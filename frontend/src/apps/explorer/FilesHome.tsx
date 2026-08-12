@@ -7,7 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder, GitRepos } from "@platform/lib/api";
+import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
+import { indexCaveat } from "@apps/explorer/listing/index-caveat";
 import { getClaudeSessionFolders, getGitRepos, indexSearch, statPath } from "@platform/lib/api";
 import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
@@ -235,10 +236,13 @@ function AiResults({ home, query, result }: { home: string; query: string; resul
 function FilesSearch({
   home,
   initialQuery,
+  indexScan,
   onActiveChange,
 }: {
   home: string;
   initialQuery: string;
+  /** The shared index poll (see FilesHome) — this box adds no poller of its own. */
+  indexScan: IndexStatus | null;
   onActiveChange: (active: boolean) => void;
 }) {
   const [query, setQuery] = useState(initialQuery);
@@ -435,6 +439,13 @@ function FilesSearch({
   // pre-selection, so Enter during the corpus load or the scan debounce cannot
   // spend a model call on a query that was about to answer itself.
   const settled = rankingSettled(view.status, scanning);
+  // The indexing caveat, same helper and same two messages as the listing's
+  // search chip (listing/index-caveat) so the two boxes make the same claim in
+  // the same words. It is the piece that makes a lagging answer read as
+  // intentional: with rows on screen from a corpus a generation behind and
+  // nothing saying why, the box just looks wrong. The rows themselves dim
+  // while `view.stale`, the same treatment the listing gives held results.
+  const caveat = active && !showingAi ? indexCaveat(indexScan) : null;
   const current = activeRow(highlight, hits.length, settled);
 
   const openRow = (row: number) => {
@@ -545,8 +556,19 @@ function FilesSearch({
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
               </>
             )}
+            {caveat && (
+              <span className="fh-index-chip" title={caveat.title}>
+                <span className="fh-index-spinner" aria-hidden="true" />
+                {caveat.note}
+              </span>
+            )}
           </p>
-          <ul className="fh-results" id="fh-result-list" role="listbox" aria-label="Search results">
+          <ul
+            className={"fh-results" + (view.stale ? " is-stale" : "")}
+            id="fh-result-list"
+            role="listbox"
+            aria-label="Search results"
+          >
             {hits.map((hit, i) => (
               <FileRow
                 key={hit.path}
@@ -654,6 +676,11 @@ export default function FilesHome({ config }: { config: Config }) {
   // an empty repo list.
   const [repos, setRepos] = useState<GitRepos | null>(null);
   const [reposFailed, setReposFailed] = useState(false);
+  // Search takes over the page body (bookmarks/recents hide behind it) for as
+  // long as there is a query — instant results appear while typing, so the
+  // grids yield from the first keystroke rather than on a submit. Declared
+  // here because the index poll below is shared with the search box.
+  const [searching, setSearching] = useState(false);
   // ...but "one GET on mount" alone would strand the user, because the answer can
   // arrive LATER: this list is derived from the file index, and a homepage opened
   // while the first scan is running would sit on "Still building…" until something
@@ -670,7 +697,14 @@ export default function FilesHome({ config }: { config: Config }) {
   // arrived — which froze `indexKey` below, so the cards and their "Reindexing"
   // note stayed on screen forever, even after the scan that would have cleared
   // them finished.
-  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos));
+  //
+  // `searching` widens the same poll rather than adding a second one: the
+  // search box needs the scan state for its "indexing…" caveat, and the repos
+  // gate goes quiet exactly when the index is healthy — which is when a scan
+  // starting mid-session would otherwise go unnoticed by the box. One poller,
+  // two consumers, the listing's rule (poll only while a search is open) still
+  // honoured for the search half.
+  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos) || searching);
   // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
   // "completes". Completion was the previous trigger and it was subtly wrong:
   // `last_completed_at` is read off the manifest, and a cancelled, failed or
@@ -747,10 +781,6 @@ export default function FilesHome({ config }: { config: Config }) {
     tabParam === "repos"
       ? tabParam
       : "sessions";
-  // Search takes over the page body (bookmarks/recents hide behind it) for as
-  // long as there is a query — instant results appear while typing, so the
-  // grids yield from the first keystroke rather than on a submit.
-  const [searching, setSearching] = useState(false);
   // A ?q= present at load was a committed AI search; FilesSearch re-runs it.
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
@@ -762,7 +792,12 @@ export default function FilesHome({ config }: { config: Config }) {
             "Find and preview your files" restatement above the box only
             pushed the one thing you came to use further down. */}
         <header className="home-hero files-hero">
-          <FilesSearch home={home} initialQuery={initialQuery} onActiveChange={setSearching} />
+          <FilesSearch
+            home={home}
+            initialQuery={initialQuery}
+            indexScan={indexScan}
+            onActiveChange={setSearching}
+          />
         </header>
 
         {searching ? null : (
