@@ -175,6 +175,17 @@
   pointer-events: none;
 }
 
+/* Community cards: the thumb is a static catalog preview.png, not an iframe. */
+.app-pcard-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+  display: block;
+}
+
 .app-pcard-shield {
   position: absolute;
   inset: 0;

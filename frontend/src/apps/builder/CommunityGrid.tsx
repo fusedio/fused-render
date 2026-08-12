@@ -1,0 +1,324 @@
+// The /apps hub's "community" tab: cards for every app in the community
+// catalog (docs/COMMUNITY_MARKETPLACE_SPEC.md). Unlike the workspace grid the
+// thumbnail is the catalog's static preview.png, not a live iframe — these
+// apps aren't on disk until previewed/cloned, and the sparse-checked browse
+// set always has the png. Data comes from the same backend the /community
+// page uses: POST /api/run against the mounted community.py (the marketplace
+// is html+py content; there is no dedicated REST surface, and community.py
+// deliberately can't be imported by the server — it runs in the executor's
+// user-code subprocess).
+//
+// Click = open: a cloned app opens its workspace copy (/apps/local/<name>,
+// same in-app route as any local card); an uncloned one opens the live
+// preview from the cache (/explorer/embed/…, the same URL the /community
+// page's Preview button uses — a full page load, since the embed shell and
+// the apps shell are different boot modes). Ordering is last-opened-first:
+// community.py records a `touch` per open, merged with the app builder's own
+// recents so opens of the cloned copy from the regular grid count too.
+import { useEffect, useMemo, useState } from "react";
+import { getConfig, getJson, postJson, rawUrl } from "@platform/lib/api";
+import { navigateUrl } from "@platform/lib/router";
+import { timeAgo } from "@platform/lib/format";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { SkeletonLines } from "@platform/ui/Skeleton";
+import { hueFor } from "@apps/builder/AppCard";
+
+export const COMMUNITY_TAG = "community";
+
+export interface CommunityApp {
+  slug: string;
+  name?: string;
+  description?: string;
+  installed?: boolean;
+  path?: string; // the cloned copy's folder, when installed
+  installed_at?: string;
+  opened_at?: number | null; // epoch seconds of the last open recorded by `touch`
+  yanked?: boolean;
+}
+
+interface Catalog {
+  status: string;
+  message?: string;
+  cache_root?: string;
+  apps?: CommunityApp[];
+}
+
+// -- community.py bridge ------------------------------------------------
+
+// The mounted backend's path never changes within a session; getConfig() is
+// awaited once and the result reused by every action call.
+let pyPathPromise: Promise<string> | null = null;
+function communityPy(): Promise<string> {
+  if (!pyPathPromise) {
+    pyPathPromise = getConfig().then((config) => {
+      if (!config.mounts_root) throw new Error("community content is not available yet");
+      return `${config.mounts_root.replace(/\/+$/, "")}/community/community.py`;
+    });
+    // A failed config fetch must not poison every later call.
+    pyPathPromise.catch(() => (pyPathPromise = null));
+  }
+  return pyPathPromise;
+}
+
+// /api/run's wire shape ({ok, result, error}); community.py additionally
+// reports its own user-facing failures as {status:"error", message}.
+interface RunEnvelope<T> {
+  ok: boolean;
+  result: T;
+  error?: { message?: string };
+}
+
+async function runCommunity<T extends { status?: string; message?: string }>(
+  params: Record<string, unknown>,
+): Promise<T> {
+  const py = await communityPy();
+  const r = await postJson<RunEnvelope<T>>("/api/run", { py, params });
+  if (!r.ok) throw new Error(r.error?.message || "community backend failed");
+  if (r.result?.status === "error") throw new Error(r.result.message || "community backend failed");
+  return r.result;
+}
+
+// Fire-and-forget open marker — ordering metadata only, never blocks the open.
+function touch(slug: string): void {
+  void runCommunity({ action: "touch", slug }).catch(() => undefined);
+}
+
+// -- catalog loading (stale-while-revalidate) -----------------------------
+
+// Module-scope cache: switching tabs within a session re-renders instantly
+// from the last catalog; a background refresh (once per session) folds in
+// upstream changes. Same posture as the /community page's own loader.
+let cachedCatalog: Catalog | null = null;
+let refreshedThisSession = false;
+
+type Loaded =
+  | { status: "loading" }
+  | { status: "ok"; catalog: Catalog }
+  | { status: "error"; message: string };
+
+function useCommunityCatalog(): Loaded {
+  const [state, setState] = useState<Loaded>(
+    cachedCatalog ? { status: "ok", catalog: cachedCatalog } : { status: "loading" },
+  );
+  useEffect(() => {
+    let alive = true;
+    const apply = (catalog: Catalog) => {
+      cachedCatalog = catalog;
+      if (alive) setState({ status: "ok", catalog });
+    };
+    const fail = (e: Error) => {
+      if (alive && !cachedCatalog) setState({ status: "error", message: e.message });
+    };
+    (async () => {
+      try {
+        if (!cachedCatalog) {
+          const catalog = await runCommunity<Catalog>({ action: "catalog" });
+          if (catalog.status === "ok") apply(catalog);
+          // no-cache (first run ever): fall through to the refresh below,
+          // which clones the catalog repo — that's the slow path the
+          // skeleton covers.
+        }
+        if (!refreshedThisSession) {
+          refreshedThisSession = true;
+          apply(await runCommunity<Catalog>({ action: "refresh" }));
+        }
+      } catch (e) {
+        refreshedThisSession = false; // a failed refresh may be retried next visit
+        fail(e as Error);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return state;
+}
+
+// The app builder's own recents (~/.fused-render/app_recents.json): opens of
+// a CLONED community app happen through the regular grid too, and only this
+// store sees those. Merged into the ordering so "last opened" means opened
+// anywhere, not just via this tab.
+function useLocalOpens(): Map<string, number> {
+  const [opens, setOpens] = useState<Map<string, number>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    getJson<{ entries: { tag: string; name: string; openedAt: string }[] }>("/api/apps/recents")
+      .then(({ entries }) => {
+        if (!alive) return;
+        const m = new Map<string, number>();
+        for (const e of entries) {
+          if (e.tag !== "local") continue;
+          const t = Date.parse(e.openedAt);
+          if (!Number.isNaN(t)) m.set(e.name, t / 1000);
+        }
+        setOpens(m);
+      })
+      .catch(() => undefined); // ordering metadata only
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return opens;
+}
+
+function lastOpened(app: CommunityApp, localOpens: Map<string, number>): number {
+  const local = app.installed && app.path ? (localOpens.get(basename(app.path)) ?? 0) : 0;
+  return Math.max(app.opened_at ?? 0, local);
+}
+
+function basename(p: string): string {
+  const parts = p.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+
+// -- open behavior ---------------------------------------------------------
+
+// The uncloned preview renders from the catalog cache through the embed
+// shell — same URL shape the /community page's Preview button builds. Not
+// router.urlForFsPath: that codec's prefix is fixed at module init to the
+// CURRENT page's mode (view, on /apps), and the preview must be embed.
+function embedUrlFor(fsPath: string): string {
+  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+  return (
+    "/explorer/embed/" +
+    norm
+      .replace(/^\/+/, "")
+      .split("/")
+      .filter((s) => s.length > 0)
+      .map(encodeURIComponent)
+      .join("/")
+  );
+}
+
+function hrefForCommunity(app: CommunityApp, cacheRoot: string | undefined): string {
+  if (app.installed && app.path) return `/apps/local/${encodeURIComponent(basename(app.path))}`;
+  // Best-effort for middle-click/new-tab: the folder may not be materialized
+  // yet (the left-click path materializes it via `detail` first).
+  return embedUrlFor(`${cacheRoot ?? ""}/${app.slug}/index.html`);
+}
+
+async function openCommunityApp(app: CommunityApp, cacheRoot: string | undefined): Promise<void> {
+  touch(app.slug);
+  if (app.installed && app.path) {
+    navigateUrl(hrefForCommunity(app, cacheRoot), { isDir: true });
+    return;
+  }
+  // Materialize the app folder in the cache (sparse checkout) before loading
+  // the preview — the browse set only guarantees preview.png/metadata.json.
+  const detail = await runCommunity<{ status?: string; message?: string; preview_entry?: string }>({
+    action: "detail",
+    slug: app.slug,
+  });
+  if (!detail.preview_entry) throw new Error("preview is not available for this app");
+  // Full page load, not navigateUrl: the embed shell is a separate boot mode
+  // (router IS_EMBED is fixed at module init), same as the /community page.
+  window.location.assign(embedUrlFor(detail.preview_entry));
+}
+
+// -- components -------------------------------------------------------------
+
+function CommunityCard({
+  app,
+  cacheRoot,
+  openedAt,
+}: {
+  app: CommunityApp;
+  cacheRoot: string | undefined;
+  openedAt: number;
+}) {
+  const [imgFailed, setImgFailed] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const title = app.name || app.slug;
+  const ago = timeAgo(openedAt || null);
+  const href = hrefForCommunity(app, cacheRoot);
+  const onClick = (e: React.MouseEvent) => {
+    // Modified/middle clicks keep the browser's own behavior on the href.
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+      return;
+    e.preventDefault();
+    openCommunityApp(app, cacheRoot).catch((err: Error) => setOpenError(err.message));
+  };
+  return (
+    <a className="app-pcard" href={href} onClick={onClick} title={app.description || title}>
+      <span className="app-pcard-body">
+        <span className="app-pcard-title">{title}</span>
+        <span className="app-pcard-meta">
+          <span className="app-pcard-tag">{COMMUNITY_TAG}</span>
+          {app.installed && <span className="app-pcard-name">cloned</span>}
+          {ago && <span className="app-pcard-ago">{ago}</span>}
+          {openError && <span className="app-pcard-ago">{openError}</span>}
+        </span>
+      </span>
+      <span className="app-pcard-thumb" aria-hidden="true">
+        {cacheRoot && !imgFailed ? (
+          <img
+            className="app-pcard-img"
+            src={rawUrl(`${cacheRoot}/${app.slug}/preview.png`)}
+            loading="lazy"
+            alt=""
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <span className="app-pcard-monogram" style={{ color: hueFor(title) }}>
+            {title.charAt(0).toUpperCase()}
+          </span>
+        )}
+      </span>
+    </a>
+  );
+}
+
+export function CommunityGrid({ query, sort }: { query: string; sort: "recent" | "name" }) {
+  const catalog = useCommunityCatalog();
+  const localOpens = useLocalOpens();
+  const q = query.trim().toLowerCase();
+  const apps = catalog.status === "ok" ? (catalog.catalog.apps ?? []) : [];
+  const cacheRoot = catalog.status === "ok" ? catalog.catalog.cache_root : undefined;
+  const shown = useMemo(() => {
+    const byName = (a: CommunityApp, b: CommunityApp) =>
+      (a.name || a.slug).localeCompare(b.name || b.slug) || a.slug.localeCompare(b.slug);
+    const filtered = apps.filter(
+      (a) =>
+        q === "" ||
+        a.slug.toLowerCase().includes(q) ||
+        (a.name ?? "").toLowerCase().includes(q) ||
+        (a.description ?? "").toLowerCase().includes(q),
+    );
+    if (sort === "name") return filtered.sort(byName);
+    // "recent" = last-opened desc; never-opened apps sink, alphabetical.
+    return filtered.sort(
+      (a, b) => lastOpened(b, localOpens) - lastOpened(a, localOpens) || byName(a, b),
+    );
+  }, [apps, q, sort, localOpens]);
+
+  if (catalog.status === "error") return <ErrorBanner>{catalog.message}</ErrorBanner>;
+  if (catalog.status === "loading")
+    return <SkeletonLines rows={4} label="Loading community apps" />;
+  return (
+    <>
+      <div className="apps-count">
+        {shown.length === apps.length
+          ? `${apps.length} community app${apps.length === 1 ? "" : "s"}`
+          : `${shown.length} of ${apps.length} community apps`}
+      </div>
+      {shown.length === 0 ? (
+        <div className="home-empty">
+          {apps.length === 0
+            ? "No community apps in the catalog yet."
+            : "No community apps match — clear the search."}
+        </div>
+      ) : (
+        <div className="apps-cards">
+          {shown.map((app) => (
+            <CommunityCard
+              key={app.slug}
+              app={app}
+              cacheRoot={cacheRoot}
+              openedAt={lastOpened(app, localOpens)}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}

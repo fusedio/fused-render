@@ -15,6 +15,8 @@ import { useDeployEnabled } from "@platform/lib/prefs";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { CommunityGrid, COMMUNITY_TAG } from "@apps/builder/CommunityGrid";
+import { useCommunityMountReady } from "@platform/lib/hooks";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -67,8 +69,20 @@ export default function Apps() {
     };
   }, [nonce]);
 
+  // The community tab lives alongside the workspace tags but is its own
+  // surface (catalog cards, not workspace apps) — gated on the builtin
+  // community mount so it never appears where the marketplace can't work.
+  const communityReady = useCommunityMountReady(false);
+
   const all = apps.status === "ok" ? apps.data : [];
-  const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  const tags = useMemo(() => {
+    const t = [...new Set(all.map((a) => a.tag))].sort();
+    return communityReady && !t.includes(COMMUNITY_TAG) ? [...t, COMMUNITY_TAG] : t;
+  }, [all, communityReady]);
+  // The chip only means the catalog when it's the appended one — a real
+  // workspace tag dir named "community" keeps its normal filtering.
+  const communityTab =
+    tag === COMMUNITY_TAG && communityReady && !all.some((a) => a.tag === COMMUNITY_TAG);
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -157,6 +171,10 @@ export default function Apps() {
           )}
         </div>
 
+        {communityTab ? (
+          <CommunityGrid query={query} sort={sort} />
+        ) : (
+          <>
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
         {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status === "ok" && (
@@ -179,6 +197,8 @@ export default function Apps() {
                 ))}
               </div>
             )}
+          </>
+        )}
           </>
         )}
       </div>

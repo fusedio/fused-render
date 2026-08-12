@@ -21,6 +21,8 @@ Actions:
               {status:"dirty"} unless force=true (which commits local edits
               first so nothing is lost from history)
   uninstall — move the installed folder to the Trash, drop the record
+  touch     — record that an app was opened (preview or installed copy);
+              feeds the "last opened" ordering of community cards
 
 State lives under ~/.fused-render/community/ (repo/ cache + installs.json);
 the mount this file is served from is read-only. Every git call runs with
@@ -52,6 +54,7 @@ STATE_DIR = os.path.join(
     "community")
 CACHE_REPO = os.path.join(STATE_DIR, "repo")
 INSTALLS_JSON = os.path.join(STATE_DIR, "installs.json")
+OPENED_JSON = os.path.join(STATE_DIR, "opened.json")
 
 # Mirrors shell/seed.fused_dir().
 WORKSPACE = os.path.abspath(
@@ -118,6 +121,36 @@ def _write_installs(data):
         except OSError:
             pass
         raise
+
+
+def _read_opened():
+    """{slug: epoch seconds of the last open} — best-effort, like installs."""
+    try:
+        with open(OPENED_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+        opened = data.get("opened")
+        return opened if isinstance(opened, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _touch(slug):
+    _require_slug(slug)
+    opened = _read_opened()
+    opened[slug] = time.time()
+    os.makedirs(STATE_DIR, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=STATE_DIR, prefix=".opened-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "opened": opened}, f, indent=2)
+        os.replace(tmp, OPENED_JSON)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return {"status": "ok", "opened_at": opened[slug]}
 
 
 def _remove_stale_locks():
@@ -203,18 +236,21 @@ def _catalog_payload():
     if index is None:
         return {"status": "no-cache"}
     installs = _read_installs()
+    opened = _read_opened()
     by_slug = {a.get("slug"): a for a in index.get("apps", [])}
     apps = []
     for entry in index.get("apps", []):
         slug = entry.get("slug")
-        apps.append({**entry, **_install_state(slug, entry, installs)})
+        apps.append({**entry, **_install_state(slug, entry, installs),
+                     "opened_at": opened.get(slug)})
     # Installed apps whose slug vanished from the catalog (yanked upstream):
     # still list them, marked, so Uninstall/Open keep working.
     for slug, rec in installs["installs"].items():
         if slug in by_slug or not os.path.isdir(rec.get("path", "")):
             continue
         apps.append({"slug": slug, "name": slug, "description": "",
-                     "yanked": True, **_install_state(slug, None, installs)})
+                     "yanked": True, "opened_at": opened.get(slug),
+                     **_install_state(slug, None, installs)})
     return {
         "status": "ok",
         "generated_at": index.get("generated_at"),
@@ -514,6 +550,8 @@ def main(action: str = "catalog", slug: str = "", force: bool = False):
             return _update(slug, force)
         if action == "uninstall":
             return _uninstall(slug)
+        if action == "touch":
+            return _touch(slug)
         raise ActionError(f"unknown action {action!r}")
     except ActionError as exc:
         return {"status": "error", "message": str(exc)}
