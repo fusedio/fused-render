@@ -925,7 +925,12 @@ export default function Listing({
   // the button says it does. One element, three homes — the mtime th, the
   // search header's Path th, and (labels hidden) the empty folder's strip —
   // because the actions act on the current folder in every one of them.
-  const headerMenuBtn = (
+  //
+  // Only where this listing OWNS the bar chrome: the menu replaces the crumb
+  // bar's path `⋮`, so it belongs to the same view that dropped it. An
+  // embedded or pane-hosted listing never had that menu — and its "Split
+  // right" would rewrite the SHELL's URL from inside a nested surface.
+  const headerMenuBtn = !ownsBarChrome ? null : (
     <button
       type="button"
       className="listing-head-menu"
