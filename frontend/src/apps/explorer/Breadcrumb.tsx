@@ -51,6 +51,7 @@ import {
 import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
 import { publishSearchSlot, retractSearchSlot } from "@apps/explorer/search-slot";
 import {
+  refreshDropTarget,
   registerSpring,
   DROP_ANNOUNCE_ATTR,
   DROP_DIR_ATTR,
@@ -90,9 +91,26 @@ const SPRING_LOAD_MS = 700;
 // "already-there" (drag-drop's dropIsValid, which has the crumb cases tested).
 //
 // `data-fs-drop-dir` is "1" with no stat probe — a path segment the listing is
-// inside is a directory by construction — and the drop is performed by the
-// listing the rows LEFT, since a crumb sits outside any `.listing-scroll` and
-// row-drag's mover lookup falls back to the origin listing for exactly that.
+// inside is a directory by construction.
+//
+// THE HARD PART IS NOT THE ATTRIBUTES, IT IS THAT THE SPRING-LOAD DESTROYS WHAT
+// THE DROP DEPENDS ON. Navigating mid-drag replaces the hovered crumb (it becomes
+// the current-folder crumb), re-lays out the strip under a pointer that has not
+// moved, re-renders away the imperatively painted drop ring, and unmounts the
+// listing whose registered mover the drop was going to use. A drag only
+// re-resolves its target on pointer MOVEMENT, so none of that was noticed. Three
+// things answer it together, and they only work as a set:
+//
+//   • every crumb is a drop target, the current-folder one included — that is the
+//     crumb the pointer lands on after a spring-load (see dropProps);
+//   • the strip tells the drag when it has changed, via row-drag's
+//     refreshDropTarget, from an effect on fsPath and armedTarget — so the spot,
+//     the cursor and the ring are rebuilt against the live DOM, and what is
+//     painted is what a release will use, because both come from that one hit
+//     test;
+//   • row-drag resolves the performer as target listing → origin listing → the
+//     listing that is actually on screen (its liveMover), because after a
+//     spring-load the first two are gone.
 //
 // Enter and leave used to be the DOM's own `dragenter`/`dragleave`. The row
 // drag is pointer-driven now (listing/row-drag.ts), so they arrive as calls
@@ -155,20 +173,32 @@ function useSpringLoadedCrumbs() {
 
   // A crumb declares itself to the drag by attribute, so a crumb re-rendered
   // mid-drag (which the spring-load's own navigation guarantees) is still the
-  // same target to a hit test that reads the DOM. Both declarations at once, in
-  // one spread, so a crumb can never be one without the other (see the header:
-  // a spring target that is not a drop target is what painted the refused
-  // cursor over the whole strip).
-  const springProps = (target: string) => ({
-    [SPRING_ATTR]: target,
+  // same target to a hit test that reads the DOM.
+  //
+  // EVERY crumb is a drop target, including the one for the folder currently
+  // being listed. That last one is not decoration: after a spring-load the crumb
+  // under the pointer IS the current-folder crumb, so leaving it out meant the
+  // headline gesture — hold to open, release to move in — failed in its
+  // commonest path, with the no-drop cursor on the crumb the user was aiming at
+  // and a release that moved nothing. What it is NOT is a spring target: the
+  // listing is already there, so navigating would be a pointless remount.
+  // (Dropping the rows you are looking at into the folder they are already in is
+  // refused as "already-there" by dropIsValid, as it is for the listing
+  // background; after a spring-load the dragged rows come from a deeper folder,
+  // so the same crumb is a real move.)
+  const dropProps = (target: string) => ({
     [DROP_PATH_ATTR]: target,
     [DROP_DIR_ATTR]: "1",
     // Empty string, not "1": the attribute's PRESENCE is the signal
     // (row-drag reads hasAttribute), and "" keeps it out of the rendered value.
     [DROP_ANNOUNCE_ATTR]: "",
   });
+  // Both declarations at once, in one spread, so an ancestor crumb can never be
+  // one without the other (see the header: a spring target that is not a drop
+  // target is what painted the refused cursor over the whole strip).
+  const springProps = (target: string) => ({ [SPRING_ATTR]: target, ...dropProps(target) });
 
-  return { springProps, armedTarget };
+  return { springProps, dropProps, armedTarget };
 }
 
 // "Update bookmark" visibility (D38). The check has side effects (a pathname
@@ -475,7 +505,7 @@ export function Breadcrumb({
   // Read by that always-on listener, which must not rebind on every toggle.
   const editingRef = useRef(false);
   editingRef.current = editing;
-  const { springProps, armedTarget } = useSpringLoadedCrumbs();
+  const { springProps, dropProps, armedTarget } = useSpringLoadedCrumbs();
 
   // Keep the tail of a long path in view on every path change (same as the
   // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
@@ -487,6 +517,25 @@ export function Breadcrumb({
     const el = crumbsRef.current;
     if (el) el.scrollLeft = el.scrollWidth;
   }, [fsPath, editing]);
+
+  // THE STRIP CHANGED UNDER A POINTER THAT DID NOT MOVE — tell the drag.
+  //
+  // Declared after the scroll pin above so it runs after it in the same flush:
+  // the re-hit-test has to see the strip where it finally sits, not where it sat
+  // before the tail was pinned back into view.
+  //
+  // Both dependencies are a mid-drag change the drag cannot otherwise notice.
+  // `fsPath` is the spring-load's own navigation, which replaces the hovered
+  // crumb with the current-folder one and re-lays out everything to its right.
+  // `armedTarget` is the armed highlight, whose re-render rewrites `className`
+  // and so erases the drop ring row-drag painted imperatively. row-drag only
+  // re-resolves the target on pointer movement, so without this the drag would
+  // keep a spot pointing at a detached element, keep the no-drop cursor, and
+  // release into whatever the fresh hit test happened to find — see
+  // refreshDropTarget, which no-ops when nothing is being dragged.
+  useEffect(() => {
+    refreshDropTarget();
+  }, [fsPath, armedTarget]);
 
   // The same click-to-edit, extended to the BAR's own free space — the gap
   // between the crumbs and the folder-search box, which belongs to #breadcrumb
@@ -605,7 +654,10 @@ export function Breadcrumb({
         (parts.length === 0 ? " last" : "") +
         (armedTarget === rootTarget ? " spring-armed" : "")
       }
-      {...springProps(rootTarget)}
+      // Drop-only when the listing is already AT the root: this crumb is then the
+      // current folder, and springing into the folder you are looking at would be
+      // a pointless remount. An ancestor gets both roles.
+      {...(parts.length === 0 ? dropProps(rootTarget) : springProps(rootTarget))}
       onClick={(e) => {
         e.preventDefault();
         // A top-bar hop always lands on the plain listing: `_mode` is dropped
@@ -648,7 +700,11 @@ export function Breadcrumb({
     if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
-        <span key={target} className={cls} title={part}>
+        // Not a link (you are already here) and not a spring target, but a DROP
+        // target like every other crumb — after a spring-load this is the crumb
+        // the pointer is sitting on, so it is the one that has to accept the
+        // release (see dropProps).
+        <span key={target} className={cls} title={part} {...dropProps(target)}>
           {part}
         </span>
       );

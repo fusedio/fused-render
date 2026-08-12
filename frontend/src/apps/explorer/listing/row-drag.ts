@@ -43,10 +43,14 @@
 //   data-fs-drop-announce  the target is OFF SCREEN, so the move has to say so
 //                          (a toast) — a sidebar bookmark, and a crumb.
 //   data-spring-target     a breadcrumb crumb: hovering it navigates there with
-//                          the drag still held. A crumb carries the drop
+//                          the drag still held. An ANCESTOR crumb carries the drop
 //                          attributes above as WELL as this one — it is a real
 //                          target (hold to open, release to move into) and
-//                          declares itself a directory without a probe.
+//                          declares itself a directory without a probe. The
+//                          current-folder crumb carries only the drop attributes,
+//                          since springing to where you already are is a no-op —
+//                          and it is the crumb under the pointer once a
+//                          spring-load has fired (see refreshDropTarget).
 //
 // EVERY DECISION belongs to drag-drop.ts (pure, tested) and marquee.ts's slop /
 // auto-scroll arithmetic (likewise). What is here is wiring, kept thin on
@@ -105,13 +109,40 @@ export interface MoveOpts {
 }
 export type ListingMover = (paths: string[], dir: string, opts: MoveOpts) => void;
 
-const movers = new WeakMap<HTMLElement, ListingMover>();
+// A Map, not a WeakMap, so the set can be ENUMERATED — see liveMover below.
+// Nothing leaks: every registration is torn down by the unregister its listing
+// calls on unmount, which is the same lifetime a WeakMap gave.
+const movers = new Map<HTMLElement, ListingMover>();
 
 export function registerListingMover(scroller: HTMLElement, mover: ListingMover): () => void {
   movers.set(scroller, mover);
   return () => {
     if (movers.get(scroller) === mover) movers.delete(scroller);
   };
+}
+
+// The mover of a listing that is actually on screen — the last one registered
+// whose scroller is still in the document.
+//
+// THIS IS THE ANSWER FOR A CRUMB DROP AFTER A SPRING-LOAD, and it is why the
+// origin listing is not enough. Spring-loading navigates mid-drag, which
+// UNMOUNTS the listing the drag started in; its unregister has already run by
+// the time the pointer comes up, so `originMover` is undefined exactly when a
+// crumb drop needs a mover most. Without this the drop fell through to the bare
+// moveEntriesInto path: the rename happened, but no listing was told, so the
+// view on screen kept showing the folder as it was until the 300ms dir-watch
+// caught up, and the moved rows were never re-anchored. (The listing prefetch
+// invalidation in lib/api does not help here — that stops a FUTURE mount reading
+// a stale cache; this is about refetching the mount that is already up.)
+//
+// The listing on screen is the right performer either way round: after a spring
+// load it is the SOURCE when the drop target is a higher ancestor (its rows are
+// leaving), and it is the DESTINATION when the target is the crumb for the
+// folder it is showing. Both need the refetch and the re-anchor.
+function liveMover(): ListingMover | undefined {
+  let found: ListingMover | undefined;
+  for (const [scroller, mover] of movers) if (scroller.isConnected) found = mover;
+  return found;
 }
 
 // --- spring-loaded crumbs ----------------------------------------------------
@@ -374,6 +405,39 @@ function repaintAtPointer(): void {
   springTo(el);
 }
 
+// Re-hit-test and repaint WITHOUT the pointer having moved. A no-op unless a
+// drag is actually under way.
+//
+// WHY THIS HAS TO EXIST. Everything else in this module reacts to the pointer:
+// the target is resolved in onPointerMove and in the auto-scroll loop, and
+// neither runs while the user holds still. That was safe as long as the DOM
+// under the pointer held still too — and spring-loading a breadcrumb breaks
+// exactly that, from three directions at once:
+//
+//   • the crumb the pointer is on is REPLACED. Navigating to it makes it the
+//     current-folder crumb, a different element (and, until this change, one
+//     with no drop attributes at all, so the hit test found nothing, the body
+//     wore the no-drop cursor over the very crumb being aimed at, and the
+//     release returned early and moved nothing);
+//   • the strip RE-LAYS-OUT under a stationary pointer — fewer segments, and the
+//     tail re-pinned into view — so a different crumb can slide under the
+//     cursor. The release hit-tests fresh, so without a repaint here the painted
+//     target and the dropped-into folder could disagree, which is a silent wrong
+//     destination;
+//   • the armed highlight is React state, and the re-render it causes writes
+//     `className` from scratch, WIPING the drop ring this module painted
+//     imperatively. Nothing would repaint it until the next pointermove, so the
+//     per-crumb "which ancestor gets this" signal vanished for the rest of the
+//     dwell.
+//
+// So the strip calls this after any render that can change it (Breadcrumb's
+// effect on fsPath/armedTarget) and the three holes close together: the spot is
+// rebuilt against the live DOM, the highlight is re-applied, and what is painted
+// is what a release would use, because both come from this one hit test.
+export function refreshDropTarget(): void {
+  if (live?.active) repaintAtPointer();
+}
+
 function onPointerMove(ev: PointerEvent): void {
   const d = live;
   if (!d || ev.pointerId !== d.pointerId) return;
@@ -480,13 +544,17 @@ async function completeDrop(
   // spring-loaded navigation is a different listing from the one the drag
   // started in, and it is the one that has to refresh and re-anchor.
   const targetScroller = spot.el.closest<HTMLElement>(".listing-scroll");
-  const mover = (targetScroller ? movers.get(targetScroller) : undefined) ?? originMover;
+  // Target's own listing, then the one the drag started in, then whichever
+  // listing is on screen — that last step is what a crumb drop lands on after a
+  // spring-load has unmounted the origin (see liveMover).
+  const mover =
+    (targetScroller ? movers.get(targetScroller) : undefined) ?? originMover ?? liveMover();
   if (mover) mover(paths, verdict.dir, { announce: spot.announce });
-  // No listing at all (both unmounted mid-drag): the move still happens, and
-  // announces itself, because a move with nothing on screen to show it must.
-  // It goes on the undo stack here rather than in a mover — the stack is a
-  // module store for exactly this reason, and a move nobody could see is the one
-  // a user is most likely to want back (lib/fs-undo).
+  // No listing at all (every one of them unmounted mid-drag): the move still
+  // happens, and announces itself, because a move with nothing on screen to show
+  // it must. It goes on the undo stack here rather than in a mover — the stack is
+  // a module store for exactly this reason, and a move nobody could see is the
+  // one a user is most likely to want back (lib/fs-undo).
   else {
     void moveEntriesInto(paths, verdict.dir, { announce: true }).then((report) => {
       if (report.pairs.length) recordFsOp({ kind: "move", pairs: report.pairs });

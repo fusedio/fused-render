@@ -278,6 +278,20 @@ describe("dropIsValid over a crumb", () => {
     expect(dropIsValid([file("/a/b/c/sub")], crumb("/a"))).toEqual({ ok: true, dir: "/a" });
   });
 
+  test("after a spring-load, the CURRENT-folder crumb is a real move", () => {
+    // The post-spring-load geometry, which is where the gesture spends most of
+    // its life: the pointer held the /a crumb, the listing followed it to /a, and
+    // that crumb is now the current-folder one — while the dragged rows still
+    // come from the deeper folder they were picked up in. So the same crumb that
+    // would refuse a same-folder drop accepts this one.
+    //
+    // THIS COVERS THE VERDICT ONLY. That the release actually reaches this
+    // target after the strip has re-rendered under a stationary pointer is
+    // pointer geometry and mid-drag DOM replacement; no headless test can see it
+    // (see refreshDropTarget) and none here claims to.
+    expect(dropIsValid([file("/a/b/c/x.md")], crumb("/a"))).toEqual({ ok: true, dir: "/a" });
+  });
+
   test("the crumb for the folder you are IN refuses — nothing would move", () => {
     // The root crumb while the listing IS the root: every dragged row's parent
     // is that folder already.

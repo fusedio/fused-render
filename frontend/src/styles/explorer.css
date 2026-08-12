@@ -244,9 +244,15 @@
    the same code from the same verdict (listing/row-drag.ts). Per-crumb, which is
    what makes an ancestor strip of small adjacent targets legible: exactly one of
    them is lit, and it is the one that would receive the drop.
-   The armed pulse above sets `animation`, this sets `box-shadow`, so the two
-   compose — except while the pulse is mid-flight, where its keyframes own the
-   ring for their 0.7s and this ring resumes when they end. */
+   Both states can be on one crumb at once, since holding it also arms the
+   spring-load. The pulse's keyframes own `box-shadow` for their 0.7s, so while it
+   runs the ring is the pulse's; the background tints below are what read through
+   either way.
+   These classes are added IMPERATIVELY by row-drag, which is why arming the
+   spring has to re-apply them: the armed state is React state, and its re-render
+   writes `className` from scratch. Breadcrumb's refreshDropTarget effect is what
+   repaints them — an earlier version of this comment claimed the ring "resumes"
+   on its own, and it did not; there was no ring for the rest of the dwell. */
 .path-crumb.drop-into {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
