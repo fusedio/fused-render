@@ -68,58 +68,123 @@ def test_an_uncovered_response_is_untouched(tmp_path, monkeypatch):
     assert filter_corpus(out) is out
 
 
-def test_the_verdict_is_cached_per_index_generation(tmp_path, monkeypatch):
-    """The git queries run once per (root, updated) — every later search of
-    the same generation is a cache hit; a new compaction re-filters."""
+def _counting_queries(monkeypatch):
+    """Every rel `_ignored` actually asks git about, across all calls."""
+    asked = []
+    real = index_gitignore._ignored
+
+    def counting(root, entries, only):
+        asked.append(sorted(only))
+        return real(root, entries, only)
+
+    monkeypatch.setattr(index_gitignore, "_ignored", counting)
+    return asked
+
+
+def test_a_repeated_search_of_one_generation_asks_git_nothing(tmp_path, monkeypatch):
     _fresh_cache(monkeypatch)
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    calls = []
-    real = index_gitignore._apply
-
-    def counting(root, entries):
-        calls.append(root)
-        return real(root, entries)
-
-    monkeypatch.setattr(index_gitignore, "_apply", counting)
+    asked = _counting_queries(monkeypatch)
     rels = ["proj/.gitignore", "proj/a.log", "proj/a.py"]
     first = filter_corpus(_out(str(tmp_path), rels, updated=1.0))
     again = filter_corpus(_out(str(tmp_path), rels, updated=1.0))
-    assert len(calls) == 1
+    assert len(asked) == 1
     assert [e["rel"] for e in again["entries"]] == [e["rel"] for e in first["entries"]]
-    filter_corpus(_out(str(tmp_path), rels, updated=2.0))
-    assert len(calls) == 2
+    assert "proj/a.log" not in [e["rel"] for e in first["entries"]]
 
 
-def test_a_query_filtered_response_is_never_cached(tmp_path, monkeypatch):
+def test_a_new_generation_only_asks_about_paths_it_has_not_seen(tmp_path, monkeypatch):
+    """The point of item 5: a completed scan must not cost a full re-sweep.
+
+    A scan finishing moves `updated`, and the old cache threw everything away
+    and re-ran check-ignore over the whole corpus — ~1s per 74k entries, on the
+    very next keystroke, while the scan's workers were still competing for IO.
+    """
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    asked = _counting_queries(monkeypatch)
+    rels = ["proj/.gitignore", "proj/a.log", "proj/a.py"]
+    filter_corpus(_out(str(tmp_path), rels, updated=1.0))
+    out = filter_corpus(_out(str(tmp_path), rels + ["proj/b.log", "proj/b.py"], updated=2.0))
+    assert asked[1] == ["proj/b.log", "proj/b.py"]
+    # ...and the newly-appeared ones are filtered on the same pass, so a build
+    # directory that appeared since the last scan never leaks into search.
+    assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore", "proj/a.py", "proj/b.py"]
+
+
+def test_verdicts_are_thrown_away_once_they_are_too_old(tmp_path, monkeypatch):
+    """The bound on reuse: a path that BECAME gitignored must not be served
+    forever. After VERDICT_MAX_AGE_S the next generation change re-asks git
+    about everything."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("nothing-here\n", encoding="utf-8")
+    rels = ["proj/.gitignore", "proj/a.log"]
+    assert len(filter_corpus(_out(str(tmp_path), rels, updated=1.0))["entries"]) == 2
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    # Still served from the pooled verdicts — that is the bounded staleness.
+    assert len(filter_corpus(_out(str(tmp_path), rels, updated=2.0))["entries"]) == 2
+    for pool in index_gitignore._cache.values():
+        pool.swept_at -= index_gitignore.VERDICT_MAX_AGE_S + 1
+    assert [e["rel"] for e in filter_corpus(
+        _out(str(tmp_path), rels, updated=3.0))["entries"]] == ["proj/.gitignore"]
+
+
+def test_a_folder_is_answered_out_of_its_index_root_pool(tmp_path, monkeypatch):
+    """Item 4: browsing folders must not evict each other.
+
+    The old cache was keyed on the REQUESTED root, so five folders opened in a
+    row evicted the first and re-paid a full check-ignore sweep of its whole
+    recursive subtree. Verdicts pool per index root, so a subfolder's corpus is
+    answered from what the root already asked.
+    """
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    filter_corpus(_out(root, ["proj/.gitignore", "proj/a.log", "proj/a.py"]),
+                  index_root=root)
+    asked = _counting_queries(monkeypatch)
+    # Now the in-folder search of proj/, whose rels are relative to proj/.
+    out = filter_corpus(_out(str(proj), [".gitignore", "a.log", "a.py"]),
+                        index_root=root)
+    assert asked == []  # every verdict was already pooled
+    assert [e["rel"] for e in out["entries"]] == [".gitignore", "a.py"]
+    assert out["total"] == 2
+    assert len(index_gitignore._cache) == 1
+
+
+def test_a_root_outside_the_index_root_gets_its_own_pool(tmp_path, monkeypatch):
+    """A mis-stated index_root must not silently re-base rels onto it."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    out = filter_corpus(_out(str(proj), [".gitignore", "a.log", "a.py"]),
+                        index_root="/somewhere/else")
+    assert [e["rel"] for e in out["entries"]] == [".gitignore", "a.py"]
+
+
+def test_a_narrowed_payload_cannot_masquerade_as_the_corpus(tmp_path, monkeypatch):
+    """A `q`-filtered or capped response is a SUBSET. It may contribute
+    verdicts (a verdict is a fact about one path, true for every request), but
+    a later full request must still get every row it asked about."""
     _fresh_cache(monkeypatch)
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
     subset = _out(str(tmp_path), ["proj/.gitignore", "proj/a.log"])
-    filter_corpus(subset, cacheable=False)
+    subset["truncated"] = True
+    filter_corpus(subset)
     full = filter_corpus(_out(str(tmp_path), [
         "proj/.gitignore", "proj/a.log", "proj/a.py"]))
-    assert "proj/a.py" in [e["rel"] for e in full["entries"]]
-
-
-def test_a_truncated_response_is_never_cached(tmp_path, monkeypatch):
-    """A capped payload is a PREFIX of the corpus, not the corpus. Caching it
-    under the generation key would serve that prefix to the next full-corpus
-    request for the same generation — which reports `truncated` from its own
-    fresh payload, so it would claim a complete corpus while handing back the
-    short list."""
-    _fresh_cache(monkeypatch)
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    capped = _out(str(tmp_path), ["proj/.gitignore", "proj/a.log"])
-    capped["truncated"] = True
-    filter_corpus(capped)
-    full = filter_corpus(_out(str(tmp_path), [
-        "proj/.gitignore", "proj/a.log", "proj/a.py"]))
-    assert "proj/a.py" in [e["rel"] for e in full["entries"]]
+    assert [e["rel"] for e in full["entries"]] == ["proj/.gitignore", "proj/a.py"]
     assert full["total"] == len(full["entries"])
 
 

@@ -287,21 +287,26 @@ def test_saving_the_config_answers_in_the_same_shape_as_reading_it(home, tmp_pat
     assert saved["configured_roots"] == read["configured_roots"] == []
 
 
-def test_a_limited_search_never_touches_the_corpus_cache(home, tmp_path, monkeypatch):
-    """The cache is keyed on (root, generation) only, so a small-limit request
-    would store its PREFIX of the corpus and the next full request for the
-    same generation would be served that prefix — while reporting `truncated`
-    from its own fresh payload, i.e. claiming the short list was complete.
-    Only a genuine whole-corpus request may take part."""
+def test_a_search_is_filtered_against_its_enclosing_index_root(home, tmp_path,
+                                                              monkeypatch):
+    """The gitignore filter pools its verdicts per INDEX ROOT, so the route has
+    to tell it which one this folder lives under. Keyed on the REQUESTED folder
+    instead (the old behaviour), browsing five folders evicted the first and
+    re-paid a full check-ignore sweep of its whole recursive subtree."""
     seen = []
     monkeypatch.setattr(index_router, "filter_corpus",
-                        lambda out, cacheable=True: seen.append(cacheable) or out)
+                        lambda out, index_root=None: seen.append(index_root) or out)
+    sub = tmp_path / "sub"
+    sub.mkdir()
     client = _client(tmp_path)
-    client.get(f"/api/index/search?root={tmp_path}&limit=5")
+    client.post("/api/index/config", json={"roots": [str(tmp_path)]},
+                headers={"X-Fused": "1"})
     client.get(f"/api/index/search?root={tmp_path}")
-    client.get(f"/api/index/search?root={tmp_path}&limit={index_router.MAX_CORPUS}")
-    client.get(f"/api/index/search?root={tmp_path}&q=x")
-    assert seen == [False, True, True, False]
+    client.get(f"/api/index/search?root={sub}")
+    # Both requests pool under the configured root, whichever folder was asked
+    # for. A folder outside every root has no pool to share and gets None.
+    client.get(f"/api/index/search?root={tmp_path.parent}")
+    assert seen == [str(tmp_path), str(tmp_path), None]
 
 
 def test_saving_the_ignore_list_preserves_comments_and_blank_lines(home, tmp_path):

@@ -29,6 +29,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from fused_render.index import freshness, runner
+from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
 from fused_render.index.ignore import default_ignore, norm
@@ -305,12 +306,15 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     what search shows (server/index_gitignore.py)."""
     if not root.strip():
         return _error("'root' is required")
-    out = index_search(load_config(), root, q=q, limit=limit)
-    # Only a whole-corpus request may use the filter cache: it is keyed on the
-    # index generation alone, so a narrowed request (`q`, or a caller-supplied
-    # cap) would both be served the wrong list and store its own subset for
-    # everyone else on that generation.
-    out = filter_corpus(out, cacheable=not q.strip() and limit >= MAX_CORPUS)
+    cfg = load_config()
+    out = index_search(cfg, root, q=q, limit=limit)
+    # Filtered per INDEX ROOT, not per requested folder: the explorer's
+    # in-folder search asks with whichever folder is open, and a cache keyed on
+    # that re-paid a whole-subtree check-ignore sweep every time browsing
+    # evicted a folder. `out["root"]` (not the raw query string) is the
+    # canonical spelling the corpus rels are relative to.
+    index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
+    out = filter_corpus(out, index_root=index_root)
     return {"ok": True, **out}
 
 
