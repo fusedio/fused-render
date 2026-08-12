@@ -648,6 +648,7 @@ export function useFileOps({
     "separator",
     { label: "Refresh", icon: MenuIcons.refresh, onClick: refetch },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(normDir(base)) },
+    { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(normDir(base)) },
     {
       label: "Open in Claude Code",
       icon: MenuIcons.openWith,

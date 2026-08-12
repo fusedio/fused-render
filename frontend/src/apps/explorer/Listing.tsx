@@ -46,6 +46,9 @@ import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
+import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
+import { EllipsisIcon } from "@apps/explorer/BarMenu";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
@@ -874,6 +877,43 @@ export default function Listing({
     setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
   };
 
+  // The header `⋮` (right end of the MODIFIED column). Everything here is about
+  // THIS FOLDER, which is what the crumb bar's own `⋮` used to be for over a
+  // listing — that one is gone (Breadcrumb.tsx) and its two unique items moved
+  // in below the background menu's set, so there is one place to look instead
+  // of a path menu and a right-click each holding half the folder's actions.
+  //
+  // Discoverability is the whole point of the button: the same items were
+  // already a right-click on the background, which nobody finds, and which an
+  // empty folder gives you no obvious surface to try.
+  const openHeaderMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation(); // never sorts — the th around it is a sort control
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenu({
+      // Right-ish alignment by hand: ContextMenu only clamps at the VIEWPORT
+      // edge, and with a preview pane open this button is nowhere near it, so
+      // an unbiased x would hang the popup off to the right of the column.
+      // 220 is the menu's own min-width (context-menu.css).
+      x: Math.max(4, r.right - 220),
+      y: r.bottom + 2,
+      items: [
+        ...backgroundMenu(),
+        "separator",
+        {
+          label: "Split right",
+          icon: <SplitRightIcon size={16} />,
+          onClick: () => enterPanel(fsPath, "row"),
+        },
+        {
+          label: "Split down",
+          icon: <SplitDownIcon size={16} />,
+          onClick: () => enterPanel(fsPath, "col"),
+        },
+      ],
+    });
+  };
+
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
@@ -1419,6 +1459,32 @@ export default function Listing({
                             >
                               ▲
                             </span>
+                          )}
+                          {/* The folder's `⋮`, absolutely positioned against
+                              the LAST header cell's right edge (the th is
+                              sticky, so it is already the positioned ancestor)
+                              — NOT a fourth column: rows have three cells, and
+                              a column they don't render breaks their
+                              backgrounds. It overlays the header's own padding,
+                              which is why .col-mtime reserves room for it
+                              (explorer.css) rather than letting it land on the
+                              sort arrow.
+                              Both handlers stop propagation: the th sorts on
+                              click, and a press that re-sorts the listing under
+                              the menu about to open is not what the button
+                              says it does. */}
+                          {key === "mtime" && (
+                            <button
+                              type="button"
+                              className="listing-head-menu"
+                              aria-haspopup="menu"
+                              aria-label="Folder actions"
+                              title="Folder actions"
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={openHeaderMenu}
+                            >
+                              <EllipsisIcon />
+                            </button>
                           )}
                         </th>
                       ),

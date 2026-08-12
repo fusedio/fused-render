@@ -1,7 +1,7 @@
 // Crumb bar, in three zones left to right:
 //
-//   path    ★ bookmark button, the crumbs (or the editable path field), then the
-//           path `⋮` — reveal, copy path, and (a file only) the two splits
+//   path    ★ bookmark button, the crumbs (or the editable path field), then —
+//           over a FILE only — the path `⋮`: reveal, copy path, the two splits
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action, the shared mode control and the preview
 //           sidebar's toggle into it
@@ -20,7 +20,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
-import { navigate, navigateUrl, currentUrl, IS_EMBED } from "@platform/lib/router";
+import { navigate, currentUrl, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { isMod } from "@platform/lib/platform";
 import {
@@ -38,9 +38,8 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@pla
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
-import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec";
-import { panelUrl } from "@apps/explorer/Panel";
 import { PathOverflow } from "@apps/explorer/BarMenu";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import {
@@ -287,7 +286,8 @@ function FolderSearchSlot() {
 // far right of the window, an inch of empty bar away from the path they act on.
 // Both are items in the path `⋮` now (BarMenu's PathOverflow), where they sit
 // beside "Open in Finder"/"Copy path", carry their names, and travel with the
-// path itself. `enterPanel` below is unchanged and is still what they call.
+// path itself. They still call `enterPanel` (lib/split-actions.ts, lifted out of
+// this file once the listing's own `⋮` became a second caller).
 //
 // Which state we are in — file or folder — is `listing/folder-chrome.ts`'s
 // claim, read where the menu is rendered rather than by a zone component of its
@@ -392,22 +392,6 @@ function TopbarActionsSlot() {
     return () => retractTopbarSlot(el);
   }, []);
   return <div ref={ref} id="topbar-mode-slot" className="crumb-actions preview-actions" />;
-}
-
-// Split entry (LM-10): two panes side by side (`dir` "row", `,` in the codec)
-// or stacked ("col", `;`), both showing the current view — entering split mode
-// with a single pane looked like nothing happened. The current view's WHOLE
-// query goes pane-local, inside each `_layout` segment (LM-3/D72): nothing is
-// promoted to the top-level pool — global params exist only when the user
-// hand-types them on the shell URL. Read via splitShellSearch, not raw
-// URLSearchParams (D51): a stray `_layout=(…)` span carries literal `&` that
-// would parse as junk keys; the codec read excludes the span, so it is
-// dropped — the strict-read semantics.
-function enterPanel(fsPath: string, dir: "row" | "col"): void {
-  const { params } = splitShellSearch(location.search);
-  const paneQ = params.toString();
-  const seg = encodePaneSegment(fsPath, paneQ ? "?" + paneQ : "");
-  navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
 }
 
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
@@ -764,20 +748,20 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
-      {/* The path `⋮` — "Open in Finder", "Copy path", and for a FILE the two
-          split-entry actions — sits immediately right of the name it acts on, in
-          every view. It used to end the bar's layout zone for a file and the
-          search row for a folder: two homes, both of them the bar's far right,
-          neither of them next to the thing being opened or copied. The crumb
-          strip stops growing (explorer.css) so this stays against the path
-          rather than drifting to the edge.
-          No splits over a FOLDER (the chrome claim is how we know): they make
-          least sense over a view that already is a split, which is why the old
-          layout zone hid itself there too. */}
-      <PathOverflow
-        fsPath={fsPath}
-        onSplit={folderClaimed ? undefined : (dir) => enterPanel(fsPath, dir)}
-      />
+      {/* The path `⋮` — "Open in Finder", "Copy path", the two split-entry
+          actions — sits immediately right of the name it acts on. The crumb
+          strip stops growing (explorer.css) so it stays against the path rather
+          than drifting to the edge.
+          A FILE only, and the chrome claim is how we know. Over a FOLDER the
+          listing owns this bar, and it now carries the same actions itself, at
+          the right end of its column header (Listing.tsx) — where they sit with
+          the folder's other operations (new file, paste, refresh) instead of
+          being split between a path menu and a right-click. Two `⋮`s a few
+          pixels apart, offering overlapping sets, was the thing to fix; this bar
+          gives its one up. */}
+      {!folderClaimed && (
+        <PathOverflow fsPath={fsPath} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      )}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
       <FolderSearchSlot />

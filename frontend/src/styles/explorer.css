@@ -813,10 +813,18 @@
     padding: 0;
     border: 0;
     box-shadow: none;
-    overflow: hidden;
     /* The label and sort arrow still exist in the cell; fixed layout would
        otherwise let them paint straight over MODIFIED's neighbour. */
     font-size: 0;
+  }
+  /* This used to be `overflow: hidden` on the cell above, which now also has
+     the folder `⋮` riding its right edge — and at width 0 that edge is the
+     TABLE's right edge, exactly where the button still belongs, so clipping the
+     cell would delete the menu at narrow widths. The two things that actually
+     needed clipping are silenced directly instead: the label by the font-size
+     above, the arrow (which carries its own 9px size) here. */
+  table.listing-table thead th.col-mtime .sort-arrow {
+    display: none;
   }
 }
 
@@ -1532,8 +1540,12 @@ table.listing-table th.col-size {
   width: 96px;
 }
 
+/* The extra right padding is the folder `⋮`'s berth: that button overlays this
+   cell rather than taking a column of its own (see .listing-head-menu below),
+   so the label and its sort arrow have to stop short of it. */
 table.listing-table th.col-mtime {
   width: 172px;
+  padding-right: 34px;
 }
 
 table.listing-table th {
@@ -1553,6 +1565,38 @@ table.listing-table th {
      rides with the header instead. */
   box-shadow: inset 0 -1px 0 var(--border);
   user-select: none;
+}
+
+/* The folder's `⋮` — the listing's own menu of what the crumb bar's path menu
+   used to offer over a folder, plus the background right-click's set. Pinned to
+   the last header cell's right edge; the sticky th is the positioned ancestor,
+   so this needs no wrapper. Vertically centred against a header whose height is
+   set by its text, hence the translate rather than a matching height.
+   Left as --fg-muted with the labels beside it: it is chrome for the folder,
+   not a fourth column heading, and it should not out-weigh the sorted column. */
+table.listing-table .listing-head-menu {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background 90ms var(--ease-out), color 90ms var(--ease-out);
+}
+
+/* The same wash every other quiet icon button in the chrome uses (.bar-ctl). */
+table.listing-table .listing-head-menu:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
 }
 
 /* Only a header that sorts something gets the affordance. Search mode's single

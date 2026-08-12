@@ -123,7 +123,10 @@ function CaretIcon({ open }: { open: boolean }) {
 // dots in a row of `/`-joined segments, i.e. "the path goes on". Turned upright
 // it reads as a control, and it is the same "more, about this thing" affordance
 // every file manager puts beside a row.
-function EllipsisIcon() {
+// Exported so the folder listing's header `⋮` (Listing.tsx) is the SAME glyph
+// as the bars' — it opens a menu of the same actions, and a second hand-rolled
+// triplet would drift.
+export function EllipsisIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
       <circle cx="12" cy="5" r="1.7" />
