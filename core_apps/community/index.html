@@ -23,10 +23,31 @@
   header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
   header h1 { font-size: 17px; margin: 0 auto 0 0; }
   header h1 .hcount { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 7px; }
-  .sub { color: var(--muted); margin: 0 0 14px; }
-  input[type=search] { background: var(--panel); border: 1px solid var(--line);
-    color: var(--text); border-radius: 7px; padding: 6px 10px;
-    flex: 1 1 200px; max-width: 320px; font: inherit; }
+  header .publish { color: var(--muted); font-size: 12px; text-decoration: none; }
+  header .publish:hover { color: var(--text); }
+  /* Prominent centered search with tag autocomplete */
+  .searchbar { display: flex; justify-content: center; margin: 16px 0 14px; }
+  .searchbox { position: relative; display: flex; align-items: center; gap: 7px;
+    width: 100%; max-width: 560px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 13px; }
+  .searchbox:focus-within { border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+  .searchbox .icon { flex: 0 0 auto; color: var(--muted); display: flex; }
+  .searchbox input { flex: 1 1 auto; min-width: 60px; background: none; border: none;
+    outline: none; color: var(--text); font: inherit; padding: 0; }
+  .token { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+    background: var(--chip); border: 1px solid var(--accent); border-radius: 999px;
+    padding: 1px 9px; font-size: 12px; }
+  .token button { border: none; background: none; padding: 0; color: var(--muted);
+    cursor: pointer; font-size: 13px; line-height: 1; }
+  .token button:hover { background: none; color: var(--text); }
+  .ac { position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 10;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    overflow: hidden; box-shadow: 0 8px 24px color-mix(in srgb, #000 30%, transparent); }
+  .ac .opt { display: flex; align-items: baseline; gap: 8px; padding: 7px 13px; cursor: pointer; }
+  .ac .opt.sel, .ac .opt:hover { background: var(--hover); }
+  .ac .opt .kind { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .ac .opt .n { color: var(--muted); margin-left: auto; font-size: 11.5px; }
   button { background: var(--panel); border: 1px solid var(--line); color: var(--text);
     border-radius: 7px; padding: 5px 12px; font: inherit; cursor: pointer; }
   button:hover { background: var(--hover); }
@@ -126,7 +147,7 @@
   <div id="browse-chrome">
     <header>
       <h1>Community apps<span class="hcount" id="hcount"></span></h1>
-      <input id="q" type="search" placeholder="Search apps…  ( / )">
+      <a class="publish" href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noreferrer">Publish yours ↗</a>
       <select id="sort" title="Sort apps">
         <option value="">Catalog order</option>
         <option value="opened">Recently opened</option>
@@ -135,8 +156,16 @@
       <button id="installed-toggle" title="Apps you've cloned">Cloned</button>
       <button id="refresh">Refresh</button>
     </header>
-    <p class="sub">Apps shared by the community — browse, read, and clone into your Fused folder.
-      <a id="repo-link" href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noreferrer">Publish yours ↗</a></p>
+    <div class="searchbar">
+      <div class="searchbox">
+        <span class="icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg></span>
+        <span id="tag-token"></span>
+        <input id="q" type="search" autocomplete="off" spellcheck="false"
+          placeholder="Search apps, or type a tag to filter…  ( / )">
+        <div class="ac" id="ac" hidden></div>
+      </div>
+    </div>
     <div class="chips" id="chips"></div>
   </div>
   <div id="content"><div class="state">Loading…</div></div>
@@ -242,12 +271,17 @@ function badge(app) {
 let chipsExpanded = false;   // ephemeral view state, deliberately not a param
 const CHIP_LIMIT = 8;
 
+function tagCounts() {
+  const counts = {};
+  for (const a of catalog?.apps || [])
+    for (const t of a.tags || []) counts[t] = (counts[t] || 0) + 1;
+  return counts;
+}
+
 function renderChips() {
   const { tag } = state();
   const apps = catalog?.apps || [];
-  const counts = {};
-  for (const a of apps)
-    for (const t of a.tags || []) counts[t] = (counts[t] || 0) + 1;
+  const counts = tagCounts();
   // Popular tags first: the long tail of 1-count tags hides behind "more".
   const tags = Object.keys(counts)
     .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
@@ -263,12 +297,21 @@ function renderChips() {
       : tags.length > CHIP_LIMIT ? `<button class="chip more" data-more>less</button>` : "");
 }
 
+// Active tag shows as a removable token inside the search box.
+function renderToken() {
+  const { tag } = state();
+  const el = document.getElementById("tag-token");
+  el.innerHTML = tag
+    ? `<span class="token">${esc(tag)}<button title="Clear tag filter" data-untag>×</button></span>`
+    : "";
+}
+
 // One dispatch: the `app` param decides which page renders — grid or detail.
 function render() {
   const { open } = state();
   browseChrome.style.display = open ? "none" : "";
   if (open) renderDetail(open);
-  else { renderChips(); renderGrid(); }
+  else { renderToken(); renderChips(); renderGrid(); }
 }
 
 // Body mirrors the app builder's preview card: title, then a meta row of
@@ -547,7 +590,60 @@ async function refresh() {
 }
 
 // --- wiring -----------------------------------------------------------------
-qEl.addEventListener("input", () => fused.params.set("q", qEl.value));
+// --- search autocomplete: typing suggests tags; picking one applies the
+// --- tag filter (as a token) and clears the text query -----------------------
+const acEl = document.getElementById("ac");
+let acIndex = -1;
+
+function acSuggestions() {
+  const { tag } = state();
+  const needle = qEl.value.trim().toLowerCase();
+  if (!needle) return [];
+  const counts = tagCounts();
+  return Object.keys(counts)
+    .filter(t => t !== tag && t.toLowerCase().includes(needle))
+    .sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))
+    .slice(0, 6)
+    .map(t => ({ t, n: counts[t] }));
+}
+
+function renderAc() {
+  const opts = acSuggestions();
+  if (!opts.length) { acEl.hidden = true; acEl.innerHTML = ""; acIndex = -1; return; }
+  if (acIndex >= opts.length) acIndex = opts.length - 1;
+  acEl.innerHTML = opts.map((o, i) =>
+    `<div class="opt${i === acIndex ? " sel" : ""}" data-ac="${esc(o.t)}">
+      <span class="kind">tag</span>${esc(o.t)}<span class="n">${o.n} app${o.n > 1 ? "s" : ""}</span></div>`).join("");
+  acEl.hidden = false;
+}
+
+function applyTag(t) {
+  fused.params.set("tag", t);
+  fused.params.set("q", "");
+  acEl.hidden = true; acEl.innerHTML = ""; acIndex = -1;
+  qEl.focus();
+}
+
+qEl.addEventListener("input", () => { fused.params.set("q", qEl.value); acIndex = -1; renderAc(); });
+qEl.addEventListener("focus", renderAc);
+qEl.addEventListener("blur", () => setTimeout(() => { acEl.hidden = true; }, 0));
+qEl.addEventListener("keydown", (e) => {
+  const opts = acEl.querySelectorAll(".opt");
+  if (e.key === "Backspace" && !qEl.value && state().tag) { fused.params.set("tag", ""); return; }
+  if (!opts.length) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); acIndex = (acIndex + 1) % opts.length; renderAc(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); acIndex = (acIndex - 1 + opts.length) % opts.length; renderAc(); }
+  else if (e.key === "Enter" && acIndex >= 0) { e.preventDefault(); applyTag(opts[acIndex].dataset.ac); }
+  else if (e.key === "Escape") { acEl.hidden = true; acIndex = -1; }
+});
+// mousedown, not click: fires before the input's blur hides the list.
+acEl.addEventListener("mousedown", (e) => {
+  const opt = e.target.closest?.("[data-ac]");
+  if (opt) { e.preventDefault(); applyTag(opt.dataset.ac); }
+});
+document.getElementById("tag-token").addEventListener("click", (e) => {
+  if (e.target.closest?.("[data-untag]")) fused.params.set("tag", "");
+});
 document.getElementById("sort").addEventListener("change", (e) =>
   fused.params.set("sort", e.target.value));
 document.getElementById("installed-toggle").addEventListener("click", () =>
