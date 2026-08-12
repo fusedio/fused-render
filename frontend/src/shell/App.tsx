@@ -408,7 +408,7 @@ function CommunityView({ config, epoch }: { config: Config; epoch: number }) {
       <div id="content">
         <div className="preview-resolving">
           <span className="mode-icon-spinner" />
-          Preparing community content…
+          Preparing showcase content…
         </div>
       </div>
     );
@@ -596,7 +596,7 @@ export default function App({ config }: { config: Config }) {
                     : isSessions
                       ? "Sessions"
                       : isCommunity
-                      ? "Community"
+                      ? "Showcase"
                       : isClaudeConfig
                       ? "Claude Config"
                       : isClaudeArtifacts
