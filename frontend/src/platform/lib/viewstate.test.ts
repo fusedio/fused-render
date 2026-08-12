@@ -4,7 +4,55 @@
 // the storage wrapper around it is two lines that cannot be got wrong, the
 // rewriting of every folder's query string is not.
 import { describe, expect, test } from "bun:test";
-import { stripParam } from "@platform/lib/viewstate";
+import { parseViewStateMap, stripParam } from "@platform/lib/viewstate";
+
+// What comes back out of localStorage is a STRING WRITTEN BY SOMEONE ELSE —
+// an older build, a foreign build, a hand-edited devtools value, a half-written
+// key. The store's whole type contract (Record<string, string>) rests on this
+// one function, and it used to be a bare `JSON.parse(raw) as Record<...>`: a
+// cast, which checks nothing.
+//
+// This stopped being a theoretical tidiness point when the purge moved to
+// pane.ts's MODULE INIT. Every other reader is lazy and inside a component, so
+// a bad value there degrades one thing; a throw at module init aborts
+// evaluation of a module that Listing.tsx and Preview.tsx both import, i.e. the
+// whole explorer bundle — a blank app. `Object.entries(null)` throws, and
+// `JSON.parse("null")` is exactly how you get a null here.
+describe("parseViewStateMap", () => {
+  test("reads a stored map", () => {
+    expect(parseViewStateMap('{"/a":"?sort=size"}')).toEqual({ "/a": "?sort=size" });
+  });
+
+  test("nothing stored", () => {
+    expect(parseViewStateMap(null)).toEqual({});
+    expect(parseViewStateMap("")).toEqual({});
+  });
+
+  test("malformed JSON is an empty store, not a throw", () => {
+    expect(parseViewStateMap("{oops")).toEqual({});
+    expect(parseViewStateMap("undefined")).toEqual({});
+  });
+
+  test("a stored JSON value that is not an object is an empty store", () => {
+    // `null` first, because it is the one that used to get through: it is
+    // truthy-checked away only when the RAW string is empty, and "null" is not.
+    expect(parseViewStateMap("null")).toEqual({});
+    expect(parseViewStateMap("[]")).toEqual({});
+    expect(parseViewStateMap('["?sort=size"]')).toEqual({});
+    expect(parseViewStateMap('"just a string"')).toEqual({});
+    expect(parseViewStateMap("42")).toEqual({});
+    expect(parseViewStateMap("true")).toEqual({});
+  });
+
+  test("non-string values inside a valid object are dropped, entry by entry", () => {
+    // The good entries survive: one bad key must not cost a user every folder's
+    // sort. A number would reach `new URLSearchParams(42)`, which parses the
+    // NUMBER's string form as a query — nonsense, silently.
+    expect(
+      parseViewStateMap('{"/a":"?sort=size","/b":42,"/c":null,"/d":{"sort":"size"},"/e":"?x=1"}')
+    ).toEqual({ "/a": "?sort=size", "/e": "?x=1" });
+  });
+});
 
 describe("stripParam", () => {
   test("removes the param and keeps the rest of the entry", () => {

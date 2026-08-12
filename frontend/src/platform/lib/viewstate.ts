@@ -9,12 +9,48 @@
 // fused by Size) and neither leaks into the other.
 const KEY = "fused-render:viewstate";
 
+// The stored string → the map, VALIDATED rather than cast. This is the only
+// door into the store, so it is the one place that can honour the
+// Record<string, string> the rest of the file is written against; it used to be
+// a bare `JSON.parse(raw) as Record<string, string>`, and a cast checks nothing.
+//
+// What is on the other side of that door is a string written by someone else:
+// an older build of this app, a foreign one sharing the origin, a hand-edited
+// devtools value, a write interrupted half way. Three shapes have to survive:
+//   • not JSON at all              → {}
+//   • JSON but not an object       → {}. `null` is the one that used to get
+//     through, because the guard was on the RAW string being non-empty and
+//     "null" is not empty; `Object.entries(null)` throws.
+//   • an object with junk INSIDE   → the junk entries are dropped and the rest
+//     kept, because one bad key must not cost a user every folder's sort. A
+//     non-string would otherwise reach `new URLSearchParams(42)`, which parses
+//     the number's string form as a query — silently, and as nonsense.
+//
+// A hard failure here got much more expensive when purgeViewStateParams moved
+// to pane.ts's MODULE INIT: the other callers are lazy and inside components,
+// where a throw degrades one thing, but a throw at module init aborts a module
+// that Listing.tsx and Preview.tsx both import — a blank app, not a blank pane.
+// Exported for the tests, which have no localStorage to reach it through.
+export function parseViewStateMap(raw: string | null): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    return {}; // malformed JSON — behave as empty
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const out: Record<string, string> = {};
+  for (const [path, search] of Object.entries(parsed)) {
+    if (typeof search === "string") out[path] = search;
+  }
+  return out;
+}
+
 function load(): Record<string, string> {
   try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    return parseViewStateMap(localStorage.getItem(KEY));
   } catch {
-    return {}; // private-mode / quota / malformed JSON — behave as empty
+    return {}; // private-mode / storage unavailable — behave as empty
   }
 }
 
