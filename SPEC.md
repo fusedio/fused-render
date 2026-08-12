@@ -5745,6 +5745,25 @@ an AI Models page that could say what was on disk but not what was *running*.
   timeout waiting for a file that was never coming back. The name carries a
   random per-worker id (never the token: a secret must not become a filename),
   and both the status and log files are removed once the process is gone.
+- **AI-5d** **A bring-up thread reports its own death, and the environment
+  wait polls the key the INSTALLER named.** Two failures of the same kind — work
+  that stops without saying so — seen as one card reading "Preparing Diffusers
+  (PyTorch)…" beside a manager row reading "no longer reporting". (a) `_bring_up`
+  and `_fetch_only` run on threads, so an exception that is not a
+  `SupervisorError` is raised to NOBODY: it kills the only thing reporting and
+  the row sits at its last detail until the manager gives up and blames the
+  process — a lie in the one direction that matters, since the server is fine
+  and nothing says the load is gone. Both catch **everything**, name the
+  exception class on the row (the only part a user can act on) and log the
+  traceback, which is otherwise the sole copy. (b) The venv wait takes its key
+  from `envinstall.start()`'s reply, never from a second derivation of its own:
+  with no pinned interpreter yet (D214) the first round installs the PYTHON
+  under `PYTHON_BOOTSTRAP_KEY`, and a re-derived venv key polls a record nobody
+  is writing — an infinite "Preparing…" over an install running fine.
+  `envinstall._reported` exists to hand a caller the right key and its docstring
+  names this exact failure; this was a caller that recomputed it anyway. It
+  therefore also runs **rounds**: every other caller of that loader is a page
+  that re-POSTs for the second round, and there is no page here.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
   so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
   linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking

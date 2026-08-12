@@ -383,6 +383,103 @@ def test_a_load_opens_a_server_owned_job_row(fake_runner):
     assert row["id"].startswith(jobs.SERVER_ID_PREFIX)
 
 
+def _row(job_id, timeout=10.0):
+    """The job row for `job_id`, once it reaches a terminal state."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+        if row and row["state"] != "running":
+            return row
+        time.sleep(0.02)
+    return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+
+
+def test_a_load_that_throws_reports_the_failure_instead_of_freezing(
+        fake_runner, monkeypatch):
+    """The bug behind "No longer reporting" on a card still saying "Preparing".
+
+    A bring-up runs on its own thread, so an exception that is not a
+    `SupervisorError` is raised to NOBODY: it kills the only thing reporting,
+    and the row sits at its last detail until the manager gives up and blames
+    the process. The server was fine; the load simply stopped existing, silently.
+    """
+    def boom(runner, worker, job):
+        raise RuntimeError("uv is on fire")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", boom)
+    started = supervisor.load("org/explodes", registry.TEXT_GENERATION)
+
+    row = _row(started["jobId"])
+    assert row["state"] == "error"
+    # The class name is the only part a user can act on or paste into a report,
+    # so it is named rather than flattened to "failed".
+    assert "RuntimeError" in row["message"]
+    assert "uv is on fire" in row["message"]
+    # And the capability is free again, rather than held by a dead bring-up.
+    assert supervisor.describe()["loaded"] == []
+
+
+def test_a_download_that_throws_reports_the_failure_too(fake_runner, monkeypatch):
+    """Same rule on the weights-only path, which is the one the user hit."""
+    def boom(runner, worker, job):
+        raise RuntimeError("the installer never started")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", boom)
+    started = supervisor.load("org/explodes", registry.TEXT_GENERATION,
+                              weights_only=True)
+
+    row = _row(started["jobId"])
+    assert row["state"] == "error"
+    assert "RuntimeError" in row["message"]
+    # The in-flight table is cleared too, so a retry is not refused as a join.
+    assert supervisor.describe()["downloading"] == []
+
+
+def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path):
+    """`envinstall.start()` names its own key, and it is not always ours.
+
+    With no pinned interpreter yet (D214) the first round installs the PYTHON,
+    under `PYTHON_BOOTSTRAP_KEY` rather than under the project's venv key. A
+    caller that re-derives the key polls a record nobody is writing — which is
+    an infinite "Preparing…" over an install that is running fine, and is what
+    `envinstall._reported` exists to prevent.
+    """
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="R")
+    rounds = []
+    installed = {"yes": False}
+
+    def fake_start(project_dir):
+        rounds.append(project_dir)
+        # Round one is the interpreter, under a key that is NOT the venv key.
+        return {"key": "bootstrap-key" if len(rounds) == 1 else "venv-key",
+                "done": False}
+
+    def fake_progress(key):
+        # Only ever answers for the key `start()` actually reported.
+        assert key in ("bootstrap-key", "venv-key"), f"polled a stale key: {key}"
+        if key == "venv-key":
+            installed["yes"] = True
+        return {"done": True, "error": None, "stage": "done"}
+
+    monkeypatch.setattr(envinstall, "start", fake_start)
+    monkeypatch.setattr(envinstall, "progress", fake_progress)
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: installed["yes"])
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "venv-key")
+
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+    assert supervisor._ensure_venv(runner, worker, "sys:ai-model:m") == "/venv/bin/python"
+    # TWO rounds: the interpreter, then the packages. One would have installed a
+    # python and then waited for packages nobody had asked for.
+    assert len(rounds) == 2
+
+
 def test_a_page_cannot_post_to_a_server_owned_id(client):
     # The ids are deterministic, so without this a page could post state:"done"
     # for a download still running and the manager would believe it.

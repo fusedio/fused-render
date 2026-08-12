@@ -40,6 +40,7 @@ boundary, in an interpreter this one built.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import shutil
@@ -54,11 +55,20 @@ from dataclasses import dataclass, field
 from fused_render import jobs
 from fused_render.ai import registry
 
+logger = logging.getLogger(__name__)
+
 # How long to wait for a freshly spawned worker to publish its port before
 # calling the launch failed. Generous: the process has to import its runtime
 # (mlx/torch are seconds of import alone) before it binds.
 BOOTSTRAP_TIMEOUT_S = 120.0
 BOOTSTRAP_POLL_S = 0.25
+
+#: How many `envinstall.start()` rounds one runner environment may take. Two is
+#: the real number — the pinned interpreter, then the packages (D214) — and the
+#: third is slack for a loader that grows another bootstrap stage rather than a
+#: retry loop: a round only repeats when the previous one finished CLEANLY and
+#: still left nothing installed, which is progress or a bug, never a poll.
+_VENV_ROUNDS = 3
 
 # A health probe is a localhost request to a process that may be inside a
 # multi-second GPU call, so this is loose. It is not a load timeout — loading is
@@ -459,6 +469,23 @@ def _report(job: str, **fields) -> None:
         pass
 
 
+def _failure_text(e: BaseException) -> str:
+    """What to put on a failed job row, for any exception a bring-up threw.
+
+    A `SupervisorError` is already a sentence written for the user — including
+    the literal "cancelled", which the callers switch on — so it passes through.
+    Anything else is a bug or an environment fault (the loader refusing to
+    start, a spawn that could not exec), and its class name is the only part a
+    user can act on or paste into a report, so the row names it rather than
+    saying "failed". The traceback goes to the server log, where it is the only
+    copy: this thread is the top of its own stack and nothing else will print it.
+    """
+    if isinstance(e, SupervisorError):
+        return str(e)
+    logger.exception("AI bring-up failed")
+    return f"{e.__class__.__name__}: {e}".strip().rstrip(":")
+
+
 def _cancel_requested(job: str) -> bool:
     for record in jobs.list_jobs():
         if record["id"] == job:
@@ -482,22 +509,36 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
     worker.state = "venv"
     _report(job, state="running", kind="download", detail=f"Preparing {runner.label}…",
             done=None, total=None)
-    envinstall.start(runner.folder)
-    key = envinstall.venv_key_for(runner.folder)
-    while True:
-        if worker.stopping or _cancel_requested(job):
-            envinstall.cancel(key)
-            raise SupervisorError("cancelled")
-        record = envinstall.progress(key) or {}
-        if record.get("done"):
-            if record.get("error"):
-                raise SupervisorError(str(record["error"]))
-            break
-        _report(job, detail=f"Preparing {runner.label} — {record.get('stage') or 'installing'}…")
-        time.sleep(0.5)
-    if not envinstall.is_installed(runner.folder):
-        raise SupervisorError(f"the environment for {runner.label} did not build")
-    return envinstall.venv_python_for(runner.folder)
+
+    # ROUNDS, because an install is not always one install. On a machine with no
+    # pinned interpreter yet (D214), the first `start()` fetches the INTERPRETER
+    # under its own key and finishes; the packages are a SECOND call. Every
+    # other caller of this loader is a page that re-POSTs, so the second round
+    # was the client's — here there is no client, and without it a first-ever
+    # runner build would sit at "Preparing…" forever having installed a python
+    # and nothing else.
+    for _ in range(_VENV_ROUNDS):
+        # The key comes from `start()`, never from a second derivation of our
+        # own: in bootstrap mode the two disagree BY DESIGN, and polling a key
+        # nobody is writing is a record that never arrives. `envinstall._reported`
+        # exists to hand the caller the right one — this is that caller.
+        started = envinstall.start(runner.folder)
+        key = started.get("key") or envinstall.venv_key_for(runner.folder)
+        while True:
+            if worker.stopping or _cancel_requested(job):
+                envinstall.cancel(key)
+                raise SupervisorError("cancelled")
+            record = envinstall.progress(key) or {}
+            if record.get("done"):
+                if record.get("error"):
+                    raise SupervisorError(str(record["error"]))
+                break
+            _report(job,
+                    detail=f"Preparing {runner.label} — {record.get('stage') or 'installing'}…")
+            time.sleep(0.5)
+        if envinstall.is_installed(runner.folder):
+            return envinstall.venv_python_for(runner.folder)
+    raise SupervisorError(f"the environment for {runner.label} did not build")
 
 
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
@@ -532,8 +573,15 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
             time.sleep(0.5)
-    except SupervisorError as e:
-        message = str(e)
+    except BaseException as e:  # noqa: BLE001 - top of a thread; see below
+        # EVERYTHING, not just SupervisorError. This is the top of a thread, so
+        # an exception that escapes it is not raised to anyone — it kills the
+        # only thing that was reporting, and the row it was reporting to sits at
+        # its last detail until the manager gives up and says "the process
+        # running it stopped reporting". Which is a lie in the one direction
+        # that matters: the server is fine, the load is not running, and nothing
+        # says so. A load that fails must SAY it failed.
+        message = _failure_text(e)
         with _lock:
             worker.state = "error"
             worker.error = message
@@ -587,8 +635,8 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
         _report(job, state="done", detail="Downloaded")
-    except SupervisorError as e:
-        message = str(e)
+    except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
+        message = _failure_text(e)
         _report(job, state="cancelled" if message == "cancelled" else "error",
                 message=None if message == "cancelled" else message)
     finally:
@@ -694,8 +742,8 @@ def start_image(model: str, request: dict, job: str) -> None:
     def run() -> None:
         try:
             result = generate_image(model, request, job)
-        except SupervisorError as e:
-            message = str(e)
+        except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
+            message = _failure_text(e)
             if message == "cancelled":
                 _report(job, state="cancelled")
             else:
