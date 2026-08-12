@@ -148,6 +148,17 @@ A bundled core app, following the learn/sessions pattern exactly (D227):
   state joined from `installs.json` (§5).
 - `install.py` — copy an app folder from the cache into the workspace,
   git-init it, record the install (§5).
+
+One constraint the helpers live with: `fused.runPython` user code runs in a
+subprocess that deliberately cannot `import fused_render` (the PYTHONPATH
+injection that once allowed it was removed — `executor.py` spawn comments —
+and the hosted execution backend strips PYTHONPATH anyway). So the helpers
+**vendor** the two small pieces they'd otherwise import: the atomic
+rename-claim loop (the `os.rename` + collision-retry idiom of
+`zip_import.move_into_new_dir`) and the git-init-with-first-commit sequence
+(the subprocess-git calls of `app_git.init_repo`). Both are ~20 lines of
+stdlib + subprocess git; duplicating the idiom is cheaper than adding an
+import channel or new routes.
 - `readme.py` — return a given app's `readme.md` and `icon.svg` from the cache
   for the detail view.
 
@@ -246,12 +257,12 @@ Flow, all inside `install.py` via `fused.runPython`:
 2. Ensure the cache is fresh enough (pull if the user hit Install from a
    stale listing and the slug is missing).
 3. Copy `repo/<slug>/` to a staging dir, drop repo-plumbing files if any, then
-   claim `<workspace>/community/<slug>/` atomically by rename via
-   `zip_import.move_into_new_dir` (same primitive as clone-a-deployed-page —
-   `os.rename`, collision retries to `<slug>-2` etc.).
-4. `app_git.init_repo(dest)` — the installed copy is a git repo from birth,
-   first commit = pristine upstream, exactly like `POST /api/apps/new` does
-   for scaffolded apps. This is what makes update-time dirty-detection free
+   claim `<workspace>/community/<slug>/` atomically by rename (the vendored
+   `move_into_new_dir` idiom from §3 — `os.rename`, collision retries to
+   `<slug>-2` etc., same behavior as clone-a-deployed-page).
+4. Git-init the destination with a first commit = pristine upstream (the
+   vendored `init_repo` sequence from §3), exactly like `POST /api/apps/new`
+   does for scaffolded apps. This is what makes update-time dirty-detection free
    (§6) and gives users the history/claude modes on their copy.
 5. Record in `installs.json`:
 
