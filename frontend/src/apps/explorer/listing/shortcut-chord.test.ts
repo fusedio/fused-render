@@ -154,6 +154,49 @@ test("Backspace: trash on a Mac, up a folder everywhere else", () => {
   expect(matchChord(ev("Backspace", { shift: true }), listing)).toBeNull();
 });
 
+test("undo and redo are the standard three chords", () => {
+  expect(matchChord(mod("z"), listing)).toBe("undo");
+  expect(matchChord(mod("Z", { shift: true }), listing)).toBe("redo");
+  // Ctrl+Y is the Windows redo. There is no Cmd+Y redo on macOS (⌘Y is
+  // History/Quick Look), so it must not answer there.
+  expect(matchChord(ev("y", { ctrl: true }), listing)).toBe(isMac ? null : "redo");
+});
+
+test("undo takes exactly its own modifiers", () => {
+  // Alt+Cmd+Z and the wrong primary modifier are somebody else's chord, like
+  // every other entry in the table.
+  expect(matchChord(mod("z", { alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("Z", { shift: true, alt: true }), listing)).toBeNull();
+  expect(matchChord(wrongMod("z"), listing)).toBeNull();
+  expect(matchChord(ev("z"), listing)).toBeNull();
+});
+
+test("A FOCUSED TEXT FIELD KEEPS ITS NATIVE UNDO", () => {
+  // The guard that is not optional. Cmd+Z inside a text field is the browser's
+  // own text undo, and the field the user is most likely to hit it in is the
+  // rename prompt — where "undo" meaning "un-move the last file" instead of
+  // "un-type that" would be both surprising and, unlike a mistyped name,
+  // unrecoverable by typing.
+  //
+  // `inSearch` is the flag, and it covers every editable that can reach the
+  // matcher: useListingShortcuts only forwards an event when focus is on the
+  // search input or on nothing at all (its `navActive` test), and a dialog's
+  // input is behind the overlay guard before that. So "focus is in a field" and
+  // "inSearch" are the same condition here — if that ever widens, this is the
+  // test that has to widen with it.
+  expect(matchChord(mod("z"), searching)).toBeNull();
+  expect(matchChord(mod("Z", { shift: true }), searching)).toBeNull();
+  expect(matchChord(ev("y", { ctrl: true }), searching)).toBeNull();
+});
+
+test("a text SELECTION does not block undo the way it blocks copy", () => {
+  // Copy defers to a highlighted range because the browser's copy is the
+  // unambiguous reading of Cmd+C there. Undo has no such reading: a selection
+  // in non-editable text is not an edit history, so Cmd+Z with a paragraph
+  // highlighted still means the listing's undo.
+  expect(matchChord(mod("z"), selecting)).toBe("undo");
+});
+
 test("rename is bare F2 — Alt+F2 is a desktop run dialog on Linux", () => {
   expect(matchChord(ev("F2"), listing)).toBe("rename");
   expect(matchChord(ev("F2", { alt: true }), listing)).toBeNull();

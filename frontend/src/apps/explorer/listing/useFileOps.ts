@@ -1,8 +1,10 @@
-// File operations on listing rows (paste, duplicate, compress, trash, delete,
-// rename, new file/folder, reveal, copy-path, open-in-Claude) plus the context
-// menus built from them. Owns the dialog + context-menu state; toasts go to
-// the global store (lib/toast) and the cut/copy clipboard is the module-level
-// store in lib/fs-clipboard (both survive this component's per-folder remount).
+// File operations on listing rows (paste, move, undo/redo, duplicate, compress,
+// trash, delete, rename, new file/folder, reveal, copy-path, open-in-Claude)
+// plus the context menus built from them. Owns the dialog + context-menu state;
+// toasts go to the global store (lib/toast), and the cut/copy clipboard and the
+// undo stack are module-level stores (lib/fs-clipboard, lib/fs-undo) — all three
+// survive this component's per-folder remount, which a move can cause mid-flight
+// by spring-loading a crumb.
 import { useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
@@ -35,6 +37,16 @@ import {
   claudeDeepLink,
 } from "@apps/explorer/lib/fs-actions";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
+import {
+  applyFsOp,
+  invertFsOp,
+  pushRedoOp,
+  pushUndoOp,
+  recordFsOp,
+  takeRedoOp,
+  takeUndoOp,
+  type FsOp,
+} from "@apps/explorer/lib/fs-undo";
 import { basename } from "@platform/lib/format";
 import { isAppEntry } from "@platform/ui/FileIcons";
 import { getClipboard, setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
@@ -118,6 +130,11 @@ export function useFileOps({
     pasteInFlight.current = true;
     run(async () => {
       const pasted: string[] = [];
+      // A CUT paste is a relocation, so it goes on the undo stack — with the
+      // destinations that actually landed, deduped names and all (lib/fs-undo).
+      // A COPY paste does not: its inverse is a delete, which is not something
+      // an undo may do on the user's behalf.
+      const relocated: { from: string; to: string }[] = [];
       let last: string | null = null;
       try {
         for (const src of paths) {
@@ -137,8 +154,10 @@ export function useFileOps({
           const dst = sameFolder
             ? await freeDuplicatePath(target, basename(src), is_dir)
             : await freePastePath(target, basename(src), is_dir);
-          if (op === "cut") await renameEntry(src, dst);
-          else await copyEntry(src, dst);
+          if (op === "cut") {
+            await renameEntry(src, dst);
+            relocated.push({ from: src, to: dst });
+          } else await copyEntry(src, dst);
           pasted.push(src);
           last = dst;
         }
@@ -162,8 +181,13 @@ export function useFileOps({
         // ones already written) until the 300 ms dir-watch catches up. The
         // rethrow is preserved so run() still toasts the failure.
         if (pasted.length) refetch();
+        // A half-moved cut is still a relocation of everything that DID move,
+        // and it is the case a user most wants back — recorded before the
+        // rethrow, since run()'s error path never reaches the lines below.
+        if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
         throw e;
       }
+      if (relocated.length) recordFsOp({ kind: "move", pairs: relocated });
       // Re-anchor onto the last thing written, if it lands in this view.
       if (last !== null) pendingSelectRef.current = last;
     }, { verb: "paste", name: label }).finally(() => {
@@ -202,6 +226,10 @@ export function useFileOps({
           announce: opts?.announce ?? false,
         });
         if (!report.moved.length) return;
+        // Undoable, from the pairs that ACTUALLY landed — the destination may be
+        // a deduped "… copy" name, and a partial batch has fewer pairs than it
+        // was asked for (see MoveReport.pairs).
+        recordFsOp({ kind: "move", pairs: report.pairs });
         pendingSelectRef.current = report.moved[report.moved.length - 1];
         refetch();
       } catch (e) {
@@ -222,6 +250,72 @@ export function useFileOps({
       }
     })();
   };
+
+  // Undo / redo of the explorer's RELOCATIONS — a drag-move, a cut-paste and a
+  // rename, the three ops that are a rename in both directions (lib/fs-undo
+  // explains why nothing else is on the stack).
+  //
+  // ONE implementation for both directions, because they are the same operation
+  // with the stacks swapped: take the top entry, apply its inverse, and put what
+  // landed onto the OTHER stack (inverting twice is the original op). Writing
+  // them separately would be two chances to get the "what goes back on which
+  // stack" half wrong.
+  //
+  // In-flight guard shared by both, for the reason paste and move have one — and
+  // shared deliberately: an undo and a redo racing each other would be two
+  // renames of the same paths in opposite directions.
+  const undoInFlight = useRef(false);
+  const runRelocation = (
+    take: () => FsOp | null,
+    pushBack: (op: FsOp) => void,
+    verb: "undo" | "redo",
+  ) => {
+    if (undoInFlight.current) return;
+    const op = take();
+    if (!op) return;
+    undoInFlight.current = true;
+    void applyFsOp(invertFsOp(op))
+      .then((report) => {
+        if (report.done.length) {
+          // What landed is what the other direction can put back. The FAILED
+          // pair goes on neither stack: it was taken off before the attempt, and
+          // an entry that 404s or 409s would otherwise sit at the top failing
+          // for every later Undo.
+          pushBack({ kind: op.kind, pairs: report.done });
+          pendingSelectRef.current = report.done[report.done.length - 1].to;
+          refetch();
+          // Announced, for the same reason a drop onto a sidebar bookmark is
+          // (moveEntriesInto's `announce`): the entries may well have gone back
+          // to a folder that isn't the one on screen, and a change you cannot
+          // see has to be told. A refetch alone would look like nothing
+          // happened.
+          const what = op.kind === "move" ? "move" : "rename";
+          pushToast({
+            msg: verb === "undo" ? `Undid the ${what}.` : `Redid the ${what}.`,
+            tone: "info",
+          });
+        }
+        if (report.failed) {
+          // Named by the DESTINATION of the failed pair — the path that could
+          // not be restored is the one the user needs to hear about, and a 409
+          // means something else is sitting there now.
+          pushToast({
+            msg: friendlyFsError(report.failed.error, {
+              verb,
+              name: basename(report.failed.pair.to),
+            }),
+            tone: "error",
+          });
+        }
+      })
+      .finally(() => {
+        // FINALLY, for the reason spelled out on moveInFlight above: a latched
+        // guard would silently kill undo for the life of the view.
+        undoInFlight.current = false;
+      });
+  };
+  const doUndo = () => runRelocation(takeUndoOp, pushRedoOp, "undo");
+  const doRedo = () => runRelocation(takeRedoOp, pushUndoOp, "redo");
 
   // Duplicate into the same folder, picking the first free "… copy[/ n]" name
   // (freeDuplicatePath lists the folder so the copy never 409s on an existing
@@ -356,6 +450,10 @@ export function useFileOps({
         const dst = join(normDir(row.parentDir), name);
         run(async () => {
           await renameEntry(row.path, dst);
+          // Undoable, and the commoner reflex than undoing a drag: Cmd+Z after a
+          // misnamed file. Recorded AFTER the rename resolved — an op that never
+          // happened must not be on the stack (lib/fs-undo).
+          recordFsOp({ kind: "rename", pairs: [{ from: row.path, to: dst }] });
           // Re-anchor onto the new name so the reloaded listing keeps this row
           // selected (and Enter opens the renamed file, not the dead old path).
           pendingSelectRef.current = dst;
@@ -559,6 +657,8 @@ export function useFileOps({
     setDialog,
     doPaste,
     doMove,
+    doUndo,
+    doRedo,
     doDuplicate,
     doTrash,
     startRename,

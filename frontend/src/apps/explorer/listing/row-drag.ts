@@ -56,6 +56,7 @@ import { statPath } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
 import { basename } from "@platform/lib/format";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
+import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { autoScrollStep, passedDragSlop, type Point } from "@apps/explorer/listing/marquee";
 import {
   clearFsDrag,
@@ -483,7 +484,14 @@ async function completeDrop(
   if (mover) mover(paths, verdict.dir, { announce: spot.announce });
   // No listing at all (both unmounted mid-drag): the move still happens, and
   // announces itself, because a move with nothing on screen to show it must.
-  else void moveEntriesInto(paths, verdict.dir, { announce: true });
+  // It goes on the undo stack here rather than in a mover — the stack is a
+  // module store for exactly this reason, and a move nobody could see is the one
+  // a user is most likely to want back (lib/fs-undo).
+  else {
+    void moveEntriesInto(paths, verdict.dir, { announce: true }).then((report) => {
+      if (report.pairs.length) recordFsOp({ kind: "move", pairs: report.pairs });
+    });
+  }
 }
 
 // One end for every way a drag can finish: dropped, released on nothing,
