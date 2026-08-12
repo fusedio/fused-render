@@ -52,6 +52,24 @@
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
  *     still exports.
+ *   fused.index.* -> the file index, without hand-rolling fetch()
+ *     stats({root}) / lookup({q, limit, offset, sort}) / search({root, q, limit})
+ *     / query({sql, limit}) / status() / scan({root, full}) / cancel({runId})
+ *     / config.get() / config.set({roots, ignore}) / repos()
+ *     Every one resolves with the endpoint's own payload PLUS a normalized
+ *     `ready: {indexed, scanning, stale, reason}`. That envelope is the point:
+ *     an index query answers zero rows both when nothing matches and when no
+ *     index was ever built, and rendering the second as the first is a silent
+ *     lie. A `ready` field is null only when that response genuinely cannot say
+ *     — `search` alone reports `scanning: null`, being the per-keystroke path
+ *     that must not double its request count. `reason` is "no-index",
+ *     "outdated", "not-covered" or null. Writes (scan/cancel/config.set) carry
+ *     the X-Fused header for you. LOCAL ONLY — a hosted page has no index.
+ *     Two routes are deliberately NOT wrapped, and both stay reachable by raw
+ *     fetch for a caller that truly means it: /api/index/delete, because
+ *     wiping the user's whole index is not something a page should do on load,
+ *     and /api/index/ask, because it spends AI credits per call and belongs
+ *     behind an explicit shell-level action rather than an app's render path.
  *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
@@ -2217,6 +2235,260 @@
     };
   }
 
+  // ------------------------------------------------------------- fused.index
+  //
+  // The file index, readable from a page without hand-rolling fetch().
+  //
+  // Every method resolves with the endpoint's own payload PLUS a normalized
+  // `ready` object, and that envelope is the reason this exists rather than a
+  // convenience wrapper. `/api/index/query` answers `{ok, columns, rows}`: a
+  // page that renders its zero rows as an answer cannot tell "nothing matches"
+  // from "no index has ever been built", and rendering the second as the first
+  // is a silent lie (routers/git_repos.py's docstring calls that "the original
+  // silent lie and the reason any of this exists"). So:
+  //
+  //   ready = { indexed, scanning, stale, reason }
+  //
+  // `indexed` — a compacted index exists at all. `scanning` — a scan is in
+  // flight; independent of indexed, because a rescan keeps serving the last
+  // completed generation. `stale` — the answer may be behind the filesystem
+  // (a scan running, or a slice built under superseded ignore rules). `reason`
+  // — why not ready: "no-index" (nothing built), "outdated" (the rule that
+  // would produce these rows never ran), "not-covered" (the index exists but
+  // has not visited this root), else null.
+  //
+  // A field is `null` when THIS response cannot say, never a guess. Where the
+  // endpoint already reports readiness it is used (`stats`/`lookup` answer
+  // `empty`, `search` answers `covered`/`fresh`/`age_s`, `/api/git-repos`
+  // answers the whole triple including `reason`); the rest piggyback one cheap
+  // `/api/index/status` GET in parallel. The single exception is `search`,
+  // which is the per-keystroke corpus path: doubling its request count to learn
+  // `scanning` is a bad trade, so it is the one method that reports
+  // `scanning: null`.
+  //
+  // fused-index:start
+  //   Self-contained on purpose: this block reaches only for `fetch` and
+  //   `callHeaders`, so tests/test_index_runtime.py can extract it between
+  //   these sentinels and run it under node against a stubbed server. Keep it
+  //   that way — a DOM or module reference here breaks those tests, which are
+  //   the only ones that check behaviour rather than spelling.
+  function indexUrl(path, params) {
+    const qs = new URLSearchParams();
+    Object.keys(params || {}).forEach((key) => {
+      const value = params[key];
+      // An omitted option must mean "the server's default", not "the empty
+      // string": `root=` on /api/index/search is a 400, and `sort=` would
+      // silently fall back through the sort allowlist.
+      if (value === undefined || value === null || value === "") return;
+      qs.set(key, String(value));
+    });
+    const search = qs.toString();
+    return search ? path + "?" + search : path;
+  }
+
+  // Three response shapes reach here, and the shell collapses the same three in
+  // frontend/src/platform/lib/index-query.ts (`outcomeFrom`): success, a flat
+  // {error: "message"}, and the AI relay's nested {error: {type, message}} —
+  // which read naively renders as "[object Object]".
+  //
+  // Rejection style follows runPython and fused.ai rather than inventing a
+  // second one in this file: an Error whose `.message` is the server's sentence
+  // verbatim (a duckdb "Binder Error: no such column: nope" is the answer the
+  // user needs) and whose `.type` is for programs.
+  function indexError(status, data) {
+    const raw = data && data.error;
+    let message = "";
+    let type = "";
+    if (typeof raw === "string") {
+      message = raw;
+    } else if (raw && typeof raw === "object") {
+      if (typeof raw.message === "string") message = raw.message;
+      if (typeof raw.type === "string") type = raw.type;
+    }
+    const err = new Error(message || "HTTP " + status);
+    err.type = type || (status === 403 ? "forbidden" : "bad_request");
+    err.status = status;
+    return err;
+  }
+
+  function indexJson(res) {
+    return res
+      .json()
+      .catch(() => null) // a 500 with an HTML body still has to reject readably
+      .then((data) => {
+        if (!res.ok) throw indexError(res.status, data);
+        // A 2xx carrying `error` should not happen on these routes, but an
+        // error rendered as an empty result is the failure this API exists to
+        // prevent, so it is refused rather than returned.
+        if (data && data.error) throw indexError(res.status, data);
+        return data || {};
+      });
+  }
+
+  function indexGet(path, params) {
+    return fetch(indexUrl(path, params), { headers: callHeaders() }).then(indexJson);
+  }
+
+  // X-Fused on EVERY post. `_require_fused` (server/common.py) 403s a POST
+  // without it — not authentication, a cross-origin-preflight tripwire — and
+  // baking it in here keeps the convention in one place instead of teaching
+  // every app author to set it by hand.
+  function indexPost(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body || {}),
+    }).then(indexJson);
+  }
+
+  function indexReady(indexed, scanning, stale, reason) {
+    const bit = (v) => (v === null || v === undefined ? null : !!v);
+    return { indexed: bit(indexed), scanning: bit(scanning), stale: bit(stale),
+             reason: reason || null };
+  }
+
+  // The envelope from a /api/index/status payload — the piggybacked source for
+  // every call whose own response cannot say.
+  //
+  // `stale` is `scanning` and nothing more here: /api/index/status exposes no
+  // applied-ignore signature, so an index whose slices were built under
+  // superseded rules reads as fresh through it. `repos()` is the one method
+  // that can see that (git_repos._fresh), and `search()` reports its own age.
+  function indexReadyFromStatus(status) {
+    const indexed = !!(status && (status.indexed || status.has_index));
+    const scanning = !!(status && status.scanning);
+    return indexReady(indexed, scanning, scanning, indexed ? null : "no-index");
+  }
+
+  // Run `call` and one status GET together, and hand back the payload with an
+  // envelope. The probe failing must neither fail the call it describes nor
+  // answer for it — an all-null envelope is exactly "this response cannot say".
+  function indexWithStatus(call) {
+    return Promise.all([
+      call,
+      indexGet("/api/index/status").then(indexReadyFromStatus,
+                                         () => indexReady(null, null, null, null)),
+    ]).then(([data, ready]) => Object.assign({}, data, { ready: ready }));
+  }
+
+  // `stats` and `lookup` both answer `empty`, from the same manifest read that
+  // produced their numbers — so it outranks the probe for `indexed`.
+  function indexRefineEmpty(out) {
+    if (typeof out.empty !== "boolean") return out;
+    out.ready = indexReady(!out.empty, out.ready.scanning, out.ready.stale,
+                           out.empty ? "no-index" : null);
+    return out;
+  }
+
+  function indexStats(opts) {
+    opts = opts || {};
+    return indexWithStatus(indexGet("/api/index/stats", { root: opts.root }))
+      .then(indexRefineEmpty);
+  }
+
+  function indexLookup(opts) {
+    opts = opts || {};
+    return indexWithStatus(indexGet("/api/index/lookup", {
+      q: opts.q, limit: opts.limit, offset: opts.offset, sort: opts.sort,
+    })).then(indexRefineEmpty);
+  }
+
+  function indexSearch(opts) {
+    opts = opts || {};
+    return indexGet("/api/index/search", {
+      root: opts.root, q: opts.q, limit: opts.limit,
+    }).then((data) => {
+      // `covered: false` deliberately collapses "no index", "not covered" and
+      // "a scan is running" into one false, because a search box treats all
+      // three the same way (query.search_under). The envelope un-collapses the
+      // one a caller actually has to distinguish: a never-built index answers
+      // `updated: null`, while a built index that has simply not visited this
+      // root answers with its last compaction time.
+      const covered = data.covered === true;
+      const built = covered || (data.updated !== null && data.updated !== undefined);
+      return Object.assign({}, data, {
+        ready: indexReady(built, null, built ? data.fresh !== true : null,
+                          built ? (covered ? null : "not-covered") : "no-index"),
+      });
+    });
+  }
+
+  function indexQuery(opts) {
+    opts = opts || {};
+    const body = { sql: opts.sql };
+    if (opts.limit !== undefined) body.limit = opts.limit;
+    return indexWithStatus(indexPost("/api/index/query", body));
+  }
+
+  function indexStatus() {
+    return indexGet("/api/index/status").then((data) =>
+      Object.assign({}, data, { ready: indexReadyFromStatus(data) }));
+  }
+
+  function indexScan(opts) {
+    opts = opts || {};
+    const body = { full: !!opts.full };
+    // No root means "every configured root" server-side, which is what the
+    // shell's own Re-index button asks for.
+    if (opts.root) body.root = opts.root;
+    return indexWithStatus(indexPost("/api/index/scan", body)).then((out) => {
+      // A scan was just started, whatever the parallel probe raced to see.
+      // `stale` follows the list: with an index there is one and it is now
+      // behind a scan; with none there is nothing to be behind (the same split
+      // git_repos._not_ready draws).
+      const indexed = out.ready.indexed;
+      out.ready = indexReady(indexed, true, indexed, out.ready.reason);
+      return out;
+    });
+  }
+
+  function indexCancel(opts) {
+    opts = opts || {};
+    // `runId` in JS, `run_id` on the wire — the same camelCase-to-snake_case
+    // trip every other option in this bridge makes.
+    return indexWithStatus(indexPost("/api/index/cancel", {
+      run_id: opts.runId === undefined ? opts.run_id || "" : opts.runId,
+    }));
+  }
+
+  function indexConfigGet() {
+    return indexWithStatus(indexGet("/api/index/config"));
+  }
+
+  function indexConfigSet(opts) {
+    opts = opts || {};
+    const body = {};
+    // Sent only when named: the endpoint updates the keys present in the body,
+    // so passing `ignore: undefined` as `ignore: null` would be a write.
+    if (opts.roots !== undefined) body.roots = opts.roots;
+    if (opts.ignore !== undefined) body.ignore = opts.ignore;
+    return indexWithStatus(indexPost("/api/index/config", body));
+  }
+
+  function indexRepos() {
+    return indexGet("/api/git-repos").then((data) =>
+      Object.assign({}, data, {
+        // Straight through: this endpoint already answers the whole triple, and
+        // its `reason` is a distinction a UI renders — "outdated" means the
+        // leaf-dir rule never ran and a rebuild is coming, "no-index" means
+        // nothing has ever been built.
+        ready: indexReady(data.indexed, data.scanning, data.stale, data.reason),
+      }));
+  }
+
+  const index = {
+    stats: indexStats,
+    lookup: indexLookup,
+    search: indexSearch,
+    query: indexQuery,
+    status: indexStatus,
+    scan: indexScan,
+    cancel: indexCancel,
+    repos: indexRepos,
+    config: { get: indexConfigGet, set: indexConfigSet },
+  };
+  // fused-index:end
+
   window.fused = {
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
@@ -2229,6 +2501,7 @@
     uploadFile,
     mkdir,
     ai,
+    index,
     trackJob,
     watchJob,
     autoReload,
