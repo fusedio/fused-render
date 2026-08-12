@@ -192,13 +192,15 @@ capability, revisions, refs}`), biggest first. `capability` is which local runne
 kind could LOAD this — `text-generation`, `text-to-image`, or null for a dataset,
 a Space, an embedding model or anything no runner serves (SPEC AI-7a). Answered
 here because the task vocabulary and the capability vocabulary both live on this
-side; a page deciding for itself would hold a second copy of the mapping. `GET /api/ai-models/status` →
-`{available, cacheDir}` is the cheap gate behind the sidebar entry (one `isdir`,
-no walk). `GET /api/ai-models/revisions?repo=<dir>` → per-revision
+side; a page deciding for itself would hold a second copy of the mapping.
+`exists` is false where the cache directory itself is absent, which is what the
+page's empty state distinguishes from a cache that has merely been emptied —
+there is no separate `/status` probe, because the sidebar entry it gated is
+unconditional (SPEC HF-8, D265). `GET /api/ai-models/revisions?repo=<dir>` → per-revision
 `{commit, refs, size, shared, files, mtime}`, where `size` is the revision's
 EXCLUSIVE bytes (what deleting it frees) and `shared` what it holds in common
 with its siblings; computed on demand because it resolves every snapshot symlink
-in the repo. Those three are unguarded reads.
+in the repo. Both are unguarded reads.
 
 `ai_models.py` resolves the cache per request through huggingface_hub's own
 precedence (`HF_HUB_CACHE` > `HUGGINGFACE_HUB_CACHE` > `$HF_HOME/hub` >

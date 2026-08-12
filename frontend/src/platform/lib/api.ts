@@ -1947,12 +1947,6 @@ export function getAiModels(): Promise<AiModelsResult> {
   return getJson<AiModelsResult>("/api/ai-models");
 }
 
-// Cheap probe (one isdir on the server, no walk) behind the sidebar entry's
-// gate — see shell/AiModels.tsx's useAiModelsAvailable.
-export function getAiModelsStatus(): Promise<{ available: boolean; cacheDir: string }> {
-  return getJson<{ available: boolean; cacheDir: string }>("/api/ai-models/status");
-}
-
 // One repo's revisions, fetched when a row is expanded (the listing doesn't
 // resolve every snapshot symlink for every repo). `size` is what deleting THIS
 // revision would free — blobs no sibling revision references — and `shared` is

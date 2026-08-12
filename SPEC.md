@@ -5318,20 +5318,21 @@ later with nothing on screen to say so.
   "open the local copy" would be a coin flip, and the two destinations answer
   different questions. Explore is visible without hovering — unlike the delete
   controls beside it, which stay quiet until the card is hovered.
-- **HF-8** **The sidebar entry is gated on the cache existing** (`GET
-  /api/ai-models/status`, one `isdir`), so a machine that has never pulled
-  from the Hub is not offered a page that can only say "nothing here". Unlike
-  the Claude-config entry's gate — an installation property, which cannot change
-  while the app runs — this one can flip mid-session: the first download creates
-  the directory. So a confirmed *yes* is
-  cached for the session, a *no* only briefly, and the answer is **published**
-  to whatever sidebar is mounted rather than only stored — a probe resolving in
-  one mount, and the page's own load (which knows the truth without a second
-  request), both have to reach a sidebar already on screen, or opening the page
-  by URL would leave its own entry missing beside it. The route stays reachable
-  by URL either way, and states
-  which of the two nothings it found — no cache directory at all, or a cache
-  that is empty.
+- **HF-8** **REVISED (D265): the sidebar entry is UNCONDITIONAL — no gate, no
+  probe.** It used to be gated on the cache directory existing (`GET
+  /api/ai-models/status`, one `isdir`, published to whatever sidebar was
+  mounted because the answer can flip mid-session), on the argument that a
+  machine which has never pulled from the Hub should not be offered a page that
+  can only say "nothing here". Discover (§39) retired that argument: the page
+  DOWNLOADS now — the suggested models, through the local runner (HS-1 as
+  amended by D258) — so on exactly the machine the gate was hiding it from, it
+  is the way to get a first model. Hiding the only door because the room is
+  empty is worse than an empty room with a door — and the gate's own cost was
+  real: a probe endpoint, a session cache with two TTLs, and a publish channel
+  so the page could tell a sidebar what it had just learned, all of it in
+  service of removing a row. Both nothings still get named on arrival — no
+  cache directory at all, or a cache that is empty — and each ends in the same
+  offer, a control that opens Discover.
 - **HF-9** **Scanning happens once per visit.** The walk touches every blob in
   the cache, so it runs **on mount and nowhere else** — never on a focus/return
   tick, which would re-walk tens of thousands of files each time the window came

@@ -263,22 +263,19 @@ def test_missing_cache_dir_is_an_empty_answer_not_an_error(client, tmp_path, mon
 
 
 def test_the_page_url_serves_the_shell(client):
-    # The page is client-side, but a bookmark, a refresh, or a URL typed in
-    # while the sidebar entry is hidden is a real GET the server has to answer
-    # with the shell (routers/shell.py) — otherwise the route 404s for exactly
-    # the people HF-8 says can still reach it.
+    # The page is client-side, but a bookmark or a refresh is a real GET the
+    # server has to answer with the shell (routers/shell.py) — otherwise the
+    # route 404s for anyone who did not arrive by clicking the sidebar.
     r = client.get("/ai-models")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
 
 
-def test_status_probe(client, hub, tmp_path, monkeypatch):
-    assert client.get("/api/ai-models/status").json() == {
-        "available": True,
-        "cacheDir": str(hub).replace("\\", "/"),
-    }
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "nope"))
-    assert client.get("/api/ai-models/status").json()["available"] is False
+def test_no_status_probe(client):
+    # The sidebar entry is unconditional (HF-8, D265), so the isdir() probe that
+    # gated it is gone rather than left standing with no caller. `exists` on the
+    # listing is the one remaining answer to "is there a cache here".
+    assert client.get("/api/ai-models/status").status_code == 404
 
 
 # -- where the cache is --------------------------------------------------------

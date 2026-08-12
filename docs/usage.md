@@ -92,8 +92,9 @@ servers) sees ordinary local paths.
 
 **AI Models** in the sidebar lists what the Hugging Face cache holds on this
 machine — every model, dataset and Space anything on your computer has pulled
-from the Hub, biggest first, with what each one costs on disk. The entry appears
-once that cache exists; the first download from the Hub creates it.
+from the Hub, biggest first, with what each one costs on disk. If you have never
+downloaded anything the page says so and offers the **Discover** tab, which is
+where a first model comes from.
 
 - **Each card says what the model is for** — "text generation", "image
   generation", "speech recognition" — and how big the model is in parameters

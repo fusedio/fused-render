@@ -23,7 +23,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import { ModelProgress } from "./AiProgress";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
-import { publishAvailable } from "./aiModelsAvailable";
 import {
   deleteAiModels,
   getAiModelRevisions,
@@ -44,12 +43,14 @@ import { pushToast } from "@platform/lib/toast";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
 
-// Sidebar-gate availability (useAiModelsAvailable, the PROBE_TTL_MS cache, and
-// the publish/subscribe plumbing behind it) lives in ./aiModelsAvailable —
-// split out so ShellSidebar's eager probe doesn't drag this whole lazy-loaded
-// page into the shell's main bundle. `publishAvailable`, imported above, is
-// this page's own write into that same cache: on its own load and on deleting
-// the last repo, below (D250).
+// This page's sidebar entry is UNCONDITIONAL (HF-8, D265), so nothing here
+// reports the cache's existence to anyone. It used to: a `./aiModelsAvailable`
+// module held the gate's probe cache and this page published into it on load
+// and after deleting the last repo, because a page that had just walked the
+// cache knew the answer without a second request. The gate is gone and the
+// module with it. `data.exists` stays, with the two readers it always had on
+// this page: the caption, which only links a cache directory that is really
+// there, and the empty state, which says WHICH nothing it found.
 
 type Load =
   | { status: "loading" }
@@ -580,16 +581,6 @@ export default function AiModels() {
     setLoad((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
     getAiModels().then(
       (data) => {
-        // The page's own answer is authoritative for the sidebar gate: a cache
-        // that exists (or has just appeared) shouldn't wait out the probe TTL,
-        // and a sidebar already on screen hears this immediately. Published
-        // BEFORE the `alive` check, deliberately: the gate is shared state, and
-        // the sidebar it is for outlives this page (navigating between shell
-        // routes unmounts the page and keeps ShellSidebar mounted). A scan the
-        // user navigated away from still learned the truth — dropping it would
-        // hide a real cache for the rest of the TTL. Only the local setState,
-        // which belongs to a component that may be gone, sits behind the guard.
-        publishAvailable(data.exists);
         if (!alive) return;
         setLoad({ status: "ok", data });
       },
@@ -716,7 +707,6 @@ export default function AiModels() {
     setBusy(true);
     try {
       const result = await deleteAiModels(targets);
-      publishAvailable(result.exists);
       setLoad({ status: "ok", data: result });
       setFailures(
         result.failures.map((f) => `${f.dir ?? "target"}${f.revision ? ` @ ${shortCommit(f.revision)}` : ""}: ${f.error}`),
@@ -870,11 +860,24 @@ export default function AiModels() {
             // pulled from the Hub) versus a cache that has been emptied. The
             // path itself is already in the caption above, so it isn't repeated
             // here.
-            <p className="cc-empty">
-              {data.exists
-                ? "Nothing cached here yet."
-                : "No Hugging Face cache on this machine — the first download from the Hub creates it."}
-            </p>
+            //
+            // Either nothing ends in the SAME next move, which is why the
+            // sidebar entry no longer has to guess whether this page is worth
+            // offering (HF-8, D265): Discover is right here, and a machine with
+            // no cache is precisely the one that needs it. A button rather than
+            // a sentence naming the tab — the tab strip is at the top of the
+            // page and the empty state is in the middle of it, so "use
+            // Discover" would be an instruction where a control fits.
+            <div className="cc-empty am-empty">
+              <p>
+                {data.exists
+                  ? "Nothing cached here yet."
+                  : "No Hugging Face cache on this machine — the first download from the Hub creates it."}
+              </p>
+              <button type="button" className="btn btn-secondary" onClick={() => setTab("discover")}>
+                Search the Hub
+              </button>
+            </div>
           ))}
       </main>
 
