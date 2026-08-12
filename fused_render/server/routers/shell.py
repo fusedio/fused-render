@@ -28,6 +28,7 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 
 @router.get("/learn")
 @router.get("/sessions")
+@router.get("/community")
 # The Claude pages: the settings panel (frontend apps/claude_config), the
 # artifacts list, and the retired /claude-md page, which the client rewrites to
 # the panel's MD Files section. Listed here for the same reason as the rest —
