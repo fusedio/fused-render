@@ -5,7 +5,7 @@
 // undo stack are module-level stores (lib/fs-clipboard, lib/fs-undo) — all three
 // survive this component's per-folder remount, which a move can cause mid-flight
 // by spring-loading a crumb.
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
   writeFile,
@@ -37,6 +37,9 @@ import {
   claudeDeepLink,
 } from "@apps/explorer/lib/fs-actions";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
+import { folderBarMenu } from "@apps/explorer/lib/bar-menus";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
+import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import {
   applyFsOp,
   beginFsUndo,
@@ -65,6 +68,7 @@ export function useFileOps({
   clipboard,
   refetch,
   pendingSelectRef,
+  ownsBar,
 }: {
   base: string;
   clipboard: Clipboard | null;
@@ -72,6 +76,12 @@ export function useFileOps({
   // A path the selection should jump to once it appears in the reloaded rows
   // (a rename/duplicate target — its row doesn't exist until the refetch lands).
   pendingSelectRef: React.MutableRefObject<string | null>;
+  // "This folder view owns the window's crumb bar" (Listing's ownsBarChrome —
+  // the same claim that moves the bar into this column). While it holds, a
+  // right-click ANYWHERE on that bar opens this folder's menu, published through
+  // topbar-menu.ts. A listing embedded in a preview pane has its own chrome and
+  // passes false, or the bar would answer with the wrong folder's actions.
+  ownsBar?: boolean;
 }) {
   // The open context menu (position + items) and the open modal, both local to
   // this folder view.
@@ -656,9 +666,29 @@ export function useFileOps({
     },
   ];
 
+  // The folder's menu as the CRUMB BAR offers it: this folder's own actions plus
+  // the splits — item for item what the middle panel's header `⋮` shows, because
+  // it is the same builder (lib/bar-menus). Two surfaces, one list.
+  const barMenu = (): MenuEntry[] => folderBarMenu(backgroundMenu(), (dir) => enterPanel(base, dir));
+
+  // Hand that menu to the crumb bar for as long as this view owns it.
+  //
+  // Through a ref, not by re-publishing: `barMenu` closes over the clipboard
+  // (Paste's disabled state), `base` and the dialog setters, so a captured
+  // function would go stale within a keystroke — and re-running the effect on
+  // every change would churn the publish/release pair for no reason. The
+  // published thunk is stable and reads the current one.
+  const openBarMenuRef = useRef<(x: number, y: number) => void>(() => {});
+  openBarMenuRef.current = (x, y) => setMenu({ x, y, items: barMenu() });
+  useEffect(() => {
+    if (!ownsBar) return;
+    return publishTopbarMenu((x, y) => openBarMenuRef.current(x, y));
+  }, [ownsBar]);
+
   return {
     menu,
     setMenu,
+    barMenu,
     dialog,
     setDialog,
     doPaste,

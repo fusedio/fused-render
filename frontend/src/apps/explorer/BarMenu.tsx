@@ -24,10 +24,6 @@
 // fourth.
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
-import { copyToClipboard } from "@platform/lib/clipboard";
-import { pushToast } from "@platform/lib/toast";
-import { MenuIcons } from "@platform/ui/MenuIcons";
-import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
 
 // Keep the popup on screen: it is right-aligned to the trigger in spirit, but
 // clamping the LEFT edge is what actually matters near the window's edge.
@@ -118,8 +114,9 @@ function CaretIcon({ open }: { open: boolean }) {
 // VERTICAL `⋮`, not the horizontal `···` it was — in every bar that carries this
 // menu, because there is one glyph for one meaning. It earns the rotation in the
 // place it is most used: the crumb strip, immediately after the path's last
-// segment (both the title bar's PathOverflow and the panel pane bars sit there),
-// where a horizontal triplet reads as a continuation of the path — three more
+// segment (the panel pane bars, and the shell bar's own path menu before it
+// became a right-click), where a horizontal triplet reads as a continuation of
+// the path — three more
 // dots in a row of `/`-joined segments, i.e. "the path goes on". Turned upright
 // it reads as a control, and it is the same "more, about this thing" affordance
 // every file manager puts beside a row.
@@ -267,61 +264,20 @@ export interface OverflowItem {
 // two menus describe a separator the same way.
 export type OverflowEntry = OverflowItem | "separator";
 
-// The path `···`: the two low-frequency one-shots every view OF A PATH offers.
-// It lives here rather than in the bar that used to own it because it now has
-// two homes — the crumb bar's layout zone for a file/preview, and the
-// listing's own search row for a folder (Listing.tsx; the handover is
-// listing/folder-chrome.ts) — and one definition is what makes "the same
-// items, wherever it sits" true rather than merely intended.
-const FILE_MANAGER = navigator.userAgent.includes("Windows") ? "File Explorer" : "Finder";
-
-// Browsers block file:// navigation from http pages, so revealing in the OS
-// file manager goes through the server (POST /api/fs/reveal). X-Fused forces
-// a CORS preflight so a foreign page can't fire this blind (D3 guard).
-function revealInFileManager(path: string): void {
-  fetch("/api/fs/reveal", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Fused": "1" },
-    body: JSON.stringify({ path }),
-  });
-}
-
-// `onSplit` (a FILE preview only — see Breadcrumb) adds the two split-entry
-// items. They used to be a pair of naked glyphs in the bar's own layout zone,
-// behind a hairline, at the far right of the window. Two problems with that: the
-// zone existed for those two buttons and nothing else, so a rule and a group
-// were carrying one action each; and "open this view split" is about the PATH,
-// which is what this menu is about and what it now sits next to. As menu rows
-// they also finally get names — "Split right" is not something the filled-half
-// rectangle glyph ever said out loud.
-export function PathOverflow({
-  fsPath,
-  onSplit,
-}: {
-  fsPath: string;
-  onSplit?: (dir: "row" | "col") => void;
-}) {
-  const copyPath = async () => {
-    if (await copyToClipboard(fsPath)) pushToast({ msg: "Path copied", tone: "info" });
-    else pushToast({ msg: "Couldn't copy the path", tone: "error" });
-  };
-  const items: OverflowEntry[] = [
-    {
-      label: "Open in " + FILE_MANAGER,
-      icon: MenuIcons.reveal,
-      onClick: () => revealInFileManager(fsPath),
-    },
-    { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => void copyPath() },
-  ];
-  if (onSplit) {
-    items.push(
-      "separator",
-      { label: "Split right", icon: <SplitRightIcon size={16} />, onClick: () => onSplit("row") },
-      { label: "Split down", icon: <SplitDownIcon size={16} />, onClick: () => onSplit("col") }
-    );
-  }
-  return <OverflowMenu items={items} />;
-}
+// THE PATH `···`/`⋮` IS GONE from this module. It held the two low-frequency
+// one-shots every view OF A PATH offers (reveal, copy path) plus — over a file —
+// the two splits, and it had two homes: the crumb bar for a file/preview and the
+// listing's own search row for a folder.
+//
+// Both callers took the items somewhere better. The folder's are in the listing
+// header's `⋮` (Listing.tsx), beside the rest of the folder's operations. The
+// file's are in the CRUMB BAR'S RIGHT-CLICK MENU (Breadcrumb's onBarContextMenu,
+// items from lib/bar-menus), which is where the hand goes first on a bar and
+// where they cost no chrome at all — and which is also how Rename and "Open in
+// Claude Code", both missing from the four-item dropdown, joined them.
+//
+// `OverflowMenu` below stays: the panel pane bars still use it for their own
+// one-shot ("Open in a new tab").
 
 // `⋮` menu for the bars. Renders nothing when it has no items, so a caller can
 // pass a conditional list without guarding the control itself.

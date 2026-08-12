@@ -46,9 +46,7 @@ import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
-import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
 import { EllipsisIcon } from "@apps/explorer/BarMenu";
-import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
@@ -412,37 +410,48 @@ export default function Listing({
   //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
   //     after the CSS yield order has bottomed out — the box is the only
   //     slack left to give.
-  //   • unfold: the whole path is showing AND the bar has ≥150px genuinely
-  //     free — room the full resting box (needing a net ~120px over the
-  //     magnifier) can take without re-truncating anything. Free space is
-  //     summed from the bar's visible children, not read off the crumbs:
-  //     they are flex-grow 0 in slot mode, so their clientWidth hugs their
-  //     content and never reports the strip's slack.
+  //   • unfold: the whole path is showing AND the bar has THE WHOLE RESTING BOX
+  //     genuinely free — room it can take without re-truncating anything (it
+  //     only has to give back the ~30px the magnifier standing in for it
+  //     occupies, so the box's own width is the threshold plus that margin).
+  //     Free space is summed from the bar's visible children, not read off the
+  //     crumbs: they are flex-grow 0 in slot mode, so their clientWidth hugs
+  //     their content and never reports the strip's slack.
+  // The resting width is read from the box (--resting-width, explorer.css)
+  // rather than hardcoded, because it is NOT one number: a box with a chip
+  // pinned in it (`.has-pin` — in practice the multi-selection readout) is
+  // 260px, not 150px. A fixed 150 was one half of the bug that blanked the
+  // whole view the moment a second row was selected: 150px of slack was enough
+  // to unfold into and nowhere near enough to hold a 260px box, so the crumbs
+  // re-ellipsized, the bar folded, the freed slack cleared 150 again — a
+  // fold/unfold flip on every commit until React gave up with "maximum update
+  // depth exceeded" (#185) and unmounted the tree, a BLANK PAGE. Reading the
+  // threshold off the element is also what keeps it and the width from
+  // drifting apart the next time either moves.
   //
-  // THE GAP IS NOT ALWAYS A GAP, which is what FLIP_BUDGET below is for. Each
-  // threshold is read in the state the OTHER one produced — "are the crumbs
-  // ellipsized" is asked of the unfolded strip, "is there 150px free" of the
-  // folded one — so the pair only behaves as hysteresis while folding really
-  // does free more than unfolding costs. At bar widths where the box's own
-  // fold delta lands near that 150px the two verdicts contradict each other
-  // and the flip is bistable: fold → "path fits and there is room" → unfold →
-  // "path is ellipsized" → fold, forever.
+  // WHICH STATE the measurement is about is read off the DOM (`.iconized`) and
+  // NOT out of React state, and the setState below is passed a plain boolean
+  // rather than an updater function. Both halves of that are load-bearing: every
+  // width here is measured from one layout, so "is the box folded right now" has
+  // to be answered by that same layout. An updater function is evaluated by
+  // React on ITS schedule — eagerly when the setter is called, to test whether
+  // the update can bail out, and again while rendering — so an updater that
+  // measures the DOM answers a different question each time it runs and the two
+  // answers disagree. That disagreement was the other half of the blank-screen
+  // crash: `folded` arrived describing the commit that had not painted yet while
+  // the widths described the one on screen, the fold decided on the mismatched
+  // pair, and the flip never settled.
   //
-  // Forever, and synchronously, because this is a layout effect with no
-  // dependency array: React commits, runs it, `measure` setStates, which
-  // commits again and runs it again. Past 50 of those React gives up with
-  // "Maximum update depth exceeded" (#185) and unmounts the tree — a BLANK
-  // PAGE. Reproduced at viewport 1675–1800px on a folder whose preview pane
-  // hosts a directory: reopening the pane narrows this strip AND removes the
-  // SideToggleButton from it in one commit, landing the bar in that window.
-  //
-  // So the budget: a flip is spent, and once a bar width has spent its budget
-  // the measurement holds whatever it is showing until the width actually
-  // changes. A width where the thresholds agree converges in one flip and
-  // never touches the budget; a width where they contradict settles on one of
-  // the two legible states instead of taking the page down. Keyed on the bar's
-  // width because that is what the contradiction is a property of — a real
-  // resize is new information and earns a fresh budget.
+  // FLIP_BUDGET stays as the backstop underneath both of those. The thresholds
+  // are meant to be honest hysteresis now, but they are still two DOM
+  // measurements taken in two different layouts, and any future width whose
+  // fold delta lands between them makes the flip bistable again. Once a bar
+  // width has spent its budget the measurement holds whatever it is showing
+  // until the width actually changes: a width where the thresholds agree
+  // converges in one flip and never touches the budget; a width where they
+  // contradict settles on a legible state instead of taking the page down.
+  // Keyed on the bar's width because that is what a contradiction is a
+  // property of — a real resize is new information and earns a fresh budget.
   //
   // No dependency array: crumbs content changes with navigation but their
   // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
@@ -452,7 +461,8 @@ export default function Listing({
   useLayoutEffect(() => {
     if (embedded || searching || pinnedOpen) return;
     const row = searchRowRef.current;
-    const bar = row?.closest("#breadcrumb");
+    if (!row) return;
+    const bar = row.closest("#breadcrumb");
     const crumbs = bar?.querySelector(".crumbs");
     if (!(bar instanceof HTMLElement) || !crumbs) return;
     const freeInBar = () => {
@@ -479,6 +489,17 @@ export default function Listing({
         (parseFloat(cs.paddingRight) || 0);
       return bar.clientWidth - used;
     };
+    // How much strip unfolding would ask for: whatever CSS says the resting box
+    // is right now. The fallback is the idle width, for the frame before the
+    // stylesheet is attached (a missing property parses to NaN, which would
+    // make every comparison false and unfold unconditionally).
+    const restingWidth = () => {
+      const box = row.querySelector(".listing-search-box");
+      const w = box
+        ? parseFloat(getComputedStyle(box).getPropertyValue("--resting-width"))
+        : NaN;
+      return Number.isFinite(w) ? w : 150;
+    };
     const measure = () => {
       // Fresh width, fresh budget (see FLIP_BUDGET above).
       const barW = bar.clientWidth;
@@ -487,16 +508,14 @@ export default function Listing({
         budget.barW = barW;
         budget.flips = 0;
       }
-      // Decided OUT HERE rather than inside a setState updater: the decision
-      // reads the DOM and spends the budget, and an updater must stay pure —
-      // React is free to call it more than once for one update, which would
-      // charge the budget twice for a single flip. `tightBar` is the currently
-      // RENDERED value and is current in this closure: the effect (and with it
-      // this observer) is rebuilt on every render, having no dependency array.
-      const folded = tightBar;
-      const next = folded
-        ? crumbs.scrollWidth > crumbs.clientWidth + 1 || freeInBar() < 150
-        : crumbs.scrollWidth > crumbs.clientWidth + 1;
+      // The layout on screen, and the state that layout IS — one pair, read
+      // together, and decided OUT HERE rather than inside a setState updater
+      // (see the comment above on why neither half may come from React: the
+      // decision reads the DOM and spends the budget, and an updater must
+      // stay pure — React is free to call it more than once for one update).
+      const folded = row.classList.contains("iconized");
+      const ellipsized = crumbs.scrollWidth > crumbs.clientWidth + 1;
+      const next = folded ? ellipsized || freeInBar() < restingWidth() : ellipsized;
       if (next === folded) return;
       if (budget.flips >= FLIP_BUDGET) return; // bistable at this width — hold
       budget.flips += 1;
@@ -575,7 +594,8 @@ export default function Listing({
     startNewFolder,
     rowMenu,
     backgroundMenu,
-  } = useFileOps({ base, clipboard, refetch, pendingSelectRef });
+    barMenu,
+  } = useFileOps({ base, clipboard, refetch, pendingSelectRef, ownsBar: ownsBarChrome });
 
   overlayOpenRef.current = menu !== null || dialog !== null;
   // Also publish this view's overlay state to the shared registry (lib/
@@ -949,6 +969,40 @@ export default function Listing({
     if (winSel && !winSel.isCollapsed) winSel.removeAllRanges();
   };
 
+  // A press on the empty background (not a row) clears the selection. This is
+  // a POINTERDOWN, not a click, and that is load-bearing: the marquee captures
+  // the pointer on row presses, and capture retargets the pointerup — so the
+  // browser computes the follow-up click's target as the SCROLLER for a press
+  // that plainly landed on a row. A click handler here read those as
+  // background clicks and un-selected every row the moment it was selected
+  // (and ate double-click-to-open with it). The pointerdown still carries the
+  // press's true target. Modified presses pass through untouched: a
+  // Shift/Cmd sweep from the background unions with the selection it started
+  // over (useMarquee snapshots `base` in the capture phase, before this runs —
+  // and a bare sweep replaces the selection anyway, so clearing first changes
+  // nothing for it).
+  const onBackgroundPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    if (e.shiftKey || e.metaKey || e.ctrlKey) return;
+    const target = e.target as HTMLElement;
+    if (
+      target !== scrollRef.current &&
+      target.tagName !== "TBODY" &&
+      target.tagName !== "TABLE"
+    ) {
+      return;
+    }
+    // A scrollbar press also targets the scroller; scrolling a long listing
+    // must not throw the selection away. The gutters live between the client
+    // box and the border box, so a press past clientWidth/clientHeight is on
+    // a scrollbar, not the background.
+    if (target === scrollRef.current) {
+      const { offsetX, offsetY } = e.nativeEvent;
+      if (offsetX >= target.clientWidth || offsetY >= target.clientHeight) return;
+    }
+    selectPaths([]);
+  };
+
   // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
   // the whole thing (Finder/Explorer behaviour); right-clicking anywhere else
   // collapses the selection onto that row first.
@@ -976,6 +1030,11 @@ export default function Listing({
   // Discoverability is the whole point of the button: the same items were
   // already a right-click on the background, which nobody finds, and which an
   // empty folder gives you no obvious surface to try.
+  //
+  // `barMenu()` (useFileOps -> lib/bar-menus) is the list, not an array built
+  // here: a right-click anywhere on the crumb bar opens the same one, and two
+  // copies of "the folder's actions plus the splits" is how the two surfaces
+  // would end up disagreeing about what the folder can do.
   const openHeaderMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     e.stopPropagation(); // never sorts — the th around it is a sort control
@@ -987,20 +1046,7 @@ export default function Listing({
       // 220 is the menu's own min-width (context-menu.css).
       x: Math.max(4, r.right - 220),
       y: r.bottom + 2,
-      items: [
-        ...backgroundMenu(),
-        "separator",
-        {
-          label: "Split right",
-          icon: <SplitRightIcon size={16} />,
-          onClick: () => enterPanel(fsPath, "row"),
-        },
-        {
-          label: "Split down",
-          icon: <SplitDownIcon size={16} />,
-          onClick: () => enterPanel(fsPath, "col"),
-        },
-      ],
+      items: barMenu(),
     });
   };
 
@@ -1544,12 +1590,10 @@ export default function Listing({
                drags the selection; anywhere else sweeps; a press that barely
                moves is still the click it always was. */
             onPointerDownCapture={onListingPointerDownCapture}
-            /* No onClick here: clicking the empty area below the rows does
-               NOT deselect. Finder's rule, and it cost more than it bought
-               once the preview pane arrived — a stray click anywhere in the
-               whitespace of a short listing blanked the pane and threw away
-               the row the user was reading. Escape still clears (the
-               deliberate gesture); the background is just background. */
+            /* Bubble phase, so the marquee's capture snapshot above runs
+               first. Deselecting on the CLICK instead is a trap — see
+               onBackgroundPointerDown. */
+            onPointerDown={onBackgroundPointerDown}
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
@@ -1583,7 +1627,10 @@ export default function Listing({
                             `sortable col-${key}` +
                             (key === sort ? " sorted" : "")
                           }
-                          onClick={() => setSort(key)}
+                          onClick={() => {
+                            setSort(key);
+                            selectPaths([]);
+                          }}
                         >
                           {/* Wrapped so the empty-folder state can hide the
                               LABEL without unmounting the strip — the `⋮` on

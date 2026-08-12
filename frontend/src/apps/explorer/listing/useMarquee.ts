@@ -158,6 +158,23 @@ export function useMarquee({
       // Measured now rather than on pointerdown: a press that turns out to be
       // a click should cost nothing at all.
       d.bands = measureBands(scroller, rowsRef.current);
+      // Capture is taken HERE, at the moment the press proves itself a sweep,
+      // not on the pointerdown. Capture retargets every later event — pointerup,
+      // click, and crucially DBLCLICK — to the scroller, so capturing on the
+      // press meant a double-click on an unselected row (whose first press
+      // lands in this branch) delivered its dblclick to the scroller instead of
+      // the row, and open-on-double-click silently died. A press that never
+      // moves past the slop keeps its native event flow; the sweep only needs
+      // capture once it is live (to survive the pointer leaving the scroller).
+      //
+      // It throws for a pointer id the browser has no active pointer for —
+      // which a synthetic event is — and the drag works without it, so a
+      // failure here must not take the gesture down with it.
+      try {
+        scroller.setPointerCapture(d.pointerId);
+      } catch {
+        /* no capture; the listeners are on the scroller either way */
+      }
     }
     const region = marqueeBox(d.origin, at);
     selectRef.current(marqueeHits(region, d.bands, { additive: d.additive, base: d.base }));
@@ -185,6 +202,11 @@ export function useMarquee({
     // sweep.
     const path = pressed.row?.getAttribute(DROP_PATH_ATTR) ?? null;
     if (path !== null && pressStartsDrag({ rowWasSelected: selRef.current.includes(path) })) {
+      // A pre-slop press abandoned outside the scroller (see the pointerleave
+      // handler below) can leave nothing behind — but mouse pointer ids are
+      // reused, so any state that DID survive here would match this new
+      // press's moves and resurrect a dead sweep under the drag.
+      drag.current = null;
       dragRef.current({
         path,
         pointerId: e.pointerId,
@@ -204,22 +226,12 @@ export function useMarquee({
     // `selectstart` handler, which says no to the selection without saying no to
     // the event.
     //
-    // Capturing HERE and not for a move-drag is also why the deferred collapse
-    // of a multi-selection still works: capture retargets the pointerup away
-    // from the row, and the only presses that reach this line are presses on
-    // UNSELECTED rows and on the background — never the press inside a
-    // multi-selection whose release the collapse is waiting for.
-    //
-    // Capture keeps the sweep alive when the pointer leaves the scroller (over
-    // the preview pane, off the window edge). It throws for a pointer id the
-    // browser has no active pointer for — which a synthetic event is — and the
-    // drag works without it, so a failure here must not take the gesture down
-    // with it.
-    try {
-      scroller.setPointerCapture(e.pointerId);
-    } catch {
-      /* no capture; the listeners below are on the scroller either way */
-    }
+    // NO setPointerCapture here either — that happens in sweepTo, once the
+    // press has moved past the slop and is definitely a sweep (see the comment
+    // there: capturing on the press retargeted the dblclick away from rows and
+    // killed open-on-double-click). Pre-slop movement is by definition inside
+    // the scroller, and the move/up listeners below are on the scroller, so
+    // nothing is missed before capture is taken.
     drag.current = {
       pointerId: e.pointerId,
       origin: contentPoint(scroller, e.clientX, e.clientY),
@@ -292,14 +304,26 @@ export function useMarquee({
       // one per frame.
     };
 
+    // A press that leaves the scroller BEFORE passing the slop is abandoned:
+    // capture is only taken once a sweep goes live (sweepTo), so a pre-slop
+    // exit means the move/up listeners above stop hearing this pointer and the
+    // press could never finish. Without this, the stale state waits for the
+    // next press — and mouse pointer ids are reused, so it would match. An
+    // ACTIVE sweep is captured and never sees pointerleave, so only the
+    // degenerate press-at-the-edge gesture is given up.
+    const onLeave = () => {
+      if (drag.current && !drag.current.active) drag.current = null;
+    };
     scroller.addEventListener("pointermove", onMove);
     scroller.addEventListener("pointerup", onUp);
     scroller.addEventListener("pointercancel", onUp);
+    scroller.addEventListener("pointerleave", onLeave);
     return () => {
       stopScrollLoop();
       scroller.removeEventListener("pointermove", onMove);
       scroller.removeEventListener("pointerup", onUp);
       scroller.removeEventListener("pointercancel", onUp);
+      scroller.removeEventListener("pointerleave", onLeave);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);

@@ -117,37 +117,56 @@
 }
 
 /* GNOME-path-bar behaviour, main bar only (the panel pane does the same at
-   .panel-crumbs below). flex:1 1 auto makes the strip own the bar's free
-   width — the whitespace right of the last crumb is the click-to-edit target.
-   The scrollbar is hidden (scrollbar-width + ::-webkit-scrollbar) so the
-   wheel-scrollable strip carries no chrome; the tail is pinned into view from
-   JS on every path change. */
-/* Shrink-to-fit, not grow-to-fill: the path `···` sits immediately after this
-   strip (Breadcrumb.tsx), and a strip that grew would push it to the bar's far
-   edge — away from the name it acts on. The leftover room becomes bar
-   background, which is click-to-edit like the strip itself. */
+   .panel-crumbs below). The scrollbar is hidden (scrollbar-width +
+   ::-webkit-scrollbar) so the wheel-scrollable strip carries no chrome; the tail
+   is pinned into view from JS on every path change. */
+/* Shrink-to-fit, not grow-to-fill: the strip stops at the width of the path it
+   holds, so the folder's search row can pin itself to the bar's right end. The
+   leftover room becomes bar background — which is click-to-edit exactly like the
+   strip itself (Breadcrumb's document-level click handler covers the whole bar),
+   so owning those pixels no longer buys the strip anything.
+
+   FULL BAR HEIGHT, and that is what makes the crumb hitboxes below possible:
+   this is a scroll container, and a scroll container clips its children in BOTH
+   axes — a crumb taller than the text would be cut straight back to the text.
+   Stretched to the bar's content box and then bled out over the bar's own
+   padding by the margin/padding pair, the strip spans the whole 48px and the
+   crumbs inside it can too.
+
+   overflow-y is pinned to `hidden` rather than left to compute off overflow-x:
+   `visible` computes to `auto` beside a non-visible axis, which would make the
+   strip USER-scrollable vertically — and the wheel handler maps deltaY onto
+   scrollLeft WITHOUT preventing the default, so a wheel over the path would
+   also scroll it out of its own bar. */
 #breadcrumb .crumbs {
   flex: 0 1 auto;
   scrollbar-width: none;
+  align-self: stretch;
+  margin-block: calc(-1 * var(--topbar-pad-y));
+  padding-block: var(--topbar-pad-y);
+  overflow-y: hidden;
 }
 
-/* The path `···`, direct child of the bar (the other `···` menus here are
-   nested in .bar-zone / .crumb-actions). It follows the path: gone with it
-   while a folder search is running (the strip is hidden then), and still there
-   in edit mode — the field is the path, and its actions stay reachable. */
-#breadcrumb > .bar-overflow {
-  flex: 0 0 auto;
-  /* The bar is `justify-content: space-between`, which used to have nothing to
-     distribute because the crumb strip grew into every spare pixel. Now that it
-     doesn't, this auto margin takes that role: it swallows the free space in
-     one place, so ★/path/`···` stay packed together on the left and the bar's
-     right-hand zones stay pinned right, instead of the gap being spread evenly
-     between every item in the row. */
+/* The free-width-eating auto margin the path `⋮` used to carry (it sat right
+   after this strip; its items are the bar's right-click menu now — see
+   Breadcrumb.tsx). The bar is `justify-content: space-between`, so unless ONE
+   item takes the slack in one place it is spread evenly between every item in the
+   row: ★, path and the right-hand zones drifting apart by a
+   window-width-dependent amount, which is what a bar with no claimant looked
+   like the moment the `⋮` came out.
+
+   `:has(.path-crumb)` keeps it to the PATH strip — the layout modes' static label
+   bar (StaticBreadcrumb) shares the class with a `.current` span and is left to
+   its own arrangement. Over a FOLDER the search row's `margin-left: auto` is the
+   claimant instead (.crumb-search-slot below) and this one stands down: two auto
+   margins in one row split the slack between them, which is the layout that pair
+   exists to prevent. */
+#breadcrumb .crumbs:has(.path-crumb) {
   margin-right: auto;
 }
 
-#breadcrumb:has(.listing-search.searching) > .bar-overflow {
-  display: none;
+#breadcrumb:has(.crumb-search-slot) .crumbs {
+  margin-right: 0;
 }
 
 #breadcrumb .crumbs::-webkit-scrollbar {
@@ -205,6 +224,42 @@
    stay reachable via the title tooltip. */
 #breadcrumb .path-crumb {
   flex: 0 0 auto;
+  /* FULL-BAR-HEIGHT HITBOX. A path segment is a 15px line of 12px monospace in a
+     48px bar: aiming at it meant aiming at a third of the bar's height, and a
+     click a few pixels high or low — on the same visual column, over what is
+     plainly "that folder" — did nothing. Fitts' law is the whole argument; the
+     top bar's crumbs are the most-clicked navigation in the explorer.
+
+     Vertical padding buys the height and a negative margin of the same order
+     hands it straight back to the layout, so the strip measures the text band it
+     always did and the path's spacing, wrapping and scroll geometry are
+     untouched. `--crumb-hit` is deliberately MORE than the 14px it takes to
+     reach the bar's edge (6px of slack around the band, plus the bar's 8px
+     padding): the box is clipped by the strip, which is exactly bar-height (see
+     .crumbs above), so overshooting costs nothing and the arithmetic does not
+     have to track the font's line box.
+
+     The one thing the box must NOT do is grow the crumb's visible decorations —
+     a 48px accent block during a drag instead of a pill around a name — so
+     .spring-armed and the drop states paint on ::before, inset back to the text
+     band. Everything below is scoped through that pseudo-element for that
+     reason, and only for that reason. */
+  --crumb-hit: 20px;
+  position: relative;
+  padding-block: calc(2px + var(--crumb-hit));
+  margin-block: calc(-1 * var(--crumb-hit));
+}
+
+/* The band the crumb LOOKS like: the 2px/4px box it had before the hitbox grew
+   around it. Painted over the text rather than behind it (a negative z-index
+   would drop it behind the bar's own background), which the drag states are fine
+   with — a 10-16% tint over a name reads as the name, tinted. */
+#breadcrumb .path-crumb::before {
+  content: "";
+  position: absolute;
+  inset: var(--crumb-hit) 0;
+  border-radius: 6px;
+  pointer-events: none;
 }
 
 #breadcrumb .path-crumb.shrink {
@@ -226,6 +281,12 @@
    Motion is dropped for reduced-motion; the accent tint still marks the crumb. */
 .path-crumb.spring-armed {
   color: var(--fg);
+}
+
+/* On the band, not on the box: the box is bar-height now (see the hitbox rule
+   above), and an accent rectangle the height of the whole bar is not a crumb
+   highlight, it is a fill. */
+.path-crumb.spring-armed::before {
   background: rgba(var(--accent-rgb), 0.16);
   animation: crumb-spring 0.7s linear;
 }
@@ -258,12 +319,15 @@
    spring has to re-apply them: the armed state is React state, and its re-render
    writes `className` from scratch. Breadcrumb's refreshDropTarget effect is what
    repaints them — an earlier version of this comment claimed the ring "resumes"
-   on its own, and it did not; there was no ring for the rest of the dwell. */
-.path-crumb.drop-into {
+   on its own, and it did not; there was no ring for the rest of the dwell.
+   Both paint on ::before for the same reason .spring-armed does: the crumb's own
+   box is the (bar-height) hitbox, so a ring drawn on it would frame the bar
+   rather than the name. */
+.path-crumb.drop-into::before {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
 
-.path-crumb.drop-reject {
+.path-crumb.drop-reject::before {
   background: rgba(var(--error-rgb), 0.1);
 }
 
@@ -315,17 +379,14 @@
 /* A filled slot in the FOLDER bar (search row present) belongs to the right
    cluster: the slot eats the free width, so its content ("Add as app") sits
    against the search box at the bar's own fixed gap — never mid-bar, never a
-   screen-width-dependent distance from the box it acts beside. The two rules
-   below hand the free-width-eating job to the slot for exactly that state:
-   with two auto margins in one row the slack splits between them and the
-   button strands in the middle, which is the layout this pair exists to
-   prevent. */
+   screen-width-dependent distance from the box it acts beside. This rule and the
+   next hand the free-width-eating job to the slot for exactly that state: with
+   two auto margins in one row the slack splits between them and the button
+   strands in the middle, which is the layout this pair exists to prevent. (The
+   third claimant, the crumbs' own `margin-right: auto`, already stands down
+   whenever a search slot is present — see .crumbs above.) */
 #breadcrumb:has(.crumb-search-slot) #topbar-mode-slot:not(:empty) {
   margin-left: auto;
-}
-
-#breadcrumb:has(.crumb-search-slot) > .bar-overflow {
-  margin-right: 0;
 }
 
 #breadcrumb:has(#topbar-mode-slot:not(:empty)) .crumb-search-slot > .listing-search {
@@ -826,6 +887,14 @@
   table.listing-table thead th.col-mtime .sort-arrow {
     display: none;
   }
+  /* With MODIFIED collapsed, that table-edge `⋮` falls inside SIZE's header
+     (SIZE holds out until 300px). Pad the HEADER cell only, so the label stops
+     short of the button; border-box keeps the column at its 96px, and the body
+     figures don't share the cell with the button, so they keep the full
+     width. */
+  table.listing-table thead th.col-size {
+    padding-right: 34px;
+  }
 }
 
 @container (max-width: 300px) {
@@ -1187,13 +1256,15 @@ table.listing-table tr.skel-row:hover {
      mode slot hides itself when empty, and the split buttons are gone over a
      folder, so "after the last thing" is not a fixed place. An auto margin is
      — it eats the free width, so the box and the `···` sit against the right
-     edge in every state, which is where the hand goes looking for them (a
-     file view keeps its own `···` in that same corner).
+     edge in every state, which is where the hand goes looking for them.
 
-     It works because the crumbs stop growing here (see .crumbs below). That
-     costs the click-to-edit target some reach — the whitespace past the last
-     crumb was part of it, and now only the strip's own trailing padding is.
-     Ctrl+L and the crumbs themselves are unaffected. */
+     It works because the crumbs stop growing here (see .crumbs below). That used
+     to cost the click-to-edit target its reach — the whitespace past the last
+     crumb was part of it, and once this margin owned those pixels only the
+     strip's own trailing padding was left. Answered since: the bar's whole dead
+     space opens the path field, these pixels included (Breadcrumb's
+     document-level click handler), so the strip's width and the target's reach
+     are no longer the same question. */
   margin-left: auto;
   /* And the row packs to its own right edge, so any leftover slack in it falls
      on the crumb side rather than between the `···` and the corner. */
@@ -1205,8 +1276,8 @@ table.listing-table tr.skel-row:hover {
 }
 
 /* The gutter hang exists to line the dots up with the MODIFIED column below
-   them. In the bar the neighbour is the file view's own `···`, at the bar's
-   16px padding — same bar, same corner, so it must not sit 6px off it. */
+   them. In the bar the reference is the bar's own 16px padding — a control in
+   this corner must sit on it, not 6px inside it. */
 .crumb-search-slot > .listing-search > .bar-overflow:last-child {
   margin-right: 0;
 }
@@ -1232,6 +1303,12 @@ table.listing-table tr.skel-row:hover {
   flex: 0 1 auto;
   width: 150px;
   min-width: 96px;
+  /* Same number, declared where JS can read it: the tight-bar fold
+     (Listing.tsx) must know how much strip the box will take when it UNFOLDS,
+     and while folded its own `width` reads 0 (.iconized below). A custom
+     property is not overridden by that rule, so this survives the fold and
+     the two numbers cannot drift apart. */
+  --resting-width: 150px;
 }
 
 /* Who yields when the bar runs short, and in what order.
@@ -1359,6 +1436,11 @@ table.listing-table tr.skel-row:hover {
 .crumb-search-slot .listing-search-box.has-pin {
   flex: 0 1 auto;
   width: 260px;
+  /* And the fold's unfold threshold moves with it — see --resting-width above.
+     A pinned box is 110px wider than an idle one, which is more than the whole
+     margin the old fixed threshold had; leaving it behind made the fold flip
+     forever (see Listing.tsx's measurement). */
+  --resting-width: 260px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
