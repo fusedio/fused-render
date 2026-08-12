@@ -36,7 +36,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
+import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -233,7 +233,27 @@ export default function Listing({
   // in its own column. A flag that could only ever be written beside another
   // one is the "three places to agree about one bit" the pane's own history
   // (pane.ts) is a warning about.
-  const paneEnabled = !embedded && !IS_SNAPSHOT;
+  //
+  // A PANEL PANE is the third, and it is the same shape of blind spot as the
+  // snapshot: a pane is a whole shell at `/explorer/embed/<path>`, so its
+  // Listing is that frame's own top-level one — `embedded=false`, `barChrome`
+  // true, everything about it says "I own this window". What it does not own is
+  // the layout: the user split it, and a pane of a 1600px window is ~800px,
+  // comfortably past PANE_SPLIT_MIN_W, so a split-right of a folder grew two
+  // half-width listings each with their own half-width preview. Four columns
+  // where the user asked for two, and the width test cannot object because the
+  // width is genuinely there. IS_PANEL_PANE is the host-side question the width
+  // cannot answer (see router.ts, including why `IS_EMBED` — which is also
+  // every TAB, where the pane is right and stays — is the wrong flag here).
+  //
+  // Switching it off HERE is the whole feature: `pane.on` is `paneEnabled &&`
+  // the measurement, so one predicate takes the slot, the divider, the closing
+  // chevron on the pane's header, the reopening SideToggleButton in the search
+  // row, the FS-16 auto-select (which waits on `pane.on` by design) and the two
+  // `useDirMode` companion probes with it. Nothing about the ROWS changes: a
+  // pane's listing still selects, arrow-keys, and opens on double-click/Enter —
+  // opening a file in a pane replaces that pane's document, which is the point.
+  const paneEnabled = !embedded && !IS_SNAPSHOT && !IS_PANEL_PANE;
   const { pane, splitRef, onDividerPointerDown } = usePreviewPane(paneEnabled);
 
   // --- the pane's THREE modes, and whether it is open at all ------------------
