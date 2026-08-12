@@ -191,12 +191,23 @@ export function recordRecentOpen(url: string, title?: string | null): Promise<vo
 }
 
 export function setRecentsCollapsed(collapsed: boolean): Promise<void> {
+  // Optimistic: the flip paints NOW, not a network round-trip later — the
+  // collapsed rail's Recents icon expands the sidebar in the same click and
+  // must reveal the list it promised, and the heading toggle should not lag
+  // the pointer either. Persistence follows behind; a failed PUT reverts.
+  const prev = cache.collapsed;
+  cache = { ...cache, collapsed };
+  notifyRecentsChanged();
   return enqueue(async () => {
     try {
       await putRecentsCollapsed(collapsed);
+      // Re-assert after the PUT: a refresh() already in the queue may have
+      // overwritten the optimistic flip with the server's pre-PUT snapshot.
       cache = { ...cache, collapsed };
       notifyRecentsChanged();
     } catch (e) {
+      cache = { ...cache, collapsed: prev };
+      notifyRecentsChanged();
       console.error("[fused] failed to persist recents collapse:", e);
     }
   });
