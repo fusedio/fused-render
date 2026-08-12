@@ -85,6 +85,10 @@ export default function Apps({ config }: { config: Config }) {
   // workspace tag dir named "community" keeps its normal filtering.
   const communityTab =
     tag === COMMUNITY_TAG && communityReady && !all.some((a) => a.tag === COMMUNITY_TAG);
+  // Empty workspace on the "All" tab: instead of a bare "no apps yet" line,
+  // surface the community catalog — something to open on first run.
+  const communityFallback =
+    tag === null && communityReady && apps.status === "ok" && all.length === 0;
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -173,8 +177,16 @@ export default function Apps({ config }: { config: Config }) {
           )}
         </div>
 
-        {communityTab ? (
-          <CommunityGrid query={query} sort={sort} />
+        {communityTab || communityFallback ? (
+          <>
+            {communityFallback && (
+              <div className="home-empty">
+                No apps yet. Describe one in the composer above to create it, or start from a
+                community app below.
+              </div>
+            )}
+            <CommunityGrid query={query} sort={sort} />
+          </>
         ) : (
           <>
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
