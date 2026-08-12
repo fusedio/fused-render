@@ -520,7 +520,8 @@ def test_the_note_composer_is_portaled_to_the_click_in_the_target_document():
     unportal = code[code.index("function annUnportalPop() {"):]
     unportal = unportal[:unportal.index("\n}\n")]
     assert "document.adoptNode(annPop);" in unportal
-    assert "annPopHome.appendChild(annPop);" in unportal
+    assert '(document.getElementById("chat") || document.body).appendChild(annPop);' \
+        in unportal
     close = code[code.index("function annCloseComposer() {"):]
     close = close[:close.index("\n}\n")]
     assert "annUnportalPop();" in close
@@ -546,6 +547,112 @@ def test_the_note_composer_is_portaled_to_the_click_in_the_target_document():
     sync = code[code.index("function annSyncTarget() {"):]
     sync = sync[:sync.index("\n}\n")]
     assert "if (annPortaled() && annPop.getRootNode() !== annLayerRoot) annCloseComposer();" in sync
+
+
+def test_the_composer_never_remembers_a_home_that_a_teardown_can_remove():
+    """A remembered home node is a race with a teardown that has not run yet.
+    `paneURL` awaits a fetch before it answers `null`, and the poll that injects
+    the annotation layer and wires the pane's click handler runs at the END of
+    the script — so annotate mode is live, over the host's pane, for a whole
+    network round trip before `enterNoPane` moves the composer out of #leftview.
+    A click in that gap portaled a composer whose parent was still #leftview,
+    and #leftview is precisely what the teardown then removes: "home" would have
+    been a detached column, i.e. a composer that opens into nothing.
+
+    So the home is resolved at unportal time (#chat is the sidebar's seat at
+    every moment, before or after the teardown), and "am I portaled" is asked of
+    `ownerDocument` — the thing `adoptNode` changes — rather than of a
+    remembered parent. That answer also survives a pane reload leaving the node
+    on a dead shadow tree, and an `adoptNode` that lands before an `appendChild`
+    that throws.
+
+    And the teardown closes any live composer before it moves anything, so it
+    never yanks an open one across documents into a coordinate that meant
+    something in someone else's viewport.
+    """
+    code = _pane_code()
+    assert "const annPortaled = () => annPop.ownerDocument !== document;" in code
+    assert "annPopHome" not in code, \
+        "no remembered home node — that was the race"
+    portal = code[code.index("function annPortalPop() {"):]
+    portal = portal[:portal.index("\n}\n")]
+    assert "parentNode" not in portal, "the portal records nothing about where it came from"
+
+    no_pane = code[code.index("function enterNoPane()"):]
+    no_pane = no_pane[:no_pane.index("\n}\n")]
+    assert no_pane.index("annCloseComposer();") < no_pane.index("appendChild(annPop)"), \
+        "a live portaled composer is closed before the rescue moves anything"
+
+
+def test_a_mark_that_moves_between_two_mounted_frames_repaints_the_pins():
+    """The shell keeps its pane-mode iframes mounted and moves the mark between
+    them, so "is there a target" can be true on both sides of a switch while the
+    TARGET is a different document. The poll's arrived/departed branches say
+    nothing about that case, and nothing else covers it: annWatchTarget refuses a
+    frame it has already adopted, so no wiring runs and no render comes with it,
+    and the layer we re-resolve is the one that frame was left with — painted
+    from whatever `annotations` said when it was last on screen.
+
+    annSyncTarget already computed the answer and was the only one who knew it.
+    The poll acts on it now.
+    """
+    code = _pane_code()
+    sync = code[code.index("function annSyncTarget() {"):]
+    sync = sync[:sync.index("\n}\n")]
+    assert "const moved = next !== annFrame;" in sync
+    assert "return moved;" in sync
+    poll = code[code.index("function annPollTarget() {"):]
+    poll = poll[:poll.index("\n}\n")]
+    assert "const moved = annSyncTarget();" in poll, \
+        "the poll has to keep the answer to act on it"
+    assert "if (moved) renderAnn();" in poll
+    assert poll.index("if (moved) renderAnn();") < poll.index("if (has) annSetMode("), \
+        "the same-answer branch is where a moved mark lands"
+
+
+def test_the_re_render_observer_follows_the_target_document():
+    """One repaint on the switch is not enough on its own: the pins also have to
+    keep up with the app RE-RENDERING under them, and that is the
+    MutationObserver's job. It was installed inside annWireTarget's run-once
+    block — precisely the path a re-selected frame skips — so after a mark moved
+    back to a frame we had already wired, the observer was still watching the
+    pane the reader LEFT. The app they were looking at could redraw and no pin
+    would move.
+
+    So it is hoisted out of that block and owned by a function whose only job is
+    "watch whichever document is the target now", idempotent on the document so
+    both callers can ask without knowing whether anything changed: annSyncTarget
+    (where a moved mark is noticed) and annWireTarget above its guard (the split
+    layout's only route, and every load's).
+
+    Still ONE observer, moved rather than accumulated — one left on an unwatched
+    pane would go on waking this frame for mutations nobody is drawing pins for.
+    """
+    code = _pane_code()
+    obs = code[code.index("function annObserveTarget(doc) {"):]
+    obs = obs[:obs.index("\n}\n")]
+    assert "if (doc === annObservedDoc) return;" in obs, "idempotent on the document"
+    assert "if (annObserver) annObserver.disconnect();" in obs, \
+        "the old document is let go before the new one is taken"
+    assert "annObserver.observe(doc.body || doc.documentElement," in obs
+    assert "hasAttribute(ANN_LAYER_MARK)" in obs, \
+        "our own layer's arrival must not re-trigger the render that drew it"
+
+    # Nothing installs an observer anywhere else, and in particular not inside
+    # the run-once wiring block that started this bug.
+    assert code.count("new MutationObserver") == 1
+    wire = code[code.index("function annWireTarget() {"):]
+    wire = wire[:wire.index("\n}\n")]
+    assert wire.index("annObserveTarget(doc);") < wire.index("if (doc.__fusedAnnWired)"), \
+        "above the guard, or a re-selected frame never re-points it"
+    sync = code[code.index("function annSyncTarget() {"):]
+    sync = sync[:sync.index("\n}\n")]
+    assert "annObserveTarget(doc);" in sync
+
+    # The render queue moved out with it and is shared: one rAF, not one per
+    # document left over from an earlier target.
+    assert "function annQueueRender() {" in code
+    assert 'doc.addEventListener("scroll", annQueueRender,' in wire
 
 
 def test_the_portaled_composer_takes_its_styling_with_it():

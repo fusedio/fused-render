@@ -3420,7 +3420,19 @@ function enterNoPane() {
   //    to come back to, and it doubles as the fallback for the one case with no
   //    point to aim at — a note whose element no longer resolves — which the
   //    `sidebar` class positions under the #anntools strip. See the stylesheet.
+  //
+  //    The close FIRST, because this teardown is not the first thing that can
+  //    happen to the composer. paneURL awaits a fetch before it answers `null`,
+  //    and the poll that injects the annotation layer and wires the pane's click
+  //    handler ran at the end of the script — so a reader who clicks the pane in
+  //    that gap has an open composer, portaled, before this line is reached.
+  //    Yanking a live one across documents with `appendChild` would leave it
+  //    visible in the chat column at a coordinate that meant something in
+  //    someone else's viewport. Closing it is the same close Escape does, and it
+  //    is what puts the node back in this document so the move below is a move
+  //    within one document again.
   if (CHAT_ONLY) {
+    annCloseComposer();
     annPop.classList.add("sidebar");
     document.getElementById("chat").appendChild(annPop);
   }
@@ -3557,7 +3569,8 @@ const annChipsEls = [
 //                whose clientWidth/clientHeight IS the framed viewport
 //   annLayerRoot the shadow root the composer is portaled into, hosted only;
 //                null in the split layout, where #annpop is already over the
-//                pane and has nowhere to go
+//                pane and has nowhere to go — which is also what makes the
+//                portal unreachable there without a second flag
 //
 // `annFrame` may be NULL in CHAT_ONLY (no marked frame yet, or none at all), so
 // every read of it is guarded. In the split layout it is the element itself and
@@ -3575,13 +3588,6 @@ let annPins = document.getElementById("annpins");
 let annHl = document.getElementById("annhl");
 let annStageEl = document.getElementById("leftview");
 let annLayerRoot = null;
-// Where #annpop sits when it is NOT portaled. Captured on the first portal
-// rather than written down here, because the answer depends on a teardown that
-// has not run yet: enterNoPane moves the composer out of #leftview (which it is
-// about to remove) and into #chat, and THAT is the seat the composer has to
-// come back to. Reading it at portal time is reading it after every move that
-// can happen to it.
-let annPopHome = null;
 // The re-render observer on the target's document, declared UP HERE with the
 // rest of the target's state rather than beside the wiring that installs it: in
 // the hosted layout the first wiring happens during the boot renderAnn (which
@@ -3589,6 +3595,59 @@ let annPopHome = null;
 // lines before the wiring section — and a `let` read before its declaration is
 // a temporal-dead-zone ReferenceError, not an undefined.
 let annObserver = null;
+// And the document it is pointed at, which is what makes annObserveTarget cheap
+// enough to ask on every sync.
+let annObservedDoc = null;
+
+// Scroll and mutation storms coalesce to one re-render per frame. One queue for
+// every document, because renderAnn repaints the whole target either way, and a
+// per-document copy would just mean two rAFs doing one job after a mark move.
+let annRenderQueued = false;
+function annQueueRender() {
+  if (annRenderQueued) return;
+  annRenderQueued = true;
+  requestAnimationFrame(() => { annRenderQueued = false; renderAnn(); });
+}
+
+// Point the re-render observer at the target's document. ONE observer, moved,
+// rather than one per document left running: the ones we would leave behind are
+// on documents nothing is drawing pins into, and each would still wake this
+// frame on every mutation of a pane the reader is not annotating.
+//
+// It has to MOVE, and that is the whole reason this is not inside annWireTarget's
+// run-once block where it started. The shell keeps its pane-mode iframes mounted
+// and moves the mark between them; re-selecting a frame we already wired runs no
+// wiring at all (`__fusedAnnWatched`, `__fusedAnnWired`), so an observer left on
+// the frame the reader just LEFT is an observer that never fires for the frame
+// they are looking at — the app re-renders under the pins and the pins stay where
+// the old DOM put them until something else redraws.
+//
+// Idempotent on the document, so callers do not have to know whether anything
+// changed: annSyncTarget asks on every render and pays one comparison for it.
+function annObserveTarget(doc) {
+  if (doc === annObservedDoc) return;
+  if (annObserver) annObserver.disconnect();
+  annObserver = null;
+  annObservedDoc = doc || null;
+  if (!doc) return;
+  // Records, not a bare annQueueRender, for the one mutation that is not the app
+  // changing: our own. The shadow tree the pins live in is invisible to this
+  // observer (which is half of why the layer is behind one), but the layer's
+  // HOST element is an ordinary child of the app's body, so its arrival is an
+  // ordinary childList record — and a render triggered by having rendered is at
+  // best a wasted frame and at worst a loop.
+  annObserver = new MutationObserver((records) => {
+    const ours = (n) => n.nodeType === 1 && n.hasAttribute
+                        && n.hasAttribute(ANN_LAYER_MARK);
+    for (const r of records) {
+      const moved = [...r.addedNodes, ...r.removedNodes];
+      if (moved.length && moved.every(ours)) continue;
+      annQueueRender();
+      return;
+    }
+  });
+  annObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+}
 
 // The host's marked content pane, or null. The mark is an attribute the shell
 // stamps on the iframe it is currently showing (Preview.tsx) — a mark, not a
@@ -3758,8 +3817,9 @@ function annInjectLayer(doc) {
 
 // Point the four bindings at whatever the host is showing NOW. Cheap enough to
 // call on every render and every poll: one querySelector in the host document,
-// one in the target's. Returns whether the FRAME changed, which is the only part
-// a caller has ever needed to know about.
+// one in the target's. Returns whether the FRAME changed — the poll acts on it,
+// because a mark that moves between two frames the shell keeps mounted is a
+// change nothing else in this file can hear (see annPollTarget).
 //
 // The layer is re-resolved every time, not only when the frame moves, because a
 // pane that live-reloads gets a brand new document with no layer in it — and
@@ -3778,7 +3838,13 @@ function annSyncTarget() {
   // stops the re-entry from recursing), and the frame resolved at DECLARATION
   // time never "moved" at all.
   if (next) annWatchTarget(next);
-  const layer = annInjectLayer(annTargetDoc());
+  const doc = annTargetDoc();
+  // The re-render observer follows the target from here, because THIS is the
+  // function that knows where the target is. Re-selecting an already-wired frame
+  // never reaches annWireTarget, so that path cannot be the only one that moves
+  // it. Idempotent, so the cost on an ordinary render is one comparison.
+  annObserveTarget(doc);
+  const layer = annInjectLayer(doc);
   annPins = layer && layer.pins;
   annHl = layer && layer.hl;
   annStageEl = layer && layer.stage;
@@ -3999,12 +4065,17 @@ function renderAnn() {
 const annDelBtn = document.getElementById("anndel");
 
 // ── the composer's two seats ──────────────────────────────────────────────
-// Is #annpop currently living in someone else's document? Asked as "not where
-// it belongs" rather than "is it in a shadow root", because the answer has to
-// stay true for a root that has since been thrown away — a reloaded pane leaves
-// the node parented to a dead shadow tree, and that is precisely the case
-// annSyncTarget needs to recognise.
-const annPortaled = () => !!annPopHome && annPop.parentNode !== annPopHome;
+// Is #annpop currently living in someone else's document? OWNERSHIP is the
+// question, not parentage, and that is what makes the answer survive everything
+// that can happen to the node while it is away: a pane that reloads leaves it
+// parented to a dead shadow tree, an `adoptNode` that lands and an `appendChild`
+// that then throws leaves it parented to nothing at all. `ownerDocument` is
+// what `adoptNode` changes and the only thing that is still true in both.
+//
+// It is also the reason there is no remembered home node. One used to be
+// captured at the first portal, which was a race with a teardown that had not
+// run yet — see annUnportalPop.
+const annPortaled = () => annPop.ownerDocument !== document;
 
 // Move the REAL composer into the target document's overlay, so it can be drawn
 // beside the element it describes. An iframe cannot paint outside its own box,
@@ -4028,10 +4099,6 @@ function annPortalPop() {
   if (!annLayerRoot) return false;
   if (annPop.getRootNode() === annLayerRoot) return true;
   try {
-    // Captured on the way out, not at declaration: enterNoPane has by now moved
-    // the composer from #leftview (which it removed) into #chat, and #chat is
-    // the seat it must come back to. See annPopHome.
-    if (!annPopHome) annPopHome = annPop.parentNode;
     annLayerRoot.ownerDocument.adoptNode(annPop);
     annLayerRoot.appendChild(annPop);
   } catch (err) {
@@ -4045,13 +4112,30 @@ function annPortalPop() {
 // a dead tree. Returning it on close means the node spends all of its idle life
 // in the document that owns it.
 //
+// The home is RESOLVED HERE, every time, and never remembered from an earlier
+// visit. Remembering it was a race: annPollTarget injects the layer and wires
+// the target's click handler at the end of THIS script, while enterNoPane —
+// which is what moves the composer out of #leftview and into #chat — waits on
+// an `await fetch` inside paneURL. A click in the pane that lands in that gap
+// portals a composer whose parent is still #leftview, and #leftview is exactly
+// what the teardown then removes: coming "home" would have meant appending into
+// a detached column, i.e. a composer that opens into nothing. Asking the
+// document is a question with only one right answer at any moment.
+//
+// #chat rather than the original parent for the same reason it is where
+// enterNoPane parks it: the split layout never portals (there is nothing to
+// portal INTO — annLayerRoot is null without a marked frame), so every node
+// that comes back through here is a sidebar one, and the sidebar's seat is the
+// chat column. <body> only if that column is somehow gone, because a node
+// dropped nowhere is a composer that can never be opened again.
+//
 // The `sidebar` class is left alone through both moves. It says "parked in the
 // chat column" and that is still what it will mean when the node gets back; the
 // shadow root simply has no rule matching it, so it is inert while portaled.
 function annUnportalPop() {
   if (!annPortaled()) return;
   document.adoptNode(annPop);
-  annPopHome.appendChild(annPop);
+  (document.getElementById("chat") || document.body).appendChild(annPop);
 }
 
 // (x, y) are the click's FRAME viewport coordinates — the same space the pins
@@ -4290,14 +4374,27 @@ annSetMode(fused.params.get("annmode") !== "0");
 const ANN_TARGET_POLL_MS = 750;
 function annPollTarget() {
   const had = !!annFrame;
-  annSyncTarget();
+  const moved = annSyncTarget();
   const has = !!annFrame;
   // Hidden, not disabled: a switch that cannot do anything is not a promise
   // worth keeping on screen — the same rule the narrow layout applies to the
   // controls of a hidden pane. (#annbtn's own `display: flex` outranks the UA's
   // [hidden] rule, so the stylesheet spells the hiding out.)
   annBtn.hidden = !has;
-  if (has === had) return;
+  if (has === had) {
+    // Same ANSWER, different FRAME: the shell switched the pane's mode between
+    // two iframes it keeps mounted and moved the mark from one to the other.
+    // The switch has nothing to say about that — there was a target before and
+    // there is one now — but the pins do, and nobody else is going to draw
+    // them. Every other repaint on this path is somebody's `load`, and the two
+    // frames both loaded long ago: annWatchTarget refuses a frame it has
+    // already adopted (`__fusedAnnWatched`), so no wiring runs and no render
+    // comes with it. The layer we just re-resolved is the one THAT frame was
+    // left with, painted from whatever `annotations` said when it was last on
+    // screen — a note added, deleted or sent in the meantime is not in it.
+    if (moved) renderAnn();
+    return;
+  }
   // A target that has just ARRIVED re-applies the boot default, because the boot
   // itself may have run before the host stamped anything — the switch would then
   // read "Annotate" while the URL says the mode is on. Through annSetMode, the
@@ -4360,6 +4457,13 @@ function annWireTarget() {
   watchApp();
   const doc = annTargetDoc();
   if (!doc) return;
+  // ABOVE the run-once guard, because the observer is not a listener on this
+  // document — it is a single instance that has to point at whichever document
+  // is the target NOW, and re-selecting an already-wired one is exactly the case
+  // the guard below skips. The split layout reaches it only through here;
+  // hosted, annSyncTarget asks as well, and both are no-ops for a document we
+  // already watch.
+  annObserveTarget(doc);
   // One wiring per DOCUMENT, marked on the document itself (the same trick, and
   // for the same reason, as watchWindow's `__fusedAppWatched`): a reload brings a
   // fresh document and must be wired again, while re-adopting a frame we already
@@ -4467,32 +4571,10 @@ function annWireTarget() {
     annPlaceHl(el);
     annOpenComposer(e.clientX, e.clientY, anchor);
   }, true);
-  // Scroll and mutation storms coalesce to one re-render per frame.
-  let queued = false;
-  const queueRender = () => {
-    if (queued) return;
-    queued = true;
-    requestAnimationFrame(() => { queued = false; renderAnn(); });
-  };
-  doc.addEventListener("scroll", queueRender, { capture: true, passive: true });
-  if (annObserver) annObserver.disconnect();
-  // Records, not a bare queueRender, for the one mutation that is not the app
-  // changing: our own. The shadow tree the pins live in is invisible to this
-  // observer (which is half of why the layer is behind one), but the layer's
-  // HOST element is an ordinary child of the app's body, so its arrival is an
-  // ordinary childList record — and a render triggered by having rendered is at
-  // best a wasted frame and at worst a loop.
-  annObserver = new MutationObserver((records) => {
-    const ours = (n) => n.nodeType === 1 && n.hasAttribute
-                        && n.hasAttribute(ANN_LAYER_MARK);
-    for (const r of records) {
-      const moved = [...r.addedNodes, ...r.removedNodes];
-      if (moved.length && moved.every(ours)) continue;
-      queueRender();
-      return;
-    }
-  });
-  annObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+  // Scroll storms coalesce to one re-render per frame. A per-DOCUMENT listener,
+  // so it belongs in this run-once block; the mutation half does NOT and lives
+  // in annObserveTarget, called above.
+  doc.addEventListener("scroll", annQueueRender, { capture: true, passive: true });
   renderAnn();
 }
 // The split layout's own pane, wired the way it always was: one frame, ours,
