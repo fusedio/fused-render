@@ -112,7 +112,7 @@
       <button id="installed-toggle">Installed</button>
       <button id="refresh">Refresh</button>
     </header>
-    <p class="sub">Apps shared by the community — browse, read, and install into your Fused folder.
+    <p class="sub">Apps shared by the community — browse, read, and clone into your Fused folder.
       <a id="repo-link" href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noreferrer">Publish yours ↗</a></p>
     <div class="chips" id="chips"></div>
   </div>
@@ -280,7 +280,7 @@ async function renderDetail(slug) {
   const preview = catalog?.cache_root ? fused.rawUrl(`${d.folder}/preview.png`) : null;
   const previewHref = "/explorer/embed/" + encodeFsPath(d.preview_entry);
   const buttons = [];
-  if (!d.installed) buttons.push(`<button class="primary" data-act="install">Install</button>`);
+  if (!d.installed) buttons.push(`<button class="primary" data-act="install">Clone</button>`);
   if (d.installed) buttons.push(`<button class="primary" data-act="open">Open</button>`);
   if (d.installed && d.update_available) buttons.push(`<button data-act="update">Update</button>`);
   buttons.push(`<a href="${previewHref}" target="_blank" rel="noreferrer"><button>Preview ↗</button></a>`);
@@ -343,19 +343,23 @@ function confirmModal({ title, body, okLabel, okClass = "primary", extra = "" })
 async function act(action, slug, d) {
   if (action === "close") return closeDetail();
   if (action === "open") {
-    window.top.location.href = "/apps/community/" + encodeURIComponent(fsSlash(d.path).split("/").pop());
+    // Derive tag + name from the stored install path so installs made before
+    // the community→local destination change still open at the right route.
+    const parts = fsSlash(d.path).split("/");
+    window.top.location.href = "/apps/" + encodeURIComponent(parts[parts.length - 2]) +
+      "/" + encodeURIComponent(parts[parts.length - 1]);
     return;
   }
   if (busy) return;
   const entry = d.entry || {};
   if (action === "install") {
     const ok = await confirmModal({
-      title: `Install ${entry.name || slug}?`,
+      title: `Clone ${entry.name || slug}?`,
       body: `<p>By ${esc(entry.author?.name || "unknown")} · from the community repo.</p>
         <p>Installed apps run with the <strong>same trust as your own files</strong>${entry.requires_python ? ", including running Python on this machine" : ""}.
         Every app enters the catalog through a reviewed pull request, but install only what you trust.</p>
-        <p>It will be copied to <code>Fused/community/${esc(slug)}</code> — yours to edit from there.</p>`,
-      okLabel: "Install",
+        <p>It will be copied to <code>Fused/local/${esc(slug)}</code> — yours to edit from there.</p>`,
+      okLabel: "Clone",
     });
     if (!ok) return;
     await write({ action: "install", slug }, "installed");
@@ -380,7 +384,7 @@ async function act(action, slug, d) {
   if (action === "uninstall") {
     const ok = await confirmModal({
       title: `Uninstall ${entry.name || slug}?`,
-      body: `<p>Moves <code>Fused/community/${esc(slug)}</code> to the Trash —
+      body: `<p>Moves <code>${esc(d.path ? fsSlash(d.path).split("/").slice(-3).join("/") : "Fused/local/" + slug)}</code> to the Trash —
         including any edits you made and their git history.</p>`,
       okLabel: "Uninstall", okClass: "danger",
     });

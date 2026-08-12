@@ -15,7 +15,7 @@ Actions:
               then return the same payload as `catalog`
   detail    — materialize one app folder in the cache; return its readme text
               + install state (the page renders the markdown client-side)
-  install   — copy the cached app folder into <workspace>/community/<slug>,
+  install   — copy the cached app folder into <workspace>/local/<slug>,
               git-init it with a pristine first commit, record the install
   update    — clean copy: replace + commit on top; edited copy: refuse with
               {status:"dirty"} unless force=true (which commits local edits
@@ -56,7 +56,7 @@ INSTALLS_JSON = os.path.join(STATE_DIR, "installs.json")
 # Mirrors shell/seed.fused_dir().
 WORKSPACE = os.path.abspath(
     os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused"))
-COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "community")
+COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "local")
 
 # The always-materialized browse set: catalog + every app's card assets.
 SPARSE_BROWSE = ["/index.json", "/*/preview.png", "/*/metadata.json"]
@@ -243,7 +243,7 @@ def _clean_cache():
     ./.cache) — that state is deliberately throwaway, and this is where it
     dies: on refresh, and before anything is copied out (install/update).
     Want preview state to survive? Install the app; the copy in
-    Fused/community/ is yours."""
+    Fused/local/ is yours."""
     _git(CACHE_REPO, "checkout", "-q", "--", ".")
     _git(CACHE_REPO, "clean", "-qfdx")
 
@@ -311,7 +311,7 @@ def _install(slug):
     }
     _write_installs(installs)
     return {"status": "installed", "path": dest,
-            "app_route": f"/apps/community/{os.path.basename(dest)}"}
+            "app_route": f"/apps/local/{os.path.basename(dest)}"}
 
 
 def _head_sha(app_dir):
