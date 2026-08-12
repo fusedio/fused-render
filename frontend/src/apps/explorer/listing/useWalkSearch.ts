@@ -20,7 +20,12 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { indexSearch, walkDirStream } from "@platform/lib/api";
 import type { WalkEntry } from "@platform/lib/api";
 import { indexCorpusFrom } from "@apps/explorer/listing/index-corpus";
-import { nextHeldCorpus, scannableCorpus, type HeldCorpus } from "@apps/explorer/listing/corpus-hold";
+import {
+  corpusKey,
+  nextHeldCorpus,
+  scannableCorpus,
+  type HeldCorpus,
+} from "@apps/explorer/listing/corpus-hold";
 import {
   fsMutationCount,
   indexLifecycleCount,
@@ -190,11 +195,11 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     let pending: WalkEntry[] = [];
     let lastFlush = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    // Corpus identities for the two sources (WalkState.key). Distinct per
-    // source as well as per generation: both may answer for one generation
-    // (they race below), and their entry lists are not the same rows.
-    const walkKey = `walk:${fsPath}:${forRefresh}`;
-    const indexKey = `index:${fsPath}:${forRefresh}`;
+    // Corpus identities for the two sources (WalkState.key). `retryNonce` is
+    // in there because a retry is a fresh walk of the filesystem under an
+    // unchanged folder and generation — see corpusKey.
+    const walkKey = corpusKey("walk", fsPath, forRefresh, retryNonce);
+    const indexKey = corpusKey("index", fsPath, forRefresh, retryNonce);
     const flush = () => {
       if (flushTimer !== null) {
         clearTimeout(flushTimer);

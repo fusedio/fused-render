@@ -20,6 +20,32 @@
 import type { WalkEntry } from "@platform/lib/api";
 import type { WalkState } from "@apps/explorer/listing/types";
 
+/**
+ * The corpus identity a fetch will produce (WalkState.key).
+ *
+ * Everything that can change the ROWS has to be in here, because downstream
+ * this is taken as a promise that two arrays hold the same entries in the same
+ * order (listing/scan-resume). Each part earns its place:
+ *
+ *  * `source` — the index and the live walk race for one generation
+ *    (listing/source-race) and do not return the same rows.
+ *  * `fsPath`, `forRefresh` — the folder, and the generation it was fetched
+ *    for.
+ *  * `attempt` — the retry counter. Omitting it was a bug: a retry keeps the
+ *    same folder and the same generation, so an aborted walk's 500 scored
+ *    entries were resumed over a brand-new array from a brand-new walk of the
+ *    filesystem. A retry usually happens BECAUSE something changed, so those
+ *    rows are exactly the ones not guaranteed to match.
+ */
+export function corpusKey(
+  source: "walk" | "index",
+  fsPath: string,
+  forRefresh: number,
+  attempt: number,
+): string {
+  return `${source}:${fsPath}:${forRefresh}:${attempt}`;
+}
+
 export interface HeldCorpus {
   entries: WalkEntry[];
   /** The corpus identity this array carries — see WalkState.key. */

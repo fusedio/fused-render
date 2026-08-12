@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { nextHeldCorpus, scannableCorpus } from "@apps/explorer/listing/corpus-hold";
+import { corpusKey, nextHeldCorpus, scannableCorpus } from "@apps/explorer/listing/corpus-hold";
 import type { WalkState } from "@apps/explorer/listing/types";
 import type { WalkEntry } from "@platform/lib/api";
 
@@ -16,6 +16,29 @@ function streaming(es: WalkEntry[], key = "k1", forRefresh = 0): WalkState {
 function ok(es: WalkEntry[], key = "k1", forRefresh = 0): WalkState {
   return { status: "ok", entries: es, truncated: false, total: es.length, key, forRefresh };
 }
+
+describe("corpusKey", () => {
+  it("is the same corpus for the same folder, generation and source", () => {
+    expect(corpusKey("walk", "/p", 3, 0)).toBe(corpusKey("walk", "/p", 3, 0));
+  });
+
+  it("separates a RETRY from the attempt it replaces", () => {
+    // The bug: a retry keeps the folder and the generation (only `retryNonce`
+    // moves), so a walk that streamed 500 entries and then failed had those
+    // 500 hits resumed over a brand-new walk's array. A retry usually happens
+    // because something changed, which is exactly when those rows differ.
+    expect(corpusKey("walk", "/p", 3, 1)).not.toBe(corpusKey("walk", "/p", 3, 0));
+  });
+
+  it("separates the two racing sources, which do not return the same rows", () => {
+    expect(corpusKey("index", "/p", 3, 0)).not.toBe(corpusKey("walk", "/p", 3, 0));
+  });
+
+  it("separates folders and generations", () => {
+    expect(corpusKey("walk", "/q", 3, 0)).not.toBe(corpusKey("walk", "/p", 3, 0));
+    expect(corpusKey("walk", "/p", 4, 0)).not.toBe(corpusKey("walk", "/p", 3, 0));
+  });
+});
 
 describe("nextHeldCorpus", () => {
   it("retains a settled corpus", () => {
