@@ -185,14 +185,22 @@ export function listDir(fsPath: string, cursor?: string | null): Promise<ListRes
 const LIST_PREFETCH_TTL_MS = 5000;
 const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number }>();
 
-// Forget every cached listing.
+// Forget every cached listing. Three callers, each covering what the others
+// cannot — the split is the point, so keep it accurate:
 //
-// Called by noteAfter below for every mutation this module performs, and by the
-// dir-watch socket (listing/useDirListing) for the ones it does not: a view's own
-// fused.writeFile() or template save goes out through /api/run from inside the
-// preview iframe and never touches these wrappers, and neither does Claude, an
-// external editor or a git checkout. The watcher is where the shell finds out, so
-// that is where the cache is dropped.
+//   noteAfter, below           every mutation THIS module performs.
+//   the dir-watch socket       a change made by anything else to the ONE folder a
+//   (listing/useDirListing)    mounted listing is watching: an editor, Claude, a
+//                              git checkout. Not a general backstop — it covers
+//                              only that folder, only while it is mounted, and
+//                              never (say) a crumb drop's destination.
+//   window._fusedFsChanged     a write from inside a preview iframe — its own JS
+//   (installed in main.tsx)    realm with its own copy of this module, so nothing
+//                              here sees its fetches. static/runtime.js reports
+//                              writeFile / uploadFile / mkdir / runPython up the
+//                              same-origin ancestor chain. This is the only cover
+//                              for a template view of a FILE, which mounts no
+//                              listing and so has no watcher at all.
 export function clearListPrefetch(): void {
   listPrefetch.clear();
 }
