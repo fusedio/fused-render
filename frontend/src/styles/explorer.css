@@ -245,9 +245,15 @@
    what makes an ancestor strip of small adjacent targets legible: exactly one of
    them is lit, and it is the one that would receive the drop.
    Both states can be on one crumb at once, since holding it also arms the
-   spring-load. The pulse's keyframes own `box-shadow` for their 0.7s, so while it
-   runs the ring is the pulse's; the background tints below are what read through
-   either way.
+   spring-load, and the pulse's keyframes own `box-shadow` for their 0.7s — so on
+   an armed crumb the ring below is suppressed until the pulse ends. The per-crumb
+   "which ancestor gets this" signal survives it, because .spring-armed carries an
+   accent BACKGROUND that no other crumb has: during the pulse the armed crumb is
+   the only tinted one in the strip, and the ring takes over the instant the
+   animation finishes. A refused crumb still reads as refused either way — the
+   error tint below is declared after .spring-armed's, so at equal specificity it
+   wins (and an armed refusal is barely reachable anyway: only ancestors spring,
+   and an ancestor drop is never "already-there").
    These classes are added IMPERATIVELY by row-drag, which is why arming the
    spring has to re-apply them: the armed state is React state, and its re-render
    writes `className` from scratch. Breadcrumb's refreshDropTarget effect is what

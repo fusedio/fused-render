@@ -395,14 +395,42 @@ function scrollLoop(): void {
   d.raf = requestAnimationFrame(scrollLoop);
 }
 
-function repaintAtPointer(): void {
+// Re-resolve the spring WITHOUT arming anything — for a re-hit-test the POINTER
+// did not cause (refreshDropTarget).
+//
+// springTo would arm the crumb it finds, and that turns a stationary pointer into
+// a navigation machine: a spring-load re-lays out the strip, a different ancestor
+// slides under the unmoved cursor, its 700ms timer starts, and the user who is
+// deliberately holding still gets a second navigation, then a third. A spring
+// must only ever be armed by a gesture toward it.
+//
+// Still not a no-op, because of the opposite error: the crumb whose timer IS
+// running may no longer be under the pointer after the re-layout, and letting it
+// fire would navigate somewhere the user is no longer pointing. So an unchanged
+// target leaves the dwell alone (holding still for 700ms is the whole feature),
+// and a changed one fires `leave` — which disarms it through springDisarms — and
+// forgets the spring entirely rather than adopting the new crumb, so a later real
+// pointer move can arm it in the ordinary way.
+function springRecheck(el: HTMLElement | null): void {
+  const d = live;
+  if (!d) return;
+  const target = el?.closest<HTMLElement>(`[${SPRING_ATTR}]`)?.getAttribute(SPRING_ATTR) ?? null;
+  if (target === d.spring) return;
+  const previous = d.spring;
+  d.spring = null;
+  if (previous !== null) for (const h of springs) h.leave(previous);
+}
+
+// `arm: false` for a repaint the pointer did not cause — see springRecheck.
+function repaintAtPointer({ arm = true }: { arm?: boolean } = {}): void {
   const d = live;
   if (!d) return;
   const el = document.elementFromPoint(d.clientX, d.clientY) as HTMLElement | null;
   const scroller = el?.closest<HTMLElement>(".listing-scroll") ?? null;
   if (scroller) d.scroller = scroller;
   paint(hitTargetOf(el));
-  springTo(el);
+  if (arm) springTo(el);
+  else springRecheck(el);
 }
 
 // Re-hit-test and repaint WITHOUT the pointer having moved. A no-op unless a
@@ -430,12 +458,18 @@ function repaintAtPointer(): void {
 //     per-crumb "which ancestor gets this" signal vanished for the rest of the
 //     dwell.
 //
-// So the strip calls this after any render that can change it (Breadcrumb's
-// effect on fsPath/armedTarget) and the three holes close together: the spot is
+// So the strip calls this whenever it changes — from its own render, and from a
+// ResizeObserver and scroll listener, because chrome portalling into the crumb bar
+// after a navigation re-lays it out asynchronously, long after any render this
+// module could be told about. The three holes then close together: the spot is
 // rebuilt against the live DOM, the highlight is re-applied, and what is painted
 // is what a release would use, because both come from this one hit test.
+//
+// It never ARMS a spring — a layout change is not a gesture toward a crumb (see
+// springRecheck, which is the difference between this and a pointer move).
 export function refreshDropTarget(): void {
-  if (live?.active) repaintAtPointer();
+  // `arm: false` — a layout change is not a gesture. See springRecheck.
+  if (live?.active) repaintAtPointer({ arm: false });
 }
 
 function onPointerMove(ev: PointerEvent): void {

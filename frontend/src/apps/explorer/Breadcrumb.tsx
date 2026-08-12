@@ -520,22 +520,45 @@ export function Breadcrumb({
 
   // THE STRIP CHANGED UNDER A POINTER THAT DID NOT MOVE — tell the drag.
   //
-  // Declared after the scroll pin above so it runs after it in the same flush:
-  // the re-hit-test has to see the strip where it finally sits, not where it sat
-  // before the tail was pinned back into view.
+  // row-drag only re-resolves its target on pointer MOVEMENT, and a spring-load is
+  // the one moment when the DOM moves instead: the hovered crumb is replaced by the
+  // current-folder one, the strip re-lays out, and the armed highlight's re-render
+  // rewrites `className` over the drop ring row-drag painted imperatively. Left
+  // unsaid, the drag holds a spot pointing at a detached element, keeps the no-drop
+  // cursor, and releases into whatever a fresh hit test happens to find — which is
+  // a silent wrong destination. refreshDropTarget no-ops off-drag, so both hooks
+  // below cost a boolean check the rest of the time.
   //
-  // Both dependencies are a mid-drag change the drag cannot otherwise notice.
-  // `fsPath` is the spring-load's own navigation, which replaces the hovered
-  // crumb with the current-folder one and re-lays out everything to its right.
-  // `armedTarget` is the armed highlight, whose re-render rewrites `className`
-  // and so erases the drop ring row-drag painted imperatively. row-drag only
-  // re-resolves the target on pointer movement, so without this the drag would
-  // keep a spot pointing at a detached element, keep the no-drop cursor, and
-  // release into whatever the fresh hit test happened to find — see
-  // refreshDropTarget, which no-ops when nothing is being dragged.
+  // THE RENDER IS NOT ENOUGH ON ITS OWN, which is why the observer exists. Chrome
+  // portals into the crumb bar ASYNCHRONOUSLY after a navigation — Preview's topbar
+  // slot, and the open-as-app button, which only appears once the new listing's
+  // /api/fs/list has resolved and reported a single app. Each one narrows the strip
+  // and re-triggers the tail pin above, sliding crumbs under a cursor that never
+  // moved, with no dependency here changing and no render of this component at all.
+  // A window resize does the same. So the geometry itself is watched rather than
+  // the React inputs that were supposed to predict it: a ResizeObserver for the
+  // width, and `scroll` for the tail pin's own scrollLeft write.
+  useEffect(() => {
+    const el = crumbsRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => refreshDropTarget());
+    observer.observe(el);
+    el.addEventListener("scroll", refreshDropTarget);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", refreshDropTarget);
+    };
+    // `editing` swaps the strip for the path input and back, so the element this
+    // is bound to is a different node either side of it.
+  }, [editing]);
+
+  // The synchronous half, kept as well as the observer: replacing the hovered
+  // crumb with a same-width one changes what is under the pointer without
+  // resizing anything, and `armedTarget` is the className rewrite, which changes
+  // no geometry at all. `editing` is here for the same reason it is on the pin.
   useEffect(() => {
     refreshDropTarget();
-  }, [fsPath, armedTarget]);
+  }, [fsPath, armedTarget, editing]);
 
   // The same click-to-edit, extended to the BAR's own free space — the gap
   // between the crumbs and the folder-search box, which belongs to #breadcrumb
