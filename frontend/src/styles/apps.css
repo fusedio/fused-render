@@ -186,6 +186,20 @@
   display: block;
 }
 
+/* Overlay while an uncloned community app fetches its files before preview. */
+.app-pcard-cloning {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(3px);
+}
+
 .app-pcard-shield {
   position: absolute;
   inset: 0;

@@ -228,6 +228,11 @@ function CommunityCard({
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  // An uncloned open first fetches the app's files from GitHub (the `detail`
+  // materialize) before the preview can load — seconds of real work with no
+  // navigation yet, so the card itself shows what's happening. Stays true
+  // until the page unloads into the preview; only an error clears it.
+  const [cloning, setCloning] = useState(false);
   const title = app.name || app.slug;
   const ago = timeAgo(openedAt || null);
   const href = hrefForCommunity(app, cacheRoot);
@@ -236,7 +241,13 @@ function CommunityCard({
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
       return;
     e.preventDefault();
-    openCommunityApp(app, cacheRoot).catch((err: Error) => setOpenError(err.message));
+    if (cloning) return; // one open in flight per card
+    if (!(app.installed && app.path)) setCloning(true);
+    setOpenError(null);
+    openCommunityApp(app, cacheRoot).catch((err: Error) => {
+      setCloning(false);
+      setOpenError(err.message);
+    });
   };
   return (
     <a className="app-pcard" href={href} onClick={onClick} title={app.description || title}>
@@ -261,6 +272,12 @@ function CommunityCard({
         ) : (
           <span className="app-pcard-monogram" style={{ color: hueFor(title) }}>
             {title.charAt(0).toUpperCase()}
+          </span>
+        )}
+        {cloning && (
+          <span className="app-pcard-cloning" role="status">
+            <span className="mode-icon-spinner" />
+            Cloning from GitHub…
           </span>
         )}
       </span>
