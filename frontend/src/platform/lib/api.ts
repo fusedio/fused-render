@@ -2048,12 +2048,16 @@ export function searchHubModels(opts: {
   sort?: HubSort;
   limit?: number;
 }): Promise<HubSearchResult> {
-  const params = new URLSearchParams();
-  if (opts.q) params.set("q", opts.q);
-  if (opts.task) params.set("task", opts.task);
-  if (opts.sort) params.set("sort", opts.sort);
-  if (opts.limit) params.set("limit", String(opts.limit));
-  return getJson<HubSearchResult>("/api/ai-models/hub/search?" + params.toString());
+  // A POST, unlike every other read in this file. Search is the one that leaves
+  // the machine — the server calls the Hub with the user's token — so it takes
+  // the shape its effect deserves and carries the D3 guard with it. See the
+  // endpoint's docstring.
+  return postJson<HubSearchResult>("/api/ai-models/hub/search", {
+    q: opts.q,
+    task: opts.task,
+    sort: opts.sort,
+    limit: opts.limit,
+  });
 }
 
 export interface HubTask {

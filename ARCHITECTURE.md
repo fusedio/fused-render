@@ -222,16 +222,22 @@ repo when it was the last revision.
 
 ### `/api/ai-models/hub/*` — Hub search, joined to the cache (SPEC §39, D255)
 
-`GET /api/ai-models/hub/search?q=&task=&sort=&limit=` →
+`POST /api/ai-models/hub/search {q, task, sort, limit}` (`X-Fused` guarded) →
 `{models, query, endpoint, authenticated}` or, when the far side is unhappy,
 `{models: [], error}` with a 200 — the request this server got was fine and the
 page has a sentence to show. Each model is `{id, task, taskHelp, pipelineTag,
 library, downloads, likes, updated, gated, private, tags, params, estimatedSize,
 local, url}`, where `local` is `{state: "downloaded"|"partial"|"none", size,
 files, lastUsed, path, dir}`.
-`GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`.
-Both are unguarded reads — this module searches and never downloads, so there is
-no mutation to guard.
+`GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`,
+an unguarded read like every other (WF-5): a static glossary that touches
+nothing. Search is the asymmetry, and deliberate. It downloads nothing either,
+but it is the one read that LEAVES the machine — an outbound call carrying the
+user's Hub token — and D36's protection is the browser refusing to show a
+foreign page the *response*, which does nothing about the *request*. Unguarded,
+a blind cross-origin GET could spend someone's credential and rate limit while
+learning nothing. So the route takes the shape its effect deserves rather than
+the rule acquiring a guarded-GET exception.
 
 `hub_models.py` is the only outbound request this feature makes. The host is
 fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is

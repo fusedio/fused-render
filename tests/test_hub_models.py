@@ -19,6 +19,14 @@ from fused_render.server.routers import ai_models as ai_models_mod
 from fused_render.server.routers import hub_models as hub
 
 
+def _search(client, body=None):
+    """One search. A guarded POST, not a GET (see the endpoint's docstring):
+    search is the only read in this module that leaves the machine, carrying the
+    user's Hub token, so it takes the shape its effect deserves."""
+    return client.post("/api/ai-models/hub/search", json=body or {},
+                       headers={"X-Fused": "1"})
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     hub._cache.clear()
@@ -87,7 +95,7 @@ def test_a_result_already_on_disk_says_so(client, hub_cache, monkeypatch):
         {"id": "org/have", "pipeline_tag": "text-generation", "downloads": 10},
         {"id": "org/have-not", "pipeline_tag": "text-generation", "downloads": 5},
     ]))
-    models = client.get("/api/ai-models/hub/search").json()["models"]
+    models = _search(client).json()["models"]
     by_id = {m["id"]: m for m in models}
     assert by_id["org/have"]["local"]["state"] == "downloaded"
     # The blob plus the repo's bookkeeping (refs/main) — the number comes
@@ -105,7 +113,7 @@ def test_a_half_pulled_repo_is_partial_not_downloaded(client, hub_cache, monkeyp
     blob.parent.mkdir(parents=True)
     blob.write_bytes(b"x" * 32)
     monkeypatch.setattr(httpx, "get", _reply([{"id": "org/partial"}]))
-    models = client.get("/api/ai-models/hub/search").json()["models"]
+    models = _search(client).json()["models"]
     assert models[0]["local"]["state"] == "partial"
 
 
@@ -132,7 +140,7 @@ def test_the_join_costs_what_the_results_cost_not_what_the_cache_costs(
         hub, "_scan_repo", lambda root: (measured.append(root), real_scan(root))[1])
     monkeypatch.setattr(httpx, "get", _reply([{"id": "org/m2"}, {"id": "org/absent"}]))
 
-    models = client.get("/api/ai-models/hub/search").json()["models"]
+    models = _search(client).json()["models"]
     assert {m["id"]: m["local"]["state"] for m in models} == {
         "org/m2": "downloaded", "org/absent": "none"}
     # One repo was in the results and present; the other four were never touched,
@@ -147,11 +155,11 @@ def test_the_local_half_is_never_served_stale(client, hub_cache, monkeypatch):
     repo = _cached_repo(hub_cache, "models--org--m")
     fake = _reply([{"id": "org/m"}])
     monkeypatch.setattr(httpx, "get", fake)
-    assert client.get("/api/ai-models/hub/search").json()["models"][0]["local"]["state"] == "downloaded"
+    assert _search(client).json()["models"][0]["local"]["state"] == "downloaded"
 
     import shutil
     shutil.rmtree(repo)
-    again = client.get("/api/ai-models/hub/search").json()["models"][0]
+    again = _search(client).json()["models"][0]
     assert again["local"] == {"state": "none"}
     assert len(fake.calls) == 1  # …and the Hub was not asked a second time
 
@@ -165,7 +173,7 @@ def test_a_task_reads_the_same_here_as_on_the_local_cards(client, hub_cache, mon
     # explains it on a downloaded model explains it here.
     monkeypatch.setattr(httpx, "get", _reply([
         {"id": "org/vlm", "pipeline_tag": "image-text-to-text"}]))
-    row = client.get("/api/ai-models/hub/search").json()["models"][0]
+    row = _search(client).json()["models"][0]
     assert row["task"] == "image + text to text"
     assert row["taskHelp"] == ai_models_mod._TASK_HELP["image + text to text"]
 
@@ -178,7 +186,7 @@ def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
         "id": "org/big",
         "safetensors": {"parameters": {"BF16": 8_000_000_000}, "total": 8_000_000_000},
     }]))
-    row = client.get("/api/ai-models/hub/search").json()["models"][0]
+    row = _search(client).json()["models"][0]
     assert row["params"] == 8_000_000_000
     assert row["estimatedSize"] == 16_000_000_000
 
@@ -187,7 +195,7 @@ def test_a_repo_with_no_safetensors_metadata_reports_no_size(client, hub_cache, 
     # A size we cannot compute is left out. A guessed one would be a number
     # someone plans a download around.
     monkeypatch.setattr(httpx, "get", _reply([{"id": "org/gguf", "safetensors": None}]))
-    row = client.get("/api/ai-models/hub/search").json()["models"][0]
+    row = _search(client).json()["models"][0]
     assert row["estimatedSize"] is None and row["params"] is None
 
 
@@ -196,7 +204,7 @@ def test_gated_is_reported_before_someone_tries(client, hub_cache, monkeypatch):
     # licence has to be accepted first, which is worth knowing in advance.
     monkeypatch.setattr(httpx, "get", _reply([
         {"id": "org/gated", "gated": "manual"}, {"id": "org/open", "gated": False}]))
-    rows = {m["id"]: m for m in client.get("/api/ai-models/hub/search").json()["models"]}
+    rows = {m["id"]: m for m in _search(client).json()["models"]}
     assert rows["org/gated"]["gated"] is True
     assert rows["org/open"]["gated"] is False
 
@@ -205,7 +213,7 @@ def test_missing_fields_are_absent_not_fatal(client, hub_cache, monkeypatch):
     # The Hub returns what it returns, and an older deployment may refuse an
     # expand[] field entirely. Nothing here indexes blindly.
     monkeypatch.setattr(httpx, "get", _reply([{"id": "org/bare"}]))
-    row = client.get("/api/ai-models/hub/search").json()["models"][0]
+    row = _search(client).json()["models"][0]
     assert row["id"] == "org/bare"
     assert row["task"] is None and row["downloads"] is None and row["tags"] == []
 
@@ -213,7 +221,7 @@ def test_missing_fields_are_absent_not_fatal(client, hub_cache, monkeypatch):
 def test_a_row_with_no_id_is_dropped(client, hub_cache, monkeypatch):
     # A row the page could not act on is a row it should not be given.
     monkeypatch.setattr(httpx, "get", _reply([{"likes": 3}, {"id": "org/real"}]))
-    models = client.get("/api/ai-models/hub/search").json()["models"]
+    models = _search(client).json()["models"]
     assert [m["id"] for m in models] == ["org/real"]
 
 
@@ -224,7 +232,7 @@ def test_the_query_is_encoded_not_concatenated(client, hub_cache, monkeypatch):
     # A search for `a&b` is a search, not a second parameter.
     fake = _reply([])
     monkeypatch.setattr(httpx, "get", fake)
-    client.get("/api/ai-models/hub/search", params={"q": "a&filter=evil b/c"})
+    _search(client, {"q": "a&filter=evil b/c"})
     url = fake.calls[0][0]
     assert "search=a%26filter%3Devil+b%2Fc" in url
     assert url.startswith("https://huggingface.co/api/models?")
@@ -233,15 +241,15 @@ def test_the_query_is_encoded_not_concatenated(client, hub_cache, monkeypatch):
 def test_the_sort_is_a_fixed_set(client, hub_cache, monkeypatch):
     # The client names a sort; it never passes a field through to the Hub.
     monkeypatch.setattr(httpx, "get", _reply([]))
-    assert client.get("/api/ai-models/hub/search", params={"sort": "likes"}).status_code == 200
-    bad = client.get("/api/ai-models/hub/search", params={"sort": "author"})
+    assert _search(client, {"sort": "likes"}).status_code == 200
+    bad = _search(client, {"sort": "author"})
     assert bad.status_code == 400 and "sort" in bad.json()["error"]
 
 
 def test_the_limit_is_bounded(client, hub_cache, monkeypatch):
     fake = _reply([])
     monkeypatch.setattr(httpx, "get", fake)
-    body = client.get("/api/ai-models/hub/search", params={"limit": 5000}).json()
+    body = _search(client, {"limit": 5000}).json()
     assert body["query"]["limit"] == hub._MAX_LIMIT
 
 
@@ -251,9 +259,9 @@ def test_identical_queries_inside_the_window_ask_once(client, hub_cache, monkeyp
     fake = _reply([{"id": "org/m"}])
     monkeypatch.setattr(httpx, "get", fake)
     for _ in range(3):
-        client.get("/api/ai-models/hub/search", params={"q": "llama"})
+        _search(client, {"q": "llama"})
     assert len(fake.calls) == 1
-    client.get("/api/ai-models/hub/search", params={"q": "llamas"})
+    _search(client, {"q": "llamas"})
     assert len(fake.calls) == 2  # …a different query is a different question
 
 
@@ -261,7 +269,7 @@ def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
     fake = _reply([])
     monkeypatch.setenv("HF_TOKEN", "hf_secret")
     monkeypatch.setattr(httpx, "get", fake)
-    body = client.get("/api/ai-models/hub/search").json()
+    body = _search(client).json()
     assert fake.calls[0][1]["headers"]["Authorization"] == "Bearer hf_secret"
     assert body["authenticated"] is True
     assert "hf_secret" not in json.dumps(body)
@@ -288,7 +296,7 @@ def test_an_unreachable_hub_is_a_sentence_not_a_500(client, hub_cache, monkeypat
         raise httpx.ConnectError("no route to host")
 
     monkeypatch.setattr(httpx, "get", boom)
-    body = client.get("/api/ai-models/hub/search").json()
+    body = _search(client).json()
     assert body["models"] == []
     assert "huggingface.co" in body["error"]
 
@@ -297,14 +305,14 @@ def test_an_unreachable_hub_is_a_sentence_not_a_500(client, hub_cache, monkeypat
     (403, "token"), (429, "rate-limiting"), (500, "500")])
 def test_an_unhappy_hub_explains_itself(client, hub_cache, monkeypatch, status, needle):
     monkeypatch.setattr(httpx, "get", _reply([], status=status))
-    body = client.get("/api/ai-models/hub/search").json()
+    body = _search(client).json()
     assert body["models"] == [] and needle in body["error"]
 
 
 @pytest.mark.parametrize("body", [b"<html>nope</html>", b'{"not": "a list"}'])
 def test_an_unexpected_reply_does_not_reach_the_page(client, hub_cache, monkeypatch, body):
     monkeypatch.setattr(httpx, "get", _reply(None, body=body))
-    payload = client.get("/api/ai-models/hub/search").json()
+    payload = _search(client).json()
     assert payload["models"] == [] and payload["error"]
 
 
@@ -312,10 +320,10 @@ def test_an_error_is_not_cached(client, hub_cache, monkeypatch):
     # A failed search must not pin the failure for the length of the window: the
     # network comes back, and the next keystroke should find out.
     monkeypatch.setattr(httpx, "get", _reply([], status=500))
-    assert client.get("/api/ai-models/hub/search").json()["error"]
+    assert _search(client).json()["error"]
     fake = _reply([{"id": "org/m"}])
     monkeypatch.setattr(httpx, "get", fake)
-    assert client.get("/api/ai-models/hub/search").json()["models"][0]["id"] == "org/m"
+    assert _search(client).json()["models"][0]["id"] == "org/m"
 
 
 # -- the filters ------------------------------------------------------------
@@ -341,7 +349,7 @@ def test_every_offered_filter_resolves_to_an_explained_label(client):
 def test_a_task_filter_is_passed_through(client, hub_cache, monkeypatch):
     fake = _reply([])
     monkeypatch.setattr(httpx, "get", fake)
-    client.get("/api/ai-models/hub/search", params={"task": "text-generation"})
+    _search(client, {"task": "text-generation"})
     assert "filter=text-generation" in fake.calls[0][0]
 
 
@@ -376,3 +384,37 @@ def test_the_hub_token_does_not_survive_a_cross_host_redirect():
         "httpx forwarded the Hub token to another host across a redirect — "
         "pin httpx, or stop following redirects on the authenticated call"
     )
+
+
+def test_search_is_a_guarded_post_not_a_read(client, hub_cache, monkeypatch):
+    """The one read in this app that leaves the machine.
+
+    Every other read is an unguarded GET (WF-5), because D36's protection is the
+    browser's: a foreign page can fire the request but cannot read the reply.
+    That covers the RESPONSE. Search's cost is in the REQUEST — it calls the Hub
+    with the user's token attached — so a blind cross-origin GET could spend
+    someone's credential and their rate limit while learning nothing. The route
+    therefore takes the shape its effect deserves rather than the rule acquiring
+    an exception.
+    """
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+
+    # No header: refused, and the Hub is never called.
+    blind = client.post("/api/ai-models/hub/search", json={})
+    assert blind.status_code == 403
+    assert not fake.calls, "a guarded search still reached the Hub"
+
+    # The old shape is gone, not merely discouraged.
+    assert client.get("/api/ai-models/hub/search").status_code == 405
+
+    # And with the header it works.
+    assert _search(client).status_code == 200
+    assert fake.calls
+
+
+def test_the_task_glossary_stays_an_ordinary_read(client):
+    """`hub/tasks` is a static list — no network, no token, nothing to spend —
+    so it keeps the unguarded GET every other read has (WF-5). The asymmetry is
+    the point: what earns the guard is the outbound call, not the router."""
+    assert client.get("/api/ai-models/hub/tasks").status_code == 200

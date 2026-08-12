@@ -1,4 +1,4 @@
-"""GET /api/ai-models/hub/search — models on the Hugging Face Hub, told apart
+"""POST /api/ai-models/hub/search — models on the Hugging Face Hub, told apart
 from the ones already on this disk.
 
 The AI Models page (§37) answers "what did I already download". This answers the
@@ -10,10 +10,21 @@ cross-referenced against the local scan before it is returned, so a card can say
 **downloaded**, **partly downloaded**, or **not downloaded, ~7.3 GB**.
 
 **Read-only, and that is the whole feature.** Nothing here downloads a model,
-writes to the cache, or mutates anything — so every route is a GET with no
-`X-Fused` guard, like the other reads. Downloading is a separate decision with a
-separate cost (gigabytes of someone's disk) and is deliberately not part of this
-module.
+writes to the cache, or mutates anything. Downloading is a separate decision with
+a separate cost (gigabytes of someone's disk) and is deliberately not part of
+this module.
+
+**Search is nevertheless a guarded POST, and the reason is worth stating.** The
+app's rule is that reads are unguarded GETs (WF-5), because D36's protection is
+the browser's own: a foreign page can fire a request but cannot read the reply.
+That reasoning is about the RESPONSE. It says nothing about the REQUEST, and
+search is the one read here that leaves the machine — it calls the Hub with the
+user's token attached. Unguarded, a blind cross-origin GET could spend someone's
+credential and their rate limit while learning nothing, which is a cost the
+same-origin policy does not prevent. Rather than bolt a guard onto a GET and
+leave a shape that contradicts the rule, the route takes the shape its effect
+deserves: outward effect → POST → `X-Fused` (D36). `hub/tasks` remains a GET
+beside it, because it is a static glossary and touches nothing.
 
 **Why the server fetches, and not the page.** One place to hold the token, one
 place to bound the timeout, one place to cache — and one place to audit what
@@ -51,10 +62,10 @@ import time
 from urllib.parse import urlencode, urlsplit
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.server.common import _error
+from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers.ai_models import (
     _FRIENDLIER_TAGS,
     _TASK_HELP,
@@ -350,20 +361,41 @@ def _store(key: tuple, value: dict) -> None:
         _cache[key] = (time.monotonic(), value)
 
 
-@router.get("/api/ai-models/hub/search")
-def api_hub_search(q: str = "", task: str = "", sort: str = "downloads", limit: int = 24):
+@router.post("/api/ai-models/hub/search")
+def api_hub_search(body: dict = Body(default={}), x_fused: str | None = Header(default=None)):
     """Hub models matching a query, each told apart from the local cache.
+
+    **A POST, and guarded, even though it reads nothing on this machine.** Every
+    other read in the app is an unguarded GET (WF-5), because D36's protection
+    is the browser's: a foreign page can fire the request but cannot read the
+    reply. That argument covers the RESPONSE and says nothing about the REQUEST,
+    and this is the one read that leaves the machine — it makes an outbound call
+    to the Hub carrying the user's token. A blind cross-origin GET could
+    therefore spend someone's credential and their rate limit without ever
+    seeing an answer.
+
+    So the shape follows the rule rather than the rule acquiring an exception:
+    a request with an outward effect is a POST, and POSTs carry `X-Fused` (D36).
+    `hub/tasks` stays a GET beside it — it is a static glossary and touches
+    nothing. Still NOT authentication (D3 stands); it only forces a preflight
+    that a cross-origin caller cannot satisfy.
 
     Sync `def` on purpose: it makes one bounded outbound request and one cache
     walk, so FastAPI runs it in the threadpool rather than parking the event
     loop behind someone else's network.
     """
-    query = (q or "").strip()[:120]
-    task_filter = (task or "").strip()[:60]
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    q, task = body.get("q"), body.get("task")
+    sort = body.get("sort") or "downloads"
+    limit = body.get("limit")
+    query = (q or "").strip()[:120] if isinstance(q, str) else ""
+    task_filter = (task or "").strip()[:60] if isinstance(task, str) else ""
     if sort not in _SORTS:
         return _error(f"unknown sort {sort!r}", status=400)
     try:
-        count = max(1, min(int(limit), _MAX_LIMIT))
+        count = 24 if limit is None else max(1, min(int(limit), _MAX_LIMIT))
     except (TypeError, ValueError):
         return _error("limit must be a number", status=400)
 

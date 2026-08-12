@@ -5577,6 +5577,20 @@ three weeks ago, and would cost nothing to open.
   surface, a resumable transfer, a half-written cache to clean up) and is
   deliberately not part of this. Every route is a GET, so none carries the D3
   `X-Fused` guard: there is nothing to guard.
+- **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
+  read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
+  is D36's: a foreign page can fire a request but the browser will not let it
+  read the reply. That protects the RESPONSE and says nothing about the REQUEST
+  — and search is the one read in this app that LEAVES the machine, calling the
+  Hub with the user's token attached (HS-3). Unguarded, a blind cross-origin GET
+  could spend someone's credential and their rate limit while learning nothing,
+  which the same-origin policy does not prevent. Rather than bolt a guard onto a
+  GET — leaving a shape that contradicts the stated rule and invites the next
+  reader to copy it — the route takes the shape its effect deserves: an outward
+  effect is a POST, and POSTs carry `X-Fused`. `hub/tasks` stays a GET beside
+  it, a static glossary that touches nothing. **What earns the guard is the
+  outbound call, not the router**, and the asymmetry inside one module is the
+  clearest possible statement of that. Still not authentication (D3 stands).
 - **HS-2** **The join is the feature.** Every result is cross-referenced against
   the local scan before it is returned, so a card says **downloaded** (with what
   it costs on disk and when it was last read), **partly downloaded**, or
