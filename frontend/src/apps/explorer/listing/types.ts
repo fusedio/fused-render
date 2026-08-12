@@ -87,6 +87,13 @@ export const URL_SYNC_MS = 200;
 // flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
 export const STREAM_FLUSH_MS = 200;
 
+// How long the index gets to answer before the live walk is started alongside
+// it (listing/source-race). Short: it is a budget, not a timeout — the index
+// usually answers well inside it, and when it does not, the walk is already
+// streaming rows by the time the index arrives. Long enough that the common
+// fast answer does not pay for a second request the user will never see.
+export const INDEX_RACE_MS = 150;
+
 // How still the query must be before a BIG corpus is re-scored. The index
 // answers a covered folder instantly and whole (up to MAX_CORPUS entries), so
 // unlike a streamed walk there is no ramp-up: the first keystroke already has

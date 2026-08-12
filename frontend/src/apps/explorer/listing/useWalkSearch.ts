@@ -25,8 +25,10 @@ import { nextHeldHits, resolveDisplayedHits, type QueryTagged } from "@platform/
 import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
 import { shouldReconcile } from "@apps/explorer/listing/revalidate";
 import { capHits } from "@apps/explorer/listing/result-cap";
+import { startRace } from "@apps/explorer/listing/source-race";
 import {
   IDLE_WALK,
+  INDEX_RACE_MS,
   RERANK_COMMIT_MS,
   SCAN_DEBOUNCE_MS,
   STREAM_FLUSH_MS,
@@ -139,10 +141,22 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // streamed walk runs exactly as it always did. The fallback is silent by
   // design: none of those is an error the user can act on, and every one of
   // them is normal in the seconds after a first launch.
+  //
+  // They RACE rather than queue. Awaiting the index in full made it strictly
+  // worse than the walk it replaced whenever it was slow (the gitignore sweep
+  // after a scan): nothing on screen for seconds, then everything at once,
+  // where the walk would have painted its first batch in ~100ms. So the walk
+  // starts if the index has not produced within INDEX_RACE_MS, and exactly one
+  // of them ends up owning the answer — see listing/source-race for why
+  // interleaving them is not an option.
   useEffect(() => {
     if (walkReq === null) return;
     const forRefresh = walkReq;
-    const ctrl = new AbortController();
+    // One controller per source: the race aborts the LOSER on its own (which
+    // closes the server-side walk generator) while the winner keeps running.
+    // Cleanup aborts both.
+    const ctrl = { index: new AbortController(), walk: new AbortController() };
+    const race = startRace((loser) => ctrl[loser].abort());
     let alive = true;
     const entries: WalkEntry[] = [];
     // Flush throttle (STREAM_FLUSH_MS): entries accumulate in `pending`
@@ -162,6 +176,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         clearTimeout(flushTimer);
         flushTimer = null;
       }
+      // Producing is what claims the race, so the FIRST flush is where the walk
+      // wins — and where it loses, if the index already answered. Nothing is
+      // pushed on a loss: `entries` only ever holds one source's rows.
+      if (!race.claim("walk")) return;
       for (const e of pending) entries.push(e); // no spread: a big chunk would blow the arg limit
       pending = [];
       lastFlush = Date.now();
@@ -174,12 +192,23 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     // instead of letting an unsettled state quietly carry last generation's
     // rows under a fresh tag.
     setWalk({ status: "streaming", entries, count: 0, key: walkKey, forRefresh });
-    const liveWalk = () =>
-      walkDirStream(fsPath, {
+    // A walk that fails while the index is still in flight is NOT the answer
+    // yet — the index may still cover this folder — so its error is remembered
+    // and surfaced only once the index has been ruled out. Without that, an
+    // early walk failure (the race started it, the folder is unreadable) would
+    // paint "Search failed" over an index answer that was one tick away.
+    let walkError: Error | null = null;
+    let indexPending = false;
+    let walkStarted = false;
+    let raceTimer: ReturnType<typeof setTimeout> | null = null;
+    const startWalk = () => {
+      if (walkStarted) return;
+      walkStarted = true;
+      void walkDirStream(fsPath, {
         hidden: true,
-        signal: ctrl.signal,
+        signal: ctrl.walk.signal,
         onBatch: (batch) => {
-          if (!alive) return;
+          if (!alive || race.winner() === "index") return;
           for (const e of batch) pending.push(e);
           const wait = STREAM_FLUSH_MS - (Date.now() - lastFlush);
           if (wait <= 0) flush();
@@ -189,7 +218,9 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         (end) => {
           if (!alive) return;
           if (flushTimer !== null) clearTimeout(flushTimer);
+          if (!race.claim("walk")) return;
           for (const e of pending) entries.push(e);
+          pending = [];
           setWalk({
             status: "ok",
             entries,
@@ -202,55 +233,80 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
         (err: Error) => {
           if (!alive || err.name === "AbortError") return;
           if (flushTimer !== null) clearTimeout(flushTimer);
+          if (race.winner() === "index") return;
+          walkError = err;
+          if (indexPending) return; // the index still might answer
+          race.claim("walk");
           setWalk({ status: "error", message: err.message, key: walkKey, forRefresh });
         }
       );
-    // A folder this app has already marked dirty is decided before any
-    // request: the walk is what will answer anyway, so waiting out the index
-    // round-trip (plus its gitignore filter) only delays the first results.
-    // The same check repeats at resolution time below for the race where the
-    // mutation lands while the fetch is in flight.
-    if (!indexMayAnswer(fsPath)) {
-      void liveWalk();
-      return () => {
-        alive = false;
-        if (flushTimer !== null) clearTimeout(flushTimer);
-        ctrl.abort();
-      };
-    }
-    indexSearch(fsPath, { signal: ctrl.signal }).then(
-      (res) => {
-        if (!alive) return;
-        // A folder this app has changed since the last scan is walked live:
-        // the corpus predates the change, so it would offer the old name and
-        // never the new one (lib/index-freshness). Out-of-band edits keep the
-        // documented trade — an instant, mostly-right answer.
-        const corpus = indexMayAnswer(fsPath) ? indexCorpusFrom(res) : null;
-        if (!corpus) {
-          void liveWalk();
-          return;
-        }
-        for (const e of corpus.entries) entries.push(e);
-        setWalk({
-          status: "ok",
-          entries,
-          truncated: corpus.truncated,
-          total: entries.length,
-          key: indexKey,
-          forRefresh,
-        });
-      },
-      (err: Error) => {
-        // Includes the abort case: a cleanup aborts BOTH requests, and
-        // liveWalk would immediately abort too, so the guard covers it.
-        if (!alive || err.name === "AbortError") return;
-        void liveWalk();
+    };
+    // The index has nothing for this folder (uncovered, dirty, or the request
+    // failed). Whatever the walk is doing is now the only answer there will be.
+    const indexIsOut = () => {
+      if (race.winner() === "walk") return; // it already produced; nothing to do
+      if (walkError !== null) {
+        race.claim("walk");
+        setWalk({ status: "error", message: walkError.message, key: walkKey, forRefresh });
+        return;
       }
-    );
+      startWalk();
+    };
+    // A folder this app has already marked dirty is decided before any
+    // request: the index is not merely slower here, it is WRONG (it would
+    // offer the pre-rename name), so there is nothing to race — see the note
+    // on the resolution-time check below.
+    if (!indexMayAnswer(fsPath)) {
+      startWalk();
+    } else {
+      indexPending = true;
+      // The budget. If the index has produced nothing by now, stop waiting on
+      // it and let the walk stream while it finishes (listing/source-race).
+      raceTimer = setTimeout(() => {
+        if (alive && !race.claimed()) startWalk();
+      }, INDEX_RACE_MS);
+      indexSearch(fsPath, { signal: ctrl.index.signal }).then(
+        (res) => {
+          if (!alive) return;
+          indexPending = false;
+          // A folder this app has changed since the last scan is walked live:
+          // the corpus predates the change, so it would offer the old name and
+          // never the new one (lib/index-freshness). Re-checked here for the
+          // race where the mutation lands while the fetch is in flight.
+          // Out-of-band edits keep the documented trade — an instant,
+          // mostly-right answer.
+          const corpus = indexMayAnswer(fsPath) ? indexCorpusFrom(res) : null;
+          if (!corpus) {
+            indexIsOut();
+            return;
+          }
+          if (!race.claim("index")) return; // the walk beat it; its rows stand
+          for (const e of corpus.entries) entries.push(e);
+          setWalk({
+            status: "ok",
+            entries,
+            truncated: corpus.truncated,
+            total: entries.length,
+            key: indexKey,
+            forRefresh,
+          });
+        },
+        (err: Error) => {
+          if (!alive) return;
+          indexPending = false;
+          // An abort here is either the cleanup or the race cancelling the
+          // loser; neither is a reason to start anything.
+          if (err.name === "AbortError") return;
+          indexIsOut();
+        }
+      );
+    }
     return () => {
       alive = false;
       if (flushTimer !== null) clearTimeout(flushTimer);
-      ctrl.abort();
+      if (raceTimer !== null) clearTimeout(raceTimer);
+      ctrl.index.abort();
+      ctrl.walk.abort();
     };
   }, [fsPath, walkReq, retryNonce]);
 
