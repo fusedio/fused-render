@@ -72,6 +72,7 @@ stage_builtin_zip() { # $1 = content dir name (learn|sessions), $2 = env var nam
 }
 stage_builtin_zip learn FUSED_RENDER_LEARN_ZIP
 stage_builtin_zip sessions FUSED_RENDER_SESSIONS_ZIP
+stage_builtin_zip community FUSED_RENDER_COMMUNITY_ZIP
 
 # Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
 # watchfiles server restarts that fire on every .py edit — without this the
