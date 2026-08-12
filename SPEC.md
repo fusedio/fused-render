@@ -587,7 +587,7 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 
 ### 14.1 URL & route
 
-- **LM-1** Route: `/view/_panel?...` and `/embed/_panel?...`. `_panel` is a **sentinel pathname**, not a real file: the shell's `route()` intercepts it (under both prefixes) before calling `stat`. Zero server changes (the server already serves the shell for any `/view/*` and `/embed/*`). The pane tree lives in the reserved `_layout` query param (LM-2).
+- **LM-1** Route: `/explorer/view/_panel?...` and `/explorer/embed/_panel?...`. `_panel` is a **sentinel pathname**, not a real file: the shell's route dispatch (`shell/App.tsx`) intercepts it under both prefixes before calling `stat`. Zero server changes (the server already serves the shell for any view/embed path). The pane tree lives in the reserved `_layout` query param (LM-2). *The prefixes were plain `/view/` and `/embed/` when this section was written; `platform/lib/router.ts` rewrites those shapes once at module init (`rewriteLegacyUrl`), so an old `/view/_panel` bookmark still opens — which is why the shorthand `/embed/<path>` below still names the right thing.*
 - **LM-2** The pane tree lives in the reserved query param **`_layout`** (underscore prefix → already invisible to `fused.params`, PR-6). Codec (borrowed from the reference grid-viewer):
   - `,` separates panes in a **row** (side by side), `;` separates **columns** (stacked), `(…)` groups for nesting. Single pane = bare path.
   - Each pane segment is the pane's **fs path plus optional pane-local query** (`/data/a.parquet?_mode=source&sort=name`). Within a segment, the characters `, ; ( ) % ?` occurring *inside* path components or the query are percent-encoded so the codec's delimiters stay unambiguous.
@@ -609,9 +609,9 @@ Goal: view several files/directories side by side in a resizable grid of panes, 
 
 ### 14.4 Entry & chrome
 
-- **LM-10** Entry: **split-right and split-down icon buttons** in the breadcrumb's crumb-actions (next to ★ Bookmark, same glyphs as the pane bar's split buttons). Click → navigate to `<prefix>/_panel?_layout=(<seg>,<seg>)` (split right) or `(<seg>;<seg>)` (split down) (D51 grammar) where `<seg>` is the current fs path + its **whole** current query (D72 — nothing is promoted to the top level) — two panes side by side or stacked, both the current view with its params carried over (a single pane on entry looked like nothing happened).
+- **LM-10** Entry: **split-right and split-down items in the path `⋮` menu** (`BarMenu`'s PathOverflow), beside "Open in Finder" / "Copy path", carrying their names and travelling with the path they act on — and offered for a **file preview only**, since the splits make least sense over a view that already IS a split. *They were unlabelled glyph buttons in the breadcrumb's own layout zone, pinned to the far right of the window an inch of empty bar away from the path; that zone is deleted, hairline and all. `enterPanel` is unchanged and is still what they call.* Click → navigate to `<prefix>/_panel?_layout=(<seg>,<seg>)` (split right) or `(<seg>;<seg>)` (split down) (D51 grammar) where `<seg>` is the current fs path + its **whole** current query (D72 — nothing is promoted to the top level) — two panes side by side or stacked, both the current view with its params carried over (a single pane on entry looked like nothing happened).
 - **LM-11** In layout mode the sidebar stays visible (bookmarks reachable, ★ button works on the layout URL — bookmarking a layout needs zero bookmark-layer changes, D20). Breadcrumb shows a static "Panel" label. The armed-bookmark "Update bookmark" flow (D38) works unchanged: pane/param drift rewrites the shell URL via replaceState → `fused:urlchange` → `syncUpdateButton`.
-- **LM-12** Module: **`views/panel.js`** — tree codec, tree ops (split/close/collapse), pane DOM + bar, URL sync. Imports `router.js` only (one-way deps, ARCHITECTURE §6). `main.js` gains one sentinel branch; `shell.css` a `.layout-*` section; sidebar/bookmarks/api untouched.
+- **LM-12** Module: **`apps/explorer/Panel.tsx`** — tree ops (split/close/collapse), pane DOM + bar, URL sync; the tree codec is the shared `platform/lib/layout-codec.ts` (TM-10). Imports `platform/lib/router` only (one-way deps, ARCHITECTURE §6). `shell/App.tsx` carries the sentinel branch; the styles are a `.layout-*` section; sidebar/bookmarks/api untouched. *Written as `views/panel.js` + a `main.js` branch, against the vanilla shell this predates (D52 moved the shell to React).*
 
 ## 15. Tab Mode — Tabbed Views (M6)
 
@@ -619,7 +619,7 @@ Goal: the same URL-is-state model as §14, but as **tabs instead of a grid**: on
 
 ### 15.1 URL & route
 
-- **TM-1** Route: `/view/_tab?...` and `/embed/_tab?...` — a sentinel pathname exactly like `_panel` (LM-1), intercepted by `route()` under both prefixes. Zero server changes.
+- **TM-1** Route: `/explorer/view/_tab?...` and `/explorer/embed/_tab?...` — a sentinel pathname exactly like `_panel` (LM-1), intercepted by the same route dispatch under both prefixes (and reached by the same legacy rewrite from `/view/_tab`). Zero server changes.
 - **TM-2** The tab list lives in the same reserved **`_layout`** param, as a **flat top-level `,` row** of the §14 codec — a tab segment is a fs path + optional segment-local query, same escaping (LM-2). Produced URLs are always a flat list; on parse, any nested structure (`;`, `()`) is defensively **flattened to its leaves in document order**, each leaf becoming a tab.
 - **TM-3** Params are **tab-independent** (same contract as LM-3 since D72). The tab shell marks its window as a **param boundary** (`window._fusedParamBoundary = true`, set on render, cleared on teardown); the runtime's ancestor climb (LM-7) stops **below** a boundary-marked ancestor, so a page rendered inside a tab targets its own pane's `/embed/...` URL. Each tab's full query — user params included — is therefore captured **segment-local** inside `_layout` by the ordinary sync (TM-7); the tab URL's own top-level query carries only hand-typed globals (readable from every tab, LM-7).
 - **TM-4** A tab segment's path may itself be a sentinel (`_panel`, `_tab`): the iframe src is just `/embed/<segment path>` + segment query, so a panel layout nests inside a tab through the ordinary pipeline (D45 embed support), its `_layout` riding inside the segment query. A nested panel's panes stay pane-local too (D72 — its own boundary stops each pane's climb) while staying isolated from every other tab.
@@ -637,7 +637,7 @@ Goal: the same URL-is-state model as §14, but as **tabs instead of a grid**: on
 
 ### 15.4 Module
 
-- **TM-10** The §14 codec (escape/parse/encode/segment helpers) moves to a shared **`views/layout-codec.js`**; `views/panel.js`, the new **`views/tabs.js`**, and `breadcrumb.js` import it. `tabs.js` owns the tab bar DOM, lazy iframes, and URL sync; `main.js` gains the `_tab` sentinel branch; `shell.css` a `.tabs-*` section; `sidebar.js` changes only the folder-row click wiring.
+- **TM-10** The §14 codec (escape/parse/encode/segment helpers) lives in a shared **`platform/lib/layout-codec.ts`**; `Panel.tsx`, **`Tabs.tsx`** and `Breadcrumb.tsx` import it. `Tabs.tsx` owns the tab bar, lazy iframes, URL sync and the folder-entry URL (`composeFolderTabsUrl`, TM-8); `shell/App.tsx` carries the `_tab` sentinel branch; the styles are a `.tabs-*` section; the sidebar (`sidebar/BookmarksSection.tsx`) changes only the folder-row click wiring, importing that one function. *Specced as `views/layout-codec.js` / `views/tabs.js` / `main.js` / `sidebar.js` against the vanilla shell (D52).*
 
 ## 16. Custom Templates — User Overrides (M7)
 
