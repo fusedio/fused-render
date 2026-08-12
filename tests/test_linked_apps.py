@@ -124,12 +124,17 @@ def test_link_rejects_non_folders_and_workspace_paths(client, tmp_path, workspac
 
 
 def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspace):
-    """A real <workspace>/linked/<name> folder colliding with a registry
-    entry: the listing drops the workspace twin (both would carry the same
-    ("linked", name) identity, which is the key the recents store and the
-    link-status probe speak), and link-status withholds the workspace folder's
-    identity so the explorer falls back to the folder's own page. Non-colliding
-    names are untouched."""
+    """A real <workspace>/linked/<name> folder colliding with a registry entry:
+    the LISTING drops the workspace twin — two cards with the same
+    ("linked", name) identity are indistinguishable to the recents store, which
+    keys on exactly that pair.
+
+    link-status does NOT withhold the twin's identity, and that is the change
+    D262 forced: the pair used to be a URL (/apps/linked/<name>, which resolved
+    through the registry, i.e. to the OTHER folder), so reporting it would have
+    sent the button somewhere else. It is now only the answer to "will
+    templates/app/condition.py take this folder", and that gate reads the
+    folder's own two-level shape — which this folder has."""
     ws_twin = workspace / "linked" / "notes"
     ws_twin.mkdir(parents=True)
     (ws_twin / "index.html").write_text("<html></html>")
@@ -145,12 +150,41 @@ def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspac
     assert ("linked", "notes", str(ws_twin)) not in listed
     assert ("linked", "solo", str(ws_free)) in listed
 
-    # colliding workspace folder: no route identity
+    # The colliding workspace folder keeps its identity: the gate takes it, so
+    # "Open as app" opens THIS folder in the app view rather than degrading to
+    # its bare index.html.
     r = client.get("/api/apps/link-status", params={"path": str(ws_twin)}).json()
-    assert r == {"status": "workspace", "name": None, "tag": None}
-    # non-colliding one keeps it (route falls back to the codec path)
+    assert r == {"status": "workspace", "name": "notes", "tag": "linked"}
     r = client.get("/api/apps/link-status", params={"path": str(ws_free)}).json()
     assert r == {"status": "workspace", "name": "solo", "tag": "linked"}
+
+
+def test_link_status_withholds_the_identity_on_a_mount(client, tmp_path, workspace,
+                                                       monkeypatch):
+    """templates/app/condition.py refuses a mount-backed path before every other
+    rule, so link-status has to as well. Without this the explorer's "Open as
+    app" promised a mode the gate denies: `_mode=app` resolves to nothing and
+    the folder falls back to `_listing` — the file list the button exists to
+    avoid showing."""
+    import fused_render.shell.mounts as mounts_mod
+
+    ws_app = workspace / "local" / "onmount"
+    ws_app.mkdir(parents=True)
+    linked = _folder(tmp_path, "remote")
+    client.post("/api/apps/link", json={"path": str(linked)}, headers=HDRS)
+
+    # Both paths read as mount-backed; nothing else about them changes.
+    monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
+
+    assert client.get("/api/apps/link-status", params={"path": str(ws_app)}).json() == {
+        "status": "workspace", "name": None, "tag": None
+    }
+    # A registered folder stays LINKED — it just can't offer the mode, so the
+    # status stands and only the identity is withheld (never "unlinked", which
+    # would offer to link a folder that already is).
+    assert client.get("/api/apps/link-status", params={"path": str(linked)}).json() == {
+        "status": "linked", "name": None, "tag": None
+    }
 
 
 def test_link_rejects_ancestors_of_the_workspace(client, tmp_path, workspace):

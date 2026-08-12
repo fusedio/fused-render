@@ -107,30 +107,50 @@ def api_link_status(path: str):
     button: "workspace" (lives under the Fused workspace — is/can be a real
     app, not linkable), "linked" (registered, with its registry name), or
     "unlinked" (linkable). Read-only, so no X-Fused guard (same posture as
-    GET /api/apps)."""
+    GET /api/apps).
+
+    `tag`/`name` are not an address — nothing routes by them any more (D262
+    deleted /apps/<tag>/<name>). They are the ANSWER TO ONE QUESTION: will
+    ``templates/app/condition.py`` offer the `app` mode for this folder? The
+    button reads them that way, so this handler has to mirror that gate rather
+    than merely describe the folder, and every branch below is one clause of it.
+    """
+    from fused_render.shell.mounts import is_mount_backed
+
     folder = os.path.abspath(os.path.expanduser(path))
+    # The gate refuses a mount-backed path outright, before any of the rules
+    # below — an app is by definition a local folder, and a mount path is itself
+    # shaped <mounts>/<remote>/<dir>, which would sail through the two-level
+    # test. Withholding the identity here is what keeps the button from
+    # promising a mode that resolves to nothing and falls back to `_listing`.
+    mounted = is_mount_backed(folder)
     root = os.path.abspath(fused_dir())
     if folder == root or folder.startswith(root + os.sep):
-        # `tag`/`name` are set when the folder is EXACTLY an app dir
-        # (<workspace>/<tag>/<name>) — the shape templates/app/condition.py
-        # admits, which is what the explorer's "Open as app" button asks this
-        # for. Null for the root, a tag dir, or anything nested deeper.
+        # Set when the folder is EXACTLY an app dir (<workspace>/<tag>/<name>),
+        # neither segment hidden — the shape the gate admits. Null for the root,
+        # a tag dir, or anything nested deeper.
+        #
+        # A workspace folder under a literal "linked" tag dir whose name a
+        # registry entry has claimed used to be withheld here too. That carve-out
+        # is GONE with the route it protected: it existed because both folders
+        # would have resolved the same /apps/linked/<name> URL, and the identity
+        # no longer names a destination. The gate takes this folder on its own
+        # two-level shape, so reporting it is simply the truth — withholding it
+        # sent "Open as app" to the bare index.html for a folder whose app mode
+        # works perfectly.
         parts = [p for p in os.path.relpath(folder, root).split(os.sep)
                  if p not in ("", ".")]
-        if len(parts) == 2 and not any(p.startswith(".") for p in parts):
-            # A workspace folder under a literal "linked" tag dir whose name
-            # a registry entry has claimed: this folder's (tag, name) already
-            # names the REGISTRY folder, not this one — withhold the identity
-            # so the caller falls back to the folder's own page.
-            if (parts[0] == linked_apps.LINKED_TAG
-                    and linked_apps.linked_path(parts[1]) is not None):
-                return {"status": "workspace", "name": None, "tag": None}
+        if len(parts) == 2 and not any(p.startswith(".") for p in parts) and not mounted:
             return {"status": "workspace", "name": parts[1], "tag": parts[0]}
         return {"status": "workspace", "name": None, "tag": None}
     for e in linked_apps.read_entries():
         if os.path.abspath(e["path"]) == folder:
-            return {"status": "linked", "name": e["name"],
-                    "tag": linked_apps.LINKED_TAG}
+            # A registered folder that has since been mounted over (or was
+            # registered under a mount) is still LINKED — it just cannot offer
+            # the mode, so the status stands and the identity does not.
+            return {"status": "linked",
+                    "name": None if mounted else e["name"],
+                    "tag": None if mounted else linked_apps.LINKED_TAG}
     return {"status": "unlinked", "name": None, "tag": None}
 
 

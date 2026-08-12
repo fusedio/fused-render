@@ -64,13 +64,14 @@ export function appButtonSpec(
 ): AppButtonSpec | null {
   if (!folder || !appFile || !link) return null;
   if (link.status === "unlinked") return { action: "link", label: "Add as app" };
-  // Both halves of the identity present is how the status says "this folder is
-  // EXACTLY an app dir (or a registry entry)" — the same shape
-  // templates/app/condition.py admits. A half-known one (an older backend that
-  // reports no `tag`, a workspace folder nested deeper than <tag>/<name>) would
-  // ask for a mode the gate refuses, and `_mode=app` that resolves to nothing
-  // falls back to `_listing` — the file list, which is what this button exists
-  // to avoid.
+  // Both halves of the identity present is the SERVER's answer to "will
+  // templates/app/condition.py offer the `app` mode for this folder" — the
+  // handler mirrors that gate clause for clause, mount refusal included
+  // (server/routers/apps.py::api_link_status), rather than merely describing
+  // the folder. A half-known identity (an older backend that reports no `tag`,
+  // a folder nested deeper than <tag>/<name>, a path on a mount) means the gate
+  // refuses, and asking for a mode it refuses gets `_listing` — the file list,
+  // which is what this button exists to avoid.
   if (link.tag && link.name) {
     return {
       action: "open",
