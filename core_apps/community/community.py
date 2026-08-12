@@ -70,12 +70,12 @@ class ActionError(Exception):
     """A user-facing failure: message is shown verbatim in the page."""
 
 
-def _git(cwd, *args, timeout=GIT_TIMEOUT, binary=False):
+def _git(cwd, *args, timeout=GIT_TIMEOUT):
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     try:
         return subprocess.run(
             ["git", "-C", cwd, *IDENTITY, *args],
-            capture_output=True, text=not binary, timeout=timeout, env=env,
+            capture_output=True, text=True, timeout=timeout, env=env,
             close_fds=False,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
@@ -193,14 +193,7 @@ def _refresh():
                 what="sparse-checkout")
         _git_ok(CACHE_REPO, "checkout", what="checkout")
     else:
-        # Preview renders live from this working tree, so a previewed app may
-        # have written next to itself (a JSON store, a sqlite db, ./.cache).
-        # That's fine — preview state is deliberately throwaway — and refresh
-        # is where it dies: discard every uncommitted change so the cache is
-        # pristine again. Want preview state to survive? Install the app; the
-        # copy in Fused/community/ is yours.
-        _git(CACHE_REPO, "checkout", "-q", "--", ".")
-        _git(CACHE_REPO, "clean", "-qfdx")
+        _clean_cache()
         _git_ok(CACHE_REPO, "fetch", "--", "origin", what="fetch")
         # ff-only: the cache is managed, never edited, so a non-ff means the
         # upstream rewrote history — re-clone is the recovery, not a merge.
@@ -234,27 +227,16 @@ def _require_slug(slug):
         raise ActionError(f"invalid app slug: {slug!r}")
 
 
-def _pristine_extract(slug, parent):
-    """Materialize the app's COMMITTED content (git archive HEAD) under
-    `parent`/<slug>/ — never a copy of the cache working tree, which preview
-    may have dirtied (a previewed app can write next to itself; refresh is
-    what cleans that up, but an install must be pristine regardless)."""
-    import io
-    import tarfile
-    r = _git(CACHE_REPO, "archive", "HEAD", "--", slug, binary=True)
-    if r.returncode != 0:
-        raise ActionError("git archive failed reading the catalog cache")
-    with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
-        for m in tf.getmembers():
-            if not m.isfile():
-                continue
-            rel = os.path.normpath(m.name)
-            if os.path.isabs(rel) or rel.split(os.sep)[0] == "..":
-                continue
-            out = os.path.join(parent, rel)
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with tf.extractfile(m) as f, open(out, "wb") as w:
-                shutil.copyfileobj(f, w)
+def _clean_cache():
+    """Reset the cache working tree to HEAD: drop tracked-file edits and
+    remove untracked files. Preview renders live from this tree, so a
+    previewed app may have written next to itself (a JSON store, a sqlite db,
+    ./.cache) — that state is deliberately throwaway, and this is where it
+    dies: on refresh, and before anything is copied out (install/update).
+    Want preview state to survive? Install the app; the copy in
+    Fused/community/ is yours."""
+    _git(CACHE_REPO, "checkout", "-q", "--", ".")
+    _git(CACHE_REPO, "clean", "-qfdx")
 
 
 def _catalog_entry(slug):
@@ -305,7 +287,8 @@ def _install(slug):
     staging = tempfile.mkdtemp(dir=COMMUNITY_TAG_DIR, prefix=f".install-{slug}-")
     try:
         stage_app = os.path.join(staging, slug)
-        _pristine_extract(slug, staging)   # committed content only
+        _clean_cache()   # never copy preview droppings out of the cache
+        shutil.copytree(src, stage_app)
         dest = _claim_dir(stage_app, os.path.join(COMMUNITY_TAG_DIR, slug))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -371,12 +354,9 @@ def _update(slug, force):
         # first, then apply upstream on top.
         _git(app_dir, "add", "-A")
         _git(app_dir, "commit", "-q", "-m", "Local edits before community update")
-    tmp = tempfile.mkdtemp(dir=STATE_DIR, prefix=f".update-{slug}-")
-    try:
-        _pristine_extract(slug, tmp)   # committed content only, like install
-        _replace_contents(app_dir, os.path.join(tmp, slug))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    src = _materialize(slug)
+    _clean_cache()   # never copy preview droppings out of the cache
+    _replace_contents(app_dir, src)
     _git_ok(app_dir, "add", "-A", what="git add")
     # An update that changes nothing (sha moved but files identical) leaves
     # nothing staged; that's fine — record the new commit either way.
