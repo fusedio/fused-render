@@ -1395,7 +1395,6 @@
   .pill:hover:not([aria-pressed="true"]) { background-color: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   .pill option { background: var(--bg); color: var(--fg); }
-  .pill option:disabled { color: var(--faint); }
   .send {
     width: 32px;
     height: 32px;
@@ -4859,8 +4858,8 @@ const growHome = autoGrow(homebox);
 const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
 
 // ── model/effort/approvals selectors (home + composer sync via params) ──
-const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
-const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+const MODELS = ["fable", "opus", "sonnet", "haiku"];
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // How much Claude may do without stopping for a card. Values are agent.py's
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
 // broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
@@ -4901,19 +4900,19 @@ const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_
 // The strictest mode is the default: more auto-approval is opted into, never
 // handed out by a missing param.
 const DEFAULT_PERMISSION = "prompt";
-function fillSelect(el, values, label) {
+// Real values only — no placeholder row: curModel()/curEffort() always
+// resolve to a concrete value, so the dropdown never needs a "model"/"effort"
+// entry the user shouldn't pick.
+function fillSelect(el, values) {
   for (const v of values) {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = v || label;
-    // The "" entry is a placeholder shown only when the current value is
-    // missing/invalid — never a choice the user can pick.
-    if (!v) o.disabled = true;
+    o.textContent = v;
     el.appendChild(o);
   }
 }
-document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "model"));
-document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "effort"));
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS));
+document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS));
 document.querySelectorAll(".perm-sel").forEach((el) => {
   for (const v of PERMISSION_MODES) {
     const o = document.createElement("option");
