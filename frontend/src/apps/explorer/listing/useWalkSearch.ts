@@ -513,18 +513,31 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // long as that takes on a big folder. Hold the last ranked answer and keep
   // rendering it (dimmed, with the spinner) until the fresh one is ready.
   //
-  // This changes only what is DISPLAYED. The invalidation machinery is
-  // untouched: a stale walk is still never scored against a new tree — `hits`
-  // remains derived from validWalk alone, and these held rows are not fed back
-  // into scoring.
+  // This changes only what is DISPLAYED: these held rows are never fed back
+  // into scoring, so a ranking is always something the scorer actually
+  // produced rather than something reassembled here.
+  //
+  // It used to be able to claim more — that `hits` came from validWalk alone,
+  // so a stale walk was structurally incapable of being scored against a new
+  // tree. That is no longer true and should not be read as if it were: `hits`
+  // now ranks whatever `scannableCorpus` hands over, which can be the previous
+  // generation's entries (listing/corpus-hold), and the corpus is deliberately
+  // not re-fetched on background churn at all (listing/revalidate). Scoring a
+  // stale corpus is the intended behaviour. What replaces the old structural
+  // guarantee is a reporting obligation: every path that ranks against
+  // something other than the current generation surfaces it — `corpus.stale`
+  // and `generationBehind` above, which drive the dimming and the chip. The
+  // invariant is now "never silently", not "never".
   //
   // Both halves of the decision — what to retain, and what to render — live in
   // lib/search-hold, pure and query-tagged: rows are only ever shown under the
   // query they were computed for, so the ONE thing this must never do (show the
   // previous query's matches under a new query) is structurally impossible
   // rather than a condition someone has to remember. A query change falls
-  // through to "Searching…" exactly as before; only a same-query invalidation
-  // holds. The hold applies only while the current-generation walk is unsettled
+  // through to "Searching…" exactly as before — and now rarely reaches it,
+  // since the corpus survives the keystroke and the new query ranks
+  // immediately; only a same-query invalidation holds. The hold applies only
+  // while the current-generation walk is unsettled
   // — a COMPLETED walk with no hits is a real "no matches" answer (the file was
   // just deleted, say) and replaces the held rows.
   const heldHits = useRef<QueryTagged<SearchHit> | null>(null);
