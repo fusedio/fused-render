@@ -27,6 +27,8 @@
 // clipboard and the in-flight drag are module-level stores (lib/fs-clipboard,
 // listing/drag-drop).
 import { renameEntry } from "@platform/lib/api";
+import { basename } from "@platform/lib/format";
+import { friendlyFsError } from "@apps/explorer/lib/fs-actions";
 
 export interface FsPair {
   from: string;
@@ -178,10 +180,12 @@ export interface FsOpReport {
   // stacks: it was taken off before the attempt, and a pair that 404s or 409s
   // would sit at the top failing for every later Undo.
   failed: { pair: FsPair; error: unknown }[];
-  // Pairs NOT ATTEMPTED, because a systemic refusal ended the batch early (see
-  // applyFsOp). Unlike a per-path failure these are worth keeping: the reason is
-  // environmental and usually fixable, so the caller puts them back on the stack
-  // it took the op from and the user can undo again once it is.
+  // Everything a systemic refusal left undone (see applyFsOp): the pair it
+  // refused, first, plus the pairs it never got to. Worth keeping, unlike a
+  // per-path failure, because the reason is environmental and usually fixable —
+  // the caller puts these back on the stack it took the op from, in this order,
+  // and the user can undo again once it is fixed. Empty when the batch ran to the
+  // end, which is every per-path case.
   pending: FsPair[];
 }
 
@@ -222,6 +226,50 @@ function isPerPathRefusal(error: unknown): boolean {
   // the server's own word for these two cases.
   const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
   return msg.includes("no such file") || msg.includes("conflict");
+}
+
+// The one toast an undo or a redo raises, from what the attempt reported.
+//
+// Announced at all for the same reason a drop onto a sidebar bookmark is
+// (fs-move's `announce`): the entries may well have gone back to a folder that is
+// not the one on screen, so a refetch alone would look like nothing happened.
+//
+// A PARTIAL RESULT MUST NOT READ AS AN ALL-CLEAR. "Undid the move" over a batch
+// where two entries refused would be a false success about the two that are still
+// where the move left them. So a failure names the first refusal and its reason —
+// on the half of the pair the error is actually about (blamedPath) — and counts the
+// rest: one sentence rather than a toast per pair, because a read-only destination
+// refuses every entry for the same reason and twenty identical toasts would bury
+// the one that mattered.
+//
+// The "left in place" count is `pending`, which INCLUDES the pair that was
+// refused. It has to: that pair is going back on the stack with the others, so a
+// count that omitted it would be short by one and its invitation to retry would be
+// partly false — the user would fix the cause, press undo, and get everything
+// except the file the message had just named.
+//
+// Pure, and separate from the hook that shows it, so the arithmetic is testable
+// without a renderer (the wording used to live inline in useFileOps).
+export function relocationToast(
+  verb: "undo" | "redo",
+  kind: FsOp["kind"],
+  report: FsOpReport,
+): { msg: string; tone: "info" | "error" } {
+  const did = verb === "undo" ? "Undid" : "Redid";
+  if (!report.failed.length) {
+    return { msg: `${did} the ${kind}.`, tone: "info" };
+  }
+  const [first] = report.failed;
+  const rest = report.failed.length - 1;
+  const held = report.pending.length;
+  return {
+    msg:
+      (report.done.length ? `${did} part of the ${kind}. ` : "") +
+      friendlyFsError(first.error, { verb, name: basename(blamedPath(first.pair, first.error)) }) +
+      (rest ? ` (and ${rest} more)` : "") +
+      (held ? ` ${held} ${held === 1 ? "item" : "items"} left in place — ${verb} again to retry.` : ""),
+    tone: "error",
+  };
 }
 
 // Perform an op: rename `from` to `to` for each pair, in order.
@@ -277,7 +325,19 @@ export async function applyFsOp(op: FsOp): Promise<FsOpReport> {
     } catch (error) {
       report.failed.push({ pair, error });
       if (!isPerPathRefusal(error)) {
-        report.pending = op.pairs.slice(i + 1);
+        // FROM `i`, NOT `i + 1`: the pair that just failed is retryable too. It
+        // was not refused for being that path — the destination is read-only, or
+        // the machine is — which is exactly as true of the pairs behind it, so
+        // handing back only those would restore everything else on the next
+        // attempt and silently abandon this one. It goes at the FRONT because the
+        // retry re-applies the set in order, and that order is the only thing
+        // keeping a batch of nested paths sound.
+        //
+        // It is therefore in BOTH `failed` and `pending`: `failed` is what the
+        // caller SAYS (this is the refusal, and why), `pending` is what the caller
+        // KEEPS. The two answer different questions and the same pair can be the
+        // answer to both.
+        report.pending = op.pairs.slice(i);
         break;
       }
     }

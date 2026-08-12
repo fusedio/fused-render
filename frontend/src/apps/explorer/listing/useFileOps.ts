@@ -40,13 +40,13 @@ import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import {
   applyFsOp,
   beginFsUndo,
-  blamedPath,
   endFsUndo,
   fsUndoEpoch,
   invertFsOp,
   pushRedoOp,
   pushUndoOp,
   recordFsOp,
+  relocationToast,
   takeRedoOp,
   takeUndoOp,
   type FsOp,
@@ -298,52 +298,20 @@ export function useFileOps({
           pendingSelectRef.current = report.done[report.done.length - 1].to;
           refetch();
         }
-        // Pairs a SYSTEMIC refusal never let us try (a read-only destination, a
-        // 5xx) go back on the stack this gesture took the op from, so they stay
-        // undoable once the cause is fixed — the failure is environmental, not a
-        // verdict about those paths, and orphaning them would be the very hazard
-        // the every-pair change removed. Re-inverted, because the stack holds ops
-        // in the original direction while `pending` is in the inverse one.
+        // Everything a SYSTEMIC refusal left undone — the pair it refused and the
+        // pairs it never reached — goes back on the stack this gesture took the op
+        // from, so it all stays undoable once the cause is fixed. The failure is
+        // environmental rather than a verdict about those paths, and abandoning
+        // any of them would be the hazard the every-pair change removed.
+        // Re-inverted, because the stack holds ops in the original direction while
+        // `pending` is in the inverse one.
         if (report.pending.length) {
           pushSame(invertFsOp({ kind: op.kind, pairs: report.pending }), startedAt);
         }
-        // ONE toast, always, and it tells the whole outcome.
-        //
-        // Announced at all for the same reason a drop onto a sidebar bookmark is
-        // (moveEntriesInto's `announce`): the entries may well have gone back to
-        // a folder that isn't the one on screen, so a refetch alone would look
-        // like nothing happened.
-        //
-        // A PARTIAL result must not read as an all-clear. "Undid the move" over
-        // a batch where two entries refused would be a false success about the
-        // two that are still where the move left them. So a failure names the
-        // first refusal and its reason and counts the rest: one sentence rather
-        // than a toast per pair, because a read-only destination fails every
-        // entry with the same reason and twenty identical toasts would bury the
-        // one that mattered. When the batch bailed early the count of untried
-        // pairs is part of the outcome too, together with the fact that pressing
-        // undo again will pick them up.
-        const what = op.kind === "move" ? "move" : "rename";
-        const did = verb === "undo" ? "Undid" : "Redid";
-        if (!report.failed.length) {
-          pushToast({ msg: `${did} the ${what}.`, tone: "info" });
-          return;
-        }
-        const [first] = report.failed;
-        const rest = report.failed.length - 1;
-        const left = report.pending.length
-          ? ` ${report.pending.length} more left in place — ${verb} again to retry.`
-          : "";
-        pushToast({
-          msg:
-            (report.done.length ? `${did} part of the ${what}. ` : "") +
-            // blamedPath, not the destination: a 404 is about the path that has
-            // gone missing, which is the one the entry was being moved FROM.
-            friendlyFsError(first.error, { verb, name: basename(blamedPath(first.pair, first.error)) }) +
-            (rest ? ` (and ${rest} more)` : "") +
-            left,
-          tone: "error",
-        });
+        // ONE toast, always, and it tells the whole outcome — built in lib/fs-undo
+        // so its arithmetic (which path is blamed, what the retry count covers) is
+        // testable without a renderer.
+        pushToast(relocationToast(verb, op.kind, report));
       })
       .finally(() => {
         // FINALLY, for the reason spelled out on moveInFlight above: a latched

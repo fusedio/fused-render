@@ -6,8 +6,11 @@
 // failing forever.
 import { beforeEach, expect, test } from "bun:test";
 
-// The apply path renames through the api layer, so the fetch stub goes in before
-// the (therefore dynamic) import — the same trade fs-move.test.ts makes.
+// The apply path renames through the api layer, and the toast wording reaches
+// fs-actions and from there the router, which reads `location` at module scope —
+// so both stubs precede the (therefore dynamic) import, the same trade
+// fs-move.test.ts makes rather than carrying a DOM.
+(globalThis as { location?: unknown }).location = new URL("http://x/");
 type Req = { url: string; body: { src?: string; dst?: string } };
 const posts: Req[] = [];
 // Which renames must fail, and how. A LIST, so one batch can hold several
@@ -51,6 +54,7 @@ const {
   pushRedoOp,
   pushUndoOp,
   recordFsOp,
+  relocationToast,
   resetFsUndo,
   takeRedoOp,
   takeUndoOp,
@@ -281,12 +285,140 @@ test("A SYSTEMIC REFUSAL BAILS OUT INSTEAD OF FIRING THE WHOLE BATCH", async () 
   });
   expect(report.done).toEqual([]);
   expect(report.failed.length).toBe(1);
+  // The pair that FAILED is retryable too, at the FRONT of the set. It was not
+  // refused for being that path — the destination is read-only, which is just as
+  // true of the pairs behind it — so leaving it out would restore everything else
+  // on the next attempt and silently abandon that one. Front, not appended,
+  // because the retry re-applies these in order.
   expect(report.pending).toEqual([
+    { from: "/b/1", to: "/a/1" },
     { from: "/b/2", to: "/a/2" },
     { from: "/b/3", to: "/a/3" },
   ]);
   // ONE request, not three.
   expect(renames().length).toBe(1);
+});
+
+test("NO PAIR IS EVER ORPHANED — done and pending cover the whole op", () => {
+  // The invariant behind both branches, stated once. A pair is either restored
+  // (and so on the opposite stack) or handed back for a retry; the only pairs that
+  // leave both stacks are per-path refusals, which are verdicts about those paths
+  // and are named in the toast.
+  const pairs = [
+    { from: "/b/1", to: "/a/1" },
+    { from: "/b/2", to: "/a/2" },
+    { from: "/b/3", to: "/a/3" },
+  ];
+  return (async () => {
+    failRules = [{ src: "*", status: 403, error: "readonly" }];
+    const systemic = await applyFsOp({ kind: "move", pairs });
+    expect([...systemic.done, ...systemic.pending]).toEqual(pairs);
+    // A per-path refusal is the documented exception: that pair is dropped on
+    // purpose, and everything else still runs.
+    failRules = [{ src: "/b/2", status: 409, error: "conflict" }];
+    const perPath = await applyFsOp({ kind: "move", pairs });
+    expect([...perPath.done, ...perPath.pending, ...perPath.failed.map((f) => f.pair)]).toHaveLength(
+      pairs.length
+    );
+  })();
+});
+
+test("A FIXED CAUSE RESTORES EVERYTHING, INCLUDING THE PAIR THAT FAILED", async () => {
+  // End to end, the way the caller drives it (listing/useFileOps' runRelocation):
+  // take the op, apply its inverse, and put what was not restored back on the
+  // stack it came from. Then the user fixes the read-only mount and presses undo
+  // again — and every original pair must be back where it started, with none left
+  // behind. The failed pair being dropped is invisible in a single round; it shows
+  // up here, as one file that never comes home.
+  const pairs = [
+    { from: "/src/1.md", to: "/dst/1.md" },
+    { from: "/src/2.md", to: "/dst/2.md" },
+    { from: "/src/3.md", to: "/dst/3.md" },
+  ];
+  recordFsOp({ kind: "move", pairs });
+
+  // Round one: the destination refuses everything.
+  failRules = [{ src: "*", status: 403, error: "readonly" }];
+  const first = takeUndoOp()!;
+  const r1 = await applyFsOp(invertFsOp(first));
+  if (r1.pending.length) {
+    pushUndoOp(invertFsOp({ kind: first.kind, pairs: r1.pending }), fsUndoEpoch());
+  }
+
+  // The user fixes the cause and presses undo again.
+  failRules = [];
+  const second = takeUndoOp();
+  expect(second).not.toBeNull();
+  const r2 = await applyFsOp(invertFsOp(second!));
+  expect(r2.failed).toEqual([]);
+  expect(r2.pending).toEqual([]);
+
+  // One refused attempt, then the whole set reversed in order — the inverse runs
+  // last-pair-first, so 3, 2, 1. Nothing is left on either stack pretending
+  // otherwise.
+  expect(renames()).toEqual([
+    ["/dst/3.md", "/src/3.md"], // round one, refused by the read-only mount
+    ["/dst/3.md", "/src/3.md"], // round two: the refused pair, retried FIRST
+    ["/dst/2.md", "/src/2.md"],
+    ["/dst/1.md", "/src/1.md"],
+  ]);
+  const restored = new Set(r1.done.concat(r2.done).map((p) => p.to));
+  expect([...restored].sort()).toEqual(["/src/1.md", "/src/2.md", "/src/3.md"]);
+  expect(takeUndoOp()).toBeNull();
+});
+
+test("THE TOAST'S RETRY COUNT COVERS THE REFUSED PAIR AS WELL", async () => {
+  // The count is the number going back on the stack, so it includes the pair the
+  // sentence just named. Counting only the untried ones was short by one and made
+  // the invitation to retry partly false: the user fixes the mount, presses undo,
+  // and gets everything except the file the message named.
+  failRules = [{ src: "*", status: 403, error: "readonly" }];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  const { msg, tone } = relocationToast("undo", "move", report);
+  expect(tone).toBe("error");
+  expect(msg).toContain("3 items left in place — undo again to retry.");
+  // Nothing was restored, so it must not claim to have undone part of anything.
+  expect(msg).not.toContain("Undid part");
+});
+
+test("the toast reads as a plain success only when nothing refused", async () => {
+  failRules = [];
+  const report = await applyFsOp({ kind: "rename", pairs: [{ from: "/w/b.md", to: "/w/a.md" }] });
+  expect(relocationToast("undo", "rename", report)).toEqual({
+    msg: "Undid the rename.",
+    tone: "info",
+  });
+  expect(relocationToast("redo", "move", report).msg).toBe("Redid the move.");
+});
+
+test("a partial result says so, names the blamed path, and counts the rest", async () => {
+  // Two per-path refusals in one batch: one named with its reason, one counted,
+  // no `pending` (so no retry invitation), and the successful pair acknowledged.
+  failRules = [
+    { src: "/b/1", status: 404, error: "no such file or directory" },
+    { src: "/b/3", status: 409, error: "conflict" },
+  ];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  const { msg } = relocationToast("undo", "move", report);
+  expect(msg).toStartWith("Undid part of the move. ");
+  // A 404 blames the SOURCE — the path that has gone missing.
+  expect(msg).toContain('"1"');
+  expect(msg).toContain("(and 1 more)");
+  expect(msg).not.toContain("left in place");
 });
 
 test("a per-path refusal never sets `pending` — the batch runs to the end", async () => {
@@ -342,6 +474,43 @@ test("a refusal with NO status is read from its message", async () => {
   expect(report.done.length).toBe(2);
 });
 
+test("a STATUS decides on its own — the message is not consulted behind it", async () => {
+  // The `typeof status === "number"` early return. A 500 that happens to say
+  // "conflict" is still the server failing, not a name collision: the status is
+  // the authoritative reading whenever there is one, and the message is only the
+  // fallback for having none. Without that line this would fall through to the
+  // message match and be treated as a per-path verdict, pressing on through a
+  // batch that cannot succeed.
+  failRules = [{ src: "*", status: 500, error: "conflict while writing" }];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+    ],
+  });
+  expect(report.pending).toHaveLength(2); // systemic: bailed, both retryable
+  expect(renames().length).toBe(1);
+});
+
+test("a status-less refusal naming a CONFLICT is one path's problem", async () => {
+  // The `msg.includes("conflict")` arm, which only a rejected request can reach:
+  // the destination name is taken, which says nothing about the next pair, so the
+  // batch presses on exactly as it does for a 409 with a status.
+  failRules = [{ src: "/b/2", rejects: true, error: "conflict" }];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  expect(report.pending).toEqual([]);
+  expect(report.done.length).toBe(2);
+  expect(renames().length).toBe(3);
+});
+
 test("a status-less refusal that names NEITHER case is systemic", async () => {
   failRules = [{ src: "*", rejects: true, error: "Failed to fetch" }];
   const report = await applyFsOp({
@@ -351,7 +520,11 @@ test("a status-less refusal that names NEITHER case is systemic", async () => {
       { from: "/b/2", to: "/a/2" },
     ],
   });
-  expect(report.pending).toEqual([{ from: "/b/2", to: "/a/2" }]);
+  // Both retryable, the refused one first (see applyFsOp's slice).
+  expect(report.pending).toEqual([
+    { from: "/b/1", to: "/a/1" },
+    { from: "/b/2", to: "/a/2" },
+  ]);
 });
 
 test("an unrecognised error is treated as systemic — it is not about a path", async () => {
@@ -366,7 +539,10 @@ test("an unrecognised error is treated as systemic — it is not about a path", 
     ],
   });
   expect(report.failed.length).toBe(1);
-  expect(report.pending).toEqual([{ from: "/b/2", to: "/a/2" }]);
+  expect(report.pending).toEqual([
+    { from: "/b/1", to: "/a/1" },
+    { from: "/b/2", to: "/a/2" },
+  ]);
 });
 
 test("the blamed path is the one the error is ABOUT, not always the destination", () => {
