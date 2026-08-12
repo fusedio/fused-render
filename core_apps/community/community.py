@@ -120,6 +120,52 @@ def _write_installs(data):
         raise
 
 
+def _remove_stale_locks():
+    """Drop leftover git lockfiles in the cache repo. A git process killed
+    mid-operation (the executor's hard kill, app quit) leaves its .lock
+    behind, and every later command dies with "Unable to create '….lock':
+    File exists … remove the file manually to continue". The cache is
+    managed exclusively by this module and its git calls are short-lived,
+    so any lock seen on a retry is stale by definition."""
+    import glob
+    git_dir = os.path.join(CACHE_REPO, ".git")
+    for lock in (glob.glob(os.path.join(git_dir, "*.lock"))
+                 + glob.glob(os.path.join(git_dir, "info", "*.lock"))):
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
+
+
+def _sparse_add(*patterns):
+    """sparse-checkout add, deduped and self-healing.
+
+    Deduped: `git sparse-checkout add` appends to the pattern file blindly,
+    so re-adding on every detail/refresh grows it without bound — skip
+    patterns already present. Self-healing: the add fails on a stale
+    lockfile (git killed mid-sync) or on preview droppings in the tree;
+    both are throwaway by doctrine, so clear and retry once instead of
+    surfacing "remove the file manually to continue" to the user."""
+    r = _git(CACHE_REPO, "sparse-checkout", "list")
+    have = r.stdout.splitlines() if r.returncode == 0 else []
+    seen = set(have)
+    missing = [p for p in patterns if p not in seen]
+    if len(have) != len(seen):
+        # Compact a pattern file bloated by pre-dedupe blind adds: `set`
+        # rewrites it wholesale with the unique patterns (order preserved).
+        cmd = ("sparse-checkout", "set", "--no-cone",
+               *dict.fromkeys(have + missing))
+    elif missing:
+        cmd = ("sparse-checkout", "add", *missing)
+    else:
+        return
+    if _git(CACHE_REPO, *cmd).returncode == 0:
+        return
+    _remove_stale_locks()
+    _clean_cache()
+    _git_ok(CACHE_REPO, *cmd, what=f"sparse-checkout {cmd[1]}")
+
+
 def _cache_ready():
     return os.path.isdir(os.path.join(CACHE_REPO, ".git"))
 
@@ -193,6 +239,7 @@ def _refresh():
                 what="sparse-checkout")
         _git_ok(CACHE_REPO, "checkout", what="checkout")
     else:
+        _remove_stale_locks()
         _clean_cache()
         # Re-assert the browse patterns on every refresh: a cache cloned under
         # an older pattern set (e.g. when cards used icon.svg) would otherwise
@@ -201,8 +248,7 @@ def _refresh():
         # _materialize appended, de-materializing every previewed app. Stale
         # old patterns linger harmlessly (they match nothing once the files
         # leave the repo). Idempotent and cheap when nothing changed.
-        _git_ok(CACHE_REPO, "sparse-checkout", "add", *SPARSE_BROWSE,
-                what="sparse-checkout add")
+        _sparse_add(*SPARSE_BROWSE)
         _git_ok(CACHE_REPO, "fetch", "--", "origin", what="fetch")
         # ff-only: the cache is managed, never edited, so a non-ff means the
         # upstream rewrote history — re-clone is the recovery, not a merge.
@@ -221,8 +267,14 @@ def _materialize(slug):
         raise ActionError("catalog cache is missing — hit Refresh first")
     # No --no-cone here: `add` inherits the non-cone mode `set` established
     # (and rejects the flag on some git versions).
-    _git_ok(CACHE_REPO, "sparse-checkout", "add", f"/{slug}/",
-            what="sparse-checkout add")
+    _sparse_add(f"/{slug}/")
+    if not os.path.isdir(folder):
+        # Pattern present but folder absent (e.g. a past add wrote the
+        # pattern, then failed applying it): dedupe above skipped the add,
+        # so force a working-tree reapply before concluding the app is gone.
+        _remove_stale_locks()
+        _clean_cache()
+        _git(CACHE_REPO, "sparse-checkout", "reapply")
     if not os.path.isdir(folder):
         raise ActionError(f"app {slug!r} is not in the catalog — refresh and retry")
     return folder
