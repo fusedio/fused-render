@@ -219,13 +219,45 @@ The standard six steps for a content sub-app:
 └── installs.json    # install registry (§5)
 ```
 
-The marketplace maintains a **single managed clone** of the community repo
-(`git clone --filter=blob:none`, `pull --ff-only` on refresh). Browsing,
-readmes, icons, and previews all read from this cache; install copies out of
-it. Refresh strategy: serve the cached `index.json` immediately, kick a pull
-in the background, re-render if it moved (stale-while-revalidate). A "Refresh"
-button forces a pull. First run with no cache shows a "fetching catalog…"
-state behind the initial clone.
+The marketplace maintains a **single managed clone** of the community repo.
+GitHub is the database, git is the sync protocol, the disk is the cache: the
+UI never talks to GitHub directly — it only reads local files that a
+background git process keeps fresh, which keeps the network off the critical
+path everywhere except first run.
+
+The clone is `git clone --filter=blob:none --no-checkout`:
+`--filter=blob:none` downloads the commit graph and directory trees but no
+file contents (blobs are fetched from GitHub lazily, in one batched pack
+request per checkout, the first time something materializes them — and are on
+disk forever after); `--no-checkout` skips materializing a working tree, so
+nothing is checked out until asked for. After the clone, the helper sparse-
+checks-out exactly what the browse grid needs: `index.json` plus every app's
+`icon.svg` and `metadata.json`. An app's full folder is materialized only when
+its detail view, preview, or install first touches it
+(`git sparse-checkout add <slug>`; the readme alone can come from
+`git show HEAD:<slug>/readme.md` without widening the checkout).
+
+### Lifecycle and expected latency
+
+| Step | Network | Expected latency |
+|---|---|---|
+| First launch ever: clone + sparse checkout of index/icons/metadata | yes | 2–6 s, behind a "fetching catalog…" state; once per machine |
+| Opening the marketplace later: read cached `index.json` from disk | no | 50–150 ms (one runPython spawn + small file read) |
+| Background refresh on open: `git fetch` + ff + re-checkout sparse set | yes | 0.3–1.5 s when unchanged, a few s when apps landed; user never waits on it |
+| First open of one app's detail view: materialize `<slug>/` (blob pack for that folder) | yes | 0.5–2 s (size-capped 20 MB/app, typically ≪ 1 MB) |
+| Later opens of the same app | no | ~50 ms, disk read |
+| Preview-before-install (`/render` from the materialized cache folder) | no | local page render; folder already materialized by the detail view |
+| Install: copy from cache + atomic rename + git-init | no | 200–800 ms, all local disk + two git subprocesses |
+| Update check: cached `index.json` shas vs `installs.json` | no | 0 — pure local JSON comparison during the browse render |
+| Applying an update | no | sub-second, same shape as install |
+
+Refresh strategy is stale-while-revalidate: serve the cached `index.json`
+immediately, kick a fetch in the background, re-render if the catalog moved. A
+"Refresh" button forces a fetch. Readme rendering happens client-side from
+the cached markdown; relative image links resolve against the materialized
+folder via `fused.rawUrl` — local files, no network. The only moments a user
+perceives GitHub's existence are the one-time first-run catalog fetch and the
+first open of each app's detail view.
 
 Rejected alternative: **sparse-clone per app via the existing `/clone`
 deep-link machinery** (`fused_render/deeplink.py`). Superficially a 1:1 fit —
@@ -238,6 +270,11 @@ app into their Fused folder" — is the copy semantics of §5, not N clones. The
 deep-link flow stays valuable as a *sharing* channel (a `?git=` link to one
 community app from a blog post still works today), but it is not the install
 mechanism.
+
+Rejected alternative: **full clone (no blob filter)** — simplest, but
+downloads every app's content up front; at 500 apps × 2 MB average that's a
+~1 GB first run for a user who installs two apps. The blobless clone is
+pay-for-what-you-touch with identical code paths afterward.
 
 If the repo grows huge, the escape hatch is fetching `index.json` +
 per-app tarballs over raw HTTP instead of a clone — the `index.json` contract
