@@ -251,18 +251,23 @@ describe("dropIsValid", () => {
 // for every target is the point — but the SHAPE a crumb hands in is unlike a
 // row's, so the answers are worth pinning:
 //
-//   • isDir is always true, asserted by the crumb rather than probed: a path
-//     segment you are standing inside cannot be a file, so "not-a-folder" (and
-//     with it the one refusal that owes the user a toast) is unreachable here;
+//   • isDir arrives true, because Breadcrumb asserts it rather than probing (a
+//     path segment you are standing inside cannot be a file). So "not-a-folder" —
+//     and with it the one refusal that owes the user a toast — is unreachable
+//     from the strip. That the crumb really does declare "1" is a fact about
+//     Breadcrumb.tsx, not something these tests establish;
 //   • a crumb is an ANCESTOR of the listed folder and a dragged row is inside
 //     it, so "self" and "descendant" are unreachable too — the drop that a
-//     crumb makes possible is the one a row cannot offer, moving entries UP;
+//     crumb makes possible is the one a row cannot offer, moving entries UP.
+//     After a spring-load the SAME crumb is the current folder while the dragged
+//     rows still come from the deeper one, so it stays an ordinary move up (the
+//     first test below is that verdict; nothing here can see the DOM replacement
+//     that gets the release to it — refreshDropTarget);
 //   • "already-there" is reachable, and it is the one that makes the new
 //     per-crumb highlight informative instead of a strip that lights up
 //     everywhere: a crumb IS the current folder when the listing is at the root
-//     of its tree (the root crumb then carries `.last`, and it is the only crumb
-//     that is both current and interactive — the tail crumb of a deeper path is
-//     a static span with no target at all).
+//     of its tree, and dropping the rows you are looking at into the folder they
+//     already live in moves nothing.
 describe("dropIsValid over a crumb", () => {
   const crumb = (path: string) => ({ path, isDir: true });
 
@@ -278,20 +283,6 @@ describe("dropIsValid over a crumb", () => {
     expect(dropIsValid([file("/a/b/c/sub")], crumb("/a"))).toEqual({ ok: true, dir: "/a" });
   });
 
-  test("after a spring-load, the CURRENT-folder crumb is a real move", () => {
-    // The post-spring-load geometry, which is where the gesture spends most of
-    // its life: the pointer held the /a crumb, the listing followed it to /a, and
-    // that crumb is now the current-folder one — while the dragged rows still
-    // come from the deeper folder they were picked up in. So the same crumb that
-    // would refuse a same-folder drop accepts this one.
-    //
-    // THIS COVERS THE VERDICT ONLY. That the release actually reaches this
-    // target after the strip has re-rendered under a stationary pointer is
-    // pointer geometry and mid-drag DOM replacement; no headless test can see it
-    // (see refreshDropTarget) and none here claims to.
-    expect(dropIsValid([file("/a/b/c/x.md")], crumb("/a"))).toEqual({ ok: true, dir: "/a" });
-  });
-
   test("the crumb for the folder you are IN refuses — nothing would move", () => {
     // The root crumb while the listing IS the root: every dragged row's parent
     // is that folder already.
@@ -303,13 +294,6 @@ describe("dropIsValid over a crumb", () => {
 
   test("the root crumb takes a drop like any other ancestor", () => {
     expect(dropIsValid([file("/a/b/c/x.md")], crumb("/"))).toEqual({ ok: true, dir: "/" });
-  });
-
-  test("a crumb's refusal is silent — it wore the reject highlight all hover", () => {
-    // Every reachable crumb refusal was painted before the release, and a crumb
-    // declares its kind ("1"), so no release on one can need words.
-    expect(refusalNeedsToast("already-there", true)).toBe(false);
-    expect(refusalNeedsToast("empty", true)).toBe(false);
   });
 });
 

@@ -10,19 +10,31 @@ import { beforeEach, expect, test } from "bun:test";
 // the (therefore dynamic) import — the same trade fs-move.test.ts makes.
 type Req = { url: string; body: { src?: string; dst?: string } };
 const posts: Req[] = [];
-// Which rename must fail, and with what — how a 404 (source gone), a 409
-// (something is in the way now) and a 403 (a read-only destination, which fails
-// every pair) are driven. "*" fails all of them.
-let failFor: { src: string; status: number; error: string } | null = null;
+// Which renames must fail, and how. A LIST, so one batch can hold several
+// failures — the property "every independent failure is reported" is only
+// observable within a single applyFsOp call, and a version of this that took one
+// rule at a time made that test pass against an unconditional break.
+//
+//   src      the source path to refuse, or "*" for all of them
+//   status   the HTTP status; omit with `rejects` for a request that never
+//            answers at all (a dropped connection), which is the only way to
+//            reach the status-less branch of isPerPathRefusal / blamedPath
+//   error    the server's `error` string, or the thrown Error's message
+type FailRule = { src: string; status?: number; error: string; rejects?: boolean };
+let failRules: FailRule[] = [];
 
 (globalThis as { fetch?: unknown }).fetch = ((url: string, init?: { body?: string }) => {
   const body = init?.body ? JSON.parse(init.body) : {};
   posts.push({ url, body });
-  if (failFor && (failFor.src === "*" || body.src === failFor.src)) {
+  const rule = failRules.find((r) => r.src === "*" || r.src === body.src);
+  if (rule) {
+    // No status anywhere on the error — api.ts's httpError always attaches one,
+    // so a plain rejection is what a network failure looks like to a caller.
+    if (rule.rejects) return Promise.reject(new Error(rule.error));
     return Promise.resolve({
       ok: false,
-      status: failFor.status,
-      json: () => Promise.resolve({ error: failFor!.error }),
+      status: rule.status,
+      json: () => Promise.resolve({ error: rule.error }),
     });
   }
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ path: body.dst }) });
@@ -51,7 +63,7 @@ const renames = () =>
 beforeEach(() => {
   resetFsUndo();
   posts.length = 0;
-  failFor = null;
+  failRules = [];
 });
 
 test("inverting an op swaps every pair and reverses the order", () => {
@@ -200,7 +212,7 @@ test("ONE PAIR'S FAILURE DOES NOT ABANDON THE REST OF THE BATCH", async () => {
   // 3 and 4 still moved with nothing on either stack naming them — orphaned by
   // the very gesture meant to put them back. Every pair is attempted, so each
   // one ends up either restored (and on the opposite stack) or reported.
-  failFor = { src: "/b/2", status: 409, error: "conflict" };
+  failRules = [{ src: "/b/2", status: 409, error: "conflict" }];
   const report = await applyFsOp({
     kind: "move",
     pairs: [
@@ -221,15 +233,30 @@ test("ONE PAIR'S FAILURE DOES NOT ABANDON THE REST OF THE BATCH", async () => {
   expect(renames().length).toBe(4);
 });
 
-test("every INDEPENDENT failure is reported, not just the first", async () => {
-  // Two different names taken in the destination: unrelated verdicts about two
-  // paths, so both are attempted and both reported.
-  failFor = { src: "/b/1", status: 409, error: "conflict" };
-  const first = await applyFsOp({ kind: "move", pairs: [{ from: "/b/1", to: "/a/1" }] });
-  failFor = { src: "/b/2", status: 409, error: "conflict" };
-  const second = await applyFsOp({ kind: "move", pairs: [{ from: "/b/2", to: "/a/2" }] });
-  expect(first.failed.length).toBe(1);
-  expect(second.failed.length).toBe(1);
+test("every INDEPENDENT failure in ONE batch is reported, not just the first", async () => {
+  // Two names already taken in the destination: unrelated verdicts about two
+  // paths, both attempted and both reported, with the pair between them still
+  // restored. It has to be one batch — asserting one failure per single-pair call
+  // is what an unconditional `break` also passes, which is how this test managed
+  // to carry that name without testing it.
+  failRules = [
+    { src: "/b/1", status: 409, error: "conflict" },
+    { src: "/b/3", status: 409, error: "conflict" },
+  ];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  expect(report.failed.map((f) => f.pair)).toEqual([
+    { from: "/b/1", to: "/a/1" },
+    { from: "/b/3", to: "/a/3" },
+  ]);
+  expect(report.done).toEqual([{ from: "/b/2", to: "/a/2" }]);
+  expect(report.pending).toEqual([]);
 });
 
 test("A SYSTEMIC REFUSAL BAILS OUT INSTEAD OF FIRING THE WHOLE BATCH", async () => {
@@ -243,7 +270,7 @@ test("A SYSTEMIC REFUSAL BAILS OUT INSTEAD OF FIRING THE WHOLE BATCH", async () 
   // the caller can leave them undoable. This is the opposite call from the 404 /
   // 409 case above, and the distinction is whether the error is a verdict about
   // a PATH or about the environment.
-  failFor = { src: "*", status: 403, error: "readonly" };
+  failRules = [{ src: "*", status: 403, error: "readonly" }];
   const report = await applyFsOp({
     kind: "move",
     pairs: [
@@ -263,7 +290,7 @@ test("A SYSTEMIC REFUSAL BAILS OUT INSTEAD OF FIRING THE WHOLE BATCH", async () 
 });
 
 test("a per-path refusal never sets `pending` — the batch runs to the end", async () => {
-  failFor = { src: "/b/2", status: 409, error: "conflict" };
+  failRules = [{ src: "/b/2", status: 409, error: "conflict" }];
   const report = await applyFsOp({
     kind: "move",
     pairs: [
@@ -276,10 +303,61 @@ test("a per-path refusal never sets `pending` — the batch runs to the end", as
   expect(report.done.length).toBe(2);
 });
 
+test("a 404 mid-batch presses on — a vanished source is one path's problem", async () => {
+  // The 404 arm of isPerPathRefusal, which only a MULTI-pair batch can observe:
+  // in a single-pair one the batch is over either way and `pending` is empty
+  // whichever branch was taken.
+  failRules = [{ src: "/b/2", status: 404, error: "no such file or directory" }];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  expect(report.pending).toEqual([]);
+  expect(report.done).toEqual([
+    { from: "/b/1", to: "/a/1" },
+    { from: "/b/3", to: "/a/3" },
+  ]);
+  expect(renames().length).toBe(3);
+});
+
+test("a refusal with NO status is read from its message", async () => {
+  // api.ts attaches a status to every HTTP error, so the status-less branch is
+  // reached only by a request that never answered — a dropped connection, an
+  // unparsable reply. The server's own words are then the only signal, and "no
+  // such file" still means one path is missing rather than the machine refusing.
+  failRules = [{ src: "/b/2", rejects: true, error: "no such file or directory" }];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  expect(report.pending).toEqual([]);
+  expect(report.done.length).toBe(2);
+});
+
+test("a status-less refusal that names NEITHER case is systemic", async () => {
+  failRules = [{ src: "*", rejects: true, error: "Failed to fetch" }];
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+    ],
+  });
+  expect(report.pending).toEqual([{ from: "/b/2", to: "/a/2" }]);
+});
+
 test("an unrecognised error is treated as systemic — it is not about a path", async () => {
   // A 500, a dropped connection, an unparsable reply: nothing there says the NEXT
   // path would fare better, so the safe reading is "the environment is refusing".
-  failFor = { src: "*", status: 500, error: "internal error" };
+  failRules = [{ src: "*", status: 500, error: "internal error" }];
   const report = await applyFsOp({
     kind: "move",
     pairs: [
@@ -299,6 +377,11 @@ test("the blamed path is the one the error is ABOUT, not always the destination"
   // existed since the move, about to be recreated — and never named the deduped
   // path that had actually disappeared.
   expect(blamedPath(pair, err(404, "no such file or directory"))).toBe("/b/report copy.csv");
+  // The STATUS decides it, not the wording. A 404 whose message says something
+  // else entirely — which is the realistic server shape, since the wire text
+  // varies — must still blame the source. (With only the message-matching arm
+  // under test, deleting the `status === 404` check changed nothing.)
+  expect(blamedPath(pair, err(404, "not found"))).toBe("/b/report copy.csv");
   // 409 and everything else are about where it is GOING.
   expect(blamedPath(pair, err(409, "conflict"))).toBe("/a/report.csv");
   expect(blamedPath(pair, err(403, "readonly"))).toBe("/a/report.csv");
@@ -308,7 +391,7 @@ test("the blamed path is the one the error is ABOUT, not always the destination"
 });
 
 test("a vanished source fails the same way — the entry is not retried forever", async () => {
-  failFor = { src: "/b/gone.md", status: 404, error: "no such file or directory" };
+  failRules = [{ src: "/b/gone.md", status: 404, error: "no such file or directory" }];
   const report = await applyFsOp({
     kind: "move",
     pairs: [{ from: "/b/gone.md", to: "/a/gone.md" }],
