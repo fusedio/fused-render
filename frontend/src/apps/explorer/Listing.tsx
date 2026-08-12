@@ -46,9 +46,7 @@ import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
-import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
 import { EllipsisIcon } from "@apps/explorer/BarMenu";
-import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
@@ -497,7 +495,8 @@ export default function Listing({
     startNewFolder,
     rowMenu,
     backgroundMenu,
-  } = useFileOps({ base, clipboard, refetch, pendingSelectRef });
+    barMenu,
+  } = useFileOps({ base, clipboard, refetch, pendingSelectRef, ownsBar: ownsBarChrome });
 
   overlayOpenRef.current = menu !== null || dialog !== null;
   // Also publish this view's overlay state to the shared registry (lib/
@@ -871,6 +870,31 @@ export default function Listing({
     if (winSel && !winSel.isCollapsed) winSel.removeAllRanges();
   };
 
+  // A press on the empty background (not a row) clears the selection. This is
+  // a POINTERDOWN, not a click, and that is load-bearing: the marquee captures
+  // the pointer on row presses, and capture retargets the pointerup — so the
+  // browser computes the follow-up click's target as the SCROLLER for a press
+  // that plainly landed on a row. A click handler here read those as
+  // background clicks and un-selected every row the moment it was selected
+  // (and ate double-click-to-open with it). The pointerdown still carries the
+  // press's true target. Modified presses pass through untouched: a
+  // Shift/Cmd sweep from the background unions with the selection it started
+  // over (useMarquee snapshots `base` in the capture phase, before this runs —
+  // and a bare sweep replaces the selection anyway, so clearing first changes
+  // nothing for it).
+  const onBackgroundPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    if (e.shiftKey || e.metaKey || e.ctrlKey) return;
+    const target = e.target as HTMLElement;
+    if (
+      target === scrollRef.current ||
+      target.tagName === "TBODY" ||
+      target.tagName === "TABLE"
+    ) {
+      selectPaths([]);
+    }
+  };
+
   // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
   // the whole thing (Finder/Explorer behaviour); right-clicking anywhere else
   // collapses the selection onto that row first.
@@ -898,6 +922,11 @@ export default function Listing({
   // Discoverability is the whole point of the button: the same items were
   // already a right-click on the background, which nobody finds, and which an
   // empty folder gives you no obvious surface to try.
+  //
+  // `barMenu()` (useFileOps -> lib/bar-menus) is the list, not an array built
+  // here: a right-click anywhere on the crumb bar opens the same one, and two
+  // copies of "the folder's actions plus the splits" is how the two surfaces
+  // would end up disagreeing about what the folder can do.
   const openHeaderMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     e.stopPropagation(); // never sorts — the th around it is a sort control
@@ -909,20 +938,7 @@ export default function Listing({
       // 220 is the menu's own min-width (context-menu.css).
       x: Math.max(4, r.right - 220),
       y: r.bottom + 2,
-      items: [
-        ...backgroundMenu(),
-        "separator",
-        {
-          label: "Split right",
-          icon: <SplitRightIcon size={16} />,
-          onClick: () => enterPanel(fsPath, "row"),
-        },
-        {
-          label: "Split down",
-          icon: <SplitDownIcon size={16} />,
-          onClick: () => enterPanel(fsPath, "col"),
-        },
-      ],
+      items: barMenu(),
     });
   };
 
@@ -1451,12 +1467,10 @@ export default function Listing({
                drags the selection; anywhere else sweeps; a press that barely
                moves is still the click it always was. */
             onPointerDownCapture={onListingPointerDownCapture}
-            /* No onClick here: clicking the empty area below the rows does
-               NOT deselect. Finder's rule, and it cost more than it bought
-               once the preview pane arrived — a stray click anywhere in the
-               whitespace of a short listing blanked the pane and threw away
-               the row the user was reading. Escape still clears (the
-               deliberate gesture); the background is just background. */
+            /* Bubble phase, so the marquee's capture snapshot above runs
+               first. Deselecting on the CLICK instead is a trap — see
+               onBackgroundPointerDown. */
+            onPointerDown={onBackgroundPointerDown}
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
@@ -1490,7 +1504,10 @@ export default function Listing({
                             `sortable col-${key}` +
                             (key === sort ? " sorted" : "")
                           }
-                          onClick={() => setSort(key)}
+                          onClick={() => {
+                            setSort(key);
+                            selectPaths([]);
+                          }}
                         >
                           {/* Wrapped so the empty-folder state can hide the
                               LABEL without unmounting the strip — the `⋮` on

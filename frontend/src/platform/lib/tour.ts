@@ -69,11 +69,19 @@ const STEPS: DriveStep[] = [
         "Pick a file and it previews right here, beside the list. Open one and the bar offers full split panes.",
     },
   },
+  // Was `.bar-overflow`, the crumb bar's path `⋮` — which no longer exists in any
+  // explorer bar: its items are the bar's RIGHT-CLICK menu now (see
+  // apps/explorer/Breadcrumb). That step had been dead for every first run
+  // anyway, since the tour auto-starts on a FOLDER and the folder view had
+  // already taken these actions into its own header `⋮`. So it points at the
+  // button that is actually on screen, and says the right-click out loud: a menu
+  // with no button is a menu nobody finds unless something tells them.
   {
-    element: ".bar-overflow",
+    element: ".listing-head-menu",
     popover: {
       title: "More actions",
-      description: "Reveal the current folder or file in your file manager, or copy its path.",
+      description:
+        "New files and folders, reveal in your file manager, copy the path — also on a right-click, here or on the bar above.",
     },
   },
 ];

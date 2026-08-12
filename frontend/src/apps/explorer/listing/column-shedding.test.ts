@@ -70,9 +70,11 @@ test("a shed column's HEADER is never display:none", () => {
 });
 
 test("a shed column's header collapses to a zero px width with no box", () => {
+  // A shed rule is one that sets a width — SIZE also gets a width-less berth
+  // rule in MODIFIED's step (see below), which is not a collapse.
   const collapsed = shedding.flatMap((block) =>
     SHED.map((col) => [col, ruleFor(block.body, `th.${col}`)] as const).filter(
-      (p): p is readonly [string, string] => p[1] !== null,
+      (p): p is readonly [string, string] => p[1] !== null && /width:/.test(p[1]),
     ),
   );
   expect(collapsed.length).toBe(2); // MODIFIED and SIZE, one step each
@@ -97,6 +99,20 @@ test("a shed column's header collapses to a zero px width with no box", () => {
       expect(ruleFor(block.body, `th.${col} .sort-arrow`)).toMatch(/display:\s*none/);
     }
   }
+});
+
+test("SIZE's header reserves berth for the folder ⋮ while MODIFIED is shed", () => {
+  // With MODIFIED collapsed, the absolutely-positioned `⋮` rides the table's
+  // right edge — which is inside SIZE's header until SIZE itself sheds. The
+  // header cell (and only the header cell — the column keeps its px width
+  // under border-box, and the body figures keep the full cell) stops its
+  // content short of the button. Dropping this repaints the label under the
+  // `⋮` between the two shed steps.
+  const wide = shedding.find((b) => /th\.col-mtime[^{]*\{[^}]*width:\s*0/s.test(b.body));
+  expect(wide).toBeDefined();
+  const berth = ruleFor(wide!.body, "th.col-size");
+  expect(berth).toMatch(/padding-right:\s*\d+px/);
+  expect(berth).not.toMatch(/width:/);
 });
 
 test("the collapse rules outrank the default widths further down the file", () => {

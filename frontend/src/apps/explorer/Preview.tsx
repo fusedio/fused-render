@@ -29,7 +29,11 @@ import {
   trashEntry,
   buildOpenWithItems,
   friendlyFsError,
+  claudeDeepLink,
 } from "@apps/explorer/lib/fs-actions";
+import { fileBarMenu } from "@apps/explorer/lib/bar-menus";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
+import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
@@ -128,7 +132,11 @@ type PreviewDialog =
 function usePreviewFileMenu(
   fsPath: string,
   stat: StatResult,
-  loadOpenWith: () => Promise<MenuItem[]>
+  loadOpenWith: () => Promise<MenuItem[]>,
+  // "This preview owns the window's crumb bar" — the same flag that portals its
+  // mode control into it. While it holds, a right-click anywhere on that bar
+  // opens THIS file's bar menu (topbar-menu.ts + lib/bar-menus).
+  actionsInTopbar?: boolean
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -274,6 +282,40 @@ function usePreviewFileMenu(
     e.preventDefault();
     setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
   };
+
+  // Open Claude Code on the file (a file cwd's into its parent and pre-fills an
+  // @-mention prompt — the same deep link the listing's row menu builds).
+  const doOpenInClaude = () => {
+    window.location.href = claudeDeepLink(fsPath, stat.is_dir, stat.name, parent);
+  };
+
+  // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
+  // lib/bar-menus for what it leaves out and why). The splits are offered on the
+  // same condition TemplatePreview uses for its own split affordances: a single
+  // file, in the shell window, not inside a pane that already is a split.
+  const barMenuItems = (): MenuEntry[] =>
+    fileBarMenu({
+      onRename: startRename,
+      onOpenInClaude: doOpenInClaude,
+      onCopyPath: doCopyPath,
+      onReveal: doReveal,
+      onSplit:
+        !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
+    });
+
+  // Publish it for as long as this preview owns the bar. Through a ref for the
+  // reason useFileOps does the same: the builder closes over `fsPath`/`stat`, so
+  // a captured function goes stale on the next file, and re-publishing per change
+  // would churn the registry (topbar-menu.ts). A DIRECTORY opened here renders an
+  // embedded <Listing> that claims the bar and publishes its own folder menu —
+  // this one stands down rather than racing it.
+  const openBarMenuRef = useRef<(x: number, y: number) => void>(() => {});
+  openBarMenuRef.current = (x, y) => setMenu({ x, y, items: barMenuItems() });
+  const ownsBar = !!actionsInTopbar && !stat.is_dir;
+  useEffect(() => {
+    if (!ownsBar) return;
+    return publishTopbarMenu((x, y) => openBarMenuRef.current(x, y));
+  }, [ownsBar]);
 
   const overlays = (
     <>
@@ -941,7 +983,7 @@ function TemplatePreview({
     else void setMode(m);
   };
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
-  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
+  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
 
   const headerActions = (
     <>
@@ -1185,7 +1227,7 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
-  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith);
+  const fileMenu = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
   return (
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}

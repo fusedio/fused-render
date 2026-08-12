@@ -62,9 +62,12 @@ test("the searching state is expressed in CSS at all", () => {
 });
 
 test("the bar stands down everything to the left of the search box", () => {
-  // The crumbs and the path `···` were already given up; the ★ is what was
-  // still holding the box off the left edge.
-  for (const target of [".crumbs", "> .bar-overflow", ".bookmark-star-btn"]) {
+  // The crumbs were already given up; the ★ is what was still holding the box
+  // off the left edge. The path `···` used to be a third entry here and needs
+  // none: it is not in the bar's markup at all any more — its items are the
+  // bar's right-click menu now (Breadcrumb's onBarContextMenu) — so there is no
+  // box left to stand down.
+  for (const target of [".crumbs", ".bookmark-star-btn"]) {
     const rule = ruleFor(target);
     expect(rule, `no searching rule for ${target}`).toBeDefined();
     expect(rule!.decls).toMatch(/display:\s*none/);
