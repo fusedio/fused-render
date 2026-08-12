@@ -1203,11 +1203,25 @@ table.listing-table tr.skel-row:hover {
    over and gives up its own width, down to 96px — still the full "Search…"
    placeholder, just with no slack around it. Between the two floors the strip
    stays one line at any width the split allows, which is what keeps it the
-   same height as the pane header across the divider. */
+   same height as the pane header across the divider.
+
+   And past BOTH floors — the path still ellipsized with the box already at
+   96px — the box stops being worth its strip at all: Listing.tsx measures
+   that state and folds the resting box into a 28px magnifier (.iconized
+   below), handing the difference back to the path. The path outranks an idle
+   input; a click on the magnifier (or typing, ever) gets the box back. */
 #breadcrumb:has(.crumb-search-slot) .crumbs {
   flex-grow: 0;
   flex-shrink: 6;
   min-width: 120px;
+}
+
+/* The tight-bar fold (Listing.tsx's measurement): the resting box goes away
+   entirely — display, not width, so the row's gap goes with it — and the
+   .listing-search-open magnifier (a .bar-ctl) stands in. Never coexists with
+   .searching: a non-empty query un-folds by definition. */
+.listing-search.iconized .listing-search-box {
+  display: none;
 }
 
 /* …and once there is a query, the crumbs get out of the way entirely.

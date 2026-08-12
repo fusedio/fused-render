@@ -303,6 +303,17 @@ export default function Listing({
 
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // --- resting search box folds to a magnifier on a tight bar ---------------
+  // The bar's yield order (crumbs shrink → box shrinks, explorer.css) bottoms
+  // out with the PATH still ellipsized on a narrow middle column, while the
+  // idle box holds ~100px of placeholder. Past that point the box becomes a
+  // 28px icon and the path gets the strip back. `tightBar` is the measured
+  // fact; `pinnedOpen` is the user overriding it (clicked the icon — the box
+  // stays until it blurs empty). A non-empty query outranks both: `.searching`
+  // already stands the crumbs down and takes the whole strip.
+  const [tightBar, setTightBar] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+  const searchRowRef = useRef<HTMLDivElement>(null);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
   // render from the rowCtxByPath memo below).
@@ -348,6 +359,62 @@ export default function Listing({
   // which is only ever over a folder that claimed the chrome; a host with no
   // crumb bar (the app builder) keeps the row in place as its own first strip.
   const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
+
+  // The tight-bar measurement. DOM-side on purpose: this row PORTALS into
+  // #breadcrumb (the slot above), so the crumbs it shares the strip with are
+  // reachable — and already coupled to this row by the bar's :has() rules.
+  // Two thresholds, deliberately apart, so the flip cannot oscillate:
+  //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
+  //     after the CSS yield order has bottomed out — the box is the only
+  //     slack left to give.
+  //   • unfold: the whole path is showing AND the bar has ≥150px genuinely
+  //     free — room the full resting box (needing a net ~120px over the
+  //     magnifier) can take without re-truncating anything. Free space is
+  //     summed from the bar's visible children, not read off the crumbs:
+  //     they are flex-grow 0 in slot mode, so their clientWidth hugs their
+  //     content and never reports the strip's slack.
+  // No dependency array: crumbs content changes with navigation but their
+  // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
+  // changes; re-measuring on every render is cheap and the guarded setState
+  // converges. Skipped while the user is in the box — measuring a strip the
+  // crumbs have stood down from (.searching hides them) reads zeros.
+  useLayoutEffect(() => {
+    if (embedded || searching || pinnedOpen) return;
+    const row = searchRowRef.current;
+    const bar = row?.closest("#breadcrumb");
+    const crumbs = bar?.querySelector(".crumbs");
+    if (!(bar instanceof HTMLElement) || !crumbs) return;
+    const freeInBar = () => {
+      const kids = Array.from(bar.children).filter(
+        (el) => getComputedStyle(el).display !== "none"
+      );
+      const cs = getComputedStyle(bar);
+      const gap = parseFloat(cs.columnGap) || 0;
+      const used =
+        kids.reduce((w, el) => w + el.getBoundingClientRect().width, 0) +
+        gap * Math.max(0, kids.length - 1) +
+        (parseFloat(cs.paddingLeft) || 0) +
+        (parseFloat(cs.paddingRight) || 0);
+      return bar.clientWidth - used;
+    };
+    const measure = () => {
+      setTightBar((folded) =>
+        folded
+          ? crumbs.scrollWidth > crumbs.clientWidth + 1 || freeInBar() < 150
+          : crumbs.scrollWidth > crumbs.clientWidth + 1
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(bar);
+    ro.observe(crumbs);
+    return () => ro.disconnect();
+  });
+
+  // The pin is a request to type: focus follows it in the same interaction.
+  useEffect(() => {
+    if (pinnedOpen) searchInputRef.current?.focus();
+  }, [pinnedOpen]);
 
   // No "Up" BUTTON beside the search box any more: the crumb strip above is
   // the same hop with a target the user can name, and the keyboard keeps its
@@ -1167,7 +1234,32 @@ export default function Listing({
                #breadcrumb:has(.listing-search.searching) in explorer.css.
                Nothing to hand upward: the row is portaled INTO the bar, so a
                class on the row is already inside the bar's subtree. */
-            <div className={"listing-search" + (searching ? " searching" : "")}>
+            <div
+              ref={searchRowRef}
+              className={
+                "listing-search" +
+                (searching ? " searching" : "") +
+                (tightBar && !searching && !pinnedOpen ? " iconized" : "")
+              }
+            >
+              {/* Tight bar (see the measurement above): the resting box is
+                  folded away by .iconized and this magnifier stands in for it.
+                  Clicking pins the box open and focuses it; blurring it still
+                  empty hands the strip back to the path. */}
+              {tightBar && !searching && !pinnedOpen && (
+                <button
+                  type="button"
+                  className="bar-ctl listing-search-open"
+                  aria-label="Search this folder"
+                  title="Search"
+                  onClick={() => setPinnedOpen(true)}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" />
+                    <line x1="16.5" y1="16.5" x2="21" y2="21" />
+                  </svg>
+                </button>
+              )}
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
             `has-pin` says a chip is actually pinned right now, so the input
@@ -1193,11 +1285,22 @@ export default function Listing({
                   placeholder="Search…"
                   value={query}
                   onFocus={prefetchWalk}
+                  // A pinned-open box that blurs still empty folds back to the
+                  // magnifier (the pin exists only to be typed into); with a
+                  // query it stays — .searching owns the strip from there.
+                  onBlur={(e) => {
+                    if (!e.currentTarget.value) setPinnedOpen(false);
+                  }}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       e.preventDefault();
                       setQuery("");
+                      // Explicit, not left to onBlur: the blur below fires
+                      // before React writes the cleared value into the DOM,
+                      // so the handler would read the pre-Esc query and keep
+                      // the pin.
+                      setPinnedOpen(false);
                       e.currentTarget.blur();
                     }
                   }}
