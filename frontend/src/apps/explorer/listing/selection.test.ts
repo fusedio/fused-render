@@ -77,15 +77,88 @@ describe("autoSelectPath", () => {
       ["b.txt", false],
     ]);
 
-  test("the folder picks its own first entry, dirs included", () => {
+  test("a page anywhere in the folder wins over the first row", () => {
+    // D263: the pane is there to SHOW something, and a page is the one row in
+    // an ordinary folder that renders as itself. Row one is still the fallback,
+    // not the rule.
+    const { paths, byPath } = rows([
+      ["src", true],
+      ["a.txt", false],
+      ["index.html", false],
+      ["z.txt", false],
+    ]);
+    expect(autoSelectPath(paths, byPath)).toBe("/d/index.html");
+  });
+
+  test("the FIRST page in rendered order, never a favourite name", () => {
+    // Deliberately not "index.html if there is one": the choice follows the
+    // active sort, so the row that wins is the one nearest the top of the table
+    // the user is looking at. Reversing the sort reverses the answer.
+    const { paths, byPath } = rows([
+      ["about.html", false],
+      ["index.html", false],
+    ]);
+    expect(autoSelectPath(paths, byPath)).toBe("/d/about.html");
+    const rev = rows([
+      ["index.html", false],
+      ["about.html", false],
+    ]);
+    expect(autoSelectPath(rev.paths, rev.byPath)).toBe("/d/index.html");
+  });
+
+  test("a page already at the top is simply the first row", () => {
+    const { paths, byPath } = rows([
+      ["index.html", false],
+      ["a.txt", false],
+    ]);
+    expect(autoSelectPath(paths, byPath)).toBe("/d/index.html");
+  });
+
+  test(".htm counts as a page", () => {
+    // The permissive reading, and the opposite call from lib/folder-app's app
+    // gate — see the comment on autoSelectPath for why the two differ.
+    const { paths, byPath } = rows([
+      ["a.txt", false],
+      ["page.htm", false],
+    ]);
+    expect(autoSelectPath(paths, byPath)).toBe("/d/page.htm");
+  });
+
+  test("the extension match is case-insensitive", () => {
+    const { paths, byPath } = rows([
+      ["a.txt", false],
+      ["PAGE.HTML", false],
+    ]);
+    expect(autoSelectPath(paths, byPath)).toBe("/d/PAGE.HTML");
+  });
+
+  test("a DIRECTORY named like a page is not a page", () => {
+    // `foo.html` as a folder is a real shape (an exported site tree). Selecting
+    // it would peek a directory in place of the file the user can see, so the
+    // kind is checked, not the name.
+    const { paths, byPath } = rows([
+      ["src", true],
+      ["build.html", true],
+      ["a.txt", false],
+    ]);
+    expect(autoSelectPath(paths, byPath)).toBe("/d/src");
+  });
+
+  test("no page falls back to the first entry, dirs included", () => {
     const { paths, byPath } = folder();
     expect(autoSelectPath(paths, byPath)).toBe("/d/src");
   });
 
+  test("a page with no rendered row cannot be selected", () => {
+    // Same rule as firstEntryPath's: a path that is not on screen is not a
+    // candidate, so the search falls through to the first row that is.
+    const { byPath } = rows([["a.txt", false]]);
+    expect(autoSelectPath(["/d/ghost.html", "/d/a.txt"], byPath)).toBe("/d/a.txt");
+  });
+
   test("nothing in the URL can claim the selection", () => {
     // The `?sel` param is gone (useListingSelection documents why), so this
-    // decision has no input but the rows: every folder open lands on its first
-    // entry, whatever the address bar happens to carry.
+    // decision has no input but the rows.
     // (autoSelectPath takes no URL argument at all any more — that IS the pin.)
     const { paths, byPath } = folder();
     expect(autoSelectPath(paths, byPath)).toBe("/d/src");

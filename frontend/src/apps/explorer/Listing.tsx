@@ -550,11 +550,12 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // Opening a folder lands on its FIRST ENTRY — file or directory (rendered
-  // order — see autoSelectPath / firstEntryPath), so the pane shows something
-  // instead of the folder's own "Select a file to preview." hint. A pane that opens empty
-  // asks the user to do the obvious thing before it will do anything at all; a
-  // folder is overwhelmingly opened to look at what is in it.
+  // Opening a folder lands on its first PAGE, or on its first entry — file or
+  // directory — when it has none (rendered order both ways; the rule and its
+  // reasons are on autoSelectPath). Either way the pane shows something instead
+  // of the folder's own "Select a file to preview." hint. A pane that opens
+  // empty asks the user to do the obvious thing before it will do anything at
+  // all; a folder is overwhelmingly opened to look at what is in it.
   //
   // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
   // the decision. The shot is taken at the first settled non-search listing WITH THE
@@ -595,9 +596,9 @@ export default function Listing({
   // silently when something already holds the selection at the moment the
   // guards are first met (`selectionClaimed`). That is exactly the scaffold
   // click above — the user clicked row five during a slow mount, the resolved
-  // listing settled, and row one used to land on top of it. The decision half
-  // (autoSelectPath) stays blind to the selection (D240); this is a condition
-  // on WHEN to ask, which is this effect's half.
+  // listing settled, and the auto-selection used to land on top of it. The
+  // decision half (autoSelectPath) stays blind to the selection (D240); this is
+  // a condition on WHEN to ask, which is this effect's half.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;
