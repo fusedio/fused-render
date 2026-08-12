@@ -202,6 +202,11 @@ export function useMarquee({
     // sweep.
     const path = pressed.row?.getAttribute(DROP_PATH_ATTR) ?? null;
     if (path !== null && pressStartsDrag({ rowWasSelected: selRef.current.includes(path) })) {
+      // A pre-slop press abandoned outside the scroller (see the pointerleave
+      // handler below) can leave nothing behind — but mouse pointer ids are
+      // reused, so any state that DID survive here would match this new
+      // press's moves and resurrect a dead sweep under the drag.
+      drag.current = null;
       dragRef.current({
         path,
         pointerId: e.pointerId,
@@ -299,14 +304,26 @@ export function useMarquee({
       // one per frame.
     };
 
+    // A press that leaves the scroller BEFORE passing the slop is abandoned:
+    // capture is only taken once a sweep goes live (sweepTo), so a pre-slop
+    // exit means the move/up listeners above stop hearing this pointer and the
+    // press could never finish. Without this, the stale state waits for the
+    // next press — and mouse pointer ids are reused, so it would match. An
+    // ACTIVE sweep is captured and never sees pointerleave, so only the
+    // degenerate press-at-the-edge gesture is given up.
+    const onLeave = () => {
+      if (drag.current && !drag.current.active) drag.current = null;
+    };
     scroller.addEventListener("pointermove", onMove);
     scroller.addEventListener("pointerup", onUp);
     scroller.addEventListener("pointercancel", onUp);
+    scroller.addEventListener("pointerleave", onLeave);
     return () => {
       stopScrollLoop();
       scroller.removeEventListener("pointermove", onMove);
       scroller.removeEventListener("pointerup", onUp);
       scroller.removeEventListener("pointercancel", onUp);
+      scroller.removeEventListener("pointerleave", onLeave);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
