@@ -67,6 +67,11 @@ _state_lock = threading.Lock()
 
 #: Set by `/cancel`. Long-running work checks it; what "stop" means is the
 #: runner's to decide (a token loop breaks, a denoiser raises).
+#:
+#: Cleared by whichever generation OWNS `GENERATE_LOCK`, never by the handler on
+#: its way in: a second request arriving while the first is generating would
+#: otherwise erase the ✕ just pressed for the first, which then runs to
+#: completion under a Stop that appeared to work.
 CANCEL = threading.Event()
 
 #: One generation at a time. A laptop has one GPU, and neither mlx's model
@@ -457,7 +462,12 @@ def _handler(generate, streaming):
                 if snapshot()["state"] != "ready":
                     self._json({"error": "the model is not loaded"}, status=409)
                     return
-                CANCEL.clear()
+                # NOT cleared here. `CANCEL` belongs to the generation that is
+                # RUNNING, and this handler may be a second request waiting for
+                # `GENERATE_LOCK`: clearing before the lock erases the ✕ the
+                # user just pressed for the first one, which then runs to
+                # completion under a Stop that appeared to work. Each generation
+                # clears the flag once it owns the lock — see `_generation`.
                 if streaming:
                     self._stream(body)
                 else:
@@ -472,6 +482,7 @@ def _handler(generate, streaming):
             would buy nothing — its progress is steps, and those go to the job
             row where the download manager can already draw them."""
             with GENERATE_LOCK:
+                CANCEL.clear()
                 try:
                     self._json({"ok": True, "result": generate(body)})
                 except Cancelled:
@@ -494,6 +505,7 @@ def _handler(generate, streaming):
                 self.wfile.flush()
 
             with GENERATE_LOCK:
+                CANCEL.clear()
                 try:
                     generate(body, write)
                 except BaseException as e:  # noqa: BLE001 - must reach the client

@@ -759,9 +759,7 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     scan = _scan_repo(repo_dir)
     meta = _repo_meta(repo_dir)
     return {
-        # "models--openai--whisper-small" -> "openai/whisper-small". A bare
-        # repo id (no org) has one segment and comes back unchanged.
-        "id": "/".join(dirname.split("--")[1:]),
+        "id": _repo_id_of(dirname),
         # The cache folder name, which is what a delete request names (never a
         # path — see the module docstring).
         "dir": dirname,
@@ -857,6 +855,16 @@ def _segment(name: object, what: str) -> str:
     return name
 
 
+def _repo_id_of(dirname: str) -> str:
+    """`models--openai--whisper-small` -> `openai/whisper-small`.
+
+    One derivation, because two things ask it now: the listing labels a card
+    with it, and the delete endpoint asks the supervisor whether THAT id is
+    loaded. A bare repo id (no org) has one segment and comes back unchanged.
+    """
+    return "/".join(dirname.split("--")[1:])
+
+
 def _resolve_repo_dir(cache_dir: str, name: object) -> str:
     """The absolute path of a cache repo folder named by a request. Read paths
     accept a symlinked folder; `_require_deletable` is what refuses it."""
@@ -875,6 +883,31 @@ def _require_deletable(repo_dir: str) -> None:
             f"{os.path.basename(repo_dir)} is a symlink into another location — "
             "delete it where the files really live"
         )
+
+
+def _require_not_in_use(dirname: str) -> None:
+    """Refuse to delete files a worker is loading, holding, or fetching.
+
+    This module owns the cache and the supervisor owns the processes, and until
+    now neither asked the other anything. Deleting a repo mid-load removes the
+    shards `from_pretrained` is still reading, and the error arrives minutes
+    later looking like a corrupt model; deleting a RESIDENT model is quieter and
+    worse, because the weights are already mapped — on POSIX the delete succeeds,
+    the page says the model is gone, and it keeps answering until an unload
+    makes the bytes disappear for real.
+
+    Checked at the endpoint rather than trusted to a disabled button: the button
+    is the courtesy, this is the guarantee (MD-11). Imported at call time — this
+    module must stay usable on a machine with no runners at all.
+    """
+    from fused_render.ai import supervisor
+
+    reason = supervisor.busy_reason(_repo_id_of(dirname))
+    if reason is None:
+        return
+    remedy = ("Unload it first." if reason == "in memory"
+              else "Wait for it to finish, or cancel it in the download manager.")
+    raise _TargetError(f"{_repo_id_of(dirname)} is {reason}. {remedy}")
 
 
 # -- deletion ------------------------------------------------------------------
@@ -1054,6 +1087,10 @@ def api_ai_models_delete(body: dict = Body(...), x_fused: str | None = Header(de
         try:
             repo_dir = _resolve_repo_dir(cache_dir, name)
             _require_deletable(repo_dir)
+            # Both kinds: a revision of a loaded model is the revision it is
+            # holding open, so "just one revision" is not the safer request it
+            # looks like.
+            _require_not_in_use(os.path.basename(repo_dir))
             # `revision is None` is the whole repo; anything else is a revision
             # and must survive _segment. Testing truthiness instead would turn a
             # malformed revision ("", 0) into "delete the entire repo" — the

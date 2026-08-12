@@ -168,6 +168,15 @@ _workers: dict[str, Worker] = {}
 #: pure Download reported progress that nothing was reading, and the sidebar
 #: showed a quiet machine that was pulling 8GB.
 _downloads: dict[str, dict] = {}
+#: model -> the download-only WORKER fetching it, for as long as it is running.
+#:
+#: `_downloads` above is what `describe()` publishes and holds no process
+#: handle; this holds the handle and is published nowhere. Two tables because a
+#: weights-only fetch is the one worker that never enters `_workers` — it evicts
+#: nothing and holds no memory — and that is exactly how it came to outlive the
+#: app: `unload_all()` walked the residents at shutdown, found none, and left a
+#: detached `snapshot_download` pulling gigabytes with nothing left to stop it.
+_fetch_workers: dict[str, Worker] = {}
 #: Every token handed to a live worker. A worker reports its own download
 #: progress to `/api/jobs` under a `sys:` id, which pages are forbidden from
 #: writing — so the endpoint has to be able to tell a worker from a page, and
@@ -469,6 +478,36 @@ def _report(job: str, **fields) -> None:
         pass
 
 
+def _require_build_tools() -> None:
+    """Refuse a load this machine cannot possibly build an environment for.
+
+    Checked BEFORE a job row is opened, so a missing prerequisite is a 409 on
+    the request with a sentence the page can show — not a row that appears, sits
+    at "Preparing…", and dies with somebody's import error in it.
+
+    Two things, and the second is the one that surprised us. `uv` is obvious.
+    The **`fused` package** is not: `envinstall` is the loader for the fused
+    engine (PY-18) and reads the base interpreter off that engine's live backend
+    (`engine.get_backend()`, a hard import of `fused`), so a machine running the
+    builtin engine cannot build ANY project venv — including a runner's. The
+    symptom was a bare "ModuleNotFoundError: No module named 'fused'" on a
+    download card, which says nothing about what to install or why a model
+    download wanted it. The wording matches `_forced_engine`'s, because it is
+    the same package and the same remedy.
+    """
+    if not shutil.which("uv"):
+        raise SupervisorError("uv is not available, so the model environment cannot be built")
+    from fused_render import engine
+
+    if not engine.available():
+        raise SupervisorError(
+            "running a model needs the `fused` package: runner environments are "
+            "built by the install loader, which builds them on the interpreter "
+            "the fused engine runs code with. Install it with "
+            "`pip install 'fused-render[fused]'`"
+        )
+
+
 def _failure_text(e: BaseException) -> str:
     """What to put on a failed job row, for any exception a bring-up threw.
 
@@ -556,7 +595,14 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
         # doing the downloading and the loading — so its /health is the source
         # of truth and it reports its own byte counts to the same job row.
         while True:
-            if worker.stopping:
+            # BOTH, and the second is the one a user actually presses. `stopping`
+            # is set by an eviction or an explicit unload — things the server
+            # decided. The ✕ on the download row sets `cancel_requested` on the
+            # JOB, which the env-build loop above already honours; without it
+            # here, pressing ✕ during the phase that actually takes the time —
+            # the multi-GB fetch the worker is doing — did nothing at all, and
+            # the download ran to completion under a row that said cancelled.
+            if worker.stopping or _cancel_requested(job):
                 raise SupervisorError("cancelled")
             if not _alive(worker):
                 raise SupervisorError("the model process exited while loading")
@@ -625,6 +671,11 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         )
         stub.pid = proc.pid
         stub.proc = proc
+        # Registered only once there IS a process to stop, and dropped in the
+        # `finally` below whatever happens — a handle for a dead pid is worse
+        # than none, because shutdown would signal it.
+        with _lock:
+            _fetch_workers[model] = stub
         while proc.poll() is None:
             if stub.stopping or _cancel_requested(job):
                 _terminate(stub)
@@ -643,6 +694,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         with _lock:
             _worker_tokens.discard(stub.token)
             _downloads.pop(model, None)
+            _fetch_workers.pop(model, None)
         _cleanup_files(stub)
 
 
@@ -663,8 +715,7 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             known.available().reason if known
             else f"no runner provides {capability!r}"
         )
-    if not shutil.which("uv"):
-        raise SupervisorError("uv is not available, so the model environment cannot be built")
+    _require_build_tools()
 
     job = job_id_for(model)
     if weights_only:
@@ -732,8 +783,7 @@ def start_image(model: str, request: dict, job: str) -> None:
         raise SupervisorError(
             known.available().reason if known
             else f"no runner provides {registry.IMAGE_GENERATION!r}")
-    if not shutil.which("uv"):
-        raise SupervisorError("uv is not available, so the model environment cannot be built")
+    _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
     _report(job, title=title[:80], state="running", kind="task", cancellable=True,
@@ -773,8 +823,48 @@ def unload(model: str | None = None, capability: str | None = None) -> bool:
 
 
 def unload_all() -> None:
-    """Server shutdown: nothing may outlive the app holding gigabytes."""
+    """Server shutdown: nothing may outlive the app.
+
+    Residents AND weights-only fetches. A download holds no memory, so it was
+    not in the table `unload()` walks — and the consequence was the opposite of
+    harmless: quitting the app left a detached `snapshot_download` pulling
+    gigabytes, with the one thing that could stop it gone. The user's remedy was
+    Activity Monitor.
+
+    Its thread notices `stopping` within its half-second poll and reports the
+    row cancelled, but shutdown does not wait for that: `_terminate` is what
+    makes the process actually go, and the row is about to be forgotten anyway.
+    """
     unload()
+    with _lock:
+        fetching = list(_fetch_workers.values())
+    for stub in fetching:
+        stub.stopping = True
+        _terminate(stub)
+
+
+def busy_reason(model: str) -> str | None:
+    """Why `model`'s files must not be deleted right now, or None.
+
+    The deletion endpoint owns the cache and the supervisor owns the processes,
+    and neither could see the other: `shutil.rmtree` over a repo a worker is
+    mid-`from_pretrained` on removes the shards it is still reading, and the
+    failure surfaces minutes later as a corrupt-looking model rather than as
+    "you deleted it". A resident model is worse — the weights are mapped, so on
+    POSIX the delete "succeeds", the card says the model is gone, and it goes on
+    answering until something unloads it and the bytes vanish for real.
+
+    A REASON rather than a bool, because the endpoint says it out loud: "unload
+    it first" and "wait for the download to finish" are different instructions.
+    """
+    with _lock:
+        for worker in _workers.values():
+            if worker.model == model:
+                return ("in memory" if worker.state == "ready"
+                        else f"being loaded ({worker.state})")
+        if model in _downloads:
+            return "being downloaded"
+    return None
 
 
 def ready_worker(capability: str, model: str | None = None) -> Worker | None:

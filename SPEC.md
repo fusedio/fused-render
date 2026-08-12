@@ -5764,6 +5764,41 @@ an AI Models page that could say what was on disk but not what was *running*.
   names this exact failure; this was a caller that recomputed it anyway. It
   therefore also runs **rounds**: every other caller of that loader is a page
   that re-POSTs for the second round, and there is no page here.
+- **AI-5e** **The ✕ reaches every phase, and shutdown reaches every process.**
+  Two halves of "the supervisor owns it, so the supervisor can really stop it"
+  (D258), each of which had a hole. **Cancel**: `stopping` is set by an eviction
+  or an explicit unload — things the SERVER decided — while what a user presses
+  sets `cancel_requested` on the JOB. The env-build loop honoured that and the
+  post-spawn loop did not, so a ✕ during the phase that actually takes the time
+  (the multi-GB fetch the worker is doing) did nothing at all and the download
+  ran to completion under a row that said cancelled. Both loops read both.
+  **Shutdown**: `unload_all()` walked the RESIDENT table, and a weights-only
+  fetch is deliberately not in it — it evicts nothing and holds no memory — so
+  quitting the app left a detached `snapshot_download` pulling gigabytes with
+  the only thing that could stop it gone. The fetch's process handle is kept in
+  its own table, published nowhere, and shutdown terminates those too.
+- **AI-5f** **Deleting a model's files asks the supervisor first.** The cache
+  endpoint owns the bytes and the supervisor owns the processes, and neither
+  could see the other. Deleting a repo mid-load removes the shards
+  `from_pretrained` is still reading and the error surfaces minutes later
+  looking like a corrupt model; deleting a RESIDENT one is quieter and worse,
+  because the weights are already mapped — on POSIX the delete succeeds, the
+  page says the model is gone, and it goes on answering until an unload makes
+  the bytes vanish for real. `busy_reason(model)` returns a SENTENCE, not a
+  bool, because the instructions differ ("unload it first" vs "wait for the
+  download"), and a revision is refused on the same grounds as a repo: the
+  revision a resident worker holds open is not the safer target it looks like.
+  The button is disabled for the same reason and is the courtesy; the endpoint
+  is the guarantee (MD-11).
+- **AI-5g** **A prerequisite this machine lacks is stated at the REQUEST.**
+  `uv`, and — less obviously — the **`fused` package**: `envinstall` is the
+  loader for the fused engine (PY-18) and reads the base interpreter off that
+  engine's live backend, so a machine running the builtin engine cannot build
+  any runner venv at all. Unchecked, that surfaced as a bare
+  "ModuleNotFoundError: No module named 'fused'" on a model download card, which
+  names neither what to install nor why a download wanted it. Both are knowable
+  before a job row exists, so both are a 409 on the request with a sentence the
+  page can show.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
   so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
   linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking

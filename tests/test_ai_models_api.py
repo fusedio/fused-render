@@ -537,6 +537,44 @@ def test_delete_requires_the_write_guard(client, hub):
     assert repo.exists()
 
 
+def test_a_model_in_use_is_not_deleted(client, hub, monkeypatch):
+    """The cache and the processes are two owners of the same files.
+
+    `shutil.rmtree` over a repo a worker is mid-`from_pretrained` on removes the
+    shards it is still reading, and the error arrives minutes later looking like
+    a corrupt model. Deleting a RESIDENT one is quieter and worse: the weights
+    are already mapped, so on POSIX the delete succeeds, the page says the model
+    is gone, and it answers on until something unloads it.
+    """
+    from fused_render.ai import supervisor
+
+    repo = _repo(hub, "models--org--live", blobs={"a": 100})
+    monkeypatch.setattr(supervisor, "busy_reason",
+                        lambda model: "in memory" if model == "org/live" else None)
+
+    r = _delete(client, [{"dir": "models--org--live"}])
+    assert r.status_code == 200
+    (failure,) = r.json()["failures"]
+    assert "in memory" in failure["error"] and "Unload it first" in failure["error"]
+    assert repo.exists(), "the files were deleted out from under a live worker"
+    assert r.json()["freed"] == 0
+
+
+def test_a_revision_of_a_model_in_use_is_not_deleted_either(client, hub, monkeypatch):
+    """"Just one revision" is not the safer request it looks like — it is the
+    revision the resident worker has open."""
+    from fused_render.ai import supervisor
+
+    repo = _repo(hub, "models--org--live", blobs={"a": 100},
+                 snapshots={"abc": {"model.bin": "a"}})
+    monkeypatch.setattr(supervisor, "busy_reason", lambda model: "being downloaded")
+
+    r = _delete(client, [{"dir": "models--org--live", "revision": "abc"}])
+    (failure,) = r.json()["failures"]
+    assert "being downloaded" in failure["error"]
+    assert (repo / "snapshots" / "abc").exists()
+
+
 def test_delete_needs_a_non_empty_target_list(client, hub):
     assert _delete(client, []).status_code == 400
     assert client.post("/api/ai-models/delete", json={}, headers={"X-Fused": "1"}).status_code == 400

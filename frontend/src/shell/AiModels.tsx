@@ -276,6 +276,7 @@ function RepoCard({
   loaded,
   job,
   busy,
+  fetching,
   canLoad,
   onToggle,
   onDeleteRepo,
@@ -290,6 +291,8 @@ function RepoCard({
   /** Its download-manager row, while a bring-up is running. */
   job: Job | undefined;
   busy: boolean;
+  /** True while a weights-only fetch for this repo is in flight. */
+  fetching: boolean;
   /** False when no runner here serves this kind of model — the control is then
    *  not offered at all, rather than offered and always failing. */
   canLoad: boolean;
@@ -304,6 +307,19 @@ function RepoCard({
   // endpoint), so the card states the date this machine actually knows.
   const added = timeAgo(repo.added);
   const live = loaded?.state === "ready";
+  // Why Delete is not offered right now, or "". Deleting files a worker is
+  // reading or holding open corrupts a load in progress, and on a RESIDENT
+  // model it is quieter and worse — the weights are already mapped, so the
+  // delete appears to work and the model answers on until something unloads it.
+  // The server refuses these too (`_require_not_in_use`); this is so the answer
+  // arrives before the confirm dialog rather than after it.
+  const inUse = live
+    ? "in memory — unload it first"
+    : loaded
+      ? `being loaded (${loaded.state})`
+      : fetching
+        ? "being downloaded"
+        : "";
   return (
     <div className={"cc-mdcard am-card" + (live ? " am-card-loaded" : "")}>
       <div className="cc-mdcard-head">
@@ -500,8 +516,9 @@ function RepoCard({
           <button
             type="button"
             className="cc-iconbtn cc-iconbtn-danger"
-            title={`Delete ${repo.id}`}
+            title={inUse ? `Cannot delete ${repo.id}: ${inUse}` : `Delete ${repo.id}`}
             aria-label={`Delete ${repo.id}`}
+            disabled={!!inUse}
             onClick={onDeleteRepo}
           >
             <svg
@@ -861,6 +878,7 @@ export default function AiModels() {
                   loaded={loadedById.get(r.id)}
                   job={jobByModel.get(r.id)}
                   busy={busy}
+                  fetching={downloading.has(r.id)}
                   canLoad={canLoad(r)}
                   onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
                   onDeleteRepo={() => setPending({ kind: "repo", repo: r })}

@@ -184,7 +184,11 @@ def fake_runner(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
-    monkeypatch.setattr(supervisor.shutil, "which", lambda name: "/usr/bin/uv")
+    # The prerequisites (`uv`, the `fused` package) are a fact about the
+    # MACHINE, and these tests are about the supervisor. Stubbed rather than
+    # faked piecemeal so the suite passes identically on a host that has
+    # neither — the check itself is tested on its own, below.
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
     yield runner
     supervisor.unload()
     supervisor.reset()
@@ -203,7 +207,11 @@ def fake_image_runner(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
-    monkeypatch.setattr(supervisor.shutil, "which", lambda name: "/usr/bin/uv")
+    # The prerequisites (`uv`, the `fused` package) are a fact about the
+    # MACHINE, and these tests are about the supervisor. Stubbed rather than
+    # faked piecemeal so the suite passes identically on a host that has
+    # neither — the check itself is tested on its own, below.
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
     yield runner
     supervisor.unload()
     supervisor.reset()
@@ -478,6 +486,82 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     # TWO rounds: the interpreter, then the packages. One would have installed a
     # python and then waited for packages nobody had asked for.
     assert len(rounds) == 2
+
+
+def test_the_cross_pressed_during_the_download_stops_the_load(fake_runner, monkeypatch):
+    """The ✕ has to reach the phase that actually takes the time.
+
+    `stopping` is set by an eviction or an explicit unload — things the SERVER
+    decided. What a user presses is the ✕ on the row, which sets
+    `cancel_requested` on the JOB. The env-build loop honoured it and the
+    post-spawn loop did not, so a cancel during the multi-GB fetch (i.e. every
+    cancel anyone would ever press) did nothing and the download finished.
+    """
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "30")  # never becomes ready on its own
+    started = supervisor.load("org/slow", registry.TEXT_GENERATION)
+    # Wait until it is past the spawn and into the loop this test is about.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if any(w["state"] in ("starting", "loading")
+               for w in supervisor.describe()["loaded"]):
+            break
+        time.sleep(0.02)
+
+    jobs.request_cancel(started["jobId"])
+
+    row = _row(started["jobId"])
+    assert row["state"] == "cancelled"
+    assert supervisor.describe()["loaded"] == []
+
+
+def test_shutdown_stops_a_download_that_is_still_running(fake_runner, monkeypatch):
+    """A fetch holds no memory, so it was in no table shutdown walked.
+
+    The consequence was not harmless: quitting the app left a detached
+    `snapshot_download` pulling gigabytes with nothing left that could stop it.
+    """
+    monkeypatch.setenv("FAKE_DOWNLOAD_SECONDS", "30")
+    supervisor.load("org/bigpull", registry.TEXT_GENERATION, weights_only=True)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if supervisor._fetch_workers.get("org/bigpull", None) is not None:
+            break
+        time.sleep(0.02)
+    stub = supervisor._fetch_workers.get("org/bigpull")
+    assert stub is not None and stub.proc is not None, "the fetch never registered"
+
+    supervisor.unload_all()
+
+    # `poll()`, never `wait()`: `_terminate` reaps the child itself, and a second
+    # `wait()` on an already-reaped Popen trips its own internal assertion.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and stub.proc.poll() is None:
+        time.sleep(0.02)
+    assert stub.proc.poll() is not None, "the downloader outlived the app"
+
+
+def test_a_prerequisite_this_machine_lacks_is_said_before_a_row_opens(monkeypatch):
+    """`uv` and the `fused` package, refused at the REQUEST.
+
+    A missing prerequisite used to surface as somebody's import error inside a
+    thread, on a card that had already said "Preparing…" — "ModuleNotFoundError:
+    No module named 'fused'" on a model download tells a user nothing about what
+    to install. `envinstall` is the loader for the fused ENGINE and reads the
+    base interpreter off that engine's backend, so a machine without the package
+    cannot build a runner venv at all, and that is knowable up front.
+    """
+    from fused_render import engine
+
+    monkeypatch.setattr(supervisor.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(engine, "available", lambda: False)
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor._require_build_tools()
+    assert "fused-render[fused]" in str(caught.value)
+
+    monkeypatch.setattr(supervisor.shutil, "which", lambda name: None)
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor._require_build_tools()
+    assert "uv" in str(caught.value)
 
 
 def test_a_page_cannot_post_to_a_server_owned_id(client):

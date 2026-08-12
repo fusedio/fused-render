@@ -56,11 +56,17 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
-            "size_gb": 8.5,
-            "note": "27B at roughly two bits per weight, so it costs about what "
-                    "Gemma 3 12B does on disk. Tight on 16GB — close other heavy "
-                    "apps first. Ternary quantization is new, so measure it "
-                    "against a 4-bit model you already trust.",
+            # 6.1, not the 8.5 the Hub's file listing adds up to: this is what
+            # the completed download MEASURES on disk, reported by the AI Models
+            # page's own scan. Where the two disagree the measurement wins —
+            # every other number on this page is bytes on a real filesystem, and
+            # a suggestion that overstates by 2.4GB is the one figure someone
+            # plans a download around.
+            "size_gb": 6.1,
+            "note": "27B at roughly two bits per weight, so it costs less on "
+                    "disk than Gemma 3 12B. Comfortable on 16GB. Ternary "
+                    "quantization is new, so measure it against a 4-bit model "
+                    "you already trust.",
         },
     ],
     registry.IMAGE_GENERATION: [
