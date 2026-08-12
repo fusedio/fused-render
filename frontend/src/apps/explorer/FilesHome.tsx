@@ -270,7 +270,9 @@ function FilesSearch({
   // for the rest of the session — while the index was in fact built. The home
   // page has no live walk to fall back on, so switching search OFF is the worst
   // available outcome: a corpus one rename stale beats no corpus at all.
-  // (useWalkSearch keeps the gate because it HAS a live walk to prefer.)
+  // (useWalkSearch keeps the gate: it has a live walk that can answer the
+  // renamed folder correctly, and racing the index against that walk does not
+  // change the calculus — the index would win the race with the wrong name.)
   const [mutations, setMutations] = useState(fsMutationCount);
   useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
   // Bumped by a real gesture (typing) to re-run a failed fetch. Without it a

@@ -253,9 +253,23 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
       startWalk();
     };
     // A folder this app has already marked dirty is decided before any
-    // request: the index is not merely slower here, it is WRONG (it would
-    // offer the pre-rename name), so there is nothing to race — see the note
-    // on the resolution-time check below.
+    // request, and the walk race above does NOT soften that.
+    //
+    // The race was the reason to revisit this gate: with the walk running
+    // anyway, refusing the index looks like it only costs latency. It does
+    // not. The index is not slower here, it is WRONG — its corpus predates
+    // the rename, so it would answer with the old name — and it would win the
+    // race handily, because answering from a corpus already on disk is exactly
+    // what it is fast at. A race fixes a slow answer, never a false one.
+    //
+    // Narrowing the gate to the mutated folder itself is not available either:
+    // in-folder search is recursive, so a rename anywhere below `fsPath`
+    // poisons its corpus, and a renamed ANCESTOR moves every path inside it.
+    // Both directions of lib/index-freshness's check are load-bearing (its
+    // test file pins them). The documented cost stands: one rename pins this
+    // folder and its ancestors to the live walk for the session, which the
+    // home page rightly refuses to pay because it has no walk to fall back
+    // on (see FilesHome) and which this box can afford because it does.
     if (!indexMayAnswer(fsPath)) {
       startWalk();
     } else {
