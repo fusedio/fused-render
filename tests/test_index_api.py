@@ -758,6 +758,7 @@ def test_a_stale_open_folder_gets_its_configured_root_rescanned(
     monkeypatch.setattr(index_router.runner, "start",
                         lambda cfg, root, full=False: started.append(root)
                         or {"run_id": "r1", "root": root})
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
     src = _tree(tmp_path)
     cfg = load_config()
     cfg.roots = [str(src)]
@@ -768,6 +769,47 @@ def test_a_stale_open_folder_gets_its_configured_root_rescanned(
     monkeypatch.setattr(index_router.freshness, "QUIET_S", 0.0)
     index_router._run_freshness_check(str(sub))
     assert started == [str(src)]
+
+
+def test_a_root_checked_moments_ago_is_not_checked_again(home, tmp_path,
+                                                         monkeypatch):
+    """The in-flight lock drops OVERLAPPING checks, not the ones that follow —
+    so browsing folder to folder checked (and could rescan) on every open, and
+    every scan that completed invalidated every corpus the client had fetched.
+    A root is now checked at most once per FRESHNESS_CHECK_S."""
+    checked = []
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots: checked.append(path) or None)
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router._run_freshness_check(str(src / "sub"))
+    # A second folder UNDER THE SAME ROOT is the same question: a scan is per
+    # root, so checking again buys nothing.
+    index_router._run_freshness_check(str(src))
+    assert checked == [str(src / "sub")]
+    # ...and it comes back round once the window has passed.
+    index_router._freshness_checked[str(src)] -= index_router.FRESHNESS_CHECK_S + 1
+    index_router._run_freshness_check(str(src))
+    assert checked == [str(src / "sub"), str(src)]
+
+
+def test_a_folder_outside_every_root_never_reaches_the_index(home, tmp_path,
+                                                             monkeypatch):
+    """Cheapest gate first: no enclosing root means no scan is possible, so the
+    duckdb lookup behind note_folder_opened must not be paid at all."""
+    checked = []
+    monkeypatch.setattr(index_router, "_freshness_checked", {})
+    monkeypatch.setattr(index_router.freshness, "note_folder_opened",
+                        lambda cfg, path, roots: checked.append(path) or None)
+    src = _tree(tmp_path)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router._run_freshness_check(str(tmp_path.parent))
+    assert checked == []
 
 
 # -- guarded SQL ---------------------------------------------------------------
