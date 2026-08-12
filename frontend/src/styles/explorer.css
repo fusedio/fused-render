@@ -1225,8 +1225,14 @@ table.listing-table tr.skel-row:hover {
    input silently refuses focus and the feature dies while folded. The
    negative margin swallows the row's 8px gap, so the zero-width item leaves
    no seam. Never coexists with .searching: a non-empty query un-folds by
-   definition. */
-.listing-search.iconized .listing-search-box {
+   definition.
+
+   Scoped under the slot for specificity, not for scope (the fold only exists
+   in slot mode anyway): the `.has-pin` width rule below is (0,3,0) and later
+   in the file, so at equal specificity a narrow-bar multi-selection would
+   win the cascade and reopen a 260px hole the fold had just reclaimed —
+   invisible, because this rule's opacity would still apply. */
+.crumb-search-slot .listing-search.iconized .listing-search-box {
   flex: 0 0 0px;
   width: 0;
   min-width: 0;
