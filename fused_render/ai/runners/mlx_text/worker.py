@@ -53,6 +53,32 @@ def load(model_id, path):
     _loaded["tokenizer"] = tokenizer
 
 
+def memory():
+    """What MLX itself says it is holding, in bytes.
+
+    RSS alone is wrong here, and this is the backend that proves it: MLX
+    memory-maps the weight files and its arrays are lazy, so immediately after a
+    load the process has touched almost none of them — RSS reported 379 MB for a
+    6.1 GB model. The allocator knows what it reserved whether or not the pages
+    have faulted in, so it is the honest figure to offer; `worker_base` takes
+    the larger of this and RSS (neither is a superset of the other).
+
+    `get_active_memory` moved out of `mlx.core.metal` into `mlx.core` and the
+    old spelling is deprecated, so both are tried — a version skew should cost
+    the better number, not raise inside `/health`.
+    """
+    import mlx.core as mx
+
+    for probe in (getattr(mx, "get_active_memory", None),
+                  getattr(getattr(mx, "metal", None), "get_active_memory", None)):
+        if probe is None:
+            continue
+        value = probe()
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -107,4 +133,5 @@ def generate(body, write):
 
 
 if __name__ == "__main__":
-    worker_base.serve(download=download, load=load, generate=generate, streaming=True)
+    worker_base.serve(download=download, load=load, generate=generate,
+                      streaming=True, memory=memory)

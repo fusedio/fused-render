@@ -5673,6 +5673,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   /api/ai/cancel` stops the generation in flight WITHOUT unloading, so the next
   message answers immediately; it returns false when there was nothing to stop,
   which is not an error (a Stop pressed as the last token lands is a no-op).
+  **`raw` is refused on the Claude path for the same reason as `history`**: it
+  means "no chat template", which only something owning the template can honour,
+  and the CLI does not expose one — dropping it would answer a raw continuation
+  as a chat turn, which is plausible text that is silently not what was asked.
+- **AI-1b** **The terminal frame carries the RESULT, on both tiers and in both
+  shapes.** `fused.ai()` resolves with `{text, model, usage}` whether or not the
+  caller passed `onChunk`, so a page can stream and still use the return value —
+  and a streamed local reply that closed with a bare `{"type":"done","ok":true}`
+  is why this is a written rule rather than an obvious one: every token had
+  already been delivered, the answer was on screen, and the caller crashed on
+  `result.text` at the end of a visibly successful generation. The chunks are
+  a VIEW of the completion, never the only copy of it, so the relay accumulates
+  what it forwarded and states it at the end; a failed stream closes with
+  `error` in the same frame, so a caller has exactly one place to look either
+  way. Pinned by contract tests over both the streaming and non-streaming
+  relays, because this is an agreement between the worker, the relay and
+  `runtime.js`, and the failure mode is silent in all three.
 - **AI-2** **A runner is a folder, and its environment is `envinstall`'s.** Each
   backend is a folder holding a `pyproject.toml` and a `worker.py`. The
   declaration is the ONLY place mlx/torch are named — fused-render's own venv
@@ -5868,3 +5885,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   `error`, never a `ready` row that lies. The figure is **resident bytes**, and it
   is not the model's size: it overcounts shared pages and moves during a
   generation.
+- **AI-8a** **Measured at every `/health`, and by the FRAMEWORK when it knows
+  better than RSS.** Both halves come from one card reading **379 MB in memory
+  for a 6.1 GB model**. The figure was taken once, immediately after `load()`
+  returned, and then served from the state dict forever — so it was a snapshot of
+  the worst possible instant, and it never moved again however much the model
+  went on to use. And the instant is worst *because of what the number is*: MLX
+  memory-maps the weight files and its arrays are lazy, so right after a load the
+  process has genuinely touched almost none of them and RSS is reporting the
+  interpreter. So residency is measured **when it is asked for**, and a runner
+  that has a better probe than RSS supplies `memory=` to `serve()` — MLX's
+  allocator, which knows what it reserved whether or not the pages have faulted
+  in. The **larger** of the two wins: neither is a superset (RSS carries the
+  interpreter and framework; the allocator carries buffers RSS has not seen yet),
+  so the honest claim is "at least this much". A runner's probe that raises is
+  worth no memory figure, never a broken `/health`.

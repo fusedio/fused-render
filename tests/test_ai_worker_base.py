@@ -410,6 +410,27 @@ def test_no_runner_reimplements_the_contract():
             )
 
 
+def test_the_mlx_runner_supplies_its_own_memory_probe():
+    """The hook exists BECAUSE of MLX (AI-8a), so it has to be wired there.
+
+    `serve(memory=)` was added after a card read "379 MB in memory" for a 6.1 GB
+    model — MLX memory-maps its weights and its arrays are lazy, so RSS right
+    after a load is measuring the interpreter. A `memory=` nobody passes leaves
+    that number exactly as wrong as it was, with a branch in the base that looks
+    like the fix. Source again, because mlx does not import on Linux.
+    """
+    from fused_render.ai import registry
+
+    mlx = registry.by_code("mlx-text")
+    assert mlx is not None
+    source = open(mlx.worker, encoding="utf-8").read()
+    assert "def memory(" in source, "mlx_text has no memory probe"
+    assert "memory=memory" in source, (
+        "mlx_text does not pass its probe to serve() — the branch in "
+        "worker_base is then dead and RSS is what /health reports"
+    )
+
+
 # -- the total is scoped to what is actually fetched ----------------------------
 
 

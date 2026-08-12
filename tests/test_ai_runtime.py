@@ -775,6 +775,29 @@ def test_history_is_refused_for_claude_rather_than_dropped(client):
     assert "local model" in response.json()["error"]["message"]
 
 
+def test_raw_is_refused_for_claude_rather_than_dropped(client):
+    """The same rule as history, and it had to be written twice because the
+    validation is shared and only the local branch honoured the flag: a `raw`
+    continuation answered as a chat turn is plausible text that is silently not
+    what was asked for."""
+    response = client.post("/api/ai", json={
+        "prompt": "The capital of France is",
+        "raw": True,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "local model" in response.json()["error"]["message"]
+
+
+def test_raw_and_history_together_are_refused(client):
+    """`raw` means no chat template, so there is nowhere to put prior turns."""
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "raw": True,
+        "history": [{"role": "user", "content": "hello"}],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "one or the other" in response.json()["error"]["message"]
+
+
 def test_cancel_stops_the_generation_without_unloading(client, fake_runner):
     """Not the same as unloading: the weights stay, so the next message starts
     answering immediately."""

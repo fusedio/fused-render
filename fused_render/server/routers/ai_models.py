@@ -7,7 +7,13 @@ The cache is a *shared* directory: anything that speaks `huggingface_hub`
 the `hf` CLI) downloads into the same tree, and nothing ever tells the user
 what accumulated there or how much disk it is now worth. This module reads that
 tree, and — only on an explicit request naming what to remove — deletes from
-it. It never downloads or re-downloads anything.
+it.
+
+This module still never FETCHES anything: the download the page now offers
+(D258, superseding HS-1) belongs to `ai_runtime.py`, because a fetch is the
+runner's — a GGUF image model and an MLX text model do not download the same
+set of files. What is here stays the reader and the deleter, so the one module
+that walks the cache is not also the one that grows it.
 
 The layout it reads is `huggingface_hub`'s own (CACHE_STRUCTURE in their
 docs)::

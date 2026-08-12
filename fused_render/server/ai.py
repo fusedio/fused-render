@@ -877,6 +877,19 @@ async def _ai_relay(body: dict):
             f"{model!r}, which answers one prompt at a time",
             status=400)
 
+    # Same rule, second flag. `raw` means "no chat template" — a thing only
+    # something that OWNS the template can honour, and the Claude CLI does not
+    # expose one. Dropping it would answer a raw continuation as a chat turn:
+    # plausible text, silently not what was asked for.
+    if raw:
+        return _ai_error(
+            "bad_request",
+            "'raw' sends the prompt to the model with no chat template, which "
+            "only a local model can do (a Hugging Face repo id, e.g. "
+            f"'mlx-community/Qwen3-8B-4bit'); this call would go to {model!r}, "
+            "which is always a chat",
+            status=400)
+
     if not _claude_bin():
         return _ai_error(
             "ai_unavailable",

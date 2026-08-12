@@ -146,20 +146,26 @@ Any `.html` file can call it and bind the result to the URL:
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).
-- `fused.trackJob(spec)` — report work that runs longer than the page you started it
-  from (a model download, a long generation) to the **download manager** in the
-  bottom-right corner, so it stays visible after you browse away:
+- `fused.trackJob(spec)` — report work **your page is doing** that runs longer
+  than the page itself (exporting a few thousand tiles, converting a folder) to
+  the **download manager** in the bottom-right corner, so it stays visible after
+  you browse away:
 
   ```js
-  const job = fused.trackJob({ title: "FLUX.2-klein-4B", kind: "download",
-                          unit: "bytes", cancellable: true });
-  job.update({ done: 1.2e9, total: 8.1e9, detail: "transformer.gguf" });
+  const job = fused.trackJob({ title: "Export tiles", kind: "export",
+                          unit: "items", cancellable: true });
+  job.update({ done: 1200, total: 4096, detail: "zoom 12" });
   if (job.cancelRequested) stopTheWork();   // the manager's ✕ asked
-  job.finish("Downloaded");                 // or .fail(err) / .cancelled()
+  job.finish("Exported");                   // or .fail(err) / .cancelled()
   ```
 
   Reporting never throws and never blocks: a failed report cannot break the work
-  it describes.
+  it describes. Your page is the only thing that can stop its own work, so the
+  ✕ here is a *request* you honour by checking `cancelRequested`.
+- `fused.watchJob(id)` — the other half: watch work the **server** is doing
+  (`fused.ai.image()` and `fused.ai.models.load()` both hand you an id) with
+  `.onUpdate(cb)`, `.get()` and a `.cancel()` that really stops it — the server
+  owns those processes, so its ✕ is an act rather than a request.
 
 Built-in preview templates (parquet tables, images, text/code files) are
 themselves just HTML files built on these same two primitives — open

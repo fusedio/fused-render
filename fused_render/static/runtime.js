@@ -9,8 +9,10 @@
  *     AbortSignal that composes.
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
- *     caller holding a conversation rather than asking one question. Local
- *     models only. fused.ai.cancel() stops a local generation mid-flight
+ *     caller holding a conversation rather than asking one question.
+ *     opts.raw: send the prompt verbatim, with no chat template around it.
+ *     Both are LOCAL-MODEL ONLY and are refused (400) rather than dropped on
+ *     the Claude path. fused.ai.cancel() stops a local generation mid-flight
  *     without unloading the model.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
  *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
@@ -1611,7 +1613,9 @@
     if (opts.history !== undefined) body.history = opts.history;
     // Raw continuation — the text goes to the model verbatim, with no chat
     // template around it. A base model continuing your paragraph, rather than
-    // an assistant answering it.
+    // an assistant answering it. Local models only, for the same reason as
+    // history: only something that OWNS the chat template can decline to apply
+    // one, so the Claude path refuses this rather than quietly ignoring it.
     if (opts.raw !== undefined) body.raw = opts.raw;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
