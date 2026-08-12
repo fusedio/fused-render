@@ -2462,7 +2462,22 @@
     // so passing `ignore: undefined` as `ignore: null` would be a write.
     if (opts.roots !== undefined) body.roots = opts.roots;
     if (opts.ignore !== undefined) body.ignore = opts.ignore;
-    return indexWithStatus(indexPost("/api/index/config", body));
+    return indexWithStatus(indexPost("/api/index/config", body)).then((out) => {
+      // A save also starts one reconciling rescan per stale root
+      // (api_index_config, server/routers/index.py), and the parallel probe
+      // usually resolves before runner.start has filed anything — the same race
+      // scan() forces past. Driven off the response's own evidence, because a
+      // save that reconciled nothing must not invent a scan to wait on.
+      const ids = out.rescan_run_ids;
+      const started = (Array.isArray(ids) && ids.some(Boolean))
+        || out.needs_rescan === true;
+      if (!started) return out;
+      // `stale` follows the list, as in scan(): with an index there is one and
+      // it is now behind a scan; with none there is nothing to be behind.
+      const indexed = out.ready.indexed;
+      out.ready = indexReady(indexed, true, indexed, out.ready.reason);
+      return out;
+    });
   }
 
   function indexRepos() {

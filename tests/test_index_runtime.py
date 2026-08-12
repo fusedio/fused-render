@@ -227,6 +227,31 @@ index.scan({}).then((r) => out(r.ready));
     assert got["stale"] is True  # there IS a list, and it is now behind a scan
 
 
+def test_a_config_save_that_started_rescans_reports_scanning():
+    # A save starts one reconciling rescan per stale root (api_index_config,
+    # server/routers/index.py), and the parallel probe routinely resolves before
+    # runner.start has filed anything — the same race scan() forces past.
+    got = _node("""
+ROUTES["/api/index/config"] = {status: 200, body: {ok: true, roots: ["/x"], ignore: [],
+  needs_rescan: true, rescan_run_id: "r7", rescan_run_ids: ["r7"]}};
+index.config.set({ignore: ["node_modules"]}).then((r) => out(r.ready));
+""")
+    assert got["scanning"] is True
+    assert got["stale"] is True  # there IS a list, and it is now behind a scan
+
+
+def test_a_config_save_that_started_nothing_does_not_claim_scanning():
+    # The override is driven off the response's own evidence: a save that
+    # reconciled nothing must not invent a scan for a UI to wait on.
+    got = _node("""
+ROUTES["/api/index/config"] = {status: 200, body: {ok: true, roots: ["/x"], ignore: [],
+  needs_rescan: false, rescan_run_id: null, rescan_run_ids: []}};
+index.config.set({ignore: []}).then((r) => out(r.ready));
+""")
+    assert got["scanning"] is False
+    assert got["stale"] is False
+
+
 # ------------------------------------------------------------- the X-Fused header
 
 def test_every_post_carries_the_x_fused_header():
