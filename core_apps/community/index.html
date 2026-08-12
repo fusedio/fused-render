@@ -155,7 +155,10 @@ function md(src, baseDir) {
   return out.join("\n");
 }
 function resolveUrl(url, baseDir) {
-  if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(url)) return esc(url);   // absolute http(s) etc.
+  if (/^(https?:|mailto:|\/\/)/i.test(url)) return esc(url);
+  // Any other scheme (javascript:, data:, vbscript:, …) in a community readme
+  // is hostile — never render it as a live href.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return "#";
   return fused.rawUrl(baseDir + "/" + url.replace(/^\.\//, ""));
 }
 
@@ -229,12 +232,15 @@ async function renderDetail(slug) {
   let d;
   try {
     d = await fused.runPython(PY, { action: "detail", slug }, { key: "detail" });
-  } catch (err) { showError(err.message); return; }
-  if (d.status === "error") { showError(d.message); return; }
+  } catch (err) {
+    if (state().open === slug) showError(err.message);   // navigated away → stale, drop it
+    return;
+  }
   if (state().open !== slug) return;   // user navigated away while loading
+  if (d.status === "error") { showError(d.message); return; }
   const entry = d.entry || {};
   const icon = catalog?.cache_root ? fused.rawUrl(`${d.folder}/icon.svg`) : null;
-  const previewHref = "/explorer/embed" + encodeFsPath(d.preview_entry);
+  const previewHref = "/explorer/embed/" + encodeFsPath(d.preview_entry);
   const buttons = [];
   if (!d.installed) buttons.push(`<button class="primary" data-act="install">Install</button>`);
   if (d.installed) buttons.push(`<button class="primary" data-act="open">Open</button>`);
@@ -261,8 +267,17 @@ async function renderDetail(slug) {
   content.querySelectorAll("[data-act]").forEach(b => b.addEventListener("click", () => act(b.dataset.act, slug, d)));
 }
 
+// Mirror of the shell's urlForFsPath (router.ts): normalize backslashes only
+// on drive-letter paths (POSIX filenames may legally contain "\"), strip the
+// leading slash, and join encoded segments — so a Windows path becomes
+// /explorer/embed/C%3A/Users/… instead of a one-segment mangled URL.
 function encodeFsPath(p) {
-  return p.split("/").map(encodeURIComponent).join("/");
+  const rest = fsSlash(p).replace(/^\/+/, "");
+  return rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+}
+
+function fsSlash(p) {
+  return /^[A-Za-z]:[\\/]/.test(p) ? String(p).replace(/\\/g, "/") : String(p);
 }
 
 function closeDetail() { fused.params.set("app", ""); }
@@ -290,7 +305,7 @@ function confirmModal({ title, body, okLabel, okClass = "primary", extra = "" })
 async function act(action, slug, d) {
   if (action === "close") return closeDetail();
   if (action === "open") {
-    window.top.location.href = "/apps/community/" + encodeURIComponent(d.path.split("/").pop());
+    window.top.location.href = "/apps/community/" + encodeURIComponent(fsSlash(d.path).split("/").pop());
     return;
   }
   if (busy) return;

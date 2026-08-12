@@ -388,8 +388,18 @@ if [[ "$RELOAD" -eq 1 ]]; then
   CORE_TRIGGER="$REPO_ROOT/core_apps/.dev-reload-trigger.py"
   touch "$CORE_TRIGGER"
   (
+    # *.py excluded: watchfiles' python filter already restarts on those (and
+    # the restart re-stages zips via dev_server_run.sh) — poking the trigger
+    # too would queue a SECOND restart for the same edit. Also skip junk that
+    # staging never packages anyway (.DS_Store, editor swaps, *.html.json
+    # sidecars) so it can't force pointless restarts.
     while sleep 2; do
-      if [[ -n "$(find "$REPO_ROOT/core_apps" -type f ! -name "${CORE_TRIGGER##*/}" \
+      if [[ -n "$(find "$REPO_ROOT/core_apps" -type f \
+                    ! -name "*.py" ! -name ".DS_Store" ! -name "*~" \
+                    ! -name "*.swp" ! -name "*.swx" ! -name "*.json.tmp" \
+                    ! -name "*.html.json" ! -name "*.md.json" ! -name "*.py.json" \
+                    ! -name "*.txt.json" ! -name "*.markdown.json" \
+                    ! -path "*/__pycache__/*" \
                     -newer "$CORE_TRIGGER" -print -quit 2>/dev/null)" ]]; then
         touch "$CORE_TRIGGER"
       fi

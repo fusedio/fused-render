@@ -296,6 +296,7 @@ def _install(slug):
     installs["installs"][slug] = {
         "path": dest,
         "commit": entry.get("commit"),
+        "local_commit": _head_sha(dest),
         "version": entry.get("version"),
         "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -304,12 +305,27 @@ def _install(slug):
             "app_route": f"/apps/community/{os.path.basename(dest)}"}
 
 
-def _worktree_clean(app_dir):
+def _head_sha(app_dir):
+    r = _git(app_dir, "rev-parse", "HEAD")
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _worktree_clean(app_dir, rec=None):
     r = _git(app_dir, "status", "--porcelain")
     if r.returncode != 0:
         return False  # no repo / broken repo — treat as edited, never clobber
     if r.stdout.strip():
         return False
+    head = _head_sha(app_dir)
+    if head is None:
+        return False
+    pristine = (rec or {}).get("local_commit")
+    if pristine:
+        # Clean means HEAD is exactly the last commit WE made (install or
+        # update) — any commit beyond it is a user edit, however it landed.
+        return head == pristine
+    # Installs from before local_commit was recorded: the only commit we ever
+    # made is the install commit, so a single-commit history means untouched.
     count = _git(app_dir, "rev-list", "--count", "HEAD")
     return count.returncode == 0 and count.stdout.strip() == "1"
 
@@ -346,7 +362,7 @@ def _update(slug, force):
         raise ActionError(f"{slug!r} is no longer in the catalog — no update to apply")
     if entry.get("commit") == rec.get("commit"):
         return {"status": "up-to-date"}
-    clean = _worktree_clean(app_dir)
+    clean = _worktree_clean(app_dir, rec)
     if not clean and not force:
         return {"status": "dirty"}
     if not clean:
@@ -365,6 +381,7 @@ def _update(slug, force):
                 f"Update to community {str(entry.get('commit'))[:12]}",
                 what="git commit")
     rec["commit"] = entry.get("commit")
+    rec["local_commit"] = _head_sha(app_dir)
     rec["version"] = entry.get("version")
     _write_installs(installs)
     return {"status": "updated", "path": app_dir}
