@@ -51,13 +51,14 @@ from fused_render.shell.storage import home_dir
 
 logger = logging.getLogger(__name__)
 
-# The skills that go in the plugin — all three, same set as the user-level sync
+# The skills that go in the plugin — all of them, same set as the user-level sync
 # (a session launched by us has as much use for usage guidance as for authoring
 # guidance). `tests/test_skill_plugin.py` pins this against user_skills.SKILLS
 # and against the real repo dirs, so the two lists cannot drift apart.
 SKILLS = (
     "fused-render-authoring",
     "fused-render-custom-templates",
+    "fused-render-index",
     "fused-render-usage",
 )
 

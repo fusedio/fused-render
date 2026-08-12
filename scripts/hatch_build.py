@@ -42,7 +42,7 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
     )
 
 
-# The three canonical skills ship ONLY as a package-level copy at
+# The canonical skills ship ONLY as a package-level copy at
 # fused_render/skills/ — the wheel-install source for both the user-level skill
 # sync (fused_render/user_skills.py, D185) and the plugin root assembled under
 # home_dir() (fused_render/skill_plugin.py, D216). The skills live once at
@@ -53,6 +53,7 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
 _ALL_SKILLS = (
     "fused-render-authoring",
     "fused-render-custom-templates",
+    "fused-render-index",
     "fused-render-usage",
 )
 

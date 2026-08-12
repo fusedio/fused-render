@@ -152,7 +152,14 @@ _SUFFIX = SUFFIX  # historical private alias, used throughout this module
 # at 1.5s is ~160 records describing nothing that happened, and they would
 # crowd out the runs they annotate. The download manager is the surface for
 # that information; the log keeps the call that started the work.
-SKIP_PREFIXES = ("/api/calls", "/api/jobs")
+#
+# /api/index/status is here on the same reasoning: fused.fileIndex.query pairs
+# every call with one status probe for its readiness envelope (runtime.js,
+# fileIndexWithStatus), so logging it would double both the log and the rate spend
+# of a page that polls — and the probe describes the call beside it rather than
+# being one. Prefixed rather than stripped of its attribution headers so the
+# shell's own status polling falls under the same rule.
+SKIP_PREFIXES = ("/api/calls", "/api/jobs", "/api/index/status")
 
 
 # --------------------------------------------------------------- store layout

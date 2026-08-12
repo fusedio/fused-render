@@ -11,7 +11,8 @@ them before non-trivial changes:
 - **`fused-render-custom-templates`** — registering the template: registry keys,
   binding rules, `condition.py`, and `icon.svg`.
 
-fused-render supplies both (and `fused-render-usage`) to every chat it
+fused-render supplies both (and `fused-render-usage` / `fused-render-index`,
+the latter for reading the machine-wide file index) to every chat it
 launches, as a plugin loaded for that session, so they are available here by
 name with no install step. It also keeps a copy in Claude Code's user-level
 skills directory for sessions fused-render didn't start — a plain `claude` in

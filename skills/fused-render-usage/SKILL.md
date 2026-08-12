@@ -52,3 +52,4 @@ View state (paging, sort, selection) lives in **URL params**, so any view is ref
 
 - Creating, editing, or debugging an `.html` view or `.py` data file, or a blank/errored view → **`fused-render-authoring`**.
 - Registering a custom preview template for a file extension → **`fused-render-custom-templates`**.
+- Searching, counting, or aggregating files across the machine — the file index, a scan, `fused.fileIndex.*` → **`fused-render-index`**.
