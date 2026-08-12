@@ -494,12 +494,25 @@ function TemplatePreview({
   // stripped before the verdict) but decides nothing — it cannot turn the split
   // on for a file that has no companion of its own, cannot become the toggle's
   // target, and cannot leave a `_side` behind if the verdict is no.
+  //
+  // `bound` is the icon supply for the DISABLED rows, and it is the one place
+  // this component deliberately reaches past `templates` to the raw stat: a
+  // companion whose gate said no was filtered out upstream (Preview's
+  // `visibleModes`), and with it went the icon the switcher still has to draw —
+  // an unavailable Claude is the Claude glyph dimmed, not a boxed "C". The
+  // parent's `git` binding comes the same way from lib/dir-mode, which keeps it
+  // through a denial for exactly this. Icons only: `path` never crosses over
+  // (lib/preview-side), so none of these can become something to frame.
   const split = sideSplit({
     splitCapable,
     content: parts.content,
     own: parts.sidebar,
     borrowed: borrowedGit,
     borrowedPending,
+    bound: [
+      ...partitionModes(stat.templates).sidebar,
+      ...(parentGit.bound ? [parentGit.bound] : []),
+    ],
   });
   const sideOn = split.on;
   // What the CONTENT pane may show, and what the SIDEBAR may show. Unsplit
@@ -510,6 +523,13 @@ function TemplatePreview({
   // the pending entry for the deep link's sake.
   const contentModes = split.offered ? parts.content : templates;
   const sidebarModes = split.offered ? split.all : [];
+  // What the sidebar's switcher DRAWS, which is a longer list than the one above:
+  // all three companions, the ones this file cannot show disabled and explaining
+  // themselves (lib/preview-side). Kept apart from `sidebarModes` on purpose —
+  // every decision below (`sideEntry`, `activeSide`, the toggle, the reconcile)
+  // reads the short list, so a disabled row can be rendered without becoming
+  // something the URL or the split can land on.
+  const sidebarMenu = split.offered ? split.menu : [];
   // Pending, for a SIDEBAR entry. The borrowed `git` entry is gated on the
   // PARENT's verdicts, resolved by lib/dir-mode — not on any of this file's, so
   // it cannot go through `isPending` (which reads `conditions`, this file's map,
@@ -1058,6 +1078,32 @@ function TemplatePreview({
                 key={m}
                 className={"preview-frame" + (m === shown ? " is-shown" : "")}
                 src={srcFor(m) as string}
+                /* The shell's ONE contribution to annotation, and deliberately
+                   the whole of it: the claude sidebar looks this attribute up
+                   through `parent.document` and treats the frame it marks as the
+                   document its notes point at — see
+                   fused_render/templates/claude/template.html (the annotate
+                   target seam). Nothing here knows what annotation is, and the
+                   template stays host-agnostic: no mark, no annotate switch.
+
+                   The contract is "exactly one, and it is the content the reader
+                   is looking at". So it rides `shown` and not `activeMode`: the
+                   swap above keeps BOTH frames mounted while the incoming
+                   document loads, and only the shown one is on screen (the other
+                   is transparent and un-clickable), so marking the active mode
+                   mid-swap would aim the pins at a frame nobody can see. `shown`
+                   catches up the moment that frame paints.
+
+                   `splitCapable` is what keeps it to the single-file explorer
+                   preview: a folder renders <Listing> and never reaches this
+                   branch, and a panel/tab embed has no sidebar to answer the
+                   mark. When no content pane shows at all — a listing, a pending
+                   gate, the fallback card — no frame renders and the mark is
+                   simply absent, which is exactly how the template is told
+                   there is nothing to annotate. */
+                data-fused-annotate-target={
+                  splitCapable && m === shown ? "" : undefined
+                }
                 onLoad={(e) => {
                   // Completes the swap: the incoming document has painted, so
                   // it can take over from the frame being held. Recorded so a
@@ -1117,10 +1163,11 @@ function TemplatePreview({
         sideSlot &&
         createPortal(
           <PreviewSidebar
-            entries={sidebarModes.map((t) => ({
+            entries={sidebarMenu.map((t) => ({
               mode: t.mode,
               icon: templateModeIcon(t),
               pending: isSidePending(t),
+              disabledReason: t.disabledReason,
             }))}
             active={activeSide}
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}

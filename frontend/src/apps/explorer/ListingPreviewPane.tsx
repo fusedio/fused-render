@@ -44,7 +44,7 @@ import {
   paneOpenAction,
 } from "@apps/explorer/listing/pane-modes";
 import {
-  paneSideList,
+  paneSideMenu,
   paneSideTarget,
   type PaneSide,
   type PaneSideEntries,
@@ -162,14 +162,19 @@ export default function ListingPreviewPane({
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
   // --- the pane's three modes (listing/pane-side.ts) --------------------------
-  // Which are on offer follows entirely from what the FOLDER gave us: `preview`
-  // always, the companions only where the folder has an entry for them. Nothing
+  // ALL THREE, ALWAYS. Which are SELECTABLE follows entirely from what the FOLDER
+  // gave us — `preview` always, the companions only where the folder has an entry
+  // — and the rest are drawn disabled with the reason (paneSideMenu). Nothing
   // about the selected row enters into it, which is what lets the pill hold still
-  // as the user arrows down the list.
-  const sides = paneSideList(sideEntries);
+  // as the user arrows down the list; and because the row count no longer moves
+  // either, the menu itself stops appearing and disappearing as the user walks
+  // from a repository into a folder outside one.
   const sideMenu = (
     <ModeMenu
-      entries={sides.map((m) => ({ mode: m, icon: paneSideIcon(m, sideEntries) }))}
+      entries={paneSideMenu(sideEntries).map((e) => ({
+        ...e,
+        icon: paneSideIcon(e.mode, sideEntries),
+      }))}
       active={side}
       onSelect={(m) => onSelectSide(m as PaneSide)}
     />

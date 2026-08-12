@@ -37,8 +37,32 @@
 // either way, so the only question open is whether it is allowed; treating it as
 // unsettled would move it between the content menu and the sidebar as the verdict
 // landed, which is a worse flash than the one this module removes.
+//
+// THE THIRD LIST, `menu`, and why it is not either of the two above: what the
+// SWITCHER shows is now ALL THREE COMPANIONS, ALWAYS — the ones this file has not
+// got listed as disabled rows carrying the reason why (mode-visibility's
+// `unavailableReason`, where the argument for saying it out loud is written down).
+// So the sidebar's header reads the same over every file, and a file outside a
+// repository gets a Git row that explains itself instead of a switcher that
+// quietly shrank — or, at one entry, disappeared.
+//
+// A disabled row is a LABEL, not a mode, and none of the rules above may see it:
+// it does not turn the split `on`, it is not `settled`, it never becomes the
+// toggle's target, and `initialSide`/`reconcileSideSearch` resolve a `?_side`
+// naming it exactly as they resolve one naming a mode nobody has ever heard of —
+// away. Hence three lists rather than a flag on one: `menu` is for drawing,
+// `all` is what a `_side` may name, `settled` is what actually exists. Feeding
+// the drawing list to any of the decisions would put a file back on a Git view
+// its folder cannot produce, which is the failure `on` vs `offered` exists to
+// prevent, arrived at from the other direction.
 import type { TemplateEntry } from "@platform/lib/api";
-import { defaultSidebarMode, isSidebarMode, orderSidebarModes } from "@platform/lib/mode-visibility";
+import {
+  SIDEBAR_MODES,
+  defaultSidebarMode,
+  isSidebarMode,
+  orderSidebarModes,
+  unavailableReason,
+} from "@platform/lib/mode-visibility";
 
 export interface SideSplitInput {
   // Whether this surface splits at all (a single file on the explorer route, in
@@ -52,11 +76,40 @@ export interface SideSplitInput {
   // because the file has a `git` of its own).
   borrowed: TemplateEntry | null;
   borrowedPending: boolean;
+  // Every companion that EXISTS AS A BINDING, whether or not it may be shown: the
+  // file's own sidebar templates BEFORE the visibility filter, plus the parent's
+  // `git` however its gate voted (lib/dir-mode's `bound`). Order and duplicates
+  // are irrelevant — exactly one field is ever read off these.
+  //
+  // That field is the ICON, and it is the whole reason the input exists. A
+  // disabled row is the same mode with the click taken away — same glyph, same
+  // name, dimmed — and building it from nothing gave it templateModeIcon's
+  // last-resort letter box instead: Git was the Git logo inside a repository and a
+  // boxed "G" one folder outside it. Two glyphs for one mode reads as two
+  // different modes, which is the one thing a disabled row must not do.
+  //
+  // Optional because a surface that never draws the menu (anything with
+  // `splitCapable` false) has no icons to look up.
+  bound?: TemplateEntry[];
+}
+
+// A switcher row. A real companion is its TemplateEntry unchanged; a companion
+// this file cannot show is a placeholder carrying the reason it is disabled, and
+// its icon if the mode is bound anywhere. The two are told apart by
+// `disabledReason` alone, so a consumer that only draws rows needs to know
+// nothing else — and `path` stays null on a placeholder, so nothing can build a
+// render URL out of one by mistake.
+export interface SideEntry extends TemplateEntry {
+  disabledReason?: string;
 }
 
 export interface SideSplit {
-  // The sidebar switcher's list, in SIDEBAR_MODES order, pending placeholder
-  // included.
+  // What the switcher DRAWS: every companion in SIDEBAR_MODES, always, with the
+  // unavailable ones disabled and explained. Nothing decides anything from this
+  // list — see the header.
+  menu: SideEntry[];
+  // The companions a `_side` may NAME: the real entries plus a still-pending
+  // borrowed placeholder, in SIDEBAR_MODES order. Not what the switcher shows.
   all: TemplateEntry[];
   // Those known to exist — `all` minus a still-pending borrowed entry.
   settled: TemplateEntry[];
@@ -64,6 +117,39 @@ export interface SideSplit {
   on: boolean;
   // Something may yet land in the sidebar, so a `_side` naming it is tolerated.
   offered: boolean;
+}
+
+// The switcher's rows: the closed list of companions, each one either the real
+// entry or a disabled placeholder. A PENDING borrowed entry is a real entry here
+// and NOT a disabled one — its probe has not answered, so "not inside a git
+// repository" would be a claim rather than a report; the caller renders it as the
+// spinner row CT-12 already defines and it either becomes selectable or becomes
+// disabled when the verdict lands.
+//
+// A disabled row wears the mode's OWN icon wherever the mode is bound at all —
+// `bound` above says where those come from and why it matters. The letter box
+// templateModeIcon falls back to is reached only by a mode NOTHING binds (a file
+// type with no `history` template registered anywhere), where there is no real
+// glyph in existence to use.
+//
+// The trailing loop is for a companion that is NOT one of SIDEBAR_MODES — a user
+// registry binding one of its own into this half. It has no canned reason and no
+// fixed rank, so it keeps its place at the end, which is where orderSidebarModes
+// puts it too.
+function sidebarMenu(all: TemplateEntry[], bound: TemplateEntry[]): SideEntry[] {
+  const menu: SideEntry[] = (SIDEBAR_MODES as readonly string[]).map(
+    (mode) =>
+      all.find((e) => e.mode === mode) ?? {
+        mode,
+        // A placeholder is a row, never a template: no path, so no URL can be
+        // built from it even by accident.
+        path: null,
+        icon: bound.find((e) => e.mode === mode)?.icon ?? null,
+        disabledReason: unavailableReason(mode),
+      }
+  );
+  for (const e of all) if (!isSidebarMode(e.mode)) menu.push(e);
+  return menu;
 }
 
 export function sideSplit(i: SideSplitInput): SideSplit {
@@ -74,6 +160,7 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // renders as it did before the split existed: chat, full width, content mode.
   const splittable = i.splitCapable && i.content.length > 0;
   return {
+    menu: sidebarMenu(all, i.bound ?? []),
     all,
     settled,
     on: splittable && settled.length > 0,
@@ -83,7 +170,11 @@ export function sideSplit(i: SideSplitInput): SideSplit {
 
 // `_side` as read at MOUNT, exactly like `_mode`, so a bookmark or a shared link
 // restores the split. Resolved against `all` (see the header) so a `?_side=git`
-// deep link survives until the borrowed probe answers.
+// deep link survives until the borrowed probe answers — and, for the same reason
+// stated the other way round, so a `?_side=git` on a file whose Git row is the
+// DISABLED placeholder resolves to null. The row is in `menu`, not in `all`; a
+// deep link to it is a deep link to an explanation, and is dropped exactly like
+// a `_side` naming a mode that does not exist.
 //
 // LEGACY DEEP LINKS are the second branch. `?_mode=claude` is what every
 // bookmark, recent, saved session and shared URL from before the split says, and
@@ -130,7 +221,10 @@ export function sideToggleTarget(
 //   2. a `_side` this file cannot honour: a param carried in from another view
 //      (the folder pane writes `_side` too), or one whose gate has just DENIED
 //      the mode. It goes, rather than sitting in the URL for a session sidecar to
-//      record and replay on the next bare open (lib/session).
+//      record and replay on the next bare open (lib/session). The denied mode is
+//      still LISTED — as the disabled row that says why (see the header) — and
+//      that changes nothing here: a row the user cannot select is not a state the
+//      URL is allowed to hold.
 //   3. write `_side` when state moved without the user's click.
 //
 // A still-PENDING borrowed entry is neither honoured nor stripped: `activeSide`

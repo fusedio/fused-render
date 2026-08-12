@@ -142,6 +142,16 @@ export interface ModeMenuEntry {
   // Condition.py gate not yet resolved (CT-12): listed as a disabled spinner
   // row until the background /api/fs/conditions verdict lands.
   pending?: boolean;
+  // Listed, disabled, and SAYING WHY — the row keeps its icon and its name and
+  // hands this string to the native tooltip. Used by the two COMPANION surfaces
+  // (the file preview's sidebar, the folder listing's pane), whose mode list is
+  // a closed set the user is entitled to see all of even where a member is
+  // unavailable; the reasons themselves are canned in lib/mode-visibility, which
+  // is also where the argument for showing them is written down.
+  //
+  // Not a second spelling of `pending`: pending says "we don't know yet" and
+  // spins, this says "we know, and here is the answer".
+  disabledReason?: string;
 }
 
 interface ModeMenuProps {
@@ -159,10 +169,18 @@ interface ModeMenuProps {
 export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
   const { pos, rootRef, toggle, close } = useMenuAnchor();
   const activeEntry = entries.find((e) => e.mode === active) ?? null;
-  // One mode is not a choice — the same rule the icon strips used — unless
+  // One ROW is not a choice — the same rule the icon strips used — unless
   // nothing is active (a caller whose surface can show no mode at all, e.g. the
   // listing pane's self target), where that one entry is the only way to pick
   // anything and the trigger is what offers it.
+  //
+  // Counted over the ROWS, disabled ones included, and that is the rule rather
+  // than an oversight. A companion surface passes its whole closed list — three
+  // rows over every file, some of them disabled placeholders explaining
+  // themselves (see `disabledReason`) — and the menu renders, because those rows
+  // are the answer to "why is there only one thing here?". Hiding a menu whose
+  // only ENABLED row is the active one is what made a file outside a git
+  // repository open with no switcher at all.
   if (!entries.length || (entries.length === 1 && activeEntry)) return null;
 
   const switching = busy !== null && busy !== undefined;
@@ -210,8 +228,14 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
                 (e.mode === activeEntry?.mode ? " active" : "") +
                 (e.pending ? " pending" : "")
               }
-              disabled={e.pending}
-              title={e.pending ? "Checking if this view applies…" : undefined}
+              /* Two ways to be unselectable, one mechanism: the native disabled
+                 button and its native tooltip (`.bar-menu-item:disabled` in
+                 explorer.css dims both alike). The spinner is the PENDING one's
+                 alone — an unavailable row keeps its own icon, because it is not
+                 waiting for anything and a spinner over a settled answer reads
+                 as a menu that never finishes loading. */
+              disabled={e.pending || !!e.disabledReason}
+              title={e.pending ? "Checking if this view applies…" : e.disabledReason}
               onClick={() => {
                 close();
                 onSelect(e.mode);

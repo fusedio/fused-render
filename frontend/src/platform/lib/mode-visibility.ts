@@ -80,6 +80,41 @@ export const SIDEBAR_MODES = ["claude", "git", "history"] as const;
 
 const SIDEBAR_MODE_SET: ReadonlySet<string> = new Set(SIDEBAR_MODES);
 
+// WHY A COMPANION IS NOT ON OFFER, in the words the switcher puts on it.
+//
+// The companion surfaces (the file sidebar, the folder pane) do NOT drop a
+// companion they cannot show: they list it DISABLED, with one of these as its
+// `title`. That is the opposite of what the content-mode policy at the top of
+// this file does with a denied entry, and the difference is the surfaces, not a
+// change of mind. A content mode list is OPEN — it is whatever the registry
+// bound to this extension, and a user has no expectation about its length, so a
+// missing entry is invisible rather than confusing. The companion list is
+// CLOSED and always the same three; a user who has seen Claude / Git / History
+// beside one file and only Claude beside the next has been told nothing about
+// why, and on the two-entry path the menu used to hide itself outright, so a
+// file outside a repository had no switcher at all. Naming the reason costs one
+// disabled row and answers the question the empty space raised.
+//
+// The reasons are CANNED CLIENT-SIDE and per MODE, not per verdict: /api/fs/
+// conditions is bool-only by design (a gate is a condition.py returning a bool,
+// not a message), and the three conditions are stable enough to say in a
+// sentence — the working tree, the file's history, the chat's applicability. A
+// mode is equally unavailable whether its gate said no or the file never bound
+// the template at all, and from the user's side those are the same fact, so one
+// string covers both.
+const UNAVAILABLE_REASONS: Record<string, string> = {
+  claude: "Claude is not available for this file",
+  git: "Not inside a git repository",
+  history: "No history for this file",
+};
+
+// Deliberately total: a user registry can bind a mode of its own into either
+// companion list, and a disabled row with a vague tooltip still beats a row
+// whose tooltip is the word "undefined".
+export function unavailableReason(mode: string): string {
+  return UNAVAILABLE_REASONS[mode] ?? "Not available here";
+}
+
 export function isSidebarMode(mode: string): boolean {
   return SIDEBAR_MODE_SET.has(mode);
 }

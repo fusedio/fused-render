@@ -90,6 +90,21 @@ export interface DirMode {
   // when the directory does not offer the mode at all — an unknown mode, an
   // explicit gate denial, or a probe that failed outright.
   entry: TemplateEntry | null;
+  // The directory's entry as the STAT reported it, gate verdict or not: non-null
+  // whenever the registry binds the mode here, including when the gate went on to
+  // deny it. `entry` is what may be FRAMED; this is what the mode IS.
+  //
+  // It exists for one job, and the job earns the extra field: the companion
+  // switchers list a mode they cannot show as a DISABLED row (lib/preview-side,
+  // listing/pane-side), and a disabled row has to wear the mode's real icon —
+  // "the same thing, switched off" rather than a different-looking thing. Read
+  // off `entry`, those rows fell through to templateModeIcon's last-resort letter
+  // box, so the Git row was the Git logo inside a repository and a boxed "G" one
+  // folder outside it.
+  //
+  // Null while `pending` (the stat has not answered, so there is nothing to know
+  // yet), and null when the directory does not bind the mode at all.
+  bound: TemplateEntry | null;
   // The probe is still in flight.
   //
   // Callers list the placeholder as a PENDING switcher entry rather than waiting
@@ -101,11 +116,12 @@ export interface DirMode {
 }
 
 // Shared, so a caller that re-renders without changing directory does not get a
-// fresh object and a pointless commit.
-const ABSENT: DirMode = { entry: null, pending: false };
+// fresh object and a pointless commit. Used for every "nothing here" answer that
+// carries no binding either: no directory to ask, and a probe that failed.
+const ABSENT: DirMode = { entry: null, bound: null, pending: false };
 
 function placeholderFor(mode: string): DirMode {
-  return { entry: { mode, path: null, icon: null }, pending: true };
+  return { entry: { mode, path: null, icon: null }, bound: null, pending: true };
 }
 
 // `dir === null` switches the whole thing off and makes no request — how callers
@@ -125,9 +141,15 @@ export function useDirMode(dir: string | null, mode: string): DirMode {
     loadDirModes(dir).then(
       (r) => {
         if (!alive) return;
-        const entry = r.templates.find((e) => e.mode === mode) ?? null;
+        // The binding is what the stat says; `entry` is that binding only if the
+        // gate also allows it. A DENIED mode therefore settles as
+        // `{ entry: null, bound: <the entry> }` — not offered, but still known,
+        // which is what lets a disabled switcher row wear its real icon.
+        const bound = r.templates.find((e) => e.mode === mode) ?? null;
         setState(
-          entry && isModeVisible(entry, r.conditions) ? { entry, pending: false } : ABSENT
+          bound && isModeVisible(bound, r.conditions)
+            ? { entry: bound, bound, pending: false }
+            : { entry: null, bound, pending: false }
         );
       },
       () => {

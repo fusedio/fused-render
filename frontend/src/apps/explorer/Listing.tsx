@@ -258,21 +258,33 @@ export default function Listing({
   // pane's chat is the FOLDER VIEW's companion, aimed at whichever row is
   // selected, so which chat template to use is a question about the folder too.
   //
-  // A folder outside a repository loses the Git pill, and one on a mount loses
-  // both (each gate refuses a mount-backed path) — at which point the pill hides
-  // itself, "one mode is not a choice", and the pane is what it always was.
+  // A folder outside a repository cannot SHOW Git, and one on a mount can show
+  // neither companion (each gate refuses a mount-backed path) — at which point the
+  // pane's switcher lists them disabled, saying why (pane-side's paneSideMenu),
+  // rather than shrinking to a Preview-only pill and hiding itself.
   const folderClaude = useDirMode(paneEnabled ? fsPath : null, "claude");
   const folderGit = useDirMode(paneEnabled ? fsPath : null, "git");
   // While the probe is in flight the entries are PLACEHOLDERS with no template
   // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
-  // pending companion is simply not offered yet. Unlike the file sidebar there is
-  // nothing to protect by listing it early: the folder's `_side` is never
-  // reconciled away (pane-side's activePaneSide leaves an unavailable request in
-  // the URL on purpose), so a `?_side=git` deep link survives the wait and lands
-  // the moment the verdict does.
+  // pending companion is not SELECTABLE yet. Unlike the file sidebar there is
+  // nothing to protect by treating it as selectable early: the folder's `_side` is
+  // never reconciled away (pane-side's activePaneSide leaves an unavailable
+  // request in the URL on purpose), so a `?_side=git` deep link survives the wait
+  // and lands the moment the verdict does.
+  //
+  // The extra fields ride along for the SWITCHER alone, which has to say more
+  // than "offered": the flags tell "we don't know yet" (spinner) from "not here"
+  // (the disabled reason), and the bindings are where a disabled row gets the
+  // mode's REAL icon — lib/dir-mode keeps a denied entry for exactly that, so the
+  // Git row is the Git glyph dimmed instead of a boxed "G". Nothing else reads
+  // either; what the pane may BE is still `claude`/`git` alone.
   const sideEntries = {
     claude: folderClaude.pending ? null : folderClaude.entry,
     git: folderGit.pending ? null : folderGit.entry,
+    claudePending: folderClaude.pending,
+    gitPending: folderGit.pending,
+    claudeBound: folderClaude.bound,
+    gitBound: folderGit.bound,
   };
   const paneSide = activePaneSide(paneSideList(sideEntries), sideState.mode);
   const paneOpen = pane.on && sideState.open;
