@@ -635,6 +635,14 @@ export function Breadcrumb({
       if (!t) return;
       if (t.classList?.contains("crumb-edit")) return;
       if (t.closest?.(".bar-overflow, .bar-menu-popup")) return;
+      // The bar's dead space IS the edit affordance (barClickEntersEdit) —
+      // a press there must not close the field it just opened. Without this,
+      // a double-click on the gap opened edit on the first click, this
+      // handler dismissed it on the second press, and closedByClickAwayRef
+      // then blocked the second click from reopening — the affordance
+      // appeared to do nothing. Closing stays with presses that land on
+      // something else: a row, the star, the search box, anywhere off-bar.
+      if (barClickEntersEdit(t)) return;
       setEditing(false);
       closedByClickAwayRef.current = true;
     };
