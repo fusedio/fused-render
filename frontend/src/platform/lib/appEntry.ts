@@ -1,12 +1,20 @@
 // How an app card resolves, links to and opens its app — shared by every
-// surface that renders one (the /apps hub's preview cards, the builder
-// sidebar's recents) so they can never disagree about what clicking a card does.
+// surface that renders one (the /apps hub's preview cards, the card context
+// menu) so they can never disagree about what clicking a card does.
 //
 // They did disagree. Each carried its own inline copy of the rule, and Home's
-// Recent row had already drifted from the hub's card. The rule: an app with a
-// page entry opens its FOLDER in the `app` view — the app itself, full-bleed,
-// for USING it — and one without a resolvable entry falls back to the plain
-// folder listing so a card is never dead.
+// Recent row had already drifted from the hub's card. The rule now: an app card
+// opens its FOLDER IN THE FILE EXPLORER, as a plain listing — no `_mode` — and
+// only an app whose entry is a lone non-page file opens that file instead.
+//
+// It used to open the folder in the `app` view (`?_mode=app`) under a builder
+// route of its own, /apps/<tag>/<name>. Both are gone. The route was a second
+// namespace for a folder the explorer already addresses, and pinning the mode
+// picked the view on the user's behalf: the explorer's mode switcher offers
+// `app` for exactly these folders (templates/app/condition.py), so landing on
+// the listing keeps the app one click away while leaving every other thing you
+// might want to do with the folder — read a file, open a chat, see its history
+// — equally reachable.
 //
 // OPENING an app is not BUILDING one: the `claude` view (the app beside a
 // Claude chat) is where a new app is created and iterated on, and the create
@@ -19,13 +27,7 @@
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
 import type { AppInfo } from "./api";
-import { APP_ROUTE_PREFIX, navigate, navigateUrl, urlForFsPath } from "./router";
-
-// The builder route for an app — /apps/<tag>/<name>, straight from the
-// AppInfo identity (no fs-path round trip needed).
-export function appRouteUrl(app: Pick<AppInfo, "tag" | "name">): string {
-  return APP_ROUTE_PREFIX + encodeURIComponent(app.tag) + "/" + encodeURIComponent(app.name);
-}
+import { navigate, urlForFsPath } from "./router";
 
 // The file this card is about, tolerating a backend that predates `entry`.
 // `entry` is "the file a card opens and previews"; `entry_html` is the narrower
@@ -34,40 +36,20 @@ export function entryOf(app: AppInfo): string | null {
   return app.entry ?? app.entry_html;
 }
 
-// Whether opening this app means opening its FOLDER in an app view, which is
-// what a page entry earns: those templates rediscover the entry from the folder
-// and want an index.html or exactly one top-level .html there.
-function opensAsProject(app: AppInfo): boolean {
-  return Boolean(app.entry_html);
-}
-
-// The virtual tag for registry-backed linked apps (fused_render/linked_apps.py).
-// Their folders live OUTSIDE the workspace, so /apps/linked/<name> can't be
-// the pure fused_dir codec the other tags use — the shell resolves that tag
-// through the registry instead (App.tsx + GET /api/apps/linked-path). Cards
-// still take the builder route like every other app, so the URL and the
-// experience are identical.
-export const LINKED_TAG = "linked";
-
 export interface OpenTarget {
   path: string;
   opts?: { isDir?: boolean; mode?: string };
 }
-
-// The template an app folder opens in: the app itself, full-bleed
-// (fused_render/templates/app). Set EXPLICITLY rather than left to the default —
-// with `_mode` absent, Preview's defaultTemplate picks the first UNCONDITIONAL
-// entry, which for a directory is `_listing`, i.e. the folder's file list.
-export const APP_OPEN_MODE = "app";
 
 // Where a card goes when activated, AS A VALUE. Split out from openApp so the
 // rule can be tested without touching `navigate`: mocking a module that half
 // the shell imports is process-wide in bun, and it leaks into whichever suite
 // runs next. A pure function needs no mock at all.
 export function openTargetFor(app: AppInfo): OpenTarget {
-  if (opensAsProject(app)) {
-    return { path: app.path, opts: { isDir: true, mode: APP_OPEN_MODE } };
-  }
+  // A page entry means the folder is the subject — the app view, the chat and
+  // the history all rediscover the entry from the folder, so the folder is what
+  // the card opens, in the explorer's own listing.
+  if (app.entry_html) return { path: app.path, opts: { isDir: true } };
   // A single file entry that isn't a page opens as the file. No workspace app
   // reaches this today (its entry is its .html or it has none), but the branch
   // is the contract `entry` exists for, and it keeps the fallback below meaning
@@ -80,29 +62,16 @@ export function openTargetFor(app: AppInfo): OpenTarget {
 // The URL for that target — what the anchor's href carries, so the browser can
 // open it in a new tab without the shell's help.
 //
-// `_mode` rides along because it selects the destination's template (the
-// plain app view); the `preview` param navigate() keeps sticky across
-// folder navigation deliberately does NOT, since it is in-session layout the
-// user toggled and a new tab is a fresh session. Built through the router's own
-// codec, so an app path with a space, a `#` or a non-ASCII name encodes exactly
-// as in-app navigation encodes it.
+// Nothing rides in the query string: the destination takes its own default view
+// (a folder's listing), and the params navigate() would otherwise carry are
+// in-session layout the user toggled, which a new tab does not inherit. Built
+// through the router's own codec, so an app path with a space, a `#` or a
+// non-ASCII name encodes exactly as in-app navigation encodes it.
 export function hrefFor(app: AppInfo): string {
-  // A project open lands in the BUILDER namespace (/apps/<tag>/<name>) — the
-  // app under the builder's own sidebar, with the header's mode switcher pinned
-  // to the app modes; the fallbacks stay explorer URLs (folder / single file).
-  if (opensAsProject(app)) return appRouteUrl(app) + "?_mode=" + APP_OPEN_MODE;
-  const { path, opts } = openTargetFor(app);
-  const search = opts?.mode ? "?_mode=" + encodeURIComponent(opts.mode) : "";
-  return urlForFsPath(path, search);
+  return urlForFsPath(openTargetFor(app).path);
 }
 
 export function openApp(app: AppInfo): void {
-  if (opensAsProject(app)) {
-    // navigateUrl, not navigate: the builder URL is already fully formed
-    // (navigate speaks fs paths and would re-encode into the explorer prefix).
-    navigateUrl(hrefFor(app), { isDir: true });
-    return;
-  }
   const { path, opts } = openTargetFor(app);
   navigate(path, opts);
 }

@@ -19,58 +19,68 @@
 //               the Home grid and makes the app view available. The button
 //               then flips to "Open as app" in place — no reload, because the
 //               status it reads is state, not a fetch cache.
-//   otherwise → "Open as app", at the BUILDER ROUTE (/apps/<tag>/<name>) in
-//               the app view when the status carries the identity that route
-//               needs, and at the folder's own page when it does not.
+//   otherwise → "Open as app", at the FOLDER in `?_mode=app` when the status
+//               says templates/app/condition.py will accept it, and at the
+//               folder's own page when it will not.
+//
+// This is now the ONLY producer of `?_mode=app` in the shell. App CARDS
+// deliberately do not pin the mode (platform/lib/appEntry) — a card opens the
+// folder's plain listing and the user picks the view. This button is the
+// opposite request, made explicitly: it says "show me this folder AS the app",
+// so it names the mode.
 //
 // The decision is pure and the fetching is a hook beside it, so the rule can be
 // pinned by a test while both surfaces share one implementation of it.
 import { useEffect, useState } from "react";
 import { getAppLinkStatus, linkApp, type AppLinkStatus } from "@platform/lib/api";
-import { APP_OPEN_MODE, appRouteUrl } from "@platform/lib/appEntry";
-import { navigate, navigateUrl } from "@platform/lib/router";
+import { navigate } from "@platform/lib/router";
 import { pushToast } from "@platform/lib/toast";
 
-// Where an "Open as app" goes. A route is a whole shell URL (the builder
-// namespace, which is not an fs path); a path is an ordinary navigation.
-export type AppButtonTarget =
-  | { kind: "route"; url: string }
-  | { kind: "path"; path: string; isDir: boolean };
+// The template an app folder opens in: the app itself, full-bleed
+// (fused_render/templates/app). Named EXPLICITLY rather than left to the
+// default — with `_mode` absent, Preview's defaultTemplate picks the first
+// UNCONDITIONAL entry, which for a directory is `_listing`, i.e. the file list
+// this button exists to avoid showing.
+export const APP_OPEN_MODE = "app";
+
+// Where an "Open as app" goes — an ordinary fs navigation, since there is no
+// app URL namespace any more: the folder in the app mode, or its lone page.
+export type AppButtonTarget = { path: string; isDir: boolean; mode?: string };
 
 export type AppButtonSpec =
   | { action: "link"; label: string }
   | { action: "open"; label: string; target: AppButtonTarget };
 
 // The button for a folder, or null when there shouldn't be one:
-//   • `appFile` null — the folder holds no single unambiguous top-level page,
-//     so it is not an app in this sense at all;
+//   • `folder`/`appFile` null — no folder in view, or it holds no single
+//     unambiguous top-level page, so it is not an app in this sense at all;
 //   • `link` null — the link-status probe is still in flight. A button that
 //     appears and then changes its own label under the cursor is worse than
 //     one that arrives a beat late.
 export function appButtonSpec(
+  folder: string | null,
   appFile: string | null,
   link: AppLinkStatus | null,
 ): AppButtonSpec | null {
-  if (!appFile || !link) return null;
+  if (!folder || !appFile || !link) return null;
   if (link.status === "unlinked") return { action: "link", label: "Add as app" };
-  // The builder route needs BOTH halves of the identity; a half-known one (an
-  // older backend that reports no `tag`, a workspace folder that isn't exactly
-  // an app dir) cannot build /apps/<tag>/<name>.
+  // Both halves of the identity present is how the status says "this folder is
+  // EXACTLY an app dir (or a registry entry)" — the same shape
+  // templates/app/condition.py admits. A half-known one (an older backend that
+  // reports no `tag`, a workspace folder nested deeper than <tag>/<name>) would
+  // ask for a mode the gate refuses, and `_mode=app` that resolves to nothing
+  // falls back to `_listing` — the file list, which is what this button exists
+  // to avoid.
   if (link.tag && link.name) {
     return {
       action: "open",
       label: "Open as app",
-      target: {
-        kind: "route",
-        // `_mode=app` is not optional: without it the destination takes its own
-        // default template, and a directory's default is `_listing`.
-        url: appRouteUrl({ tag: link.tag, name: link.name }) + "?_mode=" + APP_OPEN_MODE,
-      },
+      target: { path: folder, isDir: true, mode: APP_OPEN_MODE },
     };
   }
   // Fallback: the folder's own PAGE, which renders as the app. Deliberately not
-  // the folder — a folder with no mode is its file listing.
-  return { action: "open", label: "Open as app", target: { kind: "path", path: appFile, isDir: false } };
+  // the folder — a folder whose mode the gate would refuse is its file listing.
+  return { action: "open", label: "Open as app", target: { path: appFile, isDir: false } };
 }
 
 // The button as a surface can render it: a label and a click, or null. Both
@@ -104,8 +114,8 @@ export function useAppButton(
     };
   }, [folder, appFile]);
 
-  const spec = appButtonSpec(appFile, link);
-  if (!spec || !folder) return null;
+  const spec = appButtonSpec(folder, appFile, link);
+  if (!spec) return null;
 
   if (spec.action === "link") {
     return {
@@ -126,9 +136,6 @@ export function useAppButton(
   const { target } = spec;
   return {
     label: spec.label,
-    onClick: () => {
-      if (target.kind === "route") navigateUrl(target.url, { isDir: true });
-      else navigate(target.path, { isDir: target.isDir });
-    },
+    onClick: () => navigate(target.path, { isDir: target.isDir, mode: target.mode }),
   };
 }
