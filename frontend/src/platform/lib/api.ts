@@ -185,8 +185,14 @@ export function listDir(fsPath: string, cursor?: string | null): Promise<ListRes
 const LIST_PREFETCH_TTL_MS = 5000;
 const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number }>();
 
-// Forget every cached listing. Exported for a mutation that doesn't go through
-// this module's wrappers; everything that does is covered by noteAfter.
+// Forget every cached listing.
+//
+// Called by noteAfter below for every mutation this module performs, and by the
+// dir-watch socket (listing/useDirListing) for the ones it does not: a view's own
+// fused.writeFile() or template save goes out through /api/run from inside the
+// preview iframe and never touches these wrappers, and neither does Claude, an
+// external editor or a git checkout. The watcher is where the shell finds out, so
+// that is where the cache is dropped.
 export function clearListPrefetch(): void {
   listPrefetch.clear();
 }

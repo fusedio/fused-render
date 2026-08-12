@@ -99,7 +99,12 @@ test("a REFUSED mutation keeps the cache — nothing changed on disk", async () 
   expect(api.prefetchListDir("/refused")).toBe(first);
 });
 
-test("clearListPrefetch is exported, so a caller outside api.ts can invalidate", () => {
+test("clearListPrefetch invalidates for a mutation this app did not perform", () => {
+  // The export exists for the dir-watch socket (listing/useDirListing), which is
+  // how the shell hears about a change it did not make: a view's own
+  // fused.writeFile() through /api/run, an external editor, a git checkout. Those
+  // never reach the wrappers above, and before this the folder refreshed while a
+  // fresh mount inside the TTL still painted the pre-change listing.
   const first = api.prefetchListDir("/manual");
   api.clearListPrefetch();
   expect(api.prefetchListDir("/manual")).not.toBe(first);
