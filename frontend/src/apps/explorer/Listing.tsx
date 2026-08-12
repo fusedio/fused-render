@@ -887,12 +887,21 @@ export default function Listing({
     if (e.shiftKey || e.metaKey || e.ctrlKey) return;
     const target = e.target as HTMLElement;
     if (
-      target === scrollRef.current ||
-      target.tagName === "TBODY" ||
-      target.tagName === "TABLE"
+      target !== scrollRef.current &&
+      target.tagName !== "TBODY" &&
+      target.tagName !== "TABLE"
     ) {
-      selectPaths([]);
+      return;
     }
+    // A scrollbar press also targets the scroller; scrolling a long listing
+    // must not throw the selection away. The gutters live between the client
+    // box and the border box, so a press past clientWidth/clientHeight is on
+    // a scrollbar, not the background.
+    if (target === scrollRef.current) {
+      const { offsetX, offsetY } = e.nativeEvent;
+      if (offsetX >= target.clientWidth || offsetY >= target.clientHeight) return;
+    }
+    selectPaths([]);
   };
 
   // Right-clicking INSIDE an existing multi-row selection keeps it and acts on
