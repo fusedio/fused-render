@@ -223,8 +223,21 @@ def test_a_mount_backed_folder_is_refused_without_touching_the_kernel(
     cfg = _index(tmp_path, root, {root: 1 * NS, under: 1 * NS})
     monkeypatch.setattr(runner, "_mounts_dir", lambda: mounts)
 
-    def boom(_p):
-        raise AssertionError("stat reached a mount-backed path")
+    # Scoped to `under`, not a blanket boom() on every os.stat call: `os` is a
+    # single process-wide module object, so patching it unconditionally also
+    # patches every OTHER thread's os.stat — including Python's own linecache,
+    # which pytest's thread-exception hook calls (to format a DIFFERENT
+    # thread's traceback) at whatever moment that thread happens to raise.
+    # That corrupted the hook itself under xdist, intermittently failing an
+    # unrelated test or crashing a worker outright. Only refusing the one path
+    # this test cares about keeps the assertion just as sharp while leaving
+    # every other os.stat call in the process alone.
+    real_stat = os.stat
+
+    def boom(p, *args, **kwargs):
+        if isinstance(p, str) and p == under:
+            raise AssertionError("stat reached a mount-backed path")
+        return real_stat(p, *args, **kwargs)
 
     monkeypatch.setattr(freshness.os, "stat", boom)
     now = 10 ** 10
