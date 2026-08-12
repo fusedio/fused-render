@@ -125,10 +125,11 @@ def test_link_rejects_non_folders_and_workspace_paths(client, tmp_path, workspac
 
 def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspace):
     """A real <workspace>/linked/<name> folder colliding with a registry
-    entry: the listing drops the workspace twin (both would route to
-    /apps/linked/<name>, which resolves through the registry), and
-    link-status withholds the workspace folder's identity so the explorer
-    falls back to path navigation. Non-colliding names are untouched."""
+    entry: the listing drops the workspace twin (both would carry the same
+    ("linked", name) identity, which is the key the recents store and the
+    link-status probe speak), and link-status withholds the workspace folder's
+    identity so the explorer falls back to the folder's own page. Non-colliding
+    names are untouched."""
     ws_twin = workspace / "linked" / "notes"
     ws_twin.mkdir(parents=True)
     (ws_twin / "index.html").write_text("<html></html>")
@@ -249,18 +250,6 @@ def test_unlink_removes_from_listing_but_never_touches_the_folder(client, tmp_pa
 def test_unlink_unknown_name_reports_removed_false(client):
     r = client.post("/api/apps/unlink", json={"name": "nope"}, headers=HDRS)
     assert r.status_code == 200 and r.json()["removed"] is False
-
-
-def test_linked_path_resolves_names_for_the_shell_route(client, tmp_path):
-    """GET /api/apps/linked-path backs /apps/linked/<name>: registry name ->
-    real folder, null for unknown names."""
-    d = _folder(tmp_path, "notes")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    r = client.get("/api/apps/linked-path", params={"name": "notes"})
-    assert r.json() == {"path": str(d)}
-    assert client.get("/api/apps/linked-path", params={"name": "nope"}).json() == {
-        "path": None
-    }
 
 
 # --------------------------------------------------------------- link status

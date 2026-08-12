@@ -74,12 +74,12 @@ _APP_STARTER_DIR = os.path.join(
 @router.get("/api/apps")
 def api_apps():
     # "linked" is the registry's reserved tag, but nothing stops a user from
-    # creating a real <workspace>/linked/<name> folder. On a name collision
-    # the two cards would share the /apps/linked/<name> route, which resolves
-    # through the registry — so the workspace twin is dropped rather than
-    # listed as a card that opens a different folder. Non-colliding workspace
-    # "linked" apps keep listing: their route falls back to the fused_dir
-    # codec path, which IS their folder.
+    # creating a real <workspace>/linked/<name> folder. The two cards would
+    # then be two entries with the same (tag, name) identity — which is the key
+    # the recents store and the link-status probe speak — so the workspace twin
+    # is dropped rather than listed as an indistinguishable duplicate. (Their
+    # CARDS would still open different folders correctly: a card opens its own
+    # `path`.) Non-colliding workspace "linked" apps keep listing.
     registry = linked_apps.linked_apps()
     taken = {a["name"] for a in registry}
     workspace = [
@@ -99,15 +99,6 @@ def api_apps():
 # fused_render/linked_apps.py; these routes are thin.
 
 
-@router.get("/api/apps/linked-path")
-def api_linked_path(name: str):
-    """Resolve a linked app's registry name to its real folder — what the
-    shell's /apps/linked/<name> route needs, since that route can't be the
-    pure fused_dir codec the other tags use. `path` is null for an unknown
-    name; read-only, no X-Fused guard (same posture as GET /api/apps)."""
-    return {"path": linked_apps.linked_path(name)}
-
-
 @router.get("/api/apps/link-status")
 def api_link_status(path: str):
     """How a folder relates to the app system, for the explorer's topbar
@@ -119,16 +110,16 @@ def api_link_status(path: str):
     root = os.path.abspath(fused_dir())
     if folder == root or folder.startswith(root + os.sep):
         # `tag`/`name` are set when the folder is EXACTLY an app dir
-        # (<workspace>/<tag>/<name>) — what the explorer's "Open as app"
-        # button needs to build the /apps/<tag>/<name> route. Null for the
-        # root, a tag dir, or anything nested deeper.
+        # (<workspace>/<tag>/<name>) — the shape templates/app/condition.py
+        # admits, which is what the explorer's "Open as app" button asks this
+        # for. Null for the root, a tag dir, or anything nested deeper.
         parts = [p for p in os.path.relpath(folder, root).split(os.sep)
                  if p not in ("", ".")]
         if len(parts) == 2 and not any(p.startswith(".") for p in parts):
             # A workspace folder under a literal "linked" tag dir whose name
-            # a registry entry has claimed: the /apps/linked/<name> route
-            # would resolve to the REGISTRY folder, not this one — withhold
-            # the identity so the caller falls back to path navigation.
+            # a registry entry has claimed: this folder's (tag, name) already
+            # names the REGISTRY folder, not this one — withhold the identity
+            # so the caller falls back to the folder's own page.
             if (parts[0] == linked_apps.LINKED_TAG
                     and linked_apps.linked_path(parts[1]) is not None):
                 return {"status": "workspace", "name": None, "tag": None}
@@ -283,9 +274,9 @@ def _agent_path() -> str:
     (server.templates.TEMPLATES_DIR), the same file the split app view
     executes, so the runs dir, sidecar shape (.claude-split.json inside the
     app folder), and permission_server path stay in step with what the page
-    will poll. A newly CREATED app lands folder-first in claude (opening
-    an existing one lands in the plain `app` view instead), so the scaffolding
-    session must be recorded at the folder level too."""
+    will poll. A newly CREATED app lands folder-first in claude (opening an
+    existing one lands on the folder's explorer listing instead), so the
+    scaffolding session must be recorded at the folder level too."""
     from fused_render.server import templates as _server_templates
 
     return os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")

@@ -115,7 +115,9 @@ export function useAppButton(
   }, [folder, appFile]);
 
   const spec = appButtonSpec(folder, appFile, link);
-  if (!spec) return null;
+  // `folder` is re-tested only to narrow it for `linkApp` below — a non-null
+  // spec already implies it.
+  if (!spec || !folder) return null;
 
   if (spec.action === "link") {
     return {

@@ -50,7 +50,7 @@ import {
   sideToggleTarget,
   reconcileSideSearch,
 } from "@apps/explorer/lib/preview-side";
-import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
+import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
@@ -444,7 +444,6 @@ function TemplatePreview({
   onRenderedTitle,
   hideHeader,
   actionsInTopbar,
-  appChrome,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -452,9 +451,6 @@ function TemplatePreview({
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
   hideHeader?: boolean;
-  // True in the app-builder variant (allowModes pinned): adds the "Open in
-  // explorer" header action.
-  appChrome?: boolean;
   actionsInTopbar?: boolean;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
@@ -474,8 +470,7 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  //   * `appChrome` (the app builder) pins its own mode allowlist.
-  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !appChrome;
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
   // --- the BORROWED companion: `git`, from this file's parent folder ----------
@@ -996,9 +991,11 @@ function TemplatePreview({
           top-right, one a few hundred pixels below it — and telling which
           governed which half is not something a user should have to work out.
           The pane's is the one that stays: it sits with the thing it changes.
-          Files keep this control (they have no pane), and the app view/page
-          (`appChrome`) keeps everything it has — its folder is the whole
-          subject of the route, not a listing beside a preview.
+          Files keep this control (they have no pane). The app view had a third
+          answer here — it kept this control, because under its own route the
+          folder was the whole subject rather than a listing beside a preview —
+          and that route is gone, so a folder is a folder wherever you reached
+          it from.
           Getting back out of one of the non-listing modes is the BROWSER'S
           BACK button, and deliberately nothing else (owner call). A folder
           only ever enters those modes by navigating — a typed `?_mode=`, a
@@ -1023,7 +1020,7 @@ function TemplatePreview({
           Git sit beside the listing instead of replacing it, so they are
           companions to browsing the folder — which is exactly the argument the
           file sidebar makes one level down. */}
-      {!(stat.is_dir && !appChrome) && (
+      {!stat.is_dir && (
         <ModeMenu
           /* Content modes only where the split is on: the companions
              (`claude`, `git`, `history`) are the SIDEBAR's list, and offering them
@@ -1059,19 +1056,10 @@ function TemplatePreview({
           onClick={toggleSide}
         />
       )}
-      {/* Rightmost, per the bars' grammar: the low-frequency one-shots live in
-          the overflow, beside "Open in Finder" and "Copy path" in the title
-          bar's own `···`. "Open in explorer" — the counterpart of the
-          explorer's "Open as app", jumping from the app experience back to the
-          folder where the full template surface lives — held the bar's most
-          prominent slot for an action nobody uses twice a session. */}
-      {appChrome && stat.is_dir && (
-        <OverflowMenu
-          items={[
-            { label: "Open in explorer", onClick: () => navigate(fsPath, { isDir: true }) },
-          ]}
-        />
-      )}
+      {/* The app view's overflow lived here — one "Open in explorer" entry, the
+          counterpart of "Open as app", jumping from the app's own route back to
+          the folder. Both the route and the need for a way out of it are gone:
+          the app view IS a mode of the folder in the explorer now. */}
     </>
   );
 
@@ -1259,12 +1247,6 @@ interface PreviewProps {
   // better tab title than the filename can use it (App's StatView). Undefined
   // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
   onRenderedTitle?: (title: string | null) => void;
-  // Sub-app mode allowlist: when set, only these modes from stat.templates are
-  // offered (the app-builder pins its views to the app modes, App.tsx
-  // APP_MODES). The server keeps resolving the full list; this is a UI
-  // restriction only —
-  // `_mode` semantics on the URL are unchanged.
-  allowModes?: string[];
   // Chrome-free render (the /learn page): no preview header, no mode switcher —
   // the content fills the body directly.
   hideHeader?: boolean;
@@ -1273,15 +1255,13 @@ interface PreviewProps {
   actionsInTopbar?: boolean;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hideHeader, actionsInTopbar }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
   const templates = stat.templates.filter(
-    (t) =>
-      (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
-      (!allowModes || allowModes.includes(t.mode))
+    (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an
@@ -1317,7 +1297,6 @@ export default function Preview({ fsPath, stat, onRenderedTitle, allowModes, hid
         onRenderedTitle={onRenderedTitle}
         hideHeader={hideHeader}
         actionsInTopbar={actionsInTopbar}
-        appChrome={!!allowModes}
       />
     );
   return <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} />;

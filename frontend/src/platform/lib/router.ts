@@ -90,41 +90,19 @@ export const IS_SNAPSHOT =
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;
 
-// App-builder namespace: /apps/<tag>/<name> — pretty URLs for app folders,
-// which live exactly two levels under the workspace (<fused_dir>/<tag>/<name>,
-// see fused_render/server/routers/apps.py). Pure codec against fused_dir; no
-// server lookup. /apps itself (no segments) is the apps homepage, not an app.
-export const APP_ROUTE_PREFIX = "/apps/";
-
-export function appUrlForFsPath(fsPath: string, fusedDir: string): string | null {
-  const root = fusedDir.replace(/\/+$/, "");
-  if (!fsPath.startsWith(root + "/")) return null;
-  const segs = fsPath.slice(root.length + 1).split("/").filter((s) => s.length > 0);
-  if (segs.length !== 2) return null;
-  return APP_ROUTE_PREFIX + segs.map(encodeURIComponent).join("/");
-}
-
-// The (tag, name) identity a builder-route pathname carries, or null when the
-// pathname isn't one. Split out of fsPathFromAppRoute because the "linked"
-// tag can't use the fused_dir codec at all — its folders live anywhere on
-// disk, so the shell resolves that tag through the registry instead
-// (GET /api/apps/linked-path, see App.tsx).
-export function appRouteSegments(pathname: string): { tag: string; name: string } | null {
-  if (!pathname.startsWith(APP_ROUTE_PREFIX)) return null;
-  const segs = pathname
-    .slice(APP_ROUTE_PREFIX.length)
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(decodeURIComponent);
-  if (segs.length !== 2) return null;
-  return { tag: segs[0], name: segs[1] };
-}
-
-export function fsPathFromAppRoute(pathname: string, fusedDir: string): string | null {
-  const segs = appRouteSegments(pathname);
-  if (!segs) return null;
-  return fusedDir.replace(/\/+$/, "") + "/" + segs.tag + "/" + segs.name;
-}
+// There was a SECOND URL namespace for app folders here — /apps/<tag>/<name>,
+// a pretty route decoded against fused_dir (with the virtual "linked" tag
+// resolved through the registry instead) that rendered the folder under the app
+// builder's own chrome. It is gone, and no rewrite maps the old shape: an app
+// folder is a directory like any other, and /explorer/view/<path> already names
+// it. Two routes for one folder meant two answers to "where am I" — the
+// breadcrumb, the sidebar and the mode switcher all differed by which one you
+// arrived through — for a namespace whose only advantage was cosmetic.
+//
+// Old /apps/<tag>/<name> links are DROPPED rather than redirected (owner call),
+// the same posture as `?_mode=versions` in D243: a stale link falls back to the
+// shell's "Unrecognized URL", and a permanent alias would keep the dead shape
+// alive in every bookmark and recents entry that has one.
 
 export const NAV_EVENT = "fused:navigate";
 
@@ -214,9 +192,9 @@ export function navigate(
     const side = current.get("_side");
     if (side !== null) parts.push("_side=" + encodeURIComponent(side));
   }
-  // `opts.mode` picks the destination's template mode (`_mode`) — how the app
-  // cards open a project folder straight into the plain app view (appEntry's
-  // APP_OPEN_MODE) instead of the folder's file listing.
+  // `opts.mode` picks the destination's template mode (`_mode`) — how the
+  // explorer's "Open as app" button opens a folder straight into the app view
+  // (app-button's APP_OPEN_MODE) instead of the folder's file listing.
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
   if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
   const search = parts.length ? "?" + parts.join("&") : "";
