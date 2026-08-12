@@ -884,19 +884,27 @@ async def _ai_relay(body: dict):
             "has nowhere to put 'history' — send one or the other",
             status=400)
 
-    # Sampling. Bounded here rather than trusted to the worker, for the reason
-    # the image endpoint clamps its own numbers: `max_tokens` is how long this
-    # machine is busy, and one resident model serves every page, so a typo'd
-    # 10_000_000 is not one caller's slow request — it is the model unavailable
-    # to everything else until it finishes.
-    sampling = _sampling_problem(body)
-    if sampling:
-        return _ai_error("bad_request", sampling, status=400)
-
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
     if _is_local_model(model):
+        # Sampling is checked INSIDE this branch, not above it, and the reason
+        # is which sentence a bad value earns. These parameters do not exist on
+        # the Claude path at all, so range-checking them first meant a
+        # `temperature: 5.0` sent to Claude was answered "must be between 0.0
+        # and 2.0" — an error that invites the caller to correct a number and
+        # try again, on a path where no number would ever work. The refusal
+        # below is the true one, and it must not be pre-empted by a message that
+        # implies support.
+        #
+        # Bounded at all for the reason the image endpoint clamps its own
+        # numbers: `max_tokens` is how long this machine is busy, and one
+        # resident model serves every page, so a typo'd 10_000_000 is not one
+        # caller's slow request — it is the model unavailable to everything else
+        # until it finishes.
+        sampling = _sampling_problem(body)
+        if sampling:
+            return _ai_error("bad_request", sampling, status=400)
         # In a THREAD. `_local_relay` is blocking I/O to a worker process: it
         # waits for the first token before it can answer, and the non-streaming
         # path waits for the whole completion. On a local model that is seconds

@@ -1075,6 +1075,24 @@ def test_sampling_is_refused_for_claude_rather_than_dropped(client):
     assert "'temperature'" in response.json()["error"]["message"]
 
 
+def test_an_out_of_range_value_on_the_claude_path_still_says_unsupported(client):
+    """WHICH sentence a bad value earns, and it is not the range one.
+
+    Range-checking before the fork answered `temperature: 5.0` sent to Claude
+    with "must be between 0.0 and 2.0" — an error inviting the caller to correct
+    a number and retry, on a path where no number would ever work. The check
+    lives inside the local branch so the true refusal is never pre-empted by a
+    message that implies support.
+    """
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "temperature": 5.0,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "only applies to a local model" in message
+    assert "between" not in message
+
+
 def test_cancel_stops_the_generation_without_unloading(client, fake_runner):
     """Not the same as unloading: the weights stay, so the next message starts
     answering immediately."""
