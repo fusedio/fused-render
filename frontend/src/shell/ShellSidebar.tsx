@@ -17,7 +17,7 @@ import type { Config } from "@platform/lib/api";
 import { useUrlVersion, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
-import { useClaudeConfigAvailable } from "@apps/claude_config";
+import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 
 // Magnifier — the Explorer's front door is its search prompt (FilesHome's
 // hero), so the entry reads as "find things" rather than "a folder".

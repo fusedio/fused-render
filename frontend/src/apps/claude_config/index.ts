@@ -8,50 +8,17 @@
 // Light/Dark setting entirely.
 //
 // The shell gives it one sidebar route under the CLAUDE heading, gated on
-// `useClaudeConfigAvailable` (shell/ShellSidebar.tsx, dispatched in
-// shell/App.tsx): `/claude-config`, the settings panel, whose "MD Files"
-// section is the CLAUDE.md explorer (`?cctab=claudemd`; the old `/claude-md`
-// page redirects there). It briefly also hung off the Preferences page as a
-// tab; a settings page with a second settings app nested inside one of its tabs
-// was one surface too many.
+// `useClaudeConfigAvailable` (./available.ts, checked from
+// shell/ShellSidebar.tsx and dispatched in shell/App.tsx): `/claude-config`,
+// the settings panel, whose "MD Files" section is the CLAUDE.md explorer
+// (`?cctab=claudemd`; the old `/claude-md` page redirects there). It briefly
+// also hung off the Preferences page as a tab; a settings page with a second
+// settings app nested inside one of its tabs was one surface too many.
 // Mutable state (settings.json, the git history, MCP registrations) is written
 // by the server-side modules to ~/.claude — this app owns none of it.
-import { useEffect, useState } from "react";
-import { getStatus } from "./api";
-
-export { default as ClaudeConfig } from "./ClaudeConfig";
-
-// Module-level cache of a CONFIRMED answer, shared by every mount of the hook.
-// The shell remounts every route on each navigation (App.tsx keys them on the
-// nav epoch) and the sidebar re-renders with them, so without this the two
-// CLAUDE entries would blink out and back on every trip through the app.
 //
-// Deliberately simpler than @platform/lib/hooks' useBuiltinMountReady: that one
-// polls, because a mount becomes ready asynchronously minutes into a session.
-// Availability here is a property of the server's own installation — the
-// bridge's modules import or they don't — so it cannot flip mid-session and one
-// fetch is the whole story.
-let cached: boolean | null = null;
-
-export function useClaudeConfigAvailable(): boolean {
-  const [available, setAvailable] = useState(cached ?? false);
-  useEffect(() => {
-    if (cached !== null) return;
-    let alive = true;
-    getStatus().then(
-      (s) => {
-        cached = s.available;
-        if (alive) setAvailable(s.available);
-      },
-      () => {
-        // A failed probe is not a cached "no": a transient fetch failure would
-        // otherwise hide the sidebar entries for the rest of the session.
-        if (alive) setAvailable(false);
-      },
-    );
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return available;
-}
+// This barrel is the panel's own heavy surface (ClaudeConfig.tsx + its
+// sections/bits/ansi dependencies) — shell/App.tsx lazy-loads it for the
+// `/claude-config` route. The eager availability probe lives in ./available.ts
+// instead, on purpose: see that file for why it must not go through here.
+export { default as ClaudeConfig } from "./ClaudeConfig";
