@@ -242,10 +242,12 @@
   }
 }
 
-/* Rows ranked against a corpus a generation behind. The listing dims held
-   results the same way (.listing-stale); the chip above says why. */
+/* Rows ranked against a corpus a generation behind, matching the listing's
+   .listing-behind — light on purpose, because this state can hold for as long
+   as the box is open and rows nobody can read are worse than rows a few
+   minutes old. The chip above says why in words. */
 .fh-results.is-stale {
-  opacity: 0.55;
+  opacity: 0.86;
 }
 
 .fh-result-note kbd {

@@ -437,18 +437,21 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
   // spinner and the dimmed-rows treatment key off this, so it has to mean
   // "an answer is still coming", not merely "the deferred value lags".
   const scanPending = searching && pending;
-  // The corpus is a generation behind and is STAYING that way until a real
-  // boundary (listing/revalidate): the folder or the index moved and this
-  // search deliberately did not follow. That is a fine state to be in, but only
-  // if it is visible — "stale but honestly labelled" is the whole deal, and it
-  // is what separates this from the bug it replaced. The dimming says it here;
-  // the chip in Listing.tsx says it in words.
+  // `corpus.stale` — rows from the hold while a fetch is actually running —
+  // joins the two pre-existing reasons: rows ranked against a previous
+  // generation's corpus are exactly as provisional as rows the scan has not
+  // finished producing, and all of them must read as such. All three are
+  // MOMENTARY, which is what the heavy dim they drive is calibrated for.
+  const isStale = deferredStale || scanPending || corpus.stale;
+  // Being a generation behind is not momentary: the folder or the index moved
+  // and this search deliberately did not follow, and it will stay that way
+  // until a real boundary (listing/revalidate). That is a fine state to be in,
+  // but only if it is visible — "stale but honestly labelled" is the whole
+  // deal. It gets a treatment of its own rather than the in-flight one, because
+  // a dim that can persist for the whole session has to be legible to read
+  // under, and because "an answer is coming" and "no answer is coming, this is
+  // it" are different claims. Reported separately for exactly that reason.
   const generationBehind = searching && pinned !== gen;
-  // `corpus.stale` (rows from the hold, while a fetch actually runs) joins the
-  // two pre-existing reasons: rows ranked against a previous generation's
-  // corpus are exactly as provisional as rows the scan has not finished
-  // producing, and all of them must read as such.
-  const isStale = deferredStale || scanPending || corpus.stale || generationBehind;
 
   // --- Streaming re-rank throttle (B4) --------------------------------------
   // Every stream flush re-scores the newly arrived entries and merges them into
@@ -546,10 +549,10 @@ export function useWalkSearch(fsPath: string, refresh: number, urlSync = true) {
     q,
     searching,
     isStale,
-    // Specifically "these results are computed from an older generation of the
-    // tree", as opposed to the other two things isStale folds in (a deferred
-    // render, an unfinished scan), which are momentary. Drives the caveat chip.
-    behind: generationBehind || corpus.stale,
+    // "These results are computed from an older generation of the tree, and
+    // nothing is on its way to fix that" — see above. Drives the caveat chip
+    // and its own, lighter dim.
+    behind: generationBehind,
     scanPending,
     validWalk,
     prefetchWalk,
