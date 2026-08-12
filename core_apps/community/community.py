@@ -11,7 +11,7 @@ Actions:
   catalog   — cached index.json joined with installs.json ({status:"no-cache"}
               before the first refresh; never touches the network)
   refresh   — clone (first run) or fetch+ff the community repo cache, sparse-
-              checkout the browse set (index.json, */icon.svg, */metadata.json),
+              checkout the browse set (index.json, */preview.png, */metadata.json),
               then return the same payload as `catalog`
   detail    — materialize one app folder in the cache; return its readme text
               + install state (the page renders the markdown client-side)
@@ -59,7 +59,7 @@ WORKSPACE = os.path.abspath(
 COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "community")
 
 # The always-materialized browse set: catalog + every app's card assets.
-SPARSE_BROWSE = ["/index.json", "/*/icon.svg", "/*/metadata.json"]
+SPARSE_BROWSE = ["/index.json", "/*/preview.png", "/*/metadata.json"]
 
 GIT_TIMEOUT = 45  # < the executor's 60 s kill; clone is the longest call
 IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
@@ -194,6 +194,15 @@ def _refresh():
         _git_ok(CACHE_REPO, "checkout", what="checkout")
     else:
         _clean_cache()
+        # Re-assert the browse patterns on every refresh: a cache cloned under
+        # an older pattern set (e.g. when cards used icon.svg) would otherwise
+        # keep it forever — fetch+ff never rewrites sparse-checkout config.
+        # `add`, not `set`: set would drop the per-app /<slug>/ patterns that
+        # _materialize appended, de-materializing every previewed app. Stale
+        # old patterns linger harmlessly (they match nothing once the files
+        # leave the repo). Idempotent and cheap when nothing changed.
+        _git_ok(CACHE_REPO, "sparse-checkout", "add", *SPARSE_BROWSE,
+                what="sparse-checkout add")
         _git_ok(CACHE_REPO, "fetch", "--", "origin", what="fetch")
         # ff-only: the cache is managed, never edited, so a non-ff means the
         # upstream rewrote history — re-clone is the recovery, not a merge.

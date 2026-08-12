@@ -35,17 +35,37 @@
   .chip { background: var(--chip); border: 1px solid transparent; border-radius: 999px;
     padding: 2px 11px; cursor: pointer; color: var(--muted); }
   .chip.on { border-color: var(--accent); color: var(--text); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 14px; cursor: pointer; display: flex; gap: 12px; align-items: flex-start; }
-  .card:hover { background: var(--hover); }
-  .card img { width: 36px; height: 36px; border-radius: 8px; flex: none; }
-  .card .fallback-icon { width: 36px; height: 36px; border-radius: 8px; flex: none;
-    background: var(--chip); display: flex; align-items: center; justify-content: center;
-    font-weight: 700; color: var(--muted); }
-  .card h3 { margin: 0 0 2px; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
-  .card p { margin: 0; color: var(--muted); }
-  .meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  /* Preview cards — same shape as the app builder's .app-pcard (apps.css):
+     text body on top, 16:10 thumbnail below, hover lift. The thumbnail here
+     is a static preview.png from the catalog cache, not a live iframe. */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; }
+  .card { display: flex; flex-direction: column; min-width: 0; padding: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    overflow: hidden; cursor: pointer;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease; }
+  .card:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line));
+    box-shadow: 0 4px 18px color-mix(in srgb, #000 25%, transparent);
+    transform: translateY(-1px); }
+  .card-body { display: flex; flex-direction: column; gap: 5px; padding: 12px 14px 12px; min-width: 0; }
+  .card h3 { margin: 0; font-size: 14.5px; font-weight: 650;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card p { margin: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { display: flex; align-items: center; gap: 8px; min-width: 0;
+    color: var(--muted); font-size: 11.5px; }
+  .meta .pill { flex: 0 0 auto; padding: 1px 8px;
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10.5px;
+    border: 1px solid var(--line); border-radius: 999px; }
+  .meta .slug { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta .end { flex: 0 0 auto; margin-left: auto; }
+  .card-thumb { position: relative; display: block; aspect-ratio: 16 / 10;
+    background: var(--bg); border-top: 1px solid var(--line); overflow: hidden; }
+  .card-thumb img { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; object-position: top; }
+  .card-thumb .monogram { position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 44px; font-weight: 700; color: var(--muted);
+    background: color-mix(in srgb, currentColor 9%, transparent); }
   .badge { font-size: 10.5px; border-radius: 999px; padding: 1px 8px; font-weight: 600; }
   .badge.installed { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
   .badge.update { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
@@ -56,8 +76,10 @@
   .back-row { margin: 0 0 14px; }
   .detail { max-width: 760px; }
   .detail-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 8px; }
-  .detail-head img { width: 44px; height: 44px; border-radius: 10px; }
   .detail-head h2 { margin: 0; font-size: 16px; }
+  .detail-preview { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover;
+    object-position: top; border: 1px solid var(--line); border-radius: 12px;
+    background: var(--bg); margin: 0 0 18px; }
   .detail-head .by { color: var(--muted); }
   .actions { display: flex; gap: 8px; margin: 14px 0 18px; flex-wrap: wrap; align-items: center; }
   .readme { border-top: 1px solid var(--line); padding-top: 16px; overflow-wrap: break-word; }
@@ -170,10 +192,20 @@ const state = () => ({
   open: fused.params.get("app") || "",
 });
 
-function iconUrl(app) {
+function previewUrl(app) {
   return catalog && catalog.cache_root && !app.yanked
-    ? fused.rawUrl(`${catalog.cache_root}/${app.slug}/icon.svg`)
+    ? fused.rawUrl(`${catalog.cache_root}/${app.slug}/preview.png`)
     : null;
+}
+
+// Monogram behind the image: if preview.png is missing (yanked app, older
+// catalog cache) the <img> removes itself on error and the letter shows.
+function thumb(app) {
+  const url = previewUrl(app);
+  const letter = esc((app.name || app.slug)[0].toUpperCase());
+  return `<span class="card-thumb"><span class="monogram">${letter}</span>` +
+    (url ? `<img src="${url}" alt="" loading="lazy" onerror="this.remove()">` : "") +
+    `</span>`;
 }
 
 function badge(app) {
@@ -211,17 +243,23 @@ function renderGrid() {
     return [a.name, a.description, a.slug, ...(a.tags || [])].join(" ").toLowerCase().includes(needle);
   });
   if (!apps.length) { content.innerHTML = `<div class="state">No apps match.</div>`; return; }
-  content.innerHTML = `<div class="grid">` + apps.map(a => {
-    const icon = iconUrl(a);
-    return `<div class="card" data-slug="${esc(a.slug)}">
-      ${icon ? `<img src="${icon}" alt="">` : `<div class="fallback-icon">${esc((a.name || a.slug)[0].toUpperCase())}</div>`}
-      <div>
-        <h3>${esc(a.name || a.slug)} ${badge(a)}</h3>
+  // Body mirrors the app builder's preview card: title, then a meta row of
+  // mono pill + slug + right-aligned author/version, thumbnail below.
+  content.innerHTML = `<div class="grid">` + apps.map(a =>
+    `<div class="card" data-slug="${esc(a.slug)}">
+      <div class="card-body">
+        <h3>${esc(a.name || a.slug)}</h3>
         <p>${esc(a.description || "")}</p>
-        <div class="meta">${esc(a.author?.name || "")}${a.version ? " · v" + esc(a.version) : ""}</div>
+        <div class="meta">
+          <span class="pill">community</span>
+          ${badge(a)}
+          <span class="slug">${esc(a.slug)}</span>
+          <span class="end">${esc(a.author?.name || "")}${a.version ? " · v" + esc(a.version) : ""}</span>
+        </div>
       </div>
-    </div>`;
-  }).join("") + `</div>`;
+      ${thumb(a)}
+    </div>`
+  ).join("") + `</div>`;
 }
 
 // --- detail page --------------------------------------------------------
@@ -239,7 +277,7 @@ async function renderDetail(slug) {
   if (state().open !== slug) return;   // user navigated away while loading
   if (d.status === "error") { showError(d.message); return; }
   const entry = d.entry || {};
-  const icon = catalog?.cache_root ? fused.rawUrl(`${d.folder}/icon.svg`) : null;
+  const preview = catalog?.cache_root ? fused.rawUrl(`${d.folder}/preview.png`) : null;
   const previewHref = "/explorer/embed/" + encodeFsPath(d.preview_entry);
   const buttons = [];
   if (!d.installed) buttons.push(`<button class="primary" data-act="install">Install</button>`);
@@ -250,7 +288,6 @@ async function renderDetail(slug) {
   content.innerHTML = `<div class="back-row"><button data-act="close">← All apps</button></div>
     <div class="detail">
     <div class="detail-head">
-      ${icon ? `<img src="${icon}" alt="">` : ""}
       <div>
         <h2>${esc(entry.name || slug)}</h2>
         <div class="by">${esc(entry.author?.name || "")}${entry.version ? " · v" + esc(entry.version) : ""}
@@ -259,6 +296,7 @@ async function renderDetail(slug) {
     </div>
     <p>${esc(entry.description || "")}</p>
     <div class="actions">${buttons.join("")}</div>
+    ${preview ? `<img class="detail-preview" src="${preview}" alt="" onerror="this.remove()">` : ""}
     <div class="readme">${md(d.readme || "*no readme*", d.folder)}</div>
     <p class="fineprint">Preview renders the app from the local catalog cache — it already runs the
       app's JavaScript with the same trust as installing it. Anything a previewed app saves is
