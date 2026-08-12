@@ -1215,11 +1215,42 @@ table.listing-table tr.skel-row:hover {
    over and gives up its own width, down to 96px — still the full "Search…"
    placeholder, just with no slack around it. Between the two floors the strip
    stays one line at any width the split allows, which is what keeps it the
-   same height as the pane header across the divider. */
+   same height as the pane header across the divider.
+
+   And past BOTH floors — the path still ellipsized with the box already at
+   96px — the box stops being worth its strip at all: Listing.tsx measures
+   that state and folds the resting box into a 28px magnifier (.iconized
+   below), handing the difference back to the path. The path outranks an idle
+   input; a click on the magnifier (or typing, ever) gets the box back. */
 #breadcrumb:has(.crumb-search-slot) .crumbs {
   flex-grow: 0;
   flex-shrink: 6;
   min-width: 120px;
+}
+
+/* The tight-bar fold (Listing.tsx's measurement): the resting box collapses
+   to nothing and the .listing-search-open magnifier (a .bar-ctl) stands in.
+   Collapsed by WIDTH, not display: the input must stay focusable, because
+   type-to-search (useListingSelection's printable-key branch) lands focus on
+   it from anywhere in the listing — focus pins the box back open
+   (Listing.tsx), so the keystroke falls into a visible field. A display:none
+   input silently refuses focus and the feature dies while folded. The
+   negative margin swallows the row's 8px gap, so the zero-width item leaves
+   no seam. Never coexists with .searching: a non-empty query un-folds by
+   definition.
+
+   Scoped under the slot for specificity, not for scope (the fold only exists
+   in slot mode anyway): the `.has-pin` width rule below is (0,3,0) and later
+   in the file, so at equal specificity a narrow-bar multi-selection would
+   win the cascade and reopen a 260px hole the fold had just reclaimed —
+   invisible, because this rule's opacity would still apply. */
+.crumb-search-slot .listing-search.iconized .listing-search-box {
+  flex: 0 0 0px;
+  width: 0;
+  min-width: 0;
+  margin-left: -8px;
+  overflow: hidden;
+  opacity: 0;
 }
 
 /* …and once there is a query, the crumbs get out of the way entirely.

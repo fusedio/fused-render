@@ -52,6 +52,10 @@
     --shadow: rgba(0, 0, 0, .4);
     --scrollbar: #3a3d45;
     --handle-hover: #4a4d57;
+    /* Caret for the composer's select pills. A data URI can't read
+       currentColor, so the stroke bakes in this theme's --dim — keep the two
+       in sync when either changes. */
+    --pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%239a9fa9" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -83,6 +87,7 @@
     --shadow: rgba(0, 0, 0, .10);
     --scrollbar: #cdd0d6;
     --handle-hover: #a8adb6;
+    --pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%2361656c" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -1342,7 +1347,7 @@
   }
   .composer-row .spacer { flex: 1; }
   .pill {
-    background: transparent;
+    background-color: transparent;
     border: 1px solid transparent;
     border-radius: 999px;
     color: var(--dim);
@@ -1353,7 +1358,28 @@
     outline: none;
     -webkit-appearance: none;
     appearance: none;
-    transition: background .12s, color .12s, filter .12s;
+    transition: background-color .12s, color .12s, filter .12s;
+  }
+  /* Select pills only (not pressable button pills): a caret so they read as
+     dropdowns at rest, and a JS-fitted width (see fitSelect) because an
+     appearance:none select otherwise sizes to its WIDEST option — "fable"
+     rendered inside a "sonnet"-wide pill, leaving dead space that made the
+     row's gaps look uneven. background-color (not the background shorthand)
+     everywhere on pills, or the hover repaint erases this caret. */
+  select.pill {
+    background-image: var(--pill-caret);
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 8px 8px;
+    padding-right: 22px;
+    text-align: left;
+  }
+  /* outline:none above kills the UA focus ring; keyboard users still need a
+     receipt, mouse users still shouldn't get one on click. */
+  .pill:focus-visible {
+    border-color: var(--border-strong);
+    background-color: var(--surface-2);
+    color: var(--fg);
   }
   /* THE ONE RULE about hover and an active state, shared with #annbtn in the left
      pane's banner: a neutral hover never applies to a control that is switched on,
@@ -1366,7 +1392,7 @@
      the user is deciding whether to click. Relying on rule order for that is one
      reshuffle away from the bug coming back, and the next pressable pill in this
      row inherits the fix rather than rediscovering it. */
-  .pill:hover:not([aria-pressed="true"]) { background: var(--surface-2); color: var(--fg); }
+  .pill:hover:not([aria-pressed="true"]) { background-color: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   .pill option { background: var(--bg); color: var(--fg); }
   .send {
@@ -1382,6 +1408,9 @@
     padding: 0;
     cursor: pointer;
     flex-shrink: 0;
+    /* Redundant while the spacer is on the same line; keeps the button pinned
+       right when a narrow pane wraps it onto its own line. */
+    margin-left: auto;
     transition: filter .12s, transform .12s, opacity .12s;
   }
   .send:hover { filter: brightness(1.1); transform: translateY(-1px); }
@@ -2098,9 +2127,12 @@
           <textarea id="box" rows="1" placeholder="Reply to Claude…" spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
-            <select id="model" class="pill model-sel" title="Model"></select>
-            <select id="effort" class="pill effort-sel" title="Effort"></select>
-            <select id="perm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <!-- aria-label, not title: the OS tooltip a title attr produces reads as
+                 unpolished chrome next to the pills, and the caret + visible value
+                 already say what each pill is. Screen readers keep the name. -->
+            <select id="model" class="pill model-sel" aria-label="Model"></select>
+            <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
+            <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -2136,9 +2168,9 @@
           <textarea id="homebox" rows="2" placeholder="Ask Claude…" spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
-            <select id="hmodel" class="pill model-sel" title="Model"></select>
-            <select id="heffort" class="pill effort-sel" title="Effort"></select>
-            <select id="hperm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <select id="hmodel" class="pill model-sel" aria-label="Model"></select>
+            <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
+            <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -4826,8 +4858,8 @@ const growHome = autoGrow(homebox);
 const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
 
 // ── model/effort/approvals selectors (home + composer sync via params) ──
-const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
-const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+const MODELS = ["fable", "opus", "sonnet", "haiku"];
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // How much Claude may do without stopping for a card. Values are agent.py's
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
 // broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
@@ -4868,16 +4900,19 @@ const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_
 // The strictest mode is the default: more auto-approval is opted into, never
 // handed out by a missing param.
 const DEFAULT_PERMISSION = "prompt";
-function fillSelect(el, values, label) {
+// Real values only — no placeholder row: curModel()/curEffort() always
+// resolve to a concrete value, so the dropdown never needs a "model"/"effort"
+// entry the user shouldn't pick.
+function fillSelect(el, values) {
   for (const v of values) {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = v || label;
+    o.textContent = v;
     el.appendChild(o);
   }
 }
-document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "model"));
-document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "effort"));
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS));
+document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS));
 document.querySelectorAll(".perm-sel").forEach((el) => {
   for (const v of PERMISSION_MODES) {
     const o = document.createElement("option");
@@ -4887,6 +4922,23 @@ document.querySelectorAll(".perm-sel").forEach((el) => {
   }
 });
 
+// An appearance:none select keeps the width of its WIDEST option, so a short
+// value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
+// space before the next pill — the row's gaps looked uneven. Hug the selected
+// label instead: measure it off-DOM and set an explicit width. Padding,
+// borders (and with them the caret gutter) come off the computed style so the
+// .pill CSS stays the single source of truth for them.
+const _fitCtx = document.createElement("canvas").getContext("2d");
+function fitSelect(el) {
+  const opt = el.selectedOptions[0];
+  if (!opt) return; // value not in options — keep the last fitted width
+  const s = getComputedStyle(el);
+  _fitCtx.font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+  const chrome = parseFloat(s.paddingLeft) + parseFloat(s.paddingRight) +
+    parseFloat(s.borderLeftWidth) + parseFloat(s.borderRightWidth);
+  el.style.width = `${Math.ceil(_fitCtx.measureText(opt.textContent).width + chrome)}px`;
+}
+
 function syncSelects() {
   document.querySelectorAll(".model-sel").forEach((el) => { el.value = curModel(); });
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = curEffort(); });
@@ -4894,6 +4946,7 @@ function syncSelects() {
   document.querySelectorAll(".perm-sel").forEach((el) => {
     el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
   });
+  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach(fitSelect);
 }
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));

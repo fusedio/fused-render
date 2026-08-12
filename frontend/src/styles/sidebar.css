@@ -74,88 +74,92 @@ body:has(.sidebar-resize-handle.resizing) {
   flex-shrink: 0;
 }
 
-/* Collapsed sidebar = a slim full-height strip that expands it back, carrying
-   the tab below — the SAME reopen control on every route (an explorer-only
-   topbar button briefly competed with it, so which control you reached for
-   depended on where you were). overflow stays visible so the tab can protrude
-   over #content, and the strip is lifted above it so a stacking context inside
-   #content can't paint over the tab. */
+/* Collapsed sidebar = an icon rail: the reopen control on top (the SAME one
+   on every route — an explorer-only topbar button briefly competed with it,
+   so which control you reached for depended on where you were), then the
+   owner's section icons (SidebarRailItem). 44px holds a centred column of the
+   28px controls the bars use, self-contained — no tab protruding over
+   #content like the old 20px strip needed. */
 #sidebar.sidebar-collapsed {
-  /* 20px, not the 10px this strip used to be: the tab protrudes 28px over
-     #content, and at 10px it landed on top of whatever the route's bar starts
-     with — the app header's title began at x26 against a tab ending at x28.
-     20px puts the content gutter at 36px and leaves the tab 8px of air on
-     every route, without the strip reading as a column of its own. */
-  flex: 0 0 20px;
-  width: 20px;
-  overflow: visible;
-  position: relative;
-  z-index: 10;
-}
-
-.sidebar-expand-strip {
-  position: relative;
-  flex: 1 1 auto;
-  display: flex;
+  flex: 0 0 44px;
+  width: 44px;
   align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
+  /* Puts the expand control's centre on 24px — the line the sidebar header,
+     #breadcrumb and the app header all stand on — so the control keeps its
+     position across collapse and expand, on every route. */
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
-.sidebar-expand-strip:hover {
-  background: rgba(var(--tint), 0.06);
-}
-
-/* The reopen tab. Anchored at the strip's LEFT edge, so all 28px of it are
-   on-screen, and at the top rather than mid-height: `top: 10px` centres it on
-   24px — the line the sidebar header, #breadcrumb and the app header all stand
-   on — so the control keeps its height across collapse and expand, on every
-   route. 28px square with a 16px glyph is the .bar-ctl-icon geometry the bars
-   use, and the hover below is their wash, so it reads as one of them.
-   Presentational: the STRIP is the button, so hover/focus key off its state. */
-.sidebar-expand-tab {
-  position: absolute;
-  top: 10px;
-  left: 0;
+/* 28px square, 16px glyph, .bar-ctl geometry and hover wash (explorer.css) —
+   the rail reads as a column of the same controls the bars use. */
+.sidebar-rail-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 28px;
   height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
   border-radius: 8px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  box-shadow: 0 1px 4px var(--shadow-sm);
+  background: none;
   color: var(--fg-muted);
-  z-index: 10;
+  cursor: pointer;
 }
 
-/* Same hover as .bar-ctl (explorer.css): rgba(--tint, 0.08) over the tab's
-   own --bg-alt, and the glyph up to full --fg. */
-.sidebar-expand-strip:hover .sidebar-expand-tab {
-  background: color-mix(in srgb, rgba(var(--tint), 0.08), var(--bg-alt));
-  border-color: color-mix(in srgb, var(--border) 60%, var(--fg-muted));
+/* Rail items come in two dialects (SidebarRailItem): <button> for "expand to
+   this section", <a> for "navigate there, stay collapsed" — one look. */
+a.sidebar-rail-btn {
+  text-decoration: none;
+}
+
+.sidebar-rail-btn:hover {
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 
-/* Focus ring on the strip, or on the tab when it carries one. */
-.sidebar-expand-strip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+/* Same current-place treatment as .sidebar-item.active, on the icon alone. */
+.sidebar-rail-btn.active {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
 }
 
-.sidebar-expand-strip:focus-visible:has(.sidebar-expand-tab) {
-  outline: none;
-}
-
-.sidebar-expand-strip:focus-visible .sidebar-expand-tab {
+.sidebar-rail-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   color: var(--fg);
+}
+
+/* Section icons sit apart from the expand control: a hairline divider says
+   "these are the sidebar's contents, that is its chrome". flex: 1 so a
+   pinBottom cluster (the shell's settings icons) can push to the bottom edge,
+   mirroring the expanded sidebar's layout. */
+.sidebar-rail-items {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Group boundary inside the rail — stands in for the expanded sidebar's
+   uppercase headings. */
+.sidebar-rail-sep {
+  width: 28px;
+  height: 1px;
+  flex-shrink: 0;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+/* The flexible gap before a pinBottom cluster. */
+.sidebar-rail-flex {
+  flex: 1 1 auto;
 }
 
 /* Phones: give the whole width to the rendered view */
