@@ -29,8 +29,8 @@ local undo history for the app.
 
 If the app reads the machine-wide **file index** — a file search box, a
 disk-usage or file-type breakdown, a repos list, SQL over the filesystem —
-invoke **`fused-render-index`** as well: `fused.index.*` and its readiness
-envelope, plus the direct-parquet reader for bulk Python.
+invoke **`fused-render-index`** as well: `fused.fileIndex.search/query` and their
+readiness envelope, plus the direct-parquet reader for bulk Python.
 
 fused-render supplies those skills (and their siblings, `fused-render-usage`
 and `fused-render-custom-templates`) to every chat it launches, as a plugin loaded
