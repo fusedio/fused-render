@@ -385,9 +385,20 @@ export default function Listing({
     const crumbs = bar?.querySelector(".crumbs");
     if (!(bar instanceof HTMLElement) || !crumbs) return;
     const freeInBar = () => {
-      const kids = Array.from(bar.children).filter(
-        (el) => getComputedStyle(el).display !== "none"
-      );
+      // The bar's actual flex ITEMS, not bar.children: the search slot is
+      // `display: contents` (its rect reads 0), so its children participate
+      // in the bar's layout directly and must be counted in its place —
+      // skipping them overstates the free space by the whole search row.
+      const kids: Element[] = [];
+      const collect = (el: Element) => {
+        for (const child of Array.from(el.children)) {
+          const d = getComputedStyle(child).display;
+          if (d === "none") continue;
+          if (d === "contents") collect(child);
+          else kids.push(child);
+        }
+      };
+      collect(bar);
       const cs = getComputedStyle(bar);
       const gap = parseFloat(cs.columnGap) || 0;
       const used =
@@ -1284,7 +1295,17 @@ export default function Listing({
                   // search" was instructions for a control that needs none.
                   placeholder="Search…"
                   value={query}
-                  onFocus={prefetchWalk}
+                  // Focus pins the box open, whatever routed it here — the
+                  // magnifier click, or type-to-search landing focus on the
+                  // zero-width folded input (useListingSelection's
+                  // printable-key branch; the .iconized CSS keeps the input
+                  // focusable for exactly this). The pin also holds while a
+                  // focused user deletes their query — the box must not fold
+                  // away under the caret.
+                  onFocus={() => {
+                    setPinnedOpen(true);
+                    prefetchWalk();
+                  }}
                   // A pinned-open box that blurs still empty folds back to the
                   // magnifier (the pin exists only to be typed into); with a
                   // query it stays — .searching owns the strip from there.
