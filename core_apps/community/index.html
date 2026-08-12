@@ -31,10 +31,25 @@
   button.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 600; }
   button.danger { color: var(--danger); border-color: var(--danger); }
   button:disabled { opacity: 0.5; cursor: default; }
+  select { background: var(--panel); border: 1px solid var(--line); color: var(--text);
+    border-radius: 7px; padding: 5px 8px; font: inherit; cursor: pointer; }
   .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 16px; }
   .chip { background: var(--chip); border: 1px solid transparent; border-radius: 999px;
     padding: 2px 11px; cursor: pointer; color: var(--muted); }
   .chip.on { border-color: var(--accent); color: var(--text); }
+  .chip .n { opacity: 0.65; font-size: 11px; margin-left: 3px; }
+  .updates { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    background: color-mix(in srgb, var(--warn) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+    border-radius: 10px; padding: 8px 12px; margin: 0 0 16px; }
+  .updates .lead { color: var(--warn); font-weight: 600; margin-right: 2px; }
+  .section-title { display: flex; align-items: baseline; gap: 8px;
+    font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--muted); margin: 22px 0 10px; }
+  .section-title:first-child { margin-top: 0; }
+  .section-title .n { font-weight: 400; }
+  .resultcount { color: var(--muted); margin: 0 0 12px; }
+  .state .row { display: flex; gap: 8px; justify-content: center; margin-top: 12px; }
   /* Preview cards — same shape as the app builder's .app-pcard (apps.css):
      text body on top, 16:10 thumbnail below, hover lift. The thumbnail here
      is a static preview.png from the catalog cache, not a live iframe. */
@@ -109,6 +124,11 @@
     <header>
       <h1>Community apps</h1>
       <input id="q" type="search" placeholder="Search apps…">
+      <select id="sort" title="Sort apps">
+        <option value="">Catalog order</option>
+        <option value="opened">Recently opened</option>
+        <option value="name">Name A–Z</option>
+      </select>
       <button id="installed-toggle">Installed</button>
       <button id="refresh">Refresh</button>
     </header>
@@ -189,6 +209,7 @@ const state = () => ({
   q: fused.params.get("q") || "",
   tag: fused.params.get("tag") || "",
   installedOnly: fused.params.get("installed") === "1",
+  sort: fused.params.get("sort") || "",
   open: fused.params.get("app") || "",
 });
 
@@ -217,9 +238,11 @@ function badge(app) {
 
 function renderChips() {
   const { tag } = state();
-  const tags = [...new Set((catalog?.apps || []).flatMap(a => a.tags || []))].sort();
-  chipsEl.innerHTML = tags.map(t =>
-    `<button class="chip${t === tag ? " on" : ""}" data-tag="${esc(t)}">${esc(t)}</button>`).join("");
+  const counts = {};
+  for (const a of catalog?.apps || [])
+    for (const t of a.tags || []) counts[t] = (counts[t] || 0) + 1;
+  chipsEl.innerHTML = Object.keys(counts).sort().map(t =>
+    `<button class="chip${t === tag ? " on" : ""}" data-tag="${esc(t)}">${esc(t)}<span class="n">${counts[t]}</span></button>`).join("");
 }
 
 // One dispatch: the `app` param decides which page renders — grid or detail.
@@ -230,23 +253,10 @@ function render() {
   else { renderChips(); renderGrid(); }
 }
 
-function renderGrid() {
-  const { q, tag, installedOnly } = state();
-  if (qEl.value !== q) qEl.value = q;   // don't reset the cursor mid-typing
-  document.getElementById("installed-toggle").classList.toggle("primary", installedOnly);
-  if (!catalog) return;
-  const needle = q.toLowerCase();
-  const apps = (catalog.apps || []).filter(a => {
-    if (installedOnly && !a.installed) return false;
-    if (tag && !(a.tags || []).includes(tag)) return false;
-    if (!needle) return true;
-    return [a.name, a.description, a.slug, ...(a.tags || [])].join(" ").toLowerCase().includes(needle);
-  });
-  if (!apps.length) { content.innerHTML = `<div class="state">No apps match.</div>`; return; }
-  // Body mirrors the app builder's preview card: title, then a meta row of
-  // mono pill + slug + right-aligned author/version, thumbnail below.
-  content.innerHTML = `<div class="grid">` + apps.map(a =>
-    `<div class="card" data-slug="${esc(a.slug)}">
+// Body mirrors the app builder's preview card: title, then a meta row of
+// mono pill + slug + right-aligned author/version, thumbnail below.
+function cardHtml(a) {
+  return `<div class="card" data-slug="${esc(a.slug)}">
       <div class="card-body">
         <h3>${esc(a.name || a.slug)}</h3>
         <p>${esc(a.description || "")}</p>
@@ -258,8 +268,99 @@ function renderGrid() {
         </div>
       </div>
       ${thumb(a)}
-    </div>`
-  ).join("") + `</div>`;
+    </div>`;
+}
+
+function sortApps(apps, sort) {
+  if (sort === "name")
+    return [...apps].sort((a, b) => (a.name || a.slug).localeCompare(b.name || b.slug));
+  if (sort === "opened")
+    // Never-opened apps keep catalog order after the opened ones.
+    return [...apps].sort((a, b) => (b.opened_at || 0) - (a.opened_at || 0));
+  return apps;   // catalog order
+}
+
+function updatesStrip(apps) {
+  const pending = apps.filter(a => a.installed && a.update_available && !a.yanked);
+  if (!pending.length) return "";
+  return `<div class="updates"><span class="lead">${pending.length} update${pending.length > 1 ? "s" : ""} available</span>` +
+    pending.map(a => `<button data-update="${esc(a.slug)}">Update ${esc(a.name || a.slug)}</button>`).join("") +
+    `</div>`;
+}
+
+function renderGrid() {
+  const { q, tag, installedOnly, sort } = state();
+  if (qEl.value !== q) qEl.value = q;   // don't reset the cursor mid-typing
+  const sortEl = document.getElementById("sort");
+  if (sortEl.value !== sort) sortEl.value = sort;
+  document.getElementById("installed-toggle").classList.toggle("primary", installedOnly);
+  if (!catalog) return;
+  const all = catalog.apps || [];
+  const needle = q.toLowerCase();
+  const filtering = !!(needle || tag || installedOnly);
+  const apps = sortApps(all.filter(a => {
+    if (installedOnly && !a.installed) return false;
+    if (tag && !(a.tags || []).includes(tag)) return false;
+    if (!needle) return true;
+    return [a.name, a.description, a.slug, a.author?.name, ...(a.tags || [])]
+      .join(" ").toLowerCase().includes(needle);
+  }), sort);
+  if (!apps.length) {
+    content.innerHTML = `<div class="state">No apps match${q ? ` “${esc(q)}”` : ""}${tag ? ` in ${esc(tag)}` : ""}${installedOnly ? " among installed apps" : ""}.
+      <div class="row"><button data-clear>Show all apps</button></div></div>`;
+    content.querySelector("[data-clear]").addEventListener("click", clearFilters);
+    return;
+  }
+  // Strip pins to the unfiltered browse view; mid-search it would be noise.
+  let html = filtering ? "" : updatesStrip(all);
+  if (filtering) {
+    if (apps.length !== all.length)
+      html += `<div class="resultcount">${apps.length} of ${all.length} apps</div>`;
+    html += `<div class="grid">` + apps.map(cardHtml).join("") + `</div>`;
+  } else {
+    // Unfiltered browse: installed apps first as their own section, then the rest.
+    const installed = apps.filter(a => a.installed);
+    const rest = apps.filter(a => !a.installed);
+    if (installed.length && rest.length) {
+      html += `<div class="section-title">Installed <span class="n">${installed.length}</span></div>
+        <div class="grid">` + installed.map(cardHtml).join("") + `</div>
+        <div class="section-title">All apps <span class="n">${rest.length}</span></div>
+        <div class="grid">` + rest.map(cardHtml).join("") + `</div>`;
+    } else {
+      html += `<div class="grid">` + apps.map(cardHtml).join("") + `</div>`;
+    }
+  }
+  content.innerHTML = html;
+  content.querySelectorAll("[data-update]").forEach(b =>
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();   // don't open the card underneath
+      updateFromGrid(b.dataset.update);
+    }));
+}
+
+function clearFilters() {
+  fused.params.set("q", "");
+  fused.params.set("tag", "");
+  fused.params.set("installed", "");
+}
+
+// Inline update from the strip — same dirty-copy handshake as the detail page.
+async function updateFromGrid(slug) {
+  if (busy) return;
+  const app = (catalog?.apps || []).find(a => a.slug === slug);
+  let res = await write({ action: "update", slug }, null);
+  if (res && res.status === "dirty") {
+    const ok = await confirmModal({
+      title: "You've edited this app",
+      body: `<p>Your copy of ${esc(app?.name || slug)} has local changes. Updating first
+        commits your current state to the app's git history ("Local edits before
+        community update"), then applies the new version on top — nothing is lost,
+        but your edits won't be in the running files any more.</p>`,
+      okLabel: "Update anyway",
+    });
+    if (!ok) return;
+    await write({ action: "update", slug, force: "true" }, "updated");
+  }
 }
 
 // --- detail page --------------------------------------------------------
@@ -343,6 +444,9 @@ function confirmModal({ title, body, okLabel, okClass = "primary", extra = "" })
 async function act(action, slug, d) {
   if (action === "close") return closeDetail();
   if (action === "open") {
+    // Best-effort: record the open so "Recently opened" sorting (here and in
+    // the apps hub) sees it; never delay the navigation on it.
+    fused.runPython(PY, { action: "touch", slug }, { key: null }).catch(() => {});
     // The cloned folder opens in the explorer's listing — the /apps/<tag>/<name>
     // app route is retired (D262); a folder listing is the only destination.
     window.top.location.href = "/explorer/view/" + encodeFsPath(d.path);
@@ -438,6 +542,8 @@ async function refresh() {
 
 // --- wiring -----------------------------------------------------------------
 qEl.addEventListener("input", () => fused.params.set("q", qEl.value));
+document.getElementById("sort").addEventListener("change", (e) =>
+  fused.params.set("sort", e.target.value));
 document.getElementById("installed-toggle").addEventListener("click", () =>
   fused.params.set("installed", state().installedOnly ? "" : "1"));
 document.getElementById("refresh").addEventListener("click", refresh);
