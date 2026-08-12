@@ -10,6 +10,8 @@ import time
 import pyarrow.parquet as pq
 import pytest
 
+from _thread_scoped import this_thread_only
+
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import IgnoreRules, MountGuard
 from fused_render.index.scan import keep_subdirs, run_scan, scan_dir_once
@@ -85,8 +87,17 @@ def test_unchanged_leaf_costs_one_stat(tmp_path):
         calls.append(str(p))
         return real_scandir(p, *a, **k)
 
+    # Thread-scoped: `os.scandir = ...` rebinds it for the whole process, and any
+    # other thread's listing lands in `calls` and breaks `calls == []` — a
+    # directory this test never asked anything about. Under the fused-engine job
+    # the `openfused-invoke-dispatcher` thread polls its request directory with
+    # `pathlib.glob` -> os.scandir on its own schedule (conftest's
+    # `_no_startup_engine_warm` only stops OUR warm, not another package's). The
+    # claim is about scan_dir_once's own work, which is synchronous on this
+    # thread (the ThreadPoolExecutor lives one level up, in the pool child), so
+    # nothing is lost. Do not re-globalise. See tests/_thread_scoped.py.
     try:
-        os.scandir = watched
+        os.scandir = this_thread_only(real_scandir, watched)
         kind, payload, subs = scan_dir_once(
             str(d), cache, IgnoreRules([]), _guard(tmp_path))
     finally:
