@@ -1783,6 +1783,12 @@ export interface AppInfo {
   // the HTML-only /render iframe may be pointed at. Optional for older backends
   // that predate the key — read it through entryOf(), never directly.
   entry?: string | null;
+  // The app's authored thumbnail: an absolute path to a `preview.png` at the
+  // folder's root, or null when there is none (and undefined on backends that
+  // predate the key). A card renders it through /api/fs/raw INSTEAD of the live
+  // scaled iframe of `entry_html` — an author's chosen still beats whatever the
+  // page happens to look like with no data in it.
+  preview_image?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.

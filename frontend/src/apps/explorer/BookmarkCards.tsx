@@ -2,7 +2,8 @@
 // the file itself, rendered live in a scaled, display-only embed iframe (the
 // same trick as the /apps AppPreviewCard). A bookmark on a FOLDER shows a
 // "stack": the folder's first entries as fanned chips that spread on hover,
-// with the first file child's view peeking out underneath. A stat on the
+// with its best file child's view peeking out underneath — an authored
+// `preview.png` as an image if there is one, else a live embed. A stat on the
 // bookmark's target decides which body the card gets; saved layout sentinels
 // (/_tab, /_panel) skip the stat and embed the whole saved view. Every iframe
 // carries a pointer-events shield, so a click anywhere on the card opens the
@@ -10,7 +11,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
-import { listDir, statPath } from "@platform/lib/api";
+import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
@@ -91,20 +92,48 @@ function teaserEntries(entries: FsEntry[]): FsEntry[] {
 // How many subfolders a file-less folder probes for something to peek at.
 const APP_PROBE_LIMIT = 3;
 
-// Peek priority: an html (the folder is a fused-app — show the app itself)
-// beats an md (the folder's story) beats a json beats anything else.
+// The authored thumbnail (fused_render/app_listing.PREVIEW_IMAGE_NAME). It
+// outranks every extension below, including an html: a folder that ships one
+// has said what its picture is, and no live render of its page can beat that.
+// Matched by whole NAME, not by extension — any other .png in the folder is
+// just a file, and would be a poor guess at what the folder is about.
+const PREVIEW_IMAGE_NAME = "preview.png";
+
+// Peek priority for everything else: an html (the folder is a fused-app — show
+// the app itself) beats an md (the folder's story) beats a json beats anything
+// else. Ranks are offset by one so `preview.png` can sit at 0, above them all.
 const PEEK_EXT_ORDER = ["html", "htm", "md", "markdown", "json"];
 
-function peekRank(name: string): number {
+export function peekRank(name: string): number {
+  if (name.toLowerCase() === PREVIEW_IMAGE_NAME) return 0;
   const dot = name.lastIndexOf(".");
   const ext = dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
   const idx = PEEK_EXT_ORDER.indexOf(ext);
-  return idx === -1 ? PEEK_EXT_ORDER.length : idx;
+  return 1 + (idx === -1 ? PEEK_EXT_ORDER.length : idx);
+}
+
+// A peeked file that is the authored image is shown AS an image, not framed in
+// an embed iframe: the embed would be a whole shell page load to render one
+// <img>, and its own chrome around it.
+export function isPreviewImage(fsPath: string): boolean {
+  const name = fsPath.slice(fsPath.lastIndexOf("/") + 1);
+  return name.toLowerCase() === PREVIEW_IMAGE_NAME;
+}
+
+// Display-only image thumbnail, in the same box (and with the same shield) the
+// scaled iframe gets.
+function ImagePreview({ src }: { src: string }) {
+  return (
+    <span className="fhb-preview" aria-hidden="true">
+      <img className="fhb-shot" src={src} alt="" loading="lazy" />
+      <span className="fhb-shield" />
+    </span>
+  );
 }
 
 // The file worth peeking at among a folder's teaser entries: best extension
 // rank wins; entries arrive alphabetically sorted, so ties keep the first.
-function bestPeekFile(entries: FsEntry[]): FsEntry | null {
+export function bestPeekFile(entries: FsEntry[]): FsEntry | null {
   let best: FsEntry | null = null;
   for (const e of entries) {
     if (e.is_dir) continue;
@@ -114,11 +143,11 @@ function bestPeekFile(entries: FsEntry[]): FsEntry | null {
 }
 
 // The stack body of a folder card: back-to-front fanned chips over an
-// optional live preview peeking out underneath the front chip. The peek is
-// the folder's best direct file child (PEEK_EXT_ORDER); a folder holding
-// only subfolders (a deploy dir of apps) probes its first few subfolders
-// and peeks the best-ranked file found there — an html anywhere (a fused
-// app) wins the probe outright.
+// optional preview peeking out underneath the front chip. The peek is the
+// folder's best direct file child (peekRank: `preview.png` first, then
+// PEEK_EXT_ORDER); a folder holding only subfolders (a deploy dir of apps)
+// probes its first few subfolders and peeks the best-ranked file found there —
+// an authored preview.png anywhere wins the probe outright.
 function FolderStack({ path }: { path: string }) {
   const [entries, setEntries] = useState<FsEntry[] | null>(null);
   // A probed subfolder's best file — the fallback peek: the file's absolute
@@ -163,7 +192,7 @@ function FolderStack({ path }: { path: string }) {
         const rank = peekRank(f.name);
         if (!best || rank < best.rank)
           best = { path: joinPath(subPath, f.name), rank, dir: d.name };
-        if (rank === 0) break; // an html — nothing can outrank it
+        if (rank === 0) break; // the authored preview.png — nothing outranks it
       }
       setSubPeek(best ? { path: best.path, dir: best.dir } : null);
     })();
@@ -188,9 +217,14 @@ function FolderStack({ path }: { path: string }) {
     shown.push(front);
   }
   // The front sheet's body, under its title row: the peeked view, or (once
-  // settled with nothing to peek) a count so the card isn't a void.
+  // settled with nothing to peek) a count so the card isn't a void. Either way
+  // it is ONE preview per card — the back sheets load nothing (see below).
   const body = peekPath ? (
-    <LivePreview src={embedUrlForFsPath(peekPath)} />
+    isPreviewImage(peekPath) ? (
+      <ImagePreview src={rawUrl(peekPath)} />
+    ) : (
+      <LivePreview src={embedUrlForFsPath(peekPath)} />
+    )
   ) : settled ? (
     <span className="fhb-sheet-note">
       {`${teaser.length} item${teaser.length === 1 ? "" : "s"}`}

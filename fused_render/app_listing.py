@@ -2,9 +2,10 @@
 
 An app is a folder with a single entry page: `<workspace>/<tag>/<name>/`, whose
 entry is its one non-hidden direct-child `.html`. The walk that finds them, and
-the two facts reported about each one — a title read out of the entry, and when
-the folder was last touched — live here rather than inside the route handler, so
-they can be tested and reused without a `TestClient`.
+the facts reported about each one — a title read out of the entry, an authored
+`preview.png` thumbnail if there is one, and when the folder was last touched —
+live here rather than inside the route handler, so they can be tested and reused
+without a `TestClient`.
 
 Nothing in this module raises for a directory it cannot read: a listing degrades
 to what it could see. The one deliberate exception is `app_entry`, which lets
@@ -34,6 +35,29 @@ def app_entry(dir_path: str) -> str | None:
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 
+# The one authored thumbnail name. A card's picture of an app is otherwise the
+# entry page rendered live in a scaled iframe, which is honest but is also a
+# whole page load per card and shows whatever the app looks like with no data in
+# it; dropping a `preview.png` in the folder is how an author overrides that.
+#
+# Exactly one name, not a search over `preview.*` or `screenshot.*`: a user
+# adding a thumbnail should never have to work out which of several candidates
+# wins, and a fixed name is also what makes "is there one" a single stat.
+PREVIEW_IMAGE_NAME = "preview.png"
+
+
+def app_preview_image(dir_path: str) -> str | None:
+    """The app folder's authored thumbnail (`preview.png` at its root), or None.
+
+    Unlike `app_entry` this swallows nothing it needs to distinguish: `isfile`
+    is False for a missing file, an unreadable one and a DIRECTORY of that name
+    alike, and all three mean the same thing to the caller — there is no picture
+    to show, fall back to the live render.
+    """
+    p = os.path.join(dir_path, PREVIEW_IMAGE_NAME)
+    return os.path.abspath(p) if os.path.isfile(p) else None
+
+
 def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     """One app's listing entry — the single place the shape is built.
 
@@ -42,6 +66,11 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     directory cannot be read, skip it" into "this directory has no entry, list
     it as a folder" — an unreadable app comes back as a card. The caller is the
     only one that knows which of those it wants, so it decides.
+
+    `preview_image` is resolved HERE, and the asymmetry is the point: it has no
+    such ambiguity to hand back (see `app_preview_image`), so resolving it once
+    in the shared shape is what keeps the workspace walk and the linked-app
+    registry from having to remember it separately.
     """
     return {
         "name": name,
@@ -55,6 +84,10 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
         # entryOf) and falls back to `entry_html` against an older server.
         "entry": entry_html,
         "entry_html": entry_html,
+        # The card's thumbnail when the author supplied one: absolute path to
+        # `preview.png` at the folder's root, else None and the card falls back
+        # to rendering `entry_html` live.
+        "preview_image": app_preview_image(path),
         "title": entry_title(entry_html) if entry_html else None,
         "updated_at": dir_updated_at(path),
     }

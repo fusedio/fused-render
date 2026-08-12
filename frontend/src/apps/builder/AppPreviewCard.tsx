@@ -1,11 +1,21 @@
-// Big preview card for the /apps hub. The thumbnail is the app itself: its
-// entry HTML rendered live in a sandboxed iframe at desktop width (1280px)
-// and scaled down to fit the card — display only, a pointer-events shield
-// keeps every click on the card, which opens the app. Apps without an entry
-// file fall back to the Home grid's tinted monogram so the card is never
-// blank. Iframes are lazy so a big workspace doesn't render everything at
-// once.
+// Big preview card for the /apps hub. Its thumbnail has three shapes, in
+// precedence order:
+//
+//   1. `preview.png` at the app folder's root — an AUTHORED still, served as
+//      bytes through /api/fs/raw. First because it is the only one the author
+//      chose: a live render shows the page in whatever state it comes up in
+//      (empty, mid-load, asking for a file), and a screenshot shows the app
+//      making its point. It is also by far the cheapest of the three.
+//   2. the app itself, live: `entry_html` in a sandboxed iframe at desktop
+//      width (1280px) scaled down to fit the card.
+//   3. no entry file at all — the Home grid's tinted monogram, so a card is
+//      never blank.
+//
+// Display-only either way: a pointer-events shield keeps every click on the
+// card, which opens the app. Both the iframe and the image are lazy, so a big
+// workspace doesn't load everything at once.
 import type { AppInfo } from "@platform/lib/api";
+import { rawUrl } from "@platform/lib/api";
 import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
 
@@ -49,7 +59,21 @@ export function AppPreviewCard({
         </span>
       </span>
       <span className="app-pcard-thumb" aria-hidden="true">
-        {app.entry_html ? (
+        {app.preview_image ? (
+          <>
+            <img
+              className="app-pcard-shot"
+              src={rawUrl(app.preview_image)}
+              alt=""
+              loading="lazy"
+            />
+            {/* The same shield the iframe gets. An <img> swallows no clicks of
+                its own, but it DOES carry the browser's native drag-the-image
+                gesture, which starts a drag on the card instead of the click
+                that opens it. */}
+            <span className="app-pcard-shield" />
+          </>
+        ) : app.entry_html ? (
           <>
             <iframe
               src={`/render?path=${encodeURIComponent(app.entry_html)}`}

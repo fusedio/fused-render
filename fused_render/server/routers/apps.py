@@ -20,7 +20,9 @@ The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
 the file a card opens and previews, ``entry_html`` the narrower claim that the
 entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
-pointed at). For an app of this shape they are the same file.
+pointed at). For an app of this shape they are the same file. ``preview_image``
+is a third, unrelated path: an authored ``preview.png`` at the folder's root,
+which a card shows INSTEAD of rendering the entry live.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view

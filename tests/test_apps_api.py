@@ -64,6 +64,20 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     assert apps["one"]["tag"] == "local"
 
 
+def test_listing_surfaces_a_root_preview_png_per_app(client, workspace):
+    """`preview_image` reaches the cards through GET /api/apps, absolute like
+    every other path in the payload — the shell serves it through /api/fs/raw,
+    which takes an fs path, not a name relative to the app."""
+    shot = _app_dir(workspace, "shot")
+    (shot / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    _app_dir(workspace, "plain")
+
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert apps["shot"]["preview_image"] == str(shot / "preview.png")
+    # Absent as null, never as a path that would render a broken image.
+    assert apps["plain"]["preview_image"] is None
+
+
 def test_tag_is_the_parent_folder_name(client, workspace):
     _app_dir(workspace, "widget", tag="examples")
     _app_dir(workspace, "widget2", tag="local")

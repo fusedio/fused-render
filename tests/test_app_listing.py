@@ -154,3 +154,46 @@ def test_a_child_that_vanishes_mid_scan_does_not_lose_the_folder(tmp_path,
 
     # The survivor's mtime, reached only by continuing past the vanished child.
     assert updated == pytest.approx(future, abs=1)
+
+
+# --------------------------------------------------------- the preview image
+
+
+def test_a_root_preview_png_is_reported_as_the_apps_thumbnail(tmp_path):
+    """`preview.png` at the app folder's root is the card's picture of it — an
+    authored still, chosen over the live render of the entry page."""
+    d = _app(tmp_path / "local", "shot")
+    (d / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["preview_image"] == os.path.abspath(str(d / "preview.png"))
+
+
+def test_no_preview_png_reports_none_rather_than_a_missing_path(tmp_path):
+    """A path that isn't there would make the card render a broken image; the
+    absence has to be visible as an absence."""
+    _app(tmp_path / "local", "plain")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["preview_image"] is None
+
+
+def test_a_directory_named_preview_png_is_not_a_preview(tmp_path):
+    """Same trap as the entry rule (`index.html` as a folder): the name alone
+    is not the file, and an <img> pointed at a directory renders nothing."""
+    d = _app(tmp_path / "local", "trap")
+    (d / "preview.png").mkdir()
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["preview_image"] is None
+
+
+def test_the_preview_name_is_exact_and_case_sensitive_extension_aside(tmp_path):
+    """Only `preview.png` — not preview.jpg, not screenshot.png. One name, so a
+    user adding one never has to guess which of several the card will pick."""
+    d = _app(tmp_path / "local", "other")
+    (d / "preview.jpg").write_bytes(b"\xff\xd8\xff")
+    (d / "screenshot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["preview_image"] is None

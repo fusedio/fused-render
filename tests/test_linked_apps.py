@@ -209,6 +209,18 @@ def test_linked_apps_merge_with_workspace_apps_sorted(client, tmp_path, workspac
     ]
 
 
+def test_a_linked_folder_reports_its_preview_png_too(client, tmp_path):
+    """The registry reuses app_listing.app_dict, so the thumbnail rule reaches
+    linked apps without linked_apps.py knowing about it — the reason
+    `preview_image` is resolved inside that shared shape."""
+    d = _folder(tmp_path, "shot")
+    (d / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+
+    (app,) = client.get("/api/apps").json()["apps"]
+    assert app["preview_image"] == str(d / "preview.png")
+
+
 def test_missing_linked_folder_drops_out_but_stays_registered(client, tmp_path):
     d = _folder(tmp_path, "gone")
     client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
