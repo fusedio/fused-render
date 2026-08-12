@@ -2,7 +2,7 @@
 // Load-more pagination for truncated listings, the WebSocket dir watch that
 // drives refreshes, and the "new row" tint cue.
 import { useEffect, useRef, useState } from "react";
-import { listDir, prefetchListDir } from "@platform/lib/api";
+import { clearListPrefetch, listDir, prefetchListDir } from "@platform/lib/api";
 import { appearedKeys } from "@platform/lib/flip";
 import { pushToast } from "@platform/lib/toast";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
@@ -107,6 +107,23 @@ export function useDirListing(fsPath: string) {
           return;
         }
         if (data.keepalive) return;
+        // AN EXTERNAL WRITER CHANGED THIS FOLDER — drop every cached listing.
+        //
+        // api.ts's own mutation wrappers invalidate the prefetch cache themselves,
+        // so this is for changes made by something else: Claude, an editor, a git
+        // checkout. Without it this listing refreshed correctly (a refresh
+        // bypasses the cache) while a fresh MOUNT of the same folder within the 5s
+        // TTL still painted the pre-change contents.
+        //
+        // THE SCOPE IS NARROW, and no comment should imply otherwise: this socket
+        // watches only `fsPath`, and only while this component is mounted. A write
+        // to any other folder is invisible here, and a template view of a FILE
+        // mounts no listing at all — writes from inside a preview iframe are
+        // covered instead by window._fusedFsChanged (installed in main.tsx).
+        //
+        // Before the debounce, not inside it: the cache should be dead the moment
+        // we know it is wrong, whether or not this listing goes on to refetch.
+        clearListPrefetch();
         if (timer !== null) clearTimeout(timer);
         timer = setTimeout(() => setRefresh((n) => n + 1), 300);
       };

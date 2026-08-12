@@ -41,9 +41,11 @@ export interface DragSource {
   parentDir: string;
 }
 
-// A candidate drop target — a listing row, the listing's own background
-// (the current folder), or a sidebar bookmark. One shape for all three, so
-// there is one rule and not three.
+// A candidate drop target — a listing row, the listing's own background (the
+// current folder), a sidebar bookmark, or a breadcrumb crumb. One shape for all
+// four, so there is one rule and not four. The crumb is the only one that can
+// name a folder ABOVE the listing, and it needs no special case to do it: see
+// the crumb block in drag-drop.test.ts for which refusals it can reach.
 export interface DropTarget {
   path: string;
   isDir: boolean;

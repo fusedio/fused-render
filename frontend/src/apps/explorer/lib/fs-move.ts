@@ -59,6 +59,18 @@ export interface MoveReport {
   // Destination paths, in the order they were written. The last one is what a
   // caller re-anchors its selection onto.
   moved: string[];
+  // The same successes as `moved`, paired with where each entry CAME FROM — the
+  // undo entry for this move (lib/fs-undo). Kept as a second field rather than
+  // folded into `moved` because `moved` is what every caller re-anchors on, and
+  // because the inverse needs the source path, which `moved` does not carry.
+  //
+  // `to` is the path that ACTUALLY LANDED, not the one that was asked for:
+  // freePastePath below can turn "report.csv" into "report copy.csv" when the
+  // name is taken in the target, and an inverse built from the intended name
+  // would rename something that isn't there. Only the pairs that landed are
+  // listed — the loop breaks on its first failure, and an entry covering the
+  // whole intended batch would try to un-move entries that never moved.
+  pairs: { from: string; to: string }[];
   // The first failure, if any. The batch stops there — the rest of the entries
   // are left where they are rather than half-moved past an error nobody saw.
   failed: { path: string; error: unknown } | null;
@@ -81,7 +93,7 @@ export async function moveEntriesInto(
 ): Promise<MoveReport> {
   const dir = normDir(targetDir);
   const { move } = movePlan(paths, dir);
-  const report: MoveReport = { moved: [], failed: null };
+  const report: MoveReport = { moved: [], pairs: [], failed: null };
   for (const src of move) {
     try {
       const { is_dir } = await statPath(src);
@@ -89,6 +101,7 @@ export async function moveEntriesInto(
       await renameEntry(src, dst);
       remapClipboardPath(src, dst);
       report.moved.push(dst);
+      report.pairs.push({ from: src, to: dst });
     } catch (e) {
       report.failed = { path: src, error: e };
       break;

@@ -1,9 +1,26 @@
-"""Linked apps: registry-backed apps living anywhere on the filesystem.
+"""Linked apps: a READ-ONLY registry of app folders living anywhere on disk.
 
 The workspace walk (`app_listing.two_level_apps`) only sees folders under
 ``<workspace>/<tag>/<name>``. A *linked* app is any folder elsewhere on disk
-that the user marked as an app: an entry in ``~/.fused-render/linked_apps.json``
-mapping a name to an absolute folder path. The listing merges them in under
+that the user once marked as an app: an entry in
+``~/.fused-render/linked_apps.json`` mapping a name to an absolute folder path.
+
+**Nothing writes this registry any more.** "Add as app" was its only writer and
+went with the app concept (D264), taking `link_app`/`unlink_app` and their
+routes with it. The module survives on two facts about installs that already
+have a registry file, neither of which is served by deleting it:
+
+- those folders still list on the /apps hub under the ``linked`` tag, and
+  dropping them would be silent data loss from a feature removal that was about
+  BUTTONS, not about the user's folders;
+- `export_linked_apps_env` still publishes them, and `templates/history` still
+  asks `is_linked_app_dir` before it will `revert` — a linked folder is the
+  USER's own repository, so that refusal must keep firing for exactly the
+  folders it was written for. An unexported env var would turn a safety rule
+  into a no-op quietly.
+
+`write_entries` is kept as the one remaining way in, for tests and for a user
+editing the file by hand. The listing merges them in under
 the reserved virtual tag ``linked`` — no symlink is created, so nothing else
 in the system (git auto-commit, export, delete) can be tricked into treating
 the user's real folder as workspace content by a filesystem alias.
@@ -113,65 +130,3 @@ def linked_apps() -> list[dict]:
             continue  # unreadable: skip, never fail the listing
         apps.append(app_listing.app_dict(path, e["name"], LINKED_TAG, entry_html))
     return apps
-
-
-def link_app(path, name=None) -> tuple[dict | None, str | None, int]:
-    """Register a folder as a linked app.
-
-    Returns (app_dict, None, 200) on success or (None, why, status) on
-    rejection. `name` defaults to the folder's basename. Rejects folders
-    inside the workspace — those are (or can be) real apps already, and
-    keeping the registry workspace-free is what keeps app_git's path-prefix
-    scoping sound."""
-    from fused_render.shell.seed import fused_dir
-
-    if not isinstance(path, str) or not path.strip():
-        return None, "'path' must be a non-empty string", 400
-    folder = os.path.abspath(os.path.expanduser(path.strip()))
-    if not os.path.isdir(folder):
-        return None, f"not a folder: {folder}", 400
-
-    root = os.path.abspath(fused_dir())
-    if folder == root or folder.startswith(root + os.sep):
-        return None, "folder is inside the Fused workspace — already an app location", 400
-    if root.startswith(folder + os.sep):
-        return None, "folder contains the Fused workspace — link a folder outside it", 400
-
-    if name is None or (isinstance(name, str) and not name.strip()):
-        name = os.path.basename(folder)
-    if not isinstance(name, str):
-        return None, "'name' must be a string", 400
-    name = name.strip()
-    if not name or "/" in name or "\\" in name or name.startswith("."):
-        return None, f"invalid app name: {name!r}", 400
-
-    entries = read_entries()
-    for e in entries:
-        if e["name"] == name:
-            if os.path.abspath(e["path"]) == folder:
-                break  # same mapping: idempotent re-link
-            return None, f"{name!r} is already linked to another folder", 409
-        if os.path.abspath(e["path"]) == folder:
-            return None, f"folder already linked as {e['name']!r}", 409
-    else:
-        entries.append({"name": name, "path": folder})
-        write_entries(entries)
-
-    try:
-        entry_html = app_listing.app_entry(folder)
-    except OSError:
-        entry_html = None
-    return app_listing.app_dict(folder, name, LINKED_TAG, entry_html), None, 200
-
-
-def unlink_app(name) -> bool:
-    """Remove `name` from the registry. The target folder is never touched.
-    Returns whether an entry was removed."""
-    if not isinstance(name, str) or not name:
-        return False
-    entries = read_entries()
-    kept = [e for e in entries if e["name"] != name]
-    if len(kept) == len(entries):
-        return False
-    write_entries(kept)
-    return True

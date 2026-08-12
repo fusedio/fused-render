@@ -33,6 +33,7 @@ from geo_paths import (
     normalize_remote_path,
 )
 from optional_runtime import require
+from raster_categories import classify_categories, read_pam_aux_xml, resolve_render_mode
 
 
 AUTO_OPTIMIZE_MAX_BYTES = int(
@@ -109,19 +110,23 @@ def _raw_url(origin: str, path: str) -> str:
 
 
 @contextlib.contextmanager
-def _gdal_env():
+def _gdal_env(locator: str):
     import rasterio
 
-    with rasterio.Env(
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        CPL_VSIL_CURL_USE_HEAD="YES",
-        GDAL_HTTP_MULTIRANGE="YES",
-        GDAL_HTTP_MAX_RETRY="2",
-        GDAL_HTTP_RETRY_DELAY="0.2",
-        CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
-        CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
-        GDAL_NUM_THREADS="ALL_CPUS",
-    ):
+    options = {
+        "CPL_VSIL_CURL_USE_HEAD": "YES",
+        "GDAL_HTTP_MULTIRANGE": "YES",
+        "GDAL_HTTP_MAX_RETRY": "2",
+        "GDAL_HTTP_RETRY_DELAY": "0.2",
+        "CPL_VSIL_CURL_CHUNK_SIZE": str(64 << 10),
+        "CPL_VSIL_CURL_CACHE_SIZE": str(16 << 20),
+        "GDAL_NUM_THREADS": "ALL_CPUS",
+    }
+    # Skipping directory listings only pays off on remote sources, and for
+    # local files it blocks GDAL's PAM .aux.xml sidecar discovery.
+    if is_vsi_path(locator) or is_http_url(locator):
+        options["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
+    with rasterio.Env(**options):
         yield
 
 
@@ -249,6 +254,10 @@ class RasterSource:
     colormap: str
     rescale: list[list[float]]
     auto_rescale: bool = True
+    render_mode: str = "single"
+    auto_render_mode: bool = True
+    categories: list[dict[str, Any]] | None = None
+    category_colors: dict[int, tuple[int, ...]] = field(default_factory=dict)
     preview_path: str | None = None
     optimized_path: str | None = None
     optimization: dict[str, Any] = field(
@@ -430,7 +439,7 @@ class RasterEngine:
         from rio_tiler.io import Reader
 
         locator = self.locator(source, target)
-        with _gdal_env(), rasterio.open(locator) as dataset:
+        with _gdal_env(locator), rasterio.open(locator) as dataset:
             if dataset.driver in {"OGR_VRT"}:
                 raise ValueError("not a raster dataset")
             if dataset.crs is None:
@@ -482,6 +491,7 @@ class RasterEngine:
             )
             requested = opts.get("rescale")
             auto_rescale = True
+            sample_data = None
             if (
                 isinstance(requested, list)
                 and len(requested) == 2
@@ -500,8 +510,49 @@ class RasterEngine:
                         np.all(preview_data.data == inferred_nodata, axis=0)[None, :, :],
                     )
                 rescale = _ranges(preview_data)
+                sample_data = preview_data
             else:
                 rescale = _dtype_ranges(dataset.dtypes, render_bands)
+
+            # Categorical eligibility only makes sense for a single-band
+            # source (an RGB composite isn't classified data). Reuses the
+            # preview read above when there is one; a manual/optimized
+            # rescale skips that read, so take one here instead purely to
+            # sample which discrete values are present.
+            categories = None
+            category_colors: dict[int, tuple[int, ...]] = {}
+            embedded_colormap = None
+            if render_bands == 1:
+                if sample_data is None:
+                    try:
+                        with Reader(locator) as reader:
+                            fallback_preview = reader.preview(indexes=indexes, max_size=256)
+                        sample_data = fallback_preview.array
+                        if inferred_nodata is not None:
+                            sample_data = sample_data.copy()
+                            sample_data.mask = np.logical_or(
+                                np.ma.getmaskarray(sample_data),
+                                np.all(sample_data.data == inferred_nodata, axis=0)[None, :, :],
+                            )
+                    except Exception:
+                        sample_data = None
+                with contextlib.suppress(ValueError):
+                    embedded_colormap = dataset.colormap(1)
+                aux_colors, aux_labels = read_pam_aux_xml(locator)
+                if not embedded_colormap and aux_colors:
+                    embedded_colormap = aux_colors
+                if sample_data is not None:
+                    categories = classify_categories(
+                        sample_data,
+                        dataset.dtypes[0],
+                        embedded_colormap=embedded_colormap,
+                        overrides=opts.get("category_colors"),
+                        labels=aux_labels,
+                    )
+                if categories:
+                    category_colors = {c["value"]: tuple(c["color"]) for c in categories}
+            requested_mode = str(opts.get("render_mode") or "")
+            render_mode = resolve_render_mode(count, categories, embedded_colormap, requested_mode)
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
@@ -535,6 +586,10 @@ class RasterEngine:
                 colormap=str(opts.get("colormap") or "viridis"),
                 rescale=rescale,
                 auto_rescale=auto_rescale,
+                render_mode=render_mode,
+                auto_render_mode=(requested_mode == ""),
+                categories=categories,
+                category_colors=category_colors,
             )
 
         derivative = self.optimized_dir / f"{fingerprint}.tif"
@@ -585,6 +640,11 @@ class RasterEngine:
             existing = self.sources.get(fingerprint)
             if existing is not None:
                 existing.colormap = record.colormap
+                if not record.auto_render_mode or existing.auto_render_mode:
+                    existing.render_mode = record.render_mode
+                    existing.categories = record.categories
+                    existing.category_colors = record.category_colors
+                    existing.auto_render_mode = record.auto_render_mode
                 if not record.auto_rescale:
                     existing.rescale = record.rescale
                     existing.auto_rescale = False
@@ -639,11 +699,12 @@ class RasterEngine:
         self, record: RasterSource, artifact_id: str, warnings: list[str] | None = None
     ) -> dict[str, Any]:
         bands = 3 if record.count >= 3 else 1
+        categorical = record.render_mode == "categorical"
         stats = [
             {
                 "index": index + 1,
-                "p2": record.rescale[index][0],
-                "p98": record.rescale[index][1],
+                "p2": None if categorical else record.rescale[index][0],
+                "p98": None if categorical else record.rescale[index][1],
             }
             for index in range(min(bands, len(record.rescale)))
         ]
@@ -681,13 +742,17 @@ class RasterEngine:
                 "inferred_nodata": record.inferred_nodata,
                 "native_minzoom": record.minzoom,
                 "band_stats": stats,
-                "render_mode": "rgb" if record.count >= 3 else "single",
+                "render_mode": record.render_mode,
+                "categories": record.categories,
             },
             "style": {
                 "opacity": 0.9,
                 "colormap": record.colormap,
-                "rescale": record.rescale[0] if record.count < 3 else None,
-                "render_mode": "rgb" if record.count >= 3 else "single",
+                "rescale": record.rescale[0] if record.count < 3 and not categorical else None,
+                "render_mode": record.render_mode,
+                "category_colors": {
+                    str(value): list(color) for value, color in record.category_colors.items()
+                },
             },
             "minzoom": 0,
             "maxzoom": record.maxzoom,
@@ -755,6 +820,7 @@ class RasterEngine:
 
         with self.lock:
             record = self.sources[source_id]
+            categorical = record.render_mode == "categorical"
             record.optimization.update(
                 status="running",
                 progress=5,
@@ -776,7 +842,7 @@ class RasterEngine:
             if record.preview_path is None:
                 preview_temporary.unlink(missing_ok=True)
                 preview_stage.unlink(missing_ok=True)
-                with _gdal_env(), rasterio.open(record.locator) as source:
+                with _gdal_env(record.locator), rasterio.open(record.locator) as source:
                     scale = max(
                         1.0,
                         max(source.width, source.height) / PREVIEW_MAX_SIZE,
@@ -794,23 +860,28 @@ class RasterEngine:
                         if record.nodata is not None
                         else record.inferred_nodata
                     )
+                    # Categorical class codes must never blend into bogus
+                    # intermediate values, at any stage of derivative build.
+                    preview_resampling = (
+                        Resampling.nearest if categorical else Resampling.average
+                    )
                     if record.inferred_nodata is not None:
                         with WarpedVRT(
                             source,
                             src_nodata=record.inferred_nodata,
                             nodata=record.inferred_nodata,
-                            resampling=Resampling.average,
+                            resampling=preview_resampling,
                         ) as overview_source:
                             data = overview_source.read(
                                 indexes,
                                 out_shape=(len(indexes), height, width),
-                                resampling=Resampling.average,
+                                resampling=preview_resampling,
                             )
                     else:
                         data = source.read(
                             indexes,
                             out_shape=(len(indexes), height, width),
-                            resampling=Resampling.average,
+                            resampling=preview_resampling,
                         )
                     with self.lock:
                         record.optimization.update(
@@ -843,7 +914,7 @@ class RasterEngine:
                     BLOCKSIZE=256,
                     COMPRESS="DEFLATE",
                     OVERVIEWS="AUTO",
-                    OVERVIEW_RESAMPLING="AVERAGE",
+                    OVERVIEW_RESAMPLING="NEAREST" if categorical else "AVERAGE",
                 )
                 os.replace(preview_temporary, preview_destination)
                 preview_stage.unlink(missing_ok=True)
@@ -881,7 +952,7 @@ class RasterEngine:
                 )
 
             temporary.unlink(missing_ok=True)
-            with _gdal_env():
+            with _gdal_env(record.locator):
                 rio_copy(
                     record.locator,
                     temporary,
@@ -890,7 +961,7 @@ class RasterEngine:
                     COMPRESS="DEFLATE",
                     BIGTIFF="IF_SAFER",
                     OVERVIEWS="AUTO",
-                    OVERVIEW_RESAMPLING="AVERAGE",
+                    OVERVIEW_RESAMPLING="NEAREST" if categorical else "AVERAGE",
                 )
             os.replace(temporary, destination)
             with rasterio.open(destination) as dataset:
@@ -961,7 +1032,12 @@ class RasterEngine:
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)
             revision = locator
-            key = (source_id, revision, z, x, y, record.colormap, tuple(map(tuple, record.rescale)))
+            categorical = record.render_mode == "categorical"
+            key = (
+                source_id, revision, z, x, y, record.colormap,
+                tuple(map(tuple, record.rescale)), record.render_mode,
+                tuple(sorted(record.category_colors.items())),
+            )
             cached = self.tile_cache.get(key)
             if cached is not None:
                 self.tile_cache.move_to_end(key)
@@ -970,21 +1046,26 @@ class RasterEngine:
             ranges = record.rescale
             colormap_name = record.colormap
             inferred_nodata = record.inferred_nodata
+            category_colors = record.category_colors
 
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
-                with _gdal_env(), Reader(locator) as reader:
+                with _gdal_env(locator), Reader(locator) as reader:
                     image = reader.tile(
                         x,
                         y,
                         z,
                         indexes=indexes,
+                        # Categorical class codes must never blend into
+                        # bogus intermediate values, including at the
+                        # lower-resolution preview derivative.
                         resampling_method=(
-                            "bilinear"
-                            if record.preview_path
-                            and locator == record.preview_path
-                            else "nearest"
+                            "nearest"
+                            if categorical or not (
+                                record.preview_path and locator == record.preview_path
+                            )
+                            else "bilinear"
                         ),
                     )
             if inferred_nodata is not None:
@@ -995,9 +1076,12 @@ class RasterEngine:
                     np.ma.getmaskarray(image.array),
                     invalid[None, :, :],
                 )
-            image.rescale(ranges)
-            color = cmap.get(colormap_name) if record.count < 3 else None
-            png = image.render(img_format="PNG", colormap=color)
+            if categorical and category_colors:
+                png = image.render(img_format="PNG", colormap=category_colors)
+            else:
+                image.rescale(ranges)
+                color = cmap.get(colormap_name) if record.count < 3 else None
+                png = image.render(img_format="PNG", colormap=color)
         except TileOutsideBounds:
             png = self.transparent_tile()
 

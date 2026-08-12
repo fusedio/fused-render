@@ -394,6 +394,18 @@ def _loader_and_runpython_js():
 
 # What `runPython` reads from the rest of runtime.js. Declared with `var` so the
 # slice's own `const`/`function` declarations can never collide with them.
+#
+# EVERY NAME HERE IS A DEPENDENCY THE SLICE CANNOT SEE, and the list is not
+# optional decoration: a new one that runPython closes over and this prelude does
+# not declare is a ReferenceError under node, which surfaces as `runPython`
+# REJECTING with that message rather than as an obviously broken harness. That is
+# how `noteFsChanged` broke every test in this file when it was added above the
+# slice — the shipped runtime is one IIFE (line 99 to 2394) where the declaration
+# hoists, so only the lifted region was ever missing it.
+#
+# noteFsChanged COUNTS rather than doing nothing, so the tests below can assert the
+# runtime really tells the shell the filesystem moved. A bare no-op stub would have
+# unbroken this file while leaving that half of the feature checked by reading only.
 _RUNPYTHON_PRELUDE = """
 var inflightByKey = new Map();
 var callIds = 0;
@@ -402,6 +414,8 @@ function callHeaders(extra) { return Object.assign({}, extra || {}); }
 function reportSuperseded() {}
 var watched = [];
 function watchPath(p) { watched.push(p); }
+var fsChanges = 0;
+function noteFsChanged() { fsChanges += 1; }
 globalThis.window = { location: { search: "?path=/page.html" } };
 """
 
@@ -486,7 +500,7 @@ Promise.allSettled([
     states: settled.map((r) => r.status),
     values: settled.map((r) => r.value),
     reasons: settled.map((r) => r.reason && r.reason.message),
-    installs, runs,
+    installs, runs, fsChanges,
   }));
 });
 """) % {"a": _KEY_A})
@@ -494,6 +508,19 @@ Promise.allSettled([
     assert result["values"] == [42] * 5
     assert result["installs"] == 1, (
         f"one project must mean one install POST, saw {result['installs']}"
+    )
+    # Every run that came back told the shell the filesystem may have moved.
+    #
+    # A script can write anything — that is the whole point of running one — and
+    # the shell's listing cache is in a different JS realm from this page, so
+    # nothing invalidates it unless the runtime says so (main.tsx installs
+    # `_fusedFsChanged`, which noteFsChanged calls up the ancestor chain). Asserted
+    # against `runs` rather than a literal so it stays true as the retry path
+    # changes how many /api/run's one call makes: the two are the same number
+    # because the report is per completed run.
+    assert result["fsChanges"] == result["runs"], (
+        "each /api/run that came back must report an fs change, "
+        f"saw {result['fsChanges']} for {result['runs']} runs"
     )
 
 

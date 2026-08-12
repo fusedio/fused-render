@@ -17,7 +17,7 @@
 // recents so opens of the cloned copy from the regular grid count too.
 import { useEffect, useMemo, useState } from "react";
 import { getConfig, getJson, postJson, rawUrl } from "@platform/lib/api";
-import { navigateUrl } from "@platform/lib/router";
+import { navigate, urlForFsPath } from "@platform/lib/router";
 import { timeAgo } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -191,7 +191,10 @@ function embedUrlFor(fsPath: string): string {
 }
 
 function hrefForCommunity(app: CommunityApp, cacheRoot: string | undefined): string {
-  if (app.installed && app.path) return `/apps/local/${encodeURIComponent(basename(app.path))}`;
+  // A cloned app opens its workspace folder in the explorer — same rule as a
+  // workspace card (appEntry.ts, D262: no app route, the listing is the
+  // destination).
+  if (app.installed && app.path) return urlForFsPath(app.path);
   // Best-effort for middle-click/new-tab: the folder may not be materialized
   // yet (the left-click path materializes it via `detail` first).
   return embedUrlFor(`${cacheRoot ?? ""}/${app.slug}/index.html`);
@@ -200,7 +203,7 @@ function hrefForCommunity(app: CommunityApp, cacheRoot: string | undefined): str
 async function openCommunityApp(app: CommunityApp, cacheRoot: string | undefined): Promise<void> {
   touch(app.slug);
   if (app.installed && app.path) {
-    navigateUrl(hrefForCommunity(app, cacheRoot), { isDir: true });
+    navigate(app.path, { isDir: true });
     return;
   }
   // Materialize the app folder in the cache (sparse checkout) before loading
@@ -263,7 +266,7 @@ function CommunityCard({
       <span className="app-pcard-thumb" aria-hidden="true">
         {cacheRoot && !imgFailed ? (
           <img
-            className="app-pcard-img"
+            className="app-pcard-shot"
             src={rawUrl(`${cacheRoot}/${app.slug}/preview.png`)}
             loading="lazy"
             alt=""

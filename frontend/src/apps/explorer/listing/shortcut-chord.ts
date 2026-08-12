@@ -25,7 +25,9 @@ export type ChordAction =
   | "forward"
   | "new-folder"
   | "trash"
-  | "rename";
+  | "rename"
+  | "undo"
+  | "redo";
 
 // The parts of a KeyboardEvent this decision reads. An interface rather than
 // KeyboardEvent so a test can hand it a plain object — and so the matcher
@@ -85,6 +87,23 @@ export function matchChord(e: ChordEvent, ctx: ChordContext): ChordAction | null
     return key === "c" ? "copy" : key === "x" ? "cut" : "paste";
   }
   if (chord && key === "d") return "duplicate";
+  // Undo / redo, over the explorer's relocations only (lib/fs-undo). The three
+  // standard chords: Mod+Z, Mod+Shift+Z, and Ctrl+Y where that is a redo —
+  // ⌘Y on macOS is History/Quick Look, never a redo, so it is not answered there.
+  //
+  // WHILE TYPING THESE ARE THE FIELD'S OWN, and that is the one guard this pair
+  // cannot do without: Cmd+Z in a text field is the browser's text undo, and
+  // reinterpreting it as "un-move the last file" would be both surprising and
+  // irreversible in a way a mistyped name is not. `inSearch` is that condition
+  // in full — useListingShortcuts forwards an event only when focus is on the
+  // search input or on nothing at all, and a dialog's input is already behind
+  // the overlay guard — so it must widen with any widening of what reaches here.
+  //
+  // Unlike copy, a text SELECTION does not defer: a highlighted paragraph in
+  // non-editable text has no edit history for the browser's undo to act on.
+  if (chord && key === "z") return ctx.inSearch ? null : "undo";
+  if (shiftChord && key === "z") return ctx.inSearch ? null : "redo";
+  if (chord && key === "y") return !isMac && !ctx.inSearch ? "redo" : null;
   // Open the lead row — the same gesture as Enter (macOS Cmd+Down).
   if (chord && e.key === "ArrowDown") return "open";
   if (chord && e.key === "ArrowUp") return "parent";

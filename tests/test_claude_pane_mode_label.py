@@ -48,16 +48,12 @@ def _pane_label(modes):
     return json.loads(out.stdout)
 
 
-def test_the_app_mode_is_labelled_the_way_the_shell_labels_it():
-    """Both spellings: `app` is the registry key, `_app` the pane-only sentinel,
-    and they are the same surface seen from two routes."""
-    want = _shell_label("app")
-    assert want == "Preview", "read from the shell; update the template if this changed"
-    assert _pane_label(["app", "_app"]) == [want, want]
-
-
 def test_the_labels_the_picker_already_agreed_on_still_hold():
     """The mapping is a lookup table, and adding a row to one is how you break
-    another. `_render` is the shell's sentinel name; an unknown key still gets
-    the humanizer rather than a guess."""
-    assert _pane_label(["_render", "duckdb"]) == ["Rendered", "Duckdb"]
+    another. `_render` is the shell's sentinel name — pinned to the shell's own
+    table the same way `app` is above, so the next rename fails here rather
+    than shipping two names a strip apart. An unknown key still gets the
+    humanizer rather than a guess."""
+    want = _shell_label("_render")
+    assert want == "Render", "read from the shell; update the template if this changed"
+    assert _pane_label(["_render", "duckdb"]) == [want, "Duckdb"]

@@ -169,8 +169,44 @@ export function listDir(fsPath: string, cursor?: string | null): Promise<ListRes
 // window small so a later navigation back to the same dir always re-reads,
 // matching stat's freshness posture (the dir-watch socket refresh bypasses this
 // entirely — it must see live data).
+//
+// ANY SUCCESSFUL FS MUTATION EMPTIES THIS MAP (clearListPrefetch, called from
+// noteAfter below — add nothing that mutates the filesystem outside it). Without
+// that it was a five-second window in which a moved file could still be painted
+// in the folder it had left, and the report was "dragging a file onto a
+// breadcrumb COPIES it": the spring-load navigates to the crumb (caching that
+// listing) and unmounts the source listing with its dir-watch, the drop moves
+// the file for real, and navigating back to the source within the TTL is a FRESH
+// mount — refresh === 0, so useDirListing reads through here and repaints the
+// pre-move listing. One file in two folders, self-healing after 5s.
+//
+// The WHOLE map goes, never one path: a rename touches two directories, a
+// recursive delete a subtree, and a compress writes a sibling — path arithmetic
+// over that buys nothing and can be wrong. The cache only exists to dedupe a
+// double-fetch inside a single navigation, so its useful lifetime is about a
+// second; over-evicting costs one extra /api/fs/list on the next navigation.
 const LIST_PREFETCH_TTL_MS = 5000;
 const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number }>();
+
+// Forget every cached listing. Three callers, each covering what the others
+// cannot — the split is the point, so keep it accurate:
+//
+//   noteAfter, below           every mutation THIS module performs.
+//   the dir-watch socket       a change made by anything else to the ONE folder a
+//   (listing/useDirListing)    mounted listing is watching: an editor, Claude, a
+//                              git checkout. Not a general backstop — it covers
+//                              only that folder, only while it is mounted, and
+//                              never (say) a crumb drop's destination.
+//   window._fusedFsChanged     a write from inside a preview iframe — its own JS
+//   (installed in main.tsx)    realm with its own copy of this module, so nothing
+//                              here sees its fetches. static/runtime.js reports
+//                              writeFile / uploadFile / mkdir / runPython up the
+//                              same-origin ancestor chain. This is the only cover
+//                              for a template view of a FILE, which mounts no
+//                              listing and so has no watcher at all.
+export function clearListPrefetch(): void {
+  listPrefetch.clear();
+}
 
 export function prefetchListDir(fsPath: string): Promise<ListResult> {
   const hit = listPrefetch.get(fsPath);
@@ -1141,11 +1177,20 @@ export function revealPath(fsPath: string): Promise<void> {
 // Every mutation below marks the paths it touched, so in-folder search stops
 // answering from the index snapshot for that folder and walks it live — there
 // is no filesystem watcher, so the corpus would otherwise keep offering the
-// old name and never the new one (lib/index-freshness). Recorded only on
-// SUCCESS: a refused mutation changed nothing, and pessimising a folder over
-// a 409 would drop it to the slow path for the rest of the session.
+// old name and never the new one (lib/index-freshness). It also empties the
+// listing prefetch cache, whose whole hazard is repainting a directory as it
+// stood BEFORE the mutation (see clearListPrefetch above).
+//
+// Both are recorded only on SUCCESS: a refused mutation changed nothing, so
+// pessimising a folder over a 409 would drop it to the slow path for the rest
+// of the session, and dropping the prefetch would throw away a listing that is
+// still accurate.
+//
+// This is the one choke point for the mutations in this module — going through
+// it is what stops a NEW wrapper from silently skipping either bookkeeping.
 function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
   return p.then((out) => {
+    clearListPrefetch();
     for (const path of Array.isArray(paths) ? paths : [paths]) {
       if (path) noteFsMutation(path);
     }
@@ -1786,6 +1831,12 @@ export interface AppInfo {
   // the HTML-only /render iframe may be pointed at. Optional for older backends
   // that predate the key — read it through entryOf(), never directly.
   entry?: string | null;
+  // The app's authored thumbnail: an absolute path to a `preview.png` at the
+  // folder's root, or null when there is none (and undefined on backends that
+  // predate the key). A card renders it through /api/fs/raw INSTEAD of the live
+  // scaled iframe of `entry_html` — an author's chosen still beats whatever the
+  // page happens to look like with no data in it.
+  preview_image?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
@@ -1815,48 +1866,6 @@ export interface NewAppResult {
 
 export function createApp(name: string, prompt: string): Promise<NewAppResult> {
   return postJson<NewAppResult>("/api/apps/new", { name, prompt });
-}
-
-// -- Linked apps (registry-backed apps living anywhere on disk) ---------------
-// A folder outside the workspace registered as an app under the virtual
-// "linked" tag (~/.fused-render/linked_apps.json — see fused_render/
-// linked_apps.py for why a registry, not a symlink).
-
-// How a folder relates to the app system: "workspace" (under the Fused
-// workspace — is/can be a real app already), "linked" (registered, `name`
-// carries its registry name), "unlinked" (linkable).
-export interface AppLinkStatus {
-  status: "workspace" | "linked" | "unlinked";
-  name: string | null;
-  // The app identity for building the /apps/<tag>/<name> route: set for a
-  // linked folder ("linked"/<registry name>) and for a folder that is exactly
-  // a workspace app dir; null otherwise (and on older backends).
-  tag?: string | null;
-}
-
-// Resolve a linked app's registry name to its real folder (null = unknown
-// name) — backs the shell's /apps/linked/<name> route, which can't use the
-// fused_dir codec the other tags do.
-export function getLinkedAppPath(name: string): Promise<{ path: string | null }> {
-  return getJson<{ path: string | null }>(
-    "/api/apps/linked-path?name=" + encodeURIComponent(name)
-  );
-}
-
-export function getAppLinkStatus(path: string): Promise<AppLinkStatus> {
-  return getJson<AppLinkStatus>(
-    "/api/apps/link-status?path=" + encodeURIComponent(path)
-  );
-}
-
-// Register a folder as a linked app. 409 = name/folder already linked,
-// 400 = not a folder / inside the workspace / bad name.
-export function linkApp(path: string, name?: string): Promise<{ app: AppInfo }> {
-  return postJson<{ app: AppInfo }>("/api/apps/link", { path, name });
-}
-
-export function unlinkApp(name: string): Promise<{ removed: boolean }> {
-  return postJson<{ removed: boolean }>("/api/apps/unlink", { name });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------

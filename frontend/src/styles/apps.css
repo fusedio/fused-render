@@ -175,15 +175,17 @@
   pointer-events: none;
 }
 
-/* Community cards: the thumb is a static catalog preview.png, not an iframe. */
-.app-pcard-img {
+/* The authored `preview.png`, in the same 16/10 box the live iframe fills.
+   `cover` rather than `contain`: a thumbnail crops, it does not letterbox — a
+   screenshot at the wrong aspect ratio should still fill the card. Community
+   catalog cards reuse it for their cached preview.png. */
+.app-pcard-shot {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: top;
-  display: block;
+  background: var(--bg-panel);
 }
 
 /* Overlay while an uncloned community app fetches its files before preview. */

@@ -64,6 +64,13 @@ MVT_BUFFER = 64
 WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
 ENGINE_VERSION = "native-mvt-v1"
+# The MVT tile pyramid's {z}/{x}/{y} math is fixed to EPSG:4326 — this is this
+# pipeline's "canvas CRS" (the same role QGIS's project CRS plays: every layer,
+# regardless of its own native CRS, is reprojected on-the-fly for that one
+# render/tile). The source file's CRS is never touched. Previously left
+# implicit, relying on GDAL's OGR MVT writer to silently reproject internally
+# (GDAL >= 3.4 behavior) — now made explicit.
+TILE_CRS = "EPSG:4326"
 
 
 VECTOR_RUNTIME = {
@@ -231,10 +238,42 @@ def _buffered_bounds(
     )
 
 
+def _reproject_wkb(table: Any, geometry_name: str, source_crs: str) -> Any:
+    import pyarrow as pa
+    import shapely
+    from pyproj import Transformer
+
+    transformer = Transformer.from_crs(source_crs, TILE_CRS, always_xy=True)
+
+    def _project(coordinates):
+        projected = coordinates.copy()
+        projected[:, 0], projected[:, 1] = transformer.transform(
+            coordinates[:, 0], coordinates[:, 1]
+        )
+        return projected
+
+    index = table.schema.get_field_index(geometry_name)
+    geometries = shapely.from_wkb(
+        table.column(index).to_numpy(zero_copy_only=False)
+    )
+    projected = shapely.to_wkb(shapely.transform(geometries, _project))
+    return table.set_column(
+        index,
+        pa.field(geometry_name, pa.binary()),
+        pa.array(projected, type=pa.binary()),
+    )
+
+
 @contextlib.contextmanager
 def _gdal_env():
+    import pyogrio
     import rasterio
 
+    # A .shp dragged in without its .shx sidecar (browsers only upload the
+    # file the user dropped) is recoverable: the .shx is a redundant index
+    # GDAL can rebuild. Binary wheels give pyogrio a GDAL copy of its own
+    # that rasterio.Env can't reach, so the option is set on both.
+    pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": True})
     with rasterio.Env(
         GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
         CPL_VSIL_CURL_USE_HEAD="YES",
@@ -243,6 +282,7 @@ def _gdal_env():
         GDAL_HTTP_RETRY_DELAY="0.2",
         CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
         CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
+        SHAPE_RESTORE_SHX="YES",
     ):
         yield
 
@@ -571,6 +611,11 @@ class VectorEngine:
             )
         if table.num_rows > MAX_TILE_FEATURES:
             return None, None
+        if source.crs.upper() not in {"EPSG:4326", "OGC:CRS84"}:
+            table = _reproject_wkb(
+                table, metadata["geometry_name"], metadata["crs"]
+            )
+            metadata["crs"] = TILE_CRS
         return metadata, table
 
     def _overview_frame(
@@ -655,7 +700,7 @@ class VectorEngine:
             {"feature_count": [int(row[2]) for row in rows]},
             geometry=geometries,
             crs=source.crs,
-        )
+        ).to_crs(TILE_CRS)
 
     def _native_tile(
         self,
@@ -691,17 +736,18 @@ class VectorEngine:
                 "NAME": "layer",
             }
             if arrow_table is not None and metadata is not None:
-                pyogrio.write_arrow(
-                    arrow_table,
-                    output,
-                    layer="layer",
-                    driver="MVT",
-                    geometry_name=metadata["geometry_name"],
-                    geometry_type=metadata["geometry_type"],
-                    crs=metadata["crs"],
-                    dataset_options=dataset_options,
-                    layer_options=layer_options,
-                )
+                with _gdal_env():
+                    pyogrio.write_arrow(
+                        arrow_table,
+                        output,
+                        layer="layer",
+                        driver="MVT",
+                        geometry_name=metadata["geometry_name"],
+                        geometry_type=metadata["geometry_type"],
+                        crs=TILE_CRS,
+                        dataset_options=dataset_options,
+                        layer_options=layer_options,
+                    )
             else:
                 return b""
 
@@ -738,7 +784,7 @@ class VectorEngine:
                 metadata={
                     "geometry_name": overview.geometry.name,
                     "geometry_type": "Polygon",
-                    "crs": source.crs,
+                    "crs": TILE_CRS,
                 },
                 arrow_table=overview.to_arrow(
                     index=False,

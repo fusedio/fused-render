@@ -97,6 +97,16 @@ export function shortcutGroups(): ShortcutGroup[] {
       only: "other",
     },
     { group: "File operations", keys: [SHIFT_LABEL, MOD_LABEL, "N"], label: "New folder" },
+    // Undo covers RELOCATIONS only — a drag-move, a cut-paste and a rename, the
+    // three things that are a rename in both directions (lib/fs-undo). The label
+    // says so rather than promising a general undo the explorer does not have:
+    // a copy, a new file or a delete is not undoable, and a bare "Undo" here
+    // would read as a promise about all of them.
+    { group: "File operations", keys: [MOD_LABEL, "Z"], label: "Undo a move or rename" },
+    { group: "File operations", keys: [SHIFT_LABEL, MOD_LABEL, "Z"], label: "Redo" },
+    // The Windows/Linux second redo chord. ⌘Y is History/Quick Look on macOS,
+    // never a redo, so it exists on one platform only.
+    { group: "File operations", keys: [MOD_LABEL, "Y"], label: "Redo", only: "other" },
     // NOTE: no "Show info" entry. The shell has no info/stat surface to open
     // (nothing but the listing's own Size/Modified columns), so Mod+I is
     // deliberately unbound — listing it here would document a dead key.
