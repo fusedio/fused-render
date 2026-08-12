@@ -374,12 +374,37 @@ export default function Listing({
   //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
   //     after the CSS yield order has bottomed out — the box is the only
   //     slack left to give.
-  //   • unfold: the whole path is showing AND the bar has ≥150px genuinely
-  //     free — room the full resting box (needing a net ~120px over the
-  //     magnifier) can take without re-truncating anything. Free space is
-  //     summed from the bar's visible children, not read off the crumbs:
-  //     they are flex-grow 0 in slot mode, so their clientWidth hugs their
-  //     content and never reports the strip's slack.
+  //   • unfold: the whole path is showing AND the bar has THE WHOLE RESTING BOX
+  //     genuinely free — room it can take without re-truncating anything (it
+  //     only has to give back the ~30px the magnifier standing in for it
+  //     occupies, so the box's own width is the threshold plus that margin).
+  //     Free space is summed from the bar's visible children, not read off the
+  //     crumbs: they are flex-grow 0 in slot mode, so their clientWidth hugs
+  //     their content and never reports the strip's slack.
+  // The resting width is read from the box (--resting-width, explorer.css)
+  // rather than hardcoded, because it is NOT one number: a box with a chip
+  // pinned in it (`.has-pin` — in practice the multi-selection readout) is
+  // 260px, not 150px. A fixed 150 was the bug that blanked the whole view the
+  // moment a second row was selected: 150px of slack was enough to unfold into
+  // and nowhere near enough to hold a 260px box, so the crumbs re-ellipsized,
+  // the bar folded, the freed slack cleared 150 again — a fold/unfold flip on
+  // every commit until React gave up with "maximum update depth exceeded".
+  // Reading it off the element is also what keeps the threshold and the width
+  // from drifting apart the next time either moves.
+  //
+  // WHICH STATE the measurement is about is read off the DOM (`.iconized`) and
+  // NOT out of React state, and the setState below is passed a plain boolean
+  // rather than an updater function. Both halves of that are load-bearing: every
+  // width here is measured from one layout, so "is the box folded right now" has
+  // to be answered by that same layout. An updater function is evaluated by
+  // React on ITS schedule — eagerly when the setter is called, to test whether
+  // the update can bail out, and again while rendering — so an updater that
+  // measures the DOM answers a different question each time it runs and the two
+  // answers disagree. That disagreement was the second half of the blank-screen
+  // crash: `folded` arrived describing the commit that had not painted yet while
+  // the widths described the one on screen, the fold decided on the mismatched
+  // pair, and the flip never settled.
+  //
   // No dependency array: crumbs content changes with navigation but their
   // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
   // changes; re-measuring on every render is cheap and the guarded setState
@@ -388,7 +413,8 @@ export default function Listing({
   useLayoutEffect(() => {
     if (embedded || searching || pinnedOpen) return;
     const row = searchRowRef.current;
-    const bar = row?.closest("#breadcrumb");
+    if (!row) return;
+    const bar = row.closest("#breadcrumb");
     const crumbs = bar?.querySelector(".crumbs");
     if (!(bar instanceof HTMLElement) || !crumbs) return;
     const freeInBar = () => {
@@ -415,11 +441,24 @@ export default function Listing({
         (parseFloat(cs.paddingRight) || 0);
       return bar.clientWidth - used;
     };
+    // How much strip unfolding would ask for: whatever CSS says the resting box
+    // is right now. The fallback is the idle width, for the frame before the
+    // stylesheet is attached (a missing property parses to NaN, which would
+    // make every comparison false and unfold unconditionally).
+    const restingWidth = () => {
+      const box = row.querySelector(".listing-search-box");
+      const w = box
+        ? parseFloat(getComputedStyle(box).getPropertyValue("--resting-width"))
+        : NaN;
+      return Number.isFinite(w) ? w : 150;
+    };
     const measure = () => {
-      setTightBar((folded) =>
-        folded
-          ? crumbs.scrollWidth > crumbs.clientWidth + 1 || freeInBar() < 150
-          : crumbs.scrollWidth > crumbs.clientWidth + 1
+      // The layout on screen, and the state that layout IS — one pair, read
+      // together (see the comment above on why neither half comes from React).
+      const folded = row.classList.contains("iconized");
+      const ellipsized = crumbs.scrollWidth > crumbs.clientWidth + 1;
+      setTightBar(
+        folded ? ellipsized || freeInBar() < restingWidth() : ellipsized
       );
     };
     measure();

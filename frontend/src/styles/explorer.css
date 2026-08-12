@@ -1303,6 +1303,12 @@ table.listing-table tr.skel-row:hover {
   flex: 0 1 auto;
   width: 150px;
   min-width: 96px;
+  /* Same number, declared where JS can read it: the tight-bar fold
+     (Listing.tsx) must know how much strip the box will take when it UNFOLDS,
+     and while folded its own `width` reads 0 (.iconized below). A custom
+     property is not overridden by that rule, so this survives the fold and
+     the two numbers cannot drift apart. */
+  --resting-width: 150px;
 }
 
 /* Who yields when the bar runs short, and in what order.
@@ -1430,6 +1436,11 @@ table.listing-table tr.skel-row:hover {
 .crumb-search-slot .listing-search-box.has-pin {
   flex: 0 1 auto;
   width: 260px;
+  /* And the fold's unfold threshold moves with it — see --resting-width above.
+     A pinned box is 110px wider than an idle one, which is more than the whole
+     margin the old fixed threshold had; leaving it behind made the fold flip
+     forever (see Listing.tsx's measurement). */
+  --resting-width: 260px;
 }
 
 /* Wraps the input plus its pinned chips (count / spinner), so the preview-pane
