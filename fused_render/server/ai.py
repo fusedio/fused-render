@@ -660,6 +660,39 @@ def _ai_result_payload(data: dict, requested_model: str):
 _HISTORY_ROLES = ("user", "assistant")
 
 
+#: Sampling parameter -> (low, high). The wire names, because the worker reads
+#: these keys and one spelling should survive the whole trip.
+#:
+#: `max_tokens`'s ceiling is the load-bearing one and it is not politeness: ONE
+#: model is resident per capability and it serves every page on this machine, so
+#: an unbounded token budget is not one caller's slow request — it is every
+#: other caller blocked behind it. 32k is past any chat turn and short of "this
+#: laptop is busy until you notice".
+_SAMPLING = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "max_tokens": (1, 32768),
+}
+
+
+def _sampling_problem(body: dict) -> str | None:
+    """What is wrong with the sampling parameters, or None.
+
+    Bools are refused explicitly: `True` is an `int` in Python and would sail
+    through a numeric range check as `max_tokens: 1`, which is a one-token reply
+    for a caller who typed something meaningless and deserves to be told.
+    """
+    for name, (low, high) in _SAMPLING.items():
+        value = body.get(name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{name!r} must be a number"
+        if not low <= value <= high:
+            return f"{name!r} must be between {low} and {high}"
+    return None
+
+
 def _history_problem(history) -> str | None:
     """Why this history is unusable, or None. The message is the API's manners:
     a chat client passing the wrong shape should be told which turn and what
@@ -851,6 +884,15 @@ async def _ai_relay(body: dict):
             "has nowhere to put 'history' — send one or the other",
             status=400)
 
+    # Sampling. Bounded here rather than trusted to the worker, for the reason
+    # the image endpoint clamps its own numbers: `max_tokens` is how long this
+    # machine is busy, and one resident model serves every page, so a typo'd
+    # 10_000_000 is not one caller's slow request — it is the model unavailable
+    # to everything else until it finishes.
+    sampling = _sampling_problem(body)
+    if sampling:
+        return _ai_error("bad_request", sampling, status=400)
+
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
@@ -888,6 +930,19 @@ async def _ai_relay(body: dict):
             "only a local model can do (a Hugging Face repo id, e.g. "
             f"'mlx-community/Qwen3-8B-4bit'); this call would go to {model!r}, "
             "which is always a chat",
+            status=400)
+
+    # Third flag, same rule. The Claude CLI exposes no sampling knobs at all —
+    # `effort` is what it has — so a temperature accepted here would be a
+    # setting the caller could watch have no effect, which is the failure mode
+    # `history` and `raw` are refused for.
+    named = [name for name in _SAMPLING if body.get(name) is not None]
+    if named:
+        return _ai_error(
+            "bad_request",
+            f"{', '.join(repr(n) for n in named)} only applies to a local model "
+            "(a Hugging Face repo id, e.g. 'mlx-community/Qwen3-8B-4bit'); "
+            f"this call would go to {model!r}, which takes 'effort' instead",
             status=400)
 
     if not _claude_bin():

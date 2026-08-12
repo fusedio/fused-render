@@ -5776,7 +5776,13 @@ an AI Models page that could say what was on disk but not what was *running*.
   fetch is deliberately not in it — it evicts nothing and holds no memory — so
   quitting the app left a detached `snapshot_download` pulling gigabytes with
   the only thing that could stop it gone. The fetch's process handle is kept in
-  its own table, published nowhere, and shutdown terminates those too.
+  its own table, published nowhere, and shutdown terminates those too — from
+  the moment the work starts, not from the moment there is a download PROCESS,
+  because the first phase may itself be a multi-GB `uv` install and registering
+  after it left the fetch invisible for exactly those minutes. What "stop this
+  worker" means therefore depends on its phase, and `_terminate` knows both: an
+  environment build is cancelled by KEY (it belongs to a detached installer,
+  and there is no process of ours to kill yet), a running worker is killed.
 - **AI-5f** **Deleting a model's files asks the supervisor first.** The cache
   endpoint owns the bytes and the supervisor owns the processes, and neither
   could see the other. Deleting a repo mid-load removes the shards

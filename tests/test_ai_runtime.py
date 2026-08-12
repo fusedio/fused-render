@@ -24,6 +24,11 @@ from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
 from fused_render.server import create_app
 
+#: The real `_ensure_venv`, captured at import — before any fixture replaces it.
+#: The runner fixtures stub it (nothing is ever built in these tests), so a test
+#: about what it DOES has no other way back to it.
+_REAL_ENSURE_VENV = supervisor._ensure_venv
+
 # A worker that loads instantly, answers /health, streams two chunks and quits.
 # Deliberately stdlib-only and tiny: it stands in for mlx_text/worker.py's
 # CONTRACT, not its behaviour.
@@ -540,6 +545,39 @@ def test_shutdown_stops_a_download_that_is_still_running(fake_runner, monkeypatc
     assert stub.proc.poll() is not None, "the downloader outlived the app"
 
 
+def test_shutdown_cancels_an_environment_build_too(fake_runner, monkeypatch):
+    """The venv phase is a detached multi-GB `uv sync` with no process of ours.
+
+    Registering the fetch only once there was a DOWNLOAD process to kill left it
+    invisible to shutdown for exactly the minutes the install runs — the same
+    hole one layer up, since a first-ever runner build is the longest part of a
+    first download.
+    """
+    from fused_render import envinstall
+
+    cancelled = []
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: False)
+    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "abc123", "done": False})
+    monkeypatch.setattr(envinstall, "progress", lambda key: {"done": False, "stage": "sync"})
+    monkeypatch.setattr(envinstall, "cancel", lambda key: cancelled.append(key) or True)
+    # The real one — the fixture stubs it, and this test is about what it does.
+    monkeypatch.setattr(supervisor, "_ensure_venv", _REAL_ENSURE_VENV)
+
+    supervisor.load("org/building", registry.TEXT_GENERATION, weights_only=True)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        stub = supervisor._fetch_workers.get("org/building")
+        if stub is not None and stub.install_key:
+            break
+        time.sleep(0.02)
+    stub = supervisor._fetch_workers.get("org/building")
+    assert stub is not None, "the fetch was invisible while its environment built"
+    assert stub.install_key == "abc123"
+
+    supervisor.unload_all()
+    assert cancelled == ["abc123"], "the detached installer was left running"
+
+
 def test_a_prerequisite_this_machine_lacks_is_said_before_a_row_opens(monkeypatch):
     """`uv` and the `fused` package, refused at the REQUEST.
 
@@ -977,6 +1015,59 @@ def test_raw_and_history_together_are_refused(client):
     }, headers={"X-Fused": "1"})
     assert response.status_code == 400
     assert "one or the other" in response.json()["error"]["message"]
+
+
+def test_sampling_reaches_the_worker(client, fake_runner, monkeypatch):
+    """Displayed, persisted, and — until now — never sent anywhere.
+
+    The chat app has had Temperature and Max tokens sliders since before the
+    rewrite. The server forwarded both to the worker all along; the runtime
+    never serialized them, so two controls sat on screen changing nothing.
+    """
+    seen = {}
+    real = supervisor.generate_text
+    monkeypatch.setattr(supervisor, "generate_text",
+                        lambda model, request: (seen.update(request), real(model, request))[1])
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat",
+        "temperature": 0.2, "max_tokens": 64, "top_p": 0.9,
+    }, headers={"X-Fused": "1"})
+
+    assert seen["temperature"] == 0.2
+    assert seen["max_tokens"] == 64
+    assert seen["top_p"] == 0.9
+
+
+@pytest.mark.parametrize("body,expected", [
+    ({"max_tokens": 10_000_000}, "between"),
+    ({"max_tokens": 0}, "between"),
+    ({"temperature": 9}, "between"),
+    ({"top_p": 2}, "between"),
+    ({"temperature": "warm"}, "must be a number"),
+    # True is an int in Python and would pass a bare range check as max_tokens=1.
+    ({"max_tokens": True}, "must be a number"),
+])
+def test_a_sampling_value_out_of_range_is_refused(client, body, expected):
+    """One resident model serves every page, so an unbounded token budget is not
+    one caller's slow request — it is everybody else blocked behind it."""
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", **body,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert expected in response.json()["error"]["message"]
+
+
+def test_sampling_is_refused_for_claude_rather_than_dropped(client):
+    """The CLI has `effort`, not a temperature — so accepting one would be a
+    knob the caller can watch have no effect."""
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "temperature": 0.2,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'temperature'" in response.json()["error"]["message"]
 
 
 def test_cancel_stops_the_generation_without_unloading(client, fake_runner):

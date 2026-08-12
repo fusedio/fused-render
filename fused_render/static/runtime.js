@@ -11,8 +11,9 @@
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
- *     Both are LOCAL-MODEL ONLY and are refused (400) rather than dropped on
- *     the Claude path. fused.ai.cancel() stops a local generation mid-flight
+ *     opts.temperature / opts.maxTokens / opts.topP: sampling.
+ *     All four are LOCAL-MODEL ONLY and are refused (400) rather than dropped
+ *     on the Claude path. fused.ai.cancel() stops a local generation mid-flight
  *     without unloading the model.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
  *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
@@ -1617,6 +1618,14 @@
     // history: only something that OWNS the chat template can decline to apply
     // one, so the Claude path refuses this rather than quietly ignoring it.
     if (opts.raw !== undefined) body.raw = opts.raw;
+    // Sampling. Local models only, like history and raw — the Claude CLI
+    // exposes no sampling knobs, so these are refused there rather than
+    // dropped. camelCase in, snake_case on the wire, because the wire shape is
+    // the worker's and every other runtime option makes the same trip
+    // (systemPrompt -> system_prompt).
+    if (opts.temperature !== undefined) body.temperature = opts.temperature;
+    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+    if (opts.topP !== undefined) body.top_p = opts.topP;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const req = fetch("/api/ai", {
@@ -2121,7 +2130,16 @@
       aiPost("/api/ai/runtime/load", { model, ...(opts || {}) }),
     download: (model, opts) =>
       aiPost("/api/ai/runtime/download", { model, ...(opts || {}) }),
-    unload: (model) => aiPost("/api/ai/runtime/unload", { model }),
+    // Either a model id or `{capability}`. A page holding an Unload button
+    // usually means "release whatever is resident", and it does NOT reliably
+    // know which model that is — the one loaded may not be the one its dropdown
+    // is showing (another page, or the AI Models page, can load a different
+    // one). Passing the selected id there unloads nothing and leaves the real
+    // resident model in memory, so the capability form is the honest one.
+    unload: (model) =>
+      aiPost("/api/ai/runtime/unload",
+             typeof model === "string" || model == null
+               ? { model } : { capability: model.capability }),
   };
   ai.models = aiModels;
   ai.image = aiImage;

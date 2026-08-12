@@ -145,9 +145,15 @@ function shortCommit(commit: string): string {
 // biggest-first overview avoids doing.
 function Revisions({
   repo,
+  inUse,
   onDelete,
 }: {
   repo: AiModelRepo;
+  /** Why deleting from this repo is refused right now, or "" — the same
+   *  sentence the repo's own Delete uses. A revision is not the safer target it
+   *  looks like: the one a resident worker holds open is the one it is reading
+   *  from, so both buttons answer to the same rule (AI-5f). */
+  inUse: string;
   onDelete: (revision: AiModelRevision) => void;
 }) {
   const [rows, setRows] = useState<AiModelRevision[] | null>(null);
@@ -199,8 +205,13 @@ function Revisions({
           <button
             type="button"
             className="cc-iconbtn cc-iconbtn-danger"
-            title={`Delete revision ${shortCommit(rev.commit)}`}
+            title={
+              inUse
+                ? `Cannot delete a revision of ${repo.id}: ${inUse}`
+                : `Delete revision ${shortCommit(rev.commit)}`
+            }
             aria-label={`Delete revision ${shortCommit(rev.commit)}`}
+            disabled={!!inUse}
             onClick={() => onDelete(rev)}
           >
             ✕
@@ -540,7 +551,7 @@ function RepoCard({
       {/* Same predicate as the expander above, so a repo that drops to one
           revision under a deletion collapses itself rather than stranding an
           open drawer with no control left to close it. */}
-      {expanded && repo.revisions > 1 && <Revisions repo={repo} onDelete={onDeleteRevision} />}
+      {expanded && repo.revisions > 1 && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
     </div>
   );
 }

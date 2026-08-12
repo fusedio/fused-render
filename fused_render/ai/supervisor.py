@@ -136,6 +136,13 @@ class Worker:
     #: so the first waited out its whole bootstrap timeout on a file that would
     #: never come back. Not the token: a secret must not become a filename.
     uid: str = field(default_factory=lambda: secrets.token_hex(4))
+    #: The `envinstall` key of the environment build running for this bring-up,
+    #: while one is. Set because a worker in its VENV phase has no process of its
+    #: own yet — the multi-GB `uv sync` belongs to a detached installer — so
+    #: without this, "stop this worker" could not stop the only thing it was
+    #: actually doing, and quitting the app during a first-ever runner build left
+    #: gigabytes downloading with nothing left to cancel them.
+    install_key: str = ""
     state: str = "starting"  # starting | venv | downloading | loading | ready | error
     detail: str = ""
     error: str = ""
@@ -343,6 +350,15 @@ def _terminate(worker: Worker) -> None:
     reclaim; the kill is what happens when the process is wedged inside a
     generation and cannot get back to its accept loop.
     """
+    # An environment build first, because during that phase it is the ONLY
+    # thing this worker is doing: there is no process of ours to kill yet, and
+    # the `uv sync` pulling several GB is detached, so it survives both the
+    # thread and the app unless it is cancelled by name.
+    if worker.install_key:
+        from fused_render import envinstall
+
+        envinstall.cancel(worker.install_key)
+        worker.install_key = ""
     if worker.port:
         try:
             _worker_request(worker, "/quit", body={}, timeout=2.0).close()
@@ -563,6 +579,10 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         # exists to hand the caller the right one — this is that caller.
         started = envinstall.start(runner.folder)
         key = started.get("key") or envinstall.venv_key_for(runner.folder)
+        # Published on the worker so `_terminate` can cancel it. During this
+        # phase the install IS the work, and it belongs to a detached process
+        # that outlives us unless something says otherwise.
+        worker.install_key = key
         while True:
             if worker.stopping or _cancel_requested(job):
                 envinstall.cancel(key)
@@ -575,6 +595,7 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
             _report(job,
                     detail=f"Preparing {runner.label} — {record.get('stage') or 'installing'}…")
             time.sleep(0.5)
+        worker.install_key = ""
         if envinstall.is_installed(runner.folder):
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.label} did not build")
@@ -659,6 +680,13 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                   token=secrets.token_urlsafe(24))
     with _lock:
         _worker_tokens.add(stub.token)
+        # Registered BEFORE the venv build, not after the spawn. Its first phase
+        # may itself be a multi-GB `uv` install, and a stub that only appears
+        # once there is a download process to kill is invisible to shutdown for
+        # exactly the minutes that install runs — the same hole one layer up.
+        # `_terminate` handles either phase: it cancels the install if that is
+        # what is running, and kills the process if that is.
+        _fetch_workers[model] = stub
     try:
         python = _ensure_venv(runner, stub, job)
         _report(job, detail="Fetching weights…")
@@ -671,11 +699,6 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         )
         stub.pid = proc.pid
         stub.proc = proc
-        # Registered only once there IS a process to stop, and dropped in the
-        # `finally` below whatever happens — a handle for a dead pid is worse
-        # than none, because shutdown would signal it.
-        with _lock:
-            _fetch_workers[model] = stub
         while proc.poll() is None:
             if stub.stopping or _cancel_requested(job):
                 _terminate(stub)
