@@ -1609,6 +1609,10 @@
     // conversation to resume, and says so rather than answering a follow-up as
     // if it were the first question.
     if (opts.history !== undefined) body.history = opts.history;
+    // Raw continuation — the text goes to the model verbatim, with no chat
+    // template around it. A base model continuing your paragraph, rather than
+    // an assistant answering it.
+    if (opts.raw !== undefined) body.raw = opts.raw;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const req = fetch("/api/ai", {
@@ -1619,6 +1623,10 @@
     function fail(error) {
       const err = new Error(error && error.message);
       err.type = error && error.type;
+      // A local model that is not resident yet answers 409 with the id of the
+      // load this call just started (SPEC AI-5). Carrying it through is what
+      // lets a caller show that download rather than just reporting a failure.
+      if (error && error.jobId) err.jobId = error.jobId;
       throw err;
     }
     if (!onChunk) {

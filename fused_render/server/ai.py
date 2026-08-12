@@ -703,6 +703,10 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     if system_prompt and system_prompt != _AI_DEFAULT_SYSTEM_PROMPT:
         messages.insert(0, {"role": "system", "content": system_prompt})
     request = {
+        # `prompt` is the worker's raw path: it hands the text to the model with
+        # no chat template. Sending both lets the worker pick, and it prefers
+        # `prompt` — so this is only set when the caller asked for raw.
+        **({"prompt": prompt} if body.get("raw") else {}),
         "messages": messages,
         "max_tokens": body.get("max_tokens"),
         "temperature": body.get("temperature"),
@@ -744,17 +748,31 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     def lines():
         # Errors after the first byte are demoted to an ok:false done frame on a
         # 200, exactly as the Claude path does — the status is already sent.
+        #
+        # The done frame carries **result**, the same `{text, model, usage}` the
+        # Claude path sends and the same thing the non-streaming reply above
+        # returns. It did not, and the shapes only LOOKED alike because the
+        # chunks matched: `fused.ai`'s reader resolves with `finished.result`,
+        # so a page streaming from a local model got `undefined` back and threw
+        # on the first property it read. The full text is accumulated here
+        # rather than left to the caller — the caller may have been streaming
+        # into a DOM node and have no string to hand back.
+        text = []
         try:
             for event in walk():
                 if event.get("type") == "chunk":
-                    yield json.dumps({"type": "chunk", "text": event.get("text") or ""}) + "\n"
+                    chunk = event.get("text") or ""
+                    text.append(chunk)
+                    yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
                 elif event.get("type") == "done":
                     ok = bool(event.get("ok", True))
                     yield json.dumps({
-                        "type": "done", "ok": ok, "model": model,
-                        "usage": {"output_tokens": event.get("tokens"),
-                                  "seconds": event.get("seconds")},
-                        **({} if ok else {"error": {
+                        "type": "done", "ok": ok,
+                        **({"result": {
+                            "text": "".join(text), "model": model,
+                            "usage": {"output_tokens": event.get("tokens"),
+                                      "seconds": event.get("seconds")}}}
+                           if ok else {"error": {
                             "type": "ai_error",
                             "message": str(event.get("error") or "generation failed")}}),
                     }) + "\n"
@@ -818,6 +836,20 @@ async def _ai_relay(body: dict):
         problem = _history_problem(history)
         if problem:
             return _ai_error("bad_request", problem, status=400)
+
+    # Raw continuation: the prompt goes to the model VERBATIM, with no chat
+    # template wrapped around it. A different thing from a conversation, not a
+    # setting on one — which is why it refuses history rather than quietly
+    # winning over it.
+    raw = body.get("raw")
+    if raw is not None and not isinstance(raw, bool):
+        return _ai_error("bad_request", "'raw' must be a boolean", status=400)
+    if raw and history:
+        return _ai_error(
+            "bad_request",
+            "'raw' continues the prompt verbatim with no chat template, so it "
+            "has nowhere to put 'history' — send one or the other",
+            status=400)
 
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and

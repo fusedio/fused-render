@@ -140,22 +140,42 @@ def report_or_cancel(job=None, **fields):
     return record
 
 
-def resident_bytes():
-    """This process's resident memory, or None.
+#: A runner's own memory measurement, when it has one better than RSS. Set by
+#: `serve()`. MLX is the reason it exists: its weights are memory-mapped and its
+#: arrays are lazy, so RSS right after a load reports the interpreter and not
+#: the model — 379 MB for a 6GB model, which is what sent us looking.
+_measure = None
 
-    On Apple Silicon the GPU pool IS system memory, so RSS is the honest single
-    number for "what is this model costing you" — no separate VRAM figure exists
-    to reconcile it with. psutil comes with every runner's environment; if it is
-    somehow absent the answer is None rather than a guess.
+
+def resident_bytes():
+    """What this model is costing in memory, or None.
+
+    RSS by default: on Apple Silicon the GPU pool IS system memory, so it is the
+    honest single number and there is no separate VRAM figure to reconcile it
+    with. A runner that can do better supplies `memory=` to `serve()`, and the
+    LARGER of the two wins — both are real measurements and neither is a
+    superset (RSS includes the interpreter and framework; a framework allocator
+    includes buffers that may not be faulted into RSS yet), so the cost is at
+    least the larger.
+
+    psutil comes with every runner's environment; if it is somehow absent the
+    answer is whatever the runner could measure, or None rather than a guess.
     """
+    own = None
+    if _measure is not None:
+        try:
+            own = _measure()
+        except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+            own = None
+    rss = None
     try:
         import psutil
-    except ImportError:
-        return None
-    try:
-        return int(psutil.Process(os.getpid()).memory_info().rss)
+
+        rss = int(psutil.Process(os.getpid()).memory_info().rss)
     except Exception:  # noqa: BLE001 - psutil raises its own family; none is fatal here
-        return None
+        rss = None
+    candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
 
 
 # --------------------------------------------------------- downloading weights
@@ -351,6 +371,9 @@ def _bring_up(model_id, download, load):
 
         set_state(state="ready", detail="", error="",
                   resident_bytes=resident_bytes(), loaded_at=time.time())
+        # That figure is already stale — with lazy, memory-mapped weights most
+        # of the model has not been touched yet. `/health` re-measures on every
+        # poll, which is what the number on screen actually comes from.
         report(state="done", detail="Model loaded")
     except BaseException as e:  # noqa: BLE001 - this thread's only job is to explain a failure
         # Deliberately broad and deliberately last: this thread is the only
@@ -395,7 +418,16 @@ def _handler(generate, streaming):
             if not self._authorized():
                 return
             if self.path.startswith("/health"):
-                self._json(snapshot())
+                # Measured HERE, not read back from the state set at load time.
+                # It used to be stored once, right after `load()` returned, and
+                # served unchanged forever — so the supervisor's `refresh_memory`
+                # re-read the same frozen number every poll, and a model whose
+                # weights fault in during its first generation was reported at
+                # whatever it happened to cost before it had done anything.
+                health = snapshot()
+                if health.get("state") == "ready":
+                    health["resident_bytes"] = resident_bytes()
+                self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
 
@@ -486,15 +518,16 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
     return _Server((host, 0), _handler(generate, streaming))
 
 
-def serve(download, load, generate, streaming=False, argv=None):
+def serve(download, load, generate, streaming=False, memory=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
     there, because the supervisor waits on the process rather than on a health
     route, so a failure must not be swallowed into a status nobody reads.
     """
-    global JOB_ID
+    global JOB_ID, _measure
 
+    _measure = memory
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

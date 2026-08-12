@@ -800,3 +800,49 @@ def test_cancel_carries_the_guard_and_checks_the_capability(client):
     bad = client.post("/api/ai/cancel", json={"capability": "telepathy"},
                       headers={"X-Fused": "1"})
     assert bad.status_code == 400
+
+
+def test_a_streamed_local_reply_carries_its_result(client, fake_runner, monkeypatch):
+    """`fused.ai` resolves with the done frame's `result`, so a local model that
+    omitted it handed every streaming page `undefined` — and the page threw on
+    the first property it read. The shapes only LOOKED alike because the chunks
+    matched.
+    """
+    def fake(model, request):
+        yield {"type": "chunk", "text": "he"}
+        yield {"type": "chunk", "text": "llo"}
+        yield {"type": "done", "ok": True, "tokens": 2, "seconds": 0.1}
+
+    monkeypatch.setattr(supervisor, "generate_text", fake)
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "stream": True,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    frames = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    done = frames[-1]
+    assert done["type"] == "done" and done["ok"] is True
+    # The whole completion, accumulated server-side: a page streaming into a DOM
+    # node has no string of its own to fall back on.
+    assert done["result"]["text"] == "hello"
+    assert done["result"]["model"] == "org/chat"
+    assert done["result"]["usage"]["output_tokens"] == 2
+
+
+def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypatch):
+    """One reader parses both, so the frame they finish with is a contract —
+    pinned here rather than only described in a docstring, which is what let the
+    two drift apart."""
+    def fake(model, request):
+        yield {"type": "chunk", "text": "x"}
+        yield {"type": "done", "ok": True, "tokens": 1, "seconds": 0.1}
+
+    monkeypatch.setattr(supervisor, "generate_text", fake)
+    local = client.post("/api/ai", json={"prompt": "hi", "model": "org/chat",
+                                         "stream": True},
+                        headers={"X-Fused": "1"})
+    done = [json.loads(line) for line in local.text.splitlines() if line.strip()][-1]
+    # The same keys the Claude path's success frame carries (see _ai_relay's
+    # `{"type": "done", "ok": True, "result": payload}`), and the same shape of
+    # payload the NON-streaming reply returns.
+    assert set(done) == {"type", "ok", "result"}
+    assert set(done["result"]) == {"text", "model", "usage"}
