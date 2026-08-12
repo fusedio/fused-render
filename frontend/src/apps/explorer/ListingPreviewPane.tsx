@@ -33,7 +33,8 @@ import { navigate } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { modeTitle } from "@platform/lib/mode-name";
 import { isModeVisible } from "@platform/lib/mode-visibility";
-import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
+import { iconForEntry } from "@platform/ui/FileIcons";
+import { loneEntryPage } from "@apps/explorer/lib/folder-app";
 import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
@@ -205,11 +206,13 @@ export default function ListingPreviewPane({
     };
   }, [path, self, previewing]);
 
-  // Folder lone-app probe, for the `_app` mode. A truncated listing is only a
-  // partial page (server cap), so a lone HTML match in it doesn't prove it is
-  // the folder's ONLY one — offer no `_app` mode then (mirrors Listing's
-  // onSingleApp guard). Errors also just drop the mode; the embedded Listing
-  // surfaces the folder's real error itself.
+  // Folder lone-app probe, for the `_app` mode — the SERVER's entry rule
+  // (lib/folder-app), the same one Listing's onSingleApp applies, so the pane's
+  // button and the title bar's can never disagree about whether a folder is an
+  // app. A truncated listing is only a partial page (server cap), so a lone
+  // match in it doesn't prove it is the folder's ONLY one — offer no `_app`
+  // mode then. Errors also just drop the mode; the embedded Listing surfaces
+  // the folder's real error itself.
   useEffect(() => {
     if (!path || !isDir || self || !previewing) return;
     let alive = true;
@@ -218,12 +221,8 @@ export default function ListingPreviewPane({
       (data) => {
         if (!alive) return;
         const dir = (data.path || path).replace(/\/+$/, "");
-        const apps = data.entries.filter((e) => isAppEntry(e.name, e.is_dir));
-        setApp(
-          !data.truncated && apps.length === 1
-            ? { name: apps[0].name, path: dir + "/" + apps[0].name }
-            : null
-        );
+        const page = data.truncated ? null : loneEntryPage(data.entries);
+        setApp(page === null ? null : { name: page, path: dir + "/" + page });
       },
       () => alive && setApp(null)
     );

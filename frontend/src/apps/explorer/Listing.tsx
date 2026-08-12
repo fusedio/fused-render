@@ -41,7 +41,8 @@ import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
-import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
+import { iconForEntry } from "@platform/ui/FileIcons";
+import { loneEntryPage } from "@apps/explorer/lib/folder-app";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
@@ -353,13 +354,19 @@ export default function Listing({
   // the same hop with a target the user can name, and the keyboard keeps its
   // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
 
-  // Tell the caller whether this folder's top level holds exactly one HTML
-  // ("app") file. Keyed off the plain listing, not the search results — the
-  // button this drives describes the folder's own contents, regardless of
-  // what's currently typed into the in-folder search box.
+  // Tell the caller whether this folder's top level holds a lone entry page.
+  // The rule is the SERVER's (lib/folder-app, mirroring app_listing.app_entry),
+  // not the row-badging one — a folder the /apps hub calls an app must offer
+  // "Open as app" here, and a directory has no other mode surface to fall back
+  // on. Keyed off the plain listing, not the search results: the button this
+  // drives describes the folder's own contents, regardless of what's currently
+  // typed into the in-folder search box.
   //   • A truncated listing (the server-cap banner) only ever holds a partial
-  //     page, so a lone HTML match there doesn't mean it's the folder's only
-  //     one — withhold the report rather than risk a false "app" button.
+  //     page, so a lone match there doesn't mean it's the folder's only one —
+  //     withhold the report rather than risk a false "app" button. That is a
+  //     dead end in principle (>10k entries, LIST_MAX_ENTRIES) and left as one
+  //     deliberately: the honest repair is asking the server, and a folder that
+  //     size is not the folder-with-one-page shape this button serves.
   //   • "loading" reports nothing either way (neither null nor a path) so a
   //     same-path remount (e.g. switching a mode away from `_listing` and
   //     back) doesn't flicker an already-known button off for the length of
@@ -371,8 +378,8 @@ export default function Listing({
       onSingleApp(null);
       return;
     }
-    const apps = state.entries.filter((e) => isAppEntry(e.name, e.is_dir));
-    onSingleApp(apps.length === 1 ? base + "/" + apps[0].name : null);
+    const page = loneEntryPage(state.entries);
+    onSingleApp(page === null ? null : base + "/" + page);
   }, [state, base, onSingleApp]);
 
   // Flat, ordered list of the paths the arrow keys step through: the rendered
