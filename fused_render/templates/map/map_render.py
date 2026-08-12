@@ -49,6 +49,7 @@ BACKEND_FILES = (
     HERE / "vector_engine.py",
     HERE / "geo_classify.py",
     HERE / "geo_paths.py",
+    HERE / "raster_categories.py",
 )
 RASTER_SUFFIXES = (
     ".tif", ".tiff", ".cog", ".vrt", ".jp2", ".j2k", ".img", ".ntf",
@@ -306,6 +307,8 @@ def main(
     warmup: str = "",
     source_url: str = "",
     source_origin: str = "",
+    render_mode: str = "",
+    category_colors: str = "",
 ):
     if warmup:
         try:
@@ -357,6 +360,13 @@ def main(
         try:
             lo, hi = (float(value) for value in rescale.split(","))
             options["rescale"] = [lo, hi]
+        except ValueError:
+            pass
+    if render_mode:
+        options["render_mode"] = render_mode
+    if category_colors:
+        try:
+            options["category_colors"] = json.loads(category_colors)
         except ValueError:
             pass
 

@@ -27,12 +27,14 @@ Descriptor shape:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
 
 from geo_paths import is_remote_path, normalize_remote_path
 from optional_runtime import require
+from raster_categories import classify_categories, read_pam_aux_xml, resolve_render_mode
 
 # ---- output caps (keep artifacts screen-sized / network-friendly) -----------
 MAX_RASTER_DIM = 1400        # longest edge of the reprojected raster PNG
@@ -675,13 +677,45 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
     d["crs_original"] = ds.crs.to_string()
     warnings = []
 
-    with WarpedVRT(ds, crs="EPSG:4326", resampling=Resampling.bilinear) as vrt:
+    # Categorical eligibility is decided from the source dataset, before
+    # reprojection: a bilinear warp would blend adjacent integer class codes
+    # into meaningless values, so a categorical raster must be resampled
+    # with "nearest" for the warp too, not just for the final render.
+    dtype0 = str(ds.dtypes[0])
+    embedded_colormap = None
+    aux_labels = None
+    if ds.count < 3:
+        with contextlib.suppress(ValueError):
+            embedded_colormap = ds.colormap(1)
+        aux_colors, aux_labels = read_pam_aux_xml(ds.name)
+        if not embedded_colormap and aux_colors:
+            embedded_colormap = aux_colors
+    categories = None
+    if ds.count < 3:
+        try:
+            sample = ds.read(
+                1,
+                out_shape=(min(ds.height, 256), min(ds.width, 256)),
+                resampling=Resampling.nearest,
+                masked=True,
+            )
+            categories = classify_categories(
+                sample, dtype0, embedded_colormap=embedded_colormap,
+                overrides=opts.get("category_colors"), labels=aux_labels,
+            )
+        except Exception:
+            categories = None
+    requested_mode = str(opts.get("render_mode") or "")
+    categorical = resolve_render_mode(ds.count, categories, embedded_colormap, requested_mode) == "categorical"
+    warp_resampling = Resampling.nearest if categorical else Resampling.bilinear
+
+    with WarpedVRT(ds, crs="EPSG:4326", resampling=warp_resampling) as vrt:
         scale = min(1.0, MAX_RASTER_DIM / max(vrt.width, vrt.height))
         out_h = max(1, int(round(vrt.height * scale)))
         out_w = max(1, int(round(vrt.width * scale)))
         count = vrt.count
         data = vrt.read(out_shape=(count, out_h, out_w),
-                        resampling=Resampling.bilinear, masked=True)
+                        resampling=warp_resampling, masked=True)
         b = vrt.bounds  # (left, bottom, right, top) in EPSG:4326
 
     bounds = [float(b[0]), float(b[1]), float(b[2]), float(b[3])]
@@ -698,6 +732,7 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
     rescale = opts.get("rescale")  # optional [lo, hi]
 
     band_stats = []
+    category_colors = {}
     if count >= 3:
         chans = []
         for i in range(3):
@@ -712,6 +747,14 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
         alpha = np.where(valid_all, 255, 0).astype("uint8")
         rgba = np.dstack([chans[0], chans[1], chans[2], alpha])
         mode = "rgb"
+    elif categorical:
+        band = arr[0]
+        category_colors = {c["value"]: tuple(c["color"]) for c in categories}
+        rgba = np.zeros((out_h, out_w, 4), dtype="uint8")
+        for value, color in category_colors.items():
+            rgba[band == value] = color
+        band_stats.append({"index": 1, "p2": None, "p98": None})
+        mode = "categorical"
     else:
         band = arr[0]
         finite = band[np.isfinite(band)]
@@ -735,13 +778,15 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
     d["data"] = {"image_path": image_path}
     d["stats"] = {
         "bands": int(count), "width": int(out_w), "height": int(out_h),
-        "dtype": str(ds.dtypes[0]), "nodata": _finite(ds.nodata),
+        "dtype": dtype0, "nodata": _finite(ds.nodata),
         "band_stats": band_stats, "render_mode": mode,
+        "categories": categories,
     }
     d["style"] = {
         "opacity": 0.9, "colormap": colormap,
         "rescale": [band_stats[0].get("p2"), band_stats[0].get("p98")] if mode == "single" else None,
         "render_mode": mode,
+        "category_colors": {str(value): list(color) for value, color in category_colors.items()},
     }
     d["warnings"] = warnings
     return d
@@ -752,6 +797,7 @@ def _render_array(arr, bounds, artifact_dir, artifact_id, opts, detected):
     import numpy as np
     from PIL import Image
 
+    dtype0 = str(np.asarray(arr).dtype)
     arr = np.asarray(arr).astype("float64")
     if arr.ndim == 2:
         arr = arr[None, :, :]
@@ -764,6 +810,13 @@ def _render_array(arr, bounds, artifact_dir, artifact_id, opts, detected):
     d = _base(artifact_id, detected)
     d["bounds"] = [float(v) for v in bounds]
 
+    categories = None
+    if count < 3:
+        categories = classify_categories(arr[0], dtype0, overrides=opts.get("category_colors"))
+    requested_mode = str(opts.get("render_mode") or "")
+    categorical = resolve_render_mode(count, categories, None, requested_mode) == "categorical"
+
+    category_colors = {}
     if count >= 3:
         chans = []
         for i in range(3):
@@ -775,6 +828,13 @@ def _render_array(arr, bounds, artifact_dir, artifact_id, opts, detected):
         alpha = np.where(np.isfinite(arr[:3]).all(axis=0), 255, 0).astype("uint8")
         rgba = np.dstack([chans[0], chans[1], chans[2], alpha])
         mode = "rgb"
+    elif categorical:
+        band = arr[0]
+        category_colors = {c["value"]: tuple(c["color"]) for c in categories}
+        rgba = np.zeros((band.shape[0], band.shape[1], 4), dtype="uint8")
+        for value, color in category_colors.items():
+            rgba[band == value] = color
+        mode = "categorical"
     else:
         band = arr[0]
         finite = band[np.isfinite(band)]
@@ -790,6 +850,10 @@ def _render_array(arr, bounds, artifact_dir, artifact_id, opts, detected):
     d["kind"] = "raster_image"
     d["data"] = {"image_path": image_path}
     d["stats"] = {"bands": int(count), "render_mode": mode,
-                  "width": int(arr.shape[-1]), "height": int(arr.shape[-2])}
-    d["style"] = {"opacity": 0.9, "colormap": colormap, "render_mode": mode}
+                  "width": int(arr.shape[-1]), "height": int(arr.shape[-2]),
+                  "categories": categories}
+    d["style"] = {
+        "opacity": 0.9, "colormap": colormap, "render_mode": mode,
+        "category_colors": {str(value): list(color) for value, color in category_colors.items()},
+    }
     return d

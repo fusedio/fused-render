@@ -263,9 +263,3 @@ export function iconForEntry(name: string, isDir: boolean): JSX.Element {
   const variant: Variant = isDir ? "folder" : EXT_VARIANT[extOf(name)] ?? "file";
   return RENDER[variant]();
 }
-
-// html/htm files open as launchable apps — callers use this to badge rows and
-// switch "Open" wording to "Open App".
-export function isAppEntry(name: string, isDir: boolean): boolean {
-  return !isDir && EXT_VARIANT[extOf(name)] === "html";
-}

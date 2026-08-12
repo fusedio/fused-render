@@ -4,9 +4,15 @@
 // AppInfo can be tested without a DOM.
 //
 // The entry this menu exists for is "Open in Explorer" — the app's FOLDER in
-// fused-render's own explorer, which is a different destination from both
-// neighbours: "Open" opens the app itself (the builder route), and "Reveal in
-// Finder" hands the path to the OS file manager.
+// fused-render's own explorer, as distinct from "Reveal in Finder", which hands
+// the path to the OS file manager.
+//
+// It is no longer distinct from "Open" for the ordinary app (a folder with a
+// page): a card opens that folder in the explorer now, so the two entries land
+// in the same place. The entry stays anyway, because it is the only one that is
+// ALWAYS the folder — an app whose entry is a lone non-page file opens that
+// FILE (appEntry's `entry` branch), and "Open in Explorer" is how you get to the
+// folder around it.
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
 import { copyToClipboard } from "./clipboard";

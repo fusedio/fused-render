@@ -2,9 +2,10 @@
 
 An app is a folder with a single entry page: `<workspace>/<tag>/<name>/`, whose
 entry is its one non-hidden direct-child `.html`. The walk that finds them, and
-the two facts reported about each one — a title read out of the entry, and when
-the folder was last touched — live here rather than inside the route handler, so
-they can be tested and reused without a `TestClient`.
+the facts reported about each one — a title read out of the entry, an authored
+`preview.png` thumbnail if there is one, and when the folder was last touched —
+live here rather than inside the route handler, so they can be tested and reused
+without a `TestClient`.
 
 Nothing in this module raises for a directory it cannot read: a listing degrades
 to what it could see. The one deliberate exception is `app_entry`, which lets
@@ -14,6 +15,7 @@ list it as a folder" — see `app_dict`.
 import html
 import os
 import re
+import stat
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
@@ -34,6 +36,50 @@ def app_entry(dir_path: str) -> str | None:
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 
+# The one authored thumbnail name. A card's picture of an app is otherwise the
+# entry page rendered live in a scaled iframe, which is honest but is also a
+# whole page load per card and shows whatever the app looks like with no data in
+# it; dropping a `preview.png` in the folder is how an author overrides that.
+#
+# Exactly one name, not a search over `preview.*` or `screenshot.*`: a user
+# adding a thumbnail should never have to work out which of several candidates
+# wins. Matched EXACTLY, case included — see `app_preview_image` for why that
+# costs a listdir rather than a stat.
+PREVIEW_IMAGE_NAME = "preview.png"
+
+
+def app_preview_image(dir_path: str) -> str | None:
+    """The app folder's authored thumbnail (`preview.png` at its root), or None.
+
+    Resolved by LISTING the directory rather than probing the path, and the
+    reason is case: `os.path.isfile` inherits the filesystem's own case-folding,
+    so a `Preview.png` would be a thumbnail on macOS/Windows and not on ext4 —
+    the same folder answering differently per machine, and disagreeing with the
+    explorer's peek rule (apps/explorer/lib/folder-peek.ts), which compares the
+    name exactly. An exact membership test is the only rule both sides can hold.
+
+    Zero-length is treated as absent. A truncated or interrupted write leaves a
+    file `isfile` is perfectly happy with, and a non-null answer here is
+    load-bearing in a way the entry rule's is not: the card's fallbacks (the
+    live render, the monogram) are only reachable while this is None, so a
+    wrongly-confident path is a permanently broken image rather than a
+    degraded one. It is not a validity check and does not pretend to be — a
+    corrupt non-empty PNG still gets through, which is why both card surfaces
+    also carry an onError fallback.
+
+    Never raises: an unreadable or vanished directory is "no picture", which is
+    exactly what the caller renders.
+    """
+    try:
+        if PREVIEW_IMAGE_NAME not in os.listdir(dir_path):
+            return None
+        p = os.path.join(dir_path, PREVIEW_IMAGE_NAME)
+        st = os.stat(p)
+    except OSError:
+        return None
+    return os.path.abspath(p) if stat.S_ISREG(st.st_mode) and st.st_size > 0 else None
+
+
 def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     """One app's listing entry — the single place the shape is built.
 
@@ -42,6 +88,11 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     directory cannot be read, skip it" into "this directory has no entry, list
     it as a folder" — an unreadable app comes back as a card. The caller is the
     only one that knows which of those it wants, so it decides.
+
+    `preview_image` is resolved HERE, and the asymmetry is the point: it has no
+    such ambiguity to hand back (see `app_preview_image`), so resolving it once
+    in the shared shape is what keeps the workspace walk and the linked-app
+    registry from having to remember it separately.
     """
     return {
         "name": name,
@@ -55,6 +106,10 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
         # entryOf) and falls back to `entry_html` against an older server.
         "entry": entry_html,
         "entry_html": entry_html,
+        # The card's thumbnail when the author supplied one: absolute path to
+        # `preview.png` at the folder's root, else None and the card falls back
+        # to rendering `entry_html` live.
+        "preview_image": app_preview_image(path),
         "title": entry_title(entry_html) if entry_html else None,
         "updated_at": dir_updated_at(path),
     }

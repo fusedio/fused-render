@@ -968,23 +968,6 @@
   background: var(--bg-alt);
 }
 
-/* Portal target for the open folder's "Open as app" (pane-action-slot.ts).
-   `display: contents` so the button is a flex item of the header itself and picks
-   up its gap and alignment — landing it at the header's LEFT end beside the close
-   chevron, because it belongs to the folder on the other side of the divider and
-   not to the row the pill is about.
-
-   It used to carry `margin-right: auto` to get there, back when it was the strip's
-   only leading item; that job belongs to `.side-header-tail` now, and leaving a
-   second auto margin in the row would split the free space between the two and
-   float this button into the middle of the bar.
-
-   :empty and it disappears — most folders have no lone page to open, and an
-   empty item would still spend one of the header's 8px gaps. */
-.listing-pane .pane-action-slot {
-  display: contents;
-}
-
 /* Folder preview fallback: the folder's own entries, read-only. Narrower
    padding than the main table since it lives in the smaller pane. */
 .listing-pane .pane-mini-scroll {

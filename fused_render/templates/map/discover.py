@@ -1,9 +1,14 @@
-"""Mount-safe filesystem discovery for the Map Viewer file-picker modal."""
+"""Mount-safe filesystem discovery for the Map Viewer file-picker modal, and
+the staging directory OS drag-and-drops upload into (action="drops_dir")."""
 from __future__ import annotations
 
 import json
 import os
+import stat
 import string
+import sys
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,9 +16,15 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
+    from ..shared.private_dir import private_dir, require_private
     from .geo_paths import is_remote_path, normalize_remote_path
 else:
+    if "__file__" not in globals():
+        __file__ = os.path.join(sys.path[0], "discover.py")
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared"))
     from geo_paths import is_remote_path, normalize_remote_path
+    from private_dir import private_dir, require_private
 
 
 RASTER = (
@@ -209,7 +220,100 @@ def _local_payload(requested: str) -> dict[str, Any]:
     return _payload(str(path), triples, selected=selected)
 
 
-def main(dir: str = "", src: str = "") -> dict[str, Any]:
+def _drops_root() -> str:
+    """Where OS drag-and-drops are staged: a per-user tree under the shared
+    temp root, the same layout as claude/agent.py's `_runs_root` and for the
+    same reason — one shared name cannot be both 0700-private and usable by a
+    second account, and a per-uid root dissolves the contention. POSIX-only
+    suffix: Windows has no `geteuid` and its temp dir is already per-user."""
+    geteuid = getattr(os, "geteuid", None)
+    suffix = "-%d" % geteuid() if geteuid is not None else ""
+    return os.path.join(tempfile.gettempdir(), "fused_render_map" + suffix, "drops")
+
+
+DROPS = _drops_root()
+
+# Staged drops are scratch, not storage: a file only has to outlive the map
+# session whose layer points at it, but it can be a multi-GB raster — so the
+# TTL is generous (a week comfortably outlives any open session) and the count
+# backstop small next to the screenshot pruner's 200 tiny crops.
+DROPS_TTL = 7 * 24 * 3600
+DROPS_KEEP = 50
+
+
+def _prune_drops() -> None:
+    """Drop staged files whose session is long gone. Best-effort throughout:
+    this is housekeeping on a temp directory, and no failure here is worth
+    refusing the user their drop over."""
+    try:
+        names = os.listdir(DROPS)
+    except OSError:
+        return
+    now = time.time()
+    aged = []
+    for name in names:
+        path = os.path.join(DROPS, name)
+        try:
+            mtime = os.lstat(path).st_mtime
+        except OSError:
+            continue
+        aged.append((mtime, path))
+    stale = [p for m, p in aged if now - m > DROPS_TTL]
+    # Oldest first, so what survives the count cap is the recent session.
+    aged.sort()
+    excess = [p for _m, p in aged[:max(0, len(aged) - DROPS_KEEP)]]
+    for path in set(stale) | set(excess):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _drops_dir() -> dict[str, Any]:
+    """Ensure the drop staging directory exists and hand its path to the page.
+
+    Same shape and same asymmetry as claude/agent.py's `_shots_dir`: the
+    directory is SHARED and long-lived, so an existing one is adopted rather
+    than refused — but only after `require_private` vouches for it, and on
+    POSIX a merely world-READABLE one is tightened or refused (the drops are
+    the user's own data files). A refusal (`require_private` raising)
+    propagates; an ordinary OSError becomes an error dict, which the page
+    surfaces as a failed drop rather than a crash.
+    """
+    if os.path.isdir(DROPS):
+        require_private(DROPS)
+        if hasattr(os, "geteuid"):
+            try:
+                mode = stat.S_IMODE(os.lstat(DROPS).st_mode)
+                if mode & ~0o700:
+                    os.chmod(DROPS, 0o700)
+                    # Re-read rather than trust the call: an ACL, or a
+                    # filesystem that does not carry unix modes, can accept a
+                    # chmod and keep the bits exactly where they were.
+                    mode = stat.S_IMODE(os.lstat(DROPS).st_mode)
+            except OSError as error:
+                return {"error": f"Could not secure the drop directory: {error}"}
+            if mode & ~0o700:
+                return {
+                    "error": "The drop directory is readable by others "
+                    f"(mode {mode:04o}) and could not be tightened"
+                }
+    else:
+        try:
+            private_dir(DROPS, os.path.dirname(DROPS))
+        except FileExistsError:
+            # Another page asked at the same moment. Theirs is fine if it is
+            # ours; require_private is what decides that (and raises if not).
+            require_private(DROPS)
+        except OSError as error:
+            return {"error": f"Could not prepare the drop directory: {error}"}
+    _prune_drops()
+    return {"dir": DROPS}
+
+
+def main(dir: str = "", src: str = "", action: str = "") -> dict[str, Any]:
+    if action == "drops_dir":
+        return _drops_dir()
     requested = os.path.abspath(clean_path(dir) or str(Path.home()))
     if src:
         status, metadata = _stat(src, requested)

@@ -41,7 +41,7 @@ import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
-import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
+import { iconForEntry } from "@platform/ui/FileIcons";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
@@ -111,7 +111,6 @@ export default function Listing({
   provisional = false,
   embedded = false,
   barChrome = false,
-  onSingleApp,
 }: {
   fsPath: string;
   // `provisional`: this Listing is rendering inside the pre-stat loading
@@ -135,15 +134,10 @@ export default function Listing({
   // the crumb bar, whose layout zone it therefore claims (see
   // listing/folder-chrome.ts). The splits go away and the path `···` renders
   // in this listing's search row instead of at the far end of the bar. False
-  // for every other host: the app-builder and learn variants have no crumb bar
-  // to claim, and a panel pane's Listing sits under a pane bar that carries
-  // its own splits and its own `···`.
+  // for every other host: the learn variant has no crumb bar to claim, and a
+  // panel pane's Listing sits under a pane bar that carries its own splits and
+  // its own `···`.
   barChrome?: boolean;
-  // Reports the path of this directory's lone top-level HTML file (an
-  // "app"), or null when there isn't exactly one — the caller (Preview's
-  // header) uses this to surface an "Open as app" button. Fires whenever the
-  // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
-  onSingleApp?: (path: string | null) => void;
 }) {
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
     useDirListing(fsPath);
@@ -353,28 +347,6 @@ export default function Listing({
   // the same hop with a target the user can name, and the keyboard keeps its
   // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
 
-  // Tell the caller whether this folder's top level holds exactly one HTML
-  // ("app") file. Keyed off the plain listing, not the search results — the
-  // button this drives describes the folder's own contents, regardless of
-  // what's currently typed into the in-folder search box.
-  //   • A truncated listing (the server-cap banner) only ever holds a partial
-  //     page, so a lone HTML match there doesn't mean it's the folder's only
-  //     one — withhold the report rather than risk a false "app" button.
-  //   • "loading" reports nothing either way (neither null nor a path) so a
-  //     same-path remount (e.g. switching a mode away from `_listing` and
-  //     back) doesn't flicker an already-known button off for the length of
-  //     the refetch; only "ok"/"error" settle the caller's state.
-  useEffect(() => {
-    if (!onSingleApp) return;
-    if (state.status === "loading") return;
-    if (state.status !== "ok" || state.truncated) {
-      onSingleApp(null);
-      return;
-    }
-    const apps = state.entries.filter((e) => isAppEntry(e.name, e.is_dir));
-    onSingleApp(apps.length === 1 ? base + "/" + apps[0].name : null);
-  }, [state, base, onSingleApp]);
-
   // Flat, ordered list of the paths the arrow keys step through: the rendered
   // search hits while searching, otherwise the sorted listing. Keyed off the
   // same memoized arrays the table renders, so selection never drifts from view.
@@ -543,11 +515,12 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // Opening a folder lands on its FIRST ENTRY — file or directory (rendered
-  // order — see autoSelectPath / firstEntryPath), so the pane shows something
-  // instead of the folder's own "Select a file to preview." hint. A pane that opens empty
-  // asks the user to do the obvious thing before it will do anything at all; a
-  // folder is overwhelmingly opened to look at what is in it.
+  // Opening a folder lands on its first PAGE, or on its first entry — file or
+  // directory — when it has none (rendered order both ways; the rule and its
+  // reasons are on autoSelectPath). Either way the pane shows something instead
+  // of the folder's own "Select a file to preview." hint. A pane that opens
+  // empty asks the user to do the obvious thing before it will do anything at
+  // all; a folder is overwhelmingly opened to look at what is in it.
   //
   // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
   // the decision. The shot is taken at the first settled non-search listing WITH THE
@@ -588,9 +561,9 @@ export default function Listing({
   // silently when something already holds the selection at the moment the
   // guards are first met (`selectionClaimed`). That is exactly the scaffold
   // click above — the user clicked row five during a slow mount, the resolved
-  // listing settled, and row one used to land on top of it. The decision half
-  // (autoSelectPath) stays blind to the selection (D240); this is a condition
-  // on WHEN to ask, which is this effect's half.
+  // listing settled, and the auto-selection used to land on top of it. The
+  // decision half (autoSelectPath) stays blind to the selection (D240); this is
+  // a condition on WHEN to ask, which is this effect's half.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;

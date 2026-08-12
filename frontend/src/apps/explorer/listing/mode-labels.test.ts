@@ -29,7 +29,7 @@ import { join } from "node:path";
 
 import { modeTitle } from "@platform/lib/mode-name";
 import type { TemplateEntry } from "@platform/lib/api";
-import { PANE_APP_MODE, paneModeList } from "./pane-modes";
+import { paneModeList } from "./pane-modes";
 
 // The built-in registry, read from the repo rather than duplicated here — the
 // point is to track whatever the bindings actually are (PT-7/CT-3). A user
@@ -43,8 +43,8 @@ const PERMUTATIONS = [false, true];
 
 // Every set of modes a user can see in ONE list: the registry key's own list
 // (the Open With menu and the preview route render it as-is), plus the preview
-// pane's assembled list — same entries, one pane-only sentinel added and some
-// dropped — across the isDir/self/hasApp permutations the pane can be in.
+// pane's assembled list — the same entries with `_listing` dropped for a file —
+// across both isDir permutations.
 function offeredSets(): Array<{ where: string; modes: string[] }> {
   const sets: Array<{ where: string; modes: string[] }> = [];
   for (const [key, modes] of Object.entries(REGISTRY)) {
@@ -53,13 +53,11 @@ function offeredSets(): Array<{ where: string; modes: string[] }> {
     const templates: TemplateEntry[] = modes.map(
       (m) => ({ mode: m, path: m.startsWith("_") ? null : `/t/${m}`, icon: null, conditional: false }) as TemplateEntry
     );
-    for (const hasApp of PERMUTATIONS) {
-      for (const isDir of PERMUTATIONS) {
-        sets.push({
-          where: `preview pane, key ${key} (isDir=${isDir} hasApp=${hasApp})`,
-          modes: paneModeList({ templates, conditions: {}, isDir, hasApp }),
-        });
-      }
+    for (const isDir of PERMUTATIONS) {
+      sets.push({
+        where: `preview pane, key ${key} (isDir=${isDir})`,
+        modes: paneModeList({ templates, conditions: {}, isDir }),
+      });
     }
   }
   return sets;
@@ -78,21 +76,4 @@ test("no two modes offered together resolve to the same label", () => {
     }
   }
   expect(clashes).toEqual([]);
-});
-
-// `app` (the registry template) and `_app` (the pane's in-place render of a
-// folder's lone top-level page) are the SAME view from two surfaces, and
-// mode-name.ts names them alike deliberately. The reason the guard above passes
-// is therefore not an exemption but a list rule: the pane offers exactly one of
-// the two carriers, never both. Asserting it here keeps the guard honest — if
-// this ever regresses, the collision test must trip rather than be excused.
-test("the pane never co-offers `app` and the `_app` sentinel", () => {
-  const both: string[] = [];
-  for (const { where, modes } of offeredSets()) {
-    if (modes.includes("app") && modes.includes(PANE_APP_MODE)) both.push(where);
-  }
-  expect(both).toEqual([]);
-  // …and the pair really does read alike, so the rule above is load-bearing
-  // rather than incidentally true.
-  expect(modeTitle(PANE_APP_MODE)).toBe(modeTitle("app"));
 });

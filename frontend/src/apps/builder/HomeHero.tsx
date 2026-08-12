@@ -4,7 +4,7 @@
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { aiComplete, createApp } from "@platform/lib/api";
-import { APP_ROUTE_PREFIX, navigate, navigateUrl } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
@@ -20,26 +20,15 @@ import { TextArea } from "@platform/ui/field/fields";
 // .claude-split.json sidecar. (There is only one chat template now, so "which
 // chat" is no longer a question at all; the `_mode` still has to be spelled out
 // because the folder's default mode is the app itself, not the chat.)
-// Lands in the BUILDER namespace (/apps/<tag>/<name>) — the app folder's last
-// two path segments ARE its tag/name by the server's workspace contract.
+// An ORDINARY explorer URL for the folder. It used to be the builder route
+// (/apps/<tag>/<name>, rebuilt from the folder's last two path segments); that
+// namespace is gone, and urlForFsPath takes the whole abspath the server
+// returned — including its Windows-backslash normalization, which the old
+// segment split had to do by hand or silently take the drive-rooted path as one
+// segment.
 export function claudeChatUrl(appDir: string, runId: string): string {
-  // The server builds this path with os.path.abspath, so on Windows it
-  // arrives with backslashes — normalize before splitting or tag/name
-  // extraction silently grabs the whole path as one segment. Same
-  // drive-letter-only guard as urlForFsPath (a backslash is a legal filename
-  // character on POSIX).
-  const norm = /^[A-Za-z]:[\\/]/.test(appDir) ? appDir.replace(/\\/g, "/") : appDir;
-  const segs = norm.replace(/\/+$/, "").split("/");
-  const [tag, name] = segs.slice(-2);
   const params = new URLSearchParams({ _mode: "claude", run: runId });
-  return (
-    APP_ROUTE_PREFIX +
-    encodeURIComponent(tag) +
-    "/" +
-    encodeURIComponent(name) +
-    "?" +
-    params.toString()
-  );
+  return urlForFsPath(appDir.replace(/\/+$/, ""), "?" + params.toString());
 }
 
 // -- Prompt-first creation (the hero composer) --------------------------------

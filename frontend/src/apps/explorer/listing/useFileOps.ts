@@ -36,7 +36,6 @@ import {
 } from "@apps/explorer/lib/fs-actions";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import { basename } from "@platform/lib/format";
-import { isAppEntry } from "@platform/ui/FileIcons";
 import { getClipboard, setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
 import { pushToast } from "@platform/lib/toast";
 import type { MenuEntry, MenuItem } from "@platform/ui/ContextMenu";
@@ -508,7 +507,7 @@ export function useFileOps({
       ];
     }
     return [
-      { label: isAppEntry(row.name, row.isDir) ? "Open App" : "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
+      { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
       { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash([row]) },

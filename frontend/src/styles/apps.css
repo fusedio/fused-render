@@ -175,6 +175,18 @@
   pointer-events: none;
 }
 
+/* The authored `preview.png`, in the same 16/10 box the live iframe fills.
+   `cover` rather than `contain`: a thumbnail crops, it does not letterbox — a
+   screenshot at the wrong aspect ratio should still fill the card. */
+.app-pcard-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--bg-panel);
+}
+
 .app-pcard-shield {
   position: absolute;
   inset: 0;
