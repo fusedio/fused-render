@@ -255,7 +255,8 @@ async function renderDetail(slug) {
     <div class="actions">${buttons.join("")}</div>
     <div class="readme">${md(d.readme || "*no readme*", d.folder)}</div>
     <p class="fineprint">Preview renders the app from the local catalog cache — it already runs the
-      app's JavaScript with the same trust as installing it.</p>
+      app's JavaScript with the same trust as installing it. Anything a previewed app saves is
+      discarded on the next catalog refresh; install it to keep state.</p>
   </div>`;
   content.querySelectorAll("[data-act]").forEach(b => b.addEventListener("click", () => act(b.dataset.act, slug, d)));
 }
