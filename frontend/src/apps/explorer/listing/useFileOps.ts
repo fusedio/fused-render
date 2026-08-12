@@ -39,6 +39,10 @@ import {
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import {
   applyFsOp,
+  beginFsUndo,
+  blamedPath,
+  endFsUndo,
+  fsUndoEpoch,
   invertFsOp,
   pushRedoOp,
   pushUndoOp,
@@ -261,31 +265,47 @@ export function useFileOps({
   // them separately would be two chances to get the "what goes back on which
   // stack" half wrong.
   //
-  // In-flight guard shared by both, for the reason paste and move have one — and
-  // shared deliberately: an undo and a redo racing each other would be two
-  // renames of the same paths in opposite directions.
-  const undoInFlight = useRef(false);
+  // The in-flight guard is NOT a ref here — it lives in lib/fs-undo with the
+  // stacks (beginFsUndo). A ref in this hook died with the component, and a move
+  // can navigate mid-gesture (spring-loading a crumb), so it was reset to false
+  // exactly when a second Cmd+Z must not be allowed through. Shared by both
+  // directions deliberately: an undo racing a redo is two renames of the same
+  // paths in opposite directions.
   const runRelocation = (
     take: () => FsOp | null,
-    pushBack: (op: FsOp) => void,
+    pushOther: (op: FsOp, atEpoch: number) => void,
+    pushSame: (op: FsOp, atEpoch: number) => void,
     verb: "undo" | "redo",
   ) => {
-    if (undoInFlight.current) return;
+    if (!beginFsUndo()) return;
     const op = take();
-    if (!op) return;
-    undoInFlight.current = true;
+    if (!op) {
+      endFsUndo();
+      return;
+    }
+    // Read BEFORE the renames start. A relocation recorded while they run revokes
+    // this gesture's redo entry, and comparing epochs at the push is what makes
+    // that hold across the await (lib/fs-undo's pushRedoOp).
+    const startedAt = fsUndoEpoch();
     void applyFsOp(invertFsOp(op))
       .then((report) => {
         if (report.done.length) {
-          // What landed is what the other direction can put back. The FAILED
-          // pairs go on neither stack: the entry was taken off before the
+          // What landed is what the other direction can put back. The per-path
+          // FAILURES go on neither stack: the entry was taken off before the
           // attempt, and one that 404s or 409s would otherwise sit at the top
-          // failing for every later Undo. Nothing is left UNACCOUNTED FOR,
-          // though, because applyFsOp attempts every pair — see its own comment
-          // on why it does not stop at the first failure the way a move does.
-          pushBack({ kind: op.kind, pairs: report.done });
+          // failing for every later Undo.
+          pushOther({ kind: op.kind, pairs: report.done }, startedAt);
           pendingSelectRef.current = report.done[report.done.length - 1].to;
           refetch();
+        }
+        // Pairs a SYSTEMIC refusal never let us try (a read-only destination, a
+        // 5xx) go back on the stack this gesture took the op from, so they stay
+        // undoable once the cause is fixed — the failure is environmental, not a
+        // verdict about those paths, and orphaning them would be the very hazard
+        // the every-pair change removed. Re-inverted, because the stack holds ops
+        // in the original direction while `pending` is in the inverse one.
+        if (report.pending.length) {
+          pushSame(invertFsOp({ kind: op.kind, pairs: report.pending }), startedAt);
         }
         // ONE toast, always, and it tells the whole outcome.
         //
@@ -296,13 +316,13 @@ export function useFileOps({
         //
         // A PARTIAL result must not read as an all-clear. "Undid the move" over
         // a batch where two entries refused would be a false success about the
-        // two that are still where the move left them — and, the entry having
-        // been consumed, are no longer reachable from either stack. So a failure
-        // names the first refused destination and its reason (a 409 means
-        // something else is sitting there now) and counts the rest: one sentence
-        // rather than a toast per pair, because a read-only destination fails
-        // every entry with the same reason and twenty identical toasts would bury
-        // the one that mattered.
+        // two that are still where the move left them. So a failure names the
+        // first refusal and its reason and counts the rest: one sentence rather
+        // than a toast per pair, because a read-only destination fails every
+        // entry with the same reason and twenty identical toasts would bury the
+        // one that mattered. When the batch bailed early the count of untried
+        // pairs is part of the outcome too, together with the fact that pressing
+        // undo again will pick them up.
         const what = op.kind === "move" ? "move" : "rename";
         const did = verb === "undo" ? "Undid" : "Redid";
         if (!report.failed.length) {
@@ -311,22 +331,29 @@ export function useFileOps({
         }
         const [first] = report.failed;
         const rest = report.failed.length - 1;
+        const left = report.pending.length
+          ? ` ${report.pending.length} more left in place — ${verb} again to retry.`
+          : "";
         pushToast({
           msg:
             (report.done.length ? `${did} part of the ${what}. ` : "") +
-            friendlyFsError(first.error, { verb, name: basename(first.pair.to) }) +
-            (rest ? ` (and ${rest} more)` : ""),
+            // blamedPath, not the destination: a 404 is about the path that has
+            // gone missing, which is the one the entry was being moved FROM.
+            friendlyFsError(first.error, { verb, name: basename(blamedPath(first.pair, first.error)) }) +
+            (rest ? ` (and ${rest} more)` : "") +
+            left,
           tone: "error",
         });
       })
       .finally(() => {
         // FINALLY, for the reason spelled out on moveInFlight above: a latched
-        // guard would silently kill undo for the life of the view.
-        undoInFlight.current = false;
+        // guard would silently kill undo for the life of the SESSION now that it
+        // lives in the module rather than in this component.
+        endFsUndo();
       });
   };
-  const doUndo = () => runRelocation(takeUndoOp, pushRedoOp, "undo");
-  const doRedo = () => runRelocation(takeRedoOp, pushUndoOp, "redo");
+  const doUndo = () => runRelocation(takeUndoOp, pushRedoOp, pushUndoOp, "undo");
+  const doRedo = () => runRelocation(takeRedoOp, pushUndoOp, pushRedoOp, "redo");
 
   // Duplicate into the same folder, picking the first free "… copy[/ n]" name
   // (freeDuplicatePath lists the folder so the copy never 409s on an existing

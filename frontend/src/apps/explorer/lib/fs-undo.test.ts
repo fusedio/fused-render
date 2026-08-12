@@ -30,7 +30,12 @@ let failFor: { src: string; status: number; error: string } | null = null;
 
 const {
   applyFsOp,
+  beginFsUndo,
+  blamedPath,
+  endFsUndo,
+  fsUndoEpoch,
   invertFsOp,
+  isFsUndoInFlight,
   pushRedoOp,
   pushUndoOp,
   recordFsOp,
@@ -89,20 +94,63 @@ test("recording an op DROPS the redo stack — that future is gone", () => {
   // unreachable, because redoing it would now be redoing it onto a different
   // filesystem than the one it was recorded against.
   recordFsOp({ kind: "move", pairs: [{ from: "/a/x.md", to: "/b/x.md" }] });
-  pushRedoOp({ kind: "move", pairs: [{ from: "/b/x.md", to: "/a/x.md" }] });
+  pushRedoOp({ kind: "move", pairs: [{ from: "/b/x.md", to: "/a/x.md" }] }, fsUndoEpoch());
   recordFsOp({ kind: "rename", pairs: [{ from: "/a/y.md", to: "/a/z.md" }] });
+  expect(takeRedoOp()).toBeNull();
+});
+
+test("A NEW OP DURING AN UNDO KILLS THAT UNDO'S REDO ENTRY", () => {
+  // The race the epoch exists for. An undo's renames take real time, and the
+  // redo entry is only pushed when they finish — so a relocation started
+  // meanwhile (a drag onto a folder) cleared the redo stack BEFORE the push,
+  // and the push then resurrected an entry recorded against a filesystem that
+  // had since changed. Shift+Cmd+Z would replay the whole batch.
+  //
+  // The undo reads the epoch when it STARTS and offers it back with the push;
+  // a recordFsOp in between makes the push a no-op, which is the same outcome
+  // recordFsOp's own invariant asks for.
+  const started = fsUndoEpoch();
+  recordFsOp({ kind: "move", pairs: [{ from: "/a/x.md", to: "/b/x.md" }] }); // the racer
+  pushRedoOp({ kind: "move", pairs: [{ from: "/b/y.md", to: "/a/y.md" }] }, started);
   expect(takeRedoOp()).toBeNull();
 });
 
 test("pushing back onto a stack after a redo keeps the OTHER stack", () => {
   // pushUndoOp is not recordFsOp: a redo puts the op back on the undo stack
   // without declaring a new future, so the redo entries below it survive.
-  pushRedoOp({ kind: "move", pairs: [{ from: "/b/1", to: "/a/1" }] });
-  pushRedoOp({ kind: "move", pairs: [{ from: "/b/2", to: "/a/2" }] });
+  pushRedoOp({ kind: "move", pairs: [{ from: "/b/1", to: "/a/1" }] }, fsUndoEpoch());
+  pushRedoOp({ kind: "move", pairs: [{ from: "/b/2", to: "/a/2" }] }, fsUndoEpoch());
   const op = takeRedoOp();
   expect(op).not.toBeNull();
-  pushUndoOp(op!);
+  pushUndoOp(op!, fsUndoEpoch());
   expect(takeRedoOp()).toEqual({ kind: "move", pairs: [{ from: "/b/1", to: "/a/1" }] });
+});
+
+test("a stale epoch does NOT drop an undo-stack push — that would lose work", () => {
+  // Asymmetric on purpose. The redo stack is a claim about a future that a new
+  // op invalidates; the undo stack is a record of relocations that all really
+  // happened, and dropping one because something else happened first would make
+  // a real move permanently un-undoable.
+  const started = fsUndoEpoch();
+  recordFsOp({ kind: "move", pairs: [{ from: "/a/new.md", to: "/b/new.md" }] });
+  pushUndoOp({ kind: "rename", pairs: [{ from: "/w/a", to: "/w/b" }] }, started);
+  expect(takeUndoOp()).toEqual({ kind: "rename", pairs: [{ from: "/w/a", to: "/w/b" }] });
+});
+
+test("the in-flight guard lives with the stacks, not with a component", () => {
+  // It used to be a useRef in useFileOps, which a navigation mid-gesture
+  // remounted to false — so a second Cmd+Z ran concurrently with the first and
+  // two batches of renames over possibly-nested paths interleaved, breaking the
+  // sequential ordering applyFsOp depends on. Module-level, like the stacks it
+  // guards, it survives the remount.
+  expect(isFsUndoInFlight()).toBe(false);
+  expect(beginFsUndo()).toBe(true);
+  expect(isFsUndoInFlight()).toBe(true);
+  expect(beginFsUndo()).toBe(false); // the second gesture is refused
+  endFsUndo();
+  expect(isFsUndoInFlight()).toBe(false);
+  expect(beginFsUndo()).toBe(true);
+  endFsUndo();
 });
 
 test("the stack is capped, and it is the OLDEST op that falls off", () => {
@@ -168,15 +216,70 @@ test("ONE PAIR'S FAILURE DOES NOT ABANDON THE REST OF THE BATCH", async () => {
     { from: "/b/4", to: "/a/4" },
   ]);
   expect(report.failed.map((f) => f.pair)).toEqual([{ from: "/b/2", to: "/a/2" }]);
+  expect(report.pending).toEqual([]);
   // All four attempted — nothing was skipped past the error.
   expect(renames().length).toBe(4);
 });
 
-test("every failure is reported, not just the first", async () => {
-  // A systemic refusal (a read-only destination) fails every pair. One entry per
-  // pair, so the caller can say how many rather than naming one and going quiet
-  // about the others.
+test("every INDEPENDENT failure is reported, not just the first", async () => {
+  // Two different names taken in the destination: unrelated verdicts about two
+  // paths, so both are attempted and both reported.
+  failFor = { src: "/b/1", status: 409, error: "conflict" };
+  const first = await applyFsOp({ kind: "move", pairs: [{ from: "/b/1", to: "/a/1" }] });
+  failFor = { src: "/b/2", status: 409, error: "conflict" };
+  const second = await applyFsOp({ kind: "move", pairs: [{ from: "/b/2", to: "/a/2" }] });
+  expect(first.failed.length).toBe(1);
+  expect(second.failed.length).toBe(1);
+});
+
+test("A SYSTEMIC REFUSAL BAILS OUT INSTEAD OF FIRING THE WHOLE BATCH", async () => {
+  // A read-only destination refuses every pair for the same reason, and the
+  // reason has nothing to do with any path. Pressing on would fire one doomed
+  // request per pair — a 3,000-pair cut-paste undone into a read-only mount meant
+  // 3,000 sequential 403s with no toast and no progress, and (because the
+  // in-flight guard only clears at the end) undo looked dead for minutes.
+  //
+  // So: one attempt, then stop, and hand back the pairs that were NOT tried so
+  // the caller can leave them undoable. This is the opposite call from the 404 /
+  // 409 case above, and the distinction is whether the error is a verdict about
+  // a PATH or about the environment.
   failFor = { src: "*", status: 403, error: "readonly" };
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  expect(report.done).toEqual([]);
+  expect(report.failed.length).toBe(1);
+  expect(report.pending).toEqual([
+    { from: "/b/2", to: "/a/2" },
+    { from: "/b/3", to: "/a/3" },
+  ]);
+  // ONE request, not three.
+  expect(renames().length).toBe(1);
+});
+
+test("a per-path refusal never sets `pending` — the batch runs to the end", async () => {
+  failFor = { src: "/b/2", status: 409, error: "conflict" };
+  const report = await applyFsOp({
+    kind: "move",
+    pairs: [
+      { from: "/b/1", to: "/a/1" },
+      { from: "/b/2", to: "/a/2" },
+      { from: "/b/3", to: "/a/3" },
+    ],
+  });
+  expect(report.pending).toEqual([]);
+  expect(report.done.length).toBe(2);
+});
+
+test("an unrecognised error is treated as systemic — it is not about a path", async () => {
+  // A 500, a dropped connection, an unparsable reply: nothing there says the NEXT
+  // path would fare better, so the safe reading is "the environment is refusing".
+  failFor = { src: "*", status: 500, error: "internal error" };
   const report = await applyFsOp({
     kind: "move",
     pairs: [
@@ -184,8 +287,24 @@ test("every failure is reported, not just the first", async () => {
       { from: "/b/2", to: "/a/2" },
     ],
   });
-  expect(report.done).toEqual([]);
-  expect(report.failed.length).toBe(2);
+  expect(report.failed.length).toBe(1);
+  expect(report.pending).toEqual([{ from: "/b/2", to: "/a/2" }]);
+});
+
+test("the blamed path is the one the error is ABOUT, not always the destination", () => {
+  const pair = { from: "/b/report copy.csv", to: "/a/report.csv" };
+  const err = (status: number, message: string) => Object.assign(new Error(message), { status });
+  // 404: the thing that is missing is where the entry sits NOW. Naming the
+  // destination reported `"report.csv" no longer exists` — a path that had not
+  // existed since the move, about to be recreated — and never named the deduped
+  // path that had actually disappeared.
+  expect(blamedPath(pair, err(404, "no such file or directory"))).toBe("/b/report copy.csv");
+  // 409 and everything else are about where it is GOING.
+  expect(blamedPath(pair, err(409, "conflict"))).toBe("/a/report.csv");
+  expect(blamedPath(pair, err(403, "readonly"))).toBe("/a/report.csv");
+  // A thrown non-HttpError still gets read, since the server's words are the
+  // only signal there.
+  expect(blamedPath(pair, new Error("no such file or directory"))).toBe("/b/report copy.csv");
 });
 
 test("a vanished source fails the same way — the entry is not retried forever", async () => {
