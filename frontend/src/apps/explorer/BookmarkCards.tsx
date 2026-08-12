@@ -126,8 +126,9 @@ function ImagePreview({ src, fallback }: { src: string; fallback: ReactNode }) {
 
 // The stack body of a folder card: back-to-front fanned chips over an
 // optional preview peeking out underneath the front chip. The peek is the
-// folder's best direct file child (peekRank: `preview.png` first, then
-// PEEK_EXT_ORDER); a folder holding only subfolders (a deploy dir of apps)
+// folder's best direct file child (peekRank: `preview.png`, `index.html`,
+// `readme.md`, then by extension tier); a folder holding only subfolders (a
+// deploy dir of apps)
 // probes its first few subfolders and peeks the best-ranked file found there —
 // an authored preview.png anywhere wins the probe outright.
 function FolderStack({ path }: { path: string }) {
