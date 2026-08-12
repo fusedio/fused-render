@@ -914,6 +914,31 @@ export default function Listing({
     });
   };
 
+  // The folder's `⋮`, absolutely positioned against the LAST header cell's
+  // right edge (the th is sticky, so it is already the positioned ancestor) —
+  // NOT a fourth column: rows have three cells, and a column they don't render
+  // breaks their backgrounds. It overlays the header's own padding, which is
+  // why .col-mtime reserves room for it (explorer.css) rather than letting it
+  // land on the sort arrow.
+  // Both handlers stop propagation: the normal header's th sorts on click, and
+  // a press that re-sorts the listing under the menu about to open is not what
+  // the button says it does. One element, three homes — the mtime th, the
+  // search header's Path th, and (labels hidden) the empty folder's strip —
+  // because the actions act on the current folder in every one of them.
+  const headerMenuBtn = (
+    <button
+      type="button"
+      className="listing-head-menu"
+      aria-haspopup="menu"
+      aria-label="Folder actions"
+      title="Folder actions"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={openHeaderMenu}
+    >
+      <EllipsisIcon />
+    </button>
+  );
+
   // --- table body -----------------------------------------------------------
 
   let body: React.ReactNode;
@@ -1423,9 +1448,10 @@ export default function Listing({
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
-              {/* Header row hidden (not unmounted — the sticky header's box is
-                  part of the table's own layout) over an empty folder: see
-                  `emptyDir`. */}
+              {/* Over an empty folder the column LABELS hide (visibility, see
+                  .listing-head-empty) but the strip stays: the folder `⋮`
+                  lives on it, and an empty folder is where that menu matters
+                  most. */}
               <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
                   {searching ? (
@@ -1435,7 +1461,14 @@ export default function Listing({
                     // that by name or date presents it as an answer it isn't,
                     // and the search box already says the coverage is
                     // approximate (listing/index-caveat).
-                    <th className="col-name">Path</th>
+                    // The folder `⋮` stays through a search: its actions act on
+                    // the CURRENT folder either way, and search replacing the
+                    // one header that carried it would make the control come
+                    // and go with the query.
+                    <th className="col-name">
+                      Path
+                      {headerMenuBtn}
+                    </th>
                   ) : (
                     (Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                       ([key, label]) => (
@@ -1447,7 +1480,11 @@ export default function Listing({
                           }
                           onClick={() => setSort(key)}
                         >
-                          {label}
+                          {/* Wrapped so the empty-folder state can hide the
+                              LABEL without unmounting the strip — the `⋮` on
+                              this row must survive it (explorer.css,
+                              .listing-head-empty). */}
+                          <span className="col-label">{label}</span>
                           {/* One glyph that ROTATES for desc (see .sort-arrow):
                           swapping ▲ for ▼ replaced the element, so the change
                           could only ever pop. */}
@@ -1460,32 +1497,7 @@ export default function Listing({
                               ▲
                             </span>
                           )}
-                          {/* The folder's `⋮`, absolutely positioned against
-                              the LAST header cell's right edge (the th is
-                              sticky, so it is already the positioned ancestor)
-                              — NOT a fourth column: rows have three cells, and
-                              a column they don't render breaks their
-                              backgrounds. It overlays the header's own padding,
-                              which is why .col-mtime reserves room for it
-                              (explorer.css) rather than letting it land on the
-                              sort arrow.
-                              Both handlers stop propagation: the th sorts on
-                              click, and a press that re-sorts the listing under
-                              the menu about to open is not what the button
-                              says it does. */}
-                          {key === "mtime" && (
-                            <button
-                              type="button"
-                              className="listing-head-menu"
-                              aria-haspopup="menu"
-                              aria-label="Folder actions"
-                              title="Folder actions"
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onClick={openHeaderMenu}
-                            >
-                              <EllipsisIcon />
-                            </button>
-                          )}
+                          {key === "mtime" && headerMenuBtn}
                         </th>
                       ),
                     )

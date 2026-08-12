@@ -1513,9 +1513,17 @@ table.listing-table {
   border-collapse: collapse;
 }
 
-/* Empty folder: no column headers over zero rows (Listing.tsx `emptyDir`). */
-table.listing-table thead.listing-head-empty {
-  display: none;
+/* Empty folder: the column LABELS describe no rows, so they hide — but the
+   strip itself stays, because the folder `⋮` lives on it and an empty folder
+   is exactly where that menu matters most (no row to right-click, and the
+   background context menu is the least discoverable surface in the app).
+   `visibility` rather than the whole thead's old `display: none` so the strip
+   keeps its height and hairline and the `⋮` doesn't jump when the first entry
+   lands. Sorting an empty listing is a no-op, so the still-clickable th costs
+   nothing. */
+table.listing-table thead.listing-head-empty .col-label,
+table.listing-table thead.listing-head-empty .sort-arrow {
+  visibility: hidden;
 }
 
 /* SIZE is a quantity: right-aligned so the magnitudes line up by digit, header
