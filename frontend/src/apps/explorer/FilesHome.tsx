@@ -272,8 +272,21 @@ function FilesSearch({
   const [fetchLifecycle, setFetchLifecycle] = useState(lifecycle);
   const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
   useEffect(() => {
-    if (corpus.status !== "ok") setFetchLifecycle(lifecycle);
-  }, [lifecycle, corpus.status]);
+    // Two ways the pin comes off, and between them they are what stop it from
+    // being a one-way door — pinned on the session's first corpus with nothing
+    // to ever move it, the box would rank an hour-old corpus and caption it
+    // "not refreshed" forever.
+    //
+    //   * there is nothing to lose (no corpus yet), which is the first-scan
+    //     case this signal was added for;
+    //   * THE SEARCH ENDED. Nothing is on screen to be pulled out from under
+    //     anyone, so adopting costs the user nothing and the next search opens
+    //     on current data. This is exactly the boundary the in-folder search
+    //     already reconciles at (revalidate.shouldReconcile returns true the
+    //     moment `searching` goes false), and the two boxes should not disagree
+    //     about when a search is over.
+    if (corpus.status !== "ok" || !active) setFetchLifecycle(lifecycle);
+  }, [lifecycle, corpus.status, active]);
   // Which generation the corpus IN HAND actually reflects, which is not the
   // same question as when the fetch is allowed to re-run: a refetch forced by
   // something else (an in-app rename, a retry) still comes back with current
@@ -587,7 +600,13 @@ function FilesSearch({
             )}
             {caveat && (
               <span className="fh-index-chip" title={caveat.title}>
-                <span className="fh-index-spinner" aria-hidden="true" />
+                {/* Only while a scan is actually running. The chip also carries
+                    the "not refreshed" caveat, whose entire point is that NO
+                    work is in flight — a spinner there asserts the opposite of
+                    what the words next to it say. (Listing.tsx keeps its
+                    spinner on walk status for the same reason: the spinner
+                    tracks work, the caveat tracks trust.) */}
+                {indexScan?.scanning && <span className="fh-index-spinner" aria-hidden="true" />}
                 {caveat.note}
               </span>
             )}
