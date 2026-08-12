@@ -591,6 +591,12 @@ const BASEMAPS = {
 /* ---- map -------------------------------------------------------------- */
 const startCam = (P.get("cam") || "37.7749,-122.4194,11").split(",").map(Number);
 let baseName = ["dark","light","sat"].includes(P.get("base")) ? P.get("base") : "light";
+// map.isStyleLoaded() requires every source's tiles to be fully loaded, not
+// just the style itself — waiting on it to add/remove a single layer means a
+// big raster/vector layer still streaming tiles blocks touching ANY layer.
+// addLayer/removeLayer only actually need the style's initial load done, so
+// track that lighter, one-shot condition ourselves via "style.load".
+let styleReady = false;
 const map = new maplibregl.Map({
   container: "map", style: BASEMAPS[baseName],
   center: [startCam[1] || -122.4194, startCam[0] || 37.7749], zoom: startCam[2] || 11,
@@ -1067,7 +1073,9 @@ function boundsFeature(bounds) {
 }
 
 function rebuildRasterTiles() {
-  if (!map.isStyleLoaded()) return;
+  // Only false for the brief window between a basemap switch and its
+  // "style.load" — which already re-runs this once ready, so just bail.
+  if (!styleReady) return;
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
@@ -1171,7 +1179,7 @@ function removeVectorSource(sourceId) {
   if (map.getSource(ids.source)) map.removeSource(ids.source);
 }
 function rebuildVectorTiles() {
-  if (!map.isStyleLoaded()) return;
+  if (!styleReady) return;
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
@@ -1697,7 +1705,9 @@ function vectorControls(body, L) {
       rebuildDeck(); renderLayerCards();
     }));
     body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
-      s.line_color = [...(s.line_color||L.defaultColor).slice(0,3), a]; s._touched=true; rebuildDeck(); renderLayerCards();
+      s.line_color = [...(s.line_color||L.defaultColor).slice(0,3), a]; s._touched=true;
+      if (isPoint) { s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; }
+      rebuildDeck(); renderLayerCards();
     }));
   }
   if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width??1.5).toFixed(1), 0, 8, Math.round((s.line_width??1.5)*2),
@@ -1733,6 +1743,7 @@ function vectorTileControls(body, L) {
   }));
   body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
     s.line_color = [...(s.line_color || L.defaultColor).slice(0,3), a]; s._touched = true;
+    if (isPoint) { s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; }
     rebuildVectorTiles(); renderLayerCards();
   }));
   if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width ?? 1.5).toFixed(1), 0, 8, Math.round((s.line_width ?? 1.5) * 2),
@@ -1971,9 +1982,11 @@ function setBasemap(name) {
   if (!BASEMAPS[name] || name === baseName) return;
   baseName = name; P.set("base", name);
   qs("basemap-seg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.b === name));
+  styleReady = false;
   map.setStyle(BASEMAPS[name]);   // overlay is a control → survives setStyle
 }
 map.on("style.load", () => {
+  styleReady = true;
   rasterSourceIds = new Set();
   vectorSourceIds = new Set();
   for (const L of state.layers.values()) L._tileUrl = null;
@@ -2070,45 +2083,88 @@ qs("importpath").onkeydown = event => {
 };
 
 /* ---- drag-and-drop import: drop OS files straight onto the map -------- */
-let homeDirPromise = null;
+// Ad-hoc drops (no folder browsed yet) land in a temp staging dir, not the
+// user's home folder — discover.py prunes it, so a stray drop never piles
+// up in Home forever.
+let dropsDirPromise = null;
 async function resolveUploadDir() {
   if (state.dir) return state.dir;
-  if (!homeDirPromise) {
-    homeDirPromise = fused.runPython("./discover.py", { dir: "", src: location.origin })
-      .then(result => result.dir || "")
-      .catch(error => { homeDirPromise = null; throw error; });
+  if (!dropsDirPromise) {
+    dropsDirPromise = fused.runPython("./discover.py", { action: "drops_dir" })
+      .then(result => {
+        if (result.error) throw new Error(result.error);
+        return result.dir || "";
+      })
+      .catch(error => { dropsDirPromise = null; throw error; });
   }
-  return homeDirPromise;
+  return dropsDirPromise;
 }
 function joinPath(dir, name) {
   const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
   return dir.replace(/[\\/]+$/, "") + sep + name;
 }
+// GIS sidecars that ride along with a primary file (shapefile members,
+// world files, PAM metadata): uploaded, but never loaded as layers.
+const SIDECAR_EXTENSIONS = [
+  ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".shp.xml",
+  ".qix", ".qpj", ".aux.xml", ".ovr", ".tfw", ".tifw", ".wld",
+];
+function isSidecarName(name) {
+  const lower = name.toLowerCase();
+  return SIDECAR_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+// Split on the FIRST dot so files pairing on a shared basename
+// (farms.shp + farms.shx, landcover.tif + landcover.tif.aux.xml) get a
+// collision suffix inserted at the same spot and stay paired.
+function splitDroppedName(name) {
+  const dot = name.indexOf(".", 1);
+  return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+}
 // Any fused.stat failure (not just a 404) reads as "path is free" — the
 // upload right behind this will fail loudly on its own if something else
 // was actually wrong, so nothing is hidden by being optimistic (same
 // tradeoff as markdown/template.html's mediaExists/freeMediaName).
-async function uniqueDestPath(dir, name) {
-  const dot = name.lastIndexOf(".");
-  const stem = dot > 0 ? name.slice(0, dot) : name;
-  const ext = dot > 0 ? name.slice(dot) : "";
-  let candidate = name;
-  for (let i = 1; i <= 100; i++) {
-    const path = joinPath(dir, candidate);
-    try { await fused.stat(path); } catch { return path; }
-    candidate = `${stem} (${i})${ext}`;
-  }
-  return joinPath(dir, candidate);
+async function pathIsFree(path) {
+  try { await fused.stat(path); return false; } catch { return true; }
 }
-async function importDroppedFile(file) {
+async function groupDestPaths(dir, group) {
+  let candidate = group.map(file => joinPath(dir, file.name));
+  for (let i = 1; i <= 100; i++) {
+    const free = await Promise.all(candidate.map(pathIsFree));
+    if (free.every(Boolean)) break;
+    candidate = group.map(file => {
+      const [stem, rest] = splitDroppedName(file.name);
+      return joinPath(dir, `${stem} (${i})${rest}`);
+    });
+  }
+  return candidate;
+}
+async function importDroppedFiles(files) {
+  let dir = "";
   try {
-    const dir = await resolveUploadDir();
-    if (!dir) { toast("bad", "Couldn't drop " + file.name, "No destination folder available."); return; }
-    const dest = await uniqueDestPath(dir, file.name);
-    await fused.uploadFile(dest, file);
-    await loadTarget(dest, dest.split(/[\\/]/).pop());
+    dir = await resolveUploadDir();
   } catch (error) {
-    toast("bad", "Couldn't add " + file.name, error.message);
+    toast("bad", "Couldn't drop files", error.message);
+    return;
+  }
+  if (!dir) { toast("bad", "Couldn't drop files", "No destination folder available."); return; }
+  const groups = new Map();
+  for (const file of files) {
+    const key = splitDroppedName(file.name)[0].toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
+  }
+  for (const group of groups.values()) {
+    try {
+      const dests = await groupDestPaths(dir, group);
+      for (let i = 0; i < group.length; i++) await fused.uploadFile(dests[i], group[i]);
+      for (let i = 0; i < group.length; i++) {
+        if (isSidecarName(group[i].name)) continue;
+        await loadTarget(dests[i], dests[i].split(/[\\/]/).pop());
+      }
+    } catch (error) {
+      toast("bad", "Couldn't add " + group.map(file => file.name).join(", "), error.message);
+    }
   }
 }
 const mapwrap = qs("mapwrap"), dropzone = qs("dropzone");
@@ -2132,7 +2188,7 @@ mapwrap.addEventListener("drop", async event => {
   event.preventDefault();
   dragDepth = 0;
   dropzone.classList.add("hidden");
-  for (const file of event.dataTransfer.files) await importDroppedFile(file);
+  await importDroppedFiles([...event.dataTransfer.files]);
 });
 
 /* toast */

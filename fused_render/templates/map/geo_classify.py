@@ -34,7 +34,7 @@ import os
 
 from geo_paths import is_remote_path, normalize_remote_path
 from optional_runtime import require
-from raster_categories import classify_categories, resolve_render_mode
+from raster_categories import classify_categories, read_pam_aux_xml, resolve_render_mode
 
 # ---- output caps (keep artifacts screen-sized / network-friendly) -----------
 MAX_RASTER_DIM = 1400        # longest edge of the reprojected raster PNG
@@ -683,9 +683,13 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
     # with "nearest" for the warp too, not just for the final render.
     dtype0 = str(ds.dtypes[0])
     embedded_colormap = None
+    aux_labels = None
     if ds.count < 3:
         with contextlib.suppress(ValueError):
             embedded_colormap = ds.colormap(1)
+        aux_colors, aux_labels = read_pam_aux_xml(ds.name)
+        if not embedded_colormap and aux_colors:
+            embedded_colormap = aux_colors
     categories = None
     if ds.count < 3:
         try:
@@ -697,7 +701,7 @@ def _render_raster(ds, artifact_dir, artifact_id, opts, detected):
             )
             categories = classify_categories(
                 sample, dtype0, embedded_colormap=embedded_colormap,
-                overrides=opts.get("category_colors"),
+                overrides=opts.get("category_colors"), labels=aux_labels,
             )
         except Exception:
             categories = None

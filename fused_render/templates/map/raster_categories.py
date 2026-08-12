@@ -38,6 +38,7 @@ def classify_categories(
     dtype: str,
     embedded_colormap: dict[int, tuple[int, ...]] | None = None,
     overrides: dict[str, Any] | None = None,
+    labels: dict[int, str] | None = None,
     cap: int = CATEGORY_CAP,
 ) -> list[dict[str, Any]] | None:
     """Return a per-value legend for a categorical raster, or ``None`` if
@@ -53,12 +54,14 @@ def classify_categories(
     presence alone makes the raster eligible, and its colors take
     precedence over the fallback ``PALETTE``. ``overrides`` is
     ``{str(value): "#hex" | [r,g,b,a]}`` from user edits in the style dock;
-    it wins over both.
+    it wins over both. ``labels`` is ``{value: class name}`` (e.g. from a
+    PAM raster attribute table); unnamed values keep ``str(value)``.
     """
     import numpy as np
 
     is_int = np.issubdtype(np.dtype(dtype), np.integer)
     sample = np.ma.compressed(values) if np.ma.is_masked(values) else np.asarray(values).ravel()
+    sample = sample[np.isfinite(sample)]
     if sample.size == 0:
         return None
     unique, sample_counts = np.unique(sample, return_counts=True)
@@ -89,15 +92,124 @@ def classify_categories(
             color = raw if len(raw) == 4 else raw[:3] + (255,)
         else:
             color = PALETTE[i % len(PALETTE)] + (255,)
+        name = labels.get(value) if labels else None
         categories.append(
             {
                 "value": value,
-                "label": str(value),
+                "label": str(value) if name is None else str(name),
                 "color": list(color),
                 "count": counts.get(value, 0),
             }
         )
     return categories
+
+
+# GDALRATFieldUsage codes from gdal.h.
+_GFU_NAME = 2
+_GFU_MINMAX = 5
+_GFU_RED, _GFU_GREEN, _GFU_BLUE, _GFU_ALPHA = 6, 7, 8, 9
+
+_RAT_NAME_ALIASES = {
+    "value": ("value",),
+    "red": ("red",),
+    "green": ("green",),
+    "blue": ("blue",),
+    "alpha": ("alpha",),
+    "name": ("class_name", "classname", "class name", "category", "label", "class", "name"),
+}
+
+
+def _rat_column(fields: list[tuple[str, int]], role: str, usage: int) -> int | None:
+    for index, (_, field_usage) in enumerate(fields):
+        if field_usage == usage:
+            return index
+    aliases = _RAT_NAME_ALIASES[role]
+    for index, (name, _) in enumerate(fields):
+        if name.lower() in aliases:
+            return index
+    return None
+
+
+def _parse_pam_band(band) -> tuple[dict[int, tuple[int, int, int, int]] | None, dict[int, str] | None]:
+    colors = None
+    table = band.find(".//ColorTable")
+    if table is not None:
+        colors = {
+            index: (
+                int(entry.get("c1", 0)),
+                int(entry.get("c2", 0)),
+                int(entry.get("c3", 0)),
+                int(entry.get("c4", 255)),
+            )
+            for index, entry in enumerate(table.findall("Entry"))
+        } or None
+
+    labels = None
+    rat = band.find(".//GDALRasterAttributeTable")
+    if rat is not None:
+        fields = [
+            (defn.findtext("Name", ""), int(defn.findtext("Usage", "0")))
+            for defn in rat.findall("FieldDefn")
+        ]
+        value_col = _rat_column(fields, "value", _GFU_MINMAX)
+        name_col = _rat_column(fields, "name", _GFU_NAME)
+        rgb_cols = [
+            _rat_column(fields, role, usage)
+            for role, usage in (("red", _GFU_RED), ("green", _GFU_GREEN), ("blue", _GFU_BLUE))
+        ]
+        alpha_col = _rat_column(fields, "alpha", _GFU_ALPHA)
+        rat_colors: dict[int, tuple[int, int, int, int]] = {}
+        rat_labels: dict[int, str] = {}
+        for row_index, row in enumerate(rat.findall("Row")):
+            cells = [cell.text or "" for cell in row.findall("F")]
+            value = (
+                int(float(cells[value_col]))
+                if value_col is not None and value_col < len(cells)
+                else row_index
+            )
+            if name_col is not None and name_col < len(cells) and cells[name_col].strip():
+                rat_labels[value] = cells[name_col].strip()
+            if all(col is not None and col < len(cells) for col in rgb_cols):
+                r, g, b = (int(float(cells[col])) for col in rgb_cols)
+                a = (
+                    int(float(cells[alpha_col]))
+                    if alpha_col is not None and alpha_col < len(cells)
+                    else 255
+                )
+                rat_colors[value] = (r, g, b, a)
+        # An embedded ColorTable outranks RAT colors, matching GDAL itself.
+        if colors is None and rat_colors:
+            colors = rat_colors
+        if rat_labels:
+            labels = rat_labels
+    return colors, labels
+
+
+def read_pam_aux_xml(
+    raster_path: str,
+) -> tuple[dict[int, tuple[int, int, int, int]] | None, dict[int, str] | None]:
+    """Class colors/labels from GDAL's PAM sidecar (``<raster_path>.aux.xml``).
+
+    Covers what rasterio has no API for: raster attribute tables, plus the
+    ColorTable case when GDAL's own sidecar discovery is disabled. The
+    sidecar is optional metadata, so any read/parse problem yields
+    ``(None, None)`` rather than failing the raster load.
+    """
+    import os
+    import xml.etree.ElementTree as ET
+
+    path = raster_path + ".aux.xml"
+    try:
+        if not os.path.isfile(path):
+            return None, None
+        root = ET.parse(path).getroot()
+        bands = root.findall(".//PAMRasterBand")
+        band = next((b for b in bands if b.get("band") == "1"), bands[0] if bands else None)
+        if band is None:
+            return None, None
+        return _parse_pam_band(band)
+    except Exception:
+        return None, None
 
 
 def resolve_render_mode(

@@ -33,7 +33,7 @@ from geo_paths import (
     normalize_remote_path,
 )
 from optional_runtime import require
-from raster_categories import classify_categories, resolve_render_mode
+from raster_categories import classify_categories, read_pam_aux_xml, resolve_render_mode
 
 
 AUTO_OPTIMIZE_MAX_BYTES = int(
@@ -110,19 +110,23 @@ def _raw_url(origin: str, path: str) -> str:
 
 
 @contextlib.contextmanager
-def _gdal_env():
+def _gdal_env(locator: str):
     import rasterio
 
-    with rasterio.Env(
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        CPL_VSIL_CURL_USE_HEAD="YES",
-        GDAL_HTTP_MULTIRANGE="YES",
-        GDAL_HTTP_MAX_RETRY="2",
-        GDAL_HTTP_RETRY_DELAY="0.2",
-        CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
-        CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
-        GDAL_NUM_THREADS="ALL_CPUS",
-    ):
+    options = {
+        "CPL_VSIL_CURL_USE_HEAD": "YES",
+        "GDAL_HTTP_MULTIRANGE": "YES",
+        "GDAL_HTTP_MAX_RETRY": "2",
+        "GDAL_HTTP_RETRY_DELAY": "0.2",
+        "CPL_VSIL_CURL_CHUNK_SIZE": str(64 << 10),
+        "CPL_VSIL_CURL_CACHE_SIZE": str(16 << 20),
+        "GDAL_NUM_THREADS": "ALL_CPUS",
+    }
+    # Skipping directory listings only pays off on remote sources, and for
+    # local files it blocks GDAL's PAM .aux.xml sidecar discovery.
+    if is_vsi_path(locator) or is_http_url(locator):
+        options["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
+    with rasterio.Env(**options):
         yield
 
 
@@ -435,7 +439,7 @@ class RasterEngine:
         from rio_tiler.io import Reader
 
         locator = self.locator(source, target)
-        with _gdal_env(), rasterio.open(locator) as dataset:
+        with _gdal_env(locator), rasterio.open(locator) as dataset:
             if dataset.driver in {"OGR_VRT"}:
                 raise ValueError("not a raster dataset")
             if dataset.crs is None:
@@ -534,12 +538,16 @@ class RasterEngine:
                         sample_data = None
                 with contextlib.suppress(ValueError):
                     embedded_colormap = dataset.colormap(1)
+                aux_colors, aux_labels = read_pam_aux_xml(locator)
+                if not embedded_colormap and aux_colors:
+                    embedded_colormap = aux_colors
                 if sample_data is not None:
                     categories = classify_categories(
                         sample_data,
                         dataset.dtypes[0],
                         embedded_colormap=embedded_colormap,
                         overrides=opts.get("category_colors"),
+                        labels=aux_labels,
                     )
                 if categories:
                     category_colors = {c["value"]: tuple(c["color"]) for c in categories}
@@ -812,6 +820,7 @@ class RasterEngine:
 
         with self.lock:
             record = self.sources[source_id]
+            categorical = record.render_mode == "categorical"
             record.optimization.update(
                 status="running",
                 progress=5,
@@ -833,7 +842,7 @@ class RasterEngine:
             if record.preview_path is None:
                 preview_temporary.unlink(missing_ok=True)
                 preview_stage.unlink(missing_ok=True)
-                with _gdal_env(), rasterio.open(record.locator) as source:
+                with _gdal_env(record.locator), rasterio.open(record.locator) as source:
                     scale = max(
                         1.0,
                         max(source.width, source.height) / PREVIEW_MAX_SIZE,
@@ -851,23 +860,28 @@ class RasterEngine:
                         if record.nodata is not None
                         else record.inferred_nodata
                     )
+                    # Categorical class codes must never blend into bogus
+                    # intermediate values, at any stage of derivative build.
+                    preview_resampling = (
+                        Resampling.nearest if categorical else Resampling.average
+                    )
                     if record.inferred_nodata is not None:
                         with WarpedVRT(
                             source,
                             src_nodata=record.inferred_nodata,
                             nodata=record.inferred_nodata,
-                            resampling=Resampling.average,
+                            resampling=preview_resampling,
                         ) as overview_source:
                             data = overview_source.read(
                                 indexes,
                                 out_shape=(len(indexes), height, width),
-                                resampling=Resampling.average,
+                                resampling=preview_resampling,
                             )
                     else:
                         data = source.read(
                             indexes,
                             out_shape=(len(indexes), height, width),
-                            resampling=Resampling.average,
+                            resampling=preview_resampling,
                         )
                     with self.lock:
                         record.optimization.update(
@@ -900,7 +914,7 @@ class RasterEngine:
                     BLOCKSIZE=256,
                     COMPRESS="DEFLATE",
                     OVERVIEWS="AUTO",
-                    OVERVIEW_RESAMPLING="AVERAGE",
+                    OVERVIEW_RESAMPLING="NEAREST" if categorical else "AVERAGE",
                 )
                 os.replace(preview_temporary, preview_destination)
                 preview_stage.unlink(missing_ok=True)
@@ -938,7 +952,7 @@ class RasterEngine:
                 )
 
             temporary.unlink(missing_ok=True)
-            with _gdal_env():
+            with _gdal_env(record.locator):
                 rio_copy(
                     record.locator,
                     temporary,
@@ -947,7 +961,7 @@ class RasterEngine:
                     COMPRESS="DEFLATE",
                     BIGTIFF="IF_SAFER",
                     OVERVIEWS="AUTO",
-                    OVERVIEW_RESAMPLING="AVERAGE",
+                    OVERVIEW_RESAMPLING="NEAREST" if categorical else "AVERAGE",
                 )
             os.replace(temporary, destination)
             with rasterio.open(destination) as dataset:
@@ -1037,7 +1051,7 @@ class RasterEngine:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
-                with _gdal_env(), Reader(locator) as reader:
+                with _gdal_env(locator), Reader(locator) as reader:
                     image = reader.tile(
                         x,
                         y,
