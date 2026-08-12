@@ -22,8 +22,25 @@
 // It used to hard-code Ctrl and assert "isMac is false in this process, which
 // reports no navigator". That stopped being true — bun ≥1.3 exposes a
 // `navigator` with a real `platform` — and the whole file went red on macOS
-// while testing nothing new. Reading the detection instead of predicting it is
-// what makes it run on either platform.
+// while testing nothing new.
+//
+// TWO LIMITS OF READING THE DETECTION, both of them real and neither of them
+// fixed by this file. Say them out loud so nobody reads more assurance into a
+// green run than is there:
+//
+//   1. NOTHING HERE ASSERTS THAT THE DETECTION IS RIGHT. `isMac` is the same
+//      value the matcher used, so if detectMac() regressed to always-false the
+//      matcher and these tests would drift together and stay green while every
+//      Mac user's ⌘ chords quietly stopped working. What is tested is that the
+//      table is CONSISTENT with the detected platform, not that the platform was
+//      detected correctly.
+//   2. EACH SPLIT IS ONLY HALF-COVERED ON ANY ONE MACHINE. A run on macOS
+//      exercises the mac side of `isMac ? … : …` and reduces the other side to
+//      "matchChord returned null" — which is also its answer for a chord it has
+//      never heard of, so the non-mac assertion can pass with the branch
+//      deleted. shortcut-chord-nonmac.test.ts closes that by running the matcher
+//      in a child process with a Linux `navigator`; between the two files both
+//      halves are exercised whichever machine runs them.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -159,6 +176,13 @@ test("undo and redo are the standard three chords", () => {
   expect(matchChord(mod("Z", { shift: true }), listing)).toBe("redo");
   // Ctrl+Y is the Windows redo. There is no Cmd+Y redo on macOS (⌘Y is
   // History/Quick Look), so it must not answer there.
+  //
+  // ON A MAC THIS ASSERTION IS WEAK, by limit 2 in the header: a literal Ctrl is
+  // not the primary modifier there, so the event never reaches the Y branch and
+  // the null comes from the final fallthrough — the branch could be deleted and
+  // this would still pass. The load-bearing test for Ctrl+Y lives in
+  // shortcut-chord-nonmac.test.ts. Kept anyway, because on a Windows/Linux
+  // machine it is the direct assertion and there it does fail on a break.
   expect(matchChord(ev("y", { ctrl: true }), listing)).toBe(isMac ? null : "redo");
 });
 
@@ -186,6 +210,9 @@ test("A FOCUSED TEXT FIELD KEEPS ITS NATIVE UNDO", () => {
   // test that has to widen with it.
   expect(matchChord(mod("z"), searching)).toBeNull();
   expect(matchChord(mod("Z", { shift: true }), searching)).toBeNull();
+  // Weak on a Mac for the same reason as the Ctrl+Y assertion above — a literal
+  // Ctrl never reaches the branch, so this passes even with the guard removed.
+  // shortcut-chord-nonmac.test.ts asserts it where it can fail.
   expect(matchChord(ev("y", { ctrl: true }), searching)).toBeNull();
 });
 
