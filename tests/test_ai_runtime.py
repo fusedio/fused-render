@@ -300,6 +300,33 @@ def test_every_suggested_model_names_a_capability_with_a_runner():
         assert any(r.capability == capability for r in registry.all_runners()), capability
 
 
+def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
+    """Wheels only — a VCS or URL dependency is a source build, and a source
+    build is a build backend running in an interpreter uv creates for it.
+
+    `diffusers` tracked git while FLUX.2 lived only on main, and inside the
+    packaged macOS app every one of those builds died: the build interpreter
+    inherited the bundle's `PYTHONHOME`, imported the app's frozen
+    `_distutils_hack` in place of the shipped one, and failed with
+    `No module named 'jaraco.text'` (D266). `_env_install_worker` scrubs the env
+    now, so this is not the only thing standing between a user and that bug —
+    but a runner environment is built on someone's laptop the first time they
+    press Download, and compiling from source there is a cost with no upside
+    when a wheel exists. If a runner ever genuinely needs one, this test is the
+    conversation.
+    """
+    import tomllib
+
+    for runner in registry.all_runners():
+        manifest = os.path.join(runner.folder, "pyproject.toml")
+        assert os.path.isfile(manifest), runner.code
+        with open(manifest, "rb") as handle:
+            declared = tomllib.load(handle)["project"]["dependencies"]
+        for dependency in declared:
+            assert " @ " not in dependency, (
+                f"{runner.code} declares a source build: {dependency}")
+
+
 # -- the supervisor -------------------------------------------------------------
 
 
@@ -939,6 +966,69 @@ def test_an_image_waits_for_its_model_rather_than_failing_fast(client, fake_imag
     row = _wait_job(started["jobId"], timeout=40)
     assert row["state"] == "done", row
     assert os.path.isfile(started["path"])
+
+
+def test_an_image_whose_model_cannot_load_reports_WHY(client, fake_image_runner,
+                                                       monkeypatch):
+    """The bug a user hit trying to render through FLUX (D266).
+
+    Their runner environment could not build, and the `sys:ai-model:` row said
+    exactly why — uv's own text, verbatim. The IMAGE row they were watching said
+    "was unloaded before it could be used", which reads like a race worth
+    retrying, so they retried five times and re-ran the doomed build five times.
+
+    The cause was a waiter reading the wrong thing: `_bring_up` drops a failed
+    worker from `_workers` inside the same locked block that records the error,
+    so a waiter polling the TABLE can only ever find the model gone and never
+    the reason. Both rows have to be able to say the same failure.
+    """
+    def unbuildable(runner, worker, job):
+        raise RuntimeError(
+            "Failed to build the environment: No module named 'jaraco.text'")
+
+    monkeypatch.setattr(supervisor, "_ensure_venv", unbuildable)
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+
+    row = _wait_job(started["jobId"], timeout=40)
+    assert row["state"] == "error", row
+    assert "jaraco.text" in row["message"], row["message"]
+    assert "unloaded" not in row["message"], row["message"]
+    # And the model's own row carries it too — two rows, one truth (D261).
+    model_row = _row(supervisor.job_id_for(catalog.default_for(registry.IMAGE_GENERATION)))
+    assert model_row["state"] == "error"
+    assert "jaraco.text" in model_row["message"]
+
+
+def test_a_model_taken_away_mid_wait_still_says_it_was_unloaded(fake_image_runner,
+                                                                monkeypatch):
+    """The other half: "unloaded" is a real outcome and must survive the fix.
+
+    A bring-up that never errored and is simply GONE from the table — evicted by
+    another model, unloaded from the AI Models page — has no failure message to
+    report, and saying it was taken away is the honest answer.
+
+    Driven with `_bring_up` stubbed out, so the only thing that touches the
+    table is this test: the worker is removed the moment its row is opened, and
+    the wait's first look finds it missing.
+    """
+    monkeypatch.setattr(supervisor, "_bring_up", lambda runner, worker, job: None)
+    real_report = supervisor._report
+    taken = {"yet": False}
+
+    def report_then_take(job, **fields):
+        real_report(job, **fields)
+        if not taken["yet"]:
+            taken["yet"] = True
+            with supervisor._lock:
+                supervisor._workers.pop(registry.IMAGE_GENERATION, None)
+
+    monkeypatch.setattr(supervisor, "_report", report_then_take)
+
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor._wait_ready("org/paints", registry.IMAGE_GENERATION,
+                               supervisor.IMAGE_JOB_PREFIX + "waiter")
+    assert "unloaded before it could be used" in str(caught.value)
 
 
 # -- history and cancel, the two things a chat client needs ---------------------

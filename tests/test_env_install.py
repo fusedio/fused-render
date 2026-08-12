@@ -206,6 +206,67 @@ def test_the_stripped_env_vars_are_read_off_fused_not_guessed():
     assert set(engine._stripped_env_vars()) == set(python_compute._STRIPPED_ENV_VARS)
 
 
+def _install_worker():
+    """`_env_install_worker` as a MODULE, imported by path.
+
+    It is a script that must not import `fused_render` (D152), so it is not
+    reachable as `fused_render._env_install_worker` in the way the rest of the
+    package is — importing it by file is how a test reads it without changing
+    that rule.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "fused_render" / "_env_install_worker.py"
+    spec = importlib.util.spec_from_file_location("_env_install_worker_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_uv_child_does_not_inherit_the_apps_python_environment(monkeypatch):
+    """uv's own children are pythons, and PYTHONHOME reaches them (D266).
+
+    uv is a native binary that does not care what PYTHON* says — but a
+    dependency it has to BUILD is compiled by a build backend running in an
+    interpreter uv creates, and that interpreter inherits this environment.
+    Inside the macOS .app, PYTHONHOME points into the bundle, so those build
+    interpreters loaded the app's frozen `_distutils_hack` over the setuptools
+    doing the build and every source build failed with
+    `No module named 'jaraco.text'`. The user-visible symptom was an AI runner
+    whose environment could not be built at all.
+    """
+    worker = _install_worker()
+    poison = ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP",
+              "VIRTUAL_ENV")
+    for name in poison:
+        monkeypatch.setenv(name, "/Applications/FusedRender.app/Contents/Resources")
+    monkeypatch.setenv("KEEP_ME", "yes")
+    # Not every PYTHON* var redirects an interpreter, and the ones that do not
+    # are none of this function's business.
+    monkeypatch.setenv("PYTHONUNBUFFERED", "1")
+
+    env = worker._uv_env(UV_CACHE_DIR="/cache")
+
+    for name in poison:
+        assert name not in env, name
+    # Only the poison goes: uv needs PATH, HOME, proxy settings and the rest.
+    assert env["KEEP_ME"] == "yes"
+    assert env["PYTHONUNBUFFERED"] == "1"
+    assert env["UV_CACHE_DIR"] == "/cache"
+
+
+def test_the_install_worker_strips_everything_the_backend_does():
+    """The worker restates the list rather than importing it, so a test pairs them.
+
+    It cannot import `fused_render` (D152). A SUPERSET, not equality: the worker
+    also drops `PYTHONEXECUTABLE` (the macOS framework build sets it), which the
+    backend's own list does not carry. What must never happen is the worker
+    missing something the backend knows is dangerous.
+    """
+    worker = _install_worker()
+    assert set(worker._STRIPPED_ENV_VARS) >= set(engine._stripped_env_vars())
+
+
 # --- the precedence `run_python`'s interpreter fast path rests on --------------
 #
 # `run_python` skips the venv entirely when the app interpreter already satisfies

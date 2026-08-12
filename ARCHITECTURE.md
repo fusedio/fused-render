@@ -312,7 +312,11 @@ A runner is a folder with a `pyproject.toml` and a `worker.py`; its venv is buil
 by `envinstall` (PY-18), not by anything new, and the worker speaks four routes
 (`/health`, `/generate`, `/cancel`, `/quit`) on an ephemeral port the child
 publishes, authenticated with a per-worker token. Nothing under `fused_render/`
-imports mlx or torch — they are named only in a runner's declaration.
+imports mlx or torch — they are named only in a runner's declaration. Those
+declarations are **wheels only** (SPEC AI-2a, D266): a source build runs a build
+backend in an interpreter uv creates, and `_env_install_worker._uv_env` scrubs
+`PYTHON*`/`VIRTUAL_ENV` off every uv call so that interpreter cannot inherit the
+macOS bundle's `PYTHONHOME`. A test enforces both halves.
 
 `POST /api/ai` routes on the model id: one containing a **slash** is a Hub repo id
 and goes to the local runner, one without is a Claude alias and goes to the CLI as

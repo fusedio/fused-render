@@ -5711,6 +5711,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   Windows wheel — and it is built by the existing detached `uv sync` loader
   (PY-18), with the same progress record and the same verbatim uv errors any
   declaring folder gets. No second install mechanism exists for AI.
+- **AI-2a** **A runner declares WHEELS, and uv's children do not inherit this
+  process's Python environment** (D266). Two halves of one failure. A dependency
+  uv cannot download as a wheel is compiled by a build backend in an interpreter
+  uv creates — and that interpreter inherits the installer's environment, which
+  inside the macOS .app carries py2app's `PYTHONHOME` pointing into the bundle.
+  Build interpreters therefore loaded the app's own frozen `_distutils_hack`
+  over the setuptools doing the build, and every source build in the packaged
+  app died on `No module named 'jaraco.text'` — reported to the user as a runner
+  environment that would not build, on the one runner that had a `git+` pin.
+  `_env_install_worker` scrubs `PYTHON*`/`VIRTUAL_ENV` from every uv invocation
+  now, the same names every other child spawn in this app already strips. The
+  wheels-only rule stands on its own merit beside it: a runner environment is
+  built on a user's laptop the first time they press Download, and compiling
+  from source there is minutes of their battery for something a release already
+  answers. Held by a test over every runner's declaration.
 - **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
   (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
   `POST /quit`. Adding a capability is writing a worker, not extending the
@@ -5952,6 +5967,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   shared id would have a second render overwrite the first's progress. The PNG
   is read back through `/api/fs/raw` like every other local file, and
   `fused.ai.image()` hands the page a ready-made URL for it.
+- **AI-9c** **Both rows say the same failure** (D266). Two rows, two truths is
+  the rule; two rows where one of them lies is not. A waiting render watches the
+  worker RECORD it started, never the `_workers` table — a failed bring-up drops
+  itself from that table inside the same locked block that stamps the error, so
+  a waiter polling the table finds only that the model is gone and reports "was
+  unloaded before it could be used" for a load that failed with a real message.
+  That message is what a user reads and retries against, and it made a permanent
+  environment failure look like a transient race. "Unloaded" survives as the
+  answer for what it actually describes: a record that never errored and was
+  taken away — evicted by another model, or unloaded from the AI Models page.
 - **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
   A runner is still a folder, but the half that is the SUPERVISOR'S contract —
   the auth header's name, the status file's shape, the state vocabulary it

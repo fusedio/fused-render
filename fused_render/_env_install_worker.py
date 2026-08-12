@@ -115,6 +115,49 @@ _SIDECAR_NAME = ".fused-source.json"
 # `_resolve_script_python` probes FOR and what the bootstrap round downloads.
 _PINNED_PYTHON_VERSION = "3.12"
 
+#: Stripped from every `uv` invocation below. uv is a native binary and does not
+#: care, but the PYTHON PROCESSES IT STARTS do: a source-built dependency is
+#: compiled by a build backend running in an interpreter uv creates, and that
+#: interpreter inherits this process's environment.
+#:
+#: Inside the macOS .app, py2app's launcher exports `PYTHONHOME=<App>/Contents/
+#: Resources`, so those build interpreters resolved their stdlib and site
+#: out of the BUNDLE instead of out of the build environment. The bundle still
+#: ships setuptools' `_distutils_hack` shim (py2app collects it; `build_dmg.sh`
+#: prunes setuptools itself and used to leave the shim behind), so a fresh
+#: setuptools' `import _distutils_hack.override` got the app's stale frozen copy,
+#: which hijacked the distutils bootstrap and died with
+#: `ModuleNotFoundError: No module named 'jaraco.text'`. Every source build in
+#: the packaged app failed that way — reported to the user as a runner
+#: environment that "did not build" (D266).
+#:
+#: The union of what the two child-environment scrubbers in the package already
+#: strip — `engine._child_env` (`PYTHONPATH`, `PYTHONHOME`, `VIRTUAL_ENV`,
+#: `PYTHONSTARTUP`, read off `fused`'s own `python_compute`) and
+#: `supervisor._child_env` (those minus `VIRTUAL_ENV`, plus `PYTHONEXECUTABLE`,
+#: which the macOS framework build sets). A union rather than a pick: each name
+#: is on one of those lists because it redirects an interpreter somewhere it
+#: should not go, and uv's children are interpreters.
+#:
+#: `VIRTUAL_ENV` was already being popped for `uv sync` on its own account — uv
+#: warns about it and can target the server's own venv — which is now this one
+#: line's job for every uv call rather than that one's.
+#:
+#: RESTATED rather than imported because this worker must not import
+#: `fused_render` at all (D152 — a detached child that bootstraps the package is
+#: a failure mode that already shipped once). A test holds the two in step.
+_STRIPPED_ENV_VARS = ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE",
+                      "PYTHONSTARTUP", "VIRTUAL_ENV")
+
+
+def _uv_env(**overrides):
+    """This process's environment, minus what would poison uv's child pythons."""
+    env = dict(os.environ)
+    for name in _STRIPPED_ENV_VARS:
+        env.pop(name, None)
+    env.update(overrides)
+    return env
+
 
 def _write(progress_dir, stage, pct, detail="", done=False, error=None):
     # Unique temp name, not a shared `progress.json.tmp`: the server writes this
@@ -166,7 +209,7 @@ def _acquire_python(version):
     # handle and SIGSEGVs before exec — a bare returncode -11 with no stderr. `uv` is
     # dir-qualified here (it comes from `shutil.which`), which posix_spawn also
     # requires; a bare command name forks despite the flag.
-    proc = subprocess.run([uv, "python", "install", version],
+    proc = subprocess.run([uv, "python", "install", version], env=_uv_env(),
                           capture_output=True, text=True, close_fds=False)
     if proc.returncode != 0:
         # Verbatim, exactly like the requirements install below: uv's own text names
@@ -281,10 +324,11 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     # which is the same answer PY-16 already gives it.
     cmd = [uv, "sync", "--no-default-groups", "--python", python_executable]
 
-    env = dict(os.environ)
-    env["UV_PROJECT_ENVIRONMENT"] = venv_dir
-    env["UV_CACHE_DIR"] = uv_cache_dir
-    env.pop("VIRTUAL_ENV", None)  # else uv warns and may target the server's own venv
+    # `_uv_env` scrubs PYTHON* and VIRTUAL_ENV: without the first, every
+    # dependency uv has to BUILD rather than download as a wheel failed inside
+    # the packaged macOS app (D266); without the second, uv warns and can target
+    # the server's own venv.
+    env = _uv_env(UV_PROJECT_ENVIRONMENT=venv_dir, UV_CACHE_DIR=uv_cache_dir)
 
     os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
     os.makedirs(uv_cache_dir, exist_ok=True)
