@@ -19,6 +19,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -84,7 +85,12 @@ const METHODS = [
 """
 
 
-def _node(call: str, prelude: str = "") -> object:
+def _node(call: str, prelude: str = "") -> Any:
+    """Run the block under node and parse what it printed.
+
+    `Any`, not `object`: every caller subscripts the parsed JSON, and the shape
+    differs per test — the alternative is a cast in each one, which says nothing.
+    """
     if not shutil.which("node"):
         pytest.skip("node is needed to run the index block")
     script = _PRELUDE + prelude + BLOCK + "\n" + call
