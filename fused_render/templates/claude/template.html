@@ -52,6 +52,10 @@
     --shadow: rgba(0, 0, 0, .4);
     --scrollbar: #3a3d45;
     --handle-hover: #4a4d57;
+    /* Caret for the composer's select pills. A data URI can't read
+       currentColor, so the stroke bakes in this theme's --dim — keep the two
+       in sync when either changes. */
+    --pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%239a9fa9" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -83,6 +87,7 @@
     --shadow: rgba(0, 0, 0, .10);
     --scrollbar: #cdd0d6;
     --handle-hover: #a8adb6;
+    --pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%2361656c" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -186,6 +191,13 @@
     cursor: pointer;
     transition: color .12s;
   }
+  /* The switch is HIDDEN, not disabled, when there is nothing to annotate — the
+     sidebar layout's case, where the target is the host's content pane and the
+     host may be showing something unmarked (annPollTarget). Same rule the narrow
+     layout follows for the controls of a hidden pane: absent beats dead. Needs a
+     declaration of its own because `display: flex` above outranks the UA's
+     `[hidden] { display: none }`, exactly as #leftbar[hidden] does. */
+  #annbtn[hidden] { display: none; }
   #annbtn:hover { color: var(--fg); }
   #annbtn.on { color: var(--fg); }
   /* Where the row's shrinking actually happens — on the TEXT, not on the track,
@@ -365,6 +377,13 @@
      auto-margin owner — is out of the document, so the kebab, the one control
      the teardown keeps, anchors the right-hand end itself. */
   body.nopane #kebab { margin-left: auto; }
+  /* Unless the switch is still there and still usable, which is the sidebar
+     layout (chat_only): it keeps its auto margin, and TWO of them would split
+     the row's free space between them and float the switch into the middle
+     instead of parking it at the end. `:not([hidden])` and not a bare `#annbtn`,
+     because a hidden switch takes no space and the kebab has to slide back to
+     the end while it is away. */
+  body.nopane #annbtn:not([hidden]) ~ #kebab { margin-left: 0; }
   #kebabbtn {
     display: flex;
     align-items: center;
@@ -482,6 +501,36 @@
     border-radius: 12px;
     padding: 10px;
     box-shadow: 0 6px 24px var(--shadow);
+  }
+  /* The note composer's FALLBACK seat in the sidebar layout, and only that.
+     The composer describes an element in another column of the HOST's window,
+     so where it belongs is beside THAT element — and an iframe cannot draw
+     outside its own bounds, so annPlacePop PORTALS the node into the target
+     document's injected overlay and places it at the click there. None of these
+     rules apply on that path: the shadow root the composer moves into has never
+     heard of this stylesheet and carries its own copy of the composer's looks
+     (ANN_LAYER_CSS).
+
+     What is left for this rule is the case with no point to aim at — a chip
+     opened for a note whose element no longer resolves, or a host showing
+     nothing marked at all. The composer then stays HERE, parked directly under
+     the #anntools strip (the 51px) and spanning the column: a text box the
+     reader can still type in, rather than one placed at a coordinate we do not
+     have.
+
+     `fixed`, not absolute: this document IS the sidebar column, so the frame's
+     viewport is the column and no positioned ancestor has to be invented for
+     it. That also keeps it clear of #chat's `overflow: hidden`, which would
+     otherwise clip a popover placed at the very top of the column. Above
+     #kebabpop's 30 — it is a text field the reader is typing in, and nothing in
+     the strip may land on top of it. */
+  #annpop.sidebar {
+    position: fixed;
+    z-index: 40;
+    top: 51px;
+    left: 12px;
+    right: 12px;
+    width: auto;
   }
   #annpop textarea {
     width: 100%;
@@ -1342,7 +1391,7 @@
   }
   .composer-row .spacer { flex: 1; }
   .pill {
-    background: transparent;
+    background-color: transparent;
     border: 1px solid transparent;
     border-radius: 999px;
     color: var(--dim);
@@ -1353,7 +1402,28 @@
     outline: none;
     -webkit-appearance: none;
     appearance: none;
-    transition: background .12s, color .12s, filter .12s;
+    transition: background-color .12s, color .12s, filter .12s;
+  }
+  /* Select pills only (not pressable button pills): a caret so they read as
+     dropdowns at rest, and a JS-fitted width (see fitSelect) because an
+     appearance:none select otherwise sizes to its WIDEST option — "fable"
+     rendered inside a "sonnet"-wide pill, leaving dead space that made the
+     row's gaps look uneven. background-color (not the background shorthand)
+     everywhere on pills, or the hover repaint erases this caret. */
+  select.pill {
+    background-image: var(--pill-caret);
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 8px 8px;
+    padding-right: 22px;
+    text-align: left;
+  }
+  /* outline:none above kills the UA focus ring; keyboard users still need a
+     receipt, mouse users still shouldn't get one on click. */
+  .pill:focus-visible {
+    border-color: var(--border-strong);
+    background-color: var(--surface-2);
+    color: var(--fg);
   }
   /* THE ONE RULE about hover and an active state, shared with #annbtn in the left
      pane's banner: a neutral hover never applies to a control that is switched on,
@@ -1366,7 +1436,7 @@
      the user is deciding whether to click. Relying on rule order for that is one
      reshuffle away from the bug coming back, and the next pressable pill in this
      row inherits the fix rather than rediscovering it. */
-  .pill:hover:not([aria-pressed="true"]) { background: var(--surface-2); color: var(--fg); }
+  .pill:hover:not([aria-pressed="true"]) { background-color: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
   .pill option { background: var(--bg); color: var(--fg); }
   .send {
@@ -1382,6 +1452,9 @@
     padding: 0;
     cursor: pointer;
     flex-shrink: 0;
+    /* Redundant while the spacer is on the same line; keeps the button pinned
+       right when a narrow pane wraps it onto its own line. */
+    margin-left: auto;
     transition: filter .12s, transform .12s, opacity .12s;
   }
   .send:hover { filter: brightness(1.1); transform: translateY(-1px); }
@@ -2098,9 +2171,12 @@
           <textarea id="box" rows="1" placeholder="Reply to Claude…" spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
-            <select id="model" class="pill model-sel" title="Model"></select>
-            <select id="effort" class="pill effort-sel" title="Effort"></select>
-            <select id="perm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <!-- aria-label, not title: the OS tooltip a title attr produces reads as
+                 unpolished chrome next to the pills, and the caret + visible value
+                 already say what each pill is. Screen readers keep the name. -->
+            <select id="model" class="pill model-sel" aria-label="Model"></select>
+            <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
+            <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -2136,9 +2212,9 @@
           <textarea id="homebox" rows="2" placeholder="Ask Claude…" spellcheck="false"
                     data-gramm="false" data-gramm_editor="false" data-enable-grammarly="false"></textarea>
           <div class="composer-row">
-            <select id="hmodel" class="pill model-sel" title="Model"></select>
-            <select id="heffort" class="pill effort-sel" title="Effort"></select>
-            <select id="hperm" class="pill perm-sel" title="How much Claude may do without asking"></select>
+            <select id="hmodel" class="pill model-sel" aria-label="Model"></select>
+            <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
+            <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -2290,8 +2366,21 @@ const BASENAME = FILE.split("/").pop();
 // preview of the same target (the explorer's `_side` split — Preview.tsx and
 // PreviewSidebar.tsx), so our own left half would be that file previewed twice
 // in one window, the inner copy a few hundred pixels wide. The host says so with
-// `chat_only=1`, and we take the pane away: no second preview, no divider, no
-// annotate switch, and the chat column runs full width.
+// `chat_only=1`, and we take the pane away: no second preview, no divider, and
+// the chat column runs full width.
+//
+// The ANNOTATE SWITCH is the one thing that does not go with the pane, and it
+// used to: the pane was what a note pointed at, so removing the pane removed the
+// feature, and #456 shipped a sidebar from which nothing could be annotated at
+// all. The switch is kept and RETARGETED instead — at the host's own content
+// pane, the middle column, which is the preview this chat is beside and the one
+// the reader is actually looking at. That target is found by mark, not by
+// arrangement: the shell stamps `data-fused-annotate-target` on the content
+// iframe it is showing (Preview.tsx) and we read it back through
+// `window.parent.document`, same-origin, no postMessage (D3/D4). A host that
+// marks nothing — a foreign embedder, a cross-origin parent, or our own shell
+// on a surface with no content pane — leaves the switch hidden and this page
+// degrades to exactly the chat it was. See the annotate target seam below.
 //
 // A HOST fact, not view state, which is why it is read once into a const and
 // never written: nothing in here toggles it, and someone who reaches this URL
@@ -2628,6 +2717,16 @@ function outlineNode(el, depth, budget, doc) {
   }
   out.children = [];
   for (const kid of kids) {
+    // Our own pin layer is not part of the app. In the sidebar layout it is
+    // injected into the app's own <body> (annInjectLayer), so unlike every other
+    // piece of this UI it CAN be reached from here — and an element describing
+    // the reader's annotations, presented to the agent as part of the page it is
+    // editing, is a lie about the source. Skipped without spending budget: it is
+    // one empty div, and its shadow tree is not walkable from here anyway.
+    // The attribute is spelled out rather than read from ANN_LAYER_MARK because
+    // that const is declared a thousand lines below this one, and the walk has
+    // no business depending on the annotation section having been reached.
+    if (kid.hasAttribute && kid.hasAttribute("data-fused-annotate")) continue;
     if (budget.left <= 0) {
       out.truncated = (kids.length - out.children.length) + " sibling(s) not shown";
       break;
@@ -2999,7 +3098,7 @@ const leftPop = document.getElementById("leftmodepop");     // its listbox
 // The shell's `modeTitle` (lib/mode-name.ts), reimplemented in four lines: a
 // template is a standalone document and cannot import the shell's TS. Worth the
 // duplication because the picker's labels must read the same as the explorer's
-// mode switcher does for the same file — "Rendered" for the `_render` sentinel,
+// mode switcher does for the same file — "Render" for the `_render` sentinel,
 // and a capitalized folder name otherwise, since a folder name is chosen for the
 // filesystem, not for a label. (`_listing` never appears in a FILE's entries and
 // the two chat modes are already filtered out, so they are not here.)
@@ -3011,7 +3110,7 @@ const leftPop = document.getElementById("leftmodepop");     // its listbox
 // not a display string. A label that disagreed with the mode switcher one strip
 // away would read as two different views.
 function paneModeLabel(mode) {
-  if (mode === "_render") return "Rendered";
+  if (mode === "_render") return "Render";
   // No `history` row: the mode key IS the word, so the capitalize below
   // already produces "History" — the same string the shell's humanizer gives
   // it. It earned an explicit row only while the key was spelled `versions`.
@@ -3262,6 +3361,15 @@ function applyLeftMode() {
 // BOOT already did on the strength of a param, before anyone knew there was no
 // pane. Both were live bugs found by opening a folder URL that still carried an
 // old bookmark's `annotations` and `paneview=preview`.
+//
+// CHAT_ONLY takes this same path (paneURL answers `null` for every kind there)
+// and it is the one caller for which "no pane of ours" is NOT "nothing to
+// annotate": the host has a pane, it is marked, and the notes point at it. So
+// the three annotation steps below are the ones that ask first — the list is
+// kept, the mode is left as the boot default found it, and the switch stays in
+// the strip. Everything else — the column, the divider, the picker, the view
+// toggle, the narrow view classes — goes exactly as it does for a folder,
+// because all of that is about OUR layout and our layout really is gone.
 function enterNoPane() {
   // 1. Drop the notes and repaint, while `noPane` is still false so renderAnn
   //    actually runs. In-memory only: `pending` is what composeOutgoing reads,
@@ -3271,13 +3379,21 @@ function enterNoPane() {
   //    later `noPane` early-return would have frozen on screen. A chip showing a
   //    note that cannot be sent is a worse lie than no chip. The param itself is
   //    left alone (see above): this drops the list, it does not rewrite the URL.
-  annotations = [];
+  //
+  //    Not in CHAT_ONLY: there the notes are anchored to the HOST's pane, which
+  //    is still on screen, and `annotations` is the shell URL's own param (this
+  //    page sets no boundary, D46/D72) — the very list the sidebar was reopened
+  //    to carry on with. Emptying it would silently discard a review because we
+  //    took OUR column away.
+  if (!CHAT_ONLY) annotations = [];
   renderAnn();
   noPane = true;
   // 2. Through annSetMode, the one door in and out of the mode: the boot default
   //    already armed it. With `noPane` set the call is a plain disarm that writes
-  //    no param (see there).
-  annSetMode(false);
+  //    no param (see there). CHAT_ONLY skips it for the same reason as step 1 —
+  //    annSetMode's own guard is `annCapable()`, not `noPane`, so a disarm here
+  //    would be a real disarm of a mode that still has a target.
+  if (!CHAT_ONLY) annSetMode(false);
   // 3. And drop the narrow layout's view class, which boot stamped from
   //    `paneview`. It has to go rather than be left inert: `view-preview`
   //    collapses #chat to its #anntools strip inside the 800px block, and with
@@ -3289,9 +3405,42 @@ function enterNoPane() {
   //    way back to the chat list; the home view hides it by CSS, same as ever)
   //    and the kebab. The `nopane` class hands the kebab the row's auto margin
   //    — #annbtn, the usual owner, is about to leave the document — so the ⋮
-  //    keeps the right-hand seat it has in every other layout.
+  //    keeps the right-hand seat it has in every other layout. (In CHAT_ONLY the
+  //    switch stays and takes its margin back; the stylesheet says so, scoped to
+  //    a switch that is actually THERE and not merely hidden.)
   document.body.classList.add("nopane");
+  // 5. Rescue the note composer BEFORE the column it lives in is removed — it
+  //    is declared inside #leftview, and the loop below takes #leftview's
+  //    ancestor out of the document.
+  //
+  //    #chat is where it comes to REST, not where it works. The composer
+  //    describes an element in the host's pane, so when it opens it is portaled
+  //    into that pane's document and placed at the click (annPortalPop), and
+  //    annCloseComposer brings it back here. This move is what gives it a seat
+  //    to come back to, and it doubles as the fallback for the one case with no
+  //    point to aim at — a note whose element no longer resolves — which the
+  //    `sidebar` class positions under the #anntools strip. See the stylesheet.
+  //
+  //    The close FIRST, because this teardown is not the first thing that can
+  //    happen to the composer. paneURL awaits a fetch before it answers `null`,
+  //    and the poll that injects the annotation layer and wires the pane's click
+  //    handler ran at the end of the script — so a reader who clicks the pane in
+  //    that gap has an open composer, portaled, before this line is reached.
+  //    Yanking a live one across documents with `appendChild` would leave it
+  //    visible in the chat column at a coordinate that meant something in
+  //    someone else's viewport. Closing it is the same close Escape does, and it
+  //    is what puts the node back in this document so the move below is a move
+  //    within one document again.
+  if (CHAT_ONLY) {
+    annCloseComposer();
+    annPop.classList.add("sidebar");
+    document.getElementById("chat").appendChild(annPop);
+  }
   for (const id of ["annbtn", "leftmode", "viewbtn", "left", "divider"]) {
+    // The switch is the exception CHAT_ONLY buys: it acts on the host's pane
+    // now, which this layout still has. Everything else in this list acts on
+    // the column being removed.
+    if (CHAT_ONLY && id === "annbtn") continue;
     const el = document.getElementById(id);
     if (el) el.remove();
   }
@@ -3392,18 +3541,329 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
 // screenshots or raw coordinates, so Claude can map each note straight back
 // to the app's HTML source. Lifecycle: pending → `sent` (stamped when a
 // message carries it; pin dims) → gone (auto-resolved when that run finishes
-// cleanly). The list is persisted in the pane-local `annotations` param so a
-// reload mid-review keeps the pins; it never rides the shell URL.
+// cleanly). The list is persisted in the `annotations` param so a reload
+// mid-review keeps the pins — which, since this page sets no param boundary,
+// means the URL the runtime writes to: this frame's own when it is the page,
+// the SHELL's when it is framed (D46/D72). Framed is the case that matters:
+// the sidebar and the pane it annotates then share one URL and one review.
 const annBtn = document.getElementById("annbtn");
-const annPins = document.getElementById("annpins");
-const annHl = document.getElementById("annhl");
 const annPop = document.getElementById("annpop");
 const annTa = annPop.querySelector("textarea");
 const annChipsEls = [
   document.getElementById("annchips-home"),
   document.getElementById("annchips-chat"),
 ];
-const annFrame = document.getElementById("leftframe");
+
+// ── the annotate target: WHICH document a note points at ──────────────────
+// Bindings rather than constants, and that is the entire retargeting
+// mechanism: everything downstream (renderAnn, annPlaceHl, annSetMode, the
+// capture, the anchor extraction) names them and never asks which layout it is
+// in. Standalone and full-split they hold exactly what they always held — our
+// own frame and the overlay nodes sitting over it in #leftview — so that path
+// is unchanged by construction. CHAT_ONLY repoints them (annSyncTarget).
+//
+//   annFrame     the iframe whose document is annotated
+//   annPins      the box the pins are appended to
+//   annHl        the hover/selection ring
+//   annStageEl   the box pin coordinates are measured against — i.e. the thing
+//                whose clientWidth/clientHeight IS the framed viewport
+//   annLayerRoot the shadow root the composer is portaled into, hosted only;
+//                null in the split layout, where #annpop is already over the
+//                pane and has nowhere to go — which is also what makes the
+//                portal unreachable there without a second flag
+//
+// `annFrame` may be NULL in CHAT_ONLY (no marked frame yet, or none at all), so
+// every read of it is guarded. In the split layout it is the element itself and
+// can only ever be detached, never null — the no-pane path removes it, and
+// appWindow's `isConnected` check is what notices.
+const annOwnFrame = document.getElementById("leftframe");
+// Resolved at declaration, not at the first poll: the boot arm (annSetMode, way
+// below) asks `annCapable()` before either of those runs, and answering it with
+// OUR frame in the hosted layout would arm the mode over a column that is about
+// to be removed. The overlay bindings below are left pointing at the split
+// layout's nodes for the same few statements — nothing reads them until the boot
+// renderAnn, which syncs first.
+let annFrame = CHAT_ONLY ? annMarkedFrame() : annOwnFrame;
+let annPins = document.getElementById("annpins");
+let annHl = document.getElementById("annhl");
+let annStageEl = document.getElementById("leftview");
+let annLayerRoot = null;
+// The re-render observer on the target's document, declared UP HERE with the
+// rest of the target's state rather than beside the wiring that installs it: in
+// the hosted layout the first wiring happens during the boot renderAnn (which
+// syncs the target, which adopts the frame, which wires it) — several hundred
+// lines before the wiring section — and a `let` read before its declaration is
+// a temporal-dead-zone ReferenceError, not an undefined.
+let annObserver = null;
+// And the document it is pointed at, which is what makes annObserveTarget cheap
+// enough to ask on every sync.
+let annObservedDoc = null;
+
+// Scroll and mutation storms coalesce to one re-render per frame. One queue for
+// every document, because renderAnn repaints the whole target either way, and a
+// per-document copy would just mean two rAFs doing one job after a mark move.
+let annRenderQueued = false;
+function annQueueRender() {
+  if (annRenderQueued) return;
+  annRenderQueued = true;
+  requestAnimationFrame(() => { annRenderQueued = false; renderAnn(); });
+}
+
+// Point the re-render observer at the target's document. ONE observer, moved,
+// rather than one per document left running: the ones we would leave behind are
+// on documents nothing is drawing pins into, and each would still wake this
+// frame on every mutation of a pane the reader is not annotating.
+//
+// It has to MOVE, and that is the whole reason this is not inside annWireTarget's
+// run-once block where it started. The shell keeps its pane-mode iframes mounted
+// and moves the mark between them; re-selecting a frame we already wired runs no
+// wiring at all (`__fusedAnnWatched`, `__fusedAnnWired`), so an observer left on
+// the frame the reader just LEFT is an observer that never fires for the frame
+// they are looking at — the app re-renders under the pins and the pins stay where
+// the old DOM put them until something else redraws.
+//
+// Idempotent on the document, so callers do not have to know whether anything
+// changed: annSyncTarget asks on every render and pays one comparison for it.
+function annObserveTarget(doc) {
+  if (doc === annObservedDoc) return;
+  if (annObserver) annObserver.disconnect();
+  annObserver = null;
+  annObservedDoc = doc || null;
+  if (!doc) return;
+  // Records, not a bare annQueueRender, for the one mutation that is not the app
+  // changing: our own. The shadow tree the pins live in is invisible to this
+  // observer (which is half of why the layer is behind one), but the layer's
+  // HOST element is an ordinary child of the app's body, so its arrival is an
+  // ordinary childList record — and a render triggered by having rendered is at
+  // best a wasted frame and at worst a loop.
+  annObserver = new MutationObserver((records) => {
+    const ours = (n) => n.nodeType === 1 && n.hasAttribute
+                        && n.hasAttribute(ANN_LAYER_MARK);
+    for (const r of records) {
+      const moved = [...r.addedNodes, ...r.removedNodes];
+      if (moved.length && moved.every(ours)) continue;
+      annQueueRender();
+      return;
+    }
+  });
+  annObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+}
+
+// The host's marked content pane, or null. The mark is an attribute the shell
+// stamps on the iframe it is currently showing (Preview.tsx) — a mark, not a
+// position, so this cannot be fooled by a layout change and does not care how
+// many frames the host keeps mounted.
+//
+// Everything about this is guarded and every failure is the same answer, null:
+// a parent that is not there (this page opened directly), a parent that is
+// cross-origin (someone else's embed — `parent.document` THROWS), a host that
+// marks nothing, or a mark on something that is not an iframe. Null means the
+// switch is hidden and this page is a chat; it never means an error.
+function annMarkedFrame() {
+  try {
+    const host = window.parent;
+    if (!host || host === window) return null;
+    const el = host.document.querySelector("[data-fused-annotate-target]");
+    return el && el.tagName === "IFRAME" ? el : null;
+  } catch (err) {
+    return null;
+  }
+}
+function annTargetDoc() {
+  try {
+    return annFrame ? annFrame.contentDocument : null;
+  } catch (err) {
+    return null;   // navigating, or a frame that turned out to be cross-origin
+  }
+}
+// Is there anything to annotate right now? The question `noPane` used to answer
+// alone, and it stopped being the same question when the sidebar arrived: there
+// the pane is gone AND there is a target. Standalone it is still exactly
+// "do we have a pane"; hosted it is "is the host showing something marked",
+// which is a live fact — the mark moves with the pane's mode switcher and
+// disappears when the host shows a listing (annPollTarget).
+const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);
+
+// The annotation layer, in CHAT_ONLY, cannot live in this document: the target
+// is a sibling iframe somewhere else in the host's layout, and an overlay here
+// would be pins drawn over the chat. So it is INJECTED into the target's own
+// document, where the coordinate space is the one annStageRect already works in
+// and the pins scroll with the content for free (the frame's own scroll handler
+// re-renders them, exactly as it does in the split layout).
+//
+// The note COMPOSER lands in here too, on demand: an iframe cannot draw outside
+// its own bounds, so a popover that has to appear beside the element it
+// describes has to be a node in that element's document. annPortalPop moves the
+// real #annpop in and annCloseComposer moves it back — see there. That is why
+// this shadow root is handed back whole (`root`) and not just its two overlay
+// boxes.
+//
+// It goes in behind a SHADOW ROOT, and that buys three separate guarantees that
+// would each otherwise need code:
+//   * style isolation, both ways. The previewed document is arbitrary — user
+//     HTML, any template — and neither its `div { … }` rules nor our `.annpin`
+//     may reach each other. No naming scheme is safe against arbitrary CSS;
+//     a shadow boundary is.
+//   * the capture. shotPane clones the app's <body>, and cloneNode does NOT
+//     clone a shadow tree — so the pins cannot appear in a screenshot for the
+//     same structural reason they cannot in the split layout, where they live in
+//     the parent document.
+//   * the MutationObserver. It watches the app's body for re-renders; mutations
+//     inside a shadow root are not reported to a light-DOM observer, so drawing
+//     a pin cannot re-trigger the render that drew it.
+// The host element is APPENDED to <body>, never prepended: anchors are
+// tag:nth-of-type paths, and a new first child would renumber every one of them.
+const ANN_LAYER_CSS = [
+  ":host { all: initial; }",
+  // The reset this file's own `* { box-sizing: border-box }` gives every rule
+  // above, restated because a shadow tree inherits no stylesheet: without it the
+  // ring's 1.5px border grows the box it is supposed to trace (measured — a
+  // 400×60 element drew a 402×62 ring) and the pin stops being 22px round.
+  "* { box-sizing: border-box; }",
+  ".pins { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }",
+  // Literal colours, not tokens: this stylesheet lives in someone else's
+  // document, which has never heard of this page's palette. They are the
+  // template's --accent / --on-accent, with a light ring and a soft shadow so
+  // the pin reads on a dark app and a white page alike.
+  ".annpin { position: absolute; transform: translate(-50%, -50%); min-width: 22px;"
+  + " height: 22px; padding: 0 4px; border-radius: 999px; background: #d97757;"
+  + " color: #1a1a1a; border: 1.5px solid rgba(255, 255, 255, .9);"
+  + " font: 600 12px/1 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
+  + " display: flex; align-items: center; justify-content: center;"
+  + " pointer-events: auto; cursor: pointer; user-select: none;"
+  + " box-shadow: 0 1px 4px rgba(0, 0, 0, .35); }",
+  ".annpin.sent { opacity: .55; cursor: default; }",
+  // No `inset` on this one, unlike .pins: annPlaceHl gives it all four of
+  // left/top/width/height, and a stray `right: 0` would leave an over-constrained
+  // box the moment one of them is missing.
+  ".hl { position: absolute; display: none; pointer-events: none;"
+  + " border: 1.5px solid #d97757; border-radius: 4px;"
+  + " background: rgba(217, 119, 87, .14); }",
+  // The note composer's looks, restated for the document it gets PORTALED into
+  // (annPortalPop). The node is the very one the markup declares — its handlers
+  // and its draft ride along — but a stylesheet does not: `#annpop` and friends
+  // in the page's own <style> cannot reach across a shadow boundary into
+  // someone else's document, and without these rules the composer arrives as an
+  // unstyled UA text box floating over the app. Same selectors, same numbers as
+  // the rules up there (280px, 12px radius, 10px padding), so the two copies can
+  // be read side by side.
+  //
+  // Literal colours for the same reason the pin's are, and — like the pin — ONE
+  // fixed set rather than a light/dark pair: the app underneath is arbitrary and
+  // its theme is not ours to read. So the card brings its own ground (the
+  // template's dark --surface/--bg) plus a light hairline and a deep shadow,
+  // which is what separates it from a dark app and a white page alike.
+  //
+  // `pointer-events: auto` is load-bearing: the layer host is `none` so the app
+  // stays clickable through it, and a textarea that inherits that cannot be
+  // typed in. `position: absolute` inside a `fixed` host means annPlacePop's
+  // coordinates are the framed viewport's — the same space the pins use.
+  "#annpop { position: absolute; display: none; width: 280px; padding: 10px;"
+  + " background: #26282f; border: 1px solid rgba(255, 255, 255, .22);"
+  + " border-radius: 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .45);"
+  + " font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
+  + " color: #ececf1; pointer-events: auto; }",
+  // `font: inherit` in the page's copy; spelled out here because `:host { all:
+  // initial }` means there is nothing above to inherit but the UA default.
+  "#annpop textarea { display: block; width: 100%; background: #191a1e;"
+  + " border: 1px solid #34363e; border-radius: 8px; color: #ececf1;"
+  + " font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
+  + " padding: 7px 9px; margin: 0; resize: none; outline: none; }",
+  "#annpop .hint { color: #8a8f99; font-size: 11px; margin-top: 5px;"
+  + " display: flex; align-items: center; }",
+  "#annpop #anndel { margin-left: 8px; border: 0; background: transparent;"
+  + " color: #f26d6d; font: inherit; font-size: 11px; cursor: pointer;"
+  + " padding: 0 2px; }",
+].join("\n");
+// The marker attribute is on the HOST element, so one `closest()` tells the
+// frame's own handlers that a click or a hover landed on our layer rather than
+// on the app — see the wiring below. It is also what makes the layer findable
+// again after a re-render of this function.
+const ANN_LAYER_MARK = "data-fused-annotate";
+function annInjectLayer(doc) {
+  if (!doc || !doc.body) return null;
+  let host = doc.querySelector("[" + ANN_LAYER_MARK + "]");
+  // No shadow root means someone else's element wearing our attribute, or a
+  // half-built one from a torn-down document: start again rather than trust it.
+  if (host && !host.shadowRoot) { host.remove(); host = null; }
+  if (!host) {
+    host = doc.createElement("div");
+    host.setAttribute(ANN_LAYER_MARK, "layer");
+    // Inline, because a stylesheet of ours in a document of theirs is one
+    // `div { position: static }` away from being overruled — and these five
+    // declarations are the ones that decide whether the layer is a layer at all.
+    // `fixed` makes the layer's box the framed VIEWPORT, which is the coordinate
+    // space every pin position is already computed in.
+    host.setAttribute("style", "position: fixed; inset: 0; display: block;"
+      + " margin: 0; padding: 0; border: 0; z-index: 2147483646;"
+      + " pointer-events: none;");
+    const root = host.attachShadow({ mode: "open" });
+    const style = doc.createElement("style");
+    style.textContent = ANN_LAYER_CSS;
+    const hl = doc.createElement("div");
+    hl.className = "hl";
+    const pins = doc.createElement("div");
+    pins.className = "pins";
+    // Ring first, pins second: painted in tree order, so a pin is never hidden
+    // behind the ring of the element it marks (#annpins/#annhl do this with
+    // z-index in the split layout, where they are not siblings of nothing else).
+    root.append(style, hl, pins);
+    doc.body.appendChild(host);
+  }
+  const root = host.shadowRoot;
+  return { root, pins: root.querySelector(".pins"), hl: root.querySelector(".hl"),
+           stage: doc.documentElement };
+}
+
+// Point the four bindings at whatever the host is showing NOW. Cheap enough to
+// call on every render and every poll: one querySelector in the host document,
+// one in the target's. Returns whether the FRAME changed — the poll acts on it,
+// because a mark that moves between two frames the shell keeps mounted is a
+// change nothing else in this file can hear (see annPollTarget).
+//
+// The layer is re-resolved every time, not only when the frame moves, because a
+// pane that live-reloads gets a brand new document with no layer in it — and
+// the shell's mode switch, which moves the mark to another frame, is only the
+// louder version of the same thing.
+function annSyncTarget() {
+  if (!CHAT_ONLY) return false;
+  const next = annMarkedFrame();
+  const moved = next !== annFrame;
+  annFrame = next;
+  // Assigned BEFORE the adoption, because annWatchTarget wires the document that
+  // is already in the frame (nothing else would — its `load` fired long ago) and
+  // that wiring re-enters here; it has to find the move already made. The
+  // adoption is asked for on every sync rather than only on a move: it is a
+  // no-op for a frame we already hold (`__fusedAnnWatched`, which is also what
+  // stops the re-entry from recursing), and the frame resolved at DECLARATION
+  // time never "moved" at all.
+  if (next) annWatchTarget(next);
+  const doc = annTargetDoc();
+  // The re-render observer follows the target from here, because THIS is the
+  // function that knows where the target is. Re-selecting an already-wired frame
+  // never reaches annWireTarget, so that path cannot be the only one that moves
+  // it. Idempotent, so the cost on an ordinary render is one comparison.
+  annObserveTarget(doc);
+  const layer = annInjectLayer(doc);
+  annPins = layer && layer.pins;
+  annHl = layer && layer.hl;
+  annStageEl = layer && layer.stage;
+  annLayerRoot = (layer && layer.root) || null;
+  // The composer, while portaled, is a node we LENT to that document — and this
+  // is the one place that can notice the loan has gone bad. A live reload
+  // replaces the document and annInjectLayer builds a fresh layer in it; the
+  // shell's mode switch moves the mark to another frame entirely; an unmarked
+  // pane leaves no layer at all. In every one of those the root we handed the
+  // composer to is not the root we just resolved, and the node is either
+  // detached or floating over a document nobody is annotating any more.
+  //
+  // Close it, which also brings the node home. A close DROPS the draft, and
+  // that is the honest outcome rather than a bug: the anchor the half-typed
+  // note pointed at went with the document. Silently keeping the text would be
+  // keeping it against an element that no longer exists.
+  if (annPortaled() && annPop.getRootNode() !== annLayerRoot) annCloseComposer();
+  return moved;
+}
 
 let annOn = false;
 let annDraft = null;    // anchor of a NEW note being composed
@@ -3483,6 +3943,10 @@ function annContentBox(el) {
 // Element rect in #leftview coordinates: the iframe fills #leftview, so the
 // element's viewport rect inside the frame is already the stage rect. (The control
 // strip is a sibling ABOVE #leftview, so it does not enter this coordinate space.)
+// The retargeted layout needs no second reading of this and that is why the
+// injected layer is `position: fixed` inside the target's own document: its box
+// is that document's viewport, so "the element's rect inside its frame" goes on
+// being the whole answer — see annInjectLayer.
 function annStageRect(el) {
   const r = el.getBoundingClientRect();
   return { left: r.left, top: r.top, width: r.width, height: r.height };
@@ -3500,15 +3964,25 @@ function renderAnn() {
   // target does not have, and #annpins itself is out of the document. `annotations`
   // is already emptied by enterNoPane, so this is belt-and-braces against a later
   // caller — of which there are five, including a params.onChange for EVERY param.
-  if (noPane) return;
+  //
+  // CHAT_ONLY is `noPane` too and means none of that: the notes point at the
+  // host's pane, and the chips are the payload of a message this chat can still
+  // send. So the flag stops being the whole answer here and the two halves are
+  // asked separately — the pins need a layer (annSyncTarget hands back nulls
+  // when the host is showing nothing marked), the chips need only the list.
+  if (noPane && !CHAT_ONLY) return;
+  annSyncTarget();
   // pins over the frame
-  annPins.innerHTML = "";
-  annPins.style.display = annOn ? "" : "none";
-  const doc = annOn ? annFrame.contentDocument : null;
+  if (annPins) {
+    annPins.innerHTML = "";
+    annPins.style.display = annOn ? "" : "none";
+  }
+  const doc = annOn && annPins ? annTargetDoc() : null;
   // #leftview, not #left: pins are placed in FRAME viewport coordinates, so their
   // host must be the box the iframe fills — #left also holds the control strip,
-  // and measuring that would put every pin the strip's height too high.
-  const host = document.getElementById("leftview");
+  // and measuring that would put every pin the strip's height too high. Hosted,
+  // the same box is the target document's own viewport (annSyncTarget).
+  const host = annStageEl;
   annotations.forEach((c, i) => {
     const el = doc ? annResolve(c, doc) : null;
     if (!el) return;  // detached / frame not loaded: the chip still shows it
@@ -3522,7 +3996,10 @@ function renderAnn() {
     }
     // Scrolled out of the framed viewport: no pin this frame — the chip stays.
     if (y < 0 || y > host.clientHeight || x < 0) return;
-    const pin = document.createElement("div");
+    // Created in the layer's OWN document: hosted, that is the app's, and a node
+    // minted here would be adopted into it on append anyway — doing it by hand
+    // keeps the two documents' nodes from being quietly swapped between them.
+    const pin = annPins.ownerDocument.createElement("div");
     pin.className = "annpin" + (c.sent ? " sent" : "");
     pin.style.left = Math.min(host.clientWidth - 14, Math.max(14, x)) + "px";
     pin.style.top = Math.max(14, y) + "px";
@@ -3547,12 +4024,26 @@ function renderAnn() {
       txt.textContent = c.content;
       txt.title = c.content + " — click to edit";
       txt.style.cursor = "pointer";
-      // Edit from the chip too: the popup lives over the left pane, so place
-      // it at the note's pin when it resolves, else roughly centered.
+      // Edit from the chip too. The popover belongs beside the element the note
+      // is about, so resolve that element in the TARGET document (ours in the
+      // split layout, the host's pane in the sidebar) and hand annPlacePop its
+      // rect — the same coordinates a click on the pin would have produced.
+      //
+      // Nothing to resolve is where the two layouts part. Standalone the
+      // popover has a pane of its own to sit over, so it is roughly centred
+      // there and the reader still sees it against the preview. Hosted there is
+      // no such consolation prize: a coordinate invented in someone else's
+      // viewport would put the composer over an arbitrary part of the app,
+      // beside nothing. NULL says so, and annPlacePop parks the composer in
+      // this column instead of portaling it to a point that means nothing.
       txt.onclick = () => {
-        const el2 = annFrame.contentDocument ? annResolve(c, annFrame.contentDocument) : null;
+        const d = annTargetDoc();
+        const el2 = d ? annResolve(c, d) : null;
         const r = el2 && el2.getBoundingClientRect();
-        annOpenEditor(c, r ? r.right : host.clientWidth / 3, r ? r.top : host.clientHeight / 3);
+        const w = host ? host.clientWidth : 0, h = host ? host.clientHeight : 0;
+        const cx = r ? r.right : (CHAT_ONLY ? null : w / 3);
+        const cy = r ? r.top : (CHAT_ONLY ? null : h / 3);
+        annOpenEditor(c, cx, cy);
       };
       const x = document.createElement("button");
       x.type = "button";
@@ -3572,11 +4063,116 @@ function renderAnn() {
 }
 
 const annDelBtn = document.getElementById("anndel");
+
+// ── the composer's two seats ──────────────────────────────────────────────
+// Is #annpop currently living in someone else's document? OWNERSHIP is the
+// question, not parentage, and that is what makes the answer survive everything
+// that can happen to the node while it is away: a pane that reloads leaves it
+// parented to a dead shadow tree, an `adoptNode` that lands and an `appendChild`
+// that then throws leaves it parented to nothing at all. `ownerDocument` is
+// what `adoptNode` changes and the only thing that is still true in both.
+//
+// It is also the reason there is no remembered home node. One used to be
+// captured at the first portal, which was a race with a teardown that had not
+// run yet — see annUnportalPop.
+const annPortaled = () => annPop.ownerDocument !== document;
+
+// Move the REAL composer into the target document's overlay, so it can be drawn
+// beside the element it describes. An iframe cannot paint outside its own box,
+// and the target is a sibling frame elsewhere in the host's layout — so there is
+// no placement in this column that puts the text box next to the ring. The node
+// has to go there.
+//
+// The node, not a copy. Everything the composer is lives on it: the keydown
+// handler that saves on Enter and closes on Escape, the delete button's click,
+// the textarea's current text. All of those are addEventListener bindings and
+// closures over THIS document's state (`annotations`, `annDraft`, `annEditing`,
+// the chat composer), and a moved node keeps every one of them — a rebuilt
+// popover would be a second implementation to keep in step. `adoptNode` is
+// spelled out even though `appendChild` would adopt implicitly: the ownership
+// change is the whole point of this function, and it should read like it.
+//
+// Returns whether the move happened. False means there is nothing to portal
+// into — no marked frame, or a pane whose document we cannot reach — and the
+// caller parks the composer here instead.
+function annPortalPop() {
+  if (!annLayerRoot) return false;
+  if (annPop.getRootNode() === annLayerRoot) return true;
+  try {
+    annLayerRoot.ownerDocument.adoptNode(annPop);
+    annLayerRoot.appendChild(annPop);
+  } catch (err) {
+    return false;   // document torn down mid-gesture: park it instead
+  }
+  return true;
+}
+// And back again, on every close. Not merely tidiness: a pane that reloads or a
+// mark that moves would otherwise leave an idle composer orphaned in a document
+// nothing points at any more, and the next open would find `annPop` parented to
+// a dead tree. Returning it on close means the node spends all of its idle life
+// in the document that owns it.
+//
+// The home is RESOLVED HERE, every time, and never remembered from an earlier
+// visit. Remembering it was a race: annPollTarget injects the layer and wires
+// the target's click handler at the end of THIS script, while enterNoPane —
+// which is what moves the composer out of #leftview and into #chat — waits on
+// an `await fetch` inside paneURL. A click in the pane that lands in that gap
+// portals a composer whose parent is still #leftview, and #leftview is exactly
+// what the teardown then removes: coming "home" would have meant appending into
+// a detached column, i.e. a composer that opens into nothing. Asking the
+// document is a question with only one right answer at any moment.
+//
+// #chat rather than the original parent for the same reason it is where
+// enterNoPane parks it: the split layout never portals (there is nothing to
+// portal INTO — annLayerRoot is null without a marked frame), so every node
+// that comes back through here is a sidebar one, and the sidebar's seat is the
+// chat column. <body> only if that column is somehow gone, because a node
+// dropped nowhere is a composer that can never be opened again.
+//
+// The `sidebar` class is left alone through both moves. It says "parked in the
+// chat column" and that is still what it will mean when the node gets back; the
+// shadow root simply has no rule matching it, so it is inert while portaled.
+function annUnportalPop() {
+  if (!annPortaled()) return;
+  document.adoptNode(annPop);
+  (document.getElementById("chat") || document.body).appendChild(annPop);
+}
+
+// (x, y) are the click's FRAME viewport coordinates — the same space the pins
+// are in — and they place the popover beside what the note is about.
+//
+// ONE placement rule for both layouts, because after the portal both are the
+// same problem: the popover sits in a box whose coordinate space IS the framed
+// viewport (#leftview over our own iframe; the `fixed` layer host inside the
+// target's document, hosted), so `annStageEl` is the pane either way and the
+// arithmetic below is the arithmetic the split layout has always used. Ten
+// pixels down and right of the click, clamped so a click near an edge does not
+// push the box off the pane.
+//
+// CHAT_ONLY only adds the question of WHERE the node lives, and the answer has
+// exactly one fallback: null coordinates (the chip-edit path, for a note whose
+// element no longer resolves) or no layer to portal into (nothing marked, a
+// document mid-navigation) leave the composer parked in this column under the
+// #anntools strip, positioned by the stylesheet's `.sidebar` rule. That is the
+// one case where a text box the reader can reach beats a text box beside the
+// right element, because there is no right element to be beside.
 function annPlacePop(x, y) {
-  const host = document.getElementById("leftview");   // see renderAnn
+  const aimed = Number.isFinite(x) && Number.isFinite(y);
+  if (CHAT_ONLY && !(aimed && annPortalPop())) {
+    annUnportalPop();
+    annPop.style.display = "block";
+    annPop.style.left = "";   // parked: the stylesheet spans the column
+    annPop.style.top = "";
+    annTa.focus();
+    return;
+  }
+  const host = annStageEl;   // see renderAnn
   annPop.style.display = "block";
   annPop.style.left = Math.min(host.clientWidth - 292, Math.max(0, x + 10)) + "px";
   annPop.style.top = Math.min(host.clientHeight - 110, Math.max(0, y + 10)) + "px";
+  // Across the frame boundary, hosted — which is allowed (same origin) and is
+  // what the reader expects: their pointer is already in the pane, and the
+  // textarea they are about to type in is now a node of that pane's document.
   annTa.focus();
 }
 function annOpenComposer(x, y, anchor) {
@@ -3608,6 +4204,12 @@ function annCloseComposer() {
   annPop.style.display = "none";
   annDraft = null;
   annEditing = null;
+  // Home before the next open, always — including the closes that are not the
+  // reader's (annSetMode's disarm, a chip deleted out from under the editor,
+  // annSyncTarget noticing the pane it was lent to is gone). An idle composer
+  // parked in someone else's document is a node that a reload can orphan, and
+  // this is the single choke point every close already goes through.
+  annUnportalPop();
 }
 // A fresh note usually precedes a "go apply it" message: seed the visible
 // composer so sending is one keypress. Only when it's empty — never clobber
@@ -3630,6 +4232,14 @@ function annPrefillComposer() {
 // it fires before the target's own handlers; pins and chips are exempt — their
 // click handlers own the toggle/reopen behavior and a mousedown-close here
 // would make the pin's toggle reopen instead.
+//
+// THIS document's half of the dismissal. The other half hangs off the target's
+// document (annWireTarget), because a click inside a frame never bubbles out of
+// it, and while portaled the composer is over there — so each document dismisses
+// what the other cannot see, and each exempts the composer's own subtree. The
+// `contains` below covers it here; over there the event RETARGETS at the shadow
+// boundary, so a mousedown in the textarea arrives as the layer host and the
+// layer's own exemption already catches it.
 document.addEventListener("mousedown", (e) => {
   if (annPop.style.display !== "block") return;
   const t = e.target;
@@ -3681,17 +4291,23 @@ const annIdleTitle = () =>
 // mode too, and a second copy of this would be a second chance for the banner's
 // text to disagree with `annOn`.
 function annSetMode(on) {
-  // A target with no pane can never be armed, whoever asks. Enforced HERE rather
-  // than only at the button because arming has four entry points (the click, the
-  // boot default below, the `annmode` param, the app menu's exit action) and a
-  // check at each of them is a check that a fifth one will forget. `annmode=1`
-  // left in a URL from a folder that used to have an app entry is the concrete
-  // case: it would arm a layer over a column that is not in the document.
+  // Nothing to point at can never be armed, whoever asks. Enforced HERE rather
+  // than only at the button because arming has five entry points (the click, the
+  // boot default below, the `annmode` param, the app menu's exit action, and the
+  // hosted re-arm when a target appears) and a check at each of them is a check
+  // that a sixth one will forget. `annmode=1` left in a URL from a folder that
+  // used to have an app entry is the concrete case: it would arm a layer over a
+  // column that is not in the document.
+  //
+  // `annCapable()`, not `noPane`: the sidebar has no pane of its own and a
+  // perfectly good target, and asking the layout question there would refuse to
+  // arm the one layout this feature was rebuilt for. Standalone the predicate IS
+  // `!noPane`, so nothing about the split layout changes.
   //
   // Returns BEFORE the param write, deliberately: `annmode` on a folder URL is
   // ignored, not rewritten (see enterNoPane). Everything below this line reads
   // or writes nodes that enterNoPane has removed.
-  if (noPane) { annOn = false; return; }
+  if (!annCapable()) { annOn = false; return; }
   annOn = on;
   // STILL THE ONE WRITER — but it does not write when the URL already MEANS
   // this. `annmode` is effectively-on: absent, or anything that is not "0".
@@ -3724,13 +4340,73 @@ function annSetMode(on) {
   // appears in annotate mode and it follows what the user is aiming at).
   annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this button to stop"
                        : annIdleTitle();
-  if (!annOn) { annHl.style.display = "none"; annCloseComposer(); }
+  // The ring can be gone rather than merely hidden: hosted, it lives in the
+  // target's document and that document may have been replaced (or unmarked)
+  // since it was drawn. Nothing to hide is the same outcome as hidden.
+  if (!annOn) { if (annHl) annHl.style.display = "none"; annCloseComposer(); }
 }
 
 annBtn.addEventListener("click", () => annSetMode(!annOn));
 // Annotate mode is ON by default: an unset param means armed, and only an
 // explicit "0" (the user slid it off, or pressed Escape) starts it disarmed.
 annSetMode(fused.params.get("annmode") !== "0");
+
+// ── hosted only: keeping up with a target this document cannot hear ────────
+// The split layout is told about its pane by the pane itself — one iframe, one
+// `load` event, ours. The sidebar's target belongs to the host: it appears after
+// the shell's first paint, it is REPLACED when the reader switches the pane's
+// mode (the mark moves to another frame), and it disappears when the pane shows
+// something unannotatable. None of that reaches this document as an event, and
+// the one mechanism that would carry it — postMessage — is the thing this
+// template deliberately does not have (D3/D4).
+//
+// So the switch asks, and asking is one querySelector in the parent document
+// plus one in the target's. Cheap, and only ever in this layout. Two triggers,
+// for the two ways the answer changes:
+//   * focus — the reader came back to this frame, very often by way of clicking
+//     something in the host that changed the pane;
+//   * a slow interval, for everything else (the shell's own mode switch, a
+//     folder navigation) — slow enough to be free, quick enough that the switch
+//     is there by the time a hand gets to it.
+// A MutationObserver on the host's document would be the precise version and is
+// not worth it: it means holding a live observer on someone else's DOM for the
+// life of the session to learn a fact two cheap reads already give us.
+const ANN_TARGET_POLL_MS = 750;
+function annPollTarget() {
+  const had = !!annFrame;
+  const moved = annSyncTarget();
+  const has = !!annFrame;
+  // Hidden, not disabled: a switch that cannot do anything is not a promise
+  // worth keeping on screen — the same rule the narrow layout applies to the
+  // controls of a hidden pane. (#annbtn's own `display: flex` outranks the UA's
+  // [hidden] rule, so the stylesheet spells the hiding out.)
+  annBtn.hidden = !has;
+  if (has === had) {
+    // Same ANSWER, different FRAME: the shell switched the pane's mode between
+    // two iframes it keeps mounted and moved the mark from one to the other.
+    // The switch has nothing to say about that — there was a target before and
+    // there is one now — but the pins do, and nobody else is going to draw
+    // them. Every other repaint on this path is somebody's `load`, and the two
+    // frames both loaded long ago: annWatchTarget refuses a frame it has
+    // already adopted (`__fusedAnnWatched`), so no wiring runs and no render
+    // comes with it. The layer we just re-resolved is the one THAT frame was
+    // left with, painted from whatever `annotations` said when it was last on
+    // screen — a note added, deleted or sent in the meantime is not in it.
+    if (moved) renderAnn();
+    return;
+  }
+  // A target that has just ARRIVED re-applies the boot default, because the boot
+  // itself may have run before the host stamped anything — the switch would then
+  // read "Annotate" while the URL says the mode is on. Through annSetMode, the
+  // one door, so the label, aria-pressed, the param and the pins agree.
+  if (has) annSetMode(fused.params.get("annmode") !== "0");
+  // And a target that has GONE disarms without writing the param: annSetMode
+  // refuses (annCapable is false now) after setting annOn, which is exactly the
+  // "ignored, not rewritten" posture a stale `annmode` gets everywhere else. The
+  // repaint is ours to ask for, since that early return skips it — the chips
+  // stay, the pins went with the document.
+  else { annSetMode(false); renderAnn(); }
+}
 
 // Auto-send: a saved NEW note goes to Claude immediately, always — there is no
 // off switch. The `filled`/`sending` guards below are the only gates.
@@ -3750,15 +4426,65 @@ function annAutoSubmit() {
 // Wire the framed app on every load (the app live-reloads on Claude's edits;
 // pins re-resolve against the fresh DOM). Handlers stay attached and gate on
 // `annOn`, so toggling never needs a rewire.
-let annObserver = null;
-annFrame.addEventListener("load", () => {
+//
+// Adopt a frame as the target: hear its future loads, and wire whatever document
+// is in it NOW. That second half is what the split layout never needed — its
+// frame is empty until we give it a src, so `load` always arrives after this
+// script — and what the hosted layout cannot do without: the shell's pane was
+// loaded long before this sidebar booted, and a document already in a frame
+// fires no event for a listener that arrives late.
+function annWatchTarget(frame) {
+  if (!frame || frame.__fusedAnnWatched) return;
+  frame.__fusedAnnWatched = true;
+  frame.addEventListener("load", annWireTarget);
+  // `about:blank` is not a document that was already there, it is the
+  // placeholder before the first real one (every frame starts on it, ours
+  // included until paneReady gives it a src) — and its `load` is coming anyway.
+  try {
+    const w = frame.contentWindow;
+    if (w && String(w.location.href) !== "about:blank") annWireTarget();
+  } catch (err) { /* cross-origin or mid-navigation: nothing to wire */ }
+}
+function annWireTarget() {
   // The app-state channel hangs off the same event, for the same reason: this is
   // where a fresh document appears, so it is where the console has to be
   // re-wrapped and a reload marked. See watchApp.
+  //
+  // Hosted, the sync comes FIRST: a load event here can be the pane changing
+  // mode under us, and the mark may already have moved to another frame — the
+  // one we want is whichever one is marked now, never "the one that fired".
+  if (CHAT_ONLY) annSyncTarget();
   watchApp();
-  const doc = annFrame.contentDocument;
+  const doc = annTargetDoc();
   if (!doc) return;
+  // ABOVE the run-once guard, because the observer is not a listener on this
+  // document — it is a single instance that has to point at whichever document
+  // is the target NOW, and re-selecting an already-wired one is exactly the case
+  // the guard below skips. The split layout reaches it only through here;
+  // hosted, annSyncTarget asks as well, and both are no-ops for a document we
+  // already watch.
+  annObserveTarget(doc);
+  // One wiring per DOCUMENT, marked on the document itself (the same trick, and
+  // for the same reason, as watchWindow's `__fusedAppWatched`): a reload brings a
+  // fresh document and must be wired again, while re-adopting a frame we already
+  // wired — the mark leaving and coming back as the reader switches the pane's
+  // mode to and fro — must not stack a second set of listeners on it.
+  if (doc.__fusedAnnWired) { renderAnn(); return; }
+  doc.__fusedAnnWired = true;
   const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
+  // Our own injected layer, seen from inside the app's document. In the split
+  // layout no such node exists (the pins are in THIS document, which the app's
+  // handlers cannot see) and this is always false; hosted, it is what keeps the
+  // overlay from being treated as part of the app — a pin is a control of ours,
+  // not an element a note can point at.
+  //
+  // The COMPOSER is inside that layer too while it is portaled, and the shadow
+  // boundary is what makes one test cover both: an event raised in the shadow
+  // tree is retargeted to the host for every listener out here, so a mousedown
+  // in the textarea, a hover over the card and a click on the delete button all
+  // arrive as the layer host — already marked, already exempt. Nothing here
+  // needs to know the composer moved.
+  const annOwnNode = (t) => !!(t && t.closest && t.closest("[" + ANN_LAYER_MARK + "]"));
   // Escape, again: annotate mode is used with the pointer (and usually focus) in
   // here, and keydowns do not cross the frame boundary. Without this the banner's
   // "Esc or click to stop" was a promise only the chat pane could keep.
@@ -3767,7 +4493,16 @@ annFrame.addEventListener("load", () => {
   // outside-click dismissal needs its own hook here. In annotate mode the
   // click handler below may immediately open a fresh composer on the clicked
   // element — that's the expected "move the popover" flow.
-  doc.addEventListener("mousedown", () => {
+  //
+  // Hosted this is the dismissal that MATTERS, not a mirror of the chat's: the
+  // composer is portaled into this very document, so every click that ought to
+  // dismiss it — anywhere on the app — lands here and nowhere else.
+  doc.addEventListener("mousedown", (e) => {
+    // Exempt, exactly as the pins and chips are in this document's own
+    // outside-click handler: a mousedown on a pin is the start of that pin's
+    // toggle, and closing the popover here would turn the toggle into a reopen.
+    // Retargeting makes this the composer's exemption too — see annOwnNode.
+    if (annOwnNode(e.target)) return;
     if (annPop.style.display === "block") annCloseComposer();
   }, true);
   // One placement path for both writers: the hover follow below and the click
@@ -3776,6 +4511,7 @@ annFrame.addEventListener("load", () => {
   // for the whole trip over (see the composer guard in mousemove), so at
   // click time it shows the box the user just left.
   const annPlaceHl = (el) => {
+    if (!annHl) return;   // hosted: the layer went with an unmarked document
     const r = annStageRect(el);
     annHl.style.display = "block";
     annHl.style.left = r.left + "px";
@@ -3785,6 +4521,9 @@ annFrame.addEventListener("load", () => {
   };
   doc.addEventListener("mousemove", (e) => {
     if (!annOn) return;
+    // Hovering our own pin is not hovering the app: leave the ring on whatever
+    // it was marking rather than jumping it to a 22px circle of ours.
+    if (annOwnNode(e.target)) return;
     // An open composer means the user CLICKED an element and is writing about
     // it: the highlight is that element's, and a hover that drags it away
     // makes the popover describe one box while the orange ring shows another.
@@ -3794,7 +4533,7 @@ annFrame.addEventListener("load", () => {
     if (annPop.style.display === "block") return;
     const el = elementOf(e.target);
     if (!el || el === doc.body || el === doc.documentElement) {
-      annHl.style.display = "none";
+      if (annHl) annHl.style.display = "none";
       return;
     }
     annPlaceHl(el);
@@ -3804,6 +4543,10 @@ annFrame.addEventListener("load", () => {
   // triggering them. Toggle off to use the app normally.
   doc.addEventListener("click", (e) => {
     if (!annOn) return;
+    // A pin of ours, hosted, is the one thing in this document that must reach
+    // its own handler: swallowing it here would eat the click that reopens the
+    // note's editor and then anchor a NEW note to the pin marking the old one.
+    if (annOwnNode(e.target)) return;
     e.preventDefault();
     e.stopPropagation();
     const el = elementOf(e.target);
@@ -3828,19 +4571,23 @@ annFrame.addEventListener("load", () => {
     annPlaceHl(el);
     annOpenComposer(e.clientX, e.clientY, anchor);
   }, true);
-  // Scroll and mutation storms coalesce to one re-render per frame.
-  let queued = false;
-  const queueRender = () => {
-    if (queued) return;
-    queued = true;
-    requestAnimationFrame(() => { queued = false; renderAnn(); });
-  };
-  doc.addEventListener("scroll", queueRender, { capture: true, passive: true });
-  if (annObserver) annObserver.disconnect();
-  annObserver = new MutationObserver(queueRender);
-  annObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+  // Scroll storms coalesce to one re-render per frame. A per-DOCUMENT listener,
+  // so it belongs in this run-once block; the mutation half does NOT and lives
+  // in annObserveTarget, called above.
+  doc.addEventListener("scroll", annQueueRender, { capture: true, passive: true });
   renderAnn();
-});
+}
+// The split layout's own pane, wired the way it always was: one frame, ours,
+// adopted before it has a src. Hosted, `annFrame` is the host's or null and the
+// adoption happens in annSyncTarget instead — the target is not ours to assume,
+// so what starts there is the polling that keeps asking who it is.
+if (CHAT_ONLY) {
+  annPollTarget();
+  window.addEventListener("focus", annPollTarget);
+  setInterval(annPollTarget, ANN_TARGET_POLL_MS);
+} else {
+  annWatchTarget(annOwnFrame);
+}
 window.addEventListener("resize", renderAnn);
 renderAnn();  // chips from a persisted review show before the frame loads
 watchApp();   // a document already in the frame at boot never fires `load`
@@ -3855,8 +4602,8 @@ watchApp();   // a document already in the frame at boot never fires `load`
 // to be undone on the way out.
 //
 // Placed AFTER the annotation section on purpose: the first call re-measures the
-// pins, and renderAnn reads consts (annPins, annFrame, annotations) declared down
-// there — running this any earlier is a temporal-dead-zone ReferenceError.
+// pins, and renderAnn reads bindings (annPins, annFrame, annotations) declared
+// down there — running this any earlier is a temporal-dead-zone ReferenceError.
 const viewBtn = document.getElementById("viewbtn");
 // The view the last call applied, so a FLIP can be told from a re-application
 // (params.onChange fires for every param, `split` and `model` included). null
@@ -4526,7 +5273,10 @@ async function annCaptureShots(pending, deadline) {
     }
     return out;
   }
-  const doc = annFrame.contentDocument;
+  // Whatever `annFrame` currently points at — our pane, or the host's marked
+  // one — and it may be null in the sidebar layout, where the shotPane above has
+  // already answered "nothing to capture" for the same reason.
+  const doc = annFrame && annFrame.contentDocument;
   const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)
     + "-" + crypto.randomUUID().slice(0, 8);
   // A capture the walk could not finish — or could not trust — is a real picture
@@ -4826,8 +5576,8 @@ const growHome = autoGrow(homebox);
 const VERBS = ["Thinking", "Pondering", "Vibing", "Noodling", "Brewing", "Simmering", "Mulling", "Percolating"];
 
 // ── model/effort/approvals selectors (home + composer sync via params) ──
-const MODELS = ["", "fable", "opus", "sonnet", "haiku"];
-const EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+const MODELS = ["fable", "opus", "sonnet", "haiku"];
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // How much Claude may do without stopping for a card. Values are agent.py's
 // PERMISSION_MODES keys; the labels say what the user gets. `auto` is a
 // broader opt-in, NOT a blanket one — Claude Code's own classifier judges each
@@ -4868,16 +5618,19 @@ const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_
 // The strictest mode is the default: more auto-approval is opted into, never
 // handed out by a missing param.
 const DEFAULT_PERMISSION = "prompt";
-function fillSelect(el, values, label) {
+// Real values only — no placeholder row: curModel()/curEffort() always
+// resolve to a concrete value, so the dropdown never needs a "model"/"effort"
+// entry the user shouldn't pick.
+function fillSelect(el, values) {
   for (const v of values) {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = v || label;
+    o.textContent = v;
     el.appendChild(o);
   }
 }
-document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "model"));
-document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "effort"));
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS));
+document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS));
 document.querySelectorAll(".perm-sel").forEach((el) => {
   for (const v of PERMISSION_MODES) {
     const o = document.createElement("option");
@@ -4887,6 +5640,23 @@ document.querySelectorAll(".perm-sel").forEach((el) => {
   }
 });
 
+// An appearance:none select keeps the width of its WIDEST option, so a short
+// value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
+// space before the next pill — the row's gaps looked uneven. Hug the selected
+// label instead: measure it off-DOM and set an explicit width. Padding,
+// borders (and with them the caret gutter) come off the computed style so the
+// .pill CSS stays the single source of truth for them.
+const _fitCtx = document.createElement("canvas").getContext("2d");
+function fitSelect(el) {
+  const opt = el.selectedOptions[0];
+  if (!opt) return; // value not in options — keep the last fitted width
+  const s = getComputedStyle(el);
+  _fitCtx.font = `${s.fontStyle} ${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+  const chrome = parseFloat(s.paddingLeft) + parseFloat(s.paddingRight) +
+    parseFloat(s.borderLeftWidth) + parseFloat(s.borderRightWidth);
+  el.style.width = `${Math.ceil(_fitCtx.measureText(opt.textContent).width + chrome)}px`;
+}
+
 function syncSelects() {
   document.querySelectorAll(".model-sel").forEach((el) => { el.value = curModel(); });
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = curEffort(); });
@@ -4894,6 +5664,7 @@ function syncSelects() {
   document.querySelectorAll(".perm-sel").forEach((el) => {
     el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
   });
+  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach(fitSelect);
 }
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));

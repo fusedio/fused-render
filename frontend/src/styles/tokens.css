@@ -51,7 +51,7 @@
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
 
   /* Quiet control chrome — the bars' two bordered controls (the labelled mode
-     trigger, .bar-ctl-bordered, and the "Open as app" pill). These are TOKENS
+     trigger and .bar-ctl-bordered). These are TOKENS
      rather than an alpha spelled into the rules because the SAME alpha reads
      differently by theme: `rgba(var(--fg-muted-rgb), 0.35)` over the light
      bar is a hairline a touch darker than --border, and over the dark bar it

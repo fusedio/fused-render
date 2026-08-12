@@ -157,6 +157,9 @@ function displaySignature(slots: string[], entries: RecentEntry[], collapsed: bo
 async function refresh(): Promise<void> {
   const prevSig = displaySignature(slotPaths, cache.entries, cache.collapsed);
   cache = await getRecents();
+  // A snapshot fetched while a collapse write is in flight predates that
+  // write — the user's newest intent stays authoritative over it.
+  if (pendingCollapsed !== null) cache = { ...cache, collapsed: pendingCollapsed };
   slotPaths = computeSlots(slotPaths, cache.entries);
   // Notify only when the visible slice changed; identical-signature refreshes
   // (e.g. a re-record of an unchanged url) stay render-free.
@@ -190,14 +193,38 @@ export function recordRecentOpen(url: string, title?: string | null): Promise<vo
   });
 }
 
+// The user's latest collapse intent, authoritative while any write is in
+// flight: a refresh() snapshot fetched before the PUT landed must not undo
+// the optimistic flip, and under rapid toggles only the NEWEST intent may
+// win — an older call never re-asserts its own stale value on completion.
+let pendingCollapsed: boolean | null = null;
+let collapseWritesInFlight = 0;
+
 export function setRecentsCollapsed(collapsed: boolean): Promise<void> {
+  // Optimistic: the flip paints NOW, not a network round-trip later — the
+  // collapsed rail's Recents icon expands the sidebar in the same click and
+  // must reveal the list it promised, and the heading toggle should not lag
+  // the pointer either. Persistence follows behind, serialized by enqueue.
+  pendingCollapsed = collapsed;
+  collapseWritesInFlight++;
+  cache = { ...cache, collapsed };
+  notifyRecentsChanged();
   return enqueue(async () => {
+    let persisted = true;
     try {
       await putRecentsCollapsed(collapsed);
-      cache = { ...cache, collapsed };
-      notifyRecentsChanged();
     } catch (e) {
+      persisted = false;
       console.error("[fused] failed to persist recents collapse:", e);
+    }
+    if (--collapseWritesInFlight > 0) return; // a newer intent is still writing
+    pendingCollapsed = null;
+    // The cache already shows the latest intent; a successful FINAL write
+    // just confirmed the server agrees. A failed final write means the
+    // server kept some earlier state — reload it rather than lie about what
+    // survives a refresh.
+    if (!persisted) {
+      await refresh().catch((e) => console.error("[fused] failed to reload recents:", e));
     }
   });
 }

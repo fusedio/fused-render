@@ -13,14 +13,16 @@ the folder still lists, but opens as a directory instead of a view
 Alongside the workspace walk, the listing merges in *linked apps*: folders
 anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
 under the reserved virtual tag ``linked`` (fused_render/linked_apps.py — a
-registry, deliberately not a symlink dir; see that module for why). Their
-routes here: GET /api/apps/link-status, POST /api/apps/link, /api/apps/unlink.
+registry, deliberately not a symlink dir; see that module for why). Nothing
+registers one any more — see the note above the recents section.
 
 The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
 the file a card opens and previews, ``entry_html`` the narrower claim that the
 entry is a renderable page (the only one the HTML-only ``/render`` iframe may be
-pointed at). For an app of this shape they are the same file.
+pointed at). For an app of this shape they are the same file. ``preview_image``
+is a third, unrelated path: an authored ``preview.png`` at the folder's root,
+which a card shows INSTEAD of rendering the entry live.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
@@ -74,12 +76,12 @@ _APP_STARTER_DIR = os.path.join(
 @router.get("/api/apps")
 def api_apps():
     # "linked" is the registry's reserved tag, but nothing stops a user from
-    # creating a real <workspace>/linked/<name> folder. On a name collision
-    # the two cards would share the /apps/linked/<name> route, which resolves
-    # through the registry — so the workspace twin is dropped rather than
-    # listed as a card that opens a different folder. Non-colliding workspace
-    # "linked" apps keep listing: their route falls back to the fused_dir
-    # codec path, which IS their folder.
+    # creating a real <workspace>/linked/<name> folder. The two cards would
+    # then be two entries with the same (tag, name) identity — which is the key
+    # the recents store and the link-status probe speak — so the workspace twin
+    # is dropped rather than listed as an indistinguishable duplicate. (Their
+    # CARDS would still open different folders correctly: a card opens its own
+    # `path`.) Non-colliding workspace "linked" apps keep listing.
     registry = linked_apps.linked_apps()
     taken = {a["name"] for a in registry}
     workspace = [
@@ -91,73 +93,11 @@ def api_apps():
     return {"apps": apps}
 
 
-# ------------------------------------------------------------------- linking
-#
-# Linked apps: folders anywhere on disk registered as apps under the virtual
-# "linked" tag — registry at ~/.fused-render/linked_apps.json, never a symlink
-# in the workspace. The rules (validation, dedupe, why-a-registry) live in
-# fused_render/linked_apps.py; these routes are thin.
-
-
-@router.get("/api/apps/linked-path")
-def api_linked_path(name: str):
-    """Resolve a linked app's registry name to its real folder — what the
-    shell's /apps/linked/<name> route needs, since that route can't be the
-    pure fused_dir codec the other tags use. `path` is null for an unknown
-    name; read-only, no X-Fused guard (same posture as GET /api/apps)."""
-    return {"path": linked_apps.linked_path(name)}
-
-
-@router.get("/api/apps/link-status")
-def api_link_status(path: str):
-    """How a folder relates to the app system, for the explorer's topbar
-    button: "workspace" (lives under the Fused workspace — is/can be a real
-    app, not linkable), "linked" (registered, with its registry name), or
-    "unlinked" (linkable). Read-only, so no X-Fused guard (same posture as
-    GET /api/apps)."""
-    folder = os.path.abspath(os.path.expanduser(path))
-    root = os.path.abspath(fused_dir())
-    if folder == root or folder.startswith(root + os.sep):
-        # `tag`/`name` are set when the folder is EXACTLY an app dir
-        # (<workspace>/<tag>/<name>) — what the explorer's "Open as app"
-        # button needs to build the /apps/<tag>/<name> route. Null for the
-        # root, a tag dir, or anything nested deeper.
-        parts = [p for p in os.path.relpath(folder, root).split(os.sep)
-                 if p not in ("", ".")]
-        if len(parts) == 2 and not any(p.startswith(".") for p in parts):
-            # A workspace folder under a literal "linked" tag dir whose name
-            # a registry entry has claimed: the /apps/linked/<name> route
-            # would resolve to the REGISTRY folder, not this one — withhold
-            # the identity so the caller falls back to path navigation.
-            if (parts[0] == linked_apps.LINKED_TAG
-                    and linked_apps.linked_path(parts[1]) is not None):
-                return {"status": "workspace", "name": None, "tag": None}
-            return {"status": "workspace", "name": parts[1], "tag": parts[0]}
-        return {"status": "workspace", "name": None, "tag": None}
-    for e in linked_apps.read_entries():
-        if os.path.abspath(e["path"]) == folder:
-            return {"status": "linked", "name": e["name"],
-                    "tag": linked_apps.LINKED_TAG}
-    return {"status": "unlinked", "name": None, "tag": None}
-
-
-@router.post("/api/apps/link")
-def api_link_app(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    app, err, status = linked_apps.link_app(body.get("path"), body.get("name"))
-    if err is not None:
-        return _error(err, status=status)
-    return {"app": app}
-
-
-@router.post("/api/apps/unlink")
-def api_unlink_app(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    return {"removed": linked_apps.unlink_app(body.get("name"))}
+# Linked apps: the routes that REGISTERED one (GET /api/apps/link-status,
+# POST /api/apps/link, /api/apps/unlink) are gone with the app concept they
+# served (D264 — "Add as app" was their only caller). The registry is read-only
+# now: `GET /api/apps` still merges whatever an earlier version registered, so
+# nobody's cards disappear, and nothing can add to it.
 
 
 # ------------------------------------------------------------------- recents
@@ -283,9 +223,9 @@ def _agent_path() -> str:
     (server.templates.TEMPLATES_DIR), the same file the split app view
     executes, so the runs dir, sidecar shape (.claude-split.json inside the
     app folder), and permission_server path stay in step with what the page
-    will poll. A newly CREATED app lands folder-first in claude (opening
-    an existing one lands in the plain `app` view instead), so the scaffolding
-    session must be recorded at the folder level too."""
+    will poll. A newly CREATED app lands folder-first in claude (opening an
+    existing one lands on the folder's explorer listing instead), so the
+    scaffolding session must be recorded at the folder level too."""
     from fused_render.server import templates as _server_templates
 
     return os.path.join(_server_templates.TEMPLATES_DIR, "claude", "agent.py")

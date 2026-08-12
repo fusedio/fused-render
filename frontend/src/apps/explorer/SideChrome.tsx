@@ -26,7 +26,11 @@
 // any moment, and each sits where its own action makes sense.
 import type { ReactNode } from "react";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
-import type { PaneSide, PaneSideEntries } from "@apps/explorer/listing/pane-side";
+import {
+  paneSideIconEntry,
+  type PaneSide,
+  type PaneSideEntries,
+} from "@apps/explorer/listing/pane-side";
 
 function CloseChevron() {
   return (
@@ -116,11 +120,22 @@ const PREVIEW_SIDE_ICON = (
 // Icon for one of the folder pane's three modes. `claude` and `git` are real
 // templates borrowed from the folder (lib/dir-mode), so they get their registry
 // icon exactly as they do on every other mode surface; `preview` gets the baked
-// one above. Null entries never reach here — a mode with no entry is not offered
-// (pane-side's paneSideList) — but the fallback is the placeholder box
-// templateModeIcon draws for an icon-less template rather than a hole in the bar.
+// one above.
+//
+// An UNOFFERED mode is now an ordinary case rather than an impossible one: the
+// switcher lists all three and disables the ones the folder cannot show
+// (pane-side's paneSideMenu), so a folder outside a repository draws a Git row
+// with no framable entry behind it. It still wears the GIT ICON — a disabled row
+// is the mode with the click taken away, and the glyph is the last thing that may
+// change — which is what `paneSideIconEntry` is for: the offered entry, else the
+// binding the stat reported before the gate refused it (lib/dir-mode's `bound`).
+//
+// Only a mode bound NOWHERE falls through to templateModeIcon's letter box, since
+// then no real glyph exists to draw. It must never fall back to the PREVIEW
+// glyph, which this briefly did: two rows wearing one icon in a three-row menu
+// reads as a duplicate entry rather than as an unavailable one.
 export function paneSideIcon(side: PaneSide, entries: PaneSideEntries): ReactNode {
   if (side === "preview") return PREVIEW_SIDE_ICON;
-  const entry = side === "claude" ? entries.claude : entries.git;
-  return entry ? templateModeIcon(entry) : PREVIEW_SIDE_ICON;
+  const entry = paneSideIconEntry(side, entries);
+  return templateModeIcon(entry ?? { mode: side, path: null, icon: null });
 }

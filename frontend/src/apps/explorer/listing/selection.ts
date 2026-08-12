@@ -60,30 +60,70 @@ export function firstEntryPath(
   return null;
 }
 
+// What counts as a PAGE for the auto-selection below: a file whose extension
+// renders as itself in the preview (`_render`, PT-12).
+//
+// `.htm` counts, and that is the OPPOSITE call from `lib/folder-app.ts`, which
+// accepts `.html` only. The two questions are different and the divergence is
+// the answer to each rather than an inconsistency: folder-app decides whether a
+// folder IS AN APP, a claim the server also makes (`app_listing.app_entry`) and
+// which two surfaces must agree on to the letter — there, a stray `.htm` was a
+// bug. This decides which row a pane opens on, where being wrong costs one
+// keystroke, and the registry binds `.html` and `.htm` to the same mode list, so
+// a `.htm` previews exactly like an `.html`. Refusing it would land a folder
+// whose only page is `page.htm` on some adjacent text file instead — a worse
+// answer for no gain in correctness.
+function isPageRow(name: string, isDir: boolean): boolean {
+  return !isDir && /\.html?$/i.test(name);
+}
+
 // What a freshly opened folder should select for its preview pane, or null when
 // there is nothing to select (FS-16). The caller owns the TIMING — one shot per
 // mount, at the first settled non-search listing with the pane on, all of which
 // are conditions on WHEN to ask, not on the answer (see Listing). This owns the
 // decision.
 //
+// **The first PAGE in rendered order, else the first row** (D263, superseding
+// D240's answer). The pane exists to show something, and in an ordinary folder
+// the page is the one row that renders as itself rather than as a listing of a
+// directory or a dump of text — a folder holding an `index.html` is opened to
+// look at that page far more often than at whatever the sort put on row one.
+// The fallback is untouched: no page, first entry, directories included.
+//
+// In RENDERED order, and deliberately not "index.html if there is one". The
+// order is the one the user is looking at, so the row that wins is the one
+// nearest the top of their table and re-sorting re-answers the question; a
+// favoured name would instead pick a row that may be scrolled off screen, and
+// would need its own tie-break story the moment a folder had two of them.
+//
+// The KIND is checked, never just the name: `build.html` as a DIRECTORY is a
+// real shape (an exported site tree), and selecting it would peek a folder in
+// place of the page the user can see.
+//
 // The decision takes NO reading of the URL, and deliberately so. It used to
 // defer to the `?sel` param itself, resolving "what does this folder open on"
 // in two places at once. It does not need to: a `?sel=` on the URL is SEEDED
 // INTO THE SELECTION at mount (useListingSelection), so by the time this is
 // asked the param has already become an ordinary claim on the selection and
-// the yield below covers it. With no second claim to weigh, the ANSWER here is
-// always the first entry (D240).
+// the yield below covers it (D240, the half that stands).
 //
 // That rationale was about the URL, never about the user: **auto-select fills
 // an EMPTY selection, it never replaces one.** A row the user clicked in the
 // pre-stat provisional listing rides across the swap (recallSelection), and
-// overwriting it with row one would undo a click the user had already made and
-// seen. That yield is a condition on WHEN to ask, not on the answer, so it
-// lives in Listing's effect (`selectionClaimed`) and this stays pure.
+// overwriting it would undo a click the user had already made and seen. That
+// yield is a condition on WHEN to ask, not on the answer, so it lives in
+// Listing's effect (`selectionClaimed`) and this stays pure.
 export function autoSelectPath(
   rows: string[],
-  byPath: ReadonlyMap<string, unknown>,
+  byPath: ReadonlyMap<string, { isDir: boolean }>,
 ): string | null {
+  for (const path of rows) {
+    // `byPath.has` is the same "is it on screen" gate firstEntryPath applies —
+    // a page with no rendered row is not a candidate, and the fallback below
+    // re-walks from the top rather than settling for it.
+    const row = byPath.get(path);
+    if (row && isPageRow(path.slice(path.lastIndexOf("/") + 1), row.isDir)) return path;
+  }
   return firstEntryPath(rows, byPath);
 }
 

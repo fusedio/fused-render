@@ -350,14 +350,24 @@ def test_the_no_pane_state_undoes_what_boot_did_from_a_stale_param():
 
 
 def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
-    """One flag, checked in the four functions that would otherwise write to
-    detached nodes or to a param describing a layout that no longer exists.
+    """One flag, checked in the functions that would otherwise write to detached
+    nodes or to a param describing a layout that no longer exists.
 
     `paneEmbedded` — the "this pane is the embedded listing, refuse to arm"
     flag — is deleted rather than repurposed: there is no embedded listing any
     more, and the condition it guarded (an annotate button over a pane whose
     clicks can never resolve) is now impossible by construction, because the
     button is not in the document.
+
+    ANNOTATION IS NO LONGER ONE OF THOSE FUNCTIONS, and that split is the point.
+    `noPane` answers "is OUR column gone", which the chat-only sidebar (#456)
+    turned into a different question from "is there anything to annotate": there
+    the column is gone AND the notes have a target — the host's own content pane,
+    marked with `data-fused-annotate-target` and resolved through
+    `window.parent.document`. So annSetMode asks `annCapable()` instead, which IS
+    `!noPane` in the split layout and "is the host showing something marked" in
+    the sidebar. The layout appliers keep the flag: that layout really is ours
+    and really is gone.
     """
     code = _pane_code()
     assert "let noPane = false;" in code
@@ -367,12 +377,333 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     # rewritten.
     ann = code[code.index("function annSetMode(on) {"):]
     ann = ann[:ann.index("\nannBtn.addEventListener")]
-    assert "if (noPane) { annOn = false; return; }" in ann
-    assert ann.index("if (noPane)") < ann.index('fused.params.set("annmode"')
-    for fn in ("function applySplit() {", "function applyNarrowView() {",
-               "function renderAnn() {"):
+    assert "if (!annCapable()) { annOn = false; return; }" in ann
+    assert ann.index("if (!annCapable())") < ann.index('fused.params.set("annmode"')
+    # …and the predicate is the flag itself wherever there is no host pane.
+    assert "const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);" in code
+    for fn in ("function applySplit() {", "function applyNarrowView() {"):
         body = code[code.index(fn):code.index(fn) + 300]
         assert "if (noPane) return;" in body, fn
+    # renderAnn draws two things and they answer differently now: the pins need a
+    # layer (null bindings when the host shows nothing marked, and the loop is
+    # skipped), the chips are the payload of a message this chat can still send.
+    render = code[code.index("function renderAnn() {"):]
+    render = render[:render.index("\n}\n")]
+    assert "if (noPane && !CHAT_ONLY) return;" in render
+    assert "if (annPins) {" in render
+
+
+def _preview_tsx() -> str:
+    with open(os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx"),
+              encoding="utf-8") as f:
+        return f.read()
+
+
+def test_the_sidebar_annotates_the_hosts_content_pane_through_one_attribute():
+    """The whole contract between the shell and the chat, and it is one attribute.
+
+    The sidebar (`chat_only=1`) has no pane of its own, so annotation had nothing
+    to point at and #456 shipped a split from which nothing could be annotated.
+    The switch comes back aimed at the HOST's content pane — the middle column,
+    the preview this chat is beside — found by a mark the shell stamps on the
+    iframe it is currently showing.
+
+    A MARK, not an arrangement: the shell says which frame is the content, and
+    this page reads it back through `parent.document`. Nothing else crosses. The
+    shell learns no annotation vocabulary (one attribute, one comment), and the
+    template stays host-agnostic — a parent that is absent, cross-origin, or
+    marks nothing yields null, which hides the switch instead of erroring.
+
+    Both halves are asserted here on purpose: an attribute is a contract only
+    while its two ends spell it the same way, and neither file's own test suite
+    would notice the other renaming it.
+    """
+    tsx = _preview_tsx()
+    code = _pane_code()
+    # The shell's half: on the frame that is SHOWN (the swap keeps two mounted,
+    # and only one of them is on screen), and only where a sidebar can exist —
+    # `splitCapable` is the single-file explorer preview, never a folder listing,
+    # never a panel/tab embed.
+    assert "data-fused-annotate-target={" in tsx
+    assert "splitCapable && m === shown" in tsx
+    # The template's half: same spelling, read off the parent, guarded.
+    assert 'host.document.querySelector("[data-fused-annotate-target]")' in code
+    marked = code[code.index("function annMarkedFrame() {"):]
+    marked = marked[:marked.index("\n}")]
+    assert "window.parent" in marked
+    assert "catch" in marked, "a cross-origin parent THROWS on .document"
+    assert 'el.tagName === "IFRAME"' in marked
+    # No second channel grew alongside it (D3/D4).
+    assert "postMessage" not in code
+
+
+def test_the_hosted_pin_overlay_is_injected_into_the_target_document():
+    """Pins belong over the element they mark, and in the sidebar layout that
+    element is in another column of the HOST's window — an overlay in this
+    document would be pins drawn over the chat. So the layer is injected into the
+    target's own document, where `annStageRect`'s coordinates already mean
+    something and the frame's own scroll handler keeps them true.
+
+    Behind a SHADOW ROOT, which is not decoration: it is what keeps an arbitrary
+    previewed template's CSS off our pins and ours off theirs, what keeps the
+    pins out of `shotPane`'s clone (cloneNode does not clone a shadow tree — the
+    same structural guarantee the split layout gets by living in a different
+    document), and what keeps the re-render observer from seeing the render it
+    caused.
+
+    APPENDED, never prepended: anchors are `tag:nth-of-type` paths from <body>,
+    and a new first child would renumber every one of them.
+    """
+    code = _pane_code()
+    inject = code[code.index("function annInjectLayer(doc) {"):]
+    inject = inject[:inject.index("\n}\n")]
+    assert 'attachShadow({ mode: "open" })' in inject
+    assert "doc.body.appendChild(host);" in inject
+    assert "prepend" not in inject and "insertBefore" not in inject
+    assert "position: fixed" in inject, "the layer's box is the framed viewport"
+    # Found again rather than stacked: a second call on the same document reuses
+    # the layer it already put there.
+    assert 'doc.querySelector("[" + ANN_LAYER_MARK + "]")' in inject
+    # The injected stylesheet travels with the injection and names no token — it
+    # lives in a document that never heard of this page's palette.
+    css = code[code.index("const ANN_LAYER_CSS = ["):]
+    css = css[:css.index('].join("\\n");')]
+    assert "var(--" not in css
+    assert "box-sizing: border-box" in css, \
+        "no reset comes with a shadow tree, and the ring's border would grow it"
+    # And the app's own outline never reports our layer as part of the app.
+    outline = code[code.index("function outlineNode("):]
+    outline = outline[:outline.index("\n}\n")]
+    assert 'hasAttribute("data-fused-annotate")' in outline
+
+
+def test_the_note_composer_is_portaled_to_the_click_in_the_target_document():
+    """The composer belongs beside the element it describes, and in the sidebar
+    layout that element is in another column of the HOST's window. An iframe
+    cannot paint outside its own box, so no placement in this column can put the
+    text box next to the ring — the NODE has to move into the target's document,
+    into the same injected overlay the pins live in.
+
+    The real node, moved with `adoptNode`, never a rebuilt copy: the keydown that
+    saves on Enter and closes on Escape, the delete button's click and the
+    textarea's text all ride on it, and every one of those closes over this
+    document's state (`annotations`, `annDraft`, `annEditing`). A second popover
+    would be a second implementation to keep in step.
+
+    Placement is then the SPLIT LAYOUT'S OWN arithmetic, unchanged, because after
+    the portal both layouts are the same problem: a box whose coordinate space is
+    the framed viewport. #chat stops being where the composer works and becomes
+    where it RESTS — the seat annCloseComposer returns it to, so a pane reload
+    can never orphan an idle composer in a dead document.
+    """
+    code = _pane_code()
+    # Still rescued out of #left before the teardown removes the column — that is
+    # what gives the composer a document to come home to.
+    no_pane = code[code.index("function enterNoPane()"):]
+    no_pane = no_pane[:no_pane.index("\n}\n")]
+    assert 'annPop.classList.add("sidebar");' in no_pane
+    assert 'document.getElementById("chat").appendChild(annPop);' in no_pane
+    assert no_pane.index("appendChild(annPop)") < no_pane.index('for (const id of ["annbtn"'), \
+        "rescued BEFORE the column it lives in is removed"
+
+    # Out: adopted into the layer's shadow root, which annInjectLayer hands back
+    # whole for exactly this.
+    portal = code[code.index("function annPortalPop() {"):]
+    portal = portal[:portal.index("\n}\n")]
+    assert "annLayerRoot.ownerDocument.adoptNode(annPop);" in portal
+    assert "annLayerRoot.appendChild(annPop);" in portal
+    assert "if (!annLayerRoot) return false;" in portal, \
+        "nothing to portal into means the caller parks it, not a throw"
+    assert "root, pins:" in code, "the shadow root is part of the layer handle"
+
+    # Back: on EVERY close, so the node's idle life is spent in its own document.
+    unportal = code[code.index("function annUnportalPop() {"):]
+    unportal = unportal[:unportal.index("\n}\n")]
+    assert "document.adoptNode(annPop);" in unportal
+    assert '(document.getElementById("chat") || document.body).appendChild(annPop);' \
+        in unportal
+    close = code[code.index("function annCloseComposer() {"):]
+    close = close[:close.index("\n}\n")]
+    assert "annUnportalPop();" in close
+
+    # One placement rule, the split layout's, for both layouts.
+    place = code[code.index("function annPlacePop(x, y) {"):]
+    place = place[:place.index("\n}")]
+    assert "Math.min(host.clientWidth - 292, Math.max(0, x + 10))" in place
+    assert "Math.min(host.clientHeight - 110, Math.max(0, y + 10))" in place
+    assert place.count("annPop.style.left") == 2, \
+        "one placement, one park — no third coordinate system"
+    # The parked fallback survives, for the one case with no point to aim at.
+    assert "annUnportalPop();" in place
+    assert "#annpop.sidebar {" in _pane_source()
+    # And the chip-edit path says so with nulls rather than inventing a point in
+    # someone else's viewport.
+    render = code[code.index("function renderAnn() {"):]
+    assert "const cx = r ? r.right : (CHAT_ONLY ? null : w / 3);" in render
+
+    # A target that reloads or unmarks while the composer is open takes the
+    # composer's document with it: the sync closes it (dropping the draft, which
+    # is what any close does) rather than leaving a node in a dead tree.
+    sync = code[code.index("function annSyncTarget() {"):]
+    sync = sync[:sync.index("\n}\n")]
+    assert "if (annPortaled() && annPop.getRootNode() !== annLayerRoot) annCloseComposer();" in sync
+
+
+def test_the_composer_never_remembers_a_home_that_a_teardown_can_remove():
+    """A remembered home node is a race with a teardown that has not run yet.
+    `paneURL` awaits a fetch before it answers `null`, and the poll that injects
+    the annotation layer and wires the pane's click handler runs at the END of
+    the script — so annotate mode is live, over the host's pane, for a whole
+    network round trip before `enterNoPane` moves the composer out of #leftview.
+    A click in that gap portaled a composer whose parent was still #leftview,
+    and #leftview is precisely what the teardown then removes: "home" would have
+    been a detached column, i.e. a composer that opens into nothing.
+
+    So the home is resolved at unportal time (#chat is the sidebar's seat at
+    every moment, before or after the teardown), and "am I portaled" is asked of
+    `ownerDocument` — the thing `adoptNode` changes — rather than of a
+    remembered parent. That answer also survives a pane reload leaving the node
+    on a dead shadow tree, and an `adoptNode` that lands before an `appendChild`
+    that throws.
+
+    And the teardown closes any live composer before it moves anything, so it
+    never yanks an open one across documents into a coordinate that meant
+    something in someone else's viewport.
+    """
+    code = _pane_code()
+    assert "const annPortaled = () => annPop.ownerDocument !== document;" in code
+    assert "annPopHome" not in code, \
+        "no remembered home node — that was the race"
+    portal = code[code.index("function annPortalPop() {"):]
+    portal = portal[:portal.index("\n}\n")]
+    assert "parentNode" not in portal, "the portal records nothing about where it came from"
+
+    no_pane = code[code.index("function enterNoPane()"):]
+    no_pane = no_pane[:no_pane.index("\n}\n")]
+    assert no_pane.index("annCloseComposer();") < no_pane.index("appendChild(annPop)"), \
+        "a live portaled composer is closed before the rescue moves anything"
+
+
+def test_a_mark_that_moves_between_two_mounted_frames_repaints_the_pins():
+    """The shell keeps its pane-mode iframes mounted and moves the mark between
+    them, so "is there a target" can be true on both sides of a switch while the
+    TARGET is a different document. The poll's arrived/departed branches say
+    nothing about that case, and nothing else covers it: annWatchTarget refuses a
+    frame it has already adopted, so no wiring runs and no render comes with it,
+    and the layer we re-resolve is the one that frame was left with — painted
+    from whatever `annotations` said when it was last on screen.
+
+    annSyncTarget already computed the answer and was the only one who knew it.
+    The poll acts on it now.
+    """
+    code = _pane_code()
+    sync = code[code.index("function annSyncTarget() {"):]
+    sync = sync[:sync.index("\n}\n")]
+    assert "const moved = next !== annFrame;" in sync
+    assert "return moved;" in sync
+    poll = code[code.index("function annPollTarget() {"):]
+    poll = poll[:poll.index("\n}\n")]
+    assert "const moved = annSyncTarget();" in poll, \
+        "the poll has to keep the answer to act on it"
+    assert "if (moved) renderAnn();" in poll
+    assert poll.index("if (moved) renderAnn();") < poll.index("if (has) annSetMode("), \
+        "the same-answer branch is where a moved mark lands"
+
+
+def test_the_re_render_observer_follows_the_target_document():
+    """One repaint on the switch is not enough on its own: the pins also have to
+    keep up with the app RE-RENDERING under them, and that is the
+    MutationObserver's job. It was installed inside annWireTarget's run-once
+    block — precisely the path a re-selected frame skips — so after a mark moved
+    back to a frame we had already wired, the observer was still watching the
+    pane the reader LEFT. The app they were looking at could redraw and no pin
+    would move.
+
+    So it is hoisted out of that block and owned by a function whose only job is
+    "watch whichever document is the target now", idempotent on the document so
+    both callers can ask without knowing whether anything changed: annSyncTarget
+    (where a moved mark is noticed) and annWireTarget above its guard (the split
+    layout's only route, and every load's).
+
+    Still ONE observer, moved rather than accumulated — one left on an unwatched
+    pane would go on waking this frame for mutations nobody is drawing pins for.
+    """
+    code = _pane_code()
+    obs = code[code.index("function annObserveTarget(doc) {"):]
+    obs = obs[:obs.index("\n}\n")]
+    assert "if (doc === annObservedDoc) return;" in obs, "idempotent on the document"
+    assert "if (annObserver) annObserver.disconnect();" in obs, \
+        "the old document is let go before the new one is taken"
+    assert "annObserver.observe(doc.body || doc.documentElement," in obs
+    assert "hasAttribute(ANN_LAYER_MARK)" in obs, \
+        "our own layer's arrival must not re-trigger the render that drew it"
+
+    # Nothing installs an observer anywhere else, and in particular not inside
+    # the run-once wiring block that started this bug.
+    assert code.count("new MutationObserver") == 1
+    wire = code[code.index("function annWireTarget() {"):]
+    wire = wire[:wire.index("\n}\n")]
+    assert wire.index("annObserveTarget(doc);") < wire.index("if (doc.__fusedAnnWired)"), \
+        "above the guard, or a re-selected frame never re-points it"
+    sync = code[code.index("function annSyncTarget() {"):]
+    sync = sync[:sync.index("\n}\n")]
+    assert "annObserveTarget(doc);" in sync
+
+    # The render queue moved out with it and is shared: one rAF, not one per
+    # document left over from an earlier target.
+    assert "function annQueueRender() {" in code
+    assert 'doc.addEventListener("scroll", annQueueRender,' in wire
+
+
+def test_the_portaled_composer_takes_its_styling_with_it():
+    """`#annpop`'s rules live in this page's <style>, and a stylesheet does not
+    cross a shadow boundary into another document — so a composer portaled to the
+    target with nothing else done would arrive as a bare UA text box floating
+    over the app. The injected stylesheet carries a second copy, literal-valued
+    like everything else in there (the app has never heard of this palette).
+
+    `pointer-events: auto` is the load-bearing one: the layer host is
+    `pointer-events: none` so the app stays clickable through it, and a textarea
+    that inherits that cannot be typed in.
+    """
+    code = _pane_code()
+    css = code[code.index("const ANN_LAYER_CSS = ["):]
+    css = css[:css.index('].join("\\n");')]
+    assert "#annpop {" in css
+    assert "#annpop textarea {" in css
+    assert "#annpop .hint {" in css
+    assert "#annpop #anndel {" in css
+    # Same box as the page's own rule, so the two copies read alike.
+    assert "width: 280px" in css and "border-radius: 12px" in css
+    assert "padding: 10px" in css
+    assert "pointer-events: auto" in css, "the layer host is pointer-events: none"
+    assert "position: absolute" in css, \
+        "absolute inside the fixed layer host = framed-viewport coordinates"
+
+
+def test_the_hosted_switch_hides_itself_when_the_host_shows_nothing_marked():
+    """The mark is a live fact: it arrives after the shell's first paint, moves
+    to another frame when the reader switches the pane's mode, and goes away when
+    the pane shows something unannotatable. None of that reaches this document as
+    an event, and postMessage is the thing this template deliberately does not
+    have — so the switch asks, on focus and on a slow interval.
+
+    Hidden, not disabled: the same rule the narrow layout applies to the controls
+    of a hidden half. And only ever in this layout — the split pane hears about
+    itself from its own `load` event.
+    """
+    code = _pane_code()
+    poll = code[code.index("function annPollTarget() {"):]
+    poll = poll[:poll.index("\n}")]
+    assert "annBtn.hidden = !has;" in poll
+    assert "#annbtn[hidden] { display: none; }" in _pane_source(), \
+        "`display: flex` outranks the UA's [hidden] rule"
+    start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
+    wiring = code[start:start + 400]
+    assert 'window.addEventListener("focus", annPollTarget);' in wiring
+    assert "setInterval(annPollTarget, ANN_TARGET_POLL_MS);" in wiring
+    assert "annWatchTarget(annOwnFrame);" in wiring, \
+        "and the split layout still adopts its own frame instead"
 
 
 def test_a_stale_split_param_on_a_folder_url_is_ignored_not_an_error():

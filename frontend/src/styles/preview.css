@@ -22,7 +22,7 @@
 }
 
 /* Groups the name with whatever renders right after it (e.g. the directory
-   listing's "Open as app" button, D81's `_listing` header) — min-width:0 so
+   D81's `_listing` header) — min-width:0 so
    the group (and h1's own ellipsis) can still shrink to make room for
    .preview-actions on narrow windows. */
 .preview-title {
@@ -42,35 +42,6 @@
   white-space: nowrap;
 }
 
-/* Rendered right after the directory name (D81's `_listing` header) — shown
-   only when the folder holds exactly one HTML file. ONE rule for both hosts:
-   the explorer portals this button into the breadcrumb's actions slot
-   (.preview-actions) and the preview header renders it inline, and the slot's
-   generic button rule now excludes it BY NAME (see there) so this is what
-   paints it either way. Chrome comes from the quiet-control tokens
-   (tokens.css), which is what keeps it quiet in BOTH themes: these used to be
-   `rgba(var(--fg-muted-rgb), …)` spelled here, and one alpha cannot serve both
-   palettes — over the light bar it reads as a hairline, over the dark one as a
-   lit pill, because --fg-muted is the light ink there. The light values are
-   unchanged; the tokens are where dark gets its own. */
-.open-as-app-btn {
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 10px;
-  border: 1px solid var(--ctl-quiet-border);
-  border-radius: 6px;
-  background: var(--ctl-quiet-bg);
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.open-as-app-btn:hover {
-  background: var(--ctl-quiet-bg-hover);
-  border-color: var(--ctl-quiet-border-hover);
-  color: var(--fg);
-}
-
 .preview-actions {
   display: flex;
   align-items: center;
@@ -86,18 +57,12 @@
      * `.bar-menu-item` — the rows of a dropdown OPENED from the bar, which are
        descendants of the slot too, and which the `.active` rule below painted
        solid lime (a menu's active row and a toggle's active state share the
-       class name);
-     * `.open-as-app-btn` — SPECIFICITY TRAP, and this is the second round of
-       it. That button has its own chrome above and used to re-assert it with
-       `.preview-actions .open-as-app-btn` (0,2,0) — which loses to this
-       selector's (0,3,1), so the re-assert never applied and the button drew
-       as generic chrome in the explorer bar while drawing correctly in the
-       (unportaled) preview header. The `:not()` is the fix that actually
-       works, because it stops this rule MATCHING rather than trying to outrank
-       it; the re-assert is deleted with it. Round one wrote the re-assert and
-       a comment saying it was needed; round two is a reminder that the way to
-       settle a specificity fight is to not have one. */
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item):not(.open-as-app-btn),
+       class name).
+   A third name sat here — the "Open as app" pill, whose own chrome this rule
+   outranked (0,3,1 against its 0,2,0) until the `:not()` stopped it MATCHING
+   rather than trying to outrank it. That button is gone (D264); the mechanism
+   it taught is why the two above are named and not re-asserted. */
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item),
 .preview-actions a {
   font: inherit;
   padding: 5px 10px;
@@ -109,13 +74,13 @@
   cursor: pointer;
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item):not(.open-as-app-btn).active {
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item).active {
   background: var(--accent);
   color: var(--on-accent);
   border-color: var(--accent);
 }
 
-.preview-actions button:not(.bar-ctl):not(.bar-menu-item):not(.open-as-app-btn):hover,
+.preview-actions button:not(.bar-ctl):not(.bar-menu-item):hover,
 .preview-actions a:hover {
   background: var(--bg-alt);
 }
@@ -268,9 +233,12 @@
   touch-action: none;
 }
 
+/* Accent on hover/drag — matches .listing-divider and the left sidebar's
+   resize handle (.sidebar-resize-handle, sidebar.css). */
 .preview-side-divider:hover,
 .preview-side-divider.dragging {
-  background: var(--border);
+  background: var(--accent);
+  opacity: 0.35;
 }
 
 /* An iframe is a separate document and would swallow the captured pointer
@@ -296,18 +264,18 @@
   position: relative;
 }
 
-/* The seam between the two columns, and where it STOPS — the listing pane's rule
-   (.listing-pane-slot::before), for the reason written out there: the two header
-   strips are the same height, background and bottom hairline precisely so they
-   read as ONE bar across the window, and a border-left running the full height
-   would cut that bar in two boxes. So the line starts where the CONTENT does.
-   The drag target is untouched — the divider is a separate full-height flex item,
-   transparent until hover. Only the painted line is short. */
+/* The seam between the two columns — full height, the listing pane's rule
+   (.listing-pane-slot::before), for the reason written out there: a seam that
+   stopped at the header left its top segment a different color from the run
+   below it (the file view's left column is content, not a matching bg-alt
+   strip), so the line reads broken. One continuous hairline instead.
+   The drag target is untouched — the divider is a separate full-height flex
+   item, transparent until hover. */
 .preview-side::before {
   content: "";
   position: absolute;
   left: 0;
-  top: var(--topbar-h);
+  top: 0;
   bottom: 0;
   width: 1px;
   background: var(--border);
@@ -323,11 +291,9 @@
    collapses toward, and the mode control is packed to the far end the way the crumb
    bar's own controls are. That far end is `.side-header-tail` (explorer.css), the
    ONE auto margin the two side-column headers share — so the right-hand end holds
-   whichever of the two things renders there (the ModeMenu, or the flat
-   .preview-side-name label a one-companion file gets) without either needing a rule
-   of its own, and the strip cannot be thrown off by what does or does not render at
-   its left end. The explicit `height` is what stands the bar up; same dependency,
-   same reason, as .pane-header. */
+   whatever renders there without needing a rule of its own, and the strip cannot be
+   thrown off by what does or does not render at its left end. The explicit `height`
+   is what stands the bar up; same dependency, same reason, as .pane-header. */
 .preview-side-header {
   flex: 0 0 auto;
   display: flex;
@@ -339,23 +305,6 @@
   box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
-}
-
-/* The one-companion case: the same icon and words the menu would show, with
-   nothing to click (BarMenu's ModeMenu hides itself at one entry — "one mode is
-   not a choice" — which would leave this strip empty over an unlabelled
-   document). Deliberately NOT .bar-ctl-bordered: it is a label, and a plate
-   around it would invite the click it does not take. */
-.preview-side-name {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 2px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg);
-  white-space: nowrap;
 }
 
 /* Fills what the header leaves. flex, not height:100%, so the header can't push
@@ -525,39 +474,6 @@ body.embed:not(.snapshot) .preview-browse-chip:hover {
   border-color: var(--accent);
 }
 
-/* Embed counterpart of .open-as-app-btn (embed hides .preview-header, so the
-   header button can't reach it) — opposite corner from .preview-browse-chip
-   so a directory carrying both can show both at once. Same accent tint as
-   the header button / the old per-row "App" chip. */
-.open-as-app-chip {
-  display: none;
-}
-
-body.embed:not(.snapshot) .open-as-app-chip {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  padding: 5px 9px;
-  border: 1px solid rgba(var(--accent-rgb), 0.45);
-  border-radius: 8px;
-  /* Opaque (unlike .open-as-app-btn's translucent tint) — this one is pinned
-     OVER the listing's search input, and a see-through fill let its
-     placeholder text bleed through underneath. */
-  background: var(--bg-alt);
-  color: var(--accent-soft);
-  cursor: pointer;
-}
-
-body.embed:not(.snapshot) .open-as-app-chip:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
 
 /* Panel mode (/view/_panel, /embed/_panel): a split-pane grid of /embed iframes (SPEC §14).
    Modeled on the reference grid-viewer's pane styles, using our palette. The

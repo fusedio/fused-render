@@ -1,7 +1,7 @@
 // Crumb bar, in three zones left to right:
 //
-//   path    ★ bookmark button, the crumbs (or the editable path field), then the
-//           path `⋮` — reveal, copy path, and (a file only) the two splits
+//   path    ★ bookmark button, the crumbs (or the editable path field), then —
+//           over a FILE only — the path `⋮`: reveal, copy path, the two splits
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action, the shared mode control and the preview
 //           sidebar's toggle into it
@@ -20,7 +20,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
-import { navigate, navigateUrl, currentUrl, IS_EMBED } from "@platform/lib/router";
+import { navigate, currentUrl, IS_EMBED } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { isMod } from "@platform/lib/platform";
 import {
@@ -38,9 +38,8 @@ import { useUrlVersion, useBookmarksVersion, notifyBookmarksChanged } from "@pla
 import { urlScheme, isCloudScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { resolveCloudUrl } from "@platform/lib/api";
 import { pushToast } from "@platform/lib/toast";
-import { encodePaneSegment, splitShellSearch } from "@platform/lib/layout-codec";
-import { panelUrl } from "@apps/explorer/Panel";
 import { PathOverflow } from "@apps/explorer/BarMenu";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import {
@@ -50,7 +49,14 @@ import {
 } from "@apps/explorer/listing/folder-chrome";
 import { publishTopbarSlot, retractTopbarSlot } from "@apps/explorer/topbar-slot";
 import { publishSearchSlot, retractSearchSlot } from "@apps/explorer/search-slot";
-import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
+import {
+  refreshDropTarget,
+  registerSpring,
+  DROP_ANNOUNCE_ATTR,
+  DROP_DIR_ATTR,
+  DROP_PATH_ATTR,
+  SPRING_ATTR,
+} from "@apps/explorer/listing/row-drag";
 
 // How long a file drag has to hover a crumb before the listing follows it.
 // Spring-loading is the standard file-manager answer to "the folder I want to
@@ -62,13 +68,48 @@ import { registerSpring, SPRING_ATTR } from "@apps/explorer/listing/row-drag";
 // shorter dwell navigates out from under a drag that was only crossing it.
 const SPRING_LOAD_MS = 700;
 
-// A crumb is spring-loaded NAVIGATION, never a drop target. Dropping ON a path
-// segment would be a second, invisible way to move files — one that gives no
-// listing to see the result in and no way to change your mind about which of
-// several ancestors you meant. So a crumb carries `data-spring-target` and NOT
-// the `data-fs-drop-path` a target declares itself with: the drag keeps its
-// refused cursor over the strip, the listing navigates underneath, and the drop
-// happens in the folder like any other.
+// A crumb is BOTH a spring-loaded navigation and a real drop target: hold and
+// the ancestor opens with the drag still in your hand, release and the entries
+// move into it.
+//
+// It used to be spring-load only — no `data-fs-drop-path` — on the argument that
+// dropping ON a path segment gives no listing to see the result in and no way to
+// choose between adjacent ancestors. The second half of that is answered by the
+// per-crumb highlight every other drop target already gets (row-drag paints
+// `drop-into` / `drop-reject` on whatever the pointer is over, from the same
+// dropIsValid verdict), and the first by `data-fs-drop-announce`: the
+// destination is off screen, so the move toasts, exactly as a drop onto a
+// sidebar bookmark does.
+//
+// What the old arrangement actually produced was WORSE than either reading: with
+// no drop host under the pointer, row-drag put `fs-drag-refused` on the body, so
+// the strip wore the NO-DROP cursor for the whole hover — while hovering there
+// was doing something useful — and a release did nothing at all. One hover, two
+// meanings, painted as a rejection. The refusals are truthful now instead of
+// universal: dropping on the crumb of the folder you are already in is
+// "already-there" (drag-drop's dropIsValid, which has the crumb cases tested).
+//
+// `data-fs-drop-dir` is "1" with no stat probe — a path segment the listing is
+// inside is a directory by construction.
+//
+// THE HARD PART IS NOT THE ATTRIBUTES, IT IS THAT THE SPRING-LOAD DESTROYS WHAT
+// THE DROP DEPENDS ON. Navigating mid-drag replaces the hovered crumb (it becomes
+// the current-folder crumb), re-lays out the strip under a pointer that has not
+// moved, re-renders away the imperatively painted drop ring, and unmounts the
+// listing whose registered mover the drop was going to use. A drag only
+// re-resolves its target on pointer MOVEMENT, so none of that was noticed. Three
+// things answer it together, and they only work as a set:
+//
+//   • every crumb is a drop target, the current-folder one included — that is the
+//     crumb the pointer lands on after a spring-load (see dropProps);
+//   • the strip tells the drag when it has changed, via row-drag's
+//     refreshDropTarget, from an effect on fsPath and armedTarget — so the spot,
+//     the cursor and the ring are rebuilt against the live DOM, and what is
+//     painted is what a release will use, because both come from that one hit
+//     test;
+//   • row-drag resolves the performer as target listing → origin listing → the
+//     listing that is actually on screen (its liveMover), because after a
+//     spring-load the first two are gone.
 //
 // Enter and leave used to be the DOM's own `dragenter`/`dragleave`. The row
 // drag is pointer-driven now (listing/row-drag.ts), so they arrive as calls
@@ -132,9 +173,31 @@ function useSpringLoadedCrumbs() {
   // A crumb declares itself to the drag by attribute, so a crumb re-rendered
   // mid-drag (which the spring-load's own navigation guarantees) is still the
   // same target to a hit test that reads the DOM.
-  const springProps = (target: string) => ({ [SPRING_ATTR]: target });
+  //
+  // EVERY crumb is a drop target, including the one for the folder currently
+  // being listed. That last one is not decoration: after a spring-load the crumb
+  // under the pointer IS the current-folder crumb, so leaving it out meant the
+  // headline gesture — hold to open, release to move in — failed in its
+  // commonest path, with the no-drop cursor on the crumb the user was aiming at
+  // and a release that moved nothing. What it is NOT is a spring target: the
+  // listing is already there, so navigating would be a pointless remount.
+  // (Dropping the rows you are looking at into the folder they are already in is
+  // refused as "already-there" by dropIsValid, as it is for the listing
+  // background; after a spring-load the dragged rows come from a deeper folder,
+  // so the same crumb is a real move.)
+  const dropProps = (target: string) => ({
+    [DROP_PATH_ATTR]: target,
+    [DROP_DIR_ATTR]: "1",
+    // Empty string, not "1": the attribute's PRESENCE is the signal
+    // (row-drag reads hasAttribute), and "" keeps it out of the rendered value.
+    [DROP_ANNOUNCE_ATTR]: "",
+  });
+  // Both declarations at once, in one spread, so an ancestor crumb can never be
+  // one without the other (see the header: a spring target that is not a drop
+  // target is what painted the refused cursor over the whole strip).
+  const springProps = (target: string) => ({ [SPRING_ATTR]: target, ...dropProps(target) });
 
-  return { springProps, armedTarget };
+  return { springProps, dropProps, armedTarget };
 }
 
 // "Update bookmark" visibility (D38). The check has side effects (a pathname
@@ -223,7 +286,8 @@ function FolderSearchSlot() {
 // far right of the window, an inch of empty bar away from the path they act on.
 // Both are items in the path `⋮` now (BarMenu's PathOverflow), where they sit
 // beside "Open in Finder"/"Copy path", carry their names, and travel with the
-// path itself. `enterPanel` below is unchanged and is still what they call.
+// path itself. They still call `enterPanel` (lib/split-actions.ts, lifted out of
+// this file once the listing's own `⋮` became a second caller).
 //
 // Which state we are in — file or folder — is `listing/folder-chrome.ts`'s
 // claim, read where the menu is rendered rather than by a zone component of its
@@ -330,22 +394,6 @@ function TopbarActionsSlot() {
   return <div ref={ref} id="topbar-mode-slot" className="crumb-actions preview-actions" />;
 }
 
-// Split entry (LM-10): two panes side by side (`dir` "row", `,` in the codec)
-// or stacked ("col", `;`), both showing the current view — entering split mode
-// with a single pane looked like nothing happened. The current view's WHOLE
-// query goes pane-local, inside each `_layout` segment (LM-3/D72): nothing is
-// promoted to the top-level pool — global params exist only when the user
-// hand-types them on the shell URL. Read via splitShellSearch, not raw
-// URLSearchParams (D51): a stray `_layout=(…)` span carries literal `&` that
-// would parse as junk keys; the codec read excludes the span, so it is
-// dropped — the strict-read semantics.
-function enterPanel(fsPath: string, dir: "row" | "col"): void {
-  const { params } = splitShellSearch(location.search);
-  const paneQ = params.toString();
-  const seg = encodePaneSegment(fsPath, paneQ ? "?" + paneQ : "");
-  navigateUrl(panelUrl(seg + (dir === "row" ? "," : ";") + seg, null));
-}
-
 // Open a URL typed/pasted into the path bar. Every failure is an error toast
 // carrying the reason — the path bar has already closed by now, so a silent
 // no-op would read as "Enter did nothing". A cloud URL keeps its trailing
@@ -423,25 +471,15 @@ export function Breadcrumb({
   renderedTitle?: string | null;
 }) {
   const crumbsRef = useRef<HTMLDivElement | null>(null);
-  // The bar around whichever of the two the strip is currently showing (crumbs
-  // or the edit field) — captured from the live one, so the free-space handler
-  // below stays bound across the swap instead of dropping out in edit mode.
-  const barRef = useRef<HTMLElement | null>(null);
-  const captureBar = (el: HTMLElement | null) => {
-    if (el) barRef.current = el.parentElement;
-  };
   // Folder or file? The listing claims the bar's chrome over a folder
   // (listing/folder-chrome.ts) — the one thing that decides whether the path
   // menu offers the splits (see PathOverflow below).
   const folderClaimed = useSyncExternalStore(subscribeFolderChrome, folderChromeClaimed, () => false);
   const [editing, setEditing] = useState(false);
-  // Set by the click-away below for the rest of its gesture — see the bar's
-  // click handler, which must not treat that same click as "open the field".
-  const justClosed = useRef(false);
-  // Read by that always-on listener, which must not rebind on every toggle.
+  // Read by the always-on click-away listener, which must not rebind on every toggle.
   const editingRef = useRef(false);
   editingRef.current = editing;
-  const { springProps, armedTarget } = useSpringLoadedCrumbs();
+  const { springProps, dropProps, armedTarget } = useSpringLoadedCrumbs();
 
   // Keep the tail of a long path in view on every path change (same as the
   // panel path bar, Panel.tsx). The strip hides its scrollbar (shell.css), so
@@ -454,28 +492,52 @@ export function Breadcrumb({
     if (el) el.scrollLeft = el.scrollWidth;
   }, [fsPath, editing]);
 
-  // The same click-to-edit, extended to the BAR's own free space — the gap
-  // between the crumbs and the folder-search box, which belongs to #breadcrumb
-  // rather than to the crumb strip (the strip stops growing once the search
-  // slot is mounted, explorer.css). Bound to the parent node here instead of
-  // being handed down from BreadcrumbBar so the edit state stays in one
-  // component; `e.target === bar` keeps it to the bar's own background, never
-  // a click that landed on one of its children.
+  // THE STRIP CHANGED UNDER A POINTER THAT DID NOT MOVE — tell the drag.
+  //
+  // row-drag only re-resolves its target on pointer MOVEMENT, and a spring-load is
+  // the one moment when the DOM moves instead: the hovered crumb is replaced by the
+  // current-folder one, the strip re-lays out, and the armed highlight's re-render
+  // rewrites `className` over the drop ring row-drag painted imperatively. Left
+  // unsaid, the drag holds a spot pointing at a detached element, keeps the no-drop
+  // cursor, and releases into whatever a fresh hit test happens to find — which is
+  // a silent wrong destination. refreshDropTarget no-ops off-drag, so both hooks
+  // below cost a boolean check the rest of the time.
+  //
+  // THE RENDER IS NOT ENOUGH ON ITS OWN, which is why the observer exists. Chrome
+  // portals into the crumb bar ASYNCHRONOUSLY after a navigation — Preview's topbar
+  // slot, and the open-as-app button, which only appears once the new listing's
+  // /api/fs/list has resolved and reported a single app. Each one narrows the strip
+  // and re-triggers the tail pin above, sliding crumbs under a cursor that never
+  // moved, with no dependency here changing and no render of this component at all.
+  // A window resize does the same. So the geometry itself is watched rather than
+  // the React inputs that were supposed to predict it: a ResizeObserver for the
+  // width, and `scroll` for the tail pin's own scrollLeft write.
   useEffect(() => {
-    const bar = barRef.current;
-    if (!bar) return;
-    const onClick = (e: MouseEvent) => {
-      if (e.target !== bar) return;
-      // The click that CLOSED the field is still travelling: pointerdown ran
-      // the click-away below, and this is the same gesture's click arriving on
-      // the background the field just vacated. Without this it would read as a
-      // fresh click on free space and reopen what the user just dismissed.
-      if (justClosed.current) return;
-      setEditing(true);
+    const el = crumbsRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => refreshDropTarget());
+    observer.observe(el);
+    el.addEventListener("scroll", refreshDropTarget);
+    return () => {
+      observer.disconnect();
+      el.removeEventListener("scroll", refreshDropTarget);
     };
-    bar.addEventListener("click", onClick);
-    return () => bar.removeEventListener("click", onClick);
+    // `editing` swaps the strip for the path input and back, so the element this
+    // is bound to is a different node either side of it.
   }, [editing]);
+
+  // The synchronous half, kept as well as the observer: replacing the hovered
+  // crumb with a same-width one changes what is under the pointer without
+  // resizing anything, and `armedTarget` is the className rewrite, which changes
+  // no geometry at all. `editing` is here for the same reason it is on the pin.
+  useEffect(() => {
+    refreshDropTarget();
+  }, [fsPath, armedTarget, editing]);
+
+  // Click-to-edit stops at the crumb strip itself (.crumbs onClick below).
+  // The bar's own background — the free space right of the crumbs, and the
+  // vertical padding above/below the text — is deliberately NOT a target:
+  // a click meant for the chrome kept turning into an open path field.
 
   // Click-away, closing the path field. `onBlur` alone is not enough: whether
   // a mouse-down on non-focusable chrome (the bar's own background, a gap in
@@ -487,20 +549,15 @@ export function Breadcrumb({
   // deliberately doesn't take focus (BarMenu.tsx), so its menu opens over an
   // open field rather than closing it out from under the pointer.
   //
-  // Bound once for the bar's lifetime, not per edit session, because it owns
-  // `justClosed` on both edges: every gesture starts by clearing the flag, so
-  // it lives exactly from the pointerdown that closes the field to the next
-  // press — long enough to cover that gesture's own click (which arrives in a
-  // later task, so a timer can't span it), and no longer.
+  // Bound once for the bar's lifetime, not per edit session (editingRef keeps
+  // it reading fresh state without rebinding).
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      justClosed.current = false;
       if (!editingRef.current) return;
       const t = e.target as HTMLElement | null;
       if (!t) return;
       if (t.classList?.contains("crumb-edit")) return;
       if (t.closest?.(".bar-overflow, .bar-menu-popup")) return;
-      justClosed.current = true;
       setEditing(false);
     };
     document.addEventListener("pointerdown", onDown, true);
@@ -571,7 +628,10 @@ export function Breadcrumb({
         (parts.length === 0 ? " last" : "") +
         (armedTarget === rootTarget ? " spring-armed" : "")
       }
-      {...springProps(rootTarget)}
+      // Drop-only when the listing is already AT the root: this crumb is then the
+      // current folder, and springing into the folder you are looking at would be
+      // a pointless remount. An ancestor gets both roles.
+      {...(parts.length === 0 ? dropProps(rootTarget) : springProps(rootTarget))}
       onClick={(e) => {
         e.preventDefault();
         // A top-bar hop always lands on the plain listing: `_mode` is dropped
@@ -614,7 +674,11 @@ export function Breadcrumb({
     if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
-        <span key={target} className={cls} title={part}>
+        // Not a link (you are already here) and not a spring target, but a DROP
+        // target like every other crumb — after a spring-load this is the crumb
+        // the pointer is sitting on, so it is the one that has to accept the
+        // release (see dropProps).
+        <span key={target} className={cls} title={part} {...dropProps(target)}>
           {part}
         </span>
       );
@@ -645,7 +709,6 @@ export function Breadcrumb({
       {editing ? (
         <input
           className="crumb-edit"
-          ref={captureBar}
           defaultValue={displayPath}
           spellCheck={false}
           autoFocus
@@ -667,18 +730,16 @@ export function Breadcrumb({
           onBlur={() => setEditing(false)} // a stray click cancels rather than commits
         />
       ) : (
-        // Click-to-edit, like a browser's location bar. Anything in the strip
-        // that is not itself a control turns it editable: the whitespace right
-        // of the crumbs, the "/" separators, and the current folder's own
-        // (unlinked) crumb. Only the ancestor crumbs — real links, plus the
+        // Click-to-edit, like a browser's location bar — but only inside the
+        // strip itself: the "/" separators, the current folder's own (unlinked)
+        // crumb, and the strip's residual whitespace. The bar's background
+        // outside the strip is chrome, not path (see the note above the
+        // click-away effect). Only the ancestor crumbs — real links, plus the
         // bar's buttons — keep their own behaviour, which is why this tests
         // for an enclosing control rather than for the strip itself.
         <div
           className="crumbs"
-          ref={(el) => {
-            crumbsRef.current = el;
-            captureBar(el);
-          }}
+          ref={crumbsRef}
           onWheel={onWheel}
           onClick={(e) => {
             if (!(e.target as HTMLElement).closest("a, button, input")) setEditing(true);
@@ -687,20 +748,20 @@ export function Breadcrumb({
           {pieces}
         </div>
       )}
-      {/* The path `⋮` — "Open in Finder", "Copy path", and for a FILE the two
-          split-entry actions — sits immediately right of the name it acts on, in
-          every view. It used to end the bar's layout zone for a file and the
-          search row for a folder: two homes, both of them the bar's far right,
-          neither of them next to the thing being opened or copied. The crumb
-          strip stops growing (explorer.css) so this stays against the path
-          rather than drifting to the edge.
-          No splits over a FOLDER (the chrome claim is how we know): they make
-          least sense over a view that already is a split, which is why the old
-          layout zone hid itself there too. */}
-      <PathOverflow
-        fsPath={fsPath}
-        onSplit={folderClaimed ? undefined : (dir) => enterPanel(fsPath, dir)}
-      />
+      {/* The path `⋮` — "Open in Finder", "Copy path", the two split-entry
+          actions — sits immediately right of the name it acts on. The crumb
+          strip stops growing (explorer.css) so it stays against the path rather
+          than drifting to the edge.
+          A FILE only, and the chrome claim is how we know. Over a FOLDER the
+          listing owns this bar, and it now carries the same actions itself, at
+          the right end of its column header (Listing.tsx) — where they sit with
+          the folder's other operations (new file, paste, refresh) instead of
+          being split between a path menu and a right-click. Two `⋮`s a few
+          pixels apart, offering overlapping sets, was the thing to fix; this bar
+          gives its one up. */}
+      {!folderClaimed && (
+        <PathOverflow fsPath={fsPath} onSplit={(dir) => enterPanel(fsPath, dir)} />
+      )}
       <UpdateBookmarkButton />
       <TopbarActionsSlot />
       <FolderSearchSlot />

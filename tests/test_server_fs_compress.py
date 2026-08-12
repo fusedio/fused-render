@@ -17,6 +17,8 @@ import zipfile
 import pytest
 from fastapi.responses import JSONResponse
 
+from _thread_scoped import this_thread_only
+
 from fused_render.server.fs_mutate import _fs_compress as COMPRESS
 
 from tests.test_server_git_repo import git, make_repo
@@ -372,7 +374,17 @@ def test_mount_backed_source_is_refused_without_walking_it(tmp_path, monkeypatch
     monkeypatch.setattr(shell_mounts, "is_mount_backed", lambda p: True)
     monkeypatch.setattr(shell_mounts, "mount_read_only", lambda p: False)
     walked = []
-    monkeypatch.setattr(os, "walk", lambda *a, **k: walked.append(a) or iter(()))
+    # Thread-scoped: this patch is process-wide and it does not merely record —
+    # it returns an EMPTY walk to every caller, so another thread's legitimate
+    # walk would silently see nothing, and its arguments would land in `walked`
+    # and break `walked == []` for a tree this test never named. Under the
+    # fused-engine job the `openfused-invoke-dispatcher` thread enumerates its
+    # own request directory on its own schedule. `_fs_compress` is synchronous on
+    # the calling thread, so the claim ("the mount source is refused before
+    # anything walks it") is proved exactly as before. Do not re-globalise.
+    monkeypatch.setattr(
+        os, "walk",
+        this_thread_only(os.walk, lambda *a, **k: walked.append(a) or iter(())))
     resp = COMPRESS({"path": str(tmp_path / "mnt" / "proj"), "format": "zip"},
                     x_fused="1")
     assert _status(resp) == 400

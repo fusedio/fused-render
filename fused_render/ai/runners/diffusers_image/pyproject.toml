@@ -1,0 +1,46 @@
+# The diffusers image runner's environment (SPEC §40, PY-16).
+#
+# This folder exists so that torch and diffusers are named in exactly one place
+# and live in exactly one interpreter — not fused-render's. They are several GB;
+# a file explorer that could not start without them would be a worse file
+# explorer, and `envinstall` (PY-18) builds this on first use with the same
+# detached `uv sync` and the same verbatim errors any declaring folder gets.
+#
+# **This first install is genuinely large** — a torch wheel alone is 2-3GB — so
+# it is a reported stage rather than a silent wait, and the AI Models page shows
+# it as "Preparing Diffusers (PyTorch)…" before any weights are fetched.
+#
+# What each earns:
+#   torch          the tensors and the device (CUDA / MPS / CPU)
+#   diffusers      the pipelines. FROM GIT: FLUX.2 support landed after the last
+#                  release, and pinning to PyPI would mean the one model this
+#                  runner ships a recipe for cannot load. Revisit at the release
+#                  that carries Flux2KleinPipeline.
+#   transformers   the text encoder every text-to-image pipeline puts in front
+#   accelerate     device placement / offload for models bigger than the GPU
+#   sentencepiece  the tokenizer format those text encoders use
+#   protobuf       sentencepiece's model format needs it at load time
+#   gguf           reads the quantized single-file transformer (see worker.py)
+#   pillow         writes the PNG
+#   huggingface_hub downloads
+#   psutil         answers "how much memory is this costing"
+[project]
+name = "fused-render-runner-diffusers-image"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "diffusers @ git+https://github.com/huggingface/diffusers.git",
+    "transformers",
+    "accelerate",
+    "sentencepiece",
+    "protobuf",
+    "gguf",
+    "pillow",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

@@ -88,6 +88,141 @@ servers) sees ordinary local paths.
 - Mounts stay up until you unmount them — including across app restarts, and
   every mount is automatically remounted when the server starts.
 
+## AI Models
+
+**AI Models** in the sidebar lists what the Hugging Face cache holds on this
+machine — every model, dataset and Space anything on your computer has pulled
+from the Hub, biggest first, with what each one costs on disk. The entry appears
+once that cache exists; the first download from the Hub creates it.
+
+- **Each card says what the model is for** — "text generation", "image
+  generation", "speech recognition" — and how big the model is in parameters
+  ("7.2B params"). Both are read from the files already cached: the purpose from
+  the model card's `pipeline_tag` when it came down with the weights, otherwise
+  from the architecture in `config.json` (hover the label to see which), and the
+  parameter count from the safetensors headers. A repo whose download brought
+  neither says nothing rather than guessing.
+- **Hover a task to see what it means.** "Image + text to text" says it takes a
+  picture and a prompt and answers in text; "fill mask" says it fills in blanked
+  words. The same hover says where the label came from — the model card, or the
+  architecture in `config.json`.
+- **Quantized models say so, and their size is marked "≈".** A 4-bit checkpoint
+  packs eight weights into each stored word, so the card shows the width
+  ("4-bit") and reports the parameter count unpacked from it — approximate by
+  nature, hence the ≈, and read from what the checkpoint declares rather than
+  from a name like `…-4bit`.
+- **"Added" is when this machine got the model, not when it was released.** The
+  release date lives on the Hub, and this page only ever reads your disk.
+- **The sizes are real disk usage.** Inside the cache each revision's files are
+  symlinks to one shared copy of the bytes, so the page counts that copy once:
+  the per-card sizes add up to the total in the header.
+- **You can clear space from here**, two ways, each behind a confirmation that
+  names what goes and what it frees:
+  - **Delete a repo** — the ✕ on its card.
+  - **Delete one revision** — expand a card with more than one revision. The
+    size shown is what deleting *that* revision frees: revisions share their
+    weights, so two revisions of a 7GB model differing in a config file are
+    7GB shared and a few KB each, and only the few KB come back.
+
+  There is deliberately no bulk "delete everything older than N days": the age
+  it would select on is filesystem last-read time, which some volumes never
+  record (see below), and one confirm on a list built from that is a multi-GB
+  re-download waiting to happen. The ages on the cards are there for you to
+  weigh one model at a time.
+- **Nothing is re-downloaded for you.** Deleting a model means the next thing
+  that wants it pulls it from the Hub again.
+- **Last-read time comes from the filesystem.** Volumes mounted `noatime` never
+  update it, so on those a model you use daily can still look untouched. Weigh
+  "used 4 months ago" with that in mind before deleting anything.
+- **The name goes to the Hub; "Explore" opens it here.** Clicking a model's
+  name opens its page on huggingface.co in a new tab — the licence, the full
+  model card, the discussions and every revision live there, not on your disk.
+  **Explore**, in the card's footer, opens the copy you already have.
+- **Explore gives you a model card** view — which carries its own **Hugging
+  Face ↗** link in the header, so the way back out to the licence, the
+  discussions and the other revisions is always one click away. It shows what the
+  model is, its parameters and disk, the summary and tags from its own model
+  card, the configuration worth reading (layers, heads, context length,
+  vocabulary), a weights table and its largest tensors. It opens instantly even
+  on a 40GB checkpoint — nothing is loaded, it is all read from the metadata and
+  the safetensors headers. If the model has a `tokenizer.json`, the same page
+  ends with a **tokenizer** box: type text and see how that model splits it,
+  with counts and chars-per-token. (Live encoding needs the `tokenizers`
+  library, which the template installs itself under the fused engine; the
+  tokenizer's vocabulary and special tokens show either way.) The plain folder
+  listing is still one click away in the mode switcher.
+- **The cache path under the heading is a link** — click it to open that folder
+  in the explorer, rather than copying it out by hand.
+- **It looks where `huggingface_hub` looks** — `HF_HUB_CACHE`,
+  `HUGGINGFACE_HUB_CACHE`, `$HF_HOME/hub`, `$XDG_CACHE_HOME/huggingface/hub`,
+  then `~/.cache/huggingface/hub` — so a shared model disk pinned with `HF_HOME`
+  is the one you see. The path in use is printed under the heading.
+- **Scanning happens when you open the page**, and then only when the cache
+  really changed. It walks every file in the cache, so it is deliberately not
+  re-run each time you switch back to the window — and there is no Refresh
+  button, because knowing when that walk is worth paying for is not something
+  you should have to judge. Deleting something re-reads the cache on its own,
+  and so does a download finishing.
+- **You can load a model into memory from here.** Each cached model has a
+  **Load** button; while it is resident the card turns green and carries a
+  **LOADED** badge next to its name — findable at a glance in a grid of a dozen
+  — with the memory it is holding underneath, and **Unload** gives that back. Only one model per kind stays loaded
+  — loading a second chat model unloads the first, because two 8GB models on a
+  16GB machine is a swap storm — and a dot appears on the AI Models entry in the
+  sidebar whenever anything is in memory, so gigabytes are never held by
+  something you have forgotten about. Hover the dot to see what.
+  - Loading a model that is not downloaded yet fetches it first; the progress is
+    the same download-manager row.
+  - **Load is offered only where something can actually run it.** Chat models
+    and image models have it; a dataset, an embedding model or a transcription
+    model does not, because nothing here would load them. A multimodal chat
+    model — one labelled "image + text to text" — counts as a chat model: it is
+    loaded for its text, and its picture-reading half simply goes unused.
+  - Text generation currently needs Apple Silicon (it runs on MLX). On other
+    machines the button is not offered and the Discover tab says why. Image
+    generation runs anywhere torch does — the first use of it builds a several-GB
+    environment, which shows as its own row in the download manager before any
+    weights are fetched.
+- **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
+  local chat model instead of Claude, and `fused.ai.image({prompt})` renders a
+  picture — both through the same download manager, so a page that asks for a
+  model you don't have yet shows the download rather than hanging. Images land
+  in `~/.fused-render/ai/images/`, named by the time they were made, and the
+  seed comes back with every one so you can make the same picture again.
+- **Two tabs: Local and Discover.** Local is what this machine has; Discover is
+  what the Hub has. Which one is showing is part of the address (`?tab=discover`),
+  so you can bookmark or share a link to either — and the **back button** returns
+  you to the tab you came from rather than leaving the page.
+- **The Discover tab searches the Hub for models you don't have.** Type a name,
+  filter by task, sort by downloads, likes, recently updated or newest. Each
+  result says whether it is **already on this machine** (with what it costs on
+  disk and when you last read it), **partly downloaded** — an interrupted pull —
+  or not here at all, with an estimated size so you know what fetching it would
+  cost before you decide. A result you already have opens its model card; one
+  you don't opens its page on the Hub in a new tab.
+  - **Nothing is sent anywhere until you open that tab**, and the caption names
+    the host being asked — and links to it, so you can go and look.  If
+    `HF_ENDPOINT` points this machine at a mirror, that is the name you see. Typing is batched into one request, and repeating
+    a search inside a minute or so reuses the answer rather than asking again.
+  - **Download happens here now.** The suggestions below carry a **Download**
+    button; the transfer shows up in the download manager at the bottom-right
+    like any other long job, and its ✕ really stops it. Search results stay
+    read-only. While a download runs, its card shows that progress rather than
+    the ✓ — the ✓ means the model is complete and ready to open, not that you
+    once asked for it.
+  - **Suggested** is a short curated list per capability — chat models, image
+    models — with what each costs and why you would pick it, and a ✓ on the ones
+    you already have. It only shows when the search box is empty: it is the
+    answer to "what should I even get", which is the question you have before
+    you know what to type.
+  - **Sizes are estimates and marked "≈"**, computed from the parameter counts
+    the Hub publishes for the weights. Other files in the repo aren't counted,
+    and a repo the Hub has no such metadata for shows no size rather than a
+    guess.
+  - If you have an `HF_TOKEN` (or have logged in with the Hugging Face CLI), it
+    is used — that is what makes gated and private repos searchable, and it
+    raises the rate limit.
+
 ## Preferences
 
 The gear at the sidebar's bottom-left opens **Preferences**:

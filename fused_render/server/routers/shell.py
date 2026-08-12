@@ -11,10 +11,12 @@ def shell_root(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 @router.get("/apps")
-@router.get("/apps/{path:path}")
-def shell_apps(path: str = "", shell_path: str = Depends(get_shell_path)):
-    # Apps hub (the app home) plus /apps/<tag>/<name> app-builder routes — all
-    # client-side; serving the shell makes direct loads and refreshes work.
+def shell_apps(shell_path: str = Depends(get_shell_path)):
+    # The apps hub (the app home) — client-side, so serving the shell makes a
+    # direct load and a refresh work. The wildcard that also served
+    # /apps/<tag>/<name> is gone with that route: an app folder is browsed on
+    # /explorer/view/<path> now, and a stale deep link is better off as a 404
+    # than as a shell that renders "Unrecognized URL".
     return FileResponse(shell_path)
 
 @router.get("/explorer")
@@ -37,6 +39,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 @router.get("/preferences")
 @router.get("/templates")
 @router.get("/mounts")
+# The Hugging Face cache inventory (SPEC §37) — a client-side page like the
+# rest, and reachable by URL even where the sidebar hides its entry.
+@router.get("/ai-models")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

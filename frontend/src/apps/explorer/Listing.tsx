@@ -41,11 +41,14 @@ import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
-import { iconForEntry, isAppEntry } from "@platform/ui/FileIcons";
+import { iconForEntry } from "@platform/ui/FileIcons";
 import { getViewState, setViewState } from "@platform/lib/viewstate";
 import { useFlip, FLIP_KEY_ATTR } from "@platform/lib/flip";
 import { useClipboard } from "@apps/explorer/lib/fs-clipboard";
 import ContextMenu from "@platform/ui/ContextMenu";
+import { SplitDownIcon, SplitRightIcon } from "@platform/ui/SplitIcons";
+import { EllipsisIcon } from "@apps/explorer/BarMenu";
+import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { PromptDialog, ConfirmDialog } from "@apps/explorer/FsDialogs";
 import ListingPreviewPane from "@apps/explorer/ListingPreviewPane";
 import { resultCountLabel } from "@apps/explorer/listing/result-cap";
@@ -111,7 +114,6 @@ export default function Listing({
   provisional = false,
   embedded = false,
   barChrome = false,
-  onSingleApp,
 }: {
   fsPath: string;
   // `provisional`: this Listing is rendering inside the pre-stat loading
@@ -135,15 +137,10 @@ export default function Listing({
   // the crumb bar, whose layout zone it therefore claims (see
   // listing/folder-chrome.ts). The splits go away and the path `···` renders
   // in this listing's search row instead of at the far end of the bar. False
-  // for every other host: the app-builder and learn variants have no crumb bar
-  // to claim, and a panel pane's Listing sits under a pane bar that carries
-  // its own splits and its own `···`.
+  // for every other host: the learn variant has no crumb bar to claim, and a
+  // panel pane's Listing sits under a pane bar that carries its own splits and
+  // its own `···`.
   barChrome?: boolean;
-  // Reports the path of this directory's lone top-level HTML file (an
-  // "app"), or null when there isn't exactly one — the caller (Preview's
-  // header) uses this to surface an "Open as app" button. Fires whenever the
-  // plain (non-search) listing settles, so it tracks dir-watch refreshes too.
-  onSingleApp?: (path: string | null) => void;
 }) {
   const { state, refresh, refetch, loadMore, loadingMore, newNames } =
     useDirListing(fsPath);
@@ -237,7 +234,7 @@ export default function Listing({
   // one is the "three places to agree about one bit" the pane's own history
   // (pane.ts) is a warning about.
   const paneEnabled = !embedded && !IS_SNAPSHOT;
-  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(fsPath, paneEnabled);
+  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(paneEnabled);
 
   // --- the pane's THREE modes, and whether it is open at all ------------------
   // `pane.on` above is the LAYOUT's answer ("is there room for two columns?",
@@ -261,21 +258,33 @@ export default function Listing({
   // pane's chat is the FOLDER VIEW's companion, aimed at whichever row is
   // selected, so which chat template to use is a question about the folder too.
   //
-  // A folder outside a repository loses the Git pill, and one on a mount loses
-  // both (each gate refuses a mount-backed path) — at which point the pill hides
-  // itself, "one mode is not a choice", and the pane is what it always was.
+  // A folder outside a repository cannot SHOW Git, and one on a mount can show
+  // neither companion (each gate refuses a mount-backed path) — at which point the
+  // pane's switcher lists them disabled, saying why (pane-side's paneSideMenu),
+  // rather than shrinking to a Preview-only pill and hiding itself.
   const folderClaude = useDirMode(paneEnabled ? fsPath : null, "claude");
   const folderGit = useDirMode(paneEnabled ? fsPath : null, "git");
   // While the probe is in flight the entries are PLACEHOLDERS with no template
   // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
-  // pending companion is simply not offered yet. Unlike the file sidebar there is
-  // nothing to protect by listing it early: the folder's `_side` is never
-  // reconciled away (pane-side's activePaneSide leaves an unavailable request in
-  // the URL on purpose), so a `?_side=git` deep link survives the wait and lands
-  // the moment the verdict does.
+  // pending companion is not SELECTABLE yet. Unlike the file sidebar there is
+  // nothing to protect by treating it as selectable early: the folder's `_side` is
+  // never reconciled away (pane-side's activePaneSide leaves an unavailable
+  // request in the URL on purpose), so a `?_side=git` deep link survives the wait
+  // and lands the moment the verdict does.
+  //
+  // The extra fields ride along for the SWITCHER alone, which has to say more
+  // than "offered": the flags tell "we don't know yet" (spinner) from "not here"
+  // (the disabled reason), and the bindings are where a disabled row gets the
+  // mode's REAL icon — lib/dir-mode keeps a denied entry for exactly that, so the
+  // Git row is the Git glyph dimmed instead of a boxed "G". Nothing else reads
+  // either; what the pane may BE is still `claude`/`git` alone.
   const sideEntries = {
     claude: folderClaude.pending ? null : folderClaude.entry,
     git: folderGit.pending ? null : folderGit.entry,
+    claudePending: folderClaude.pending,
+    gitPending: folderGit.pending,
+    claudeBound: folderClaude.bound,
+    gitBound: folderGit.bound,
   };
   const paneSide = activePaneSide(paneSideList(sideEntries), sideState.mode);
   const paneOpen = pane.on && sideState.open;
@@ -303,6 +312,17 @@ export default function Listing({
 
   // Search input, so a keystroke anywhere in the listing can focus it.
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // --- resting search box folds to a magnifier on a tight bar ---------------
+  // The bar's yield order (crumbs shrink → box shrinks, explorer.css) bottoms
+  // out with the PATH still ellipsized on a narrow middle column, while the
+  // idle box holds ~100px of placeholder. Past that point the box becomes a
+  // 28px icon and the path gets the strip back. `tightBar` is the measured
+  // fact; `pinnedOpen` is the user overriding it (clicked the icon — the box
+  // stays until it blurs empty). A non-empty query outranks both: `.searching`
+  // already stands the crumbs down and takes the whole strip.
+  const [tightBar, setTightBar] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+  const searchRowRef = useRef<HTMLDivElement>(null);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
   // render from the rowCtxByPath memo below).
@@ -349,31 +369,76 @@ export default function Listing({
   // crumb bar (the app builder) keeps the row in place as its own first strip.
   const barSearchSlot = useSyncExternalStore(subscribeSearchSlot, searchSlot, () => null);
 
+  // The tight-bar measurement. DOM-side on purpose: this row PORTALS into
+  // #breadcrumb (the slot above), so the crumbs it shares the strip with are
+  // reachable — and already coupled to this row by the bar's :has() rules.
+  // Two thresholds, deliberately apart, so the flip cannot oscillate:
+  //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
+  //     after the CSS yield order has bottomed out — the box is the only
+  //     slack left to give.
+  //   • unfold: the whole path is showing AND the bar has ≥150px genuinely
+  //     free — room the full resting box (needing a net ~120px over the
+  //     magnifier) can take without re-truncating anything. Free space is
+  //     summed from the bar's visible children, not read off the crumbs:
+  //     they are flex-grow 0 in slot mode, so their clientWidth hugs their
+  //     content and never reports the strip's slack.
+  // No dependency array: crumbs content changes with navigation but their
+  // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
+  // changes; re-measuring on every render is cheap and the guarded setState
+  // converges. Skipped while the user is in the box — measuring a strip the
+  // crumbs have stood down from (.searching hides them) reads zeros.
+  useLayoutEffect(() => {
+    if (embedded || searching || pinnedOpen) return;
+    const row = searchRowRef.current;
+    const bar = row?.closest("#breadcrumb");
+    const crumbs = bar?.querySelector(".crumbs");
+    if (!(bar instanceof HTMLElement) || !crumbs) return;
+    const freeInBar = () => {
+      // The bar's actual flex ITEMS, not bar.children: the search slot is
+      // `display: contents` (its rect reads 0), so its children participate
+      // in the bar's layout directly and must be counted in its place —
+      // skipping them overstates the free space by the whole search row.
+      const kids: Element[] = [];
+      const collect = (el: Element) => {
+        for (const child of Array.from(el.children)) {
+          const d = getComputedStyle(child).display;
+          if (d === "none") continue;
+          if (d === "contents") collect(child);
+          else kids.push(child);
+        }
+      };
+      collect(bar);
+      const cs = getComputedStyle(bar);
+      const gap = parseFloat(cs.columnGap) || 0;
+      const used =
+        kids.reduce((w, el) => w + el.getBoundingClientRect().width, 0) +
+        gap * Math.max(0, kids.length - 1) +
+        (parseFloat(cs.paddingLeft) || 0) +
+        (parseFloat(cs.paddingRight) || 0);
+      return bar.clientWidth - used;
+    };
+    const measure = () => {
+      setTightBar((folded) =>
+        folded
+          ? crumbs.scrollWidth > crumbs.clientWidth + 1 || freeInBar() < 150
+          : crumbs.scrollWidth > crumbs.clientWidth + 1
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(bar);
+    ro.observe(crumbs);
+    return () => ro.disconnect();
+  });
+
+  // The pin is a request to type: focus follows it in the same interaction.
+  useEffect(() => {
+    if (pinnedOpen) searchInputRef.current?.focus();
+  }, [pinnedOpen]);
+
   // No "Up" BUTTON beside the search box any more: the crumb strip above is
   // the same hop with a target the user can name, and the keyboard keeps its
   // own (Mod+Up / bare Backspace — see listing/useListingShortcuts).
-
-  // Tell the caller whether this folder's top level holds exactly one HTML
-  // ("app") file. Keyed off the plain listing, not the search results — the
-  // button this drives describes the folder's own contents, regardless of
-  // what's currently typed into the in-folder search box.
-  //   • A truncated listing (the server-cap banner) only ever holds a partial
-  //     page, so a lone HTML match there doesn't mean it's the folder's only
-  //     one — withhold the report rather than risk a false "app" button.
-  //   • "loading" reports nothing either way (neither null nor a path) so a
-  //     same-path remount (e.g. switching a mode away from `_listing` and
-  //     back) doesn't flicker an already-known button off for the length of
-  //     the refetch; only "ok"/"error" settle the caller's state.
-  useEffect(() => {
-    if (!onSingleApp) return;
-    if (state.status === "loading") return;
-    if (state.status !== "ok" || state.truncated) {
-      onSingleApp(null);
-      return;
-    }
-    const apps = state.entries.filter((e) => isAppEntry(e.name, e.is_dir));
-    onSingleApp(apps.length === 1 ? base + "/" + apps[0].name : null);
-  }, [state, base, onSingleApp]);
 
   // Flat, ordered list of the paths the arrow keys step through: the rendered
   // search hits while searching, otherwise the sorted listing. Keyed off the
@@ -424,6 +489,8 @@ export default function Listing({
     setDialog,
     doPaste,
     doMove,
+    doUndo,
+    doRedo,
     doDuplicate,
     doTrash,
     startRename,
@@ -543,11 +610,12 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // Opening a folder lands on its FIRST ENTRY — file or directory (rendered
-  // order — see autoSelectPath / firstEntryPath), so the pane shows something
-  // instead of the folder's own "Select a file to preview." hint. A pane that opens empty
-  // asks the user to do the obvious thing before it will do anything at all; a
-  // folder is overwhelmingly opened to look at what is in it.
+  // Opening a folder lands on its first PAGE, or on its first entry — file or
+  // directory — when it has none (rendered order both ways; the rule and its
+  // reasons are on autoSelectPath). Either way the pane shows something instead
+  // of the folder's own "Select a file to preview." hint. A pane that opens
+  // empty asks the user to do the obvious thing before it will do anything at
+  // all; a folder is overwhelmingly opened to look at what is in it.
   //
   // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
   // the decision. The shot is taken at the first settled non-search listing WITH THE
@@ -588,9 +656,9 @@ export default function Listing({
   // silently when something already holds the selection at the moment the
   // guards are first met (`selectionClaimed`). That is exactly the scaffold
   // click above — the user clicked row five during a slow mount, the resolved
-  // listing settled, and row one used to land on top of it. The decision half
-  // (autoSelectPath) stays blind to the selection (D240); this is a condition
-  // on WHEN to ask, which is this effect's half.
+  // listing settled, and the auto-selection used to land on top of it. The
+  // decision half (autoSelectPath) stays blind to the selection (D240); this is
+  // a condition on WHEN to ask, which is this effect's half.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;
@@ -688,6 +756,8 @@ export default function Listing({
     searchInputRef,
     overlayOpenRef,
     doPaste,
+    doUndo,
+    doRedo,
     doDuplicate,
     doTrash,
     startRename,
@@ -818,6 +888,68 @@ export default function Listing({
     e.preventDefault();
     setMenu({ x: e.clientX, y: e.clientY, items: backgroundMenu() });
   };
+
+  // The header `⋮` (right end of the MODIFIED column). Everything here is about
+  // THIS FOLDER, which is what the crumb bar's own `⋮` used to be for over a
+  // listing — that one is gone (Breadcrumb.tsx) and its two unique items moved
+  // in below the background menu's set, so there is one place to look instead
+  // of a path menu and a right-click each holding half the folder's actions.
+  //
+  // Discoverability is the whole point of the button: the same items were
+  // already a right-click on the background, which nobody finds, and which an
+  // empty folder gives you no obvious surface to try.
+  const openHeaderMenu = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation(); // never sorts — the th around it is a sort control
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenu({
+      // Right-ish alignment by hand: ContextMenu only clamps at the VIEWPORT
+      // edge, and with a preview pane open this button is nowhere near it, so
+      // an unbiased x would hang the popup off to the right of the column.
+      // 220 is the menu's own min-width (context-menu.css).
+      x: Math.max(4, r.right - 220),
+      y: r.bottom + 2,
+      items: [
+        ...backgroundMenu(),
+        "separator",
+        {
+          label: "Split right",
+          icon: <SplitRightIcon size={16} />,
+          onClick: () => enterPanel(fsPath, "row"),
+        },
+        {
+          label: "Split down",
+          icon: <SplitDownIcon size={16} />,
+          onClick: () => enterPanel(fsPath, "col"),
+        },
+      ],
+    });
+  };
+
+  // The folder's `⋮`, absolutely positioned against the LAST header cell's
+  // right edge (the th is sticky, so it is already the positioned ancestor) —
+  // NOT a fourth column: rows have three cells, and a column they don't render
+  // breaks their backgrounds. It overlays the header's own padding, which is
+  // why .col-mtime reserves room for it (explorer.css) rather than letting it
+  // land on the sort arrow.
+  // Both handlers stop propagation: the normal header's th sorts on click, and
+  // a press that re-sorts the listing under the menu about to open is not what
+  // the button says it does. One element, three homes — the mtime th, the
+  // search header's Path th, and (labels hidden) the empty folder's strip —
+  // because the actions act on the current folder in every one of them.
+  const headerMenuBtn = (
+    <button
+      type="button"
+      className="listing-head-menu"
+      aria-haspopup="menu"
+      aria-label="Folder actions"
+      title="Folder actions"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={openHeaderMenu}
+    >
+      <EllipsisIcon />
+    </button>
+  );
 
   // --- table body -----------------------------------------------------------
 
@@ -1167,7 +1299,32 @@ export default function Listing({
                #breadcrumb:has(.listing-search.searching) in explorer.css.
                Nothing to hand upward: the row is portaled INTO the bar, so a
                class on the row is already inside the bar's subtree. */
-            <div className={"listing-search" + (searching ? " searching" : "")}>
+            <div
+              ref={searchRowRef}
+              className={
+                "listing-search" +
+                (searching ? " searching" : "") +
+                (tightBar && !searching && !pinnedOpen ? " iconized" : "")
+              }
+            >
+              {/* Tight bar (see the measurement above): the resting box is
+                  folded away by .iconized and this magnifier stands in for it.
+                  Clicking pins the box open and focuses it; blurring it still
+                  empty hands the strip back to the path. */}
+              {tightBar && !searching && !pinnedOpen && (
+                <button
+                  type="button"
+                  className="bar-ctl listing-search-open"
+                  aria-label="Search this folder"
+                  title="Search"
+                  onClick={() => setPinnedOpen(true)}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="7" />
+                    <line x1="16.5" y1="16.5" x2="21" y2="21" />
+                  </svg>
+                </button>
+              )}
               {/* The box wraps input + pinned chips so the pane toggle can sit to
             their right without disturbing the chips' inside-the-input pin.
             `has-pin` says a chip is actually pinned right now, so the input
@@ -1192,12 +1349,33 @@ export default function Listing({
                   // search" was instructions for a control that needs none.
                   placeholder="Search…"
                   value={query}
-                  onFocus={prefetchWalk}
+                  // Focus pins the box open, whatever routed it here — the
+                  // magnifier click, or type-to-search landing focus on the
+                  // zero-width folded input (useListingSelection's
+                  // printable-key branch; the .iconized CSS keeps the input
+                  // focusable for exactly this). The pin also holds while a
+                  // focused user deletes their query — the box must not fold
+                  // away under the caret.
+                  onFocus={() => {
+                    setPinnedOpen(true);
+                    prefetchWalk();
+                  }}
+                  // A pinned-open box that blurs still empty folds back to the
+                  // magnifier (the pin exists only to be typed into); with a
+                  // query it stays — .searching owns the strip from there.
+                  onBlur={(e) => {
+                    if (!e.currentTarget.value) setPinnedOpen(false);
+                  }}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Escape") {
                       e.preventDefault();
                       setQuery("");
+                      // Explicit, not left to onBlur: the blur below fires
+                      // before React writes the cleared value into the DOM,
+                      // so the handler would read the pre-Esc query and keep
+                      // the pin.
+                      setPinnedOpen(false);
                       e.currentTarget.blur();
                     }
                   }}
@@ -1282,9 +1460,10 @@ export default function Listing({
             onContextMenu={openBackgroundMenu}
           >
             <table className="listing-table">
-              {/* Header row hidden (not unmounted — the sticky header's box is
-                  part of the table's own layout) over an empty folder: see
-                  `emptyDir`. */}
+              {/* Over an empty folder the column LABELS hide (visibility, see
+                  .listing-head-empty) but the strip stays: the folder `⋮`
+                  lives on it, and an empty folder is where that menu matters
+                  most. */}
               <thead className={emptyDir ? "listing-head-empty" : undefined}>
                 <tr>
                   {searching ? (
@@ -1294,7 +1473,14 @@ export default function Listing({
                     // that by name or date presents it as an answer it isn't,
                     // and the search box already says the coverage is
                     // approximate (listing/index-caveat).
-                    <th className="col-name">Path</th>
+                    // The folder `⋮` stays through a search: its actions act on
+                    // the CURRENT folder either way, and search replacing the
+                    // one header that carried it would make the control come
+                    // and go with the query.
+                    <th className="col-name">
+                      Path
+                      {headerMenuBtn}
+                    </th>
                   ) : (
                     (Object.entries(SORT_KEYS) as [SortKey, string][]).map(
                       ([key, label]) => (
@@ -1306,7 +1492,11 @@ export default function Listing({
                           }
                           onClick={() => setSort(key)}
                         >
-                          {label}
+                          {/* Wrapped so the empty-folder state can hide the
+                              LABEL without unmounting the strip — the `⋮` on
+                              this row must survive it (explorer.css,
+                              .listing-head-empty). */}
+                          <span className="col-label">{label}</span>
                           {/* One glyph that ROTATES for desc (see .sort-arrow):
                           swapping ▲ for ▼ replaced the element, so the change
                           could only ever pop. */}
@@ -1319,6 +1509,7 @@ export default function Listing({
                               ▲
                             </span>
                           )}
+                          {key === "mtime" && headerMenuBtn}
                         </th>
                       ),
                     )

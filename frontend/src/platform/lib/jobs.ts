@@ -13,6 +13,10 @@ import { getJson, postJson } from "@platform/lib/api";
 
 export type JobState = "running" | "done" | "error" | "cancelled";
 export type JobKind = "download" | "task";
+// Who is running the work, which decides what ✕ can do (SPEC BG-4). "page" —
+// only the page knows what stopping means, so cancel is a request it honours.
+// "server" — this app owns the process and really stops it.
+export type JobOwner = "page" | "server";
 
 export interface Job {
   id: string;
@@ -26,6 +30,7 @@ export interface Job {
   unit: string; // "bytes" | "" — decides how done/total are formatted
   message: string; // the error text, when state is "error"
   page: string; // the .html that raised it (attribution)
+  owner: JobOwner;
   cancellable: boolean;
   cancel_requested: boolean;
   started_at: number;
@@ -139,9 +144,17 @@ export function jobStatusLine(job: Job): string {
   // died before honoring it, that claim would stand for the whole ten-minute
   // stale-drop window while nothing at all was happening.
   if (job.stalled) {
+    // WHOSE reporter went quiet decides what to say. A page-owned row means a
+    // tab was closed. A server-owned one (a model download, SPEC §40) means the
+    // app's own worker stopped reporting — and telling someone their page was
+    // closed when no page was involved sends them to look in the wrong place.
+    const why =
+      job.owner === "server"
+        ? "the process running it stopped reporting"
+        : "the page that started it was closed";
     return job.cancel_requested
-      ? "Cancel requested, but nothing is reporting any more — the page that started it was closed"
-      : "No longer reporting — the page that started it was closed";
+      ? `Cancel requested, but nothing is reporting any more — ${why}`
+      : `No longer reporting — ${why}`;
   }
   if (job.cancel_requested) return "Cancelling…";
   return job.detail;

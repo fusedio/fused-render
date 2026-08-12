@@ -15,6 +15,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from _thread_scoped import this_thread_only
+
 import fused_render.shell.gcssign as gcssign_mod
 import fused_render.shell.mounts as mounts_mod
 import fused_render.shell.mounts.rcd as rcd_mod
@@ -1304,9 +1306,19 @@ def test_rc_list_dir_calls_operations_list_with_fs_and_remote(home, rcd, monkeyp
         {"Name": "a", "IsDir": True, "Size": -1, "ModTime": "2024-01-02T03:04:05Z"},
         {"Name": "b.txt", "IsDir": False, "Size": 7, "ModTime": "2024-01-02T03:04:05Z"},
     ]}
-    # Never touch the mount path through the kernel.
-    monkeypatch.setattr(mounts_mod.os, "scandir",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scandir!")))
+    # Never touch the mount path through the kernel. Thread-scoped: patching
+    # `mounts_mod.os` patches the `os` MODULE, i.e. every thread in the process,
+    # and under the fused-engine job the `openfused-invoke-dispatcher` thread
+    # polls its own request directory with `pathlib.glob` -> os.scandir. It hit
+    # this trap and failed an unrelated test
+    # (test_calls.py::test_an_abandoned_merge_closes_the_day_s_files, locally)
+    # with "scandir!". `rc_list_dir` is synchronous on the calling thread, so
+    # scoping the trap to this thread still proves exactly what it proved
+    # before: THIS call never enumerated. Do not re-globalise it.
+    monkeypatch.setattr(
+        mounts_mod.os, "scandir",
+        this_thread_only(mounts_mod.os.scandir,
+                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("scandir!"))))
 
     entries = mounts_mod.rc_list_dir(_os.path.join(mp, "sub"))
     assert [e["Name"] for e in entries] == ["a", "b.txt"]
@@ -3203,9 +3215,24 @@ def _reset_listdir_inflight():
     mounts_mod.lifecycle._LISTDIR_INFLIGHT.clear()
 
 
-def _blackhole_listdir(monkeypatch, release: threading.Event, calls: list):
-    """os.listdir that blocks until `release` is set, counting its calls."""
+def _blackhole_listdir(monkeypatch, mountpoint: str, release: threading.Event,
+                       calls: list):
+    """os.listdir on `mountpoint` blocks until `release` is set, counting its calls.
+
+    Scoped to the mountpoint, not thread-scoped: the probe deliberately runs on a
+    thread the code under test spawns, so a thread-identity check would disarm the
+    blackhole entirely. Scoping matters because patching `mounts_mod.os` patches
+    the `os` MODULE — every thread in the process. Under the fused-engine job the
+    `openfused-invoke-dispatcher` thread polls its own request directory, and an
+    unscoped trap would strand it for 10s and push a foreign path into `calls`,
+    breaking `calls == [mp]` in a test that never listed it. Every assertion here
+    is about the mountpoint, so that is all the trap touches.
+    """
+    real = mounts_mod.os.listdir
+
     def blocked(p):
+        if p != mountpoint:
+            return real(p)
         calls.append(p)
         release.wait(10)
         return []
@@ -3220,7 +3247,7 @@ def test_state_disconnected_once_a_listdir_has_blackholed_past_the_threshold(
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
     release, calls = threading.Event(), []
-    _blackhole_listdir(monkeypatch, release, calls)
+    _blackhole_listdir(monkeypatch, mp, release, calls)
     try:
         live = mounts_mod.mounted_paths()
         # First poll: outstanding but not yet stuck — this is exactly the
@@ -3244,7 +3271,7 @@ def test_state_starts_only_one_listdir_per_mountpoint(home, rcd, monkeypatch):
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
     release, calls = threading.Event(), []
-    _blackhole_listdir(monkeypatch, release, calls)
+    _blackhole_listdir(monkeypatch, mp, release, calls)
     try:
         live = mounts_mod.mounted_paths()
         for _ in range(5):
@@ -3263,7 +3290,7 @@ def test_state_recovers_when_a_stuck_listdir_finally_returns(home, rcd,
     monkeypatch.setattr(mounts_mod.os.path, "ismount", lambda p: p == mp)
     monkeypatch.setattr(mounts_mod.lifecycle, "LISTDIR_STUCK_AFTER", 0.3)
     release, calls = threading.Event(), []
-    _blackhole_listdir(monkeypatch, release, calls)
+    _blackhole_listdir(monkeypatch, mp, release, calls)
     try:
         live = mounts_mod.mounted_paths()
         mounts_mod.mount_state(c, live, timeout=0.05)

@@ -8,16 +8,46 @@
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
+ *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
+ *     caller holding a conversation rather than asking one question.
+ *     opts.raw: send the prompt verbatim, with no chat template around it.
+ *     opts.temperature / opts.maxTokens / opts.topP: sampling.
+ *     All four are LOCAL-MODEL ONLY and are refused (400) rather than dropped
+ *     on the Claude path. fused.ai.cancel() stops a local generation mid-flight
+ *     without unloading the model.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
  *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
  *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
  *     usage names, NOT OpenAI's prompt_tokens/completion_tokens. opts:
  *     systemPrompt, model, effort ("low"|"medium"|"high"|"xhigh"),
  *     onChunk. Local-only — not available on hosted/exported pages.
+ *   fused.ai.models.list() / catalog() / load(id) / download(id) / unload(id)
+ *     Local inference (SPEC §40): what this machine is holding in memory and
+ *     what it costs. load/download return {jobId} — a cold load is a multi-GB
+ *     download, so nothing waits on it; watch it with fused.watchJob(jobId). To
+ *     GENERATE TEXT with a local model there is no new call: pass its repo id
+ *     as fused.ai(prompt, {model: "org/name"}).
+ *   fused.ai.image({prompt, model, width, height, steps, guidance, seed,
+ *                   onProgress}) -> Promise<{path, url, seed, ...}>
+ *     Text to image, locally (SPEC AI-9). Resolves with the PNG's path and a
+ *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
+ *     used — invented server-side when you don't pass one, so a render is
+ *     always repeatable. Minutes long: onProgress fires per denoising step with
+ *     the download-manager record, and that row's ✕ really stops it. Rejects
+ *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
+ *     this machine — the reason is in the message).
+ *   fused.watchJob(id) -> {get, watch, stop, cancel}
+ *     Observe a job this page did NOT create — the server-owned work that
+ *     fused.ai.models.load() and image generation start. The read side of the
+ *     download manager; trackJob below is the write side. TRACK is "I am doing
+ *     this and reporting it" (takes a spec, creates a row); WATCH is "someone
+ *     else is doing it and I am looking" (takes an id).
  *   fused.trackJob(spec) -> handle {update, finish, fail, cancelled, cancelRequested}
- *     Report a long-running operation (a model download, a minutes-long
- *     generation) to the shell's download manager, so it stays visible after
- *     the page that started it is navigated away from (SPEC §36, D244). Every
+ *     Report a long-running operation THIS PAGE is running to the shell's
+ *     download manager, so it stays visible after the page that started it is
+ *     navigated away from (SPEC §36, D244). Model downloads used to be the
+ *     motivating example; they are the server's job now (SPEC §40) and a page
+ *     observes them with fused.job() instead of reporting them. Every
  *     method is fire-and-forget and never rejects — reporting is decoration and
  *     must not be able to break the work it describes. A no-op stub on a
  *     hosted page (there is no manager there), so a view that reports progress
@@ -309,6 +339,42 @@
 
   const target = findTarget();
   const standalone = target === window;
+
+  // Tell every same-origin ancestor that this page just changed the filesystem.
+  //
+  // WHY THE SHELL CANNOT SEE IT OTHERWISE. writeFile/uploadFile/mkdir below, and
+  // any file a runPython script writes, are fetches issued from INSIDE this
+  // frame. The frame is its own JS realm with its own copy of the shell's api
+  // module, so nothing the shell caches about a directory hears about them — and
+  // the shell's directory watcher only ever watches the ONE folder a mounted
+  // listing is showing, of which there is none at all in a template view of a
+  // file. Its listing prefetch cache would then answer a navigation made seconds
+  // later with the pre-write contents of the folder.
+  //
+  // A global on the ancestor, not a postMessage: same-origin iframe model
+  // (D3/D4), which is how params already reach the ancestor URL (D46) and how
+  // _fusedSidecarPath already passes app-internal bookkeeping the other way.
+  // Deliberately NOT on `fused` and underscore-prefixed for the same reason as
+  // those: it is plumbing between this script and the shell that ships with it,
+  // not a documented contract a template may rely on.
+  //
+  // The WHOLE chain is walked, not just findTarget()'s result: that climb stops
+  // below a param boundary (a layout shell), and every shell in the chain has its
+  // own realm and so its own cache to invalidate. A window with no hook is simply
+  // not a shell (a standalone /render page, the hosted stub).
+  function noteFsChanged() {
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedFsChanged === "function") t._fusedFsChanged();
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+  }
 
   // Same-origin ancestors ABOVE the target, nearest first (non-empty only when
   // a param boundary stopped the climb). Their top-level queries hold
@@ -1247,7 +1313,16 @@
                              controller._callId),
         body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
         signal: controller.signal,
-      }).then((res) => res.json());
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          // A script that ran may have written anything, anywhere — and unlike
+          // writeFile below there is no way to know what, so the shell is told
+          // unconditionally once the run comes back. Also on a FAILED run: a
+          // script that wrote three files and then raised still changed the disk.
+          noteFsChanged();
+          return data;
+        });
 
     // `installed` guards against a loop, and holds the KEYS already installed
     // rather than a boolean because a run can legitimately need two rounds: with no
@@ -1408,6 +1483,8 @@
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        // The shell cannot see a write made from inside this frame (noteFsChanged).
+        noteFsChanged();
         return data;
       });
   }
@@ -1519,6 +1596,7 @@
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        noteFsChanged();
         return data;
       });
   }
@@ -1548,6 +1626,7 @@
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        noteFsChanged();
         return data;
       });
   }
@@ -1576,6 +1655,26 @@
     if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
+    // Prior turns, for a caller holding a conversation. `prompt` stays the
+    // thing being asked NOW, so adding history changes no existing call.
+    // Local models only — the Claude path is one invocation with no
+    // conversation to resume, and says so rather than answering a follow-up as
+    // if it were the first question.
+    if (opts.history !== undefined) body.history = opts.history;
+    // Raw continuation — the text goes to the model verbatim, with no chat
+    // template around it. A base model continuing your paragraph, rather than
+    // an assistant answering it. Local models only, for the same reason as
+    // history: only something that OWNS the chat template can decline to apply
+    // one, so the Claude path refuses this rather than quietly ignoring it.
+    if (opts.raw !== undefined) body.raw = opts.raw;
+    // Sampling. Local models only, like history and raw — the Claude CLI
+    // exposes no sampling knobs, so these are refused there rather than
+    // dropped. camelCase in, snake_case on the wire, because the wire shape is
+    // the worker's and every other runtime option makes the same trip
+    // (systemPrompt -> system_prompt).
+    if (opts.temperature !== undefined) body.temperature = opts.temperature;
+    if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
+    if (opts.topP !== undefined) body.top_p = opts.topP;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const req = fetch("/api/ai", {
@@ -1586,6 +1685,10 @@
     function fail(error) {
       const err = new Error(error && error.message);
       err.type = error && error.type;
+      // A local model that is not resident yet answers 409 with the id of the
+      // load this call just started (SPEC AI-5). Carrying it through is what
+      // lets a caller show that download rather than just reporting a failure.
+      if (error && error.jobId) err.jobId = error.jobId;
       throw err;
     }
     if (!onChunk) {
@@ -1987,6 +2090,182 @@
     loadConfig().then(begin);
   }
 
+  // ---------------------------------------------------------------- local models
+  //
+  // fused.ai.models — the lifecycle half of the AI API (SPEC §40). Generation
+  // itself needs nothing new: fused.ai(prompt, {model: "org/name", onChunk})
+  // already reaches a local model, because a model id with a slash in it IS a
+  // Hugging Face repo id and the server routes on that.
+  //
+  // What DOES need an API is everything around it — a model is a resident
+  // process here, not a request to somebody else's datacentre, so a page can ask
+  // what is loaded, put something in memory, and give the memory back.
+  //
+  // load() and download() return a JOB, not a finished model: a cold load is a
+  // multi-GB download and nothing waits on it. Watch it with fused.job(id).
+  async function aiPost(path, body) {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body || {}),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error((data && data.error) || res.statusText);
+      err.type = res.status === 409 ? "unavailable" : "bad_request";
+      throw err;
+    }
+    return data;
+  }
+
+  // fused.ai.image({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  //
+  // The one call in this bridge that RESOLVES WITH A FILE. Text streams, so
+  // fused.ai hands back words; an image is an artefact, so this hands back
+  // somewhere to point an <img> at — `url` is already the /api/fs/raw address,
+  // because every page that calls this would otherwise write the same line.
+  //
+  // Minutes, not seconds. The server answers immediately with a job id, and
+  // this waits on it: `onProgress(job)` fires per tick with the record the
+  // download manager is drawing (done/total are DENOISING STEPS), and the same
+  // row's ✕ really stops the render — the work is the server's, not the page's.
+  //
+  // The seed comes back whether or not one was passed, so "make that one again"
+  // is always a call away.
+  function aiImage(opts) {
+    opts = opts || {};
+    if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
+      const err = new Error("fused.ai.image({prompt}): prompt must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of ["prompt", "model", "width", "height", "steps", "guidance", "seed"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return aiPost("/api/ai/image", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      const done = () => ({ ...started, url: rawUrl(started.path) });
+      return watcher.watch(onProgress).then((record) => {
+        if (!record) {
+          // The row aged out from under us — a backgrounded tab can sleep past
+          // its retention on a render this long. The FILE is the other witness,
+          // and the one that actually matters.
+          return stat(started.path).then(done, () => {
+            const err = new Error("the image job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the image was cancelled"
+            : record.message || "the image failed to render",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
+  const aiModels = {
+    list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
+    catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
+    load: (model, opts) =>
+      aiPost("/api/ai/runtime/load", { model, ...(opts || {}) }),
+    download: (model, opts) =>
+      aiPost("/api/ai/runtime/download", { model, ...(opts || {}) }),
+    // Either a model id or `{capability}`. A page holding an Unload button
+    // usually means "release whatever is resident", and it does NOT reliably
+    // know which model that is — the one loaded may not be the one its dropdown
+    // is showing (another page, or the AI Models page, can load a different
+    // one). Passing the selected id there unloads nothing and leaves the real
+    // resident model in memory, so the capability form is the honest one.
+    unload: (model) =>
+      aiPost("/api/ai/runtime/unload",
+             typeof model === "string" || model == null
+               ? { model } : { capability: model.capability }),
+  };
+  ai.models = aiModels;
+  ai.image = aiImage;
+  // Stop the generation in flight on a local model, keeping it loaded — the
+  // next message answers straight away. Resolves false when there was nothing
+  // to stop, which is not an error: a Stop pressed as the last token lands
+  // should be a no-op.
+  ai.cancel = (capability) =>
+    aiPost("/api/ai/cancel", capability ? { capability } : {}).then((r) => !!r.cancelled);
+
+  // -------------------------------------------------------------- fused.watchJob
+  //
+  // The READ side of the download manager, and the half trackJob never had.
+  //
+  // Named as trackJob's sibling on purpose (D244 named that one `trackJob` and
+  // not `job` because a bare `fused.job(...)` reads as the job itself rather
+  // than as a handle). The pair is the distinction: TRACK takes a spec and
+  // creates a row for work this page runs; WATCH takes an id and observes work
+  // it did not start.
+  //
+  // trackJob is for work THIS PAGE runs: it writes progress and reads back a
+  // cancel REQUEST it then honours itself. But a page can now start work the
+  // SERVER runs — a model load, an image generation — and it has every reason to
+  // show that progress inline and offer a ✕ for it. That job is not the page's
+  // to report and its cancel is not advisory: the server owns the process and
+  // can really stop it.
+  //
+  // So: observe by id, poll while it lives, cancel for real.
+  function watchJob(id) {
+    let stopped = false;
+    async function get() {
+      const res = await fetch("/api/jobs", { headers: callHeaders({}) });
+      const data = await res.json().catch(() => ({}));
+      return (data.jobs || []).find((j) => j.id === id) || null;
+    }
+    return {
+      get,
+      // Resolves when the job reaches a terminal state; calls back on the way.
+      // Polling rather than a socket: the manager is already polling, jobs tick
+      // about once a second, and a page that navigates away simply stops.
+      //
+      // Resolves with NULL when the row is gone — either stop() was called, or
+      // it was there and vanished. A finished record is dropped after its
+      // retention window (SPEC BG-6), which a backgrounded tab can easily sleep
+      // straight through on a render that takes minutes; polling forever for a
+      // row that is never coming back is a promise that never settles.
+      async watch(onUpdate, intervalMs) {
+        const every = Math.max(200, intervalMs || 700);
+        let seen = false;
+        let missing = 0;
+        for (;;) {
+          if (stopped) return null;
+          const record = await get().catch(() => null);
+          if (record) {
+            seen = true;
+            missing = 0;
+            if (typeof onUpdate === "function") onUpdate(record);
+            if (record.state !== "running") return record;
+          } else if (seen && ++missing >= 5) {
+            return null;
+          }
+          await new Promise((r) => setTimeout(r, every));
+        }
+      },
+      stop() {
+        stopped = true;
+      },
+      // A real stop for a server-owned job; for a page-owned one this is the
+      // same request trackJob's own reporter reads back off its next tick.
+      cancel: () =>
+        fetch("/api/jobs/" + encodeURIComponent(id) + "/cancel", {
+          method: "POST",
+          headers: callHeaders({ "X-Fused": "1" }),
+        }).then((r) => r.ok),
+    };
+  }
+
   window.fused = {
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
@@ -2000,6 +2279,7 @@
     mkdir,
     ai,
     trackJob,
+    watchJob,
     autoReload,
     params: { get, getAll, set, onChange },
   };

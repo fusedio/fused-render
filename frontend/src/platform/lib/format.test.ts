@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatMtime, formatMtimeFull, formatSize, basename, dirname } from "@platform/lib/format";
+import { formatMtime, formatMtimeFull, formatParams, formatSize, basename, dirname } from "@platform/lib/format";
 
 // 2025-09-24 20:59:57 local time — the seconds are what the assertions are
 // about, so the instant is built from local parts, not a UTC string.
@@ -51,5 +51,22 @@ describe("path helpers", () => {
     expect(basename("/")).toBe("/");
     expect(dirname("/a/b/c.txt")).toBe("/a/b");
     expect(dirname("/a")).toBe("/");
+  });
+});
+
+describe("formatParams", () => {
+  it("uses decimal steps — a 7B model is 7e9 parameters, not 7 * 2^30", () => {
+    expect(formatParams(7_241_732_096)).toBe("7.2B");
+    expect(formatParams(1_000_000_000)).toBe("1B");
+    expect(formatParams(465_000_000)).toBe("465M");
+    expect(formatParams(22_713_216)).toBe("23M");
+    expect(formatParams(4096)).toBe("4K");
+    expect(formatParams(512)).toBe("512");
+  });
+
+  it("says nothing when there is no count", () => {
+    expect(formatParams(null)).toBe("");
+    expect(formatParams(undefined)).toBe("");
+    expect(formatParams(0)).toBe("");
   });
 });

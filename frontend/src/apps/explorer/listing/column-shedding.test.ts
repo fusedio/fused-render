@@ -71,15 +71,31 @@ test("a shed column's HEADER is never display:none", () => {
 
 test("a shed column's header collapses to a zero px width with no box", () => {
   const collapsed = shedding.flatMap((block) =>
-    SHED.map((col) => ruleFor(block.body, `th.${col}`)).filter((d): d is string => d !== null),
+    SHED.map((col) => [col, ruleFor(block.body, `th.${col}`)] as const).filter(
+      (p): p is readonly [string, string] => p[1] !== null,
+    ),
   );
   expect(collapsed.length).toBe(2); // MODIFIED and SIZE, one step each
-  for (const decls of collapsed) {
+  for (const [col, decls] of collapsed) {
     expect(decls).toMatch(/width:\s*0\b/);
     expect(decls).toMatch(/padding:\s*0\b/);
     // Content must not paint over the neighbouring column once the box is gone.
+    // The label goes quiet by font-size in both cells.
     expect(decls).toMatch(/font-size:\s*0\b/);
-    expect(decls).toMatch(/overflow:\s*hidden/);
+    if (col === "col-size") {
+      // Nothing else lives in this cell, so one clip covers the rest of it.
+      expect(decls).toMatch(/overflow:\s*hidden/);
+    } else {
+      // MODIFIED is the last column, so its right edge is the TABLE's — which
+      // is where the folder `⋮` is pinned (.listing-head-menu, Listing.tsx),
+      // and it has to survive the collapse or the folder's menu disappears
+      // whenever the listing is narrow. So this cell must NOT clip, and the one
+      // piece of content that font-size:0 cannot silence — the sort arrow,
+      // which sets its own 9px — is hidden by a rule of its own instead.
+      expect(decls).not.toMatch(/overflow:\s*hidden/);
+      const block = shedding.find((b) => b.body.includes(`th.${col}`))!;
+      expect(ruleFor(block.body, `th.${col} .sort-arrow`)).toMatch(/display:\s*none/);
+    }
   }
 });
 

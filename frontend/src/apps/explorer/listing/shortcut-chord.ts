@@ -25,7 +25,9 @@ export type ChordAction =
   | "forward"
   | "new-folder"
   | "trash"
-  | "rename";
+  | "rename"
+  | "undo"
+  | "redo";
 
 // The parts of a KeyboardEvent this decision reads. An interface rather than
 // KeyboardEvent so a test can hand it a plain object — and so the matcher
@@ -44,6 +46,16 @@ export interface ChordContext {
   // "clear to start of line" on macOS), so they resolve to no action at all
   // rather than being matched and then declined.
   inSearch: boolean;
+  // Whether the user has TEXT selected anywhere on the page. The same argument
+  // as `inSearch`, for the case that has no input box: this handler is bound on
+  // `document`, and clicking a plain <span> leaves activeElement as <body>, so
+  // the "is the listing active" guard passes while the user is looking at text
+  // they just highlighted somewhere else entirely. Cmd+C then matched
+  // copy-the-file-path and called preventDefault, and the browser's own copy
+  // never ran — which is why an error message in the download manager could be
+  // selected and never copied. Rows are `user-select: none`, so a real text
+  // selection is never the listing's own.
+  hasSelection: boolean;
 }
 
 // Platform is NOT a parameter. `isMod`/`isMac` are the app's one detection and
@@ -66,9 +78,32 @@ export function matchChord(e: ChordEvent, ctx: ChordContext): ChordAction | null
     // With focus in the search box these keep their native text-clipboard
     // meaning; only the non-text chords stay live there.
     if (ctx.inSearch) return null;
+    // Selected text wins Cmd+C, wherever it is. Copying what you highlighted is
+    // unambiguous and it is the browser's own meaning, so the listing does not
+    // get to reinterpret it as "copy the selected file's path". Only COPY:
+    // a non-editable selection cannot be cut, so Cmd+X keeps meaning the
+    // listing's cut, and paste never had a text reading here at all.
+    if (key === "c" && ctx.hasSelection) return null;
     return key === "c" ? "copy" : key === "x" ? "cut" : "paste";
   }
   if (chord && key === "d") return "duplicate";
+  // Undo / redo, over the explorer's relocations only (lib/fs-undo). The three
+  // standard chords: Mod+Z, Mod+Shift+Z, and Ctrl+Y where that is a redo —
+  // ⌘Y on macOS is History/Quick Look, never a redo, so it is not answered there.
+  //
+  // WHILE TYPING THESE ARE THE FIELD'S OWN, and that is the one guard this pair
+  // cannot do without: Cmd+Z in a text field is the browser's text undo, and
+  // reinterpreting it as "un-move the last file" would be both surprising and
+  // irreversible in a way a mistyped name is not. `inSearch` is that condition
+  // in full — useListingShortcuts forwards an event only when focus is on the
+  // search input or on nothing at all, and a dialog's input is already behind
+  // the overlay guard — so it must widen with any widening of what reaches here.
+  //
+  // Unlike copy, a text SELECTION does not defer: a highlighted paragraph in
+  // non-editable text has no edit history for the browser's undo to act on.
+  if (chord && key === "z") return ctx.inSearch ? null : "undo";
+  if (shiftChord && key === "z") return ctx.inSearch ? null : "redo";
+  if (chord && key === "y") return !isMac && !ctx.inSearch ? "redo" : null;
   // Open the lead row — the same gesture as Enter (macOS Cmd+Down).
   if (chord && e.key === "ArrowDown") return "open";
   if (chord && e.key === "ArrowUp") return "parent";

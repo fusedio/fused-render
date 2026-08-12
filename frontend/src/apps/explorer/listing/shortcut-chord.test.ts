@@ -7,23 +7,51 @@
 // source guard survives from when this file could only read text, for the
 // reload chord — see its own test.
 //
-// PLATFORM: `isMac` is detected once at import (lib/platform) and is FALSE in
-// this process, which reports no navigator. So these run the Windows/Linux
-// table — which is where the reported bug lives (Ctrl+Shift+C is devtools'
-// inspect-element there) — and the mac-only branches are asserted from the
-// non-mac side: Cmd+Backspace does NOT trash here, bare Backspace DOES go up.
+// PLATFORM: `isMac` is detected once at import (lib/platform) and is NOT a
+// parameter of the matcher — see the note above matchChord for why re-deriving
+// it from an argument would be a second copy of the app's one platform rule. So
+// these tests read the SAME detection the matcher does and drive the table it
+// actually built:
+//
+//   • the primary modifier is spelled `mod(...)`, which is Meta on a Mac and
+//     Ctrl elsewhere, and `wrongMod(...)` is the other one (never the primary,
+//     on either platform — that exclusivity is a rule under test);
+//   • the two platform-SPLIT branches (Delete, Backspace) assert both sides,
+//     picked by the same isMac.
+//
+// It used to hard-code Ctrl and assert "isMac is false in this process, which
+// reports no navigator". That stopped being true — bun ≥1.3 exposes a
+// `navigator` with a real `platform` — and the whole file went red on macOS
+// while testing nothing new.
+//
+// TWO LIMITS OF READING THE DETECTION, both of them real and neither of them
+// fixed by this file. Say them out loud so nobody reads more assurance into a
+// green run than is there:
+//
+//   1. NOTHING HERE ASSERTS THAT THE DETECTION IS RIGHT. `isMac` is the same
+//      value the matcher used, so if detectMac() regressed to always-false the
+//      matcher and these tests would drift together and stay green while every
+//      Mac user's ⌘ chords quietly stopped working. What is tested is that the
+//      table is CONSISTENT with the detected platform, not that the platform was
+//      detected correctly.
+//   2. EACH SPLIT IS ONLY HALF-COVERED ON ANY ONE MACHINE. A run on macOS
+//      exercises the mac side of `isMac ? … : …` and reduces the other side to
+//      "matchChord returned null" — which is also its answer for a chord it has
+//      never heard of, so the non-mac assertion can pass with the branch
+//      deleted. shortcut-chord-nonmac.test.ts closes that by running the matcher
+//      in a child process with a Linux `navigator`; between the two files both
+//      halves are exercised whichever machine runs them.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isMac } from "@platform/lib/platform";
 import { matchChord } from "./shortcut-chord";
 
 // A key event as the matcher reads it. Modifiers default to "not held", so
 // every test spells out exactly the ones its chord carries — which is the
 // property under test.
-function ev(
-  key: string,
-  mods: { meta?: boolean; ctrl?: boolean; shift?: boolean; alt?: boolean } = {}
-) {
+type Mods = { meta?: boolean; ctrl?: boolean; shift?: boolean; alt?: boolean };
+function ev(key: string, mods: Mods = {}) {
   return {
     key,
     metaKey: !!mods.meta,
@@ -32,14 +60,25 @@ function ev(
     altKey: !!mods.alt,
   };
 }
-const listing = { inSearch: false };
-const searching = { inSearch: true };
+
+// This platform's primary modifier — ⌘ on a Mac, Ctrl everywhere else — plus
+// whatever else the chord carries.
+const mod = (key: string, extra: Mods = {}) =>
+  ev(key, isMac ? { meta: true, ...extra } : { ctrl: true, ...extra });
+// The OTHER one, which is never the primary modifier (isMod is exclusive).
+const wrongMod = (key: string, extra: Mods = {}) =>
+  ev(key, isMac ? { ctrl: true, ...extra } : { meta: true, ...extra });
+const listing = { inSearch: false, hasSelection: false };
+const searching = { inSearch: true, hasSelection: false };
+// Text highlighted somewhere on the page — anywhere, since this handler is
+// bound on `document`.
+const selecting = { inSearch: false, hasSelection: true };
 
 test("the primary-modifier clipboard chords act", () => {
-  expect(matchChord(ev("c", { ctrl: true }), listing)).toBe("copy");
-  expect(matchChord(ev("x", { ctrl: true }), listing)).toBe("cut");
-  expect(matchChord(ev("v", { ctrl: true }), listing)).toBe("paste");
-  expect(matchChord(ev("d", { ctrl: true }), listing)).toBe("duplicate");
+  expect(matchChord(mod("c"), listing)).toBe("copy");
+  expect(matchChord(mod("x"), listing)).toBe("cut");
+  expect(matchChord(mod("v"), listing)).toBe("paste");
+  expect(matchChord(mod("d"), listing)).toBe("duplicate");
 });
 
 test("SHIFT makes them somebody else's chord, not ours", () => {
@@ -47,85 +86,148 @@ test("SHIFT makes them somebody else's chord, not ours", () => {
   // `mod && key === "c"` matched — so the listing copied its selection AND
   // called preventDefault on the devtools inspect-element chord (and on the
   // terminal-style copy). Null means the hook never touches the event.
-  expect(matchChord(ev("C", { ctrl: true, shift: true }), listing)).toBeNull();
-  expect(matchChord(ev("X", { ctrl: true, shift: true }), listing)).toBeNull();
-  expect(matchChord(ev("V", { ctrl: true, shift: true }), listing)).toBeNull();
-  expect(matchChord(ev("D", { ctrl: true, shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("C", { shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("X", { shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("V", { shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("D", { shift: true }), listing)).toBeNull();
   // Same event with the modifier reported on the key as lowercase (layouts and
   // browsers vary): still not ours.
-  expect(matchChord(ev("c", { ctrl: true, shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("c", { shift: true }), listing)).toBeNull();
 });
 
 test("ALT makes them somebody else's chord too", () => {
-  expect(matchChord(ev("c", { ctrl: true, alt: true }), listing)).toBeNull();
-  expect(matchChord(ev("v", { ctrl: true, alt: true }), listing)).toBeNull();
-  expect(matchChord(ev("d", { ctrl: true, alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("c", { alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("v", { alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("d", { alt: true }), listing)).toBeNull();
 });
 
 test("the WRONG primary modifier is not the primary modifier", () => {
-  // isMod is exclusive (lib/platform): off a Mac, Meta is not Ctrl. A Mac
-  // keyboard plugged into Linux must not trash files with Cmd+Backspace.
-  expect(matchChord(ev("c", { meta: true }), listing)).toBeNull();
+  // isMod is exclusive (lib/platform): off a Mac, Meta is not Ctrl, and on a Mac
+  // Ctrl is not Meta. A Mac keyboard plugged into Linux must not trash files
+  // with Cmd+Backspace.
+  expect(matchChord(wrongMod("c"), listing)).toBeNull();
+  // Both at once is neither, on either platform.
   expect(matchChord(ev("c", { ctrl: true, meta: true }), listing)).toBeNull();
 });
 
 test("the search box keeps the native text clipboard", () => {
-  expect(matchChord(ev("c", { ctrl: true }), searching)).toBeNull();
-  expect(matchChord(ev("x", { ctrl: true }), searching)).toBeNull();
-  expect(matchChord(ev("v", { ctrl: true }), searching)).toBeNull();
+  expect(matchChord(mod("c"), searching)).toBeNull();
+  expect(matchChord(mod("x"), searching)).toBeNull();
+  expect(matchChord(mod("v"), searching)).toBeNull();
   // Duplicate is not a text chord, so it stays live while typing.
-  expect(matchChord(ev("d", { ctrl: true }), searching)).toBe("duplicate");
+  expect(matchChord(mod("d"), searching)).toBe("duplicate");
 });
 
 test("navigation chords are bare-modifier too", () => {
-  expect(matchChord(ev("ArrowDown", { ctrl: true }), listing)).toBe("open");
-  expect(matchChord(ev("ArrowUp", { ctrl: true }), listing)).toBe("parent");
+  expect(matchChord(mod("ArrowDown"), listing)).toBe("open");
+  expect(matchChord(mod("ArrowUp"), listing)).toBe("parent");
   // Shift+arrow with the primary modifier is a selection gesture elsewhere and
   // a text chord on macOS — never "open the lead row".
-  expect(matchChord(ev("ArrowDown", { ctrl: true, shift: true }), listing)).toBeNull();
-  expect(matchChord(ev("ArrowUp", { ctrl: true, alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("ArrowDown", { shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("ArrowUp", { alt: true }), listing)).toBeNull();
 });
 
 test("the history brackets do not steal the browser's tab chords", () => {
-  expect(matchChord(ev("[", { ctrl: true }), listing)).toBe("back");
-  expect(matchChord(ev("]", { ctrl: true }), listing)).toBe("forward");
+  expect(matchChord(mod("["), listing)).toBe("back");
+  expect(matchChord(mod("]"), listing)).toBe("forward");
   // Cmd+Shift+[ / ] switch browser tabs on macOS.
-  expect(matchChord(ev("[", { ctrl: true, shift: true }), listing)).toBeNull();
-  expect(matchChord(ev("]", { ctrl: true, shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("[", { shift: true }), listing)).toBeNull();
+  expect(matchChord(mod("]", { shift: true }), listing)).toBeNull();
 });
 
 test("new folder is the one chord that WANTS Shift", () => {
-  expect(matchChord(ev("N", { ctrl: true, shift: true }), listing)).toBe("new-folder");
+  expect(matchChord(mod("N", { shift: true }), listing)).toBe("new-folder");
   // …and only Shift.
-  expect(matchChord(ev("N", { ctrl: true, shift: true, alt: true }), listing)).toBeNull();
-  expect(matchChord(ev("n", { ctrl: true }), listing)).toBeNull();
+  expect(matchChord(mod("N", { shift: true, alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("n"), listing)).toBeNull();
 });
 
 test("the destructive keys are bare-key only", () => {
-  expect(matchChord(ev("Delete"), listing)).toBe("trash");
+  // Bare Delete is the Windows/Linux trash key; on macOS the ⌦ key is not the
+  // trash gesture at all (Cmd+Backspace is, below).
+  expect(matchChord(ev("Delete"), listing)).toBe(isMac ? null : "trash");
   // Shift+Delete is Windows Explorer's "delete permanently" — answering it with
   // an ordinary trash would do the wrong thing under the user's own chord.
   expect(matchChord(ev("Delete", { shift: true }), listing)).toBeNull();
   expect(matchChord(ev("Delete", { alt: true }), listing)).toBeNull();
   // A held Super key reports as metaKey on Linux; isMod is false there, so a
-  // `!isMod(e)` test would have let this through to a destructive branch.
+  // `!isMod(e)` test would have let this through to a destructive branch. (On a
+  // Mac this IS the primary modifier, and ⌘⌦ is nobody's trash chord either.)
   expect(matchChord(ev("Delete", { meta: true }), listing)).toBeNull();
   // Never while typing.
   expect(matchChord(ev("Delete"), searching)).toBeNull();
 });
 
-test("Backspace: up a folder here, trash only on a Mac", () => {
-  expect(matchChord(ev("Backspace"), listing)).toBe("parent");
+test("Backspace: trash on a Mac, up a folder everywhere else", () => {
+  // The two halves of the one split, asserted from whichever side this process
+  // is on — and each is the OTHER platform's foot-gun, which is why neither may
+  // leak across: a bare Backspace navigating away on a Mac (where ⌘⌫ deletes),
+  // or ⌘⌫ deleting on Windows.
+  expect(matchChord(ev("Backspace"), listing)).toBe(isMac ? null : "parent");
+  expect(matchChord(mod("Backspace"), listing)).toBe(isMac ? "trash" : null);
+  // Never while typing, on either platform: ⌘⌫ is "clear to start of line".
   expect(matchChord(ev("Backspace"), searching)).toBeNull();
-  // The macOS trash chord, off a Mac: not ours, and not a navigation either.
-  expect(matchChord(ev("Backspace", { ctrl: true }), listing)).toBeNull();
+  expect(matchChord(mod("Backspace"), searching)).toBeNull();
   expect(matchChord(ev("Backspace", { shift: true }), listing)).toBeNull();
+});
+
+test("undo and redo are the standard three chords", () => {
+  expect(matchChord(mod("z"), listing)).toBe("undo");
+  expect(matchChord(mod("Z", { shift: true }), listing)).toBe("redo");
+  // Ctrl+Y is the Windows redo. There is no Cmd+Y redo on macOS (⌘Y is
+  // History/Quick Look), so it must not answer there.
+  //
+  // ON A MAC THIS ASSERTION IS WEAK, by limit 2 in the header: a literal Ctrl is
+  // not the primary modifier there, so the event never reaches the Y branch and
+  // the null comes from the final fallthrough — the branch could be deleted and
+  // this would still pass. The load-bearing test for Ctrl+Y lives in
+  // shortcut-chord-nonmac.test.ts. Kept anyway, because on a Windows/Linux
+  // machine it is the direct assertion and there it does fail on a break.
+  expect(matchChord(ev("y", { ctrl: true }), listing)).toBe(isMac ? null : "redo");
+});
+
+test("undo takes exactly its own modifiers", () => {
+  // Alt+Cmd+Z and the wrong primary modifier are somebody else's chord, like
+  // every other entry in the table.
+  expect(matchChord(mod("z", { alt: true }), listing)).toBeNull();
+  expect(matchChord(mod("Z", { shift: true, alt: true }), listing)).toBeNull();
+  expect(matchChord(wrongMod("z"), listing)).toBeNull();
+  expect(matchChord(ev("z"), listing)).toBeNull();
+});
+
+test("A FOCUSED TEXT FIELD KEEPS ITS NATIVE UNDO", () => {
+  // The guard that is not optional. Cmd+Z inside a text field is the browser's
+  // own text undo, and the field the user is most likely to hit it in is the
+  // rename prompt — where "undo" meaning "un-move the last file" instead of
+  // "un-type that" would be both surprising and, unlike a mistyped name,
+  // unrecoverable by typing.
+  //
+  // `inSearch` is the flag, and it covers every editable that can reach the
+  // matcher: useListingShortcuts only forwards an event when focus is on the
+  // search input or on nothing at all (its `navActive` test), and a dialog's
+  // input is behind the overlay guard before that. So "focus is in a field" and
+  // "inSearch" are the same condition here — if that ever widens, this is the
+  // test that has to widen with it.
+  expect(matchChord(mod("z"), searching)).toBeNull();
+  expect(matchChord(mod("Z", { shift: true }), searching)).toBeNull();
+  // Weak on a Mac for the same reason as the Ctrl+Y assertion above — a literal
+  // Ctrl never reaches the branch, so this passes even with the guard removed.
+  // shortcut-chord-nonmac.test.ts asserts it where it can fail.
+  expect(matchChord(ev("y", { ctrl: true }), searching)).toBeNull();
+});
+
+test("a text SELECTION does not block undo the way it blocks copy", () => {
+  // Copy defers to a highlighted range because the browser's copy is the
+  // unambiguous reading of Cmd+C there. Undo has no such reading: a selection
+  // in non-editable text is not an edit history, so Cmd+Z with a paragraph
+  // highlighted still means the listing's undo.
+  expect(matchChord(mod("z"), selecting)).toBe("undo");
 });
 
 test("rename is bare F2 — Alt+F2 is a desktop run dialog on Linux", () => {
   expect(matchChord(ev("F2"), listing)).toBe("rename");
   expect(matchChord(ev("F2", { alt: true }), listing)).toBeNull();
-  expect(matchChord(ev("F2", { ctrl: true }), listing)).toBeNull();
+  expect(matchChord(mod("F2"), listing)).toBeNull();
 });
 
 // ── the reload guard ────────────────────────────────────────────────────────
@@ -160,4 +262,20 @@ test("the listing does not hijack the browser's reload chord", () => {
   expect(keys).not.toContain("R");
   // Nothing in the table may name it, however the branch is written.
   expect(SRC).not.toMatch(/"[rR]"/);
+});
+
+test("selected text keeps Cmd+C, wherever it is", () => {
+  // The handler is bound on `document`, and clicking a plain <span> leaves
+  // activeElement as <body> — so the listing's "am I active" guard passes while
+  // the user is looking at text they highlighted somewhere else. Matching copy
+  // there calls preventDefault and the browser's own copy never runs, which is
+  // how an error message in the download manager could be selected and never
+  // copied.
+  expect(matchChord(mod("c"), selecting)).toBeNull();
+  // Only copy. A non-editable selection cannot be cut, so Cmd+X still means the
+  // listing's cut, and paste never had a text reading here.
+  expect(matchChord(mod("x"), selecting)).toBe("cut");
+  expect(matchChord(mod("v"), selecting)).toBe("paste");
+  // With nothing selected it is the file-path copy it always was.
+  expect(matchChord(mod("c"), listing)).toBe("copy");
 });

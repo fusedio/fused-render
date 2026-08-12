@@ -1,7 +1,6 @@
 // Route dispatch (super-app step 2 — shell + three sub-apps):
 //   "/"                      -> redirect (replaceState) to /explorer
 //   "/apps"                  -> apps homepage (the app home)
-//   "/apps/<tag>/<name>"     -> app builder (StatView variant "app")
 //   "/explorer"              -> file-explorer homepage (FilesHome)
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
@@ -9,6 +8,7 @@
 //   "/claude-config"         -> Claude config panel (native, no mount)
 //   "/claude-md"             -> legacy; redirects into the panel's MD Files tab
 //   "/claude-artifacts"      -> project folders with Claude Code sessions
+//   "/ai-models"             -> Hugging Face cache inventory
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
 // rewritten in place at boot by router.ts before any of this runs.
@@ -16,12 +16,10 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { IS_EMBED, appRouteSegments, fsPathFromLocation, fsPathFromAppRoute, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "@platform/lib/router";
 import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
-import { useAppRecentsTracking } from "@apps/builder/lib/recents";
-import { statPath, getLinkedAppPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { LINKED_TAG } from "@platform/lib/appEntry";
+import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
 import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
@@ -29,7 +27,6 @@ import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
 import ShellSidebar from "@shell/ShellSidebar";
 import ExplorerSidebar from "@apps/explorer/sidebar/ExplorerSidebar";
-import BuilderSidebar from "@apps/builder/sidebar/BuilderSidebar";
 import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -50,13 +47,14 @@ import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
-// visit this session is actually opened — the settings pages, the app-builder
-// hub, the Claude Config panel, and the bookmark-open redirector. Splitting
-// them out of the main chunk is what fixes vite's "chunks larger than 500 kB"
-// build warning without just raising the limit.
+// visit this session is actually opened — the settings pages, the AI Models
+// page, the app-builder hub, the Claude Config panel, and the bookmark-open
+// redirector. Splitting them out of the main chunk is what fixes vite's
+// "chunks larger than 500 kB" build warning without just raising the limit.
 const Preferences = lazy(() => import("@shell/Preferences"));
 const Templates = lazy(() => import("@shell/templates/Templates"));
 const Mounts = lazy(() => import("@shell/Mounts"));
+const AiModels = lazy(() => import("@shell/AiModels"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
@@ -239,41 +237,31 @@ function RouteFallback() {
   );
 }
 
-// The mode list the app builder pins its views to — the modes that make sense
-// over an app folder, in switcher order. `app` (the app itself, full-bleed) is
-// first because it is what opening an app lands on; `claude` is where an
-// app is built. A mode absent from this list is filtered out of the switcher
-// entirely (Preview's allowModes), so this is what makes the plain view
-// reachable. The URL's `_mode` semantics are unchanged.
-//
-// The pin is load-bearing rather than cosmetic: an app folder is still a
-// directory, so without it the builder would also offer the other directory
-// modes (`git`, `graph`, `zarr_aoi`). It is a curation of this view,
-// not a divergence from the explorer — every mode listed here behaves in the
-// builder exactly as it does in the explorer for the same folder.
-const APP_MODES = ["app", "claude", "history"];
-
 // Stat-backed views (listing/preview): breadcrumb + content under one hook
 // component so useStat only runs when the pathname is a real fs path, not a
 // sentinel.
 //
 // `variant` selects the sub-app chrome:
 //   "explorer" (default) — breadcrumb, full preview header, file recents.
-//   "app"                — no breadcrumb, header kept (mode switcher pinned to
-//                          APP_MODES), app recents (needs `fusedDir`).
 //   "learn"              — no breadcrumb, no preview header, no recents.
+//
+// There was a third, "app", for the /apps/<tag>/<name> route: no breadcrumb, the
+// builder's sidebar, and the mode switcher pinned to an APP_MODES allowlist
+// (`app`, `claude`, `history`). Route and variant are both gone — an app folder
+// is browsed on the explorer route now, where it gets the breadcrumb it always
+// had a path for and the switcher's full list, whose extra directory entries
+// (`git`, `graph`, `zarr_aoi`) the pin existed to hide and which are perfectly
+// sensible over an app.
 function StatView({
   fsPath,
   epoch,
   home,
   variant = "explorer",
-  fusedDir = "",
 }: {
   fsPath: string;
   epoch: number;
   home: string;
-  variant?: "explorer" | "app" | "learn";
-  fusedDir?: string;
+  variant?: "explorer" | "learn";
 }) {
   // Bumped by StatErrorView to re-stat in place after reconnecting a mount.
   const [reloadKey, setReloadKey] = useState(0);
@@ -307,13 +295,11 @@ function StatView({
   // not on a `_mode` switch within the same file — TemplatePreview owns that.
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
-  // Recents: each sub-app records into its OWN store. Explorer files use the
-  // confirmed-file gate (same as session tracking); the app builder records
-  // the app folder into apps/builder's store (fusedDir empty = disabled, so
-  // learn and explorer never write there). Both hooks are unconditional
-  // (hooks rules) and gate internally on their args.
+  // Recents: the explorer's own store, gated on a confirmed FILE (same gate as
+  // session tracking), so learn and embed panes never write there. The app
+  // builder's parallel (tag, name) store went with its route — nothing displays
+  // it now that the builder sidebar is gone.
   useRecentsTracking(fsPath, variant === "explorer" ? isDir : null, renderedTitle);
-  useAppRecentsTracking(fsPath, variant === "app" ? fusedDir : "", renderedTitle);
   let content = null;
   if (stat.status === "loading") {
     // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
@@ -352,7 +338,6 @@ function StatView({
           fsPath={fsPath}
           stat={s}
           onRenderedTitle={setRenderedTitle}
-          allowModes={variant === "app" ? APP_MODES : undefined}
           hideHeader={variant === "learn"}
           actionsInTopbar={variant === "explorer"}
         />
@@ -372,13 +357,13 @@ function StatView({
   // folder (.listing-split / .listing-main), for the same reason.
   //
   // The slot stands empty on every route that has no sidebar — every folder, the
-  // app builder, learn, embed panes — and `display: contents` on an empty
+  // learn, embed panes — and `display: contents` on an empty
   // element costs the layout nothing (explorer.css).
   return (
     <div className="stat-split">
       <div className="stat-main">
-        {/* Only the explorer carries a breadcrumb bar — the app builder and
-            learn render their content directly (no path chrome). BreadcrumbBar
+        {/* Only the explorer carries a breadcrumb bar — learn renders its
+            content directly (no path chrome). BreadcrumbBar
             owns the `#breadcrumb` box itself: over a folder it portals the whole
             bar down into the listing's left column, so it can't be a wrapper
             rendered here (Breadcrumb.tsx). */}
@@ -562,6 +547,8 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/templates";
   // PROTOTYPE: mounts page (see shell/Mounts.tsx).
   const isMounts = pathname === "/mounts";
+  // What the Hugging Face cache holds on this machine (shell/AiModels.tsx).
+  const isAiModels = pathname === "/ai-models";
   // Apps hub = the app home: all detected apps with search + tag filters.
   const isApps = pathname === "/apps";
   // File-explorer homepage: the bookmark launcher.
@@ -571,48 +558,16 @@ export default function App({ config }: { config: Config }) {
   const isClaudeConfig = pathname === "/claude-config";
   const isClaudeArtifacts = pathname === "/claude-artifacts";
   const isBookmark = pathname === "/explorer/view/_bookmark";
-  // App-builder route: /apps/<tag>/<name> resolves to the app folder under
-  // the workspace — a pure codec, no server lookup (router.fsPathFromAppRoute).
-  // EXCEPT the virtual "linked" tag: those folders live anywhere on disk, so
-  // the name resolves through the registry (GET /api/apps/linked-path) — one
-  // async hop, after which the exact same StatView/app view renders on the
-  // real folder. An unknown name (or a fetch failure) falls back to the codec
-  // path, which doesn't exist — the same missing-folder card a bad workspace
-  // app route gets.
-  const fusedDir = config.fused_dir.replace(/\\/g, "/");
-  const appSegs = isApps ? null : appRouteSegments(pathname);
-  const linkedName = appSegs && appSegs.tag === LINKED_TAG ? appSegs.name : null;
-  // The resolved path is keyed to the name it was fetched for: on a
-  // linked-to-linked navigation the effect (and its reset) only runs AFTER
-  // the first render of the new route, so an unkeyed value would hand the
-  // previous app's folder to StatView for a frame.
-  const [linkedResolved, setLinkedResolved] =
-    useState<{ name: string; path: string } | null>(null);
-  const linkedPath =
-    linkedResolved && linkedResolved.name === linkedName ? linkedResolved.path : null;
-  useEffect(() => {
-    if (!linkedName) return;
-    let stale = false;
-    const fallback = fusedDir.replace(/\/+$/, "") + "/" + LINKED_TAG + "/" + linkedName;
-    getLinkedAppPath(linkedName).then(
-      (r) => {
-        if (!stale)
-          setLinkedResolved({
-            name: linkedName,
-            path: (r.path ?? fallback).replace(/\\/g, "/"),
-          });
-      },
-      () => { if (!stale) setLinkedResolved({ name: linkedName, path: fallback }); }
-    );
-    return () => { stale = true; };
-  }, [linkedName, fusedDir]);
-  const appFsPath = linkedName ? linkedPath : fsPathFromAppRoute(pathname, fusedDir);
-  // Registry lookup in flight: hold the route (spinner below) instead of
-  // letting it fall through to the "Unrecognized URL" branch for a frame.
-  const linkedResolving = linkedName !== null && linkedPath === null;
+  // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
+  // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
+  // folders live anywhere on disk — through GET /api/apps/linked-path, one async
+  // hop the route had to hold a blank frame for. Both are gone with the route:
+  // an app folder is an ordinary fs path, which /explorer/view/<path> already
+  // carries with no lookup at all. Anything under /apps that isn't the hub falls
+  // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeArtifacts || isBookmark;
-  const fsPath = isSentinel || appFsPath ? null : fsPathFromLocation();
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeArtifacts || isBookmark;
+  const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
   // fs path directly — never StatView (the file describes a view, it isn't one).
@@ -629,7 +584,9 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
-              : isApps
+              : isAiModels
+                ? "AI Models"
+                : isApps
                 ? "Apps"
                 : isExplorerHome
                   ? "File Explorer"
@@ -643,7 +600,7 @@ export default function App({ config }: { config: Config }) {
                       ? "Artifacts"
                       : isBookmark || bookmarkFile
                       ? "Bookmark"
-                      : fsPath || appFsPath
+                      : fsPath
                         ? undefined
                         : null
   );
@@ -727,6 +684,28 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
+  } else if (isAiModels) {
+    // AI Models — the Hugging Face cache inventory, in the same cc-* page
+    // chrome as Artifacts. Reachable by URL even where the sidebar hides its
+    // entry (no cache dir yet); the page states that case itself.
+    //
+    // **Not keyed on `epoch`, unlike every branch around it.** The only
+    // same-route navigation this page has is its own Local/Discover toggle,
+    // which lives in the URL (`?tab=`) so the back button can undo it — and
+    // remounting a page to change its own view state would re-walk every blob
+    // in the Hugging Face cache and throw away whatever was typed into
+    // Discover's search. The page subscribes to the URL itself instead.
+    // Arriving from any other route still mounts it fresh: the branches differ
+    // in their children, so React replaces the subtree regardless.
+    main = (
+      <div id="content">
+        <div className="cc-page">
+          <Suspense fallback={<RouteFallback />}>
+            <AiModels />
+          </Suspense>
+        </div>
+      </div>
+    );
   } else if (isApps) {
     // Apps hub — the app home. No breadcrumb bar; the page owns its own
     // header. The shell sidebar renders beside it.
@@ -765,19 +744,6 @@ export default function App({ config }: { config: Config }) {
         </div>
       </div>
     );
-  } else if (appFsPath) {
-    // App builder: the app folder rendered in one of APP_MODES, no breadcrumb
-    // (StatView variant "app" carries its own #content).
-    main = (
-      <StatView
-        key={epoch + ":" + appFsPath}
-        fsPath={appFsPath}
-        epoch={epoch}
-        home={config.home.replace(/\\/g, "/")}
-        variant="app"
-        fusedDir={fusedDir}
-      />
-    );
   } else if (isBookmark || bookmarkFile) {
     // `.bookmark` open flow (SB-9, D99): Finder double-click lands on the
     // `/view/_bookmark?file=` sentinel; browsing to the file in the explorer
@@ -792,16 +758,6 @@ export default function App({ config }: { config: Config }) {
             <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
           </Suspense>
         </div>
-      </>
-    );
-  } else if (linkedResolving) {
-    // /apps/linked/<name> with the registry lookup still in flight — a blank
-    // beat, never the "Unrecognized URL" error for a URL that is about to
-    // resolve.
-    main = (
-      <>
-        <div id="breadcrumb" />
-        <div id="content" key={epoch} />
       </>
     );
   } else if (!fsPath) {
@@ -821,11 +777,11 @@ export default function App({ config }: { config: Config }) {
   }
 
   // Each sub-app owns its sidebar; the shell only picks which one matches the
-  // active route: builder on /apps/<tag>/<name>, explorer on fs-path routes,
-  // the shell's own app-switcher everywhere else (homepages, settings, learn).
-  const sidebar = appFsPath || linkedResolving ? (
-    <BuilderSidebar config={config} />
-  ) : fsPath || isPanel || isTabs || isBookmark ? (
+  // active route: explorer on fs-path routes, the shell's own app-switcher
+  // everywhere else (homepages, settings, learn). The builder's own sidebar was
+  // the third, chosen by the /apps/<tag>/<name> route — gone with it, and an app
+  // folder now gets the explorer's, which is the sidebar for where it is.
+  const sidebar = fsPath || isPanel || isTabs || isBookmark ? (
     <ExplorerSidebar config={config} />
   ) : (
     <ShellSidebar config={config} />

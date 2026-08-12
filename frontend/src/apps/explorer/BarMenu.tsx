@@ -12,7 +12,7 @@
 // glyph. An earlier pass put it in a filled accent chip to mark "this is the
 // active mode"; on screen that read as a coloured badge shouting for
 // attention in a row of quiet chrome. The accent survives where it costs
-// nothing — the checkmark on the dropdown's active row.
+// nothing — the wash on the dropdown's active row (.bar-menu-item.active).
 //
 // OverflowMenu is the `···` companion: low-frequency one-shot actions (reveal
 // in the file manager, copy path, open in a new tab) that used to be welded
@@ -115,25 +115,6 @@ function CaretIcon({ open }: { open: boolean }) {
   );
 }
 
-function CheckIcon() {
-  return (
-    <svg
-      className="bar-menu-check"
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-
 // VERTICAL `⋮`, not the horizontal `···` it was — in every bar that carries this
 // menu, because there is one glyph for one meaning. It earns the rotation in the
 // place it is most used: the crumb strip, immediately after the path's last
@@ -142,7 +123,10 @@ function CheckIcon() {
 // dots in a row of `/`-joined segments, i.e. "the path goes on". Turned upright
 // it reads as a control, and it is the same "more, about this thing" affordance
 // every file manager puts beside a row.
-function EllipsisIcon() {
+// Exported so the folder listing's header `⋮` (Listing.tsx) is the SAME glyph
+// as the bars' — it opens a menu of the same actions, and a second hand-rolled
+// triplet would drift.
+export function EllipsisIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
       <circle cx="12" cy="5" r="1.7" />
@@ -158,6 +142,16 @@ export interface ModeMenuEntry {
   // Condition.py gate not yet resolved (CT-12): listed as a disabled spinner
   // row until the background /api/fs/conditions verdict lands.
   pending?: boolean;
+  // Listed, disabled, and SAYING WHY — the row keeps its icon and its name and
+  // hands this string to the native tooltip. Used by the two COMPANION surfaces
+  // (the file preview's sidebar, the folder listing's pane), whose mode list is
+  // a closed set the user is entitled to see all of even where a member is
+  // unavailable; the reasons themselves are canned in lib/mode-visibility, which
+  // is also where the argument for showing them is written down.
+  //
+  // Not a second spelling of `pending`: pending says "we don't know yet" and
+  // spins, this says "we know, and here is the answer".
+  disabledReason?: string;
 }
 
 interface ModeMenuProps {
@@ -175,10 +169,18 @@ interface ModeMenuProps {
 export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
   const { pos, rootRef, toggle, close } = useMenuAnchor();
   const activeEntry = entries.find((e) => e.mode === active) ?? null;
-  // One mode is not a choice — the same rule the icon strips used — unless
+  // One ROW is not a choice — the same rule the icon strips used — unless
   // nothing is active (a caller whose surface can show no mode at all, e.g. the
   // listing pane's self target), where that one entry is the only way to pick
   // anything and the trigger is what offers it.
+  //
+  // Counted over the ROWS, disabled ones included, and that is the rule rather
+  // than an oversight. A companion surface passes its whole closed list — three
+  // rows over every file, some of them disabled placeholders explaining
+  // themselves (see `disabledReason`) — and the menu renders, because those rows
+  // are the answer to "why is there only one thing here?". Hiding a menu whose
+  // only ENABLED row is the active one is what made a file outside a git
+  // repository open with no switcher at all.
   if (!entries.length || (entries.length === 1 && activeEntry)) return null;
 
   const switching = busy !== null && busy !== undefined;
@@ -226,8 +228,14 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
                 (e.mode === activeEntry?.mode ? " active" : "") +
                 (e.pending ? " pending" : "")
               }
-              disabled={e.pending}
-              title={e.pending ? "Checking if this view applies…" : undefined}
+              /* Two ways to be unselectable, one mechanism: the native disabled
+                 button and its native tooltip (`.bar-menu-item:disabled` in
+                 explorer.css dims both alike). The spinner is the PENDING one's
+                 alone — an unavailable row keeps its own icon, because it is not
+                 waiting for anything and a spinner over a settled answer reads
+                 as a menu that never finishes loading. */
+              disabled={e.pending || !!e.disabledReason}
+              title={e.pending ? "Checking if this view applies…" : e.disabledReason}
               onClick={() => {
                 close();
                 onSelect(e.mode);
@@ -237,7 +245,6 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
                 {e.pending ? <span className="mode-icon-spinner" /> : e.icon}
               </span>
               <span className="bar-menu-item-label">{modeTitle(e.mode)}</span>
-              {e.mode === activeEntry?.mode && <CheckIcon />}
             </button>
           ))}
         </div>
