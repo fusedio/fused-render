@@ -30,6 +30,7 @@ from unittest import mock
 import pytest
 
 from _git_repo import build_repo, empty_repo, git, git_available, write
+from _thread_scoped import this_thread_only
 
 CONDITION = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "git", "condition.py")
@@ -58,11 +59,24 @@ def _no_enumeration():
     def forbidden(*args, **kwargs):
         raise AssertionError("the gate must never enumerate a directory (CT-12)")
 
-    with mock.patch.object(os, "listdir", forbidden), \
-            mock.patch.object(os, "scandir", forbidden), \
-            mock.patch.object(os, "walk", forbidden), \
-            mock.patch.object(glob_mod, "glob", forbidden), \
-            mock.patch.object(glob_mod, "iglob", forbidden):
+    # Thread-scoped: these patches are process-wide, and under the fused-engine
+    # job another package's background thread (`openfused-invoke-dispatcher`)
+    # polls its own request directory with `pathlib.glob` -> os.scandir. It ticks
+    # on its own schedule, so it landed inside this window and blamed the gate
+    # for a directory the gate never touched — surfacing as
+    # `RuntimeError: Failed to process thread exception` against whatever
+    # unrelated test happened to be running (test_index_freshness.py, in the run
+    # that caught it). Do NOT re-globalise this: what the assertion means is
+    # "*this* call must not enumerate", a property of one thread's work. The
+    # gate is a single synchronous `git rev-parse` on the calling thread (its
+    # subprocess is a separate process, unaffected by an in-process patch), so
+    # scoping to this thread loses no coverage. See tests/_thread_scoped.py.
+    def guard(target, name):
+        real = getattr(target, name)
+        return mock.patch.object(target, name, this_thread_only(real, forbidden))
+
+    with guard(os, "listdir"), guard(os, "scandir"), guard(os, "walk"), \
+            guard(glob_mod, "glob"), guard(glob_mod, "iglob"):
         yield
 
 

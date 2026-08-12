@@ -231,7 +231,7 @@ export default function Listing({
   // one is the "three places to agree about one bit" the pane's own history
   // (pane.ts) is a warning about.
   const paneEnabled = !embedded && !IS_SNAPSHOT;
-  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(fsPath, paneEnabled);
+  const { pane, splitRef, onDividerPointerDown } = usePreviewPane(paneEnabled);
 
   // --- the pane's THREE modes, and whether it is open at all ------------------
   // `pane.on` above is the LAYOUT's answer ("is there room for two columns?",
