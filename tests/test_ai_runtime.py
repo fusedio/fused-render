@@ -314,14 +314,18 @@ def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
     press Download, and compiling from source there is a cost with no upside
     when a wheel exists. If a runner ever genuinely needs one, this test is the
     conversation.
+
+    Read through `projectenv.dependencies_of` — the app's own manifest reader,
+    which is markers-and-all verbatim (what a packaging invariant wants) and
+    which already carries the `tomli` fallback for the 3.10 that
+    `requires-python` still promises.
     """
-    import tomllib
+    from fused_render import projectenv
 
     for runner in registry.all_runners():
-        manifest = os.path.join(runner.folder, "pyproject.toml")
-        assert os.path.isfile(manifest), runner.code
-        with open(manifest, "rb") as handle:
-            declared = tomllib.load(handle)["project"]["dependencies"]
+        assert os.path.isfile(runner.pyproject), runner.code
+        declared = projectenv.dependencies_of(runner.folder)
+        assert declared, f"{runner.code} declares nothing — did the manifest move?"
         for dependency in declared:
             assert " @ " not in dependency, (
                 f"{runner.code} declares a source build: {dependency}")
