@@ -22,7 +22,7 @@ An index query answers **zero rows** both when nothing matches and when no index
 - **no index / not covered** → "still building" or "your folder isn't indexed yet", never "no results".
 - **a real empty answer** → "no matches".
 
-The JS bridge hands you that distinction on every call; the Python reader gets it by returning `(None, None)` for a missing manifest. Neither treats "no index" as an error — it is a state you render.
+The JS bridge hands you that distinction on every call; the Python reader gets it by returning `(None, None)` for a store with nothing to read yet. Neither treats "no index" as an error — it is a state you render.
 
 ## A. The JS bridge: `fused.index.*`
 
@@ -34,11 +34,11 @@ Injected with the rest of `window.fused` — no script tag, no fetch, no `X-Fuse
 | `await fused.index.lookup({q, limit, offset, sort})` | Files whose **path** matches `q`: `{rows: [{path, dir, name, ext, size, mtime}], total, empty, scanned_partitions, of_partitions}`. `q` is a substring, `*` is a wildcard, and a `q` starting with `/`, `~` or a drive letter is anchored at the start. `sort` is one of `path` / `size` / `mtime` (default) / `name`. |
 | `await fused.index.search({root, q, limit})` | The in-folder corpus for `root`, in `/api/fs/walk`'s entry shape: `{entries: [{rel, is_dir, size, mtime}], covered, fresh, age_s, truncated}`. This is the explorer's own search source — reach for it when you want *one folder's* tree, not a machine-wide match. |
 | `await fused.index.query({sql, limit})` | One **read-only** SQL statement over the `files` and `dirs` views: `{columns, rows, truncated}`. The real workhorse for anything shaped like a report. |
-| `await fused.index.status()` | `{indexed, has_index, scanning, files_indexed, last_completed_at, phase, files, dirs, run_id, …}` — the live scan readout. |
+| `await fused.index.status({runId, since})` | `{indexed, has_index, scanning, files_indexed, last_completed_at, phase, files, dirs, run_id, error, …}` — the live scan readout, plus `events`/`cursor` when you pass the `runId` a `scan()` returned. `error` is **data** (the last run's failure sentence, to render), not a rejection. With no `runId` it answers for the most recent *running* run, which is what a page that just loaded wants. |
 | `await fused.index.scan({root, full})` | Start a scan; `{run_id, root, runs}`. No `root` means every configured root. `full: true` discards the reuse cache. |
 | `await fused.index.cancel({runId})` | Cancel a run by id. |
 | `await fused.index.config.get()` / `.set({roots, ignore})` | `{roots, configured_roots, ignore, defaults, location}`. A `set` that changes the rules starts reconciling rescans and says so (`needs_rescan`, `rescan_run_ids`). |
-| `await fused.index.repos()` | Git repositories on the machine: `{repos: [{path}], indexed, reason, scanning, stale}`. See section E — do not rewrite this query yourself. |
+| `await fused.index.repos()` | Git repositories on the machine: `{repos: [{path}], indexed, reason, scanning, stale}`. See section D — do not rewrite this query yourself. |
 
 **Every one of them also resolves with `ready`:**
 
@@ -87,10 +87,19 @@ A field is `null` only where that response genuinely cannot say, never as a gues
       `${(s.total_size / 1e9).toFixed(1)} GB`;
   }
 
+  // Index calls are NOT superseded the way runPython's are (D114): nothing
+  // aborts the in-flight "ab" lookup when "abc" starts, and the broader earlier
+  // query is usually the slower one — so its reply can land LAST and leave the
+  // table (and the title) showing a query the box no longer contains. One
+  // generation counter per render path is the whole guard.
+  let generation = 0;
+
   async function drawRows() {
+    const mine = ++generation;
     const q = fused.params.get("q") || "";
     const offset = parseInt(fused.params.get("offset") || "0", 10);
     const out = await fused.index.lookup({ q, limit: PAGE, offset, sort: "size" });
+    if (mine !== generation) return;  // a newer keystroke already owns the table
     if (!banner(out.ready)) return;
     document.getElementById("rows").innerHTML = out.rows
       .map((r) => `<tr><td>${r.name}</td><td>${r.size}</td><td>${r.dir}</td></tr>`)
@@ -303,6 +312,8 @@ One genuine gap, so nobody discovers it mid-migration: **relocating the index di
 - `import fused_render` from an app `.py` that has a `pyproject.toml` → `ModuleNotFoundError`; the project venv does not contain it. Copy the reader.
 - Forgetting `duckdb` in the app's own `pyproject.toml` → the declaration is the complete list; the bundled set is not unioned in (see `fused-render-authoring`).
 - `POST`ing `/api/index/*` by hand without `X-Fused: 1` → 403. Use `fused.index.*`.
+- Rendering a per-keystroke `lookup()`/`query()` with no generation guard → **index calls are not superseded like `runPython`'s** (D114 gives that only to `runPython`). The slower earlier query wins the race and the table shows a stale answer with no error anywhere. Guard your own renders, as `drawRows` above does.
+- Treating `status().error` as a failure → it is the last run's failure sentence, arriving on a 200 for you to render.
 - Calling `/api/index/ask` per keystroke → it spends AI credits per call. It is a button, not a debounce target.
 - Re-implementing the repos query in a page → wrong on both kinds of zero and on both screening layers; call `fused.index.repos()`.
 - Assuming `stale: false` means the index matches the filesystem → it means "as fresh as the index gets". Nothing can know the difference without re-walking, which is the cost this whole thing avoids.

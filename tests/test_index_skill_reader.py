@@ -1,13 +1,16 @@
-"""The reader snippet in skills/fused-render-index/SKILL.md, actually executed.
+"""The CODE in skills/fused-render-index/SKILL.md, checked rather than read.
 
-That snippet is copy-paste code: whatever it gets wrong propagates into every
+The Python reader is copy-paste code: whatever it gets wrong propagates into every
 app that follows the skill, and prose review cannot catch a path that resolves
 to a directory which does not exist. So the block is extracted from the
 markdown and run — its branch sanitization is checked against the real
 ``fused_render._branch.sanitize`` it has to match, and ``connect()`` is pointed
-at the store shapes that made it raise.
+at the store shapes that made it raise. The JS example gets the two checks that
+can be made statically: its cross-references, and the generation guard that
+keeps a per-keystroke render honest.
 """
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +28,29 @@ def _reader():
     namespace = {}
     exec(compile(code, "SKILL.md:reader", "exec"), namespace)  # noqa: S102
     return namespace
+
+
+# --------------------------------------------------------------- the JS example
+
+def test_every_section_cross_reference_names_a_section_that_exists():
+    # Catches a pointer at a section that is not there. It cannot catch a
+    # pointer at the WRONG existing section (the repos row said "section E",
+    # the migration guide, instead of D) — that one is on review, and the
+    # sections are lettered here so a rename at least fails loudly.
+    letters = {m.group(1) for m in re.finditer(r"^## ([A-Z])\. ", SKILL, re.M)}
+    for cited in re.findall(r"[Ss]ection ([A-Z])\b", SKILL):
+        assert cited in letters, cited
+
+
+def test_the_per_keystroke_example_guards_its_own_renders():
+    """`fused.index.*` has no supersede channel (runPython's D114 is not shared),
+    so the copy-pasted example must not let a slower earlier query win."""
+    example = SKILL.split("### The canonical shape", 1)[1].split("```", 2)[1]
+    assert "let generation = 0;" in example
+    assert "const mine = ++generation;" in example
+    assert "if (mine !== generation) return;" in example
+    # And the checklist has to say it in words, for a reader who writes their own.
+    assert "not superseded like `runPython`" in SKILL
 
 
 # ------------------------------------------------------------- branch scoping
