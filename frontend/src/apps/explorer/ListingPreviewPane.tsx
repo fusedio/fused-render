@@ -10,9 +10,7 @@
 //            modes and its DEFAULT embeds as the normal /render iframe (which
 //            mode that is, is listing/pane-modes.ts's call). A folder's
 //            `_listing` mode mounts the real shell Listing component (embedded —
-//            no URL writes, no nested pane, no global keyboard); a folder with a
-//            lone top-level HTML "app" gets the pane-only `_app` mode instead,
-//            rendering that app in place.
+//            no URL writes, no nested pane, no global keyboard).
 //   Claude   the chat, chat-only, about the selected row (about the FOLDER when
 //            the selection names no single row).
 //   Git      the OPEN FOLDER's working tree. The one mode whose subject is not
@@ -26,28 +24,21 @@
 // column at its left end, the mode pill at its right (SideChrome). Wire-up state
 // — whether there is a pane at all, its width, the divider drag, and `_side`
 // itself — stays in Listing; this component owns only what the pane shows.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { listDir, resolveConditions, statPath } from "@platform/lib/api";
+import { useEffect, useState } from "react";
+import { resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { modeTitle } from "@platform/lib/mode-name";
 import { isModeVisible } from "@platform/lib/mode-visibility";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import { loneEntryPage } from "@apps/explorer/lib/folder-app";
 import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideCloseButton, paneSideIcon } from "@apps/explorer/SideChrome";
-import { useAppButton } from "@apps/explorer/lib/app-button";
 import { withNoFocus } from "@apps/explorer/listing/frame-focus";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
-import {
-  publishPaneActionSlot,
-  retractPaneActionSlot,
-} from "@apps/explorer/pane-action-slot";
 import Listing from "@apps/explorer/Listing";
 import {
-  PANE_APP_MODE,
   activePaneMode,
   paneModeList,
   paneOpenAction,
@@ -71,16 +62,6 @@ export interface PaneTarget {
   self?: boolean;
 }
 
-// The pane-only sentinel, re-exported locally for readability (defined with
-// the ordering rules in listing/pane-modes.ts).
-const APP_MODE = PANE_APP_MODE;
-
-// `_app` no longer needs a SWITCHER ICON of its own. It had one — a monochrome
-// play-in-a-box, currentColor like every other mode glyph — for the pane's own
-// per-template menu, which listed `_app` beside the row's real templates. That
-// menu is gone (see the header below): `_app` is now only ever RENDERED, as one
-// of the things `Preview` can resolve to, and nothing draws it in a bar.
-
 // The stat'ed template picture for the selected row. `conditions` is null
 // while gated entries are still resolving (CT-12 deferred verdicts).
 interface PaneInfo {
@@ -94,31 +75,6 @@ type InfoState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | ({ status: "ok" } & PaneInfo);
-
-// Lone-app detection for a folder: null while loading or when the folder has
-// no single unambiguous app (a truncated listing never proves uniqueness).
-interface AppTarget {
-  name: string;
-  path: string;
-}
-
-// Portal target for the open folder's primary action (pane-action-slot.ts).
-// Publishing the live node rather than letting Preview find it by id: the pane
-// unmounts whenever the split narrows past its threshold, and a stale
-// reference would leave the button portaled into a detached div — invisible,
-// with nothing in the title bar either.
-//
-// Collapses when empty so the header's `gap` does not open a hole beside the
-// mode chip for the folders that have no app to open (.pane-action-slot:empty).
-function PaneActionSlot() {
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (el) publishPaneActionSlot(el);
-    return () => retractPaneActionSlot(el);
-  }, []);
-  return <div className="pane-action-slot" ref={ref} />;
-}
 
 export default function ListingPreviewPane({
   row,
@@ -151,24 +107,18 @@ export default function ListingPreviewPane({
   onClose: () => void;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
-  // Lone-app probe result for a folder: undefined = still loading, null =
-  // no unambiguous app. Only drives the `_app` menu entry, never a default.
-  const [app, setApp] = useState<AppTarget | null | undefined>(undefined);
-
   // Stat the selection — files and folders alike carry a template mode list
   // (folders at minimum the `_listing` sentinel). The cleanup flag is the
   // superseded-click guard: a stale async result for a row that's no longer
   // selected must not render.
   const path = row?.path;
-  const isDir = row?.isDir;
-  // The self target renders without asking the server anything (no modes, no
-  // app probe — see its branch below), so neither fetch is started for it.
+  // The self target renders without asking the server anything (no modes — see
+  // its branch below), so no fetch is started for it.
   const self = !!row?.self;
   // Only `Preview` is about the row's own templates. Claude and Git are handed
   // their entry by the caller and aimed by `_file`, so in those two modes the
-  // stat and the lone-app probe below would both be work for an answer nothing
-  // reads — including on every selection change, since Claude stays mounted
-  // across one.
+  // stat below would be work for an answer nothing reads — including on every
+  // selection change, since Claude stays mounted across one.
   const previewing = side === "preview";
   useEffect(() => {
     if (!path || self || !previewing) return;
@@ -206,39 +156,6 @@ export default function ListingPreviewPane({
     };
   }, [path, self, previewing]);
 
-  // Folder lone-app probe, for the `_app` mode — the SERVER's entry rule
-  // (lib/folder-app), the same one Listing's onSingleApp applies, so the pane's
-  // button and the title bar's can never disagree about whether a folder is an
-  // app. A truncated listing is only a partial page (server cap), so a lone
-  // match in it doesn't prove it is the folder's ONLY one — offer no `_app`
-  // mode then. Errors also just drop the mode; the embedded Listing surfaces
-  // the folder's real error itself.
-  useEffect(() => {
-    if (!path || !isDir || self || !previewing) return;
-    let alive = true;
-    setApp(undefined);
-    listDir(path).then(
-      (data) => {
-        if (!alive) return;
-        const dir = (data.path || path).replace(/\/+$/, "");
-        const page = data.truncated ? null : loneEntryPage(data.entries);
-        setApp(page === null ? null : { name: page, path: dir + "/" + page });
-      },
-      () => alive && setApp(null)
-    );
-    return () => {
-      alive = false;
-    };
-  }, [path, isDir, self, previewing]);
-
-  // The "Open as app" / "Add as app" button for a previewed FOLDER that holds a
-  // lone top-level page — label, click and destination decided in one shared
-  // place (lib/app-button), so this pane and the title bar's own button can
-  // never mean different things. Called before the early returns below, as a
-  // hook must be; a null folder switches the whole thing off and makes no
-  // request, which covers files, the self target and a multi-selection alike.
-  const appBtn = useAppButton(isDir && !self ? (path as string) : null, app?.path ?? null);
-
   // Keep the keyboard on the listing when this preview mounts (the pane's focus
   // contract — listing/frame-focus.ts). Also a hook, so also before the early
   // returns; the branches it guards are the ones that render a frame.
@@ -272,10 +189,10 @@ export default function ListingPreviewPane({
   // Both of those are in `strip` rather than in `extra`, i.e. in every state: a
   // control that vanishes while a row stats is a control the user cannot rely on,
   // and closing the pane is not something a loading preview should be able to
-  // take away. The same reasoning already put the OPEN FOLDER's primary action
-  // here (portaled down from Preview.tsx, pane-action-slot.ts — see there for why
-  // it is not in the title bar): it belongs to the folder on the left, not to
-  // whichever row the pane happens to be showing.
+  // take away. The OPEN FOLDER's primary action used to be portaled in beside
+  // them on the same reasoning — it belonged to the folder on the left, not to
+  // whichever row the pane happens to be showing — but that action was "Open as
+  // app" and a folder has no primary any more (D264).
   //
   // The chevron went missing for a while in between. It used to sit on the seam it
   // sent the pane back to, and went with the toggle when visibility became purely
@@ -289,11 +206,10 @@ export default function ListingPreviewPane({
   // one fact the layout already made obvious.
   //
   // `extra` is what only the settled Preview puts in it — the open-full-screen
-  // button and a folder-app's primary — at the far end, after the pill.
+  // button — at the far end, after the pill.
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
       <SideCloseButton what={modeTitle(side)} onClick={onClose} />
-      <PaneActionSlot />
       <div className="side-header-tail">
         {sideMenu}
         {extra}
@@ -355,15 +271,11 @@ export default function ListingPreviewPane({
 
   // The SELF target — nothing selected, so the pane's subject is the folder
   // already open on the left. It has no preview: just the hint that says what to
-  // do about it. No actions either — the folder's own primary ("Open as app")
-  // used to be handed down into this header, but a folder that HAS an app is not
-  // empty, so FS-16's auto-select means this row is barely ever on screen; the
-  // button belongs in the title bar, which is where it now stays whether the pane
-  // is open or not (Preview.tsx).
+  // do about it.
   //
   // NO PER-ROW MODE LIST, which is why this branch renders before all the mode
-  // machinery below and why the stat/app-probe fetches above skip the self target
-  // entirely: there is no row to resolve templates for. The pane's OWN three-way
+  // machinery below and why the stat above skips the self target entirely:
+  // there is no row to resolve templates for. The pane's OWN three-way
   // pill is in `strip` and so is present here like everywhere else — and it is
   // exactly the control this state used to lack. The picker that was removed here
   // was the per-row one: its only job in this state was to offer a chat on the
@@ -403,10 +315,8 @@ export default function ListingPreviewPane({
 
   // --- what `Preview` resolves to for this row --------------------------------
 
-  // Mode order = pane priority, decided in listing/pane-modes.ts — which also
-  // documents why a lone app leads over `_listing`, and why `app` and `_app`
-  // are never both offered. This component only turns that ranking into a
-  // rendered frame.
+  // Mode order = pane priority, decided in listing/pane-modes.ts. This
+  // component only turns that ranking into a rendered frame.
   //
   // Gate policy is the shared one (lib/mode-visibility), on every mode surface
   // alike: an entry hides only on an EXPLICIT denial.
@@ -424,19 +334,17 @@ export default function ListingPreviewPane({
     templates: info.templates,
     conditions: info.conditions,
     isDir: !!row.isDir,
-    hasApp: !!app,
   });
 
   // While that list is still undecided, hold the skeleton — the pane must never
-  // settle on an interim mode and then jump. Undecided means: the folder's app
-  // probe is in flight (`_app` would lead the list), or any gated template's
-  // verdict is unresolved (a higher-ranked conditional mode may still enter it).
-  // Both signals resolve exactly once per mount (the component is keyed on the
+  // settle on an interim mode and then jump. Undecided means a gated template's
+  // verdict is unresolved (a higher-ranked conditional mode may still enter the
+  // list). It resolves exactly once per mount (the component is keyed on the
   // previewed path), so this never re-shows the skeleton post-settle.
   const gatesPending =
     info.conditions === null &&
     info.templates.some((e) => e.conditional && e.mode !== "_listing");
-  if (gatesPending || (row.isDir && app === undefined)) {
+  if (gatesPending) {
     return (
       <div className="listing-pane">
         {strip()}
@@ -513,19 +421,6 @@ export default function ListingPreviewPane({
           </svg>
         </button>
       )}
-      {/* A folder that IS an app gets the folder's real primary in that slot
-          instead, and this one is LABELLED: the expand glyph reads as "bigger",
-          which is not what happens — the folder's page opens, and no icon says
-          that. It is literally the title bar's own button for the open folder
-          (lib/app-button), because it is the same action one level down — down
-          to offering "Add as app" for a folder the registry doesn't know yet,
-          which the pane's older, listing-only version of this button could not
-          see and so could not offer. */}
-      {appBtn && (
-        <button type="button" className="bar-ctl" title={appBtn.label} onClick={appBtn.onClick}>
-          {appBtn.label}
-        </button>
-      )}
     </>
   );
 
@@ -556,18 +451,6 @@ export default function ListingPreviewPane({
           className="pane-frame"
           src={srcFor(activeEntry)}
           title={row.name}
-        />
-      </>
-    );
-  } else if (activeMode === APP_MODE && app) {
-    body = (
-      <>
-        {header}
-        <iframe
-          key={APP_MODE}
-          className="pane-frame"
-          src={withNoFocus(`/render?path=${encodeURIComponent(app.path)}`)}
-          title={app.name}
         />
       </>
     );

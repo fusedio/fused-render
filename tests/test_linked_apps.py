@@ -1,7 +1,14 @@
-"""Linked apps (fused_render/linked_apps.py + its routes in
-server/routers/apps.py): folders anywhere on disk registered as apps under the
-virtual "linked" tag, via ~/.fused-render/linked_apps.json — never a symlink
-in the workspace.
+"""Linked apps (fused_render/linked_apps.py): folders anywhere on disk listed
+as apps under the virtual "linked" tag, via ~/.fused-render/linked_apps.json —
+never a symlink in the workspace.
+
+The registry is READ-ONLY as of D264: "Add as app" was its only writer and went
+with the app concept, taking `link_app`/`unlink_app` and the link/unlink/status
+routes with it. What is left, and what these tests cover, is everything that
+still READS it — the /apps hub listing, the env export, and the template gates
+and history scoping that ask whether a path belongs to a registered folder.
+Registration happens here through `write_entries`, the module's one remaining
+way in, which is also how a user with an existing registry file gets there.
 """
 import json
 import os
@@ -53,74 +60,29 @@ def _folder(tmp_path, name, htmls=("index.html",), title=None):
 HDRS = {"X-Fused": "1"}
 
 
-# ------------------------------------------------------------------- linking
+def _register(*folders) -> None:
+    """Put folders in the registry under their basenames, as an install that
+    predates D264 would have. Goes through write_entries so the env export
+    (which the template gates read) happens exactly as in production."""
+    linked_apps.write_entries(
+        [{"name": os.path.basename(str(d)), "path": str(d)} for d in folders]
+    )
 
 
-def test_link_requires_the_fused_header(client, tmp_path):
-    r = client.post("/api/apps/link", json={"path": str(tmp_path)})
-    assert r.status_code == 403
+# ------------------------------------------------------------------- listing
 
 
-def test_link_then_listed_under_the_linked_tag(client, tmp_path):
+def test_a_registered_folder_lists_under_the_linked_tag(client, tmp_path):
     d = _folder(tmp_path, "notes", title="My Notes")
-    r = client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert r.status_code == 200
-    app = r.json()["app"]
+    _register(d)
+
+    (app,) = client.get("/api/apps").json()["apps"]
     assert app["tag"] == linked_apps.LINKED_TAG
     assert app["name"] == "notes"
+    assert app["path"] == str(d)
+    # Same app_dict shape as a workspace app — the registry reuses it wholesale.
     assert app["entry"] == app["entry_html"] == str(d / "index.html")
     assert app["title"] == "My Notes"
-
-    listed = client.get("/api/apps").json()["apps"]
-    assert [(a["tag"], a["name"]) for a in listed] == [("linked", "notes")]
-
-
-def test_link_with_explicit_name(client, tmp_path):
-    d = _folder(tmp_path, "notes")
-    r = client.post(
-        "/api/apps/link", json={"path": str(d), "name": "renamed"}, headers=HDRS
-    )
-    assert r.status_code == 200
-    assert r.json()["app"]["name"] == "renamed"
-
-
-def test_link_is_idempotent_for_the_same_mapping(client, tmp_path):
-    d = _folder(tmp_path, "notes")
-    for _ in range(2):
-        r = client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-        assert r.status_code == 200
-    assert len(linked_apps.read_entries()) == 1
-
-
-def test_link_name_collision_is_409(client, tmp_path):
-    a = _folder(tmp_path, "same")
-    b = tmp_path / "elsewhere2" / "same"
-    b.mkdir(parents=True)
-    assert client.post("/api/apps/link", json={"path": str(a)}, headers=HDRS).status_code == 200
-    r = client.post("/api/apps/link", json={"path": str(b)}, headers=HDRS)
-    assert r.status_code == 409
-
-
-def test_link_same_folder_under_two_names_is_409(client, tmp_path):
-    d = _folder(tmp_path, "notes")
-    assert client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS).status_code == 200
-    r = client.post(
-        "/api/apps/link", json={"path": str(d), "name": "other"}, headers=HDRS
-    )
-    assert r.status_code == 409
-
-
-def test_link_rejects_non_folders_and_workspace_paths(client, tmp_path, workspace):
-    r = client.post(
-        "/api/apps/link", json={"path": str(tmp_path / "nope")}, headers=HDRS
-    )
-    assert r.status_code == 400
-
-    inside = workspace / "local" / "real-app"
-    inside.mkdir(parents=True)
-    r = client.post("/api/apps/link", json={"path": str(inside)}, headers=HDRS)
-    assert r.status_code == 400
-    assert "workspace" in r.json()["error"]
 
 
 def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspace):
@@ -129,12 +91,9 @@ def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspac
     ("linked", name) identity are indistinguishable to the recents store, which
     keys on exactly that pair.
 
-    link-status does NOT withhold the twin's identity, and that is the change
-    D262 forced: the pair used to be a URL (/apps/linked/<name>, which resolved
-    through the registry, i.e. to the OTHER folder), so reporting it would have
-    sent the button somewhere else. It is now only the answer to "will
-    templates/app/condition.py take this folder", and that gate reads the
-    folder's own two-level shape — which this folder has."""
+The link-status half of this rule is gone with the route that reported it
+    (D264); what remains is the listing, which is where the ambiguity actually
+    mattered."""
     ws_twin = workspace / "linked" / "notes"
     ws_twin.mkdir(parents=True)
     (ws_twin / "index.html").write_text("<html></html>")
@@ -142,59 +101,13 @@ def test_workspace_linked_tag_collision_registry_wins(client, tmp_path, workspac
     ws_free.mkdir(parents=True)
 
     d = _folder(tmp_path, "notes")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
 
     listed = [(a["tag"], a["name"], a["path"]) for a in
               client.get("/api/apps").json()["apps"]]
     assert ("linked", "notes", str(d)) in listed
     assert ("linked", "notes", str(ws_twin)) not in listed
     assert ("linked", "solo", str(ws_free)) in listed
-
-    # The colliding workspace folder keeps its identity: the gate takes it, so
-    # "Open as app" opens THIS folder in the app view rather than degrading to
-    # its bare index.html.
-    r = client.get("/api/apps/link-status", params={"path": str(ws_twin)}).json()
-    assert r == {"status": "workspace", "name": "notes", "tag": "linked"}
-    r = client.get("/api/apps/link-status", params={"path": str(ws_free)}).json()
-    assert r == {"status": "workspace", "name": "solo", "tag": "linked"}
-
-
-def test_link_status_withholds_the_identity_on_a_mount(client, tmp_path, workspace,
-                                                       monkeypatch):
-    """templates/app/condition.py refuses a mount-backed path before every other
-    rule, so link-status has to as well. Without this the explorer's "Open as
-    app" promised a mode the gate denies: `_mode=app` resolves to nothing and
-    the folder falls back to `_listing` — the file list the button exists to
-    avoid showing."""
-    import fused_render.shell.mounts as mounts_mod
-
-    ws_app = workspace / "local" / "onmount"
-    ws_app.mkdir(parents=True)
-    linked = _folder(tmp_path, "remote")
-    client.post("/api/apps/link", json={"path": str(linked)}, headers=HDRS)
-
-    # Both paths read as mount-backed; nothing else about them changes.
-    monkeypatch.setattr(mounts_mod, "is_mount_backed", lambda p: True)
-
-    assert client.get("/api/apps/link-status", params={"path": str(ws_app)}).json() == {
-        "status": "workspace", "name": None, "tag": None
-    }
-    # A registered folder stays LINKED — it just can't offer the mode, so the
-    # status stands and only the identity is withheld (never "unlinked", which
-    # would offer to link a folder that already is).
-    assert client.get("/api/apps/link-status", params={"path": str(linked)}).json() == {
-        "status": "linked", "name": None, "tag": None
-    }
-
-
-def test_link_rejects_ancestors_of_the_workspace(client, tmp_path, workspace):
-    """Linking the workspace's parent would make linked_app_dir_for claim
-    every workspace path, shadowing real apps in the template gates."""
-    r = client.post("/api/apps/link", json={"path": str(tmp_path)}, headers=HDRS)
-    assert r.status_code == 400
-    assert "contains the Fused workspace" in r.json()["error"]
-    r = client.post("/api/apps/link", json={"path": str(workspace)}, headers=HDRS)
-    assert r.status_code == 400
 
 
 def test_registry_entries_containing_the_workspace_are_filtered_on_read(
@@ -215,26 +128,11 @@ def test_registry_entries_containing_the_workspace_are_filtered_on_read(
     assert os.environ["FUSED_RENDER_LINKED_APPS"] == str(ok)
 
 
-@pytest.mark.parametrize("bad", ["", "  ", "a/b", "a\\b", ".hidden"])
-def test_link_rejects_bad_explicit_names(client, tmp_path, bad):
-    d = _folder(tmp_path, "notes")
-    r = client.post("/api/apps/link", json={"path": str(d), "name": bad}, headers=HDRS)
-    # blank names fall back to the basename; malformed ones are rejected
-    if not bad.strip():
-        assert r.status_code == 200
-        assert r.json()["app"]["name"] == "notes"
-    else:
-        assert r.status_code == 400
-
-
-# ------------------------------------------------------------------ listing
-
-
 def test_linked_apps_merge_with_workspace_apps_sorted(client, tmp_path, workspace):
     d = _folder(tmp_path, "zeta")
     (workspace / "local" / "alpha").mkdir(parents=True)
     (workspace / "local" / "alpha" / "index.html").write_text("<html></html>")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
 
     listed = client.get("/api/apps").json()["apps"]
     assert [(a["tag"], a["name"]) for a in listed] == [
@@ -249,7 +147,7 @@ def test_a_linked_folder_reports_its_preview_png_too(client, tmp_path):
     `preview_image` is resolved inside that shared shape."""
     d = _folder(tmp_path, "shot")
     (d / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
 
     (app,) = client.get("/api/apps").json()["apps"]
     assert app["preview_image"] == str(d / "preview.png")
@@ -257,7 +155,7 @@ def test_a_linked_folder_reports_its_preview_png_too(client, tmp_path):
 
 def test_missing_linked_folder_drops_out_but_stays_registered(client, tmp_path):
     d = _folder(tmp_path, "gone")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     (d / "index.html").unlink()
     d.rmdir()
     assert client.get("/api/apps").json()["apps"] == []
@@ -267,9 +165,9 @@ def test_missing_linked_folder_drops_out_but_stays_registered(client, tmp_path):
 
 def test_zero_or_many_htmls_lists_as_entryless_card(client, tmp_path):
     d = _folder(tmp_path, "multi", htmls=("a.html", "b.html"))
-    r = client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert r.status_code == 200
-    assert r.json()["app"]["entry_html"] is None
+    _register(d)
+    (app,) = client.get("/api/apps").json()["apps"]
+    assert app["entry_html"] is None
 
 
 def test_corrupt_registry_reads_as_empty(client, tmp_path, monkeypatch):
@@ -281,50 +179,9 @@ def test_corrupt_registry_reads_as_empty(client, tmp_path, monkeypatch):
     assert client.get("/api/apps").json()["apps"] == []
 
 
-# ---------------------------------------------------------------- unlinking
-
-
-def test_unlink_removes_from_listing_but_never_touches_the_folder(client, tmp_path):
-    d = _folder(tmp_path, "notes")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    r = client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
-    assert r.status_code == 200 and r.json()["removed"] is True
-    assert client.get("/api/apps").json()["apps"] == []
-    assert (d / "index.html").exists()  # target untouched
-
-
-def test_unlink_unknown_name_reports_removed_false(client):
-    r = client.post("/api/apps/unlink", json={"name": "nope"}, headers=HDRS)
-    assert r.status_code == 200 and r.json()["removed"] is False
-
-
-# --------------------------------------------------------------- link status
-
-
-def test_link_status_tracks_the_lifecycle(client, tmp_path, workspace):
-    d = _folder(tmp_path, "notes")
-    st = lambda p: client.get("/api/apps/link-status", params={"path": p}).json()
-
-    assert st(str(d)) == {"status": "unlinked", "name": None, "tag": None}
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert st(str(d)) == {"status": "linked", "name": "notes", "tag": "linked"}
-    client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
-    assert st(str(d)) == {"status": "unlinked", "name": None, "tag": None}
-
-    # A workspace app dir carries its route identity; the root and a tag
-    # folder don't (the button falls back to the fs path there).
-    inside = workspace / "local" / "real-app"
-    inside.mkdir(parents=True)
-    assert st(str(inside)) == {"status": "workspace", "name": "real-app", "tag": "local"}
-    assert st(str(workspace / "local")) == {"status": "workspace", "name": None, "tag": None}
-
-
-# ------------------------------------------------------------------- recents
-
-
 def test_recents_resolve_linked_tag_through_the_registry(client, tmp_path):
     d = _folder(tmp_path, "notes")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     r = client.post(
         "/api/apps/recents/open",
         json={"tag": "linked", "name": "notes"},
@@ -333,18 +190,21 @@ def test_recents_resolve_linked_tag_through_the_registry(client, tmp_path):
     assert r.json()["recorded"] is True
     assert [e["name"] for e in client.get("/api/apps/recents").json()["entries"]] == ["notes"]
 
-    # unlink: the recent stops resolving and is filtered from GET
-    client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
+    # De-registered (there is no unlink route any more — a hand-edited or
+    # emptied registry is the remaining way): the recent stops resolving and is
+    # filtered out of the GET, which is the behaviour that matters.
+    linked_apps.write_entries([])
     assert client.get("/api/apps/recents").json()["entries"] == []
 
 
 # ------------------------------------------------------------ template gates
 #
-# The app/claude gates accept a linked folder through the
-# FUSED_RENDER_LINKED_APPS env var (exported on every registry write) — pure
-# env membership, no file reads. `history` stays workspace-only on purpose:
-# its backend writes git history with the Fused identity, and a linked folder
-# is the user's own repository.
+# The chat gate accepts a linked folder through the FUSED_RENDER_LINKED_APPS
+# env var (exported on every registry write) — pure env membership, no file
+# reads. The `app` gate used to be the other half of this and is gone with the
+# template (D264). `history` REFUSES to revert there on purpose: its backend
+# writes git history with the Fused identity, and a linked folder is the user's
+# own repository — which is why the env export outlived the registration UI.
 
 
 def _condition(name):
@@ -360,37 +220,6 @@ def _condition(name):
     return mod
 
 
-def test_link_and_unlink_export_the_env_var(client, tmp_path):
-    d = _folder(tmp_path, "notes")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert os.environ["FUSED_RENDER_LINKED_APPS"] == str(d)
-    client.post("/api/apps/unlink", json={"name": "notes"}, headers=HDRS)
-    assert os.environ["FUSED_RENDER_LINKED_APPS"] == ""
-
-
-# The chat gate was parametrised here alongside `app`: the two app modes had to
-# agree about which folders are apps, or a folder would offer one without the
-# other. It is out now — that mode is the ONE chat template and is offered on
-# every directory, linked or not, so it has no app-folder rule left to agree
-# about. The exclusion is asserted directly in
-# test_a_linked_folder_needs_no_gate_for_the_chat below, rather than left implicit
-# in a shortened parametrize list.
-@pytest.mark.parametrize("template", ["app"])
-def test_app_gates_accept_a_linked_folder(client, tmp_path, workspace, template):
-    d = _folder(tmp_path, "notes")
-    cond = _condition(template)
-    assert cond.main(str(d)) is False  # not linked yet
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
-    assert cond.main(str(d)) is True
-    # only the registered folder itself — never its parent or children
-    assert cond.main(str(d.parent)) is False
-    assert cond.main(str(d / "sub")) is False
-    # the workspace two-level rule is untouched
-    app_dir = workspace / "local" / "real"
-    app_dir.mkdir(parents=True)
-    assert cond.main(str(app_dir)) is True
-
-
 def test_a_linked_folder_needs_no_gate_for_the_chat(client, tmp_path):
     """The chat gate stopped caring about linked apps when it stopped caring about
     app folders at all: a linked folder, its parent and its children are all just
@@ -403,7 +232,7 @@ def test_a_linked_folder_needs_no_gate_for_the_chat(client, tmp_path):
     assert cond.main(str(d)) is True          # never linked
     assert cond.main(str(d.parent)) is True
     assert cond.main(str(d / "sub")) is True
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     assert cond.main(str(d)) is True          # and linking changes nothing
 
 
@@ -416,7 +245,7 @@ def _git_repo(d):
 def test_history_gate_accepts_git_backed_linked_folders(client, tmp_path):
     d = _folder(tmp_path, "notes")
     cond = _condition("history")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     assert cond.main(str(d)) is False  # linked but no repo: no history to show
     _git_repo(d)
     assert cond.main(str(d)) is True
@@ -432,7 +261,7 @@ def test_history_gate_finds_the_git_at_an_ancestor(client, tmp_path):
     d.mkdir(parents=True)
     (d / "index.html").write_text("<html></html>")
     _git_repo(repo)
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     assert _condition("history").main(str(d)) is True
     # ...and `git` is offered there too. It used to step aside ("one story, one
     # mode") with a whole extra `rev-parse` fork on every stat to work out
@@ -445,7 +274,7 @@ def test_git_gate_keeps_serving_ungitted_linked_folders(client, tmp_path, worksp
     """Being linked has no bearing on the git gate either way: the only
     question is whether git says the path is in a work tree."""
     d = _folder(tmp_path, "notes")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     # linked but not git-backed: there is genuinely no repo, so no mode
     assert _condition("git").main(str(d)) is False
     assert _condition("history").main(str(d)) is False
@@ -485,7 +314,7 @@ def test_history_backend_scopes_to_the_linked_subtree(client, tmp_path):
     (d / "main.html").write_text("<html>v1</html>")
     commit("app commit")
 
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
 
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -522,7 +351,7 @@ def test_history_backend_shows_history_but_refuses_revert_for_linked(
          "commit", "-q", "-m", "user commit"],
         check=True,
     )
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
 
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -558,5 +387,5 @@ def test_git_scoping_ignores_linked_folders(client, tmp_path, workspace):
     from fused_render import app_git
 
     d = _folder(tmp_path, "myrepo")
-    client.post("/api/apps/link", json={"path": str(d)}, headers=HDRS)
+    _register(d)
     assert app_git.app_dir_for(str(d / "index.html")) is None

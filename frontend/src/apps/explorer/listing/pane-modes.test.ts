@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
-import { KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
-  PANE_APP_MODE,
   activePaneMode,
   paneModeList,
   paneOpenAction,
@@ -42,20 +40,21 @@ describe("paneModeList — the selected target", () => {
       templates: dirTemplates(),
       conditions: verdicts(["claude", "git"], ["app", "history", "graph"]),
       isDir: true,
-      hasApp: false,
     });
     expect(modes[0]).toBe("_listing");
     expect(activePaneMode(modes, null)).toBe("_listing");
   });
 
-  test("a lone-app folder leads with `_app`, listing next", () => {
+  test("a folder holding a lone page is still just a folder", () => {
+    // It used to lead with a pane-only `_app` sentinel rendering that page in
+    // place. The app concept is gone (D264): every folder previews as its
+    // listing, and the page is one row of it.
     const modes = paneModeList({
       templates: dirTemplates(["_listing", "claude"]),
       conditions: verdicts(["claude"]),
       isDir: true,
-      hasApp: true,
     });
-    expect(modes).toEqual([PANE_APP_MODE, "_listing", "claude"]);
+    expect(modes).toEqual(["_listing", "claude"]);
   });
 
   test("a file drops `_listing` and takes its own first mode", () => {
@@ -64,47 +63,8 @@ describe("paneModeList — the selected target", () => {
       { mode: "code", path: "/t/code/template.html", icon: null },
       { mode: "_listing", path: null, icon: null },
     ] as TemplateEntry[];
-    const modes = paneModeList({ templates, conditions: {}, isDir: false, hasApp: false });
+    const modes = paneModeList({ templates, conditions: {}, isDir: false });
     expect(modes).toEqual(["_render", "code"]);
-  });
-});
-
-// A lone app has two possible carriers — the registry's `app` template and the
-// pane's own `_app` sentinel — and mode-name.ts names them ALIKE on purpose
-// (same view, two surfaces). The list is where the duplicate is prevented, so
-// this is the rule, not a naming exemption.
-describe("paneModeList — a lone app gets exactly one entry", () => {
-  test("a visible registry `app` suppresses the sentinel and takes the lead", () => {
-    const modes = paneModeList({
-      templates: dirTemplates(["_listing", "app", "claude"]),
-      conditions: verdicts(["app", "claude"]),
-      isDir: true,
-      hasApp: true,
-    });
-    expect(modes).toEqual(["app", "_listing", "claude"]);
-    expect(modes).not.toContain(PANE_APP_MODE);
-  });
-
-
-  test("a denied registry `app` hands the lead back to the sentinel", () => {
-    const modes = paneModeList({
-      templates: dirTemplates(["_listing", "app", "claude"]),
-      conditions: verdicts(["claude"], ["app"]),
-      isDir: true,
-      hasApp: true,
-    });
-    expect(modes).toEqual([PANE_APP_MODE, "_listing", "claude"]);
-  });
-
-  test("no lone HTML page: `app` is offered but keeps the registry's rank", () => {
-    const modes = paneModeList({
-      templates: dirTemplates(["_listing", "app", "claude"]),
-      conditions: verdicts(["app", "claude"]),
-      isDir: true,
-      hasApp: false,
-    });
-    expect(modes).toEqual(["_listing", "app", "claude"]);
-    expect(modes).not.toContain(PANE_APP_MODE);
   });
 });
 
@@ -118,13 +78,13 @@ describe("paneModeList — a lone app gets exactly one entry", () => {
 describe("paneModeList — gate visibility is the shared policy", () => {
   test("verdicts in flight are pending, not denied", () => {
     const templates = dirTemplates(["_listing", "zarr_aoi"]);
-    const modes = paneModeList({ templates, conditions: null, isDir: true, hasApp: false });
+    const modes = paneModeList({ templates, conditions: null, isDir: true });
     expect(modes).toEqual(["_listing", "zarr_aoi"]);
   });
 
   test("a failed verdict call (no key for the mode) still offers the mode", () => {
     const templates = dirTemplates(["_listing", "zarr_aoi"]);
-    const modes = paneModeList({ templates, conditions: {}, isDir: true, hasApp: false });
+    const modes = paneModeList({ templates, conditions: {}, isDir: true });
     expect(modes).toEqual(["_listing", "zarr_aoi"]);
   });
 
@@ -134,7 +94,6 @@ describe("paneModeList — gate visibility is the shared policy", () => {
       templates,
       conditions: verdicts([], ["zarr_aoi"]),
       isDir: true,
-      hasApp: false,
     });
     expect(modes).toEqual(["_listing"]);
   });
@@ -154,12 +113,6 @@ test("an empty list is the only way to have no active mode", () => {
   // An override wins while it is offered, and is ignored when it is not.
   expect(activePaneMode(["claude", "git"], "git")).toBe("git");
   expect(activePaneMode(["claude"], "git")).toBe("claude");
-});
-
-test("the pane's own sentinel is never sent to the server", () => {
-  // KNOWN_SENTINEL_MODES is the set the shell will build a render URL for
-  // (PT-12). `_app` is pane-local: the pane renders it itself.
-  expect(KNOWN_SENTINEL_MODES.has(PANE_APP_MODE)).toBe(false);
 });
 
 // The expand icon opens what the pane is SHOWING, not what the row defaults to
@@ -192,23 +145,12 @@ describe("paneOpenTarget", () => {
   test("nothing offered means nothing to carry", () => {
     expect(paneOpenTarget(file, null)).toEqual({ path: "/w/notes.md", isDir: false });
   });
-
-  test("the pane-only app sentinel is never written out as `_mode=_app`", () => {
-    // The server has never heard of `_app`. It used to be TRANSLATED here, to
-    // the folder's lone page — which quietly answered "where does this app
-    // open" from the previewed row alone, and so could neither reach an app's
-    // builder route nor notice that an unlinked folder has no app view at all.
-    // That question belongs to lib/app-button now; all this has to guarantee is
-    // that the sentinel never leaks into a URL.
-    expect(paneOpenTarget(dir, PANE_APP_MODE)).toEqual({ path: "/w/proj", isDir: true });
-  });
 });
 
 // Which control the pane's header offers for the previewed row. "Expand" means
 // something for a FILE and nothing for a folder — a folder full-screen is just
 // its listing, which is already on the left of the very split the button sits
-// in. A folder that IS an app gets its own button, from lib/app-button, which
-// this module deliberately does not decide (see paneOpenAction's comment).
+// in.
 describe("paneOpenAction", () => {
   const file = { path: "/w/notes.md", isDir: false };
   const dir = { path: "/w/proj", isDir: true };
@@ -221,10 +163,9 @@ describe("paneOpenAction", () => {
   });
 
   test("a folder offers nothing here, whatever mode it is showing", () => {
-    // Including a folder that IS an app: its button is the shared one, and it
-    // must not ALSO get an expand control — that one would open the folder's
-    // listing, which is what the left half of this very split already shows.
-    for (const mode of ["_listing", "claude", "app", PANE_APP_MODE, null]) {
+    // An expand control on a folder would open the folder's listing, which is
+    // what the left half of this very split already shows.
+    for (const mode of ["_listing", "claude", "git", null]) {
       expect(paneOpenAction(dir, mode)).toEqual({ kind: "none" });
     }
   });

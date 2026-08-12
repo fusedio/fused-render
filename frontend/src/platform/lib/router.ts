@@ -62,7 +62,9 @@ export const IS_EMBED =
 //   * the "Browse contents" mode chip, which over a snapshot dir offers the
 //     folder's counterpart mode — a Claude chat ON THE EXTRACTED COPY, which is
 //     nonsense pointed at a frozen tree;
-//   * the "Open as app" chip, same argument.
+//   * the "Open as app" chip, same argument. (That chip is gone outright now —
+//     D264 removed the app concept — but the flag still suppresses the two
+//     above, which is the same reasoning applied to the survivors.)
 //
 // The fourth is about being FRAMED rather than about being frozen: the listing
 // does not open a preview pane of its own (Listing.tsx). A snapshot is embedded
@@ -192,9 +194,11 @@ export function navigate(
     const side = current.get("_side");
     if (side !== null) parts.push("_side=" + encodeURIComponent(side));
   }
-  // `opts.mode` picks the destination's template mode (`_mode`) — how the
-  // explorer's "Open as app" button opens a folder straight into the app view
-  // (app-button's APP_OPEN_MODE) instead of the folder's file listing.
+  // `opts.mode` picks the destination's template mode (`_mode`) — a caller
+  // that wants the destination opened in a specific view rather than its own
+  // default (the preview pane's expand button carries the mode it is showing).
+  // Its other producer, the explorer's "Open as app", is gone with the app
+  // concept (D264).
   if (opts?.mode) parts.push("_mode=" + encodeURIComponent(opts.mode));
   if (opts?.sel) parts.push("sel=" + encodeURIComponent(opts.sel));
   const search = parts.length ? "?" + parts.join("&") : "";

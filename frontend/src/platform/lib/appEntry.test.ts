@@ -82,8 +82,8 @@ test("entryOf prefers entry and falls back to entry_html", () => {
 
 test("an app with a page entry opens its folder as a plain explorer listing", () => {
   // No `_mode`: the folder arrives as its file listing and the app view is one
-  // click away in the mode switcher. A card that pinned `_mode=app` chose the
-  // view for the user; opening the folder lets them choose.
+  // A card once pinned `?_mode=app` to open the folder in an app view; that
+  // mode is gone entirely (D264), so the listing is not one option among two.
   expect(openTargetFor(app())).toEqual({
     path: "/w/local/demo",
     opts: { isDir: true },

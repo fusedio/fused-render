@@ -1820,41 +1820,6 @@ export function createApp(name: string, prompt: string): Promise<NewAppResult> {
   return postJson<NewAppResult>("/api/apps/new", { name, prompt });
 }
 
-// -- Linked apps (registry-backed apps living anywhere on disk) ---------------
-// A folder outside the workspace registered as an app under the virtual
-// "linked" tag (~/.fused-render/linked_apps.json — see fused_render/
-// linked_apps.py for why a registry, not a symlink).
-
-// How a folder relates to the app system: "workspace" (under the Fused
-// workspace — is/can be a real app already), "linked" (registered, `name`
-// carries its registry name), "unlinked" (linkable).
-export interface AppLinkStatus {
-  status: "workspace" | "linked" | "unlinked";
-  name: string | null;
-  // Whether the folder is EXACTLY an app dir — a registry entry ("linked"/
-  // <registry name>) or a workspace <tag>/<name>. Null otherwise (and on older
-  // backends). Both halves present is how "Open as app" knows
-  // templates/app/condition.py will take the folder (apps/explorer/lib/
-  // app-button); the pair no longer names a URL.
-  tag?: string | null;
-}
-
-export function getAppLinkStatus(path: string): Promise<AppLinkStatus> {
-  return getJson<AppLinkStatus>(
-    "/api/apps/link-status?path=" + encodeURIComponent(path)
-  );
-}
-
-// Register a folder as a linked app. 409 = name/folder already linked,
-// 400 = not a folder / inside the workspace / bad name.
-export function linkApp(path: string, name?: string): Promise<{ app: AppInfo }> {
-  return postJson<{ app: AppInfo }>("/api/apps/link", { path, name });
-}
-
-export function unlinkApp(name: string): Promise<{ removed: boolean }> {
-  return postJson<{ removed: boolean }>("/api/apps/unlink", { name });
-}
-
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
 // Project folders that hold Claude Code session transcripts, for the
 // Explorer homepage's "Claude sessions" tab — one entry per folder, newest

@@ -7,14 +7,11 @@
 // opens its FOLDER IN THE FILE EXPLORER, as a plain listing — no `_mode` — and
 // only an app whose entry is a lone non-page file opens that file instead.
 //
-// It used to open the folder in the `app` view (`?_mode=app`) under a builder
-// route of its own, /apps/<tag>/<name>. Both are gone. The route was a second
-// namespace for a folder the explorer already addresses, and pinning the mode
-// picked the view on the user's behalf: the explorer's mode switcher offers
-// `app` for exactly these folders (templates/app/condition.py), so landing on
-// the listing keeps the app one click away while leaving every other thing you
-// might want to do with the folder — read a file, open a chat, see its history
-// — equally reachable.
+// It used to open the folder in an `app` view (`?_mode=app`) under a builder
+// route of its own, /apps/<tag>/<name>. The route went first (D262), then the
+// app view itself (D264): there is no longer any such thing as opening a folder
+// "as an app", so a card opening the folder's listing is not a compromise
+// between two destinations — it is the only destination there is.
 //
 // OPENING an app is not BUILDING one: the `claude` view (the app beside a
 // Claude chat) is where a new app is created and iterated on, and the create

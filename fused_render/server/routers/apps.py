@@ -13,8 +13,8 @@ the folder still lists, but opens as a directory instead of a view
 Alongside the workspace walk, the listing merges in *linked apps*: folders
 anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
 under the reserved virtual tag ``linked`` (fused_render/linked_apps.py — a
-registry, deliberately not a symlink dir; see that module for why). Their
-routes here: GET /api/apps/link-status, POST /api/apps/link, /api/apps/unlink.
+registry, deliberately not a symlink dir; see that module for why). Nothing
+registers one any more — see the note above the recents section.
 
 The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
@@ -93,84 +93,11 @@ def api_apps():
     return {"apps": apps}
 
 
-# ------------------------------------------------------------------- linking
-#
-# Linked apps: folders anywhere on disk registered as apps under the virtual
-# "linked" tag — registry at ~/.fused-render/linked_apps.json, never a symlink
-# in the workspace. The rules (validation, dedupe, why-a-registry) live in
-# fused_render/linked_apps.py; these routes are thin.
-
-
-@router.get("/api/apps/link-status")
-def api_link_status(path: str):
-    """How a folder relates to the app system, for the explorer's topbar
-    button: "workspace" (lives under the Fused workspace — is/can be a real
-    app, not linkable), "linked" (registered, with its registry name), or
-    "unlinked" (linkable). Read-only, so no X-Fused guard (same posture as
-    GET /api/apps).
-
-    `tag`/`name` are not an address — nothing routes by them any more (D262
-    deleted /apps/<tag>/<name>). They are the ANSWER TO ONE QUESTION: will
-    ``templates/app/condition.py`` offer the `app` mode for this folder? The
-    button reads them that way, so this handler has to mirror that gate rather
-    than merely describe the folder, and every branch below is one clause of it.
-    """
-    from fused_render.shell.mounts import is_mount_backed
-
-    folder = os.path.abspath(os.path.expanduser(path))
-    # The gate refuses a mount-backed path outright, before any of the rules
-    # below — an app is by definition a local folder, and a mount path is itself
-    # shaped <mounts>/<remote>/<dir>, which would sail through the two-level
-    # test. Withholding the identity here is what keeps the button from
-    # promising a mode that resolves to nothing and falls back to `_listing`.
-    mounted = is_mount_backed(folder)
-    root = os.path.abspath(fused_dir())
-    if folder == root or folder.startswith(root + os.sep):
-        # Set when the folder is EXACTLY an app dir (<workspace>/<tag>/<name>),
-        # neither segment hidden — the shape the gate admits. Null for the root,
-        # a tag dir, or anything nested deeper.
-        #
-        # A workspace folder under a literal "linked" tag dir whose name a
-        # registry entry has claimed used to be withheld here too. That carve-out
-        # is GONE with the route it protected: it existed because both folders
-        # would have resolved the same /apps/linked/<name> URL, and the identity
-        # no longer names a destination. The gate takes this folder on its own
-        # two-level shape, so reporting it is simply the truth — withholding it
-        # sent "Open as app" to the bare index.html for a folder whose app mode
-        # works perfectly.
-        parts = [p for p in os.path.relpath(folder, root).split(os.sep)
-                 if p not in ("", ".")]
-        if len(parts) == 2 and not any(p.startswith(".") for p in parts) and not mounted:
-            return {"status": "workspace", "name": parts[1], "tag": parts[0]}
-        return {"status": "workspace", "name": None, "tag": None}
-    for e in linked_apps.read_entries():
-        if os.path.abspath(e["path"]) == folder:
-            # A registered folder that has since been mounted over (or was
-            # registered under a mount) is still LINKED — it just cannot offer
-            # the mode, so the status stands and the identity does not.
-            return {"status": "linked",
-                    "name": None if mounted else e["name"],
-                    "tag": None if mounted else linked_apps.LINKED_TAG}
-    return {"status": "unlinked", "name": None, "tag": None}
-
-
-@router.post("/api/apps/link")
-def api_link_app(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    app, err, status = linked_apps.link_app(body.get("path"), body.get("name"))
-    if err is not None:
-        return _error(err, status=status)
-    return {"app": app}
-
-
-@router.post("/api/apps/unlink")
-def api_unlink_app(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    return {"removed": linked_apps.unlink_app(body.get("name"))}
+# Linked apps: the routes that REGISTERED one (GET /api/apps/link-status,
+# POST /api/apps/link, /api/apps/unlink) are gone with the app concept they
+# served (D264 — "Add as app" was their only caller). The registry is read-only
+# now: `GET /api/apps` still merges whatever an earlier version registered, so
+# nobody's cards disappear, and nothing can add to it.
 
 
 # ------------------------------------------------------------------- recents
