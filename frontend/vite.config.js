@@ -21,6 +21,16 @@ export default defineConfig({
   build: {
     outDir: "../fused_render/static/shell-dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // Third-party deps change far less often than the app itself — their
+        // own chunk means a shell code change doesn't bust the browser's
+        // cache of react/react-dom/driver.js on every rebuild.
+        manualChunks: {
+          vendor: ["react", "react-dom", "driver.js"],
+        },
+      },
+    },
   },
   server: {
     // `npm run dev` proxies API/render traffic to a running fused-render

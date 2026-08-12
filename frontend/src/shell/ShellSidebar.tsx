@@ -19,8 +19,8 @@ import type { Config } from "@platform/lib/api";
 import { useUrlVersion, useLearnMountReady, useSessionsMountReady, useCommunityMountReady } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
-import { useClaudeConfigAvailable } from "@apps/claude_config";
-import { useAiModelsAvailable } from "@shell/AiModels";
+import { useClaudeConfigAvailable } from "@apps/claude_config/available";
+import { useAiModelsAvailable } from "@shell/aiModelsAvailable";
 import { useAiRuntime } from "@shell/aiRuntime";
 import { formatSize } from "@platform/lib/format";
 

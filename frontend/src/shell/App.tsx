@@ -15,7 +15,7 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { IS_EMBED, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
 import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
@@ -40,18 +40,30 @@ import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
-import Preferences from "@shell/Preferences";
-import Templates from "@shell/templates/Templates";
-import Mounts from "@shell/Mounts";
-import AiModels from "@shell/AiModels";
-import Apps from "@apps/builder/Apps";
 import FilesHome from "@apps/explorer/FilesHome";
 import { learnEntryPath } from "@apps/learn";
 import { sessionsEntryPath } from "@apps/sessions";
 import { communityEntryPath } from "@apps/community";
-import { ClaudeConfig, useClaudeConfigAvailable } from "@apps/claude_config";
-import ClaudeArtifacts from "@shell/ClaudeArtifacts";
-import BookmarkOpen from "@apps/explorer/BookmarkOpen";
+import { useClaudeConfigAvailable } from "@apps/claude_config/available";
+
+// Route-gated surfaces, lazy-loaded: none of these render on the front door
+// (the explorer route above stays eager), only once a route nobody may ever
+// visit this session is actually opened — the settings pages, the AI Models
+// page, the app-builder hub, the Claude Config panel, and the bookmark-open
+// redirector. Splitting them out of the main chunk is what fixes vite's
+// "chunks larger than 500 kB" build warning without just raising the limit.
+// (Community, like Learn/Sessions, is mount-backed content rendered through
+// StatView — CommunityView below — so it needs no lazy() of its own.)
+const Preferences = lazy(() => import("@shell/Preferences"));
+const Templates = lazy(() => import("@shell/templates/Templates"));
+const Mounts = lazy(() => import("@shell/Mounts"));
+const AiModels = lazy(() => import("@shell/AiModels"));
+const Apps = lazy(() => import("@apps/builder/Apps"));
+const ClaudeConfig = lazy(() =>
+  import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
+);
+const ClaudeArtifacts = lazy(() => import("@shell/ClaudeArtifacts"));
+const BookmarkOpen = lazy(() => import("@apps/explorer/BookmarkOpen"));
 
 type StatState =
   | { status: "loading" }
@@ -214,6 +226,17 @@ function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir:
         )}
       </div>
     </>
+  );
+}
+
+// Suspense fallback for the lazy-loaded routes above. Brief on a local
+// server — most resolve within a frame or two — so this deliberately carries
+// no label of its own; each panel paints its own scaffolding once it mounts.
+function RouteFallback() {
+  return (
+    <div className="preview-resolving">
+      <span className="mode-icon-spinner" />
+    </div>
   );
 }
 
@@ -426,7 +449,9 @@ function ClaudeConfigView() {
     <div id="content">
       <div className="cc-page">
         {available ? (
-          <ClaudeConfig />
+          <Suspense fallback={<RouteFallback />}>
+            <ClaudeConfig />
+          </Suspense>
         ) : (
           <div className="preview-resolving">No Claude Code configuration found (~/.claude).</div>
         )}
@@ -663,7 +688,9 @@ export default function App({ config }: { config: Config }) {
     // split actions are explorer concepts and never render outside it.
     main = (
       <div id="content" key={epoch}>
-        <Preferences key={epoch} />
+        <Suspense fallback={<RouteFallback />}>
+          <Preferences key={epoch} />
+        </Suspense>
       </div>
     );
   } else if (isTemplates) {
@@ -671,14 +698,18 @@ export default function App({ config }: { config: Config }) {
     // topbar.
     main = (
       <div id="content" key={epoch}>
-        <Templates key={epoch} />
+        <Suspense fallback={<RouteFallback />}>
+          <Templates key={epoch} />
+        </Suspense>
       </div>
     );
   } else if (isMounts) {
     // PROTOTYPE — remote-storage mounts, same chrome-free settings pattern.
     main = (
       <div id="content" key={epoch}>
-        <Mounts key={epoch} />
+        <Suspense fallback={<RouteFallback />}>
+          <Mounts key={epoch} />
+        </Suspense>
       </div>
     );
   } else if (isAiModels) {
@@ -697,7 +728,9 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content">
         <div className="cc-page">
-          <AiModels />
+          <Suspense fallback={<RouteFallback />}>
+            <AiModels />
+          </Suspense>
         </div>
       </div>
     );
@@ -706,7 +739,9 @@ export default function App({ config }: { config: Config }) {
     // header. The shell sidebar renders beside it.
     main = (
       <div id="content" key={epoch}>
-        <Apps key={epoch} config={config} />
+        <Suspense fallback={<RouteFallback />}>
+          <Apps key={epoch} config={config} />
+        </Suspense>
       </div>
     );
   } else if (isExplorerHome) {
@@ -734,7 +769,9 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content" key={epoch}>
         <div className="cc-page">
-          <ClaudeArtifacts />
+          <Suspense fallback={<RouteFallback />}>
+            <ClaudeArtifacts />
+          </Suspense>
         </div>
       </div>
     );
@@ -748,7 +785,9 @@ export default function App({ config }: { config: Config }) {
           <StaticBreadcrumb label="Bookmark" />
         </div>
         <div id="content" key={epoch}>
-          <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
+          <Suspense fallback={<RouteFallback />}>
+            <BookmarkOpen key={epoch} file={bookmarkFile ?? undefined} />
+          </Suspense>
         </div>
       </>
     );
