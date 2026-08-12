@@ -134,6 +134,9 @@ Any `.html` file can call it and bind the result to the URL:
   Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
   Hugging Face repo id as `model` (`"mlx-community/Qwen3-8B-4bit"`) and the same
   call runs a model **locally** instead — the slash is what tells them apart.
+  Local calls also take `history` (prior `{role, content}` turns, for a
+  conversation rather than one question) and can be stopped mid-answer with
+  `fused.ai.cancel()`.
   See `examples_seed/ai_demo/` for a working AI-analyst view.
 - `fused.ai.image({prompt, ...})` — text to image, locally; resolves with the
   PNG's path, a ready-made URL to point an `<img>` at, and the seed used (one is

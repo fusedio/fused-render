@@ -161,6 +161,28 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
         return _error(str(e), status=409)
 
 
+@router.post("/api/ai/cancel")
+def api_ai_cancel(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Stop the generation in flight on a resident model.
+
+    Not the same as unloading: the weights stay, so the next message starts
+    answering immediately. A chat box needs this — a model that has decided to
+    write nine hundred tokens is otherwise something you can only wait out or
+    unload — and the supervisor could already do it; only the route was missing.
+
+    False when there was nothing to stop, which is not an error: a Stop pressed
+    just as the last token arrived should be a no-op, not a failure.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    capability = body.get("capability")
+    if capability is not None and capability not in registry.capabilities():
+        return _error(f"unknown capability {capability!r}", status=400)
+    return {"cancelled": supervisor.cancel_generation(
+        capability or registry.TEXT_GENERATION)}
+
+
 @router.post("/api/ai/image")
 def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Render one image. Returns everything about it except the pixels.

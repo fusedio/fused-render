@@ -5661,6 +5661,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
   closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
   which is what keeps every page written before this working.
+- **AI-1a** **A conversation and a stop, because a chat client needs both.**
+  `prompt` stays the thing being asked NOW, and `history` carries the turns
+  before it — so adding it changes no existing call, and the turns reach the
+  worker as MESSAGES for the model's own chat template rather than flattened
+  into one string (flattening is how you get output that looks almost right).
+  Local models only: the Claude path is one invocation with no conversation to
+  resume, and it **refuses** history rather than dropping it, because silently
+  ignoring it answers a follow-up as if it were the first question — which reads
+  as the model having forgotten, not as the API having declined. `POST
+  /api/ai/cancel` stops the generation in flight WITHOUT unloading, so the next
+  message answers immediately; it returns false when there was nothing to stop,
+  which is not an error (a Stop pressed as the last token lands is a no-op).
 - **AI-2** **A runner is a folder, and its environment is `envinstall`'s.** Each
   backend is a folder holding a `pyproject.toml` and a `worker.py`. The
   declaration is the ONLY place mlx/torch are named — fused-render's own venv

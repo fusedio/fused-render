@@ -8,6 +8,10 @@
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
+ *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
+ *     caller holding a conversation rather than asking one question. Local
+ *     models only. fused.ai.cancel() stops a local generation mid-flight
+ *     without unloading the model.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
  *     (Claude Code) CLI. Resolves with exactly {text: string, model: full model
  *     id that ran, usage: {input_tokens, output_tokens} | null} — Anthropic-style
@@ -1599,6 +1603,12 @@
     if (opts.systemPrompt !== undefined) body.system_prompt = opts.systemPrompt;
     if (opts.model !== undefined) body.model = opts.model;
     if (opts.effort !== undefined) body.effort = opts.effort;
+    // Prior turns, for a caller holding a conversation. `prompt` stays the
+    // thing being asked NOW, so adding history changes no existing call.
+    // Local models only — the Claude path is one invocation with no
+    // conversation to resume, and says so rather than answering a follow-up as
+    // if it were the first question.
+    if (opts.history !== undefined) body.history = opts.history;
     const onChunk = typeof opts.onChunk === "function" ? opts.onChunk : null;
     if (onChunk) body.stream = true;
     const req = fetch("/api/ai", {
@@ -2103,6 +2113,12 @@
   };
   ai.models = aiModels;
   ai.image = aiImage;
+  // Stop the generation in flight on a local model, keeping it loaded — the
+  // next message answers straight away. Resolves false when there was nothing
+  // to stop, which is not an error: a Stop pressed as the last token lands
+  // should be a no-op.
+  ai.cancel = (capability) =>
+    aiPost("/api/ai/cancel", capability ? { capability } : {}).then((r) => !!r.cancelled);
 
   // -------------------------------------------------------------- fused.watchJob
   //

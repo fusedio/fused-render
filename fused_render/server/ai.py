@@ -654,6 +654,29 @@ def _ai_result_payload(data: dict, requested_model: str):
             "usage": _ai_usage(data.get("usage"))}, None
 
 
+#: Who may speak in a supplied history. Deliberately not "system" — the system
+#: prompt has its own parameter, and letting it arrive twice by two routes is
+#: how a caller ends up with two contradictory ones and no way to tell.
+_HISTORY_ROLES = ("user", "assistant")
+
+
+def _history_problem(history) -> str | None:
+    """Why this history is unusable, or None. The message is the API's manners:
+    a chat client passing the wrong shape should be told which turn and what
+    was wrong with it, not handed a 500 from inside a worker."""
+    if not isinstance(history, list):
+        return "'history' must be a list of {role, content} turns"
+    for index, turn in enumerate(history):
+        if not isinstance(turn, dict):
+            return f"'history[{index}]' must be an object with 'role' and 'content'"
+        if turn.get("role") not in _HISTORY_ROLES:
+            return (f"'history[{index}].role' must be one of: "
+                    + ", ".join(_HISTORY_ROLES))
+        if not isinstance(turn.get("content"), str):
+            return f"'history[{index}].content' must be a string"
+    return None
+
+
 def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                  body: dict):
     """One completion from a model resident on THIS machine (SPEC §40).
@@ -670,7 +693,13 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
     """
     from fused_render.ai import supervisor
 
-    messages = [{"role": "user", "content": prompt}]
+    # Prior turns first, then the one being asked. Validated by the caller, so
+    # only the two fields the worker's chat template reads are passed on —
+    # anything else a client kept on its own turns (timestamps, ids) is its
+    # business and not the model's.
+    history = body.get("history") or []
+    messages = [{"role": turn["role"], "content": turn["content"]} for turn in history]
+    messages.append({"role": "user", "content": prompt})
     if system_prompt and system_prompt != _AI_DEFAULT_SYSTEM_PROMPT:
         messages.insert(0, {"role": "system", "content": system_prompt})
     request = {
@@ -781,6 +810,15 @@ async def _ai_relay(body: dict):
         return _ai_error(
             "bad_request", "'stream' must be a boolean", status=400)
 
+    # Prior turns, for a caller holding a conversation rather than asking one
+    # question. `prompt` stays what it always was — the thing being asked NOW —
+    # and this is what came before it, so no call changes meaning by adding it.
+    history = body.get("history")
+    if history is not None:
+        problem = _history_problem(history)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
@@ -793,6 +831,19 @@ async def _ai_relay(body: dict):
         # iterates a sync generator in a threadpool of its own.)
         return await asyncio.to_thread(
             _local_relay, model, prompt, system_prompt, bool(stream), body)
+
+    # Refused rather than dropped. The Claude path is one `claude -p` invocation
+    # with no conversation to resume, so honouring history would mean inventing
+    # one — and silently ignoring it would answer a follow-up as if it were the
+    # first question, which reads as the model having forgotten rather than as
+    # the API having declined.
+    if history:
+        return _ai_error(
+            "bad_request",
+            "'history' is only supported by a local model (a Hugging Face repo "
+            "id, e.g. 'mlx-community/Qwen3-8B-4bit'); this call would go to "
+            f"{model!r}, which answers one prompt at a time",
+            status=400)
 
     if not _claude_bin():
         return _ai_error(

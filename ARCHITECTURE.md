@@ -263,6 +263,13 @@ thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, 
 they start processes and write gigabytes; `load` and `download` return a `{jobId}`
 into the download manager rather than blocking.
 
+`POST /api/ai/cancel` (SPEC AI-1a) → `{cancelled}` — stops a local generation
+without unloading the model; false when there was nothing running.
+
+`POST /api/ai` also takes `history`: prior `{role, content}` turns that reach the
+worker as messages, ahead of `prompt`. Local models only — the Claude path
+refuses it rather than dropping it.
+
 `POST /api/ai/image` (SPEC AI-9) → `{jobId, path, model, prompt, width, height,
 steps, guidance, seed}` immediately; the render runs on a thread and reports its
 denoising steps to `sys:ai-image:<uid>`. The path and the seed are settled in

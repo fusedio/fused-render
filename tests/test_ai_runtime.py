@@ -715,3 +715,88 @@ def test_an_image_waits_for_its_model_rather_than_failing_fast(client, fake_imag
     row = _wait_job(started["jobId"], timeout=40)
     assert row["state"] == "done", row
     assert os.path.isfile(started["path"])
+
+
+# -- history and cancel, the two things a chat client needs ---------------------
+
+
+def test_history_reaches_the_worker_as_prior_turns(client, fake_runner, monkeypatch):
+    """A chat is a conversation, and `prompt` alone cannot express one. The
+    turns arrive as messages so the model's OWN chat template formats them —
+    flattening them into one string is how you get output that looks almost
+    right."""
+    sent = {}
+
+    def capture(model, request):
+        sent["request"] = request
+        yield {"type": "chunk", "text": "ok"}
+        yield {"type": "done", "ok": True, "tokens": 1}
+
+    monkeypatch.setattr(supervisor, "generate_text", capture)
+    response = client.post("/api/ai", json={
+        "prompt": "and in French?",
+        "model": "org/chat",
+        "history": [{"role": "user", "content": "say hello"},
+                    {"role": "assistant", "content": "Hello!"}],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.text
+    assert sent["request"]["messages"] == [
+        {"role": "user", "content": "say hello"},
+        {"role": "assistant", "content": "Hello!"},
+        # The prompt is still the thing being asked NOW, and it goes last.
+        {"role": "user", "content": "and in French?"},
+    ]
+
+
+@pytest.mark.parametrize("history,expected", [
+    ("not a list", "must be a list"),
+    ([{"role": "user"}], "content"),
+    ([{"role": "system", "content": "x"}], "role"),
+    ([{"role": "user", "content": 7}], "content"),
+    (["hello"], "must be an object"),
+])
+def test_a_malformed_history_says_which_turn_is_wrong(client, history, expected):
+    response = client.post("/api/ai", json={
+        "prompt": "hi", "model": "org/chat", "history": history,
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert expected in response.json()["error"]["message"]
+
+
+def test_history_is_refused_for_claude_rather_than_dropped(client):
+    """Silently ignoring it would answer a follow-up as if it were the first
+    question — which reads as the model having forgotten, not as the API having
+    declined."""
+    response = client.post("/api/ai", json={
+        "prompt": "and in French?",
+        "history": [{"role": "user", "content": "say hello"}],
+    }, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "local model" in response.json()["error"]["message"]
+
+
+def test_cancel_stops_the_generation_without_unloading(client, fake_runner):
+    """Not the same as unloading: the weights stay, so the next message starts
+    answering immediately."""
+    supervisor.load("org/chat", registry.TEXT_GENERATION)
+    _wait_ready("org/chat")
+
+    response = client.post("/api/ai/cancel", json={}, headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": True}
+    # Still resident — cancel is not unload.
+    assert [m["model"] for m in supervisor.describe()["loaded"]] == ["org/chat"]
+
+
+def test_cancelling_nothing_is_false_not_an_error(client, fake_runner):
+    """A Stop pressed just as the last token lands should be a no-op."""
+    response = client.post("/api/ai/cancel", json={}, headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": False}
+
+
+def test_cancel_carries_the_guard_and_checks_the_capability(client):
+    assert client.post("/api/ai/cancel", json={}).status_code == 403
+    bad = client.post("/api/ai/cancel", json={"capability": "telepathy"},
+                      headers={"X-Fused": "1"})
+    assert bad.status_code == 400
