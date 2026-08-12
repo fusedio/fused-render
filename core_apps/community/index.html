@@ -52,15 +52,13 @@
   .badge.yanked { background: color-mix(in srgb, var(--danger) 18%, transparent); color: var(--danger); }
   .state { color: var(--muted); padding: 60px 0; text-align: center; }
   .error { color: var(--danger); }
-  /* detail overlay */
-  .overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 55%, transparent);
-    backdrop-filter: blur(2px); display: flex; justify-content: center; padding: 40px 16px; overflow: auto; }
-  .sheet { background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
-    width: min(760px, 100%); height: fit-content; padding: 22px 26px 26px; }
-  .sheet-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 8px; }
-  .sheet-head img { width: 44px; height: 44px; border-radius: 10px; }
-  .sheet-head h2 { margin: 0; font-size: 16px; }
-  .sheet-head .by { color: var(--muted); }
+  /* detail page */
+  .back-row { margin: 0 0 14px; }
+  .detail { max-width: 760px; }
+  .detail-head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 8px; }
+  .detail-head img { width: 44px; height: 44px; border-radius: 10px; }
+  .detail-head h2 { margin: 0; font-size: 16px; }
+  .detail-head .by { color: var(--muted); }
   .actions { display: flex; gap: 8px; margin: 14px 0 18px; flex-wrap: wrap; align-items: center; }
   .readme { border-top: 1px solid var(--line); padding-top: 16px; overflow-wrap: break-word; }
   .readme h1, .readme h2, .readme h3 { font-size: 14.5px; margin: 18px 0 6px; }
@@ -85,23 +83,24 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>Community apps</h1>
-    <input id="q" type="search" placeholder="Search apps…">
-    <button id="installed-toggle">Installed</button>
-    <button id="refresh">Refresh</button>
-  </header>
-  <p class="sub">Apps shared by the community — browse, read, and install into your Fused folder.
-    <a id="repo-link" href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noreferrer">Publish yours ↗</a></p>
-  <div class="chips" id="chips"></div>
+  <div id="browse-chrome">
+    <header>
+      <h1>Community apps</h1>
+      <input id="q" type="search" placeholder="Search apps…">
+      <button id="installed-toggle">Installed</button>
+      <button id="refresh">Refresh</button>
+    </header>
+    <p class="sub">Apps shared by the community — browse, read, and install into your Fused folder.
+      <a id="repo-link" href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noreferrer">Publish yours ↗</a></p>
+    <div class="chips" id="chips"></div>
+  </div>
   <div id="content"><div class="state">Loading…</div></div>
 </div>
-<div id="layer"></div>
 <script>
 "use strict";
 const PY = "./community.py";
 const content = document.getElementById("content");
-const layer = document.getElementById("layer");
+const browseChrome = document.getElementById("browse-chrome");
 const chipsEl = document.getElementById("chips");
 const qEl = document.getElementById("q");
 
@@ -188,9 +187,17 @@ function renderChips() {
     `<button class="chip${t === tag ? " on" : ""}" data-tag="${esc(t)}">${esc(t)}</button>`).join("");
 }
 
+// One dispatch: the `app` param decides which page renders — grid or detail.
+function render() {
+  const { open } = state();
+  browseChrome.style.display = open ? "none" : "";
+  if (open) renderDetail(open);
+  else { renderChips(); renderGrid(); }
+}
+
 function renderGrid() {
   const { q, tag, installedOnly } = state();
-  qEl.value = q;
+  if (qEl.value !== q) qEl.value = q;   // don't reset the cursor mid-typing
   document.getElementById("installed-toggle").classList.toggle("primary", installedOnly);
   if (!catalog) return;
   const needle = q.toLowerCase();
@@ -214,14 +221,17 @@ function renderGrid() {
   }).join("") + `</div>`;
 }
 
-// --- detail overlay ---------------------------------------------------------
+// --- detail page --------------------------------------------------------
 async function renderDetail(slug) {
-  layer.innerHTML = `<div class="overlay"><div class="sheet"><div class="state">Loading ${esc(slug)}…</div></div></div>`;
+  content.innerHTML = `<div class="back-row"><button data-act="close">← All apps</button></div>
+    <div class="state">Loading ${esc(slug)}…</div>`;
+  content.querySelector("[data-act=close]").addEventListener("click", closeDetail);
   let d;
   try {
     d = await fused.runPython(PY, { action: "detail", slug }, { key: "detail" });
-  } catch (err) { layer.innerHTML = ""; showError(err.message); return; }
-  if (d.status === "error") { layer.innerHTML = ""; showError(d.message); return; }
+  } catch (err) { showError(err.message); return; }
+  if (d.status === "error") { showError(d.message); return; }
+  if (state().open !== slug) return;   // user navigated away while loading
   const entry = d.entry || {};
   const icon = catalog?.cache_root ? fused.rawUrl(`${d.folder}/icon.svg`) : null;
   const previewHref = "/explorer/embed" + encodeFsPath(d.preview_entry);
@@ -231,25 +241,23 @@ async function renderDetail(slug) {
   if (d.installed && d.update_available) buttons.push(`<button data-act="update">Update</button>`);
   buttons.push(`<a href="${previewHref}" target="_blank" rel="noreferrer"><button>Preview ↗</button></a>`);
   if (d.installed) buttons.push(`<button class="danger" data-act="uninstall">Uninstall</button>`);
-  layer.innerHTML = `<div class="overlay" id="detail-overlay"><div class="sheet">
-    <div class="sheet-head">
+  content.innerHTML = `<div class="back-row"><button data-act="close">← All apps</button></div>
+    <div class="detail">
+    <div class="detail-head">
       ${icon ? `<img src="${icon}" alt="">` : ""}
       <div>
         <h2>${esc(entry.name || slug)}</h2>
         <div class="by">${esc(entry.author?.name || "")}${entry.version ? " · v" + esc(entry.version) : ""}
           ${(entry.tags || []).map(t => `· ${esc(t)}`).join(" ")}</div>
       </div>
-      <button style="margin-left:auto" data-act="close">✕</button>
     </div>
     <p>${esc(entry.description || "")}</p>
     <div class="actions">${buttons.join("")}</div>
     <div class="readme">${md(d.readme || "*no readme*", d.folder)}</div>
     <p class="fineprint">Preview renders the app from the local catalog cache — it already runs the
       app's JavaScript with the same trust as installing it.</p>
-  </div></div>`;
-  const overlay = document.getElementById("detail-overlay");
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDetail(); });
-  overlay.querySelectorAll("[data-act]").forEach(b => b.addEventListener("click", () => act(b.dataset.act, slug, d)));
+  </div>`;
+  content.querySelectorAll("[data-act]").forEach(b => b.addEventListener("click", () => act(b.dataset.act, slug, d)));
 }
 
 function encodeFsPath(p) {
@@ -297,7 +305,6 @@ async function act(action, slug, d) {
     });
     if (!ok) return;
     await write({ action: "install", slug }, "installed");
-    renderDetail(slug);
     return;
   }
   if (action === "update") {
@@ -314,7 +321,6 @@ async function act(action, slug, d) {
       if (!ok) return;
       res = await write({ action: "update", slug, force: "true" }, "updated");
     }
-    renderDetail(slug);
     return;
   }
   if (action === "uninstall") {
@@ -358,9 +364,7 @@ async function loadCatalog(allowRefresh) {
     return refresh();
   }
   catalog = res;
-  renderChips();
-  renderGrid();
-  if (state().open) renderDetail(state().open);
+  render();
 }
 
 async function refresh() {
@@ -370,8 +374,7 @@ async function refresh() {
     const res = await fused.runPython(PY, { action: "refresh" }, { key: "catalog" });
     if (res.status === "error") { content.innerHTML = `<div class="state error">${esc(res.message)}</div>`; return; }
     catalog = res;
-    renderChips();
-    renderGrid();
+    render();
   } catch (err) {
     content.innerHTML = `<div class="state error">${esc(err.message)}</div>`;
   } finally { btn.disabled = false; btn.textContent = "Refresh"; }
@@ -391,16 +394,7 @@ content.addEventListener("click", (e) => {
   if (card) fused.params.set("app", card.dataset.slug);
 });
 
-let lastOpen = state().open;
-fused.params.onChange(() => {
-  renderChips();
-  renderGrid();
-  const open = state().open;
-  if (open !== lastOpen) {
-    lastOpen = open;
-    if (open) renderDetail(open); else layer.innerHTML = "";
-  }
-});
+fused.params.onChange(render);
 
 loadCatalog(true).then(() => {
   // Stale-while-revalidate: catalog painted from disk; quietly re-sync in the
@@ -409,7 +403,8 @@ loadCatalog(true).then(() => {
     fused.runPython(PY, { action: "refresh" }, { key: "background-refresh" })
       .then((res) => {
         if (res.status === "ok" && res.commit !== catalog.commit) {
-          catalog = res; renderChips(); renderGrid();
+          catalog = res;
+          if (!state().open) render();   // don't yank a detail page mid-read
         } else if (res.status === "ok") {
           catalog = res;   // fresh install-state join, no visual change needed
         }
