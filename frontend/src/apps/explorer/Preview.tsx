@@ -32,6 +32,7 @@ import {
 } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
+import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { pushToast } from "@platform/lib/toast";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -219,6 +220,14 @@ function usePreviewFileMenu(
         const dst = join(parent, name);
         renameEntry(fsPath, dst).then(
           () => {
+            // Undoable, exactly as the listing's own rename is (lib/fs-undo).
+            // The stack is module-level and the chord is served by whichever
+            // Listing is mounted, so a rename recorded HERE and undone from the
+            // folder view afterwards is the normal case, not an edge one — and a
+            // rename that skipped this left the stack's top entry describing some
+            // older move, so Cmd+Z said "Undid the move" and yanked an unrelated
+            // file out of a folder while this rename stayed unreachable.
+            recordFsOp({ kind: "rename", pairs: [{ from: fsPath, to: dst }] });
             // The clipboard may still be pointing at the old path (or inside
             // it, if this was a renamed folder holding the cut/copied entry)
             // — repoint it so a later Paste doesn't target a gone source.

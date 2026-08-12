@@ -340,6 +340,42 @@
   const target = findTarget();
   const standalone = target === window;
 
+  // Tell every same-origin ancestor that this page just changed the filesystem.
+  //
+  // WHY THE SHELL CANNOT SEE IT OTHERWISE. writeFile/uploadFile/mkdir below, and
+  // any file a runPython script writes, are fetches issued from INSIDE this
+  // frame. The frame is its own JS realm with its own copy of the shell's api
+  // module, so nothing the shell caches about a directory hears about them — and
+  // the shell's directory watcher only ever watches the ONE folder a mounted
+  // listing is showing, of which there is none at all in a template view of a
+  // file. Its listing prefetch cache would then answer a navigation made seconds
+  // later with the pre-write contents of the folder.
+  //
+  // A global on the ancestor, not a postMessage: same-origin iframe model
+  // (D3/D4), which is how params already reach the ancestor URL (D46) and how
+  // _fusedSidecarPath already passes app-internal bookkeeping the other way.
+  // Deliberately NOT on `fused` and underscore-prefixed for the same reason as
+  // those: it is plumbing between this script and the shell that ships with it,
+  // not a documented contract a template may rely on.
+  //
+  // The WHOLE chain is walked, not just findTarget()'s result: that climb stops
+  // below a param boundary (a layout shell), and every shell in the chain has its
+  // own realm and so its own cache to invalidate. A window with no hook is simply
+  // not a shell (a standalone /render page, the hosted stub).
+  function noteFsChanged() {
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedFsChanged === "function") t._fusedFsChanged();
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+  }
+
   // Same-origin ancestors ABOVE the target, nearest first (non-empty only when
   // a param boundary stopped the climb). Their top-level queries hold
   // hand-typed global params (D72): read-only from here — set() never touches
@@ -1277,7 +1313,16 @@
                              controller._callId),
         body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
         signal: controller.signal,
-      }).then((res) => res.json());
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          // A script that ran may have written anything, anywhere — and unlike
+          // writeFile below there is no way to know what, so the shell is told
+          // unconditionally once the run comes back. Also on a FAILED run: a
+          // script that wrote three files and then raised still changed the disk.
+          noteFsChanged();
+          return data;
+        });
 
     // `installed` guards against a loop, and holds the KEYS already installed
     // rather than a boolean because a run can legitimately need two rounds: with no
@@ -1438,6 +1483,8 @@
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        // The shell cannot see a write made from inside this frame (noteFsChanged).
+        noteFsChanged();
         return data;
       });
   }
@@ -1549,6 +1596,7 @@
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        noteFsChanged();
         return data;
       });
   }
@@ -1578,6 +1626,7 @@
           throw err;
         }
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
+        noteFsChanged();
         return data;
       });
   }

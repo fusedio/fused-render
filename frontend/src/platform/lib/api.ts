@@ -166,8 +166,44 @@ export function listDir(fsPath: string, cursor?: string | null): Promise<ListRes
 // window small so a later navigation back to the same dir always re-reads,
 // matching stat's freshness posture (the dir-watch socket refresh bypasses this
 // entirely — it must see live data).
+//
+// ANY SUCCESSFUL FS MUTATION EMPTIES THIS MAP (clearListPrefetch, called from
+// noteAfter below — add nothing that mutates the filesystem outside it). Without
+// that it was a five-second window in which a moved file could still be painted
+// in the folder it had left, and the report was "dragging a file onto a
+// breadcrumb COPIES it": the spring-load navigates to the crumb (caching that
+// listing) and unmounts the source listing with its dir-watch, the drop moves
+// the file for real, and navigating back to the source within the TTL is a FRESH
+// mount — refresh === 0, so useDirListing reads through here and repaints the
+// pre-move listing. One file in two folders, self-healing after 5s.
+//
+// The WHOLE map goes, never one path: a rename touches two directories, a
+// recursive delete a subtree, and a compress writes a sibling — path arithmetic
+// over that buys nothing and can be wrong. The cache only exists to dedupe a
+// double-fetch inside a single navigation, so its useful lifetime is about a
+// second; over-evicting costs one extra /api/fs/list on the next navigation.
 const LIST_PREFETCH_TTL_MS = 5000;
 const listPrefetch = new Map<string, { promise: Promise<ListResult>; ts: number }>();
+
+// Forget every cached listing. Three callers, each covering what the others
+// cannot — the split is the point, so keep it accurate:
+//
+//   noteAfter, below           every mutation THIS module performs.
+//   the dir-watch socket       a change made by anything else to the ONE folder a
+//   (listing/useDirListing)    mounted listing is watching: an editor, Claude, a
+//                              git checkout. Not a general backstop — it covers
+//                              only that folder, only while it is mounted, and
+//                              never (say) a crumb drop's destination.
+//   window._fusedFsChanged     a write from inside a preview iframe — its own JS
+//   (installed in main.tsx)    realm with its own copy of this module, so nothing
+//                              here sees its fetches. static/runtime.js reports
+//                              writeFile / uploadFile / mkdir / runPython up the
+//                              same-origin ancestor chain. This is the only cover
+//                              for a template view of a FILE, which mounts no
+//                              listing and so has no watcher at all.
+export function clearListPrefetch(): void {
+  listPrefetch.clear();
+}
 
 export function prefetchListDir(fsPath: string): Promise<ListResult> {
   const hit = listPrefetch.get(fsPath);
@@ -1138,11 +1174,20 @@ export function revealPath(fsPath: string): Promise<void> {
 // Every mutation below marks the paths it touched, so in-folder search stops
 // answering from the index snapshot for that folder and walks it live — there
 // is no filesystem watcher, so the corpus would otherwise keep offering the
-// old name and never the new one (lib/index-freshness). Recorded only on
-// SUCCESS: a refused mutation changed nothing, and pessimising a folder over
-// a 409 would drop it to the slow path for the rest of the session.
+// old name and never the new one (lib/index-freshness). It also empties the
+// listing prefetch cache, whose whole hazard is repainting a directory as it
+// stood BEFORE the mutation (see clearListPrefetch above).
+//
+// Both are recorded only on SUCCESS: a refused mutation changed nothing, so
+// pessimising a folder over a 409 would drop it to the slow path for the rest
+// of the session, and dropping the prefetch would throw away a listing that is
+// still accurate.
+//
+// This is the one choke point for the mutations in this module — going through
+// it is what stops a NEW wrapper from silently skipping either bookkeeping.
 function noteAfter<T>(paths: string | string[], p: Promise<T>): Promise<T> {
   return p.then((out) => {
+    clearListPrefetch();
     for (const path of Array.isArray(paths) ? paths : [paths]) {
       if (path) noteFsMutation(path);
     }

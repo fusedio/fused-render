@@ -1,7 +1,8 @@
-// Bootstrap: history wrapping, embed class, config load, React mount.
+// Bootstrap: history wrapping, the runtime's fs-change hook, embed class, config
+// load, React mount.
 import { createRoot } from "react-dom/client";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
-import { getConfig } from "@platform/lib/api";
+import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged } from "@platform/lib/hooks";
@@ -25,6 +26,33 @@ history.pushState = function (...args: Parameters<History["pushState"]>) {
   origPushState(...args);
   window.dispatchEvent(new Event("fused:urlchange"));
 };
+
+// The one window global this app OWNS (the runtime's other globals are ones it
+// reads from templates, not ones the shell writes), so it is declared here beside
+// its assignment rather than in an ambient .d.ts nothing else would use.
+declare global {
+  interface Window {
+    _fusedFsChanged?: () => void;
+  }
+}
+
+// The preview iframe's injected runtime (static/runtime.js) reports a filesystem
+// change up the ancestor chain through this global — writeFile, uploadFile,
+// mkdir, and every runPython, since a script can write anything.
+//
+// It has to, because nothing else here can see those writes: they are fetches
+// from inside the frame, which is its own JS realm with its own copy of lib/api,
+// so this window's listing prefetch cache is untouched by them. The directory
+// watcher is not a backstop either — it watches only the ONE folder a mounted
+// listing is showing, and a template view of a FILE has no listing at all. The
+// symptom was a view saving a file and a navigation to that folder seconds later
+// painting the folder as it stood before the save.
+//
+// A global rather than a postMessage for the same reason the runtime reads params
+// off ancestor URLs directly (D3/D4, D46) — same-origin by construction — and
+// installed here, beside the history wrapping, because both are contracts with
+// that runtime that must exist before any frame can load.
+window._fusedFsChanged = clearListPrefetch;
 
 if (IS_EMBED) document.body.classList.add("embed");
 // Frozen-tree framing (router.ts IS_SNAPSHOT): a body class rather than props

@@ -17,6 +17,8 @@ import { matchChord } from "@apps/explorer/listing/shortcut-chord";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { setClipboard, type Clipboard } from "@apps/explorer/lib/fs-clipboard";
+import { canRedo, canUndo, isFsUndoInFlight } from "@apps/explorer/lib/fs-undo";
+import { pushToast } from "@platform/lib/toast";
 import { cameFromSelParam } from "@apps/explorer/listing/selection";
 import type { RowCtx } from "@apps/explorer/listing/types";
 import { targetDirOf } from "@apps/explorer/listing/row-utils";
@@ -29,6 +31,8 @@ export function useListingShortcuts({
   searchInputRef,
   overlayOpenRef,
   doPaste,
+  doUndo,
+  doRedo,
   doDuplicate,
   doTrash,
   startRename,
@@ -45,6 +49,8 @@ export function useListingShortcuts({
   searchInputRef: React.RefObject<HTMLInputElement>;
   overlayOpenRef: React.MutableRefObject<boolean>;
   doPaste: (dir: string) => void;
+  doUndo: () => void;
+  doRedo: () => void;
   doDuplicate: (rows: RowCtx[]) => void;
   doTrash: (rows: RowCtx[]) => void;
   startRename: (row: RowCtx) => void;
@@ -120,6 +126,30 @@ export function useListingShortcuts({
       if (!rows.length) return;
       e.preventDefault();
       doTrash(rows);
+    } else if (action === "undo" || action === "redo") {
+      // Nothing on the stack means the chord was never ours: falling through
+      // WITHOUT preventDefault leaves Cmd+Z to whatever else would have taken
+      // it, which is the same courtesy an empty clipboard gets from paste.
+      if (action === "undo" ? !canUndo() : !canRedo()) return;
+      // ALREADY RUNNING ONE. The chord IS ours here — there is something to
+      // undo, we simply cannot start a second batch over the same paths — so it
+      // is claimed and answered rather than dropped. It used to be
+      // preventDefaulted on the stack check alone and then discarded inside
+      // runRelocation's guard, so during a long undo the second and third Cmd+Z
+      // did nothing, said nothing, and read as "undo is broken". Short-lived
+      // toast, since three quick presses should not leave three notices standing.
+      if (isFsUndoInFlight()) {
+        e.preventDefault();
+        pushToast({
+          msg: `Still ${action === "undo" ? "undoing" : "redoing"}…`,
+          tone: "info",
+          ttlMs: 1200,
+        });
+        return;
+      }
+      e.preventDefault();
+      if (action === "undo") doUndo();
+      else doRedo();
     } else if (action === "rename") {
       // Rename is single-entry: with several rows selected it renames the LEAD
       // row (what Windows Explorer does — F2 edits the focused item), not a
