@@ -1,0 +1,24 @@
+# The model card's environment (SPEC PY-16).
+#
+# `tokenizers` is the reason this folder declares anything, and only the
+# tokenizer section needs it: it is in neither `[bundled]` nor the core deps, so
+# the app's own interpreter cannot supply it (PY-17). It is also the whole
+# dependency — encoding text with a `tokenizer.json` is one import and no
+# framework, where pulling in `transformers` (and torch behind it) to do the
+# same job would turn a seconds-long first open into a multi-GB one.
+#
+# `inspect_model.py` — everything the card itself shows — is stdlib-only and
+# stays that way, so the card renders identically under either engine and this
+# declaration only ever costs the tokenizer half.
+[project]
+name = "fused-render-template-model-card"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "tokenizers>=0.15",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install.
+[tool.uv]
+package = false

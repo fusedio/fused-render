@@ -32,8 +32,11 @@ function ev(
     altKey: !!mods.alt,
   };
 }
-const listing = { inSearch: false };
-const searching = { inSearch: true };
+const listing = { inSearch: false, hasSelection: false };
+const searching = { inSearch: true, hasSelection: false };
+// Text highlighted somewhere on the page — anywhere, since this handler is
+// bound on `document`.
+const selecting = { inSearch: false, hasSelection: true };
 
 test("the primary-modifier clipboard chords act", () => {
   expect(matchChord(ev("c", { ctrl: true }), listing)).toBe("copy");
@@ -160,4 +163,20 @@ test("the listing does not hijack the browser's reload chord", () => {
   expect(keys).not.toContain("R");
   // Nothing in the table may name it, however the branch is written.
   expect(SRC).not.toMatch(/"[rR]"/);
+});
+
+test("selected text keeps Cmd+C, wherever it is", () => {
+  // The handler is bound on `document`, and clicking a plain <span> leaves
+  // activeElement as <body> — so the listing's "am I active" guard passes while
+  // the user is looking at text they highlighted somewhere else. Matching copy
+  // there calls preventDefault and the browser's own copy never runs, which is
+  // how an error message in the download manager could be selected and never
+  // copied.
+  expect(matchChord(ev("c", { ctrl: true }), selecting)).toBeNull();
+  // Only copy. A non-editable selection cannot be cut, so Cmd+X still means the
+  // listing's cut, and paste never had a text reading here.
+  expect(matchChord(ev("x", { ctrl: true }), selecting)).toBe("cut");
+  expect(matchChord(ev("v", { ctrl: true }), selecting)).toBe("paste");
+  // With nothing selected it is the file-path copy it always was.
+  expect(matchChord(ev("c", { ctrl: true }), listing)).toBe("copy");
 });

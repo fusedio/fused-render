@@ -37,6 +37,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 @router.get("/preferences")
 @router.get("/templates")
 @router.get("/mounts")
+# The Hugging Face cache inventory (SPEC §37) — a client-side page like the
+# rest, and reachable by URL even where the sidebar hides its entry.
+@router.get("/ai-models")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

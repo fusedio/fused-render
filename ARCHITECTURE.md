@@ -183,6 +183,139 @@ running one); `POST /api/jobs/clear` closes all finished. State lives in
 `fused_render/jobs.py`, in memory. `/api/jobs` is in `calls.SKIP_PREFIXES` — a
 tick is bookkeeping about a call, not a call.
 
+### `/api/ai-models` — Hugging Face cache inventory (SPEC §37, D249)
+
+`GET /api/ai-models` → `{cacheDir, hfHome, exists, totalSize, repos}`, one
+entry per cached repo (`{id, dir, kind, path, size, files, mtime, lastUsed,
+task, taskHelp, taskSource, library, params, paramsEstimated, quantization,
+capability, revisions, refs}`), biggest first. `capability` is which local runner
+kind could LOAD this — `text-generation`, `text-to-image`, or null for a dataset,
+a Space, an embedding model or anything no runner serves (SPEC AI-7a). Answered
+here because the task vocabulary and the capability vocabulary both live on this
+side; a page deciding for itself would hold a second copy of the mapping. `GET /api/ai-models/status` →
+`{available, cacheDir}` is the cheap gate behind the sidebar entry (one `isdir`,
+no walk). `GET /api/ai-models/revisions?repo=<dir>` → per-revision
+`{commit, refs, size, shared, files, mtime}`, where `size` is the revision's
+EXCLUSIVE bytes (what deleting it frees) and `shared` what it holds in common
+with its siblings; computed on demand because it resolves every snapshot symlink
+in the repo. Those three are unguarded reads.
+
+`ai_models.py` resolves the cache per request through huggingface_hub's own
+precedence (`HF_HUB_CACHE` > `HUGGINGFACE_HUB_CACHE` > `$HF_HOME/hub` >
+`$XDG_CACHE_HOME/huggingface/hub` > `~/.cache/huggingface/hub`) and measures
+each repo with `lstat`, skipping the `snapshots/` symlinks (they point back into
+the same repo's `blobs/`) and de-duplicating hardlinks by `(st_dev, st_ino)`, so
+`size` is bytes on disk and the rows sum to `totalSize`. `lastUsed` is the newest
+atime over real files; the ref reads this module makes restore atime afterwards,
+so inspecting the cache cannot mark it as used. Sync `def` — the walk is
+disk-bound and belongs in the threadpool.
+
+`POST /api/ai-models/delete` (SPEC HF-10..HF-15, D250) takes
+`{"targets": [{"dir": "models--org--name", "revision": "<sha>"|null}]}` and
+answers with the fresh listing plus `freed` and per-target `failures`. `X-Fused`
+guarded (D3). A target names a cache FOLDER — validated as one path segment with
+a known kind prefix and joined onto the server's cache dir, never a path from
+the body — and a symlinked repo folder is refused rather than followed. A
+revision delete removes the snapshot, the blobs no other revision references
+(resolved through their links), the refs pointing at that commit, and the whole
+repo when it was the last revision.
+
+### `/api/ai-models/hub/*` — Hub search, joined to the cache (SPEC §39, D255)
+
+`POST /api/ai-models/hub/search {q, task, sort, limit}` (`X-Fused` guarded) →
+`{models, query, endpoint, authenticated}` or, when the far side is unhappy,
+`{models: [], error}` with a 200 — the request this server got was fine and the
+page has a sentence to show. Each model is `{id, task, taskHelp, pipelineTag,
+library, downloads, likes, updated, gated, private, tags, params, estimatedSize,
+local, url}`, where `local` is `{state: "downloaded"|"partial"|"none", size,
+files, lastUsed, path, dir}`.
+`GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`,
+an unguarded read like every other (WF-5): a static glossary that touches
+nothing. Search is the asymmetry, and deliberate. It downloads nothing either,
+but it is the one read that LEAVES the machine — an outbound call carrying the
+user's Hub token — and D36's protection is the browser refusing to show a
+foreign page the *response*, which does nothing about the *request*. Unguarded,
+a blind cross-origin GET could spend someone's credential and rate limit while
+learning nothing. So the route takes the shape its effect deserves rather than
+the rule acquiring a guarded-GET exception.
+
+`hub_models.py` is the only outbound request this feature makes. The host is
+fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
+`urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
+token (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`/`$HF_HOME/token`) is sent and never
+returned. Answers are memoised for a short TTL — search-as-you-type would
+otherwise be one request per keystroke — but **errors are not cached** and the
+**local join runs on every request**, outside the cache, so a model deleted a
+second ago stops claiming to be downloaded. That join is scoped to the rows
+being returned: one `scandir` of the cache root for id→folder, then `_scan_repo`
++ `_revisions` for only the results actually present. It deliberately does NOT
+go through `_listing()`, which additionally reads every repo's card, config and
+safetensors headers — metadata no Hub row uses. Sizes are recovered from
+`safetensors.parameters` (`count * bits / 8`) with the same table `inspect_model`
+uses locally; no metadata means no size rather than a guess. Sync `def`: one
+bounded outbound call plus a cache walk, so it belongs in the threadpool.
+
+### `/api/ai/runtime`, `/api/ai/catalog` — local inference (SPEC §40, D257)
+
+`GET /api/ai/runtime` → `{runners:[{code,capability,label,available,reason}],
+loaded:[{model,capability,runner,state,residentBytes,loadedAt,jobId}],
+downloading:[{model,capability,jobId,startedAt}], totalResidentBytes}`.
+`downloading` is weights landing on disk — no memory, no eviction, no worker row —
+and it is in this reply rather than only in the job list because it is what tells
+a page whether to read job rows at all (AI-5a). `GET /api/ai/catalog` → the curated
+suggestions per capability, and nothing about what is on this disk: the cache is
+the AI-models listing's question, joined by the page so both its tabs mean one
+thing by it. `POST /api/ai/runtime/load|unload|download` — `X-Fused` guarded, since
+they start processes and write gigabytes; `load` and `download` return a `{jobId}`
+into the download manager rather than blocking.
+
+`POST /api/ai/cancel` (SPEC AI-1a) → `{cancelled}` — stops a local generation
+without unloading the model; false when there was nothing running.
+
+`POST /api/ai` also takes `history`: prior `{role, content}` turns that reach the
+worker as messages, ahead of `prompt`. Local models only — the Claude path
+refuses it rather than dropping it.
+
+`POST /api/ai/image` (SPEC AI-9) → `{jobId, path, model, prompt, width, height,
+steps, guidance, seed}` immediately; the render runs on a thread and reports its
+denoising steps to `sys:ai-image:<uid>`. The path and the seed are settled in
+that first reply — the server owns both — so there is no second endpoint for the
+result and the job record needs no result field. The reply carries the CLAMPED
+values (sides 256–2048 snapped to /16, steps ≤100, guidance ≤20), not the
+requested ones. The PNG lands in `<home>/ai/images/` and is read back through
+`/api/fs/raw`.
+
+`fused_render/ai/` is three modules and a folder of runners. `registry.py` says
+what this machine can do (`available()` answers with a REASON, and resolution
+skips a runner that cannot run here). `supervisor.py` owns the worker processes:
+one resident model per capability, auto-evicting; liveness via `Popen.poll()`
+(never `os.kill(pid, 0)` — a zombie answers that yes, and on Windows it
+*terminates* the process); stopping via `killpg` on a verified group leader, or
+`CTRL_BREAK`/`taskkill /T /F` on Windows. The port-handshake file is named per
+BRING-UP (a random per-worker id, never the token), because two workers for one
+capability overlap — an eviction's replacement starts while the old one is being
+killed — and a shared name let the second one's `unlink` delete the port the first
+had just published.
+
+`runners/worker_base.py` is the worker half of that contract, written once: the
+four routes, the auth header, the port handshake, the state machine and the
+disk-measured download. A runner folder supplies only `download`, `load` and
+`generate` and calls `serve()`. Stdlib-only — anything imported there becomes a
+dependency of every backend, and it is what makes the contract testable on CI
+(`tests/test_ai_worker_base.py` drives the real routes with stub callables;
+neither concrete worker can run there). `catalog.py` holds the curated model
+lists that used to live inside the sandbox apps.
+
+A runner is a folder with a `pyproject.toml` and a `worker.py`; its venv is built
+by `envinstall` (PY-18), not by anything new, and the worker speaks four routes
+(`/health`, `/generate`, `/cancel`, `/quit`) on an ephemeral port the child
+publishes, authenticated with a per-worker token. Nothing under `fused_render/`
+imports mlx or torch — they are named only in a runner's declaration.
+
+`POST /api/ai` routes on the model id: one containing a **slash** is a Hub repo id
+and goes to the local runner, one without is a Claude alias and goes to the CLI as
+before.
+
 ### `GET /static/*`
 StaticFiles mount for shell + runtime. Templates dir is NOT statically mounted — templates are served through `/render` like any HTML file.
 

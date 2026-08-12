@@ -72,7 +72,12 @@ export function useListingShortcuts({
     // matches but has nothing to act on (no selection, an empty clipboard)
     // falls through WITHOUT preventDefault, exactly as an unmatched one does,
     // so the browser keeps whatever binding it had.
-    const action = matchChord(e, { inSearch });
+    // Asked at event time, never cached: a selection is made and dropped by the
+    // same clicks that reach this handler. `toString()` rather than `isCollapsed`
+    // because a collapsed range inside a shadow/contenteditable can still report
+    // a non-null selection with nothing in it.
+    const hasSelection = !!(window.getSelection()?.toString() || "").trim();
+    const action = matchChord(e, { inSearch, hasSelection });
     if (action === null) return;
     // The parent folder, for Mod+Up / bare Backspace. Equal to the current
     // folder at the filesystem (or drive) root, where there's nowhere to go.

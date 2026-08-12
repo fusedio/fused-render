@@ -5144,6 +5144,14 @@ stop it short of quitting the app.
   browser tab as the shell chrome. The record therefore outlives the document
   that reports it, and the same registry answers a detached Python worker
   POSTing to `/api/jobs` directly.
+- **BG-2a** **Observing is the other half, and it arrived with a sibling name.**
+  `trackJob` writes: a page reports work IT runs. A page can now also start work
+  the SERVER runs (§40) and wants to show that progress inline with a ✕ — which
+  is a read, of a row it did not create. `fused.watchJob(id)` is that half.
+  Named as trackJob's sibling deliberately: D244 called it `trackJob` rather than
+  `job` because a bare `fused.job(...)` reads as the job itself rather than as a
+  handle, and that still holds — TRACK takes a spec and creates a row, WATCH
+  takes an id and looks at one.
 - **BG-3** **Reporting bridge** (`static/runtime.js`): `fused.trackJob(spec)` returns
   a handle — `update(fields)`, `finish(detail)`, `fail(message)`, `cancelled()`,
   plus the read-only `cancelRequested` / `state`. Reporting is **decoration**:
@@ -5153,19 +5161,33 @@ stop it short of quitting the app.
   backwards. A **rejected** report (bad id, missing title) warns once to the
   console: silence would leave an author with a page that works and a manager
   that never shows it.
-- **BG-4** **Cancel is a REQUEST, not a kill.** The server does not know what
-  the work is or which process is doing it, so `POST /api/jobs/{id}/cancel` only
-  sets `cancel_requested`; the reporting page reads it back in the reply to the
+- **BG-4** **Cancel is a REQUEST for a PAGE-owned job, and an ACTION for a
+  SERVER-owned one.** For work a page runs, the server does not know what the
+  work is or which process is doing it, so `POST /api/jobs/{id}/cancel` only sets
+  `cancel_requested`; the reporting page reads it back in the reply to the
   progress tick it was going to send anyway, and stops the way it knows how. The
   row stays "running / Cancelling…" until the work actually stops — a row that
   flipped to "cancelled" while the download carried on underneath would be a lie
-  the UI told to look responsive. A job that never declared itself
-  `cancellable` shows no ✕ at all rather than a dead one.
+  the UI told to look responsive. A job that never declared itself `cancellable`
+  shows no ✕ at all rather than a dead one. Since local inference (§40) the
+  server ALSO runs work of its own — a model download, a generation — and there
+  it owns the process and really can stop it. Same ✕, two meanings, so every
+  record carries an `owner` (`"page"` / `"server"`).
+- **BG-4a** **Server-owned ids are reserved.** They are deterministic
+  (`sys:ai-model:<repo>`), so without a rule a page could post `state: "done"` for
+  a download that is still running and the manager would have no way to catch the
+  lie. `POST /api/jobs` REFUSES any id under the `sys:` prefix; only this process
+  writes those. `owner` follows from the id at creation and is never settable
+  from a report body — a page cannot claim to be the server by saying so.
 - **BG-5** **Stalled, not frozen.** A `running` record with no update for
   `STALE_AFTER_S` (30s) is reported `stalled: true` — computed on read, so a
   late tick un-stalls it with no timer involved. The UI dims the row and says
-  *"No longer reporting — the page that started it was closed"*, which is the
-  truth: the reporter is gone, the work very likely is not. It is dropped
+  *"No longer reporting"* — plus **which reporter went quiet**, which follows
+  from `owner`: *"the page that started it was closed"* for a page-owned row,
+  *"the process running it stopped reporting"* for a server-owned one. Blaming a
+  page for a model download nobody's page started sends the user to look in the
+  wrong place. Either way it is the truth: the reporter is gone, the work very
+  likely is not. It is dropped
   entirely after `STALE_DROP_S` (10 min) so a dead reporter cannot wedge the
   list for the session.
 - **BG-6** **Retention.** A finished record stays `FINISHED_TTL_S` (30s) — long
@@ -5222,7 +5244,764 @@ stop it short of quitting the app.
   optimisation only: a Python worker reporting straight to the API runs no JS
   and writes none, so the idle poll is the floor that guarantees its row shows
   up either way.
-- **BG-14** **Portable.** `fused.trackJob` is a no-op stub in the hosted runtime (the
-  `fused` wheel's copy of the bridge) rather than an export-blocking call like
-  `fused.ai` (RH-11): progress reporting is decoration, and a page that reports
-  it should still deploy — it simply has no manager to report to.
+- **BG-14** **Portable.** `fused.trackJob` **and `fused.watchJob`** are no-op
+  stubs in the hosted runtime (the `fused` wheel's copy of the bridge) rather
+  than export-blocking calls like `fused.ai` (RH-11): progress reporting is
+  decoration, and a page that reports or observes it should still deploy — it
+  simply has no manager to talk to. `watchJob`'s stub resolves its `watch` with
+  null, the same answer the local one gives for a row that is gone, so a page
+  written against it needs no hosted-only branch. **This is an obligation on a
+  DIFFERENT repo**: adding to the bridge here is not done until that copy has
+  the same name.
+
+---
+
+## 37. AI Models — What the Hugging Face Cache Holds (D249)
+
+Goal: the models, datasets and Spaces this machine has downloaded from the
+Hugging Face Hub are visible and accounted for, from a sidebar entry, without
+anyone having to remember where the cache lives or run `du` on it.
+
+The cache is shared and invisible: a `transformers` import in a page's Python,
+a `diffusers` pipeline, a template someone pasted in, or an `hf download` in a
+terminal all write into the same tree, and nothing in the app has ever named
+it. It grows in multi-GB steps and the app is the thing that grew it — a
+checkpoint pulled by a page the user opened once is still on their disk a month
+later with nothing on screen to say so.
+
+- **HF-1** **An inventory that can also clear space** (D250 revisited the
+  original read-only posture, which shipped first). The page's first job is to
+  show what is cached and what it costs; on top of that it offers exactly two
+  deletions — a repo, or one revision of a repo. It never downloads,
+  re-downloads, or repairs anything, and no deletion happens without a
+  confirmation that names what goes and what it frees. **Bulk age-based pruning
+  was offered and withdrawn (D256):** a dialog that selects models by a
+  threshold is one wrong click from a multi-GB re-download, and `lastUsed` rests
+  on an atime that `noatime` volumes never write — a caveat printed inside the
+  dialog cannot make a list built on it safe to confirm in one action.
+- **HF-2** **Where the cache is** follows `huggingface_hub`'s own resolution
+  order, not a hardcoded `~/.cache`: `HF_HUB_CACHE`, else the deprecated
+  `HUGGINGFACE_HUB_CACHE`, else `$HF_HOME/hub`, else
+  `$XDG_CACHE_HOME/huggingface/hub`, else `~/.cache/huggingface/hub`. Any other
+  order reports "nothing cached" on precisely the machines that care most — the
+  ones with a shared model disk pinned by `HF_HOME`. Resolved per request, so
+  the answer is the environment the server is actually running in.
+- **HF-3** **One row per repo**, decoded from the cache's own directory
+  encoding: `models--openai--whisper-small` → `openai/whisper-small`, kind
+  `model`; `datasets--` → dataset, `spaces--` → space. A directory carrying
+  none of those three prefixes is not a repo folder and is skipped, which is
+  also what keeps `.locks/`, `version.txt` and half-written `tmp*` downloads
+  out of the list.
+- **HF-4** **Size is bytes on disk, measured with `lstat`.** Every file under
+  `snapshots/` is a symlink back into the same repo's `blobs/`, so a walk that
+  followed them would multiply a repo by its revision count — on a real cache
+  that is a page about disk usage being wrong by hundreds of GB. Hardlinks (one
+  blob shared by two entries, and what Windows falls back to when it cannot
+  symlink) are de-duplicated by `(st_dev, st_ino)` for the same reason. The
+  per-row sizes therefore sum to the reported total.
+- **HF-5** **Newest-file time, directories excluded.** A repo's stamp is the
+  newest mtime among its files *and its snapshot symlinks* — a blob is written
+  once, but materialising a revision creates its links, so the links are what
+  "last pulled" looks like on disk. Directory mtimes are left out because they
+  also move on deletion, which would report a repo someone just emptied as
+  freshly used. A repo with no files at all reports no time rather than "now".
+- **HF-6** **Biggest first.** The page exists to answer "what is this costing
+  me", and a name sort buries the 8GB checkpoint among forty 2MB tokenizer
+  repos. Each row also carries its file count, its revision count when it holds
+  more than one, and the refs (`main`, a tag) pointing into it.
+- **HF-7** **A card has TWO doors, and they lead to different places (D256).**
+  The **name** goes to the model's page on the **Hub** — a repo id is a Hub
+  address, and the licence, the full model card, the discussions and every
+  revision live there, none of it on this disk. **"Explore"** opens it *here*,
+  in the model card view (§38), which reads this folder's own files. Both are
+  real `<a href>`s, so middle-click and copy-link behave. One control cannot
+  serve both: a name that sometimes meant "read about this" and sometimes meant
+  "open the local copy" would be a coin flip, and the two destinations answer
+  different questions. Explore is visible without hovering — unlike the delete
+  controls beside it, which stay quiet until the card is hovered.
+- **HF-8** **The sidebar entry is gated on the cache existing** (`GET
+  /api/ai-models/status`, one `isdir`), so a machine that has never pulled
+  from the Hub is not offered a page that can only say "nothing here". Unlike
+  the Claude-config entry's gate — an installation property, which cannot change
+  while the app runs — this one can flip mid-session: the first download creates
+  the directory. So a confirmed *yes* is
+  cached for the session, a *no* only briefly, and the answer is **published**
+  to whatever sidebar is mounted rather than only stored — a probe resolving in
+  one mount, and the page's own load (which knows the truth without a second
+  request), both have to reach a sidebar already on screen, or opening the page
+  by URL would leave its own entry missing beside it. The route stays reachable
+  by URL either way, and states
+  which of the two nothings it found — no cache directory at all, or a cache
+  that is empty.
+- **HF-9** **Scanning happens once per visit.** The walk touches every blob in
+  the cache, so it runs **on mount and nowhere else** — never on a focus/return
+  tick, which would re-walk tens of thousands of files each time the window came
+  back, and no longer behind a Refresh button (D256), which asked the user to
+  know when a re-walk was worth paying for. A delete answers with the fresh
+  listing it just measured, so the one thing that changes the cache from here
+  refreshes it without being asked.
+  It runs in the threadpool (a sync endpoint), so a big cache cannot stall the
+  requests the rest of the page is making. And it **never fails because the
+  cache changed under it**: a download finalising or another window's delete can
+  take an entry away between the listing that found it and the stat that asks
+  about it, so every such read treats the race as "report what was there" — a
+  row fewer, never an error page.
+
+**Managing it** (D250, narrowed by D256). Two deletions — one repo, or one
+revision of one — each behind a confirmation naming what goes and what it frees:
+
+- **HF-10** **Deleting a repo** removes its cache folder and the `.locks/` entry
+  that mirrors its name, and reports the bytes it held. Nothing else in the
+  cache is touched.
+- **HF-11** **Deleting a revision removes only what that revision alone owns.**
+  Its snapshot directory goes, and with it the blobs no *other* revision
+  references — a blob two revisions share stays, because taking it would corrupt
+  the revision left behind, which is a worse outcome than any amount of wasted
+  disk. Refs pointing at the deleted commit go too (a ref to a revision that no
+  longer exists is dangling, and would make the next `from_pretrained` resolve
+  to nothing). If it was the **last** revision, the whole repo folder goes: a
+  shell of refs and unreferenced blobs is not something to leave behind, and it
+  is what `huggingface_hub`'s own delete does with a last revision. The number
+  shown against a revision is therefore its **exclusive** bytes, with what it
+  shares stated separately — two revisions of a 7GB model that differ in a
+  config file are 7GB shared and a few KB each, and a row claiming 7GB apiece
+  would be a lie in the one column this page exists for.
+- **HF-12** **RETIRED (D256).** Bulk age-based pruning is gone. What it stood
+  on remains true and still shapes the page: `lastUsed` is filesystem atime,
+  `noatime` volumes never write it, and a repo with no readable timestamp proves
+  nothing about being cold — which is exactly why "used 4 months ago" is a fact
+  on a card someone reads before deleting one model, and not a threshold that
+  selects twenty. Deleting still names its targets one at a time (HF-13), and
+  the multi-target request shape survives because a revision delete uses it.
+- **HF-13** **A delete request names a cache FOLDER, never a path.** The name
+  must be a single path segment carrying a known kind prefix; the path is built
+  server-side from the cache dir the server resolved. A repo folder that is a
+  **symlink** is refused rather than followed — those point at another disk, and
+  deleting through one would reach outside the directory this endpoint is scoped
+  to. The POST carries the `X-Fused` guard (D3) like every mutating endpoint:
+  it removes multi-GB directories, and a blind cross-origin POST must not reach
+  it. A malformed revision is an error, never a fallback to "delete the whole
+  repo" — only an *absent* revision means the repo.
+- **HF-14** **Every target is reported.** One stale row must not lose the rest
+  of a multi-target request, so each target succeeds or fails on its own and the
+  failures come back named. The reply is the **fresh listing**, re-read from
+  disk after the deletions, so the page swaps in state it just measured instead
+  of patching rows it hopes are still true.
+- **HF-15** **Reading the page does not count as using a model.** Resolving
+  revisions means opening ref files, which bumps their atime — the very signal
+  `lastUsed` reports. Their atime is put back after the read, so the page cannot
+  quietly rewrite the "last used" of everything it just looked at into now,
+  which would make the one number a person deletes by say the same thing about
+  every model they own.
+
+**Naming what a model is** (D251). A repo id and a size do not say what a thing
+is for, and the cache states it nowhere:
+
+- **HF-16** **The purpose is read from whatever evidence the download brought**,
+  best first: the model card's `pipeline_tag` (the Hub's own answer, so nothing
+  is inferred when the card came down); a diffusers `model_index.json`
+  `_class_name`; a sentence-transformers marker; the `architectures` head in
+  `config.json` (…`ForCausalLM` → text generation, …`ForImageClassification` →
+  image classification, with `model_type` separating whisper's
+  …`ForConditionalGeneration` from t5's); a `.gguf` weights file. Tags render by
+  turning hyphens into spaces, which needs no table to stay current — except
+  where that produces something unreadable: `image-text-to-text` becomes
+  "image + text to text" (an image AND a prompt in, text out) rather than the
+  unparseable "image text to text". **The hover explains the label, not just its
+  provenance**: one sentence saying what goes in and what comes out ("takes an
+  image AND a prompt, answers in text"), because the Hub's vocabulary is jargon
+  to anyone who has not met it, and a card that shows a term without defining it
+  has told the user only that they don't know it. The glossary is keyed by the
+  LABEL, so one table serves the model-card path and the architecture path; a
+  tag it has no sentence for still shows its label and its source, which is what
+  an open vocabulary degrades to gracefully. **Every answer
+  carries where it came from**, and the card shows that on hover: a
+  `pipeline_tag` is a fact and an architecture is a reading of one, and a UI
+  that rendered them identically would be overclaiming. A repo with none of that
+  evidence says nothing rather than guessing from its name.
+- **HF-17** **Parameter count is exact or absent.** It is summed from the
+  **shapes in the safetensors headers** — a little-endian u64 length then that
+  many bytes of JSON, so it costs one small read per shard rather than the
+  multi-GB file. `.bin` pickles and `.gguf` carry no equivalent cheap header, so
+  those repos report no count; a figure derived from file size ÷ assumed dtype
+  would be a guess dressed as a measurement, in a page whose credibility rests
+  on its numbers being real. The revision is **walked**, not listed: a diffusers
+  pipeline keeps its weights per component (`transformer/`, `vae/`,
+  `text_encoder/`), which is the very layout behind the pipelines HF-16 detects,
+  so a top-level-only look would report nothing for the models people most want
+  the number for. What is summed is every component — the parameters the repo
+  actually holds, not a curated idea of which component is "the model" — with a
+  precision variant skipped when its plain counterpart is present
+  (`…fp16.safetensors` beside `….safetensors` is the same tensors twice) and a
+  blob counted once however many names link to it.
+- **HF-17a** **A quantized checkpoint stores several weights per element**, so
+  summing shapes counts storage slots rather than parameters: a 4-bit MLX or
+  GPTQ checkpoint packs eight weights into each `U32`, and a 12B model reported
+  2.4B — not a small error but a different number. When `config.json` declares a
+  width (`quantization.bits`, `quantization_config.bits`/`w_bit`/`load_in_4bit`),
+  integer tensors are expanded by how many weights their word holds and the
+  count is shown with a **≈**: it is recovered from the declared width, not read
+  off unpacked shapes, and the card must not present the two identically. The
+  width is read from the checkpoint, never from the repo name —
+  `mlx-community/…-4bit` is a naming convention, and no number this page prints
+  may rest on one. The declared width is also shown in its own right ("4-bit"):
+  it is the difference between a 7GB download and a 24GB one of the same model.
+- **HF-18** **The date shown is `added`, not "released".** The Hub's release
+  date is not on this disk and this page never goes to the network, so what it
+  states is the oldest file in the repo — when this machine first got it. The
+  distinction is the honest one: a model published in 2023 and pulled here last
+  week is a week old *to this cache*, and that is the fact the page can back up.
+- **HF-19** **Metadata is read through the same atime-preserving read as the
+  refs** (HF-15) and cached per snapshot directory, keyed by its mtime — a
+  snapshot's contents are immutable once written, so a Refresh over forty repos
+  re-reads nothing.
+
+---
+
+## 38. The Model View — Opening a Cached Model (D252, D254)
+
+Goal: a cached model is a folder full of opaque names — `model-00001-of-00004.safetensors`,
+`config.json`, a 40MB `tokenizer.json` — and opening it showed exactly that. One
+template makes the folder answer for itself, and it reads only: nothing here
+loads weights, imports a framework, or touches the network.
+
+- **MV-0** **A link back out to the Hub (D256).** The view reads the folder on
+  THIS disk; the licence, the discussions and every revision live on the model's
+  Hub page and nothing here can show them, so the header carries a link to it —
+  built from the KIND as well as the id, since a dataset linked as
+  `huggingface.co/<id>` is a 404 dressed up as a link, and absent entirely for a
+  folder that is not a cache repo (someone's own checkout has no Hub page, and a
+  link built from a local directory name would point at a stranger's). The id
+  goes through `quote()` on its way into the URL, not an f-string.
+- **MV-1** **`model_card` — what this model IS.** Name (decoded from the cache
+  folder, or from the repo folder when a snapshot is opened directly, because a
+  commit sha is not a model's name), parameters, disk, the model card's own
+  summary and tags, the configuration a person actually reads (hidden size,
+  layers, heads, context length, vocabulary), a per-file weights table, the
+  largest tensors, and the file list. Instant on a 40GB checkpoint, because the
+  parameter counts come from the **safetensors headers** rather than the weights
+  (SPEC HF-17's rule, and its quantization arithmetic with it — a 4-bit
+  checkpoint's count is unpacked from its declared width and marked `≈`).
+- **MV-2** **A tokenizer section on the same page — how it splits text.** A
+  textarea, a token count, chars-per-token, and the text painted token by token,
+  below the card rather than beside it in a second mode (D254): they describe one
+  model, and one page beats two. Two halves that fail separately, deliberately:
+  the **facts** (vocabulary size, model kind, merges, special tokens) are read
+  from `tokenizer.json` itself and always work; **encoding** needs the
+  `tokenizers` library, which the template declares in its own `pyproject.toml`
+  (PY-16) and which therefore arrives only under the fused engine. A missing
+  library is a state the page explains, not an error — and so is a
+  `tokenizer.json` this build of the library refuses, which keeps its facts and
+  says why it could not load. Tokens are highlighted by **offsets into the
+  original text**, never by the decoded piece: every BPE tokenizer rewrites
+  whitespace (`Ġ`, `▁`), and showing that instead of what was typed makes the
+  highlighting unreadable. The section is **inert until someone types** — the
+  card stays instant because parsing a 40MB vocabulary is work it refuses to do
+  before anyone has asked to tokenize anything. The older `vocab.txt`+`merges.txt`
+  pair is deliberately not served: loading those needs the model class that owns
+  them, and a playground that cannot tokenize is worse than none.
+- **MV-3** **The view is gated, and the gate runs on every folder you open** —
+  it is bound to the universal `/` registry key beside `zarr_aoi`, the existing
+  view for one kind of directory content. So it obeys that gate's discipline: no
+  listing, no walking, constant-time probes, cheapest first. It accepts a cache
+  repo folder (a name check plus one `isdir`), a folder carrying a decisive
+  marker (`model_index.json`, `config_sentence_transformers.json`, or
+  `tokenizer.json` — a tokenizer-only repo is a real shape and the view now has
+  something to say about it), or a `config.json` — and that last case only after
+  ONE bounded read confirming the file is a model config, since `config.json` is
+  among the most common filenames there is and a folder of application settings
+  must not sprout a model view. That read is reached through `isfile` **before**
+  `os.stat`, and the order is load-bearing: over a mount `isfile`/`isdir`/`exists`
+  can be answered from the listing the endpoint already took while `stat` cannot,
+  so probing with `stat` would make every ordinary folder pay a remote round trip
+  for a name already known to be absent.
+- **MV-4** **The AI Models cards open the view by name.** A gated template can
+  never be a folder's default mode (CT-12), so a model folder still lists like
+  any other folder for anyone who browses to it — but from the AI Models page the
+  repo IS a model, so its card navigates with `_mode=model_card`. The switcher
+  then offers that mode beside the folder's own.
+- **MV-5** **Looking at a model is not using it.** Every read in the template
+  restores the file's atime, for the same reason the AI Models page does
+  (HF-15): "last used" is the number a person weighs before deleting a model,
+  and looking at one must not rewrite that number into now. **Including the
+  gates** — they read too (`config.json`, `refs/main`), they run on every folder
+  the user opens, and a gate is the last thing that should mark a model as
+  recently used. That `os.utime` is the one WRITE a gate makes, so the mount
+  shim (CT-12's routing) **drops it on a mount path** rather than routing it: a
+  mount has no atime worth preserving, and a kernel SETATTR there is exactly the
+  class of call the shim exists to keep gates from making.
+- **MV-6** **The folder the AI Models page opens is a cache REPO, and the
+  layout has exactly ONE owner.** A repo folder (`models--org--name`) holds
+  no model files itself — they live under `snapshots/<commit>/`, at the revision
+  **`refs/main`** names, which is the one a load would get. `inspect_model.py`
+  resolves that once when the card is drawn and reports it as `root`; the page
+  hands `root` straight to `tokenize_text.py`, which therefore resolves nothing
+  and reads one file in one folder. That hand-off is the point: a template is
+  scripts the engine runs, not a package, so two scripts cannot share a module
+  (PY-15/D166) — and a second copy of the cache layout is a second thing to drift
+  from the first. Passing the answer instead of re-deriving it removes the drift
+  rather than testing for it.
+- **MV-7** **Nothing survives between calls, so the playground is built not to
+  need it.** Each `runPython` is a fresh subprocess (PY-6); a tokenizer held in a
+  module-level dict is dead code that reads as an optimisation. What keeps typing
+  responsive instead: the **facts are requested on the section's FIRST call and
+  never again**, so every keystroke after it skips the whole-file parse of a
+  `tokenizer.json` that is routinely tens of MB. Facts and encoding travel on that
+  one call rather than two, because loading the file to encode and parsing it for
+  facts are one visit to one file — and a facts-only call (no text yet) never
+  loads at all, since there is nothing to encode and the load would be paid for
+  and thrown away. The per-call cost that remains is the library's own load, which
+  is Rust and measured in tens of milliseconds; holding one tokenizer open across
+  keystrokes would need a resident process, which is a different design from a
+  script.
+
+---
+
+## 39. Discover — Searching the Hub From the AI Models Page (D255)
+
+Goal: §37 answers "what did I already download". This answers the other half —
+"what is out there" — and the two are only worth anything **together**, because
+the Hub does not know your disk and a browser tab open on huggingface.co cannot
+tell you that the model you are reading about is already cached, was last read
+three weeks ago, and would cost nothing to open.
+
+- **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
+  unchanged.** The original rule was that a download needs a progress surface, a
+  cancel and an answer for a half-finished pull — none of which existed, so the
+  button did not either. Local inference (§40) built exactly that, so Discover
+  now downloads through it. What still holds: search, filter and sort tell you
+  what a result would COST before the click, and this module still never writes
+  to the cache itself — it asks the runner's worker to, and the job registry
+  shows it. Downloading gigabytes onto someone's
+  disk is a separate decision with a separate cost (free space, a progress
+  surface, a resumable transfer, a half-written cache to clean up) and is
+  deliberately not part of this. Every route is a GET, so none carries the D3
+  `X-Fused` guard: there is nothing to guard.
+- **HS-1a** **Search is a guarded POST; the rest of Discover is an ordinary
+  read.** The app's rule is that reads are unguarded GETs (WF-5), and the reason
+  is D36's: a foreign page can fire a request but the browser will not let it
+  read the reply. That protects the RESPONSE and says nothing about the REQUEST
+  — and search is the one read in this app that LEAVES the machine, calling the
+  Hub with the user's token attached (HS-3). Unguarded, a blind cross-origin GET
+  could spend someone's credential and their rate limit while learning nothing,
+  which the same-origin policy does not prevent. Rather than bolt a guard onto a
+  GET — leaving a shape that contradicts the stated rule and invites the next
+  reader to copy it — the route takes the shape its effect deserves: an outward
+  effect is a POST, and POSTs carry `X-Fused`. `hub/tasks` stays a GET beside
+  it, a static glossary that touches nothing. **What earns the guard is the
+  outbound call, not the router**, and the asymmetry inside one module is the
+  clearest possible statement of that. Still not authentication (D3 stands).
+- **HS-2** **The join is the feature.** Every result is cross-referenced against
+  the local scan before it is returned, so a card says **downloaded** (with what
+  it costs on disk and when it was last read), **partly downloaded**, or
+  **not downloaded**. `partial` is a real state and not a rounding of the other
+  two: an interrupted pull leaves a repo folder holding blobs and no
+  materialised snapshot, and calling that "downloaded" sends someone to a model
+  that cannot load. The line is "has at least one snapshot" — and the page holds
+  the same line, so only a **downloaded** result opens its model card. A partial
+  one links to the Hub like an absent one does, because there is no revision for
+  the card to describe and linking there would hand someone the very failure the
+  distinction exists to prevent.
+- **HS-3** **The server fetches; the page never does.** One place holds the
+  token, bounds the timeout, caches, and can be audited for what this app sends
+  to a third party. The **host is fixed** — only the query string varies, so no
+  request can point this at another server — with `HF_ENDPOINT` (the standard
+  mirror override `huggingface_hub` honours) the one exception, and it is still
+  checked to be an http(s) URL before it is used. The query is **encoded**, never
+  concatenated: a search for `a&b=c` is a search, not a second parameter. The
+  sort is a **fixed set** of names, so a client can never pass a raw field
+  through to the Hub.
+- **HS-4** **Nothing reaches the network until Discover is opened.** The app is
+  a local file explorer; a page that quietly queried a third party on mount
+  would be a surprise. Selecting the tab is the consent, the caption names the
+  host being asked, and the query is debounced — a burst of typing is one
+  request — with identical queries inside a short TTL answered from memory,
+  because search-as-you-type would otherwise put one request per keystroke on a
+  public API. **Errors are never cached:** the network comes back, and the next
+  keystroke has to be allowed to find out.
+- **HS-5** **The local half of a result is never served stale, and is scoped to
+  the results.** The Hub's answer holds for the TTL; what is on this disk does
+  not, so the join runs on every request, outside the cache — a model deleted a
+  second ago must stop claiming to be downloaded, or its card links to a folder
+  that is no longer there. It can afford that because it costs what the RESULTS
+  cost rather than what the cache costs: one `scandir` of the cache root to map
+  ids to folder names, then a measure of only the handful of rows that turned
+  out to be present. The §37 listing would answer this too, but it also reads
+  every repo's model card, config and safetensors headers to say what each model
+  is FOR — work no row here needs, and work a debounced keystroke must not pay
+  for across a cache of hundreds of repos.
+- **HS-6** **Sizes are recovered, and say so.** `safetensors.parameters` is a
+  dtype → count map, so bytes come from summing `count * bits / 8` — the same
+  arithmetic and the same `≈` the model card uses on local files (HF-17), so one
+  model cannot be 16GB on one tab and 8GB on the other. A repo with no
+  safetensors metadata reports **no size** rather than a guessed one: a number
+  someone plans a 16GB download around must not be invented. `gated` is surfaced
+  before anyone tries, because "accept the licence on the Hub first" is worth
+  knowing in advance rather than as a 403.
+- **HS-7** **One vocabulary across both tabs.** A result's task label and its
+  hover sentence come from the same glossary the cached cards use (HF-18), so
+  "image + text to text" means the same thing wherever it appears. The task
+  FILTERS, though, are the Hub's own `pipeline_tag` values, listed explicitly in
+  the module that talks to the Hub — deriving them by reversing the glossary is
+  the tempting version and it is wrong, because several labels there ("image
+  generation", "video generation") are this app's reading of a diffusers
+  `_class_name` rather than tags anyone publishes under, and a filter built from
+  one would quietly return nothing. Every offered filter resolves to a label the
+  glossary explains, and a test pins that.
+- **HS-8** **A far side that is unhappy is a sentence, not a 500.** Unreachable,
+  rate-limiting, refusing without a token, answering with HTML — each produces a
+  200 carrying an empty result and an explanation the page can show, because the
+  request this server received was fine and the distinction matters to whoever
+  is looking at it. Every field of a result is optional: the Hub returns what it
+  returns, an older deployment may refuse an `expand[]` field entirely, and a
+  missing field is one a card leaves out rather than an exception.
+
+---
+
+## 40. Local Inference — Running a Model on This Machine (D257)
+
+Goal: `fused.ai(prompt)` meant exactly one thing — a completion from the Claude
+Code CLI — while local models lived inside individual apps. `local_chat` shipped
+its own MLX server, its own dependency declaration, its own download reporter and
+its own curated model list; the image app shipped the same apparatus again for
+diffusers. Two copies of "how do I run a model", neither reusable by a third, and
+an AI Models page that could say what was on disk but not what was *running*.
+
+- **AI-1** **One door, two tiers.** `POST /api/ai` is extended, not replaced: its
+  `model` parameter already existed, and a value containing a **slash** is a
+  Hugging Face repo id and therefore local, while one without is a Claude alias.
+  That is not a heuristic — a Hub id is always `org/name` and no Claude alias
+  contains a slash. So `fused.ai(prompt, {model})` reaches a local model with no
+  new parameter, the streaming shape is byte-identical (`{"type":"chunk"}` lines
+  closed by `{"type":"done"}`), and **a call with no `model` still means Claude**,
+  which is what keeps every page written before this working.
+- **AI-1a** **A conversation and a stop, because a chat client needs both.**
+  `prompt` stays the thing being asked NOW, and `history` carries the turns
+  before it — so adding it changes no existing call, and the turns reach the
+  worker as MESSAGES for the model's own chat template rather than flattened
+  into one string (flattening is how you get output that looks almost right).
+  Local models only: the Claude path is one invocation with no conversation to
+  resume, and it **refuses** history rather than dropping it, because silently
+  ignoring it answers a follow-up as if it were the first question — which reads
+  as the model having forgotten, not as the API having declined. `POST
+  /api/ai/cancel` stops the generation in flight WITHOUT unloading, so the next
+  message answers immediately; it returns false when there was nothing to stop,
+  which is not an error (a Stop pressed as the last token lands is a no-op).
+  **`raw` is refused on the Claude path for the same reason as `history`**: it
+  means "no chat template", which only something owning the template can honour,
+  and the CLI does not expose one — dropping it would answer a raw continuation
+  as a chat turn, which is plausible text that is silently not what was asked.
+- **AI-1b** **The terminal frame carries the RESULT, on both tiers and in both
+  shapes.** `fused.ai()` resolves with `{text, model, usage}` whether or not the
+  caller passed `onChunk`, so a page can stream and still use the return value —
+  and a streamed local reply that closed with a bare `{"type":"done","ok":true}`
+  is why this is a written rule rather than an obvious one: every token had
+  already been delivered, the answer was on screen, and the caller crashed on
+  `result.text` at the end of a visibly successful generation. The chunks are
+  a VIEW of the completion, never the only copy of it, so the relay accumulates
+  what it forwarded and states it at the end; a failed stream closes with
+  `error` in the same frame, so a caller has exactly one place to look either
+  way. Pinned by contract tests over both the streaming and non-streaming
+  relays, because this is an agreement between the worker, the relay and
+  `runtime.js`, and the failure mode is silent in all three.
+- **AI-2** **A runner is a folder, and its environment is `envinstall`'s.** Each
+  backend is a folder holding a `pyproject.toml` and a `worker.py`. The
+  declaration is the ONLY place mlx/torch are named — fused-render's own venv
+  must stay a file explorer's, and must not carry a Metal-only dependency into a
+  Windows wheel — and it is built by the existing detached `uv sync` loader
+  (PY-18), with the same progress record and the same verbatim uv errors any
+  declaring folder gets. No second install mechanism exists for AI.
+- **AI-3** **Four routes, and that is the whole worker contract.** `GET /health`
+  (state, resident bytes), `POST /generate` (NDJSON for text), `POST /cancel`,
+  `POST /quit`. Adding a capability is writing a worker, not extending the
+  supervisor. The port is **ephemeral and published by the child** — anything the
+  parent reserved could be taken between its bind and the exec — and every
+  request carries a per-worker token in a header, so a foreign page that guessed
+  the port still cannot drive the model.
+- **AI-4** **One resident model per capability, auto-evicting.** Loading a second
+  text model stops the first BEFORE the new one loads. Arithmetic, not taste: two
+  8GB models on a 16GB machine is a swap storm, and a swap storm reads to the user
+  as "the app hung". A text model and an image model coexist — different
+  capabilities, and the user asked for both.
+- **AI-5** **Load is a job, never an awaited request.** A cold load is a multi-GB
+  download and a minutes-long weight load, so `load()` returns a **job id** and the
+  work continues on a thread. Progress goes to the existing download manager
+  (§36) under the deterministic id `sys:ai-model:<repo>`, which is also what lets
+  the AI Models page join a job row onto a repo card without a second index.
+  Generating with a model that is not resident **starts the load and fails with
+  that job id** (409): a caller should not have to orchestrate load-then-wait
+  before its first call, and generation must not block for minutes either.
+- **AI-5a** **A download is part of the runtime, even though it is not
+  residency.** `GET /api/ai/runtime` reports `downloading` beside `loaded`: a
+  weights-only pull holds no memory and evicts nothing, but it is work this
+  machine is doing, and a runtime that omitted it made an 8GB fetch invisible —
+  the page polls job rows only while the runtime says something is happening, so
+  a Download reported progress nothing was reading, and the card that started it
+  went on saying "not downloaded". The BYTES stay in the job row; this list only
+  says which models have a pull in flight. A second Download of a model already
+  being fetched **joins the first** rather than starting a second
+  `snapshot_download` over the same `.incomplete` files.
+- **AI-5b** **Download progress is measured from the DISK.**
+  `snapshot_download` exposes only its outer "Fetching N files" counter through
+  `tqdm_class`; the per-file byte bars are internal. Reporting that counter as
+  bytes is how a 4.6GB pull came to read **"10 / 11 B"**, and during a single
+  large shard it does not move at all — so the row also went stale mid-download
+  and the manager declared nobody was reporting. The runner instead walks its own
+  repo folder (counting the `.incomplete` files, skipping the snapshot symlinks)
+  on a **one-second poll that doubles as the heartbeat**, and the repo's total
+  comes from one Hub metadata call. No total means an indeterminate bar, which is
+  honest; a wrong total is not.
+- **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
+  Two workers for one capability really do overlap — an eviction's replacement
+  starts while the old one is still being killed, a Download runs beside a Load —
+  and when they shared `<capability>.json` the second one's `unlink` deleted the
+  port the first had just published, so the first sat out its entire bootstrap
+  timeout waiting for a file that was never coming back. The name carries a
+  random per-worker id (never the token: a secret must not become a filename),
+  and both the status and log files are removed once the process is gone.
+- **AI-5d** **A bring-up thread reports its own death, and the environment
+  wait polls the key the INSTALLER named.** Two failures of the same kind — work
+  that stops without saying so — seen as one card reading "Preparing Diffusers
+  (PyTorch)…" beside a manager row reading "no longer reporting". (a) `_bring_up`
+  and `_fetch_only` run on threads, so an exception that is not a
+  `SupervisorError` is raised to NOBODY: it kills the only thing reporting and
+  the row sits at its last detail until the manager gives up and blames the
+  process — a lie in the one direction that matters, since the server is fine
+  and nothing says the load is gone. Both catch **everything**, name the
+  exception class on the row (the only part a user can act on) and log the
+  traceback, which is otherwise the sole copy. (b) The venv wait takes its key
+  from `envinstall.start()`'s reply, never from a second derivation of its own:
+  with no pinned interpreter yet (D214) the first round installs the PYTHON
+  under `PYTHON_BOOTSTRAP_KEY`, and a re-derived venv key polls a record nobody
+  is writing — an infinite "Preparing…" over an install running fine.
+  `envinstall._reported` exists to hand a caller the right key and its docstring
+  names this exact failure; this was a caller that recomputed it anyway. It
+  therefore also runs **rounds**: every other caller of that loader is a page
+  that re-POSTs for the second round, and there is no page here.
+- **AI-5e** **The ✕ reaches every phase, and shutdown reaches every process.**
+  Two halves of "the supervisor owns it, so the supervisor can really stop it"
+  (D258), each of which had a hole. **Cancel**: `stopping` is set by an eviction
+  or an explicit unload — things the SERVER decided — while what a user presses
+  sets `cancel_requested` on the JOB. The env-build loop honoured that and the
+  post-spawn loop did not, so a ✕ during the phase that actually takes the time
+  (the multi-GB fetch the worker is doing) did nothing at all and the download
+  ran to completion under a row that said cancelled. Both loops read both.
+  **Shutdown**: `unload_all()` walked the RESIDENT table, and a weights-only
+  fetch is deliberately not in it — it evicts nothing and holds no memory — so
+  quitting the app left a detached `snapshot_download` pulling gigabytes with
+  the only thing that could stop it gone. The fetch's process handle is kept in
+  its own table, published nowhere, and shutdown terminates those too — from
+  the moment the work starts, not from the moment there is a download PROCESS,
+  because the first phase may itself be a multi-GB `uv` install and registering
+  after it left the fetch invisible for exactly those minutes. What "stop this
+  worker" means therefore depends on its phase, and `_terminate` knows both: an
+  environment build is cancelled by KEY (it belongs to a detached installer,
+  and there is no process of ours to kill yet), a running worker is killed.
+- **AI-5f** **Deleting a model's files asks the supervisor first.** The cache
+  endpoint owns the bytes and the supervisor owns the processes, and neither
+  could see the other. Deleting a repo mid-load removes the shards
+  `from_pretrained` is still reading and the error surfaces minutes later
+  looking like a corrupt model; deleting a RESIDENT one is quieter and worse,
+  because the weights are already mapped — on POSIX the delete succeeds, the
+  page says the model is gone, and it goes on answering until an unload makes
+  the bytes vanish for real. `busy_reason(model)` returns a SENTENCE, not a
+  bool, because the instructions differ ("unload it first" vs "wait for the
+  download"), and a revision is refused on the same grounds as a repo: the
+  revision a resident worker holds open is not the safer target it looks like.
+  The button is disabled for the same reason and is the courtesy; the endpoint
+  is the guarantee (MD-11).
+- **AI-5g** **A prerequisite this machine lacks is stated at the REQUEST.**
+  `uv`, and — less obviously — the **`fused` package**: `envinstall` is the
+  loader for the fused engine (PY-18) and reads the base interpreter off that
+  engine's live backend, so a machine running the builtin engine cannot build
+  any runner venv at all. Unchecked, that surfaced as a bare
+  "ModuleNotFoundError: No module named 'fused'" on a model download card, which
+  names neither what to install nor why a download wanted it. Both are knowable
+  before a job row exists, so both are a 409 on the request with a sentence the
+  page can show.
+- **AI-5h** **Every reporter heartbeats, because "no longer reporting" must
+  never be said about work that is simply slow.** A row untouched for
+  `STALE_AFTER_S` (30s) is reported as stalled — true of a page that was closed,
+  a LIE about a worker mid-step. AI-5b made a download's disk poll double as its
+  heartbeat; the image runner reports once per DENOISING STEP, and a FLUX step on
+  a laptop routinely takes longer than the whole stale window, so a render that
+  was progressing perfectly announced at **step 1 of 3** that nobody was
+  reporting it. The heartbeat therefore lives in `worker_base` and wraps every
+  generation, because the property that causes this — progress whose natural
+  granularity is coarser than the stale window — belongs to the CONTRACT rather
+  than to one denoiser. It re-sends the LAST payload, never an invented one (a
+  tick that learned nothing must not move the bar), it is plain `report` and
+  never `report_or_cancel` (a `Cancelled` raised on a timer thread is raised at
+  nobody — the ✕ is still honoured in the generating thread's own tick), and it
+  never repeats a TERMINAL state, which would revive a row the manager had
+  already retired. Two consequences of it being a THREAD, both found in review:
+  it sends through the half of `report` that does NOT re-record the payload (a
+  beat that re-recorded what it had just read clobbered any real tick landing in
+  between, so the bar went BACKWARDS while the model progressed — a worse lie
+  than the stall), and the context manager JOINS it rather than only signalling
+  it, because `stop` cannot reach a beat already inside its POST and that tick
+  would land after the work finished, flipping a row the supervisor had just
+  marked done back to running.
+- **AI-8b** **A runner whose weights live outside RSS supplies its own memory
+  probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
+  arrays; the image runner needs it for an unrelated reason and the number was
+  just as wrong — torch keeps the weights in a GPU allocator's pool, which on
+  MPS is not counted in the process's resident set, so an 11.9B pipeline
+  reported **33 MB in memory**. Both runners now answer for themselves, and the
+  test asks it of BOTH with the reason each one needs it, because "supplies a
+  probe" is a property of a runner rather than a fact about MLX.
+- **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
+  so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
+  linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking
+  it and failing at load time — which would report "the model failed to load" for
+  a machine that was never going to load it. A capability this machine cannot
+  serve is still listed, with its reason: hiding it leaves a user hunting for a
+  feature that was never there.
+- **AI-7** **Liveness is `poll()`, and stopping is platform-specific.** Never
+  `os.kill(pid, 0)`: on POSIX an unreaped child is a zombie and signal 0 to a
+  zombie succeeds, so the check answers "alive" for a model that crashed; on
+  Windows `os.kill` maps onto `TerminateProcess`, so the *liveness probe kills the
+  process it asks about*. Stopping takes the whole process group — a worker
+  spawns children that would otherwise keep the weights — through `killpg` on
+  POSIX **only when the pid is its own group leader** (the guard `envinstall`
+  carries for the same reason: a stale pid in the server's group once shut down a
+  test session) and `CTRL_BREAK` + `taskkill /T /F` on Windows, which has no
+  `killpg` at all.
+- **AI-7a** **The AI Models page shows what is RUNNING, not only what is on
+  disk.** A cached card carries a live state row — downloading (with bytes, from
+  the job row, because that is the only place byte counts exist), loading (text
+  and a pulse, **no bar**: weights going into memory is one opaque step and an
+  invented percentage reads as frozen), loaded (with its resident memory), or
+  failed (with the reason). **Loaded is said loudly**: a filled badge beside the
+  name and a colour change over the whole card, in the same green as the
+  sidebar's live dot. A small bullet was the wrong instrument — a grid is read by
+  sweeping before it is read by reading, and the one state that costs gigabytes
+  continuously has to survive the sweep. **Load / Unload** is a word rather than a glyph and
+  is always visible: it is the one control on the page that spends MEMORY rather
+  than disk, and it is not offered at all for a capability no runner here serves
+  — a button that always fails is worse than no button. **Which capability
+  could load a repo is answered by the SERVER** (`capability` on each listed
+  repo, or null): the task vocabulary and the capability vocabulary both live
+  there, and a page deciding for itself needs a second copy of the mapping — the
+  first version of it guessed text generation for every cached repo and offered
+  to load a dataset as a chat model. **Every task label is CLASSIFIED, never
+  merely absent**: it maps to a capability or it is listed as served by nothing
+  yet. A label nobody has thought about and a label that has been ruled out both
+  answer null, so they are indistinguishable from the page — which is how
+  "image + text to text" lost its Load button while Discover went on
+  recommending `gemma-3-12b-it-4bit`, a model carrying exactly that label, as a
+  chat model. (A vision-language checkpoint IS the causal LM the text runner
+  loads when you only give it text; the image half goes unused until a runner
+  wants it.) A **dot on the sidebar
+  entry** whenever anything is resident, naming it on hover: gigabytes held by
+  something you have forgotten about is exactly what an indicator is for, and it
+  is the same treatment being signed in already gets (AC-1).
+- **AI-7c** **The tab is URL state, and the cache path and the Hub host are
+  links.** The two tabs are **Local** and **Discover** — "cached" names the
+  mechanism (a Hugging Face cache directory) where "local" names the thing, and
+  local-vs-discover is the pair that reads. Which one is showing lives in the
+  URL (`?tab=discover`, the default omitted), the shape Preferences already
+  uses: bookmarkable, and — the reason it is worth doing on a page with two
+  tabs — **on the back button**, which is where a user reaches for "put it
+  back". The page therefore **must not be remounted by its own toggle**: it is
+  the one shell route not keyed on the navigation epoch, because remounting to
+  change a page's own view state would re-walk every blob in the cache and
+  discard whatever was typed into Discover's search. An unrecognised `tab=`
+  value falls back to the default silently (PT-9's posture for `_mode`).
+  Each tab's caption names a DESTINATION and makes it reachable: the cache
+  directory opens in the explorer, the Hub host opens in a new tab. This is a
+  file explorer — leaving the path as text asks the user to copy it into the
+  very thing they are looking at — and the host is the one place the app
+  discloses who it queries, which is worth being able to go and check.
+- **AI-7b** **Discover suggests, and the suggestions know what you have.** A
+  short curated list per capability — moved out of the apps that used to carry
+  it privately — with size, the reason you would pick each one, and a **✓** on
+  the ones already downloaded. It shows only when the search box is empty,
+  because it answers "what should I even get", which is the question you have
+  *before* you know what to type. A capability this machine cannot serve is
+  still listed, with its reason. **Downloading is offered here** (D258,
+  superseding HS-1's read-only posture): the job-backed machinery HS-1 named as
+  the prerequisite now exists, so the ✕ in the manager really stops a pull.
+  The ✓ means a **materialised snapshot**, never merely a repo folder:
+  `huggingface_hub` creates `models--org--name/` on the first byte, so a set
+  built from folder names flipped a suggestion to "✓ downloaded" seconds
+  after Download was pressed, over a 4.6GB pull that had barely started. While
+  the pull runs the card shows that pull's progress instead — the same three
+  states the Hub result cards already draw. And the cache answer is the PAGE's
+  one walk, handed down, not a second walk Discover runs for itself: two walks
+  meant two definitions of "on this machine" and a window where the tabs
+  disagreed about the same repo.
+- **AI-9** **Image generation is job-backed, and the reply decides everything
+  but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
+  watch AND with the **path** and the **seed** already settled — so no second
+  endpoint exists for "what did I get", and the job record needs no result
+  field. The server picks both because it owns where user files go
+  (`<home>/ai/images/`, not beside a page that may sit in a read-only folder)
+  and because a seed invented inside the worker and never surfaced would make
+  every unseeded render unrepeatable. The reply describes the render that will
+  actually happen, not the one that was asked for: sides are clamped to
+  256–2048 and snapped to a multiple of 16, steps to 100, guidance to 20 — a
+  4096² render at 500 steps is an OOM, and a caller echoing its own request
+  would mislabel the picture it got. **Unlike text, an image WAITS for its
+  model.** `fused.ai` fails fast with a job id because a chat box must not hang
+  for a cold multi-GB load; an image caller is already watching a progress row
+  for work that takes minutes either way, so the wait belongs inside the job
+  rather than being a second failure to orchestrate around. The load keeps its
+  own row (`sys:ai-model:<repo>`, with the bytes); the image row says only that
+  it is waiting. One row per RENDER (`sys:ai-image:<uid>`), never per model — a
+  shared id would have a second render overwrite the first's progress. The PNG
+  is read back through `/api/fs/raw` like every other local file, and
+  `fused.ai.image()` hands the page a ready-made URL for it.
+- **AI-9a** **The worker contract is written once, in `runners/worker_base.py`.**
+  A runner is still a folder, but the half that is the SUPERVISOR'S contract —
+  the auth header's name, the status file's shape, the state vocabulary it
+  polls, the way download bytes are measured — lives in one stdlib-only module
+  both runners import, and a concrete runner supplies only `download`, `load`
+  and `generate`. Copying it per folder would have put that contract in two
+  places, which is the failure mode every bug in this feature has had. It is
+  stdlib-only for two reasons: anything imported there becomes a dependency of
+  every backend forever, and it makes the contract **testable on CI**, which
+  neither concrete worker is (one needs Metal, the other several GB of torch).
+  `load` is handed what `download` returned rather than resolving the files
+  again — doing it twice re-ran the Hub metadata call and re-reported a finished
+  download on every load of a cached model.
+- **AI-9b** **A quantized single-file component is a RECIPE, not a heuristic.**
+  The image runner keeps an explicit table of which quantized checkpoint
+  replaces which component of which model (FLUX.2 klein's ~8GB bf16 transformer
+  → a ~2.6GB Q4_K_M GGUF), because "which quantization of which part is safe" is
+  the same editorial judgement `catalog.py` makes about what to suggest, not
+  something to infer from a file listing. A model absent from the table is not
+  unsupported — it loads the ordinary way. The recipe also decides what NOT to
+  download: the base repo's own `transformer/` is exactly the weights the
+  quantized file replaces, and fetching it would cost several GB for components
+  that are then ignored — but it skips the WEIGHT files, never the subfolder,
+  because `from_single_file` reads that subfolder's config and a "download" that
+  leaves a cache which cannot load offline has not done what the button said.
+  **A scoped download measures itself against a scoped total**: one file out of
+  a repo that publishes a dozen quantizations counts that file, and a pull that
+  ignores a subfolder does not count it. Summing the whole repo either way is
+  how a 2.6GB fetch came to read as a fraction of 30GB and then jump to
+  complete; the reported figure is also capped at the total, since the disk walk
+  sees siblings the download was never fetching.
+- **AI-8** **The worker measures its own memory.** Only the process holding the
+  weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
+  honest number rather than two that need reconciling. What the supervisor knows
+  better is whether the process is ALIVE — a worker that stops answering becomes
+  `error`, never a `ready` row that lies. The figure is **resident bytes**, and it
+  is not the model's size: it overcounts shared pages and moves during a
+  generation.
+- **AI-8a** **Measured at every `/health`, and by the FRAMEWORK when it knows
+  better than RSS.** Both halves come from one card reading **379 MB in memory
+  for a 6.1 GB model**. The figure was taken once, immediately after `load()`
+  returned, and then served from the state dict forever — so it was a snapshot of
+  the worst possible instant, and it never moved again however much the model
+  went on to use. And the instant is worst *because of what the number is*: MLX
+  memory-maps the weight files and its arrays are lazy, so right after a load the
+  process has genuinely touched almost none of them and RSS is reporting the
+  interpreter. So residency is measured **when it is asked for**, and a runner
+  that has a better probe than RSS supplies `memory=` to `serve()` — MLX's
+  allocator, which knows what it reserved whether or not the pages have faulted
+  in. The **larger** of the two wins: neither is a superset (RSS carries the
+  interpreter and framework; the allocator carries buffers RSS has not seen yet),
+  so the honest claim is "at least this much". A runner's probe that raises is
+  worth no memory figure, never a broken `/health`.

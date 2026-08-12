@@ -27,6 +27,7 @@ function job(over: Partial<Job> = {}): Job {
     unit: "bytes",
     message: "",
     page: "/tmp/index.html",
+    owner: "page",
     cancellable: true,
     cancel_requested: false,
     started_at: 1000,
@@ -89,6 +90,17 @@ test("a requested cancel says so — the ✕ must not read as broken", () => {
 
 test("a stalled row explains itself instead of showing a stale detail", () => {
   expect(jobStatusLine(job({ stalled: true, detail: "shard 3/8" }))).toContain("No longer reporting");
+});
+
+test("a stalled row blames the right reporter", () => {
+  // A page-owned row means a tab was closed. A server-owned one — a model
+  // download (SPEC §40) — means the app's own worker went quiet, and telling
+  // someone their page was closed when no page was involved sends them to look
+  // in the wrong place.
+  expect(jobStatusLine(job({ stalled: true }))).toContain("the page that started it was closed");
+  const server = jobStatusLine(job({ stalled: true, owner: "server" }));
+  expect(server).toContain("the process running it stopped reporting");
+  expect(server).not.toContain("page");
 });
 
 test("stalled outranks a pending cancel, and says both", () => {

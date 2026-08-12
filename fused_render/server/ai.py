@@ -93,7 +93,17 @@ _AI_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # just validation: on the Windows .cmd-shim path argv is re-parsed by cmd.exe
 # (whose quoting cannot be escaped reliably), so every argv element must be a
 # static literal, a tempdir path, or a value this regex admitted.
-_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._-]+")
+# A cloud alias ("opus") or a Hugging Face repo id ("mlx-community/Qwen3-8B-4bit").
+# The slash is the SEAM (SPEC §40): a model id with an org in it names a repo on
+# disk, which means local inference, and one without it is a Claude alias. That
+# is not a heuristic — a Hub id always has the form `org/name`, and no Claude
+# alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
+# reach a local model with no new parameter and no change to any existing caller.
+_AI_MODEL_RE = re.compile(r"[A-Za-z0-9._/-]+")
+
+
+def _is_local_model(model: str) -> bool:
+    return "/" in model
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -644,6 +654,168 @@ def _ai_result_payload(data: dict, requested_model: str):
             "usage": _ai_usage(data.get("usage"))}, None
 
 
+#: Who may speak in a supplied history. Deliberately not "system" — the system
+#: prompt has its own parameter, and letting it arrive twice by two routes is
+#: how a caller ends up with two contradictory ones and no way to tell.
+_HISTORY_ROLES = ("user", "assistant")
+
+
+#: Sampling parameter -> (low, high). The wire names, because the worker reads
+#: these keys and one spelling should survive the whole trip.
+#:
+#: `max_tokens`'s ceiling is the load-bearing one and it is not politeness: ONE
+#: model is resident per capability and it serves every page on this machine, so
+#: an unbounded token budget is not one caller's slow request — it is every
+#: other caller blocked behind it. 32k is past any chat turn and short of "this
+#: laptop is busy until you notice".
+_SAMPLING = {
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "max_tokens": (1, 32768),
+}
+
+
+def _sampling_problem(body: dict) -> str | None:
+    """What is wrong with the sampling parameters, or None.
+
+    Bools are refused explicitly: `True` is an `int` in Python and would sail
+    through a numeric range check as `max_tokens: 1`, which is a one-token reply
+    for a caller who typed something meaningless and deserves to be told.
+    """
+    for name, (low, high) in _SAMPLING.items():
+        value = body.get(name)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"{name!r} must be a number"
+        if not low <= value <= high:
+            return f"{name!r} must be between {low} and {high}"
+    return None
+
+
+def _history_problem(history) -> str | None:
+    """Why this history is unusable, or None. The message is the API's manners:
+    a chat client passing the wrong shape should be told which turn and what
+    was wrong with it, not handed a 500 from inside a worker."""
+    if not isinstance(history, list):
+        return "'history' must be a list of {role, content} turns"
+    for index, turn in enumerate(history):
+        if not isinstance(turn, dict):
+            return f"'history[{index}]' must be an object with 'role' and 'content'"
+        if turn.get("role") not in _HISTORY_ROLES:
+            return (f"'history[{index}].role' must be one of: "
+                    + ", ".join(_HISTORY_ROLES))
+        if not isinstance(turn.get("content"), str):
+            return f"'history[{index}].content' must be a string"
+    return None
+
+
+def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
+                 body: dict):
+    """One completion from a model resident on THIS machine (SPEC §40).
+
+    Same wire shape as the Claude path, deliberately: `{ok, result:{text, model,
+    usage}}`, or NDJSON `{"type":"chunk","text"}` lines closed by `{"type":"done"}`
+    when streaming. A page swapping `model: "opus"` for
+    `model: "mlx-community/Qwen3-8B-4bit"` should have to change nothing else,
+    and `fused.ai`'s own streaming reader is already written against that shape.
+
+    A model that is not resident answers **409 with the job id of the load this
+    call just started** — see `supervisor.generate_text`. That is a real state,
+    not an error to swallow: the page can show the download it just caused.
+    """
+    from fused_render.ai import supervisor
+
+    # Prior turns first, then the one being asked. Validated by the caller, so
+    # only the two fields the worker's chat template reads are passed on —
+    # anything else a client kept on its own turns (timestamps, ids) is its
+    # business and not the model's.
+    history = body.get("history") or []
+    messages = [{"role": turn["role"], "content": turn["content"]} for turn in history]
+    messages.append({"role": "user", "content": prompt})
+    if system_prompt and system_prompt != _AI_DEFAULT_SYSTEM_PROMPT:
+        messages.insert(0, {"role": "system", "content": system_prompt})
+    request = {
+        # `prompt` is the worker's raw path: it hands the text to the model with
+        # no chat template. Sending both lets the worker pick, and it prefers
+        # `prompt` — so this is only set when the caller asked for raw.
+        **({"prompt": prompt} if body.get("raw") else {}),
+        "messages": messages,
+        "max_tokens": body.get("max_tokens"),
+        "temperature": body.get("temperature"),
+        "top_p": body.get("top_p"),
+    }
+    request = {k: v for k, v in request.items() if v is not None}
+
+    try:
+        events = supervisor.generate_text(model, request)
+        first = next(events, None)
+    except supervisor.ModelNotReady as e:
+        return JSONResponse(
+            {"ok": False, "error": {"type": "model_loading", "message": str(e),
+                                    "jobId": e.job_id}},
+            status_code=409)
+    except supervisor.SupervisorError as e:
+        return _ai_error("ai_unavailable", str(e), status=502)
+
+    def walk():
+        """The events, with the one already pulled off put back in front."""
+        if first is not None:
+            yield first
+        yield from events
+
+    if not stream:
+        text, usage = [], {}
+        for event in walk():
+            if event.get("type") == "chunk":
+                text.append(event.get("text") or "")
+            elif event.get("type") == "done":
+                if not event.get("ok", True):
+                    return _ai_error("ai_error", str(event.get("error") or "generation failed"),
+                                     status=502)
+                usage = {"output_tokens": event.get("tokens"),
+                         "seconds": event.get("seconds")}
+        return JSONResponse(
+            {"ok": True, "result": {"text": "".join(text), "model": model, "usage": usage}})
+
+    def lines():
+        # Errors after the first byte are demoted to an ok:false done frame on a
+        # 200, exactly as the Claude path does — the status is already sent.
+        #
+        # The done frame carries **result**, the same `{text, model, usage}` the
+        # Claude path sends and the same thing the non-streaming reply above
+        # returns. It did not, and the shapes only LOOKED alike because the
+        # chunks matched: `fused.ai`'s reader resolves with `finished.result`,
+        # so a page streaming from a local model got `undefined` back and threw
+        # on the first property it read. The full text is accumulated here
+        # rather than left to the caller — the caller may have been streaming
+        # into a DOM node and have no string to hand back.
+        text = []
+        try:
+            for event in walk():
+                if event.get("type") == "chunk":
+                    chunk = event.get("text") or ""
+                    text.append(chunk)
+                    yield json.dumps({"type": "chunk", "text": chunk}) + "\n"
+                elif event.get("type") == "done":
+                    ok = bool(event.get("ok", True))
+                    yield json.dumps({
+                        "type": "done", "ok": ok,
+                        **({"result": {
+                            "text": "".join(text), "model": model,
+                            "usage": {"output_tokens": event.get("tokens"),
+                                      "seconds": event.get("seconds")}}}
+                           if ok else {"error": {
+                            "type": "ai_error",
+                            "message": str(event.get("error") or "generation failed")}}),
+                    }) + "\n"
+        except supervisor.SupervisorError as e:
+            yield json.dumps({"type": "done", "ok": False,
+                              "error": {"type": "ai_unavailable", "message": str(e)}}) + "\n"
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
 async def _ai_relay(body: dict):
     """Validate an /api/ai body and run one claude CLI completion.
 
@@ -688,6 +860,98 @@ async def _ai_relay(body: dict):
     if stream is not None and not isinstance(stream, bool):
         return _ai_error(
             "bad_request", "'stream' must be a boolean", status=400)
+
+    # Prior turns, for a caller holding a conversation rather than asking one
+    # question. `prompt` stays what it always was — the thing being asked NOW —
+    # and this is what came before it, so no call changes meaning by adding it.
+    history = body.get("history")
+    if history is not None:
+        problem = _history_problem(history)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+
+    # Raw continuation: the prompt goes to the model VERBATIM, with no chat
+    # template wrapped around it. A different thing from a conversation, not a
+    # setting on one — which is why it refuses history rather than quietly
+    # winning over it.
+    raw = body.get("raw")
+    if raw is not None and not isinstance(raw, bool):
+        return _ai_error("bad_request", "'raw' must be a boolean", status=400)
+    if raw and history:
+        return _ai_error(
+            "bad_request",
+            "'raw' continues the prompt verbatim with no chat template, so it "
+            "has nowhere to put 'history' — send one or the other",
+            status=400)
+
+    # The fork. Everything above is shared validation — a prompt is a prompt and
+    # a stream flag is a stream flag wherever the tokens come from — and
+    # everything below this line is the Claude CLI's own path.
+    if _is_local_model(model):
+        # Sampling is checked INSIDE this branch, not above it, and the reason
+        # is which sentence a bad value earns. These parameters do not exist on
+        # the Claude path at all, so range-checking them first meant a
+        # `temperature: 5.0` sent to Claude was answered "must be between 0.0
+        # and 2.0" — an error that invites the caller to correct a number and
+        # try again, on a path where no number would ever work. The refusal
+        # below is the true one, and it must not be pre-empted by a message that
+        # implies support.
+        #
+        # Bounded at all for the reason the image endpoint clamps its own
+        # numbers: `max_tokens` is how long this machine is busy, and one
+        # resident model serves every page, so a typo'd 10_000_000 is not one
+        # caller's slow request — it is the model unavailable to everything else
+        # until it finishes.
+        sampling = _sampling_problem(body)
+        if sampling:
+            return _ai_error("bad_request", sampling, status=400)
+        # In a THREAD. `_local_relay` is blocking I/O to a worker process: it
+        # waits for the first token before it can answer, and the non-streaming
+        # path waits for the whole completion. On a local model that is seconds
+        # to minutes, and on the event loop it is the whole server frozen for
+        # that long. (The StreamingResponse it returns is fine — Starlette
+        # iterates a sync generator in a threadpool of its own.)
+        return await asyncio.to_thread(
+            _local_relay, model, prompt, system_prompt, bool(stream), body)
+
+    # Refused rather than dropped. The Claude path is one `claude -p` invocation
+    # with no conversation to resume, so honouring history would mean inventing
+    # one — and silently ignoring it would answer a follow-up as if it were the
+    # first question, which reads as the model having forgotten rather than as
+    # the API having declined.
+    if history:
+        return _ai_error(
+            "bad_request",
+            "'history' is only supported by a local model (a Hugging Face repo "
+            "id, e.g. 'mlx-community/Qwen3-8B-4bit'); this call would go to "
+            f"{model!r}, which answers one prompt at a time",
+            status=400)
+
+    # Same rule, second flag. `raw` means "no chat template" — a thing only
+    # something that OWNS the template can honour, and the Claude CLI does not
+    # expose one. Dropping it would answer a raw continuation as a chat turn:
+    # plausible text, silently not what was asked for.
+    if raw:
+        return _ai_error(
+            "bad_request",
+            "'raw' sends the prompt to the model with no chat template, which "
+            "only a local model can do (a Hugging Face repo id, e.g. "
+            f"'mlx-community/Qwen3-8B-4bit'); this call would go to {model!r}, "
+            "which is always a chat",
+            status=400)
+
+    # Third flag, same rule. The Claude CLI exposes no sampling knobs at all —
+    # `effort` is what it has — so a temperature accepted here would be a
+    # setting the caller could watch have no effect, which is the failure mode
+    # `history` and `raw` are refused for.
+    named = [name for name in _SAMPLING if body.get(name) is not None]
+    if named:
+        return _ai_error(
+            "bad_request",
+            f"{', '.join(repr(n) for n in named)} only applies to a local model "
+            "(a Hugging Face repo id, e.g. 'mlx-community/Qwen3-8B-4bit'); "
+            f"this call would go to {model!r}, which takes 'effort' instead",
+            status=400)
 
     if not _claude_bin():
         return _ai_error(

@@ -44,6 +44,16 @@ export interface ChordContext {
   // "clear to start of line" on macOS), so they resolve to no action at all
   // rather than being matched and then declined.
   inSearch: boolean;
+  // Whether the user has TEXT selected anywhere on the page. The same argument
+  // as `inSearch`, for the case that has no input box: this handler is bound on
+  // `document`, and clicking a plain <span> leaves activeElement as <body>, so
+  // the "is the listing active" guard passes while the user is looking at text
+  // they just highlighted somewhere else entirely. Cmd+C then matched
+  // copy-the-file-path and called preventDefault, and the browser's own copy
+  // never ran — which is why an error message in the download manager could be
+  // selected and never copied. Rows are `user-select: none`, so a real text
+  // selection is never the listing's own.
+  hasSelection: boolean;
 }
 
 // Platform is NOT a parameter. `isMod`/`isMac` are the app's one detection and
@@ -66,6 +76,12 @@ export function matchChord(e: ChordEvent, ctx: ChordContext): ChordAction | null
     // With focus in the search box these keep their native text-clipboard
     // meaning; only the non-text chords stay live there.
     if (ctx.inSearch) return null;
+    // Selected text wins Cmd+C, wherever it is. Copying what you highlighted is
+    // unambiguous and it is the browser's own meaning, so the listing does not
+    // get to reinterpret it as "copy the selected file's path". Only COPY:
+    // a non-editable selection cannot be cut, so Cmd+X keeps meaning the
+    // listing's cut, and paste never had a text reading here at all.
+    if (key === "c" && ctx.hasSelection) return null;
     return key === "c" ? "copy" : key === "x" ? "cut" : "paste";
   }
   if (chord && key === "d") return "duplicate";

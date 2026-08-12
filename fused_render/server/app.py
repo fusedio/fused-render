@@ -51,6 +51,9 @@ from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
+from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.ai_runtime import router as ai_runtime_router
+from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
@@ -229,6 +232,15 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
 
+    # Local model workers die with the app. They hold GIGABYTES — a stranded one
+    # is not a leaked file handle, it is a machine that has quietly lost 8GB of
+    # memory to a process nothing on screen mentions any more.
+    @app.on_event("shutdown")
+    async def _shutdown_ai_workers():
+        from fused_render.ai import supervisor
+
+        supervisor.unload_all()
+
     # Reclaim project venvs whose source folder is gone (SPEC PY-16). Keying a
     # venv on the folder's path means moving or renaming a project orphans its
     # environment BY DESIGN — a moved project starts clean — so without this the
@@ -329,6 +341,22 @@ def create_app(start_dir: str) -> FastAPI:
     # (routers/git_repos.py) — candidates come from the file index, never a
     # fresh walk, so it cannot touch a mount. Read-only, no auth guard.
     app.include_router(git_repos_router)
+    # What the Hugging Face cache holds on this machine, for the sidebar's
+    # "AI Models" page (routers/ai_models.py). The reads are unguarded;
+    # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
+    # guard. It never downloads anything.
+    app.include_router(ai_models_router)
+    # The other half of that page: what the Hugging Face Hub HAS, joined to what
+    # this disk already holds (routers/hub_models.py). Read-only — it searches
+    # and never downloads — so no guard, and it is the only outbound request
+    # this feature makes. A separate module because "what is on my disk" and
+    # "what is on the network" fail differently and share nothing but the join.
+    app.include_router(hub_models_router)
+    # Local inference (routers/ai_runtime.py, SPEC §40): which models this
+    # machine is holding in memory, what they cost, and the load/unload/download
+    # that change that. Reads unguarded; the three POSTs start processes and
+    # write gigabytes, so they carry the D3 X-Fused guard.
+    app.include_router(ai_runtime_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability

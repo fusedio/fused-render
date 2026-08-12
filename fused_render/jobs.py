@@ -81,6 +81,21 @@ MAX_JOBS = 64
 # token so it stays safe as a dict key, a URL path segment, and a React key.
 _ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
+# Ids under this prefix belong to the SERVER (SPEC §40): a model download, a
+# generation — work this process runs and can therefore really stop. A page may
+# READ and CANCEL them like any other row, but it may not WRITE one: the ids are
+# deterministic (`sys:ai-model:<repo>`), so without this a page could post
+# `state: "done"` for a download that is still running and the manager would
+# believe it.
+SERVER_ID_PREFIX = "sys:"
+
+# Who is running the work, which decides what the manager's ✕ can do:
+#   "page"   — only the page knows what stopping means, so cancel is a REQUEST
+#              it reads back off its next tick and honours (or does not).
+#   "server" — this process owns the subprocess, so cancel is an ACTION.
+OWNER_PAGE = "page"
+OWNER_SERVER = "server"
+
 # Field caps. Titles and details are single-line labels in a 360px column;
 # a message carries a traceback, so it is allowed to be long and multi-line.
 TITLE_MAX = 120
@@ -134,6 +149,10 @@ class Job:
     # — the manager shows which page a row belongs to, and clicking it goes
     # back there.
     page: str = ""
+    # OWNER_PAGE or OWNER_SERVER — see SERVER_ID_PREFIX. Not settable from a
+    # report body: it follows from the id, so a page cannot claim to be the
+    # server by saying so.
+    owner: str = OWNER_PAGE
     cancellable: bool = False
     cancel_requested: bool = False
     started_at: float = 0.0
@@ -205,7 +224,8 @@ def clean_id(value: object) -> str:
 # -------------------------------------------------------------------- mutation
 
 
-def upsert(body: dict, *, page: str = "", now: float | None = None) -> dict:
+def upsert(body: dict, *, page: str = "", now: float | None = None,
+           server: bool = False) -> dict:
     """Create or update one record from a reporter's POST body.
 
     Upsert rather than create+update: a reporter's every progress tick is the
@@ -217,11 +237,22 @@ def upsert(body: dict, *, page: str = "", now: float | None = None) -> dict:
     Only the keys PRESENT in the body are applied — a tick that carries just
     `done` must not blank the title the first tick set. That is also why this
     reads the body directly instead of taking a fully-populated Job.
+
+    `server=True` is for THIS process reporting its own work (a model download,
+    a generation), and it is the only way to write a `sys:` id. The HTTP
+    endpoint never passes it, so a page cannot post progress for a job the
+    server owns — those ids are deterministic, and a forged "done" on a download
+    still running is exactly the lie the manager would have no way to catch.
     """
     if not isinstance(body, dict):
         raise JobError("request body must be a JSON object")
     now = time.time() if now is None else now
     job_id = clean_id(body.get("id"))
+    if job_id.startswith(SERVER_ID_PREFIX) and not server:
+        raise JobError(
+            f"'id' may not start with {SERVER_ID_PREFIX!r} — that prefix is "
+            "reserved for work the app itself is running"
+        )
 
     with _lock:
         if job_id in _dismissed:
@@ -244,7 +275,16 @@ def upsert(body: dict, *, page: str = "", now: float | None = None) -> dict:
             title = _text(body.get("title"), TITLE_MAX)
             if not title:
                 raise JobError("the first report for a job must include a 'title'")
-            job = Job(id=job_id, title=title, started_at=now, updated_at=now)
+            # The owner follows from the id, and is fixed at creation: it says
+            # what the manager's ✕ is able to do, which is a fact about who runs
+            # the work, not a claim a later tick gets to revise.
+            job = Job(
+                id=job_id,
+                title=title,
+                started_at=now,
+                updated_at=now,
+                owner=OWNER_SERVER if job_id.startswith(SERVER_ID_PREFIX) else OWNER_PAGE,
+            )
             _jobs[job_id] = job
         elif "title" in body:
             title = _text(body.get("title"), TITLE_MAX)

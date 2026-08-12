@@ -1871,6 +1871,302 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
+// -- AI Models (GET /api/ai-models) -------------------------------------
+// What the Hugging Face cache holds on this machine, for the sidebar's "Local
+// models" page (shell/AiModels.tsx). One entry per cached repo, biggest
+// first; `size` is bytes actually on disk (the server measures blobs and skips
+// the snapshot symlinks pointing at them), so the sizes sum to `totalSize`.
+// `path` is the repo's cache folder, ready for navigate(path, {isDir:true}).
+export interface AiModelRepo {
+  id: string;
+  /** Cache folder name ("models--org--name") — what a delete request names. */
+  dir: string;
+  kind: "model" | "dataset" | "space";
+  path: string;
+  size: number;
+  files: number;
+  /** Epoch seconds of the newest file in the repo folder, or null if unknown. */
+  mtime: number | null;
+  /** Newest atime — "last read", which is what pruning by age asks about. */
+  lastUsed: number | null;
+  /**
+   * When the repo first landed on this machine (its oldest file). NOT the
+   * model's release date: that is Hub metadata, and this page never goes to
+   * the network.
+   */
+  added: number | null;
+  /** What the model is for ("text generation", "image generation"), or null. */
+  task: string | null;
+  /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
+   *  architecture is our reading of one, and the UI distinguishes them. */
+  taskSource: string | null;
+  /** One sentence on what the task MEANS (what goes in, what comes out), for
+   *  the hover — the labels are the Hub's vocabulary, which is jargon until
+   *  someone explains it. Null for a tag we have no sentence for. */
+  taskHelp: string | null;
+  library: string | null;
+  /** Parameter count from the safetensors headers; null when the weights are in
+   *  a format with no cheap header to read (.bin, .gguf). */
+  params: number | null;
+  /** True when `params` was recovered from PACKED weights — a 4-bit checkpoint
+   *  stores eight weights per word, so the count rests on the declared bit
+   *  width rather than on unpacked shapes, and the card marks it "≈". */
+  paramsEstimated: boolean;
+  /** What the checkpoint declares about its weight width ("4-bit"), or null. */
+  quantization: string | null;
+  /** Which capability could LOAD this locally, or null when nothing here
+   *  serves it (a dataset, an embedding model, a VLM). Decided server-side so
+   *  the page holds no second copy of the task→capability mapping. */
+  capability: string | null;
+  revisions: number;
+  refs: string[];
+}
+
+export interface AiModelsResult {
+  cacheDir: string;
+  hfHome: string;
+  /** False when nothing has ever been downloaded — the cache dir isn't there. */
+  exists: boolean;
+  totalSize: number;
+  repos: AiModelRepo[];
+}
+
+export function getAiModels(): Promise<AiModelsResult> {
+  return getJson<AiModelsResult>("/api/ai-models");
+}
+
+// Cheap probe (one isdir on the server, no walk) behind the sidebar entry's
+// gate — see shell/AiModels.tsx's useAiModelsAvailable.
+export function getAiModelsStatus(): Promise<{ available: boolean; cacheDir: string }> {
+  return getJson<{ available: boolean; cacheDir: string }>("/api/ai-models/status");
+}
+
+// One repo's revisions, fetched when a row is expanded (the listing doesn't
+// resolve every snapshot symlink for every repo). `size` is what deleting THIS
+// revision would free — blobs no sibling revision references — and `shared` is
+// what it holds in common with them and would leave behind.
+export interface AiModelRevision {
+  commit: string;
+  refs: string[];
+  size: number;
+  shared: number;
+  files: number;
+  mtime: number | null;
+}
+
+export function getAiModelRevisions(
+  dir: string,
+): Promise<{ repo: string; revisions: AiModelRevision[] }> {
+  return getJson<{ repo: string; revisions: AiModelRevision[] }>(
+    "/api/ai-models/revisions?repo=" + encodeURIComponent(dir),
+  );
+}
+
+// Delete cached repos and/or single revisions. A target with no `revision` is
+// the whole repo folder. Targets are named by cache FOLDER NAME — the server
+// builds every path itself from the cache dir it resolved (D250).
+//
+// The reply is the whole listing, re-read from disk after the deletions, plus
+// what was freed and any per-target failures — so the page swaps in fresh state
+// instead of patching rows it hopes are still true.
+export interface AiModelDeleteTarget {
+  dir: string;
+  revision?: string | null;
+}
+
+export interface AiModelDeleteFailure {
+  dir: string | null;
+  revision: string | null;
+  error: string;
+}
+
+export type AiModelsDeleteResult = AiModelsResult & {
+  freed: number;
+  failures: AiModelDeleteFailure[];
+};
+
+export function deleteAiModels(
+  targets: AiModelDeleteTarget[],
+): Promise<AiModelsDeleteResult> {
+  return postJson<AiModelsDeleteResult>("/api/ai-models/delete", { targets });
+}
+
+// -- Hub search (GET /api/ai-models/hub/*) ------------------------------------
+// The other half of the AI models page: what the Hugging Face Hub HAS, with
+// every result already told apart from what this disk holds (`local`). The
+// server makes the outbound request — this module never talks to
+// huggingface.co — so one place holds the token, the timeout and the cache.
+//
+// Read-only by design: there is no download call here, and adding one would be
+// a different decision with a different cost.
+export interface HubModelLocal {
+  /** "downloaded" has a materialised snapshot; "partial" is an interrupted pull. */
+  state: "downloaded" | "partial" | "none";
+  size?: number;
+  files?: number;
+  lastUsed?: number | null;
+  /** Ready for navigate(path, {isDir:true}) — absent unless it is here. */
+  path?: string;
+  dir?: string;
+}
+
+export interface HubModel {
+  id: string;
+  /** Friendly task label — the SAME vocabulary the cached cards use. */
+  task: string | null;
+  taskHelp: string | null;
+  pipelineTag: string | null;
+  library: string | null;
+  downloads: number | null;
+  likes: number | null;
+  updated: string | null;
+  /** The licence must be accepted on the Hub before a download would work. */
+  gated: boolean;
+  private: boolean;
+  tags: string[];
+  params: number | null;
+  /** Bytes recovered from the dtype map — an estimate, and shown with "≈". */
+  estimatedSize: number | null;
+  local: HubModelLocal;
+  url: string;
+}
+
+export interface HubSearchResult {
+  models: HubModel[];
+  query: { q: string; task: string; sort: string; limit: number };
+  /** Present INSTEAD of results when the Hub could not be reached or refused. */
+  error?: string;
+  endpoint?: string;
+  authenticated?: boolean;
+}
+
+export type HubSort = "downloads" | "likes" | "updated" | "created";
+
+export function searchHubModels(opts: {
+  q?: string;
+  task?: string;
+  sort?: HubSort;
+  limit?: number;
+}): Promise<HubSearchResult> {
+  // A POST, unlike every other read in this file. Search is the one that leaves
+  // the machine — the server calls the Hub with the user's token — so it takes
+  // the shape its effect deserves and carries the D3 guard with it. See the
+  // endpoint's docstring.
+  return postJson<HubSearchResult>("/api/ai-models/hub/search", {
+    q: opts.q,
+    task: opts.task,
+    sort: opts.sort,
+    limit: opts.limit,
+  });
+}
+
+export interface HubTask {
+  /** The Hub's own pipeline tag — what the filter actually sends. */
+  tag: string;
+  label: string;
+  help: string | null;
+}
+
+export function getHubTasks(): Promise<{ tasks: HubTask[] }> {
+  return getJson<{ tasks: HubTask[] }>("/api/ai-models/hub/tasks");
+}
+
+// -- Local inference (GET/POST /api/ai/runtime, /api/ai/catalog) ---------------
+// What this machine is HOLDING IN MEMORY, as opposed to what it has on disk
+// (the AI models endpoints above). A model here is a resident process with a
+// cost, so the page can show that cost and give the memory back.
+//
+// load/download answer with a jobId rather than a finished model: a cold load is
+// a multi-GB download, and it is watched through the download manager.
+export interface AiRunner {
+  code: string;
+  capability: string;
+  label: string;
+  available: boolean;
+  /** Why not, in words — "needs Apple Silicon…". Null when it is available. */
+  reason: string | null;
+}
+
+export interface AiLoadedModel {
+  model: string;
+  capability: string;
+  runner: string;
+  /** venv | starting | downloading | loading | ready | error */
+  state: string;
+  detail: string | null;
+  error: string | null;
+  /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
+  residentBytes: number | null;
+  loadedAt: number | null;
+  startedAt: number;
+  /** The download-manager row for this model's bring-up. */
+  jobId: string;
+}
+
+/** A weights-only fetch in flight: on disk, not in memory. The BYTES live in the
+ *  job row (`jobId`); this only says the pull is still running — which is what
+ *  keeps a Discover card from claiming "✓ downloaded" the moment it was asked. */
+export interface AiDownload {
+  model: string;
+  capability: string;
+  jobId: string;
+  startedAt: number;
+}
+
+export interface AiRuntime {
+  runners: AiRunner[];
+  loaded: AiLoadedModel[];
+  downloading: AiDownload[];
+  totalResidentBytes: number | null;
+}
+
+export function getAiRuntime(): Promise<AiRuntime> {
+  return getJson<AiRuntime>("/api/ai/runtime");
+}
+
+/** One curated suggestion. Deliberately says nothing about whether you HAVE it:
+ *  the server's catalog is the curation, and what is on this disk is the cache
+ *  listing's answer — joined by the page so both tabs mean one thing by it. */
+export interface AiCatalogModel {
+  id: string;
+  label: string;
+  /** The download in GB, or null when nobody has measured it — shown as "—"
+   *  rather than as a number someone would plan a multi-GB fetch around. */
+  size_gb: number | null;
+  note: string;
+}
+
+export interface AiCatalogCapability {
+  capability: string;
+  runner: string | null;
+  available: boolean;
+  reason: string | null;
+  default: string | null;
+  models: AiCatalogModel[];
+}
+
+export function getAiCatalog(): Promise<{ capabilities: AiCatalogCapability[] }> {
+  return getJson<{ capabilities: AiCatalogCapability[] }>("/api/ai/catalog");
+}
+
+export interface AiLoadStarted {
+  jobId: string;
+  model: string;
+  state: string;
+}
+
+export function loadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
+  return postJson<AiLoadStarted>("/api/ai/runtime/load", { model, capability });
+}
+
+export function downloadAiModel(model: string, capability?: string): Promise<AiLoadStarted> {
+  return postJson<AiLoadStarted>("/api/ai/runtime/download", { model, capability });
+}
+
+export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
+  return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
 // -- Git repos (GET /api/git-repos) -------------------------------------------
 // Git repositories on this machine, for the Explorer homepage's "Repos" tab.
 // One entry per repo root, in path order; `path` is ready to pass straight to

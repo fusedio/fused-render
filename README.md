@@ -131,22 +131,41 @@ Any `.html` file can call it and bind the result to the URL:
   URL (`get`, `getAll`, `set`, `onChange`). Refreshing or bookmarking a view
   reproduces its exact state.
 - `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
-  Code) CLI on your machine; resolves with `{text, model, usage}`.
+  Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
+  Hugging Face repo id as `model` (`"mlx-community/Qwen3-8B-4bit"`) and the same
+  call runs a model **locally** instead — the slash is what tells them apart.
+  Local calls also take `history` (prior `{role, content}` turns, for a
+  conversation rather than one question) and can be stopped mid-answer with
+  `fused.ai.cancel()`.
   See `examples_seed/ai_demo/` for a working AI-analyst view.
-- `fused.trackJob(spec)` — report work that runs longer than the page you started it
-  from (a model download, a long generation) to the **download manager** in the
-  bottom-right corner, so it stays visible after you browse away:
+- `fused.ai.image({prompt, ...})` — text to image, locally; resolves with the
+  PNG's path, a ready-made URL to point an `<img>` at, and the seed used (one is
+  chosen for you if you don't pass one, so a render is always repeatable). It
+  runs for minutes, so `onProgress` fires per denoising step and the download
+  manager's ✕ really stops it.
+- `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
+  holding in memory and what it costs. See the **AI Models** page
+  ([docs](docs/usage.md#ai-models)).
+- `fused.trackJob(spec)` — report work **your page is doing** that runs longer
+  than the page itself (exporting a few thousand tiles, converting a folder) to
+  the **download manager** in the bottom-right corner, so it stays visible after
+  you browse away:
 
   ```js
-  const job = fused.trackJob({ title: "FLUX.2-klein-4B", kind: "download",
-                          unit: "bytes", cancellable: true });
-  job.update({ done: 1.2e9, total: 8.1e9, detail: "transformer.gguf" });
+  const job = fused.trackJob({ title: "Export tiles", kind: "export",
+                          unit: "items", cancellable: true });
+  job.update({ done: 1200, total: 4096, detail: "zoom 12" });
   if (job.cancelRequested) stopTheWork();   // the manager's ✕ asked
-  job.finish("Downloaded");                 // or .fail(err) / .cancelled()
+  job.finish("Exported");                   // or .fail(err) / .cancelled()
   ```
 
   Reporting never throws and never blocks: a failed report cannot break the work
-  it describes.
+  it describes. Your page is the only thing that can stop its own work, so the
+  ✕ here is a *request* you honour by checking `cancelRequested`.
+- `fused.watchJob(id)` — the other half: watch work the **server** is doing
+  (`fused.ai.image()` and `fused.ai.models.load()` both hand you an id) with
+  `.onUpdate(cb)`, `.get()` and a `.cancel()` that really stops it — the server
+  owns those processes, so its ✕ is an act rather than a request.
 
 Built-in preview templates (parquet tables, images, text/code files) are
 themselves just HTML files built on these same two primitives — open
@@ -164,6 +183,9 @@ Runtime features and settings live in [docs/usage.md](docs/usage.md):
 - [Remote storage (mounts)](docs/usage.md#remote-storage-mounts) — mount
   S3-compatible stores, Google Drive, and anything else rclone speaks, as local
   folders.
+- [AI Models](docs/usage.md#ai-models) — what the Hugging Face cache
+  holds on this machine, what it costs on disk, how to clear it, and a
+  read-only search of the Hub that says which results you already have.
 - [Preferences](docs/usage.md#preferences) — the in-app settings panel
   (execution engine, deploy toggle, logs, template registry).
 - [Export for hosted serving](docs/usage.md#export-for-hosted-serving) — the
