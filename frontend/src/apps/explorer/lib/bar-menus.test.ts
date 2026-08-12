@@ -65,21 +65,23 @@ test("fileBarMenu lists rename, Claude, the path pair and the splits", () => {
     onReveal: () => called.push("reveal"),
     onSplit: (dir) => called.push("split:" + dir),
   });
+  // The shared trio sits in the FOLDER menu's order (backgroundMenu):
+  // Reveal → Copy Path → Claude Code. Two bars, one surface.
   expect(labels(items)).toEqual([
     "Rename…",
-    "Open in Claude Code",
     "—",
-    "Copy Path",
     "Reveal in Finder",
+    "Copy Path",
+    "Open in Claude Code",
     "—",
     "Split right",
     "Split down",
   ]);
-  for (const label of ["Rename…", "Open in Claude Code", "Copy Path", "Reveal in Finder"]) {
+  for (const label of ["Rename…", "Reveal in Finder", "Copy Path", "Open in Claude Code"]) {
     item(items, label).onClick?.();
   }
   item(items, "Split down").onClick?.();
-  expect(called).toEqual(["rename", "claude", "copy", "reveal", "split:col"]);
+  expect(called).toEqual(["rename", "reveal", "copy", "claude", "split:col"]);
 });
 
 test("fileBarMenu drops the splits AND their separator when it can't split", () => {
@@ -91,10 +93,10 @@ test("fileBarMenu drops the splits AND their separator when it can't split", () 
   });
   expect(labels(items)).toEqual([
     "Rename…",
-    "Open in Claude Code",
     "—",
-    "Copy Path",
     "Reveal in Finder",
+    "Copy Path",
+    "Open in Claude Code",
   ]);
   // No trailing divider: a menu that ends in a separator reads as a menu with
   // something missing.

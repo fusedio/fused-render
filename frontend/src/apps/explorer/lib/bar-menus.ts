@@ -69,12 +69,15 @@ export interface FileBarActions {
 // no Open With (the mode control is two inches away in this same bar), no
 // Bin/Duplicate/Cut/Copy — a top bar is not where a file gets destroyed.
 export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
+  // Reveal → Copy Path → Open in Claude Code, in exactly the folder menu's
+  // order (useFileOps.backgroundMenu) — the two bars are one surface to the
+  // user, and the shared trio must not swap places between them.
   return [
     { label: "Rename…", icon: MenuIcons.rename, onClick: actions.onRename },
-    { label: "Open in Claude Code", icon: MenuIcons.openWith, onClick: actions.onOpenInClaude },
     "separator",
-    { label: "Copy Path", icon: MenuIcons.copyPath, onClick: actions.onCopyPath },
     { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: actions.onReveal },
+    { label: "Copy Path", icon: MenuIcons.copyPath, onClick: actions.onCopyPath },
+    { label: "Open in Claude Code", icon: MenuIcons.openWith, onClick: actions.onOpenInClaude },
     ...(actions.onSplit ? (["separator", ...splitItems(actions.onSplit)] as MenuEntry[]) : []),
   ];
 }

@@ -16,11 +16,11 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
 import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
+import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady, useCommunityMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
@@ -48,6 +48,7 @@ import Apps from "@apps/builder/Apps";
 import FilesHome from "@apps/explorer/FilesHome";
 import { learnEntryPath } from "@apps/learn";
 import { sessionsEntryPath } from "@apps/sessions";
+import { communityEntryPath } from "@apps/community";
 import { ClaudeConfig, useClaudeConfigAvailable } from "@apps/claude_config";
 import ClaudeArtifacts from "@shell/ClaudeArtifacts";
 import BookmarkOpen from "@apps/explorer/BookmarkOpen";
@@ -396,6 +397,25 @@ function SessionsView({ config, epoch }: { config: Config; epoch: number }) {
   return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
 }
 
+// /community: the bundled Community marketplace, same chrome-free treatment
+// as learn (docs/COMMUNITY_MARKETPLACE_SPEC.md). Waits on the community mount
+// record before statting the entry, so a boot-race never shows a dead 404.
+function CommunityView({ config, epoch }: { config: Config; epoch: number }) {
+  const ready = useCommunityMountReady(config.community_mount_ready);
+  const entry = communityEntryPath(config);
+  if (!ready || !entry) {
+    return (
+      <div id="content">
+        <div className="preview-resolving">
+          <span className="mode-icon-spinner" />
+          Preparing showcase content…
+        </div>
+      </div>
+    );
+  }
+  return <StatView key={epoch + ":" + entry} fsPath={entry} epoch={epoch} home="" variant="learn" />;
+}
+
 // /claude-config: the native Claude Config panel. Chrome-free like
 // learn/sessions, but native React — no mount, no StatView; the availability
 // gate mirrors the sidebar entry's, so a direct URL hit while ~/.claude is
@@ -518,7 +538,10 @@ export default function App({ config }: { config: Config }) {
   }
 
   const pathname = location.pathname;
-  const isPanel = pathname === "/explorer/view/_panel" || pathname === "/explorer/embed/_panel";
+  // Via the router's predicate, not a second copy of the two spellings: a pane's
+  // Listing asks the SAME question of its host document (IS_PANEL_PANE), and one
+  // route must not be spelled in two places.
+  const isPanel = isPanelPath(pathname);
   const isTabs = pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
   const isPrefs = pathname === "/preferences";
   const isTemplates = pathname === "/templates";
@@ -532,6 +555,7 @@ export default function App({ config }: { config: Config }) {
   const isExplorerHome = pathname === "/explorer";
   const isLearn = pathname === "/learn";
   const isSessions = pathname === "/sessions";
+  const isCommunity = pathname === "/community";
   const isClaudeConfig = pathname === "/claude-config";
   const isClaudeArtifacts = pathname === "/claude-artifacts";
   const isBookmark = pathname === "/explorer/view/_bookmark";
@@ -543,7 +567,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isClaudeArtifacts || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isCommunity || isClaudeConfig || isClaudeArtifacts || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -571,6 +595,8 @@ export default function App({ config }: { config: Config }) {
                     ? "Learn"
                     : isSessions
                       ? "Sessions"
+                      : isCommunity
+                      ? "Showcase"
                       : isClaudeConfig
                       ? "Claude Config"
                       : isClaudeArtifacts
@@ -680,7 +706,7 @@ export default function App({ config }: { config: Config }) {
     // header. The shell sidebar renders beside it.
     main = (
       <div id="content" key={epoch}>
-        <Apps key={epoch} />
+        <Apps key={epoch} config={config} />
       </div>
     );
   } else if (isExplorerHome) {
@@ -694,6 +720,9 @@ export default function App({ config }: { config: Config }) {
     // Learn content, chrome-free (LearnView renders a StatView that carries
     // its own #content).
     main = <LearnView key={epoch} config={config} epoch={epoch} />;
+  } else if (isCommunity) {
+    // Community marketplace, same chrome-free treatment as learn.
+    main = <CommunityView key={epoch} config={config} epoch={epoch} />;
   } else if (isSessions) {
     // Claude Sessions inbox, same chrome-free treatment as learn.
     main = <SessionsView key={epoch} config={config} epoch={epoch} />;

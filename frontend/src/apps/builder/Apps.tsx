@@ -8,13 +8,15 @@
 // never reorders cards under interaction.
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
-import type { AppInfo } from "@platform/lib/api";
+import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { CommunityGrid, COMMUNITY_TAG } from "@apps/builder/CommunityGrid";
+import { useCommunityMountReady } from "@platform/lib/hooks";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -37,7 +39,7 @@ function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
   return sorted;
 }
 
-export default function Apps() {
+export default function Apps({ config }: { config: Config }) {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
   const [query, setQuery] = useState("");
   const [tag, setTag] = useState<string | null>(null);
@@ -67,8 +69,26 @@ export default function Apps() {
     };
   }, [nonce]);
 
+  // The community tab lives alongside the workspace tags but is its own
+  // surface (catalog cards, not workspace apps) — gated on the builtin
+  // community mount so it never appears where the marketplace can't work.
+  // Seeded from the boot config like the sidebar's entry — starting from
+  // `false` made the chip lag behind the sidebar by a poll tick (~2s).
+  const communityReady = useCommunityMountReady(config.community_mount_ready);
+
   const all = apps.status === "ok" ? apps.data : [];
-  const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  const tags = useMemo(() => {
+    const t = [...new Set(all.map((a) => a.tag))].sort();
+    return communityReady && !t.includes(COMMUNITY_TAG) ? [...t, COMMUNITY_TAG] : t;
+  }, [all, communityReady]);
+  // The chip only means the catalog when it's the appended one — a real
+  // workspace tag dir named "community" keeps its normal filtering.
+  const communityTab =
+    tag === COMMUNITY_TAG && communityReady && !all.some((a) => a.tag === COMMUNITY_TAG);
+  // Empty workspace on the "All" tab: instead of a bare "no apps yet" line,
+  // surface the community catalog — something to open on first run.
+  const communityFallback =
+    tag === null && communityReady && apps.status === "ok" && all.length === 0;
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -157,6 +177,18 @@ export default function Apps() {
           )}
         </div>
 
+        {communityTab || communityFallback ? (
+          <>
+            {communityFallback && (
+              <div className="home-empty">
+                No apps yet. Describe one in the composer above to create it, or start from a
+                community app below.
+              </div>
+            )}
+            <CommunityGrid query={query} sort={sort} />
+          </>
+        ) : (
+          <>
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
         {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status === "ok" && (
@@ -179,6 +211,8 @@ export default function Apps() {
                 ))}
               </div>
             )}
+          </>
+        )}
           </>
         )}
       </div>

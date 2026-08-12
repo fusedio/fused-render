@@ -18,13 +18,16 @@ logger = logging.getLogger(__name__)
 
 LEARN_MOUNT_NAME = "learn"
 SESSIONS_MOUNT_NAME = "sessions"
+COMMUNITY_MOUNT_NAME = "community"
 
 # Every builtin mount: bundled zip basename + the env var that overrides its
 # location for dev/testing. Adding a builtin = one row here plus the packaging
-# steps (build_dmg.sh, build_windows_installer.ps1, supervisor/paths.py).
+# steps (build_dmg.sh, build_windows_installer.ps1, supervisor/paths.py,
+# scripts/dev.sh).
 BUILTIN_MOUNTS = {
     LEARN_MOUNT_NAME: ("learn.zip", "FUSED_RENDER_LEARN_ZIP"),
     SESSIONS_MOUNT_NAME: ("sessions.zip", "FUSED_RENDER_SESSIONS_ZIP"),
+    COMMUNITY_MOUNT_NAME: ("community.zip", "FUSED_RENDER_COMMUNITY_ZIP"),
 }
 
 
@@ -187,6 +190,10 @@ def learn_mount_ready() -> bool:
 
 def sessions_mount_ready() -> bool:
     return builtin_mount_ready(SESSIONS_MOUNT_NAME)
+
+
+def community_mount_ready() -> bool:
+    return builtin_mount_ready(COMMUNITY_MOUNT_NAME)
 
 
 def builtin_mount_ready(name: str) -> bool:

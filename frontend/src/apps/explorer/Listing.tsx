@@ -36,7 +36,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
+import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
@@ -106,6 +106,10 @@ import { useListingShortcuts } from "@apps/explorer/listing/useListingShortcuts"
 function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
   return slot ? createPortal(row, slot) : row;
 }
+
+// Flips the tight-bar measurement is allowed at one bar width before it holds.
+// The reasoning is at `tightFlipRef` and at the layout effect it guards.
+const FLIP_BUDGET = 2;
 
 export default function Listing({
   fsPath,
@@ -231,7 +235,27 @@ export default function Listing({
   // in its own column. A flag that could only ever be written beside another
   // one is the "three places to agree about one bit" the pane's own history
   // (pane.ts) is a warning about.
-  const paneEnabled = !embedded && !IS_SNAPSHOT;
+  //
+  // A PANEL PANE is the third, and it is the same shape of blind spot as the
+  // snapshot: a pane is a whole shell at `/explorer/embed/<path>`, so its
+  // Listing is that frame's own top-level one — `embedded=false`, `barChrome`
+  // true, everything about it says "I own this window". What it does not own is
+  // the layout: the user split it, and a pane of a 1600px window is ~800px,
+  // comfortably past PANE_SPLIT_MIN_W, so a split-right of a folder grew two
+  // half-width listings each with their own half-width preview. Four columns
+  // where the user asked for two, and the width test cannot object because the
+  // width is genuinely there. IS_PANEL_PANE is the host-side question the width
+  // cannot answer (see router.ts, including why `IS_EMBED` — which is also
+  // every TAB, where the pane is right and stays — is the wrong flag here).
+  //
+  // Switching it off HERE is the whole feature: `pane.on` is `paneEnabled &&`
+  // the measurement, so one predicate takes the slot, the divider, the closing
+  // chevron on the pane's header, the reopening SideToggleButton in the search
+  // row, the FS-16 auto-select (which waits on `pane.on` by design) and the two
+  // `useDirMode` companion probes with it. Nothing about the ROWS changes: a
+  // pane's listing still selects, arrow-keys, and opens on double-click/Enter —
+  // opening a file in a pane replaces that pane's document, which is the point.
+  const paneEnabled = !embedded && !IS_SNAPSHOT && !IS_PANEL_PANE;
   const { pane, splitRef, onDividerPointerDown } = usePreviewPane(paneEnabled);
 
   // --- the pane's THREE modes, and whether it is open at all ------------------
@@ -320,6 +344,16 @@ export default function Listing({
   // already stands the crumbs down and takes the whole strip.
   const [tightBar, setTightBar] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  // How many times the tight-bar measurement may flip at one bar width before
+  // it stops arguing with itself — the convergence guarantee for the layout
+  // effect below, which has no dependency array and so re-enters on every
+  // commit it causes. Two is enough for every honest case: the first flip is
+  // the decision, the second absorbs a settling relayout (a scrollbar, a
+  // shed column) that legitimately reverses it. A third flip at an unchanged
+  // width is not new information, it is the bistable case, and past 50 of
+  // those React unmounts the whole tree with #185. Lives in a ref, not state,
+  // because spending budget must not itself schedule a render.
+  const tightFlipRef = useRef({ barW: -1, flips: 0 });
   const searchRowRef = useRef<HTMLDivElement>(null);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
@@ -370,7 +404,8 @@ export default function Listing({
   // The tight-bar measurement. DOM-side on purpose: this row PORTALS into
   // #breadcrumb (the slot above), so the crumbs it shares the strip with are
   // reachable — and already coupled to this row by the bar's :has() rules.
-  // Two thresholds, deliberately apart, so the flip cannot oscillate:
+  // Two thresholds, meant to be far enough apart that the flip cannot
+  // oscillate:
   //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
   //     after the CSS yield order has bottomed out — the box is the only
   //     slack left to give.
@@ -384,13 +419,14 @@ export default function Listing({
   // The resting width is read from the box (--resting-width, explorer.css)
   // rather than hardcoded, because it is NOT one number: a box with a chip
   // pinned in it (`.has-pin` — in practice the multi-selection readout) is
-  // 260px, not 150px. A fixed 150 was the bug that blanked the whole view the
-  // moment a second row was selected: 150px of slack was enough to unfold into
-  // and nowhere near enough to hold a 260px box, so the crumbs re-ellipsized,
-  // the bar folded, the freed slack cleared 150 again — a fold/unfold flip on
-  // every commit until React gave up with "maximum update depth exceeded".
-  // Reading it off the element is also what keeps the threshold and the width
-  // from drifting apart the next time either moves.
+  // 260px, not 150px. A fixed 150 was one half of the bug that blanked the
+  // whole view the moment a second row was selected: 150px of slack was enough
+  // to unfold into and nowhere near enough to hold a 260px box, so the crumbs
+  // re-ellipsized, the bar folded, the freed slack cleared 150 again — a
+  // fold/unfold flip on every commit until React gave up with "maximum update
+  // depth exceeded" (#185) and unmounted the tree, a BLANK PAGE. Reading the
+  // threshold off the element is also what keeps it and the width from
+  // drifting apart the next time either moves.
   //
   // WHICH STATE the measurement is about is read off the DOM (`.iconized`) and
   // NOT out of React state, and the setState below is passed a plain boolean
@@ -400,16 +436,27 @@ export default function Listing({
   // React on ITS schedule — eagerly when the setter is called, to test whether
   // the update can bail out, and again while rendering — so an updater that
   // measures the DOM answers a different question each time it runs and the two
-  // answers disagree. That disagreement was the second half of the blank-screen
+  // answers disagree. That disagreement was the other half of the blank-screen
   // crash: `folded` arrived describing the commit that had not painted yet while
   // the widths described the one on screen, the fold decided on the mismatched
   // pair, and the flip never settled.
   //
+  // FLIP_BUDGET stays as the backstop underneath both of those. The thresholds
+  // are meant to be honest hysteresis now, but they are still two DOM
+  // measurements taken in two different layouts, and any future width whose
+  // fold delta lands between them makes the flip bistable again. Once a bar
+  // width has spent its budget the measurement holds whatever it is showing
+  // until the width actually changes: a width where the thresholds agree
+  // converges in one flip and never touches the budget; a width where they
+  // contradict settles on a legible state instead of taking the page down.
+  // Keyed on the bar's width because that is what a contradiction is a
+  // property of — a real resize is new information and earns a fresh budget.
+  //
   // No dependency array: crumbs content changes with navigation but their
   // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
-  // changes; re-measuring on every render is cheap and the guarded setState
-  // converges. Skipped while the user is in the box — measuring a strip the
-  // crumbs have stood down from (.searching hides them) reads zeros.
+  // changes; re-measuring on every render is cheap. Skipped while the user is
+  // in the box — measuring a strip the crumbs have stood down from
+  // (.searching hides them) reads zeros.
   useLayoutEffect(() => {
     if (embedded || searching || pinnedOpen) return;
     const row = searchRowRef.current;
@@ -453,13 +500,25 @@ export default function Listing({
       return Number.isFinite(w) ? w : 150;
     };
     const measure = () => {
+      // Fresh width, fresh budget (see FLIP_BUDGET above).
+      const barW = bar.clientWidth;
+      const budget = tightFlipRef.current;
+      if (budget.barW !== barW) {
+        budget.barW = barW;
+        budget.flips = 0;
+      }
       // The layout on screen, and the state that layout IS — one pair, read
-      // together (see the comment above on why neither half comes from React).
+      // together, and decided OUT HERE rather than inside a setState updater
+      // (see the comment above on why neither half may come from React: the
+      // decision reads the DOM and spends the budget, and an updater must
+      // stay pure — React is free to call it more than once for one update).
       const folded = row.classList.contains("iconized");
       const ellipsized = crumbs.scrollWidth > crumbs.clientWidth + 1;
-      setTightBar(
-        folded ? ellipsized || freeInBar() < restingWidth() : ellipsized
-      );
+      const next = folded ? ellipsized || freeInBar() < restingWidth() : ellipsized;
+      if (next === folded) return;
+      if (budget.flips >= FLIP_BUDGET) return; // bistable at this width — hold
+      budget.flips += 1;
+      setTightBar(next);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -1001,7 +1060,12 @@ export default function Listing({
   // the button says it does. One element, three homes — the mtime th, the
   // search header's Path th, and (labels hidden) the empty folder's strip —
   // because the actions act on the current folder in every one of them.
-  const headerMenuBtn = (
+  //
+  // Only where this listing OWNS the bar chrome: the menu replaces the crumb
+  // bar's path `⋮`, so it belongs to the same view that dropped it. An
+  // embedded or pane-hosted listing never had that menu — and its "Split
+  // right" would rewrite the SHELL's URL from inside a nested surface.
+  const headerMenuBtn = !ownsBarChrome ? null : (
     <button
       type="button"
       className="listing-head-menu"

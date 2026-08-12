@@ -5,6 +5,7 @@
 // recents, and app lists. Width/collapsed state is shared across all owners
 // (platform/lib/sidebarstate): switching sub-apps must not jump the layout.
 import React, { useRef, useState } from "react";
+import Chevron from "@platform/ui/Chevron";
 import { navigateUrl } from "@platform/lib/router";
 import {
   getSidebarState,
@@ -162,9 +163,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           title="Expand sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m9 18 6-6-6-6" />
-          </svg>
+          {/* Mirrored: expanding sends the sidebar back out to the right. */}
+          <Chevron dir="right" />
         </button>
         {rail && rail.length > 0 && (
           <div className="sidebar-rail-items">
@@ -237,9 +237,11 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
           title="Collapse sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m15 18-6-6 6-6" />
-          </svg>
+          {/* The shared glyph (platform/ui/Chevron) — this used to be a 14px
+              copy of it, which on the 24-unit grid drew a visibly thinner line
+              than the identical 16px chevron on the right-hand companion
+              column's close button. See there for the arithmetic. */}
+          <Chevron dir="left" />
         </button>
       </div>
 
