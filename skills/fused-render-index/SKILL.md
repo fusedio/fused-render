@@ -161,7 +161,18 @@ The corollary is what makes the reader simple: **readers never take `store_lock`
 
 ```python
 """Read-only access to the fused-render file index. Only dep: duckdb."""
-import json, os, duckdb
+import json, os, re, duckdb
+
+def _branch_ref(ref):
+    # MUST match `sanitize` in fused_render/_branch.py — the server resolved the
+    # store path through it, so any drift here silently opens the WRONG store: a
+    # raw ref like "worktree-fused-index-api" names a branches/ dir that never
+    # existed (the real one is branches/worktree-fus), and the reader then reports
+    # "no index" against a store sitting right there.
+    if not ref or ref.lower() in ("main", "master", "head"):
+        return ""                     # a default branch IS the baseline: no nesting
+    collapsed = re.sub(r"[^a-z0-9]+", "-", ref.lower()).strip("-")
+    return collapsed[:12].rstrip("-")           # _MAX_LEN = 12
 
 def store_dir(location=None):
     # Prefer the `location` that /api/index/stats and /api/index/config report;
@@ -169,25 +180,35 @@ def store_dir(location=None):
     if location:
         return location
     home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    branch = os.environ.get("FUSED_RENDER_BRANCH")
-    if branch:
-        home = os.path.join(home, "branches", branch)
+    ref = _branch_ref(os.environ.get("FUSED_RENDER_BRANCH"))
+    if ref:
+        home = os.path.join(home, "branches", ref)
     return os.path.join(home, "index")
 
 def connect(location=None):
     """A duckdb connection with `files` and `dirs` views, plus the manifest.
-    Returns (None, None) when no scan has ever compacted."""
+    Returns (None, None) for every "nothing to read yet" shape: no manifest, an
+    unreadable one, a manifest naming zero partitions, or no dirs.parquet."""
     d = store_dir(location)
     try:
         with open(os.path.join(d, "partitions.json")) as f:
             manifest = json.load(f)
     except (OSError, ValueError):
         return None, None                       # no index yet — an ANSWER, not an error
+    parts = [os.path.join(d, "files", p["file"])
+             for p in manifest.get("partitions") or []]
+    dirs = os.path.join(d, "dirs.parquet")
+    # Both of these are legitimate stores, not corruption: store.py defaults a
+    # manifest to {"rows": 0, "partitions": []}, and git_repos._repos checks for
+    # dirs.parquet separately from the manifest. read_parquet raises on either
+    # (InvalidInputException on [], IOException on a missing file), so they get
+    # the same "no index" answer rather than a traceback.
+    if not parts or not os.path.exists(dirs):
+        return None, None
     con = duckdb.connect()
     # NEVER a files/*.parquet glob: old generations stay on disk and would double-count.
-    con.read_parquet([os.path.join(d, "files", p["file"])
-                      for p in manifest["partitions"]]).create_view("files")
-    con.read_parquet(os.path.join(d, "dirs.parquet")).create_view("dirs")
+    con.read_parquet(parts).create_view("files")
+    con.read_parquet(dirs).create_view("dirs")
     return con, manifest
 
 def main(min_size="0"):
@@ -206,9 +227,9 @@ def main(min_size="0"):
 Two gotchas, both hit while verifying this:
 
 - **`CREATE VIEW x AS SELECT * FROM read_parquet(?)` does not work.** It fails with `Binder Error: Unexpected prepared parameter. This type of statement can't be prepared!` The relation API (`con.read_parquet(list).create_view(...)`) avoids it *and* avoids having to SQL-quote the user's store path — which is exactly why `query.py` carries a `_q` helper for the paths it does interpolate. Parameters work fine in ordinary `SELECT`s (see `main` above); it is the `CREATE VIEW` that refuses them.
-- **Returning `(None, None)` for a missing manifest instead of raising.** "No index" is a state to render, not an error — the same discipline as the JS envelope. Raising here turns a normal first-boot condition into a red traceback overlay.
+- **Returning `(None, None)` rather than raising, for every empty shape.** "No index" is a state to render, not an error — the same discipline as the JS envelope. That covers a missing manifest (normal first boot), a manifest naming zero partitions, and a store with no `dirs.parquet`; each of the latter two makes `read_parquet` raise, and a legitimately empty store must not reach the page as a red traceback overlay.
 
-**Branch-scoping matters in a dev worktree.** `home_dir()` (`fused_render/shell/storage.py`) honours `FUSED_RENDER_HOME` and nests under `branches/<ref>/` when `FUSED_RENDER_BRANCH` is set, so a dev server's index is a *different store* from `~/.fused-render/index`. When a reader and a UI disagree about the row count, this is usually why — pass the `location` that `/api/index/stats` reports rather than resolving the path twice.
+**Branch-scoping matters in a dev worktree.** `home_dir()` (`fused_render/shell/storage.py`) honours `FUSED_RENDER_HOME` and nests under `branches/<ref>/` when `FUSED_RENDER_BRANCH` is set, so a dev server's index is a *different store* from `~/.fused-render/index`. **Pass the `location` that `/api/index/stats` reports** — it is the store the server is actually using, and resolving the path twice is how a reader and a UI end up disagreeing about the row count. `<ref>` is not the env var: it is `sanitize()`d (`fused_render/_branch.py`) — lowercased, non-alphanumeric runs collapsed to `-`, cut to 12 chars, and `main`/`master`/`head` mapped to the baseline with no `branches/` segment at all. The snippet's `_branch_ref` ports that, and it only exists for the case where no `location` is at hand.
 
 ## C. Raw HTTP reference
 
