@@ -107,7 +107,7 @@ def test_the_contract_comment_documents_the_index():
     # the contract, so a method added without a line here is undocumented.
     for signature in ("stats({root})", "lookup({q, limit, offset, sort})",
                       "search({root, q, limit})", "query({sql, limit})",
-                      "status()", "scan({root, full})", "cancel({runId})",
+                      "status({runId, since})", "scan({root, full})", "cancel({runId})",
                       "config.get()", "config.set({roots, ignore})", "repos()"):
         assert signature in header, signature
     # The envelope, which is the reason the API exists.
@@ -252,6 +252,77 @@ index.config.set({ignore: []}).then((r) => out(r.ready));
     assert got["stale"] is False
 
 
+def test_a_failed_run_is_data_on_the_status_route_not_a_rejection():
+    """`error` is part of /api/index/status's SUCCESS shape.
+
+    derive_state (index/runner.py) seeds `error: None` and fills it from
+    `run_end`; _with_liveness writes the abandoned-worker sentence into it. The
+    status readout exists to RENDER that, so a 200 carrying it must resolve.
+    """
+    got = _node("""
+ROUTES["/api/index/status"] = {status: 200, body: {ok: true, indexed: true,
+  has_index: true, scanning: false, running: false, run_id: "r3",
+  error: "the scan worker died without finishing (no activity for 300s)"}};
+index.status().then((r) => out({error: r.error, ready: r.ready}),
+                    (e) => out({rejected: e.message}));
+""")
+    assert got["error"] == ("the scan worker died without finishing "
+                            "(no activity for 300s)")
+    assert got["ready"] == {"indexed": True, "scanning": False, "stale": False,
+                            "reason": None}
+
+
+def test_a_failed_run_does_not_blind_the_envelope_of_every_other_call():
+    # The mechanical consequence of the above: the piggybacked probe rejecting
+    # would hand `query` — which has no `empty` of its own — an all-null
+    # envelope, so it would render zero rows with no way to tell "no match" from
+    # "no index". That is the silent lie this API exists to prevent.
+    got = _node("""
+ROUTES["/api/index/status"] = {status: 200, body: {ok: true, indexed: true,
+  has_index: true, scanning: true, running: true, error: "the previous run died"}};
+Promise.all([index.query({sql: "select 1"}), index.stats({root: "/x"})]).then(
+  (rs) => out(rs.map((r) => r.ready)));
+""")
+    for ready in got:
+        assert ready["indexed"] is True
+        assert ready["scanning"] is True
+
+
+def test_a_2xx_error_from_a_reading_route_still_rejects():
+    # The guard is load-bearing everywhere else: an error rendered as an empty
+    # result is the failure this API exists to prevent, so only the status
+    # route — where `error` is a documented success field — tolerates it.
+    got = _node("""
+ROUTES["/api/index/query"] = {status: 200, body: {error: "Binder Error: nope", rows: []}};
+ROUTES["/api/index/stats"] = {status: 200, body: {error: "unreadable manifest"}};
+index.query({sql: "select 1"}).then(() => "resolved", (e) => e.message).then((q) =>
+  index.stats({}).then(() => "resolved", (e) => e.message).then((s) => out([q, s])));
+""")
+    assert got == ["Binder Error: nope", "unreadable manifest"]
+
+
+def test_a_genuinely_broken_status_probe_is_still_isolated():
+    # Tolerating a 2xx `error` must not weaken the other half of the rule: a
+    # probe that really fails still neither fails the call nor answers for it.
+    got = _node("""
+ROUTES["/api/index/status"] = {status: 503, body: {error: "index config unreadable"}};
+index.query({sql: "select 1"}).then((r) => out(r.ready), (e) => out({rejected: e.message}));
+""")
+    assert got == {"indexed": None, "scanning": None, "stale": None, "reason": None}
+
+
+def test_status_can_follow_the_run_a_scan_just_returned():
+    # Without these the events/cursor stream is unreachable from the bridge, and
+    # the rootless form reports the most recent RUNNING run — which is the wrong
+    # one as soon as two roots scan concurrently.
+    got = _node("""
+index.status({runId: "r9", since: 12}).then(() =>
+  index.status().then(() => out(CALLS.map((c) => String(c.url)))));
+""")
+    assert got[0] == "/api/index/status?run_id=r9&since=12"
+    assert got[1] == "/api/index/status"
+
+
 # ------------------------------------------------------------- the X-Fused header
 
 def test_every_post_carries_the_x_fused_header():
@@ -289,6 +360,24 @@ index.cancel({runId: "r9"}).then(() => out(
   CALLS.filter((c) => c.init.method === "POST").map((c) => JSON.parse(c.init.body))));
 """)
     assert got == [{"run_id": "r9"}]
+
+
+# ------------------------------------------------- the probe is not an app call
+
+def test_the_readiness_probe_is_not_billed_as_a_call():
+    """Every index call fires one status GET, so logging it would double both the
+    call log and the per-page rate spend for a search box at 5 keystrokes/s.
+
+    Same reasoning D244 applied to /api/jobs (BG-9): bookkeeping ABOUT a call is
+    not a call. Prefix-skipped rather than header-stripped, so the shell's own
+    status polling is covered by the same rule.
+    """
+    from fused_render import calls
+
+    assert "/api/index/status".startswith(calls.SKIP_PREFIXES)
+    # Only the status route: a real read the page asked for stays a logged call.
+    assert not "/api/index/lookup".startswith(calls.SKIP_PREFIXES)
+    assert not "/api/index/scan".startswith(calls.SKIP_PREFIXES)
 
 
 # --------------------------------------------------------- error normalization

@@ -54,7 +54,8 @@
  *     still exports.
  *   fused.index.* -> the file index, without hand-rolling fetch()
  *     stats({root}) / lookup({q, limit, offset, sort}) / search({root, q, limit})
- *     / query({sql, limit}) / status() / scan({root, full}) / cancel({runId})
+ *     / query({sql, limit}) / status({runId, since}) / scan({root, full})
+ *     / cancel({runId})
  *     / config.get() / config.set({roots, ignore}) / repos()
  *     Every one resolves with the endpoint's own payload PLUS a normalized
  *     `ready: {indexed, scanning, stale, reason}`. That envelope is the point:
@@ -64,7 +65,11 @@
  *     — `search` alone reports `scanning: null`, being the per-keystroke path
  *     that must not double its request count. `reason` is "no-index",
  *     "outdated", "not-covered" or null. Writes (scan/cancel/config.set) carry
- *     the X-Fused header for you. LOCAL ONLY — a hosted page has no index.
+ *     the X-Fused header for you. `status()`'s own `error` is DATA — the last
+ *     scan's failure, to render — not a rejection. Unlike runPython there is no
+ *     supersede channel: a per-keystroke caller must guard its own renders
+ *     against an earlier reply landing last. LOCAL ONLY — a hosted page has no
+ *     index.
  *     Two routes are deliberately NOT wrapped, and both stay reachable by raw
  *     fetch for a caller that truly means it: /api/index/delete, because
  *     wiping the user's whole index is not something a page should do on load,
@@ -2311,22 +2316,37 @@
     return err;
   }
 
-  function indexJson(res) {
+  // `errorIsData` is set by the ONE route whose success shape includes `error`;
+  // see indexStatusGet. Stated per call site on purpose — sniffing the payload
+  // for a tell (`"running" in data`) would decide the question from whichever
+  // keys a response happened to carry.
+  function indexJson(res, errorIsData) {
     return res
       .json()
       .catch(() => null) // a 500 with an HTML body still has to reject readably
       .then((data) => {
         if (!res.ok) throw indexError(res.status, data);
-        // A 2xx carrying `error` should not happen on these routes, but an
-        // error rendered as an empty result is the failure this API exists to
-        // prevent, so it is refused rather than returned.
-        if (data && data.error) throw indexError(res.status, data);
+        // A 2xx carrying `error` should not happen on the routes that mean it as
+        // a failure, but an error rendered as an empty result is the failure this
+        // API exists to prevent, so it is refused rather than returned.
+        if (data && data.error && !errorIsData) throw indexError(res.status, data);
         return data || {};
       });
   }
 
-  function indexGet(path, params) {
-    return fetch(indexUrl(path, params), { headers: callHeaders() }).then(indexJson);
+  function indexGet(path, params, errorIsData) {
+    return fetch(indexUrl(path, params), { headers: callHeaders() })
+      .then((res) => indexJson(res, errorIsData));
+  }
+
+  // /api/index/status answers `error` as DATA: derive_state (index/runner.py)
+  // seeds it null and fills it from `run_end`, and _with_liveness writes the
+  // abandoned-worker sentence into it — so the last run having failed is exactly
+  // what this readout exists to render, on a 200. Refusing it here rejected the
+  // call AND (through indexWithStatus's probe) blinded the envelope of every
+  // other method until the dead run was pruned.
+  function indexStatusGet(params) {
+    return indexGet("/api/index/status", params, true);
   }
 
   // X-Fused on EVERY post. `_require_fused` (server/common.py) 403s a POST
@@ -2366,8 +2386,8 @@
   function indexWithStatus(call) {
     return Promise.all([
       call,
-      indexGet("/api/index/status").then(indexReadyFromStatus,
-                                         () => indexReady(null, null, null, null)),
+      indexStatusGet().then(indexReadyFromStatus,
+                            () => indexReady(null, null, null, null)),
     ]).then(([data, ready]) => Object.assign({}, data, { ready: ready }));
   }
 
@@ -2420,9 +2440,16 @@
     return indexWithStatus(indexPost("/api/index/query", body));
   }
 
-  function indexStatus() {
-    return indexGet("/api/index/status").then((data) =>
-      Object.assign({}, data, { ready: indexReadyFromStatus(data) }));
+  function indexStatus(opts) {
+    opts = opts || {};
+    // `runId`/`since` follow one run's event stream. Omitting them keeps the
+    // rootless reading — the most recent RUNNING run — which is right for a page
+    // that just loaded, and wrong for a page holding the run_id scan() returned
+    // once two roots are walking at the same time.
+    return indexStatusGet({
+      run_id: opts.runId === undefined ? opts.run_id : opts.runId,
+      since: opts.since,
+    }).then((data) => Object.assign({}, data, { ready: indexReadyFromStatus(data) }));
   }
 
   function indexScan(opts) {
