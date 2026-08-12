@@ -88,6 +88,77 @@ export const IS_EMBED =
 // would be a second source of truth for a fact that never moves.
 export const IS_SNAPSHOT =
   new URLSearchParams(location.search).get("snapshot") === "1";
+
+// Is this pathname panel mode's sentinel route? Both prefixes, because panel
+// mode lives under the page's own one (Panel.tsx's PANEL_PATH) so that
+// entering/refreshing/exiting stays in the active mode — which means the shell
+// has to recognise either spelling. Exported so the two readers (App's route
+// dispatch, and IS_PANEL_PANE below, which asks it of a HOST document) cannot
+// drift into two spellings of one route.
+export function isPanelPath(pathname: string): boolean {
+  return pathname === VIEW_PREFIX + "_panel" || pathname === EMBED_PREFIX + "_panel";
+}
+
+// AM I A PANE OF A SPLIT? — the third framing flag, and the only one that is
+// not a fact about this document's own URL.
+//
+// A panel pane is a whole shell loaded at `/explorer/embed/<path>`, so from the
+// inside it looks exactly like a top-level window: it owns its bar chrome
+// (`barChrome && !embedded` is true in there), it reflects sort/`_side` into its
+// own address bar, it registers document-level keys. That is all deliberate —
+// a pane IS a browsing context, and everything in it should behave. The one
+// thing it must not do is grow the listing's own preview pane: the user already
+// answered the layout question by splitting, and half of a window is not two
+// readable columns. Exactly the argument Preview.tsx makes for the FILE
+// sidebar's `splitCapable`.
+//
+// So why not `IS_EMBED`, which is what `splitCapable` uses? Because it is too
+// coarse for THIS surface: it is also every TAB (Tabs.tsx frames the same
+// /embed shells), and a tab is full-window — there is no split, nothing was
+// answered, and its folder listing should keep the pane it has always had. It
+// is also bookmark cards and any external embed. `splitCapable` can afford the
+// looseness (a tab's file view genuinely doesn't want a second split either);
+// a folder listing cannot.
+//
+// And the panes themselves carry NOTHING to tell the two apart: Panel and Tabs
+// both build their iframe src through layout-codec's `embedSrc`, byte for byte
+// identical. A marker param would be the obvious fix and is a trap — `navigate`
+// deliberately drops the query on every hop (see there), so `?_pane=1` would
+// survive exactly until the user clicked a folder inside the pane, and keeping
+// it would mean adding a second exception beside `snapshot=1` to carry a bit
+// the host already knows.
+//
+// So ASK THE HOST. Climbing to an ancestor's URL is the shell's existing
+// same-origin idiom, not a new one: the template runtime reads its params off
+// ancestor URLs the same way (D3/D4/D46), and panel/tab shells already reach
+// down the other direction (readEmbedLoc reads a pane iframe's live location).
+// The host's pathname is the route sentinel itself, so there is no flag for
+// anyone to write, forget to write, or write inconsistently — one producer, and
+// it is the route.
+//
+// Climbs the whole chain rather than checking `parent` alone: a listing can sit
+// two frames deep inside a split (a pane showing the bookmarks page, whose
+// cards are embeds of their own), and being three levels down in a pane is
+// still being in a pane. `top` terminates it; the try/catch is for a
+// cross-origin ancestor (an external embed), where the answer is "not a pane" —
+// the same safe direction the flag's other cases point.
+//
+// Read ONCE at module init, like the two above, and for a stronger reason than
+// theirs: a document cannot be re-parented into or out of a frame, so the fact
+// physically cannot change without a fresh load of this document.
+export const IS_PANEL_PANE = (function inPanelHost(): boolean {
+  try {
+    let win: Window = window;
+    while (win !== win.parent) {
+      win = win.parent;
+      if (isPanelPath(win.location.pathname)) return true;
+    }
+  } catch {
+    // Cross-origin ancestor: not our panel.
+  }
+  return false;
+})();
+
 // URL prefix for this page's mode. Keeps refresh, in-listing navigation, and
 // param sync (iframe runtime's history.replaceState) inside the active prefix.
 const PREFIX = IS_EMBED ? EMBED_PREFIX : VIEW_PREFIX;

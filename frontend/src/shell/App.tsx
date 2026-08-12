@@ -16,7 +16,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { IS_EMBED, fsPathFromLocation, navHintIsDir } from "@platform/lib/router";
+import { IS_EMBED, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
 import { useSessionRestore, useSessionTracking } from "@platform/lib/session";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
@@ -541,7 +541,10 @@ export default function App({ config }: { config: Config }) {
   }
 
   const pathname = location.pathname;
-  const isPanel = pathname === "/explorer/view/_panel" || pathname === "/explorer/embed/_panel";
+  // Via the router's predicate, not a second copy of the two spellings: a pane's
+  // Listing asks the SAME question of its host document (IS_PANEL_PANE), and one
+  // route must not be spelled in two places.
+  const isPanel = isPanelPath(pathname);
   const isTabs = pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
   const isPrefs = pathname === "/preferences";
   const isTemplates = pathname === "/templates";

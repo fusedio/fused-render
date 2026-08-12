@@ -25,30 +25,13 @@
 // rendering fault rather than as a choice. Exactly one of them is on screen at
 // any moment, and each sits where its own action makes sense.
 import type { ReactNode } from "react";
+import Chevron from "@platform/ui/Chevron";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import {
   paneSideIconEntry,
   type PaneSide,
   type PaneSideEntries,
 } from "@apps/explorer/listing/pane-side";
-
-function CloseChevron() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="16"
-      height="16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <polyline points="9 6 15 12 9 18" />
-    </svg>
-  );
-}
 
 // `what` names the panel in both labels — the mode's display name ("Claude",
 // "Git", "Preview"), so the tooltip says which panel rather than "the panel".
@@ -62,7 +45,10 @@ export function SideCloseButton({ what, onClick }: { what: string; onClick: () =
       aria-label={label}
       onClick={onClick}
     >
-      <CloseChevron />
+      {/* Points RIGHT — this column is on the right, and right is the way it
+          goes when it collapses. The identical glyph mirrored is what the left
+          sidebar's collapse button wears (platform/ui/Chevron). */}
+      <Chevron dir="right" />
     </button>
   );
 }
