@@ -16,6 +16,32 @@ import {
 } from "@platform/lib/sidebarstate";
 import { useSidebarState } from "@platform/lib/hooks";
 
+/** One icon on the collapsed rail. Two dialects, by what the icon stands for:
+    a SECTION of this sidebar (explorer: bookmarks/recents) — click expands
+    the frame and `onExpand` reveals the section; or a DESTINATION (shell: the
+    sub-app list) — `href` set, click navigates and the sidebar STAYS
+    collapsed, expanding only via the chevron. The frame stays ignorant of
+    what the icons mean — owners describe them here. */
+export interface SidebarRailItem {
+  key: string;
+  /** Tooltip + accessible name; the rail shows only the icon. */
+  label: string;
+  icon: React.ReactNode;
+  /** Destination dialect: navigate here on click, keeping the rail collapsed.
+      Highlights as active on exact pathname match, like NavItem. */
+  href?: string;
+  /** Section dialect: runs after the click expands the frame — the owner's
+      chance to make the promised section actually visible (e.g. un-collapse
+      Recents). Ignored when `href` is set. */
+  onExpand?: () => void;
+  /** Hairline above this item — a group boundary, mirroring the expanded
+      sidebar's headings. */
+  dividerBefore?: boolean;
+  /** Set on the FIRST item of a bottom-pinned cluster (the shell's settings
+      list) — pushes it and everything after to the rail's bottom edge. */
+  pinBottom?: boolean;
+}
+
 export interface SidebarFrameProps {
   /** Brand text next to the cube mark — names the owning context. */
   title: string;
@@ -23,6 +49,9 @@ export interface SidebarFrameProps {
   version?: string;
   /** Where the brand click lands; the front door of the owning app. */
   homeHref?: string;
+  /** Section icons for the collapsed rail. Optional — a sidebar without them
+      collapses to just the expand control. */
+  rail?: SidebarRailItem[];
   children: React.ReactNode;
 }
 
@@ -60,7 +89,7 @@ export function NavItem({
   );
 }
 
-export function SidebarFrame({ title, version, homeHref = "/apps", children }: SidebarFrameProps) {
+export function SidebarFrame({ title, version, homeHref = "/apps", rail, children }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. The state lives in the
   // shared store (platform/lib/sidebarstate) rather than here so that a
@@ -119,36 +148,68 @@ export function SidebarFrame({ title, version, homeHref = "/apps", children }: S
   };
 
   if (sidebarCollapsed) {
-    // Collapsed: a slim strip carrying the ONE reopen control, the same one on
-    // every route. It briefly lived in the explorer's top bar instead, with
-    // this tab as the fallback for routes that have no top bar (Apps,
-    // Preferences, panel mode) — two dialects for one action, so which control
-    // you reached for depended on where you happened to be. The strip is the
-    // whole button; the tab is the visible part of it, pinned to the top so it
-    // lands on the same line as the bars beside it.
-    //
-    // Not the floating bubble this replaced either: anchored at `left: 100%`
-    // on a 10px strip, half of it hung off the viewport and it sat level with
-    // the explorer's bookmark star, reading as a second star.
+    // Collapsed: an icon RAIL, not the old anonymous 20px strip (which read as
+    // a full-height bar whose only content was an arrow). The expand control
+    // stays on top — the ONE reopen control, on every route, pinned to the
+    // same 24px line the sidebar header and the app bars stand on. Below it,
+    // the owner's section icons (SidebarRailItem): the collapsed state keeps
+    // saying what the sidebar HAS, and clicking an icon is "expand, showing me
+    // that" — the frame expands, then the owner's onExpand makes the section
+    // visible.
     //
     // Still the same #sidebar node, so the <=700px media hide applies.
     return (
       <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
         <button
           type="button"
-          className="sidebar-expand-strip"
+          className="sidebar-rail-btn sidebar-rail-expand"
           aria-label="Expand sidebar"
           title="Expand sidebar"
           onClick={toggleSidebarCollapsed}
         >
-          {/* Presentational — the strip is the button, so hover and focus key
-              off the strip's own state (sidebar.css). */}
-          <span className="sidebar-expand-tab" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m9 18 6-6-6-6" />
-            </svg>
-          </span>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
         </button>
+        {rail && rail.length > 0 && (
+          <div className="sidebar-rail-items">
+            {rail.map((item) => (
+              <React.Fragment key={item.key}>
+                {item.pinBottom && <span className="sidebar-rail-flex" aria-hidden="true" />}
+                {item.dividerBefore && <span className="sidebar-rail-sep" aria-hidden="true" />}
+                {item.href ? (
+                  <a
+                    href={item.href}
+                    className={
+                      "sidebar-rail-btn" + (location.pathname === item.href ? " active" : "")
+                    }
+                    aria-label={item.label}
+                    title={item.label}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      navigateUrl(item.href!);
+                    }}
+                  >
+                    {item.icon}
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    className="sidebar-rail-btn"
+                    aria-label={`Expand sidebar to ${item.label}`}
+                    title={item.label}
+                    onClick={() => {
+                      setSidebarState((s) => ({ ...s, collapsed: false }));
+                      item.onExpand?.();
+                    }}
+                  >
+                    {item.icon}
+                  </button>
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
       </nav>
     );
   }
