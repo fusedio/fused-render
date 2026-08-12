@@ -109,6 +109,10 @@ function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
   return slot ? createPortal(row, slot) : row;
 }
 
+// Flips the tight-bar measurement is allowed at one bar width before it holds.
+// The reasoning is at `tightFlipRef` and at the layout effect it guards.
+const FLIP_BUDGET = 2;
+
 export default function Listing({
   fsPath,
   provisional = false,
@@ -330,6 +334,16 @@ export default function Listing({
   // already stands the crumbs down and takes the whole strip.
   const [tightBar, setTightBar] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  // How many times the tight-bar measurement may flip at one bar width before
+  // it stops arguing with itself — the convergence guarantee for the layout
+  // effect below, which has no dependency array and so re-enters on every
+  // commit it causes. Two is enough for every honest case: the first flip is
+  // the decision, the second absorbs a settling relayout (a scrollbar, a
+  // shed column) that legitimately reverses it. A third flip at an unchanged
+  // width is not new information, it is the bistable case, and past 50 of
+  // those React unmounts the whole tree with #185. Lives in a ref, not state,
+  // because spending budget must not itself schedule a render.
+  const tightFlipRef = useRef({ barW: -1, flips: 0 });
   const searchRowRef = useRef<HTMLDivElement>(null);
   // Path -> RowCtx for the rendered rows, read by the once-registered keydown
   // handler so Enter can pass the row's is_dir as a nav hint (assigned each
@@ -380,7 +394,8 @@ export default function Listing({
   // The tight-bar measurement. DOM-side on purpose: this row PORTALS into
   // #breadcrumb (the slot above), so the crumbs it shares the strip with are
   // reachable — and already coupled to this row by the bar's :has() rules.
-  // Two thresholds, deliberately apart, so the flip cannot oscillate:
+  // Two thresholds, meant to be far enough apart that the flip cannot
+  // oscillate:
   //   • fold: the crumbs are ellipsized (scrollWidth past clientWidth) even
   //     after the CSS yield order has bottomed out — the box is the only
   //     slack left to give.
@@ -390,11 +405,37 @@ export default function Listing({
   //     summed from the bar's visible children, not read off the crumbs:
   //     they are flex-grow 0 in slot mode, so their clientWidth hugs their
   //     content and never reports the strip's slack.
+  //
+  // THE GAP IS NOT ALWAYS A GAP, which is what FLIP_BUDGET below is for. Each
+  // threshold is read in the state the OTHER one produced — "are the crumbs
+  // ellipsized" is asked of the unfolded strip, "is there 150px free" of the
+  // folded one — so the pair only behaves as hysteresis while folding really
+  // does free more than unfolding costs. At bar widths where the box's own
+  // fold delta lands near that 150px the two verdicts contradict each other
+  // and the flip is bistable: fold → "path fits and there is room" → unfold →
+  // "path is ellipsized" → fold, forever.
+  //
+  // Forever, and synchronously, because this is a layout effect with no
+  // dependency array: React commits, runs it, `measure` setStates, which
+  // commits again and runs it again. Past 50 of those React gives up with
+  // "Maximum update depth exceeded" (#185) and unmounts the tree — a BLANK
+  // PAGE. Reproduced at viewport 1675–1800px on a folder whose preview pane
+  // hosts a directory: reopening the pane narrows this strip AND removes the
+  // SideToggleButton from it in one commit, landing the bar in that window.
+  //
+  // So the budget: a flip is spent, and once a bar width has spent its budget
+  // the measurement holds whatever it is showing until the width actually
+  // changes. A width where the thresholds agree converges in one flip and
+  // never touches the budget; a width where they contradict settles on one of
+  // the two legible states instead of taking the page down. Keyed on the bar's
+  // width because that is what the contradiction is a property of — a real
+  // resize is new information and earns a fresh budget.
+  //
   // No dependency array: crumbs content changes with navigation but their
   // clientWidth may not, so a ResizeObserver alone misses scrollWidth-only
-  // changes; re-measuring on every render is cheap and the guarded setState
-  // converges. Skipped while the user is in the box — measuring a strip the
-  // crumbs have stood down from (.searching hides them) reads zeros.
+  // changes; re-measuring on every render is cheap. Skipped while the user is
+  // in the box — measuring a strip the crumbs have stood down from
+  // (.searching hides them) reads zeros.
   useLayoutEffect(() => {
     if (embedded || searching || pinnedOpen) return;
     const row = searchRowRef.current;
@@ -426,11 +467,27 @@ export default function Listing({
       return bar.clientWidth - used;
     };
     const measure = () => {
-      setTightBar((folded) =>
-        folded
-          ? crumbs.scrollWidth > crumbs.clientWidth + 1 || freeInBar() < 150
-          : crumbs.scrollWidth > crumbs.clientWidth + 1
-      );
+      // Fresh width, fresh budget (see FLIP_BUDGET above).
+      const barW = bar.clientWidth;
+      const budget = tightFlipRef.current;
+      if (budget.barW !== barW) {
+        budget.barW = barW;
+        budget.flips = 0;
+      }
+      // Decided OUT HERE rather than inside a setState updater: the decision
+      // reads the DOM and spends the budget, and an updater must stay pure —
+      // React is free to call it more than once for one update, which would
+      // charge the budget twice for a single flip. `tightBar` is the currently
+      // RENDERED value and is current in this closure: the effect (and with it
+      // this observer) is rebuilt on every render, having no dependency array.
+      const folded = tightBar;
+      const next = folded
+        ? crumbs.scrollWidth > crumbs.clientWidth + 1 || freeInBar() < 150
+        : crumbs.scrollWidth > crumbs.clientWidth + 1;
+      if (next === folded) return;
+      if (budget.flips >= FLIP_BUDGET) return; // bistable at this width — hold
+      budget.flips += 1;
+      setTightBar(next);
     };
     measure();
     const ro = new ResizeObserver(measure);
