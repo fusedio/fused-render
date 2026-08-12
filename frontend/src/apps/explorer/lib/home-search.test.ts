@@ -3,13 +3,16 @@ import {
   HOME_RESULT_CAP,
   activeRow,
   corpusFrom,
+  homeCorpusView,
   homeCountNote,
   homeHitsFrom,
+  nextHeldHomeCorpus,
   pathShortcut,
   rankingSettled,
   redirectsToSearch,
   stepHighlight,
   submitRow,
+  type CorpusState,
 } from "./home-search";
 import type { IndexSearchResult, WalkEntry } from "@platform/lib/api";
 import type { SearchHit } from "@apps/explorer/listing/types";
@@ -102,17 +105,106 @@ describe("homeCountNote", () => {
 
 describe("corpusFrom", () => {
   it("is ok for a covered root", () => {
-    expect(corpusFrom(indexResult())).toEqual({
+    expect(corpusFrom(indexResult({ updated: 7 }))).toEqual({
       status: "ok",
       entries: [walkEntry("Downloads/a.csv")],
       truncated: false,
+      key: `${HOME}|7`,
     });
+  });
+
+  it("gives the same key to the same (root, generation) — a refetch is the same corpus", () => {
+    expect(corpusFrom(indexResult({ updated: 7 }))).toMatchObject({ key: `${HOME}|7` });
+    expect(corpusFrom(indexResult({ updated: 8 }))).toMatchObject({ key: `${HOME}|8` });
+  });
+
+  it("gives NO key when the response carries no generation, rather than a shared one", () => {
+    expect(corpusFrom(indexResult({ updated: null }))).toMatchObject({ key: "" });
   });
 
   it("is cold — not empty — when the index has not covered the root yet", () => {
     // The honest answer is "still building", never "no matches": the home page
     // has no live walk to fall back on, so a miss here is the app's state.
     expect(corpusFrom(indexResult({ covered: false, entries: [] }))).toEqual({ status: "cold" });
+  });
+});
+
+describe("the home corpus hold", () => {
+  const A = [walkEntry("a.txt")];
+  const B = [walkEntry("b.txt")];
+  const okA: CorpusState = { status: "ok", entries: A, truncated: false, key: "k1" };
+  const okB: CorpusState = { status: "ok", entries: B, truncated: true, key: "k2" };
+
+  it("holds a real corpus and nothing else", () => {
+    expect(nextHeldHomeCorpus(okA, null)).toEqual({ entries: A, truncated: false, key: "k1" });
+    const held = nextHeldHomeCorpus(okA, null);
+    expect(nextHeldHomeCorpus({ status: "loading" }, held)).toBe(held!);
+    expect(nextHeldHomeCorpus({ status: "cold" }, held)).toBe(held!);
+    expect(nextHeldHomeCorpus({ status: "error", message: "x" }, held)).toBe(held!);
+  });
+
+  it("is identity-stable, and adopts a new corpus", () => {
+    const held = nextHeldHomeCorpus(okA, null);
+    expect(nextHeldHomeCorpus(okA, held)).toBe(held!);
+    expect(nextHeldHomeCorpus(okB, held)).toEqual({ entries: B, truncated: true, key: "k2" });
+  });
+
+  it("shows the fresh corpus when there is one", () => {
+    expect(homeCorpusView(okA, null)).toEqual({
+      entries: A, truncated: false, key: "k1", stale: false, status: "ok", message: "",
+    });
+  });
+
+  it("keeps the rows AND reports a failed refetch", () => {
+    // Holding the rows is right — dropping a working search to show an error
+    // would be the worse trade on a page with no live walk to fall back on.
+    // Swallowing the failure is not: `retryNonce` retries on a keystroke, and
+    // a retry that reports nothing at all leaves the user pressing keys into
+    // silence. So: both.
+    const held = nextHeldHomeCorpus(okA, null);
+    const view = homeCorpusView({ status: "error", message: "boom" }, held);
+    expect(view.entries).toBe(A);
+    expect(view.stale).toBe(true);
+    expect(view.status).toBe("ok");
+    expect(view.message).toBe("boom");
+  });
+
+  it("has nothing to report once a refetch succeeds", () => {
+    expect(homeCorpusView(okA, nextHeldHomeCorpus(okA, null)).message).toBe("");
+  });
+
+  it("keeps answering from the previous corpus while a refetch runs", () => {
+    // The whole point: a rescan republishes the fetch, and `cold`/`loading`
+    // mid-refetch must not take the rows away — only never having had a corpus
+    // may do that (lib/repos.ts applies the same rule to the repo cards).
+    const held = nextHeldHomeCorpus(okA, null);
+    for (const state of [
+      { status: "loading" } as CorpusState,
+      // `cold` too: the index being gone does not make the paths in hand
+      // untrue, and a cold state re-fetches on the next lifecycle bump, so
+      // this recovers on its own the moment an index exists again.
+      { status: "cold" } as CorpusState,
+    ]) {
+      expect(homeCorpusView(state, held)).toEqual({
+        entries: A, truncated: false, key: "k1", stale: true, status: "ok", message: "",
+      });
+    }
+  });
+
+  it("suppresses rows ONLY when no corpus has ever been in hand", () => {
+    expect(homeCorpusView({ status: "cold" }, null)).toEqual({
+      entries: null, truncated: false, key: "", stale: false, status: "cold", message: "",
+    });
+    expect(homeCorpusView({ status: "error", message: "x" }, null)).toMatchObject({
+      status: "error",
+      message: "x",
+    });
+    expect(homeCorpusView({ status: "loading" }, null).status).toBe("loading");
+  });
+
+  it("reads as settled while stale — held rows are a finished answer, not a pending one", () => {
+    const held = nextHeldHomeCorpus(okA, null);
+    expect(rankingSettled(homeCorpusView({ status: "loading" }, held).status, false)).toBe(true);
   });
 });
 

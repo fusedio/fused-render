@@ -203,6 +203,7 @@ export default function Listing({
     setQuery,
     searching,
     isStale,
+    behind,
     scanPending,
     validWalk,
     prefetchWalk,
@@ -1347,7 +1348,7 @@ export default function Listing({
   // facts are about the same search, and one line says both. Which message
   // appears is a claim about how far the results can be trusted, so it lives
   // in a pure, tested helper (listing/index-caveat).
-  const caveat = searching ? indexCaveat(indexScan) : null;
+  const caveat = searching ? indexCaveat(indexScan, behind) : null;
   if (caveat) {
     searchCount = withCaveat(searchCount, caveat);
     searchCountFull = caveat.title;
@@ -1518,9 +1519,19 @@ export default function Listing({
           )}
           <div
             ref={scrollRef}
-            /* Dimmed both when the deferred render lags a keystroke and while
-             held (pre-refresh) results stand in for a re-running walk. */
-            className={"listing-scroll" + (isStale || showingHeld ? " listing-stale" : "")}
+            /* Two different dims, two different claims. `listing-stale` means
+               an answer is on its way (the deferred render lags a keystroke,
+               the scan is mid-flight, or held results stand in for a walk that
+               is re-running). `listing-behind` means the opposite: no answer is
+               coming, these results are a generation old and staying that way
+               until a boundary (listing/revalidate). The second can last the
+               whole session, so it is deliberately the lighter of the two —
+               it has to be legible to read under, not merely noticeable. */
+            className={
+              "listing-scroll" +
+              (isStale || showingHeld ? " listing-stale" : "") +
+              (behind ? " listing-behind" : "")
+            }
             /* The background means THIS FOLDER: "move these here". It lights up
                (.drop-into, painted by row-drag.ts) only when that would actually
                move something — dropping rows into the folder they already live

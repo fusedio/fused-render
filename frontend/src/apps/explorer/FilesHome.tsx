@@ -7,7 +7,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
-import type { Config, ClaudeSessionFolder, GitRepos } from "@platform/lib/api";
+import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
+import { indexCaveat } from "@apps/explorer/listing/index-caveat";
 import { getClaudeSessionFolders, getGitRepos, indexSearch, statPath } from "@platform/lib/api";
 import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
 import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
@@ -32,15 +33,18 @@ import {
   INSTANT_DEBOUNCE_MS,
   activeRow,
   corpusFrom,
+  homeCorpusView,
   homeCountNote,
   homeHitsFrom,
   isAiRow,
+  nextHeldHomeCorpus,
   pathShortcut,
   rankingSettled,
   redirectsToSearch,
   stepHighlight,
   submitRow,
   type CorpusState,
+  type HeldHomeCorpus,
   type HomeHit,
 } from "@apps/explorer/lib/home-search";
 import { useRankedScan } from "@apps/explorer/listing/useRankedScan";
@@ -232,10 +236,13 @@ function AiResults({ home, query, result }: { home: string; query: string; resul
 function FilesSearch({
   home,
   initialQuery,
+  indexScan,
   onActiveChange,
 }: {
   home: string;
   initialQuery: string;
+  /** The shared index poll (see FilesHome) — this box adds no poller of its own. */
+  indexScan: IndexStatus | null;
   onActiveChange: (active: boolean) => void;
 }) {
   const [query, setQuery] = useState(initialQuery);
@@ -249,12 +256,45 @@ function FilesSearch({
   // Fetched ONCE per index generation, not per keystroke: the index answers
   // with the whole covered subtree, so re-asking on every letter would spend a
   // round trip to receive the same rows. Ranking is what runs per query.
-  const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
   // A scan finishing or the index being deleted changes what the corpus IS,
   // and no other signal reports it (the filesystem did not change) — see
   // lib/index-freshness.
   const [lifecycle, setLifecycle] = useState(indexLifecycleCount);
   useEffect(() => subscribeIndexLifecycle(() => setLifecycle(indexLifecycleCount())), []);
+  // ...but it is RECORDED, not applied. Scans complete often, and refetching on
+  // each one swapped the rows out from under whoever was reading them — the
+  // exact churn this page is being fixed to stop. A corpus in hand therefore
+  // pins the fetch generation and keeps answering, captioned "indexing…" and
+  // dimmed; only having nothing to lose lets the fetch follow the index, which
+  // is precisely the case this signal was added for (the first scan finishing
+  // while the page sits on "still building"). The same posture the in-folder
+  // search takes for its dir-watch bumps (listing/revalidate).
+  const [fetchLifecycle, setFetchLifecycle] = useState(lifecycle);
+  const [corpus, setCorpus] = useState<CorpusState>({ status: "idle" });
+  useEffect(() => {
+    // Two ways the pin comes off, and between them they are what stop it from
+    // being a one-way door — pinned on the session's first corpus with nothing
+    // to ever move it, the box would rank an hour-old corpus and caption it
+    // "not refreshed" forever.
+    //
+    //   * there is nothing to lose (no corpus yet), which is the first-scan
+    //     case this signal was added for;
+    //   * THE SEARCH ENDED. Nothing is on screen to be pulled out from under
+    //     anyone, so adopting costs the user nothing and the next search opens
+    //     on current data. This is exactly the boundary the in-folder search
+    //     already reconciles at (revalidate.shouldReconcile returns true the
+    //     moment `searching` goes false), and the two boxes should not disagree
+    //     about when a search is over.
+    if (corpus.status !== "ok" || !active) setFetchLifecycle(lifecycle);
+  }, [lifecycle, corpus.status, active]);
+  // Which generation the corpus IN HAND actually reflects, which is not the
+  // same question as when the fetch is allowed to re-run: a refetch forced by
+  // something else (an in-app rename, a retry) still comes back with current
+  // data and has to clear this, or the caveat would stick forever. Stamped
+  // from the moment the request was ISSUED, so a scan that completes while it
+  // is in flight leaves the answer marked behind rather than falsely current.
+  const corpusLifecycle = useRef(lifecycle);
+  const corpusBehind = corpusLifecycle.current !== lifecycle;
   // An in-app rename/delete moves paths the fetched corpus already holds, so
   // search would find the old name and the click would 404. It is a REFETCH
   // trigger, not a gate: `indexMayAnswer(home)` used to disable instant search
@@ -263,7 +303,9 @@ function FilesSearch({
   // for the rest of the session — while the index was in fact built. The home
   // page has no live walk to fall back on, so switching search OFF is the worst
   // available outcome: a corpus one rename stale beats no corpus at all.
-  // (useWalkSearch keeps the gate because it HAS a live walk to prefer.)
+  // (useWalkSearch keeps the gate: it has a live walk that can answer the
+  // renamed folder correctly, and racing the index against that walk does not
+  // change the calculus — the index would win the race with the wrong name.)
   const [mutations, setMutations] = useState(fsMutationCount);
   useEffect(() => subscribeFsMutations(() => setMutations(fsMutationCount())), []);
   // Bumped by a real gesture (typing) to re-run a failed fetch. Without it a
@@ -279,10 +321,13 @@ function FilesSearch({
   useEffect(() => {
     if (!wanted) return;
     const ctl = new AbortController();
+    const issuedAt = indexLifecycleCount();
     setCorpus((prev) => (prev.status === "ok" ? prev : { status: "loading" }));
     indexSearch(home, { signal: ctl.signal }).then(
       (res) => {
-        if (!ctl.signal.aborted) setCorpus(corpusFrom(res));
+        if (ctl.signal.aborted) return;
+        corpusLifecycle.current = issuedAt;
+        setCorpus(corpusFrom(res));
       },
       (err: Error) => {
         if (ctl.signal.aborted || err.name === "AbortError") return;
@@ -290,15 +335,28 @@ function FilesSearch({
       },
     );
     return () => ctl.abort();
-  }, [home, wanted, lifecycle, mutations, retryNonce]);
+  }, [home, wanted, fetchLifecycle, mutations, retryNonce]);
+
+  // A corpus once in hand keeps answering while the next one is fetched. The
+  // rescan that republishes this fetch used to put the box back into `cold`
+  // for its duration — "The file index is still building", zero rows, for an
+  // index that was built. Only never having had a corpus may suppress rows;
+  // being a generation behind is a note, not a downgrade (lib/home-search,
+  // and lib/repos.ts for the same rule on the repo cards).
+  const heldCorpus = useRef<HeldHomeCorpus | null>(null);
+  heldCorpus.current = nextHeldHomeCorpus(corpus, heldCorpus.current);
+  const view = homeCorpusView(corpus, heldCorpus.current);
+  // Behind either because the fetch is deliberately pinned to an older index
+  // generation, or because the rows on screen are the held ones while a fetch
+  // the user's own action forced actually runs.
+  const behind = view.entries !== null && (corpusBehind || view.stale);
 
   // -- ranking ---------------------------------------------------------------
   // The same sliced, cancellable scan the in-folder search runs — literally the
   // same hook (listing/useRankedScan): a covered home root can be 200k entries,
   // and scoring that synchronously on a keystroke is the typing freeze
   // listing/scan-job exists to prevent.
-  const entries = corpus.status === "ok" ? corpus.entries : null;
-  const { ranked, pending } = useRankedScan(entries, q, INSTANT_DEBOUNCE_MS);
+  const { ranked, pending } = useRankedScan(view.entries, q, INSTANT_DEBOUNCE_MS, view.key);
   const hits = useMemo(() => homeHitsFrom(ranked, home), [ranked, home]);
   const scanning = active && pending;
 
@@ -422,7 +480,14 @@ function FilesSearch({
   // Whether the instant list is a finished answer. Gates the AI row's
   // pre-selection, so Enter during the corpus load or the scan debounce cannot
   // spend a model call on a query that was about to answer itself.
-  const settled = rankingSettled(corpus.status, scanning);
+  const settled = rankingSettled(view.status, scanning);
+  // The indexing caveat, same helper and same two messages as the listing's
+  // search chip (listing/index-caveat) so the two boxes make the same claim in
+  // the same words. It is the piece that makes a lagging answer read as
+  // intentional: with rows on screen from a corpus a generation behind and
+  // nothing saying why, the box just looks wrong. The rows themselves dim
+  // while `view.stale`, the same treatment the listing gives held results.
+  const caveat = active && !showingAi ? indexCaveat(indexScan, behind) : null;
   const current = activeRow(highlight, hits.length, settled);
 
   const openRow = (row: number) => {
@@ -505,31 +570,65 @@ function FilesSearch({
 
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
 
+      {/* A refetch failed while rows are still in hand. The rows stay — they
+          are the best answer available on a page with no live walk — but the
+          failure is said out loud, because typing is the retry gesture
+          (`retryNonce`) and a retry that reports nothing leaves the user
+          pressing keys into silence. The no-rows case is not this banner: it
+          is the whole content of the result note below. */}
+      {active && !showingAi && view.entries !== null && view.message !== "" && (
+        <ErrorBanner>
+          Couldn't refresh the file index ({view.message}) — showing the last results.
+        </ErrorBanner>
+      )}
+
       {!active ? null : showingAi ? (
         <AiResults home={home} query={ai.query} result={ai.result} />
       ) : (
         <div className="fh-panel">
           <p className="fh-result-note">
-            {corpus.status === "cold" ? (
+            {/* `view.status`, not `corpus.status`: a refetch (a rescan, an
+                in-app rename) puts the FETCH back into loading/cold while the
+                corpus we are still ranking sits in hand. Branching on the raw
+                fetch state meant a mid-rescan search claimed the index was
+                "still building" over the rows it was showing. */}
+            {view.status === "cold" ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.
               "The file index is still building — AI search can answer in the meantime."
-            ) : corpus.status === "error" ? (
-              `The file index could not be searched: ${corpus.message}`
-            ) : corpus.status !== "ok" || scanning ? (
+            ) : view.status === "error" ? (
+              `The file index could not be searched: ${view.message}`
+            ) : view.status !== "ok" || scanning ? (
               "Searching…"
             ) : ranked.length === 0 ? (
               `No file name matched “${q}” — AI search can look at dates, types and sizes.`
             ) : (
               <>
-                {homeCountNote(ranked.length, corpus.truncated)}
+                {homeCountNote(ranked.length, view.truncated)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
               </>
             )}
+            {caveat && (
+              <span className="fh-index-chip" title={caveat.title}>
+                {/* Only while a scan is actually running. The chip also carries
+                    the "not refreshed" caveat, whose entire point is that NO
+                    work is in flight — a spinner there asserts the opposite of
+                    what the words next to it say. (Listing.tsx keeps its
+                    spinner on walk status for the same reason: the spinner
+                    tracks work, the caveat tracks trust.) */}
+                {indexScan?.scanning && <span className="fh-index-spinner" aria-hidden="true" />}
+                {caveat.note}
+              </span>
+            )}
           </p>
-          <ul className="fh-results" id="fh-result-list" role="listbox" aria-label="Search results">
+          <ul
+            className={"fh-results" + (behind ? " is-stale" : "")}
+            id="fh-result-list"
+            role="listbox"
+            aria-label="Search results"
+          >
             {hits.map((hit, i) => (
               <FileRow
                 key={hit.path}
@@ -637,6 +736,11 @@ export default function FilesHome({ config }: { config: Config }) {
   // an empty repo list.
   const [repos, setRepos] = useState<GitRepos | null>(null);
   const [reposFailed, setReposFailed] = useState(false);
+  // Search takes over the page body (bookmarks/recents hide behind it) for as
+  // long as there is a query — instant results appear while typing, so the
+  // grids yield from the first keystroke rather than on a submit. Declared
+  // here because the index poll below is shared with the search box.
+  const [searching, setSearching] = useState(false);
   // ...but "one GET on mount" alone would strand the user, because the answer can
   // arrive LATER: this list is derived from the file index, and a homepage opened
   // while the first scan is running would sit on "Still building…" until something
@@ -653,7 +757,14 @@ export default function FilesHome({ config }: { config: Config }) {
   // arrived — which froze `indexKey` below, so the cards and their "Reindexing"
   // note stayed on screen forever, even after the scan that would have cleared
   // them finished.
-  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos));
+  //
+  // `searching` widens the same poll rather than adding a second one: the
+  // search box needs the scan state for its "indexing…" caveat, and the repos
+  // gate goes quiet exactly when the index is healthy — which is when a scan
+  // starting mid-session would otherwise go unnoticed by the box. One poller,
+  // two consumers, the listing's rule (poll only while a search is open) still
+  // honoured for the search half.
+  const indexScan = useIndexStatus(reposNeedsIndexPoll(repos) || searching);
   // Refetch whenever the index's OBSERVABLE STATE changes — not when a scan
   // "completes". Completion was the previous trigger and it was subtly wrong:
   // `last_completed_at` is read off the manifest, and a cancelled, failed or
@@ -730,10 +841,6 @@ export default function FilesHome({ config }: { config: Config }) {
     tabParam === "repos"
       ? tabParam
       : "sessions";
-  // Search takes over the page body (bookmarks/recents hide behind it) for as
-  // long as there is a query — instant results appear while typing, so the
-  // grids yield from the first keystroke rather than on a submit.
-  const [searching, setSearching] = useState(false);
   // A ?q= present at load was a committed AI search; FilesSearch re-runs it.
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
@@ -745,7 +852,12 @@ export default function FilesHome({ config }: { config: Config }) {
             "Find and preview your files" restatement above the box only
             pushed the one thing you came to use further down. */}
         <header className="home-hero files-hero">
-          <FilesSearch home={home} initialQuery={initialQuery} onActiveChange={setSearching} />
+          <FilesSearch
+            home={home}
+            initialQuery={initialQuery}
+            indexScan={indexScan}
+            onActiveChange={setSearching}
+          />
         </header>
 
         {searching ? null : (

@@ -206,6 +206,50 @@
   color: var(--fg-muted);
 }
 
+/* The "indexing…" caveat, rendered at the end of that same line rather than as
+   a banner of its own: it is a footnote on the count next to it, and an index
+   is always a little behind the filesystem, so a louder treatment would cry
+   wolf permanently. Same two messages as the listing's search chip
+   (listing/index-caveat) — one claim, one wording, two boxes. */
+.fh-index-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 1px 7px 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  vertical-align: baseline;
+}
+
+.fh-index-spinner {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--fg-muted);
+  border-radius: 50%;
+  animation: fh-index-spin 0.6s linear infinite;
+}
+
+@keyframes fh-index-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Rows ranked against a corpus a generation behind, matching the listing's
+   .listing-behind — light on purpose, because this state can hold for as long
+   as the box is open and rows nobody can read are worse than rows a few
+   minutes old. The chip above says why in words. */
+.fh-results.is-stale {
+  opacity: 0.86;
+}
+
 .fh-result-note kbd {
   font: inherit;
   padding: 0 4px;

@@ -13,26 +13,44 @@ export interface IndexCaveat {
   title: string;
 }
 
-// `has_index` splits the two cases. An index that already exists keeps
+// `has_index` splits the two scanning cases. An index that already exists keeps
 // answering while a rescan runs (the last completed generation), so the user
 // is told the results may lag. With no index yet the live walk is answering,
 // so the same spinner means progress, not staleness.
+//
+// `behind` is the third message and the quiet one: no scan is running, but
+// these results were computed from an older generation of the tree and the
+// search is deliberately not refetching (listing/revalidate — swapping the
+// rows out from under someone reading them is worse than being a little
+// behind). That trade is only defensible if it is stated, which is what this
+// says. A running scan outranks it: "indexing…" already implies the same
+// caveat and names the reason.
 export function indexCaveat(
   status: IndexStatus | null | undefined,
+  behind = false,
 ): IndexCaveat | null {
-  if (!status || !status.scanning) return null;
-  if (status.has_index) {
+  if (status && status.scanning) {
+    if (status.has_index) {
+      return {
+        note: "indexing…",
+        title:
+          "A scan is running. Results come from the last completed index, so a very recent change may be missing.",
+      };
+    }
     return {
-      note: "indexing…",
+      note: `building index… ${(status.files || 0).toLocaleString()} files`,
       title:
-        "A scan is running. Results come from the last completed index, so a very recent change may be missing.",
+        "Building the file index for the first time. This folder is being searched live meanwhile.",
     };
   }
-  return {
-    note: `building index… ${(status.files || 0).toLocaleString()} files`,
-    title:
-      "Building the file index for the first time. This folder is being searched live meanwhile.",
-  };
+  if (behind) {
+    return {
+      note: "not refreshed",
+      title:
+        "This folder or the file index changed since these results were computed. They are kept as they are rather than swapped out while you read them — clear the search and run it again for the newest.",
+    };
+  }
+  return null;
 }
 
 // The chip carries both facts when both exist — one element, because the chip

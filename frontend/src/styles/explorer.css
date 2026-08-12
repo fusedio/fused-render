@@ -1453,6 +1453,17 @@ table.listing-table tr.skel-row:hover {
   transition: opacity 0.1s ease-out;
 }
 
+/* Results a generation behind, with nothing on its way to replace them: the
+   search deliberately does not refetch while you are reading (listing/
+   revalidate), and the chip in the input says so in words. Much lighter than
+   .listing-stale above, because this one is not a flicker — it can hold for as
+   long as the search is open, and rows nobody can read are worse than rows
+   that are a few minutes old. The two compound when both apply, which is
+   correct: that is genuinely the least certain state there is. */
+.listing-behind {
+  opacity: 0.86;
+}
+
 /* Shared search-input chrome (explorer header + sidebar bookmarks). */
 .listing-search-input,
 .bookmark-search-input {

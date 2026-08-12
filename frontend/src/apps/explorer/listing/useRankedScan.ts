@@ -22,14 +22,21 @@
 //    the scan has found so far". Without it an intermediate slice read as a
 //    settled result and a zero-hit moment mid-scan rendered a confident "no
 //    matches".
-//  * incremental resume. As long as query, hidden-intent and the entries ARRAY
-//    are unchanged, only entries appended since the last progress mark get
-//    scored, so a stream flush near the tail of a big walk costs one small scan
-//    rather than a re-scan of everything.
+//  * incremental resume. As long as query, hidden-intent and the CORPUS are
+//    unchanged, only entries appended since the last progress mark get scored,
+//    so a stream flush near the tail of a big walk costs one small scan rather
+//    than a re-scan of everything. "Unchanged" used to mean the entries ARRAY
+//    was identical, which a refetch can never satisfy — so every corpus
+//    refetch, including the ones triggered by things that do not change the
+//    corpus at all (an in-app rename, a retry after an error), re-scored the
+//    whole 200k-entry home corpus from zero. `corpusKey` is the caller's claim
+//    that two arrays hold the same rows; see the resume check below for what
+//    that claim has to be worth.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { WalkEntry } from "@platform/lib/api";
 import type { QueryTagged } from "@platform/lib/search-hold";
 import { startScanJob } from "@apps/explorer/listing/scan-job";
+import { canResumeScan, type ScanCache } from "@apps/explorer/listing/scan-resume";
 import { queryWantsHidden, rankCompare, scoreEntries } from "@apps/explorer/listing/search";
 import {
   RERANK_COMMIT_MS,
@@ -52,8 +59,21 @@ import {
  * Stream flushes reuse the same entries array (it is appended in place), so the
  * array identity cannot tell the job that more arrived — its length can, which
  * is why the length is a dep of its own.
+ *
+ * `corpusKey` identifies the corpus CONTENT: two arrays carrying the same key
+ * hold the same rows in the same order, whoever fetched them and whenever. It
+ * is what lets the incremental score cache survive a refetch. The caller owes
+ * that guarantee — a key that stayed the same across a genuine content change
+ * would leave the cache holding hits for entries that are no longer there —
+ * which is why "" means "no identity" and never resumes. It is optional, and a
+ * caller that omits it gets the array-identity rule and nothing more.
  */
-export function useRankedScan(entries: WalkEntry[] | null, q: string, debounceMs: number) {
+export function useRankedScan(
+  entries: WalkEntry[] | null,
+  q: string,
+  debounceMs: number,
+  corpusKey = "",
+) {
   const showHidden = queryWantsHidden(q);
   const [scanned, setScanned] = useState<QueryTagged<SearchHit> & { done: boolean }>(() => ({
     q: "",
@@ -63,13 +83,14 @@ export function useRankedScan(entries: WalkEntry[] | null, q: string, debounceMs
 
   // Incremental-scoring cache, which also carries a chunked scan's PROGRESS so
   // a job cancelled mid-flight (by the next stream flush) resumes.
-  const scoreCache = useRef<{
-    q: string;
-    showHidden: boolean;
-    entries: WalkEntry[] | null;
-    scored: number; // how many of `entries` have been scored already
-    ranked: SearchHit[];
-  }>({ q: "", showHidden: false, entries: null, scored: 0, ranked: [] });
+  const scoreCache = useRef<ScanCache & { ranked: SearchHit[] }>({
+    q: "",
+    showHidden: false,
+    entries: null,
+    key: "",
+    scored: 0, // how many of `entries` have been scored already
+    ranked: [],
+  });
 
   const scannable = q === "" ? null : entries;
   const entryCount = scannable ? scannable.length : 0;
@@ -87,10 +108,14 @@ export function useRankedScan(entries: WalkEntry[] | null, q: string, debounceMs
       return;
     }
     const cache = scoreCache.current;
-    const resumable =
-      cache.entries === scannable && cache.q === q && cache.showHidden === showHidden;
-    if (!resumable) {
-      scoreCache.current = { q, showHidden, entries: scannable, scored: 0, ranked: [] };
+    const target = { q, showHidden, entries: scannable, key: corpusKey };
+    if (canResumeScan(cache, target)) {
+      // Point the cache at the array the job will actually walk: on a refetch
+      // that is a NEW array holding the same rows, and the next resume check
+      // compares against it.
+      cache.entries = scannable;
+    } else {
+      scoreCache.current = { ...target, scored: 0, ranked: [] };
     }
     const live = scoreCache.current;
     return startScanJob(
@@ -117,7 +142,7 @@ export function useRankedScan(entries: WalkEntry[] | null, q: string, debounceMs
         },
       },
     );
-  }, [q, showHidden, scannable, entryCount, debounceMs]);
+  }, [q, showHidden, scannable, entryCount, debounceMs, corpusKey]);
 
   // Rows are dropped unless they were computed for the CURRENT query, so a scan
   // still catching up never shows the previous query's matches — the same rule

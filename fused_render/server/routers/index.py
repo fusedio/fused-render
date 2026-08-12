@@ -29,6 +29,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from fused_render.index import freshness, runner
+from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
 from fused_render.index.ignore import default_ignore, norm
@@ -131,19 +132,59 @@ async def startup_scan(start_dir: str | None = None) -> None:
 # opens AND again on every watch tick of a folder being displayed, so the hook
 # is called far more often than a check costs — and a check opens duckdb over
 # dirs.parquet. A plain non-reentrant lock, acquired by the request thread and
-# released by the worker, is the whole throttle.
+# released by the worker, is the whole concurrency control.
 _freshness_slot = threading.Lock()
+
+# ...but a non-reentrant lock is not a debounce: it drops the checks that
+# OVERLAP one, not the ones that follow it, so opening folders in sequence
+# checked on every single open. Each check opens duckdb over dirs.parquet, and
+# every check that does fire a scan ends by invalidating every corpus the
+# client has fetched (platform/lib/index-status). So a root is checked at most
+# this often, whatever the explorer is doing.
+#
+# Deliberately coarse. The client's posture is now to keep serving the corpus
+# it has and label it a generation behind rather than to refetch on every
+# index event (listing/revalidate), which makes an eager freshness check worth
+# much less than it used to be and its side effect — a scan completing mid-read
+# — worth avoiding. freshness.MIN_INTERVAL_S is the second, longer floor on the
+# SCANS themselves; this one is about the checks.
+FRESHNESS_CHECK_S = 60.0
+
+# root -> when it was last checked. Bounded by the number of configured scan
+# roots (a handful), so it needs no eviction.
+_freshness_checked: dict = {}
+_freshness_checked_lock = threading.Lock()
+
+
+def _freshness_due(root: str, now: float) -> bool:
+    """Whether `root` is due a check, stamping it when it is."""
+    with _freshness_checked_lock:
+        last = _freshness_checked.get(root)
+        if last is not None and (now - last) < FRESHNESS_CHECK_S:
+            return False
+        _freshness_checked[root] = now
+        return True
 
 
 def _run_freshness_check(path: str) -> None:
     """The check itself, off the request thread. Never raises: a listing must
     not fail, or slow down, because index housekeeping did."""
     try:
+        import time
+
         cfg = load_config()
-        root = freshness.note_folder_opened(cfg, path, scan_roots(cfg))
-        if root:
+        roots = scan_roots(cfg)
+        # The debounce is keyed on the enclosing ROOT, not the folder: a scan
+        # is per root, so two folders under one root are the same question. A
+        # folder under no root has no question to ask at all, and
+        # note_folder_opened would answer None anyway.
+        root = enclosing_root(roots, path)
+        if root is None or not _freshness_due(root, time.time()):
+            return
+        started = freshness.note_folder_opened(cfg, path, roots)
+        if started:
             logger.info("index: %s changed since the last scan; rescanning %s",
-                        path, root)
+                        path, started)
     except Exception:  # noqa: BLE001 - housekeeping must never surface
         logger.exception("could not check index freshness for %s", path)
     finally:
@@ -305,12 +346,15 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     what search shows (server/index_gitignore.py)."""
     if not root.strip():
         return _error("'root' is required")
-    out = index_search(load_config(), root, q=q, limit=limit)
-    # Only a whole-corpus request may use the filter cache: it is keyed on the
-    # index generation alone, so a narrowed request (`q`, or a caller-supplied
-    # cap) would both be served the wrong list and store its own subset for
-    # everyone else on that generation.
-    out = filter_corpus(out, cacheable=not q.strip() and limit >= MAX_CORPUS)
+    cfg = load_config()
+    out = index_search(cfg, root, q=q, limit=limit)
+    # Filtered per INDEX ROOT, not per requested folder: the explorer's
+    # in-folder search asks with whichever folder is open, and a cache keyed on
+    # that re-paid a whole-subtree check-ignore sweep every time browsing
+    # evicted a folder. `out["root"]` (not the raw query string) is the
+    # canonical spelling the corpus rels are relative to.
+    index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
+    out = filter_corpus(out, index_root=index_root)
     return {"ok": True, **out}
 
 
