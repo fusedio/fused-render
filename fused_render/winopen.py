@@ -528,7 +528,7 @@ def _open(path: str | None, requested_port: int | None) -> None:
             # fused-render://launch (D128): ensure the server is running and
             # stop — the page that linked here (D126 banner) reconnects on
             # its own, so opening a tab would just duplicate it.
-            # relaunch (D268) degrades to the same thing here: the macOS
+            # relaunch (D273) degrades to the same thing here: the macOS
             # quit-and-respawn doesn't apply (installed_version is None on
             # Windows, the restart card never shows), and falling through
             # would error on the /clone page.

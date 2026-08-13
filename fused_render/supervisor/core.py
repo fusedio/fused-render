@@ -442,7 +442,7 @@ def _open_command(port: int, command: protocol.Command) -> None:
                 # (and a forwarded Open reaches here only after startup). The
                 # server-down banner just needs the app running — the page that
                 # linked here reconnects on its own, so open NO tab (matching
-                # macOS app.py and Windows winopen._open). relaunch (D268)
+                # macOS app.py and Windows winopen._open). relaunch (D273)
                 # degrades to the same: the quit-and-respawn is macOS-only
                 # machinery, and /clone would just error on the link.
                 return
