@@ -5897,8 +5897,18 @@ const nearBottom = () => logwrap.scrollHeight - logwrap.scrollTop - logwrap.clie
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
   if (sending) return;  // mid-turn reset would orphan the streaming run's UI
-  fused.params.set("session_id", "");
-  fused.params.set("run", "");  // a failed re-attach must not chase us home
+  // Guarded, because this button is live on a chat that has no session yet —
+  // "New chat" enters the chat view and `session_id` is not written until the
+  // first turn's poll answers. Clearing an already-absent param is a semantic
+  // no-op that is NOT a textual one (`set(k, "")` appends `k=`), so it changed
+  // the URL, and the first param write on a pristine entry is the one that buys
+  // a `pushState` (D8/PR-3): leaving an empty new chat minted a history entry
+  // for a landing the page had already navigated to imperatively, and the Back
+  // that undid it did nothing visible. PT-15's rule — write only when the URL
+  // does not already MEAN the new state; absent and empty are the same answer.
+  const clearParam = (k) => { if (fused.params.get(k)) fused.params.set(k, ""); };
+  clearParam("session_id");
+  clearParam("run");  // a failed re-attach must not chase us home
   showSession();
   log.innerHTML = "";
   permCards.clear();  // the cards went with the log; don't keep handles to them
@@ -6694,8 +6704,29 @@ function buildPlanCard(p, run_id) {
       // authoritative READ of what landed (`res.decision`), not the click,
       // decides whether this ran — the losing half of a double-click must not
       // reset the picker for an approval that never actually took.
+      //
+      // The write is skipped when the URL ALREADY MEANS the landing mode, which
+      // for the CLI default means ABSENT as well as the literal "prompt": the
+      // only reader of this param is `permission_mode: get("permission") ||
+      // DEFAULT_PERMISSION` on the next spawn, and syncSelects paints the same
+      // default into the picker either way, so writing "prompt" over an absent
+      // param moves nothing and shows nothing. What it did do was change the
+      // URL, and the first param write on a pristine entry is the one that
+      // costs a `pushState` (D8/PR-3) — so approving a plan on a chat opened
+      // from a link (no `permission` in the URL, the ordinary case) minted a
+      // history entry whose whole content was a value that was already in
+      // force, and the Back that undid it did nothing visible. Exactly the
+      // `annmode` boot default in PT-15, one surface over.
+      //
+      // A landing mode that is NOT the default still always writes: absent
+      // means "prompt" and nothing else. The other no-op — param already
+      // literally equal to the landing mode — needs no guard here, because
+      // runtime.js drops writes that leave the URL byte-identical.
       if ((res && res.decision) === "allow") {
-        fused.params.set("permission", res.mode || "prompt");
+        const landing = res.mode || "prompt";
+        if (fused.params.get("permission") || landing !== DEFAULT_PERMISSION) {
+          fused.params.set("permission", landing);
+        }
         syncSelects();
       }
       // agent.py answers with what landed on disk (first writer wins), so a

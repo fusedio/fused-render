@@ -243,11 +243,39 @@ function setRasterTiles(){
              'raster-resampling': 'nearest' } });
 }
 
-function fitToData(instant){
+// `auto` = this frame moved the map ITSELF, because a store just finished
+// opening — not because anyone asked for this view. It rides through as
+// MapLibre's third `fitBounds` argument (eventData), which is merged onto the
+// `moveend` event, and that is the only way the moveend handler can tell the
+// two apart: a programmatic fit and a user drag produce byte-identical camera
+// state, and `originalEvent` is absent on BOTH (fitBounds has no source event,
+// and an inertial drag ends its own way).
+//
+// The handler uses it to skip writing `ll`/`z`. Those params are a record of
+// where the READER navigated to; the fit is where the DATA is, which the URL
+// already says by naming the store — `hadView` is false in exactly this path,
+// so a reload re-derives the same camera from the same bounds. Writing it back
+// bought nothing and cost a history entry under runtime.js's first-change-push
+// (D8/PR-3): opening the app on a fresh store, or picking a store out of the
+// explorer, would land a viewport nobody chose on top of the entry, and Back
+// would rewind the camera rather than leaving the view. The pre-gesture gate
+// (D268) covers the very first open on its own, but not this — the fit lands
+// AFTER an await on the daemon's /meta, so any click or keypress the reader got
+// in during that wait (the Browse button, a pan of the still-empty basemap, the
+// explorer click that chose this store) has already opened the gate. That is
+// the whole category the gate cannot see, and it has to be answered here, at
+// the one place that knows the move was ours.
+//
+// Rejected: suppressing with a timestamp/flag window around the fit ("ignore
+// moveend for 500 ms"). An instant fit and an animated one settle on wildly
+// different schedules, and a window wide enough for the slow case swallows a
+// real drag that starts while it is open. The eventData tag has no timing in it.
+function fitToData(instant, auto){
   const lb = meta && meta.lonlat_bounds;
   if (!lb) return;
   map.fitBounds([[lb.west, lb.south], [lb.east, lb.north]],
-    {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 10});
+    {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 10},
+    {fusedAutoFit: !!auto});
 }
 
 // ---------------- streaming panel ----------------
@@ -456,9 +484,30 @@ function syncControls(){
     els.idxRow.style.display = 'none';
   }
 }
-els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+// Load is always live and the box is empty until a store is open, so pressing it
+// on the "no store — use Browse" state wrote `file=` over an absent param: no
+// store opened, nothing on screen moved, and the URL still changed — which is
+// what buys the once-per-visit `pushState` (D8/PR-3, PT-15). Two ways for the URL
+// to already mean the typed path, and both have to be asked because P.file()
+// falls back through `_file` and DEFAULT_FILE: it equals the RAW param (absent
+// and '' are the same answer), or it equals the RESOLVED store — the box is
+// seeded from P.file(), so on a store the SHELL supplied pressing Load only
+// copied that path into a second param.
+els.load.onclick = () => {
+  const p = els.path.value.trim();
+  if (p !== (fused.params.get('file') || '') && p !== P.file()) fused.params.set('file', p);
+};
 els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
-els.var.onchange = () => { fused.params.set('var', els.var.value); fused.params.set('index', '0'); };
+// `set(k, '')` / `set('index', '0')` on an ABSENT key is a semantic no-op that
+// still rewrites the URL, so it is guarded everywhere the value being written is
+// the one the URL already means (PT-15). These particular ones cost no history
+// entry — they always ride behind a real change (`var`, `file`) that already took
+// the entry's one push, and every later write in a visit coalesces (D99) — but a
+// URL that a reader is meant to copy should not carry `var=&index=0&stretch=`
+// stating three defaults.
+const clearParam = (k) => { if (fused.params.get(k)) fused.params.set(k, ''); };
+const resetIndex = () => { if (fused.params.get('index')) fused.params.set('index', '0'); };
+els.var.onchange = () => { fused.params.set('var', els.var.value); resetIndex(); };
 let idxTimer = null;
 els.idxRange.oninput = () => {
   els.idxLabel.textContent = `${els.idxRange.value} / ${els.idxRange.max}`;
@@ -511,8 +560,8 @@ async function refreshExplorer(dir){
   els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
     const p = row.dataset.p;
     if (row.dataset.d === '1' && !p.endsWith('.zarr')) refreshExplorer(p);
-    else { fused.params.set('dir', p.replace(/\/[^/]*$/, '')); fused.params.set('var', ''); fused.params.set('index', '0');
-           fused.params.set('stretch', ''); fused.params.set('file', p); els.explorer.style.display = 'none'; }
+    else { fused.params.set('dir', p.replace(/\/[^/]*$/, '')); clearParam('var'); resetIndex();
+           clearParam('stretch'); fused.params.set('file', p); els.explorer.style.display = 'none'; }
   });
 }
 
@@ -550,7 +599,7 @@ async function loadSliceInner(){
   if (m.geographic){
     if (map.getLayer('raster') && firstFile){ map.removeLayer('raster'); map.removeSource('raster'); }
     setRasterTiles();
-    if (firstFile && !hadView) fitToData();
+    if (firstFile && !hadView) fitToData(undefined, true);
   } else {
     status('store has no geo transform — switch to the classic Zarr template (mode picker)', true);
   }
@@ -577,8 +626,47 @@ function onParamsChanged(){
 }
 fused.params.onChange(onParamsChanged);
 
-map.on('moveend', () => {
+// Has the reader touched this document at all? The same question runtime.js's
+// own gate asks (D268), asked again here because the answer is needed for a
+// DIFFERENT decision: the runtime uses it to pick pushState vs replaceState,
+// this uses it to decide whether the camera is worth recording at all. Capture
+// phase and sticky, for the same reasons the runtime gives — a handler that
+// stops propagation still counts, and the question is "ever", not "just now".
+// `wheel` is in the list because scroll-zoom is a real move that arrives with no
+// pointerdown of its own.
+let mapUserMoved = false;
+for (const ev of ['pointerdown', 'keydown', 'wheel'])
+  document.addEventListener(ev, () => { mapUserMoved = true; }, true);
+
+map.on('moveend', e => {
   renderLevelLine(); zoomHintUpdate(); statsActive(2500);
+  // The panels above repaint for every move, ours included — they are reading
+  // the camera, not recording a decision. The URL write is the one that has to
+  // know WHO moved the map, and there are two ways for the answer to be "not the
+  // reader":
+  //
+  //  · the auto-fit (see fitToData) — the camera the DATA implies, re-derivable
+  //    from bounds the URL already names by naming the store; and
+  //  · the boot settle — `styleReady` calls map.resize() twice against a
+  //    container that only gets its real size inside the shell's iframe, and
+  //    each resize ends a "move" at the untouched default camera ([0,25] z1.4).
+  //
+  // Both used to write. Neither cost a history entry on a cold open (the
+  // runtime folds a pre-gesture write into the entry, D268) but both put `ll`
+  // and `z` in the URL — and that is not cosmetic here: `hadView` reads those
+  // very params at boot, so a seeded default camera makes every LATER open of
+  // this store skip the fit and show the whole world instead of the data. The
+  // param has to stay ABSENT until it means something, which is what this guard
+  // buys. It also covers the case the runtime's gate cannot see: the fit lands
+  // after an await on the daemon's /meta, so a click that arrived during that
+  // wait (Browse, the explorer row that chose this store) has already opened the
+  // runtime's gate and the fit would push a real entry on top of it.
+  //
+  // Rejected: keying on `e.originalEvent` (present for drag and scroll-zoom,
+  // absent for a programmatic move). It is absent for the NavigationControl's
+  // +/- buttons too — those call map.zoomIn() with no source event — so a reader
+  // who navigates only by those buttons would never get a shareable URL.
+  if (!mapUserMoved || (e && e.fusedAutoFit)) return;
   const c = map.getCenter();
   fused.params.set('ll', `${c.lng.toFixed(4)},${c.lat.toFixed(4)}`);
   fused.params.set('z', map.getZoom().toFixed(2));

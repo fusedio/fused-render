@@ -384,19 +384,42 @@
       return base.concat([["is_null", "is empty"], ["not_null", "is not empty"]]);
     }
 
+    // Writing a param the URL ALREADY MEANS is a semantic no-op that is not a
+    // textual one: `set("sort", "")` on an absent key appends `sort=` and
+    // `set("offset", "0")` appends `offset=0`, and runtime.js sees a changed URL
+    // and spends this entry's once-per-visit history push on it (D8/PR-3) — the
+    // same shape as the claude template's `annmode` boot default (PT-15). It
+    // matters most on Reset: that button is live whether or not anything is
+    // sorted or filtered, so pressing it on an untouched grid used to mint a
+    // history entry for a screen that did not change, and the Back that undid it
+    // looked broken for the same reason. These two guards read the RAW param
+    // rather than currentSort()/currentOffset(): absent, empty and a malformed
+    // leftover all parse to the same "no sort" / "page one", so truthiness is
+    // exactly the question ("is there anything in the URL to clear?").
+    //
+    // Not extended to a general setParam() wrapper: the default a value has to
+    // be compared against is per-key knowledge (offset defaults to 0, sort to
+    // none, `table` to whatever the file's first table turns out to be), and a
+    // wrapper that guessed would be wrong for the third one.
+    const clearParam = (k) => { if (fused.params.get(k)) fused.params.set(k, ""); };
+    const resetOffset = () => { if (fused.params.get("offset")) fused.params.set("offset", "0"); };
+
     // Cycle a column's sort on header click: none -> asc -> desc -> none.
     function cycleSort(col) {
       const s = currentSort();
       const next = (!s || s.column !== col) ? col + ":asc"
                  : s.dir === "asc" ? col + ":desc" : "";
-      fused.params.set("offset", "0");
-      fused.params.set("sort", next);
+      resetOffset();
+      // The third click clears the sort; on an already-unsorted column there is
+      // nothing to clear and nothing to write.
+      if (next) fused.params.set("sort", next);
+      else clearParam("sort");
     }
 
     function clearSortFilters() {
-      fused.params.set("offset", "0");
-      fused.params.set("sort", "");
-      fused.params.set("filters", "");
+      resetOffset();
+      clearParam("sort");
+      clearParam("filters");
     }
 
     // ---- filter bar: one or more {column, op, value?} conditions, ANDed
@@ -404,8 +427,9 @@
     // on Apply (the reader ANDs them; two conditions on one column give a range).
 
     function setFilters(filters) {
-      fused.params.set("offset", "0");
-      fused.params.set("filters", filters && filters.length ? JSON.stringify(filters) : "");
+      resetOffset();
+      if (filters && filters.length) fused.params.set("filters", JSON.stringify(filters));
+      else clearParam("filters");   // Apply with every row removed clears nothing new
     }
 
     const colOptions = (cols, sel) => cols.map((c) =>
@@ -834,11 +858,16 @@
     prevBtn.addEventListener("click", () => fused.params.set("offset", String(Math.max(0, currentOffset() - LIMIT))));
     nextBtn.addEventListener("click", () => fused.params.set("offset", String(currentOffset() + LIMIT)));
     tableSel.addEventListener("change", () => {
-      fused.params.set("offset", "0");
+      resetOffset();
       // A new table has different columns, so any sort/filter keyed to the old
-      // one no longer applies — clear them.
-      fused.params.set("sort", "");
-      fused.params.set("filters", "");
+      // one no longer applies — clear them (guarded: switching tables from an
+      // unsorted, unfiltered page must not append `sort=&filters=` just to say
+      // what the URL already said — see clearParam).
+      clearParam("sort");
+      clearParam("filters");
+      // `table` itself is unguarded on purpose: this IS the navigation, and the
+      // reader's default table is server-side (the file's first table), so the
+      // template cannot tell whether an absent param already means this one.
       fused.params.set("table", tableSel.value);
     });
     addBtn.addEventListener("click", () => { staged.inserts.push({ values: {} }); renderAll(); });
