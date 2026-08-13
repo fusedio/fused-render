@@ -1,0 +1,115 @@
+"""Scheduled Claude messages: list, schedule, cancel.
+
+The model — the store, the firing decision, the catch-up bound — is
+`fused_render/schedule.py`; this is the HTTP skin over it. Two things live here
+rather than there, both because they need what only this layer knows:
+
+* **the mount refusal.** A scheduled turn is an agent turned loose on a path,
+  and the bytes under the mounts dir come from a remote over FUSE. Every peer
+  gate refuses those paths (the claude template's own `condition.py` exists for
+  this single refusal), so scheduling a message against one would route around
+  that gate. The mounts registry lives above the schedule module, so the check
+  belongs on this side of the import.
+* **ValueError -> 400.** The model raises with a message written for a human;
+  the route is what turns that into a status code.
+
+Reads are unguarded like every other read endpoint. Both POSTs carry the D3
+X-Fused guard: one of them schedules code execution, and the other stops it.
+"""
+import os
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Body, Header
+
+from fused_render import schedule
+from fused_render.server.common import _error, _require_fused
+
+router = APIRouter()
+
+
+@router.get("/api/schedule")
+def api_schedule():
+    """Every scheduled message, live ones first.
+
+    `max_late_seconds` rides along because the UI cannot explain a `missed`
+    entry without it — the bound is configurable (FUSED_RENDER_SCHEDULE_MAX_LATE),
+    so the number has to come from the server rather than be restated in the
+    page."""
+    return {"entries": schedule.list_entries(),
+            "max_late_seconds": schedule.max_late_seconds(),
+            "permission_modes": list(schedule.PERMISSION_MODES)}
+
+
+@router.post("/api/schedule")
+def api_schedule_create(body: dict = Body(...),
+                        x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    target = body.get("target")
+    if not isinstance(target, str) or not target.strip():
+        return _error("target: required", status=400)
+
+    # Refused before anything is stored — see the module docstring. Resolved the
+    # same way the model will resolve it (expanduser + abspath), so the path this
+    # check clears is the path that gets scheduled.
+    #
+    # Imported per call, not at module scope: binding the name at import would
+    # freeze it past the mounts registry's own seams (the same reason the peer
+    # gates resolve it late).
+    from fused_render.shell.mounts import is_mount_backed
+
+    resolved = os.path.abspath(os.path.expanduser(target.strip()))
+    if is_mount_backed(resolved):
+        return _error(
+            "target: refused — a scheduled session must not run against a "
+            "remote mount", status=400)
+
+    # `delay_seconds` is the other way to say when: a page offering "in 30
+    # minutes" should not have to do timezone arithmetic to say it. Exactly one
+    # of the two, so a request carrying both cannot half-mean each.
+    due = body.get("due")
+    delay = body.get("delay_seconds")
+    if (due is None) == (delay is None):
+        return _error("expected exactly one of `due` or `delay_seconds`",
+                      status=400)
+    if delay is not None:
+        try:
+            seconds = float(delay)
+        except (TypeError, ValueError):
+            return _error("delay_seconds: expected a number", status=400)
+        if seconds <= 0:
+            return _error("delay_seconds: must be positive", status=400)
+        due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+
+    try:
+        entry = schedule.create(
+            resolved, body.get("message"), due,
+            session_id=str(body.get("session_id") or ""),
+            permission_mode=str(body.get("permission_mode") or ""))
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    return {"entry": entry}
+
+
+@router.post("/api/schedule/cancel")
+def api_schedule_cancel(body: dict = Body(...),
+                        x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    entry_id = body.get("id")
+    if not isinstance(entry_id, str) or not entry_id:
+        return _error("id: required", status=400)
+    entry = schedule.cancel(entry_id)
+    if entry is None:
+        # One 404 for both "no such id" and "not pending any more": the second
+        # is the race worth being honest about — a message that sent while the
+        # user was reaching for Cancel is not cancellable, and saying "already
+        # sent" would be a guess this layer cannot make (the entry may equally
+        # have been cancelled a moment ago in another tab).
+        return _error(f"no pending scheduled message with id {entry_id!r}",
+                      status=404)
+    return {"entry": entry}

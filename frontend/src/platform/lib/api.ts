@@ -2228,3 +2228,64 @@ export function aiComplete(prompt: string, system_prompt?: string): Promise<stri
     ...(system_prompt ? { system_prompt } : {}),
   }).then((r) => r.result.text);
 }
+
+// -- Scheduled Claude messages (/api/schedule) --------------------------------
+// A durable list of "send this prompt to this target at this time", fired by the
+// server's own loop (fused_render/schedule.py) so a scheduled turn runs in the
+// app's environment rather than a cron job's. `state` is the whole story of one
+// entry: `pending` until due, then `sent` (with `run_id`), or `missed` when the
+// app was not running between the due time and the catch-up bound, or `error`
+// with a reason. Terminal entries are kept — a message that did not send is
+// exactly the one the user needs to be able to read afterwards.
+export type ScheduledState =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "missed"
+  | "error"
+  | "cancelled";
+
+export interface ScheduledMessage {
+  id: string;
+  target: string;
+  message: string;
+  due: string;
+  session_id: string;
+  permission_mode: string;
+  state: ScheduledState;
+  created: string;
+  fired: string;
+  run_id: string;
+  error: string;
+}
+
+export interface ScheduleResult {
+  entries: ScheduledMessage[];
+  // The catch-up bound, in seconds (FUSED_RENDER_SCHEDULE_MAX_LATE server-side).
+  // Configurable, so the page cannot explain a `missed` entry without asking.
+  max_late_seconds: number;
+  permission_modes: string[];
+}
+
+export function getSchedule(): Promise<ScheduleResult> {
+  return getJson<ScheduleResult>("/api/schedule");
+}
+
+// Exactly one of `due` (ISO 8601) or `delay_seconds` — the server refuses both,
+// so a caller offering "in 30 minutes" never has to do timezone arithmetic.
+export function scheduleMessage(body: {
+  target: string;
+  message: string;
+  due?: string;
+  delay_seconds?: number;
+  session_id?: string;
+  permission_mode?: string;
+}): Promise<{ entry: ScheduledMessage }> {
+  return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
+}
+
+// Rejects with the server's 404 message when the entry is no longer pending —
+// a message that sent while the user was reaching for Cancel cannot be withdrawn.
+export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
+  return postJson<{ entry: ScheduledMessage }>("/api/schedule/cancel", { id });
+}

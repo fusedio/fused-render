@@ -379,7 +379,12 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     pthread_atfork handler; same crash test_worker_forksafe.py pins for the
     executor). The spawn must therefore happen via a helper subprocess — and
     that helper's own Popen must stay on the posix_spawn path (close_fds=False,
-    no cwd, no start_new_session) with the prompt on stdin, not argv."""
+    no cwd, no start_new_session) with the prompt on stdin, not argv.
+
+    The spawn itself now lives in fused_render/claude_spawn.py — shared with
+    scheduled messages, which need the identical discipline — so the subprocess
+    stub goes there. What stays this module's own is the policy asserted below:
+    permission mode "auto", and a fresh session."""
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
     entry.write_text("<html></html>")
@@ -391,7 +396,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
         return type("R", (), {"returncode": 0,
                               "stdout": '{"run_id": "r-1"}', "stderr": ""})()
 
-    monkeypatch.setattr(apps_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
     monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
     started_threads = []
     monkeypatch.setattr(apps_mod.threading, "Thread",
@@ -401,7 +406,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     assert (run_id, err) == ("r-1", None)
 
     # a real python -c helper, not claude itself, and prompt over stdin only
-    assert seen["cmd"][0] == apps_mod.sys.executable
+    assert seen["cmd"][0] == apps_mod.claude_spawn.sys.executable
     assert "secret prompt" not in " ".join(seen["cmd"])
     import json as jsonlib
     req = jsonlib.loads(seen["kwargs"]["input"])
@@ -411,6 +416,8 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     # the strict default mode would park the first tool call until the
     # permission timeout denied it — boilerplate, silently.
     assert req["permission_mode"] == "auto"
+    # an app is being scaffolded: there is no prior conversation to resume
+    assert req["session_id"] == ""
     # posix_spawn preconditions on the helper spawn (the crash was fork+exec)
     assert seen["kwargs"]["close_fds"] is False
     assert "cwd" not in seen["kwargs"]
@@ -423,7 +430,7 @@ def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
         return type("R", (), {"returncode": 1, "stdout": "",
                               "stderr": "boom\nFileNotFoundError: claude"})()
 
-    monkeypatch.setattr(apps_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
     run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
     assert run_id is None
     assert "FileNotFoundError: claude" in err

@@ -1,0 +1,74 @@
+/* ---- Scheduled messages page (shell/Scheduled.tsx) ---------------------- */
+/* Borrows the settings-page vocabulary wholesale — .prefs-page, .prefs-section,
+   .field / .field-control, .btn — so the only rules here are the three things
+   that page has and no other does: a state pill, the row header that carries it,
+   and the quick-pick button row. */
+
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.schedule-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* The submit button sits at the end of the quick-pick row, so push it away from
+   the chips that only stage a time. */
+.schedule-quick .btn-primary {
+  margin-left: auto;
+}
+
+.schedule-row-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.schedule-row-head .btn {
+  margin-left: auto;
+}
+
+.schedule-message {
+  /* The prompt is the content of the row, so it gets the body colour while the
+     metadata around it stays muted. `pre-wrap` keeps a multi-line prompt looking
+     the way the user typed it. */
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.schedule-state {
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* Only the states that need to be distinguished at a glance get a colour: a
+   message still waiting, and the two ways one can fail to have been sent.
+   `sent` and `cancelled` are deliberately plain — nothing to act on. */
+.schedule-state--pending,
+.schedule-state--sending {
+  color: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Missed is a warning, not an error: nothing went wrong, the app just wasn't
+   running in the window where sending was still the right thing to do. */
+.schedule-state--missed {
+  color: var(--warning);
+  border-color: currentColor;
+}
+
+.schedule-state--error {
+  color: var(--error);
+  border-color: currentColor;
+}

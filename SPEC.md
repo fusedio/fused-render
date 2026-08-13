@@ -6038,3 +6038,98 @@ an AI Models page that could say what was on disk but not what was *running*.
   interpreter and framework; the allocator carries buffers RSS has not seen yet),
   so the honest claim is "at least this much". A runner's probe that raises is
   worth no memory figure, never a broken `/health`.
+
+## 41. Scheduled Messages — Sending Claude a Message Later (D274)
+
+Goal: the app could start a Claude Code session on demand — the split-view chat,
+and the apps API's scaffolding turn — but had no way to say *later*. Scheduling
+a message ("update the changelog at 6pm", "re-run the check tomorrow morning")
+had to be done outside the app, by a crontab line or a Task Scheduler entry
+invoking `agent.py` directly, and that turns out not to work in the way that
+matters: a scheduled turn launched from outside the app runs in a different
+world from one the user typed.
+
+- **SCH-1** **A durable schedule** (`fused_render/schedule.py`,
+  `<home>/scheduled_messages.json`). One entry per message:
+  `{id, target, message, due, session_id, permission_mode, state, created,
+  fired, run_id, error}`. On disk, not in memory (unlike the job registry, §36)
+  — the whole point is to outlive the app session that scheduled it. Branch-aware
+  through `storage.home_dir()`, so a dev checkout on a branch ref never fires the
+  baseline install's messages. A missing or corrupt store reads as "nothing
+  scheduled", the same degradation as every other registry here.
+- **SCH-2** **The app sends it, not the OS.** `supervisor/paths.py`'s
+  `child_environment` injects ~20 variables into every child the app spawns
+  (state/cache/runtime/temp/log dirs, the bundled rclone and uv, `TMPDIR`, the
+  `CLAUDE_CONFIG_DIR` passthrough), and `_plugin_argv` hands a session
+  fused-render's skills only when that contract is present. A cron line
+  reproduces none of it, so its turn silently becomes a *different install*:
+  other state dir, no skills. On macOS it is worse than different — per D72 a
+  process that is not the app does not inherit the app's Documents/Desktop TCC
+  grants, and the CLI's credentials live in the login Keychain of a GUI session
+  cron is not in; both spawn paths run headless (`claude -p`) where the `/login`
+  the CLI prints can never be actioned. Firing inside the server process makes a
+  scheduled turn environmentally identical to a typed one.
+- **SCH-3** **The cost, stated: nothing fires while the app is closed.** The page
+  says this where it is relevant rather than implying a guarantee it does not
+  have. Two mechanisms make it survivable:
+  - **SCH-3a** **Wall-clock comparison, never tick-counting.** Every tick asks
+    what is due *now*. A laptop that slept through a due time fires on the tick
+    after it wakes; an app that was quit fires on the tick after it starts.
+    Catch-up is not a feature — it is what the absence of tick-counting gets for
+    free, which is why the loop is a **startup event** (not the `create_app`
+    body: it sends things, and every test that builds an app would otherwise
+    spawn whatever the developer's store held) and does not sleep before its
+    first pass.
+  - **SCH-3b** **A bound on how late is still worth sending**
+    (`FUSED_RENDER_SCHEDULE_MAX_LATE`, default 24h). Unbounded catch-up is its
+    own bug: a message meant for Tuesday's standup, fired unattended on Friday
+    against a repo that has moved on, is worse than one that never fired. Past
+    the bound an entry becomes `missed` — visible, never sent. `GET /api/schedule`
+    reports the bound, because the page cannot explain a `missed` entry without it.
+- **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
+  *before* the helper is launched, so a process that dies mid-spawn leaves it
+  `sending` rather than `pending` and the next boot does not resend it; a sweep
+  later reports it as interrupted. That is the safe direction to fail — an unsent
+  message is a disappointment, a message sent five times over five crash-restarts
+  is an agent running unattended five times.
+- **SCH-5** **Permission mode is per-entry, default `auto`.** Same reasoning as
+  the apps API (`_APP_SESSION_PERMISSION_MODE`): nobody polls `decide`, so under
+  the strict default the first tool call parks a request until `PERMISSION_WAIT`
+  denies it — a message that "sent" and did nothing. The extra wrinkle here is
+  that the turn is unattended *by definition*, so the mode is recorded ON the
+  entry: "auto" is a choice made per message, not a property of scheduling.
+- **SCH-6** **A mount-backed target is refused**, in the router rather than the
+  model (the mounts registry lives above it). A scheduled turn is an agent turned
+  loose on a path; scheduling one against a FUSE mount would route around the
+  gate `templates/claude/condition.py` exists solely to be.
+- **SCH-7** **Routes.** `GET /api/schedule` lists (unguarded, like every read);
+  `POST /api/schedule` schedules and `POST /api/schedule/cancel` withdraws, both
+  behind the D3 X-Fused guard — one schedules code execution and the other stops
+  it. Create takes **exactly one** of `due` (ISO 8601) or `delay_seconds`, so a
+  caller offering "in 30 minutes" never does timezone arithmetic; a **naive**
+  `due` is read as LOCAL time, because it came from a human writing the time on
+  their own clock. Only a `pending` entry is cancellable: the helper for a
+  `sending` one is already away.
+- **SCH-8** **The OS half launches the app and nothing else**
+  (`fused_render/schedule_wake.py`). It sends no messages and does not know what
+  one is; it asks the platform to have the app *running* at the times something
+  is due, and the app's own first tick (SCH-3a) does the rest. **macOS: a
+  LaunchAgent** — `launchd`, not cron, because it runs in the Aqua session (so
+  the app it starts has the Keychain and can prompt for consent) and it runs a
+  missed `StartCalendarInterval` when the machine next wakes, which cron does not
+  do at all. Intervals are written in **local time** (what launchd evaluates
+  against), capped to the soonest few (the plist is a wake-up list, not the
+  schedule), and `open -g -a` launches **without stealing focus** from whatever a
+  3am wake interrupted. **Windows and Linux get nothing new, deliberately:** both
+  already have a start-at-login toggle the supervisor owns (`_win32/startup.py`'s
+  Run key, `_linux/startup.py`'s autostart entry), and a schedule-specific timer
+  would be a third mechanism that can disagree with those two about whether the
+  app should be running. Everything here is best-effort: a failed plist write
+  makes messages fire less reliably, never lost, and must not fail the store
+  write that triggered it.
+- **SCH-9** **One copy of the spawn discipline** (`fused_render/claude_spawn.py`).
+  The apps API and the scheduler need the identical posix_spawn posture — calling
+  `agent._start` in the server process fork()s with libproj resident and SIGSEGVs
+  the child before exec — plus the same poll that gets a run into its sidecar.
+  Extracted rather than duplicated, because that reasoning is the kind that gets
+  paraphrased into something false on the second telling.

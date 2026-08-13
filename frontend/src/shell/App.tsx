@@ -53,6 +53,7 @@ const Preferences = lazy(() => import("@shell/Preferences"));
 const Templates = lazy(() => import("@shell/templates/Templates"));
 const Mounts = lazy(() => import("@shell/Mounts"));
 const AiModels = lazy(() => import("@shell/AiModels"));
+const Scheduled = lazy(() => import("@shell/Scheduled"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
@@ -548,6 +549,9 @@ export default function App({ config }: { config: Config }) {
   const isTemplates = pathname === "/templates";
   // PROTOTYPE: mounts page (see shell/Mounts.tsx).
   const isMounts = pathname === "/mounts";
+  // Scheduled Claude messages (shell/Scheduled.tsx) — same chrome-free settings
+  // pattern as Mounts.
+  const isScheduled = pathname === "/scheduled";
   // What the Hugging Face cache holds on this machine (shell/AiModels.tsx).
   const isAiModels = pathname === "/ai-models";
   // Apps hub = the app home: all detected apps with search + tag filters.
@@ -566,7 +570,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -584,6 +588,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isMounts
               ? "Mounts"
+              : isScheduled
+                ? "Scheduled messages"
               : isAiModels
                 ? "AI Models"
                 : isApps
@@ -679,6 +685,17 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Mounts key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isScheduled) {
+    // Scheduled Claude messages — the durable list plus the form that adds to
+    // it. Keyed on `epoch` like its neighbours: the page has no URL-held view
+    // state of its own, so a remount per navigation is just a fresh read.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <Scheduled key={epoch} />
         </Suspense>
       </div>
     );
