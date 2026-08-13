@@ -63,12 +63,11 @@ describe("visibleModes", () => {
 
 describe("partitionModes", () => {
   const image = t("image");
-  const history = t("history");
 
   it("splits the companions out and preserves order in both halves", () => {
-    const { content, sidebar } = partitionModes([image, t("photos"), claude, history]);
+    const { content, sidebar } = partitionModes([image, t("photos"), claude, git]);
     expect(names(content)).toEqual(["image", "photos"]);
-    expect(names(sidebar)).toEqual(["claude", "history"]);
+    expect(names(sidebar)).toEqual(["claude", "git"]);
   });
 
   it("leaves a list with no companions entirely to the content pane", () => {
@@ -80,7 +79,6 @@ describe("partitionModes", () => {
   it("agrees with isSidebarMode", () => {
     expect(isSidebarMode("claude")).toBe(true);
     expect(isSidebarMode("git")).toBe(true);
-    expect(isSidebarMode("history")).toBe(true);
     expect(isSidebarMode("claude_split")).toBe(false);
     expect(isSidebarMode("_render")).toBe(false);
   });
@@ -91,9 +89,9 @@ describe("partitionModes", () => {
   // it. The file sidebar's own git entry is BORROWED from the parent folder and
   // appended (lib/dir-mode), which is why `orderSidebarModes` exists.
   it("does not invent a git entry for a file that has none", () => {
-    const { content, sidebar } = partitionModes([image, claude, history]);
+    const { content, sidebar } = partitionModes([image, claude]);
     expect(names(content)).toEqual(["image"]);
-    expect(names(sidebar)).toEqual(["claude", "history"]);
+    expect(names(sidebar)).toEqual(["claude"]);
   });
 
   it("takes a file's own git entry into the sidebar half when there is one", () => {
@@ -106,45 +104,41 @@ describe("partitionModes", () => {
   it("defaults the sidebar to the chat, whatever the registry's order was", () => {
     // The registry ranks views for a FILE TYPE; this is a preference between the
     // companions, so SIDEBAR_MODES order wins over the list's.
-    expect(defaultSidebarMode([history, git, claude])).toBe("claude");
-    expect(defaultSidebarMode([history, git])).toBe("git");
-    expect(defaultSidebarMode([history])).toBe("history");
+    expect(defaultSidebarMode([git, claude])).toBe("claude");
+    expect(defaultSidebarMode([git])).toBe("git");
+    // An unranked companion (a user registry's own) still opens something.
+    expect(defaultSidebarMode([t("my_notes")])).toBe("my_notes");
     expect(defaultSidebarMode([])).toBe(null);
   });
 });
 
-// The switcher's order is Claude / Git / History for every file, because the list
-// is ASSEMBLED (git arrives from the parent folder and is appended) rather than
+// The switcher's order is Claude / Git for every file, because the list is
+// ASSEMBLED (git arrives from the parent folder and is appended) rather than
 // read off one registry key.
 describe("orderSidebarModes", () => {
-  const history = t("history");
-
   it("puts the companions in SIDEBAR_MODES order, not the input's", () => {
-    expect(names(orderSidebarModes([history, claude]))).toEqual(["claude", "history"]);
     // The shape the file sidebar actually builds: the file's own companions in
-    // registry order, then the borrowed git appended at the end.
-    expect(names(orderSidebarModes([claude, history, git]))).toEqual([
-      "claude",
-      "git",
-      "history",
-    ]);
+    // registry order, then the borrowed git appended at the end — and the
+    // reverse, which is the case the rank exists for.
+    expect(names(orderSidebarModes([claude, git]))).toEqual(["claude", "git"]);
+    expect(names(orderSidebarModes([git, claude]))).toEqual(["claude", "git"]);
   });
 
   it("leaves an unknown companion at the end, in the order it came", () => {
     const mine = t("my_notes");
     const yours = t("your_notes");
-    expect(names(orderSidebarModes([mine, history, yours, claude]))).toEqual([
+    expect(names(orderSidebarModes([mine, git, yours, claude]))).toEqual([
       "claude",
-      "history",
+      "git",
       "my_notes",
       "your_notes",
     ]);
   });
 
   it("does not mutate its input", () => {
-    const input = [t("history"), claude];
+    const input = [git, claude];
     orderSidebarModes(input);
-    expect(names(input)).toEqual(["history", "claude"]);
+    expect(names(input)).toEqual(["git", "claude"]);
   });
 });
 

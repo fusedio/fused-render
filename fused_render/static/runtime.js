@@ -805,6 +805,103 @@
     }
   }
 
+  // ---- revision reads (`_rev`) ---------------------------------------------
+  //
+  // A frame whose OWN url carries `_rev=<sha>` is showing the target file AS OF
+  // that commit: every read helper further down (rawUrl, and readFile/stat
+  // through it) resolves through /api/git/show instead of the live filesystem,
+  // and every write is refused. Declared up HERE, beside the other ancestor-hop
+  // plumbing and above the install loader, rather than next to the helpers it
+  // serves: the loader block down there is lifted verbatim into a node harness by
+  // tests/test_server_env_install.py, and a module-level read of `ownQuery`
+  // inside that slice is a ReferenceError under node (the same trap noteFsChanged
+  // fell into — see that file's prelude comment). The git sidebar puts a page into
+  // this state by telling the shell which commit was clicked (window
+  // ._fusedSelectRev, below); the shell rebuilds the content frame's src with the
+  // param on it. Reading it HERE is what makes the whole feature cost templates
+  // zero lines: a template still calls fused.readFile(fused.params.get("_file")),
+  // and which bytes that means is decided by the frame's url.
+  //
+  // Read once, not per call: `_rev` rides the frame's own URL, and a change to
+  // that url is a navigation — a new document with a fresh copy of this script.
+  // (`_file` is read per call because it can also come from an ANCESTOR's query;
+  // a revision deliberately never does. It must not be inheritable — a sha chosen
+  // for one file's pane leaking into another frame is exactly the bug that keeps
+  // this param off the shell's address bar in the first place.)
+  //
+  // Hex only, and validated here as well as server-side: the value goes into a
+  // query string this script builds, and a junk `_rev` must read as "no revision"
+  // rather than produce a broken read on every file the page touches.
+  const rev = (function () {
+    const raw = ownQuery("_rev");
+    return raw && /^[0-9a-fA-F]{4,64}$/.test(raw) ? raw : null;
+  })();
+
+  function revUrl(path) {
+    return "/api/git/show?path=" + encodeURIComponent(path) +
+      "&sha=" + encodeURIComponent(rev);
+  }
+
+  // Whether a path read by this page resolves through git rather than the disk.
+  // ABSOLUTE paths only, deliberately: a relative path is resolved against the
+  // PAGE's own directory (SPEC RH-1) — the template's own assets, which live in
+  // the app's install tree and have nothing to do with the target file's
+  // repository. Those stay live.
+  function revResolves(path) {
+    return rev !== null && typeof path === "string" && path[0] === "/";
+  }
+
+  // THE WRITE GATE, AND WHAT IT IS NOT.
+  //
+  // This is a RUNTIME-LEVEL refusal, not a server-enforced one. /api/fs/write and
+  // friends have no idea a caller is looking at a past revision — the path a
+  // revision pane holds is the LIVE path — so nothing stops a page that builds its
+  // own fetch() from writing today's file while showing yesterday's bytes. The
+  // guarantee here is exactly: a template that reaches the filesystem through the
+  // documented `fused.*` helpers cannot silently do that. Making it a server
+  // property would mean teaching every mutating route about a UI mode, which is
+  // the wrong place for it; making it a lie would be worse than either.
+  function revRefusal(what) {
+    const err = new Error(
+      what + " is not possible here: this pane is showing the file as of commit " +
+      rev.slice(0, 7) + ", which is read-only. Close the revision to edit the "
+      + "current file.");
+    // `readonly` is the type the helpers already reject with for a file the
+    // filesystem refuses (see writeFile), and a template's existing
+    // `err.type === "readonly"` branch is the right handler for this too.
+    err.type = "readonly";
+    return Promise.reject(err);
+  }
+
+  // Tell every same-origin ancestor which commit the user just selected (or, with
+  // null, that the selection is gone). Same shape and the same climbing/try-catch
+  // discipline as noteFsChanged above, for the same reasons (D3/D4: a global on
+  // the ancestor, not a postMessage) — and underscore-prefixed for the same
+  // reason as _fusedSidecarPath: it is plumbing between the built-in git template
+  // and the shell that ships with it, NOT a documented `fused.*` contract.
+  //
+  // Deliberately not a param. `fused.params.set` writes the ancestor's URL, and
+  // the shell's address bar is the one place this value must never appear: a path
+  // change preserves the query verbatim (so a sha picked from file A's commit list
+  // would be carried onto file B), the session sidecar PUTs the whole query string
+  // and replays it on the next bare open (so it would survive a restart), and
+  // bookmarks store the search too. `_file` and `chat_only=1` already live on an
+  // iframe src alone for the same reason; `_rev` is the third param of that kind.
+  function noteRevSelected(sha) {
+    const value = typeof sha === "string" && sha ? sha : null;
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedRevSelected === "function") t._fusedRevSelected(value);
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+  }
+
   // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
   // Most .py files run on the app's own interpreter and install nothing. A file
@@ -1292,6 +1389,31 @@
       );
   }
 
+  // KNOWN GAP — `_rev` DOES NOT REACH A PYTHON READER. Deliberate, deferred, not
+  // an oversight; the seam is here because here is where it would have to be
+  // closed.
+  //
+  // The read helpers above resolve a revision (fused.readFile / rawUrl / stat all
+  // route through /api/git/show while this frame carries `_rev`), so every
+  // template whose bytes come from those — code, markdown, json, images, media —
+  // renders the past revision truthfully with no change of its own. A template
+  // whose bytes come from a READER `.py` is different: `main()` receives the real
+  // absolute path and `open()`s the LIVE file, so a parquet/xlsx/notebook pane
+  // would show CURRENT content under a heading that says otherwise.
+  //
+  // Closing it means the reader can no longer be handed a path: it needs the bytes
+  // (a temp materialization, which is exactly the on-disk snapshot this design
+  // removed) or a file-like object over the revision route (a Python-side shim
+  // every reader would have to accept). That is phase 2b, and it is a change to the
+  // `main()` contract rather than a patch here — hence the deferral.
+  //
+  // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
+  // revision indicator names the limitation next to the sha (Preview.tsx —
+  // RevisionPill), so a pane is never labelled as a past revision with no warning
+  // that a Python-backed view may not be one. Reads are not blocked here: refusing
+  // runPython under `_rev` would leave those modes with a broken pane instead of a
+  // qualified one, and the same reader also serves modes that legitimately do not
+  // read the target's bytes at all.
   function runPython(pyPath, params, opts) {
     opts = opts || {};
     // Default channel = the .py path; opts.key === null opts out, a string regroups.
@@ -1426,6 +1548,9 @@
   // against the bundle's _asset route by the same key. An absolute path needs no
   // base and is sent unchanged.
   function rawUrl(path) {
+    // A revision pane's <img>/<embed>/download URL points at the object database,
+    // not the working tree (see revResolves for why only absolute paths).
+    if (revResolves(path)) return revUrl(path);
     let url = "/api/fs/raw?path=" + encodeURIComponent(path);
     if (path && path[0] !== "/") {
       const ownPath = new URLSearchParams(window.location.search).get("path");
@@ -1441,7 +1566,43 @@
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        return data;
+        if (!revResolves(path)) return data;
+        return revStat(path, data);
+      });
+  }
+
+  // A stat under `_rev`. The live stat is still the source of everything that is
+  // about the PATH rather than about the bytes (name, is_dir, remote, the mode
+  // list a template may consult) — but two fields would otherwise describe the
+  // wrong file:
+  //
+  //   writable   FALSE, always. This is the field every template checks before it
+  //              offers an edit UI (the code editor's whole save path hangs off
+  //              it), so a revision pane must answer no here or the editor
+  //              renders enabled over bytes it cannot write back.
+  //   size       the blob's size AT THIS REVISION, from a HEAD on the revision
+  //              route. Templates use it as a read guard ("too big to render"),
+  //              and today's size is the wrong number to guard a past read with.
+  //
+  // A failing HEAD is propagated rather than swallowed: "this path did not exist
+  // at that commit" is the honest answer to stat, and a size guard that silently
+  // fell back to the live file's size would be the lying pane again.
+  function revStat(path, live) {
+    return fetch(revUrl(path), { method: "HEAD", headers: callHeaders() })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("failed to stat " + path + " at " + rev.slice(0, 7) +
+                          " (HTTP " + res.status + ")");
+        }
+        const length = parseInt(res.headers.get("content-length") || "", 10);
+        return Object.assign({}, live, {
+          writable: false,
+          size: Number.isFinite(length) ? length : live.size,
+          // The sha the numbers above describe. Not part of the documented stat
+          // shape — a template needs no knowledge of revisions — but it is what
+          // makes a logged stat payload readable when one goes wrong.
+          rev: rev,
+        });
       });
   }
 
@@ -1476,6 +1637,7 @@
   // things (this one is "it is already there", the lock's is "it changed"), and
   // a caller that offers overwrite-anyway on a conflict must not offer it here.
   function writeFile(path, content, opts) {
+    if (rev !== null) return revRefusal("Saving");
     const payload = { path: path, content: content };
     if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
       payload.expected_mtime = opts.expectedMtime;
@@ -1602,6 +1764,7 @@
   // no optimistic lock and no `create`: a freshly pasted blob has no prior
   // version to conflict with.
   function uploadFile(path, blob) {
+    if (rev !== null) return revRefusal("Uploading");
     const form = new FormData();
     form.append("path", path);
     form.append("file", blob);
@@ -1630,6 +1793,7 @@
   // for the same reason: "it is already there" is a different fact from "it
   // changed", and an ensure-this-directory caller wants to treat it as success.
   function mkdir(path) {
+    if (rev !== null) return revRefusal("Creating a directory");
     return fetch("/api/fs/mkdir", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -2503,6 +2667,13 @@
   // `window.fused` (see the file header). Not present in the hosted runtime.
   window._fusedSidecarPath = sidecarPath;
   window._fusedTargetPathFromSidecarPath = targetPathFromSidecarPath;
+  // The git sidebar's revision hop, internal for the same reason (see
+  // noteRevSelected): the built-in git template calls this with the sha of the
+  // commit the user clicked, or null to go back to live content, and the shell
+  // rebuilds the CONTENT frame's src with `_rev` on it. A window with no
+  // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
+  // does nothing.
+  window._fusedSelectRev = noteRevSelected;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).
