@@ -225,19 +225,88 @@ def test_a_chat_left_open_picks_up_its_own_scheduled_send(code):
     "Scheduled for 12:20" while the session ran, finished and edited files.
 
     It goes through `resumeRun`, which is already written for a run this frame did
-    not start — live (stream the rest) or already finished (repair the
-    transcript) — rather than a second attach path beside it."""
+    not start — live (stream the rest) or already finished (append it, see
+    appendIfDone) — rather than a second attach path beside it."""
     assert "function pollScheduledRuns(" in code
     body = code[code.index("async function pollScheduledRuns("):]
-    body = body[:body.index("\nsetInterval(pollScheduledRuns")]
-    assert "resumeRun(entry.run_id)" in body
+    body = body[:body.index("\npollScheduledRuns();")]
+    assert "resumeRun(entry.run_id, { appendIfDone: true })" in body
     assert 'e.target === FILE' in body or "entry.target === FILE" in body, \
         "only this template's own target"
     # never over a live turn — resumeRun would fight pollLoop for the frame
     assert "if (activeRun || sending) return;" in body
     # and the first pass is silent, or every already-recorded run would re-render
-    assert "baseline" in body
+    assert "scheduleBaselined" in body
     assert "setInterval(pollScheduledRuns" in code
+
+
+def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
+    """The first cut of this only worked while the run was still live, which made
+    the common case — a short turn finishing inside the 15s window — still
+    invisible, with the composer's note promising otherwise.
+
+    `resumeRun`'s done path repairs only what it can PROVE is missing (an empty log,
+    or a last user bubble that is this run's message) because on the reload path the
+    restored transcript may already hold the turn. A scheduled send is the opposite:
+    it fired after this frame rendered, so the turn cannot be on screen and the
+    caller knows it. Hence an explicit opt-in rather than loosening the default."""
+    assert "appendIfDone" in code
+    assert "{ appendIfDone: true }" in code
+    done = code[code.index("if (probe.done) {"):]
+    done = done[:done.index("scrollBottom();")]
+    assert "(!users.length || appendIfDone) && probeMsg" in done, \
+        "a finished run must APPEND when the caller says the turn was never shown"
+    # a failed turn needs its own user line too, or the error reads as belonging to
+    # whatever the reader last said
+    assert "if (probeMsg) addUser(probeMsg);" in done
+
+    # and the reload caller keeps the conservative default — passing no opts
+    assert "await resumeRun(run_id);" in code
+
+
+def test_the_baseline_is_taken_at_load_not_one_interval_later(code):
+    """Baselining on the first INTERVAL wrote off anything firing in the opening 15s
+    as predating a frame it had fired inside — and that window is exactly when a
+    reader opens the chat, because the note tells them to leave it open."""
+    assert "\npollScheduledRuns();\nsetInterval(pollScheduledRuns" in code
+
+
+def test_a_run_is_only_written_off_once_it_is_really_handled(code):
+    """Marking an id handled before the attach could succeed lost the turn
+    entirely: `resumeRun` returns immediately if `sending` went true meanwhile, and
+    the id was already written off. So the live-turn guard sits adjacent to the call
+    with nothing awaited between, and a run that cannot be taken now is left
+    unmarked for the next tick."""
+    body = code[code.index("async function pollScheduledRuns("):]
+    body = body[:body.index("\npollScheduledRuns();")]
+    guard = body.index("if (activeRun || sending) return;")
+    mark = body.index("SCHEDULE_ATTACHED.add(entry.run_id);", guard)
+    call = body.index("await resumeRun(", guard)
+    assert guard < mark < call, "guard, then mark, then call — in that order"
+    assert "await" not in body[guard:call].replace("await resumeRun(", ""), \
+        "nothing may be awaited between the guard and the call"
+
+
+def test_an_attached_run_goes_on_the_url(code):
+    """`sendMessage` puts the run on the URL so a reload re-attaches. Without the
+    same here, a reload or a mode switch dropped the stream — and the next frame's
+    baseline then wrote the run off as predating it."""
+    body = code[code.index("async function pollScheduledRuns("):]
+    body = body[:body.index("\npollScheduledRuns();")]
+    assert 'fused.params.set("run", entry.run_id' in body
+
+
+def test_another_sessions_run_is_noted_but_not_written_off(code):
+    """One set for both made the note permanent and a later attach impossible: this
+    frame can switch sessions without remounting, and the turn would then belong
+    here after all."""
+    assert "SCHEDULE_ATTACHED" in code and "SCHEDULE_NOTED" in code
+    body = code[code.index("async function pollScheduledRuns("):]
+    body = body[:body.index("\npollScheduledRuns();")]
+    foreign = body[body.index("if (!scheduledRunIsOurs(entry)) {"):]
+    foreign = foreign[:foreign.index("continue;")]
+    assert "SCHEDULE_NOTED.add" in foreign
+    assert "SCHEDULE_ATTACHED.add" not in foreign
 
 
 def test_it_only_attaches_a_run_that_belongs_on_this_screen(code):

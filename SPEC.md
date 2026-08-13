@@ -6320,11 +6320,36 @@ world from one the user typed.
     rest through `pollLoop`; already finished, it repairs the transcript from the
     poll payload. Three guards, each earning its place: never over a live turn
     (`resumeRun` would fight `pollLoop` for the frame); the first pass is a silent
-    baseline (every already-recorded run predates this frame, and the transcript
-    restore has accounted for the ones that belong here); and a run only attaches
-    when it BELONGS on this screen — the same session by either id, or, with no
+    baseline — taken AT LOAD, not one interval later, since baselining on the first
+    interval wrote off anything firing in the opening 15s as predating a frame it
+    had fired inside, which is exactly when a reader opens the chat because the
+    note told them to; and a run only attaches when it BELONGS on this screen — the same session by either id, or, with no
     session yet, one that resumed nothing and so created a session this frame can
     adopt. Splicing another conversation's turn into this transcript would be the
     page lying about what was said where, which is worse than not attaching. The
     confirmation note promises the turn will appear here, which is true only
     because this exists; the two move together and a test says so.
+  - **SCH-11g** **A finished scheduled turn is APPENDED, which needed an opt-in**
+    (`resumeRun(run_id, {appendIfDone: true})`). `resumeRun`'s done path repairs
+    only what it can prove is missing — an empty log, or a last user bubble that IS
+    this run's message — because on the reload path it was written for, the restored
+    transcript may already hold the turn and appending would duplicate it. A
+    scheduled send is the opposite case: it fired *after* this frame rendered, so
+    the turn cannot be on screen and the caller knows it. Without the opt-in, a
+    scheduled turn that finished between two polls fell through both branches and
+    appeared nowhere — which is most of them, since a short turn beats a 15s poll,
+    so the first cut of SCH-11f fixed only the live case while the note promised
+    otherwise. A failed run appended this way gets its own user line first, or the
+    error reads as belonging to whatever the reader last said.
+  - **SCH-11h** **A run is written off only once it is really handled.** Two sets,
+    not one: `SCHEDULE_ATTACHED` blocks a second attach, `SCHEDULE_NOTED` blocks a
+    repeated mention of a run that belongs to another session — which is
+    deliberately NOT marked attached, because this frame can switch sessions without
+    remounting and the turn would then belong here after all. The live-turn guard
+    sits adjacent to the `resumeRun` call with nothing awaited between: checked
+    before the fetch it could go stale, and `resumeRun` returning early on `sending`
+    while the id had already been written off lost the turn entirely. The attached
+    run also goes on the URL as `run` (a `replace` write, PR-3), for the same reason
+    `sendMessage` does it — a reload or a remounting mode switch re-attaches from
+    the param, and without it the stream was lost and the next frame's baseline then
+    wrote the same run off as predating it.

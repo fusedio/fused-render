@@ -8648,7 +8648,14 @@ async function sendMessage(message) {
 // a run this frame did not start and may have missed the end of — and handles
 // both cases: still live (render the user line, then `pollLoop` streams the rest)
 // and already finished (repair the transcript from the poll payload).
-const SCHEDULE_SEEN = new Set();
+// TWO sets, because "already on screen" and "already mentioned" expire
+// differently. A run this frame ATTACHED must never attach twice. A run that
+// belongs to another session is only NOTED — deliberately not marked attached —
+// because this frame can switch to that session (`session_id` changes without a
+// remount) and the turn would then belong here after all. One set for both made
+// the note permanent and the later attach impossible.
+const SCHEDULE_ATTACHED = new Set();
+const SCHEDULE_NOTED = new Set();
 let scheduleBaselined = false;
 const SCHEDULE_POLL_MS = 15000;
 
@@ -8668,9 +8675,6 @@ function scheduledRunIsOurs(entry) {
 }
 
 async function pollScheduledRuns() {
-  // Never over a live turn: `resumeRun` would fight `pollLoop` for the frame, and
-  // the scheduler's own per-session hold means the next tick will offer it again.
-  if (activeRun || sending) return;
   if (chatEl.classList.contains("home")) return;  // nothing to render into
   let data;
   try {
@@ -8681,28 +8685,67 @@ async function pollScheduledRuns() {
     return;  // a blip; the next tick tries again
   }
   const fired = (data.entries || []).filter((e) => e.target === FILE && e.run_id);
-  // The FIRST pass is a silent baseline. Every run already recorded happened
-  // before this frame existed, and the transcript restore has already accounted
-  // for the ones that belong here — re-attaching would re-render old turns.
-  const baseline = !scheduleBaselined;
-  scheduleBaselined = true;
+  // The FIRST pass is a silent baseline: every run already recorded happened
+  // before this frame existed, and the transcript restore has accounted for the
+  // ones that belong here, so attaching them would re-render old turns.
+  //
+  // It runs at LOAD, not one interval later. Baselining on the first *interval*
+  // meant anything firing in the opening 15s was written off as predating a frame
+  // it had in fact fired inside — and that window is exactly when a reader opens
+  // the chat, because the note told them to leave it open to watch the send.
+  if (!scheduleBaselined) {
+    scheduleBaselined = true;
+    for (const entry of fired) SCHEDULE_ATTACHED.add(entry.run_id);
+    return;
+  }
   for (const entry of fired) {
-    if (SCHEDULE_SEEN.has(entry.run_id)) continue;
-    SCHEDULE_SEEN.add(entry.run_id);
-    if (baseline) continue;
+    if (SCHEDULE_ATTACHED.has(entry.run_id)) continue;
     if (!scheduledRunIsOurs(entry)) {
-      addNote("A scheduled message for this folder just ran in another session.",
-              null, "◷");
+      // Noted once, never marked attached — see SCHEDULE_NOTED.
+      if (!SCHEDULE_NOTED.has(entry.run_id)) {
+        SCHEDULE_NOTED.add(entry.run_id);
+        addNote("A scheduled message for this folder just ran in another session.",
+                null, "◷");
+      }
       continue;
     }
+    // The live-turn guard sits HERE, adjacent to the call with nothing awaited in
+    // between, rather than at the top of the function. Checked before the fetch, it
+    // could go stale across that await: `sending` flipping true meanwhile made
+    // `resumeRun` return immediately while this had already written the id off as
+    // handled, so the turn never appeared at all. Returning instead leaves the
+    // entry unmarked for the next tick.
+    if (activeRun || sending) return;
     addNote("Your scheduled message is running now.", null, "◷");
-    await resumeRun(entry.run_id);
+    SCHEDULE_ATTACHED.add(entry.run_id);
+    // The run goes on the URL for the same reason `sendMessage` puts it there: a
+    // reload, or a mode switch that remounts this frame, re-attaches from the
+    // param. Without it the stream was simply lost, and the next frame's baseline
+    // then wrote the same run off as predating it.
+    fused.params.set("run", entry.run_id, { history: "replace" });
+    // appendIfDone: this frame has never had the turn on screen, so a run that
+    // finished between polls must be appended rather than matched.
+    await resumeRun(entry.run_id, { appendIfDone: true });
     return;  // one at a time; the next tick picks up anything behind it
   }
 }
+// Baseline immediately (see above), then watch.
+pollScheduledRuns();
 setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 
-async function resumeRun(run_id) {
+// `opts.appendIfDone` — this frame has NEVER had this run's turn on screen, so a
+// finished run must be APPENDED rather than matched against the last bubble.
+//
+// The default (false) is the reload case this function was written for, where the
+// restored transcript may already contain the turn: there, appending would
+// duplicate it, which is why the done path below repairs only what it can prove
+// is missing (an empty log, or a last user bubble that IS this run's message).
+// A scheduled send is the opposite situation — it fired after this frame rendered,
+// so the turn cannot be on screen and the caller knows it. Without this, a
+// scheduled turn that finished between two 15s polls fell through both branches
+// and appeared nowhere at all, while the composer's note promised otherwise.
+async function resumeRun(run_id, opts) {
+  const appendIfDone = !!(opts && opts.appendIfDone);
   if (sending) return;
   sending = true;
   try {
@@ -8732,7 +8775,15 @@ async function resumeRun(run_id) {
       annResolveSent();  // the run this frame missed still handled its notes
       snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {
-        if (matches || !users.length) addError(probe.error);
+        if (matches || !users.length) {
+          addError(probe.error);
+        } else if (appendIfDone) {
+          // The turn is not on screen and never was, so the failure needs its own
+          // user line to hang under — otherwise the error reads as belonging to
+          // whatever the reader last said.
+          if (probeMsg) addUser(probeMsg);
+          addError(probe.error);
+        }
         return;
       }
       // `probe` is a poll payload, so it carries the turn's segments too — the
@@ -8744,7 +8795,11 @@ async function resumeRun(run_id) {
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
-      } else if (!users.length && probeMsg) {
+      } else if ((!users.length || appendIfDone) && probeMsg) {
+        // Appended, not matched: either the log is empty, or the caller has told
+        // us this run's turn was never on screen (a scheduled send that fired and
+        // finished between polls). Both render the whole turn — user line plus the
+        // assistant rows and their tool timeline from the poll payload.
         addUser(probeMsg);
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));

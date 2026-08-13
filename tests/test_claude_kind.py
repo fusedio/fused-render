@@ -980,10 +980,16 @@ def test_every_run_write_is_a_replace_write():
     ignores set()'s third argument, so a site regressing to a two-arg call would
     record an identical [key, value] tuple and every existing expectation would
     still pass.
+
+    The COUNT is a tripwire, not the invariant — the loop below is. It is here so a
+    new `run` write has to be looked at on purpose rather than inherited. The sixth
+    is `pollScheduledRuns` attaching a scheduled send that fired while the chat was
+    open (SCH-11f): in-flight bookkeeping of exactly the kind this rule is about,
+    and a `replace` write like its five siblings.
     """
     code = _pane_code()
     writes = re.findall(r'fused\.params\.set\("run",[^;]*;', code)
-    assert len(writes) == 5, writes
+    assert len(writes) == 6, writes
     for w in writes:
         assert 'history: "replace"' in w, w
 
