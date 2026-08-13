@@ -1759,9 +1759,9 @@
   /* Claude snapshots (SPEC §34). Same visual family as .chat-row — this is
      another "list of past things about this target" on the same landing page —
      and like those rows it is pressable: a row expands to its diff and the one
-     action that goes back to it. The SECTION itself is pressable too: it is a
-     collapsed heading until asked for, so the landing page costs no round trip
-     for a history most opens never look at. */
+     action that goes back to it. The SECTION is not pressable: it is a quiet
+     static label over that stack, exactly as #recent is, because the list is
+     painted on arrival rather than hidden behind a control. */
   #snaps { margin-top: 28px; padding-bottom: 32px; }
   #snaps .head {
     color: var(--faint);
@@ -1772,25 +1772,21 @@
     margin-bottom: 8px;
     padding: 0 4px;
   }
-  /* WHAT OPENS THE SECTION IS A ROW, not the heading.
-     The heading was the control for one revision and it was the wrong element:
-     11px uppercase letter-spaced micro-type stretched across a full-width
-     bordered pill reads as neither a heading nor a button ("the claude
-     snapshots toggle thing UI is very ugly"), and a lowercase "show" hint
-     sitting beside an uppercase label made two type systems argue inside one
-     box. The page already has an affordance vocabulary and it is not headings:
-     EVERY section here is a quiet static uppercase label over a stack of
-     pressable rows (#recent's heading over .chat-row). So the heading goes back
-     to being a label, and the thing you press is one placeholder .snap-row —
-     the SAME class the snapshots themselves use, borrowed rather than copied —
-     which is literally a preview of what is inside: a row that opens into more
-     rows exactly like it. */
+  /* THE HEADING IS A LABEL, and there is no control on this line at all.
+     Two revisions were spent on the wrong element: first the heading itself was
+     the toggle (11px uppercase letter-spaced micro-type stretched across a
+     full-width bordered pill reads as neither a heading nor a button — "the
+     claude snapshots toggle thing UI is very ugly"), then a placeholder .snap-row
+     stood in for the section with a "hide" beside the label. Both existed to
+     defer a read that no longer needs deferring: an unenriched, undiffed timeline
+     is ~6 ms, so the list is simply there, and the cheapest control is the one
+     that does not have to exist. The heading keeps its flex box for the retry
+     the failure path puts on this line. */
   #snapshead { display: flex; align-items: center; gap: 8px; }
-  /* The way back out, and it only exists once there is something to close. It
-     lives on the heading LINE (there is no placeholder row to press any more)
-     but not in the heading's type: normal case, so it reads as a control beside
-     the label rather than as part of it. */
-  #snapshide {
+  /* Only ever present after a failed read — the note says what went wrong and
+     this is the way to ask again. Normal case, so it reads as a control beside
+     the label rather than as part of its type. */
+  #snapsretry {
     margin-left: auto;
     font: inherit;
     font-size: 11.5px;
@@ -1804,13 +1800,37 @@
     padding: 2px 6px;
     cursor: pointer;
   }
-  #snapshide:hover { color: var(--fg); }
-  /* `.snap-row` is `display: flex`, which outranks the UA's `[hidden]` rule. */
-  #snapsopen[hidden] { display: none; }
-  /* The one thing the placeholder does not take from .snap-row: its label is the
-     row's SUBJECT, so it carries the row's own ink rather than the muted
-     timestamp colour .snap-when is for. */
-  #snapsopen .snap-open-label { color: var(--fg); flex: 1; }
+  #snapsretry:hover { color: var(--fg); }
+  /* ONE RUN of checkpoints from one chat. The rule down the left is the whole
+     point of the box: it says "these numbers belong together", which is what
+     makes a v2 under one heading and a v2 under another stop reading as the same
+     row twice. Indented past the rule rather than boxed, so the rows keep their
+     full width in a narrow pane. */
+  .snap-runbox {
+    border-left: 1px solid var(--border);
+    padding-left: 10px;
+    margin-bottom: 14px;
+  }
+  .snap-runbox:last-child { margin-bottom: 0; }
+  /* Not the section's uppercase micro-type: that type is reserved for the ONE
+     heading of the panel ("Claude snapshots"), and a second tier wearing it would
+     compete with it. This is normal-case text at row scale, one step quieter. */
+  .snap-run {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 0 4px 5px;
+    font-size: 11.5px;
+  }
+  /* The chat's own words, so it can be long: it takes the space and ellipsises
+     rather than pushing the count off the row. */
+  .snap-run-name {
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .snap-run-sub { color: var(--faint); flex-shrink: 0; margin-left: auto; }
   .snap-row {
     display: flex;
     align-items: center;
@@ -2292,28 +2312,18 @@
              §34). Ported from the superseded `annotate` template, whose reader
              (shared/file_history.py) was written annotate-agnostic for exactly
              this adoption. FILE targets only — the store keys on one absolute
-             file path, so a folder has no chain. COLLAPSED by default: the
-             heading is offered as soon as the target is known to be a file, and
-             the timeline behind it is only read when the user opens it. -->
+             file path, so a folder has no chain. LISTED on arrival: the read is
+             ~6 ms with neither enrichment nor exact deltas (see loadSnapshots),
+             so there is nothing left worth hiding behind a click. -->
         <div id="snaps" hidden>
           <div class="head" id="snapshead">
             <span>Claude snapshots</span>
-            <!-- Only ever shown once the section is open: a "hide" for something
-                 that is not showing is a control for nothing. -->
-            <button id="snapshide" type="button" hidden
-                    aria-expanded="true" aria-controls="snapsbody">hide ▾</button>
+            <!-- Only ever shown after a failed read: it is the retry, and a
+                 "try again" for something that has not failed is a control for
+                 nothing. -->
+            <button id="snapsretry" type="button" hidden>try again</button>
           </div>
-          <!-- The one pressable thing while collapsed, and a .snap-row on
-               purpose: it is a preview of what opening does, in the same shape
-               as what it opens into. Ships BEFORE the body so a failed read can
-               put it back with the error underneath it. -->
-          <div class="snap-row" id="snapsopen" role="button" tabindex="0"
-               aria-expanded="false" aria-controls="snapsbody">
-            <span class="snap-dot">●</span>
-            <span class="snap-open-label">Show version history</span>
-            <span class="snap-caret">▸</span>
-          </div>
-          <div id="snapsbody" hidden>
+          <div id="snapsbody">
             <div id="snapslist"></div>
             <div id="snapsnote"></div>
           </div>
@@ -5921,12 +5931,18 @@ document.getElementById("back").onclick = () => {
   chatEl.classList.add("home");
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
+  // Deliberately NOT awaited in sequence with the mount below: these are two
+  // independent reads and neither should hold the other's section blank. What
+  // makes that safe is that `loadRecent` repaints the run headings itself once it
+  // has names — see the tail of that function — rather than this call site being
+  // ordered so it happens to win.
   loadRecent();
   // The snapshots panel belongs to the LANDING page, so it is offered on every
   // path onto it — not just the boot with no session. A page opened straight
   // into a resumed chat (`?session_id=`) never ran the boot's landing branch, so
-  // without this the panel could never appear for the rest of that page's life.
-  // This only reveals the collapsed heading; nothing is read until it is opened.
+  // without this the panel could never appear for the rest of that page's life —
+  // and that is also the one path on which this mount is the FIRST snapshots read
+  // of the page's life rather than a cached repaint.
   mountSnapshots();
   focusBox(homebox);
 };
@@ -8591,6 +8607,26 @@ async function loadRecent() {
     const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
+    // Name the snapshot runs from the SAME strings these rows are labelled with,
+    // before the early return: a file can have chains in the store and no chats in
+    // its sidecar, and the reverse — an empty session list is still an answer the
+    // snapshots panel wants (it means "name nothing"), not a reason to skip.
+    let named = false;
+    for (const s of sessions) {
+      if (s.preview && snapNames.get(s.id) !== s.preview) {
+        snapNames.set(s.id, s.preview);
+        named = true;
+      }
+    }
+    // REPAINT the headings, because this read RACES the snapshots read rather than
+    // preceding it. Boot awaits us first, but the "Back to chats" path fires both
+    // at once, and on a page opened straight into a resumed chat (`?session_id=`)
+    // that path is the panel's FIRST read — so whichever of the two round trips
+    // lands first decides whether the headings have names, and nothing else would
+    // ever come back to fix them. Guarded on `named` so the ordinary case (no new
+    // names, or no panel yet) costs nothing, and it repaints from the cached
+    // timeline rather than re-reading anything.
+    if (named && snapTimeline) renderSnapshots(snapTimeline);
     if (!sessions.length) {
       document.getElementById("recent").style.display = "none";
       return;
@@ -8614,10 +8650,16 @@ async function loadRecent() {
 // between it and the file as it is now, and carries the one action that makes
 // the list mean anything — going back to it.
 //
-// It is also COLLAPSED until asked for. The question it answers is one a user
-// arrives at deliberately, so the landing page shows a heading and reads the
-// timeline on the first expand rather than paying a worker round trip on every
-// file open. See `mountSnapshots` / `loadSnapshots` below for the caching rule.
+// It is LISTED on arrival rather than hidden behind a control: the read is ~6 ms
+// once it declines enrichment and the exact deltas, which is the whole argument
+// in `mountSnapshots` / `loadSnapshots` below (with the caching rule).
+//
+// And it is GROUPED BY SESSION, because the version numbers restart in every one
+// (semantic 4 / SPEC FH-4): five chats that edited this file give five chains
+// each beginning at v1, and a flat merged list therefore shows "v2" three times
+// and reads as duplicate rows — "why do we have multiple snapshots of the same
+// version". The number is real and per-chain, so the fix is to draw the chain it
+// belongs to rather than to drop or globally renumber it.
 //
 // The two-call contract is annotate's, unchanged, because it is the reason the
 // write is safe: `snapshot_plan` describes (diff, counts, whether a copy of the
@@ -8627,9 +8669,17 @@ async function loadRecent() {
 // than a sheet: one destructive action, one click to arm it, and the diff the
 // user is confirming stays on screen the whole time.
 
-// What restoring a version would do to the file AS IT IS NOW. `exact:false`
-// means the helper refused to diff (too big, or not text) and only net counts
-// are honest, so it says so with a tilde rather than implying a real diff.
+// What restoring a version would do to the file AS IT IS NOW.
+//
+// TWO shapes, because `exact: false` is not a hedged version of the same answer.
+// An exact delta is a PAIR — difflib counted lines going in and lines going out,
+// and both are real. An inexact one is a NET, which is a single number by
+// construction: `_delta`'s cheap branch is `max(0, ver − cur)` against
+// `max(0, cur − ver)`, so at most one side can ever be non-zero. Printing it as a
+// pair was the first attempt and the app settled the question — a column of
+// "~+0 −43" down every row of a file that has only grown, where the "+0" is not a
+// measurement but the shape of the arithmetic. So the net renders as ONE signed
+// term, and the tilde still says it is not a diff.
 function snapDelta(v) {
   const frag = document.createDocumentFragment();
   const span = (cls, text) => {
@@ -8641,6 +8691,16 @@ function snapDelta(v) {
   if (!v.existed) return span("snap-minus", "did not exist");
   if (v.added == null || v.removed == null) return document.createTextNode("binary");
   if (!v.differs) return document.createTextNode("on disk now");
+  if (!v.exact) {
+    // Same line COUNT, different bytes — an edit that replaced as many lines as it
+    // removed, which is most edits. The net has nothing to report, so the honest
+    // thing is the one fact it does establish: this is not what is on disk. (Both
+    // sides non-zero cannot come from a net, but an exact-shaped pair would still
+    // be printable, so the fall-through below covers it rather than asserting.)
+    if (!v.added && !v.removed) return document.createTextNode("changed");
+    if (!v.removed) return span("snap-plus", "~+" + v.added);
+    if (!v.added) return span("snap-minus", "~−" + v.removed);
+  }
   frag.append(span("snap-plus", (v.exact ? "" : "~") + "+" + v.added),
               document.createTextNode(" "),
               span("snap-minus", "−" + v.removed));
@@ -8663,6 +8723,11 @@ function snapAgo(sec) {
 // timeline the write returned and both facts have to survive that.
 let snapTimeline = null;
 let snapOpenId = null;
+// sessionId → the name that session's chat goes by, filled from the sidecar by
+// `loadRecent` and read by `snapRunHead`. A Map rather than a lookup through the
+// session list itself, because the snapshots panel must not depend on that list
+// having been fetched, or on its order.
+const snapNames = new Map();
 
 function renderSnapshots(timeline) {
   const list = document.getElementById("snapslist");
@@ -8679,54 +8744,130 @@ function renderSnapshots(timeline) {
     note.textContent = timeline.note || "No Claude Code file history on this machine.";
     return;
   }
-  for (const v of timeline.versions) {
-    // The row and its expansion share one box, so the open body is visibly part
-    // of the row it belongs to rather than a panel floating under the list.
-    const item = document.createElement("div");
-    item.className = "snap-item";
-    const row = document.createElement("div");
-    const here = v.id === timeline.position;
-    const open = v.id === snapOpenId;
-    row.className = "snap-row" + (here ? " here" : "") + (open ? " open" : "");
-    row.setAttribute("role", "button");
-    row.setAttribute("aria-expanded", open ? "true" : "false");
-    row.tabIndex = 0;
-    const toggle = () => {
-      snapOpenId = open ? null : v.id;
-      renderSnapshots(snapTimeline);
-    };
-    row.onclick = toggle;
-    row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
-    if (here) row.title = "what is on disk now";
-    const dot = document.createElement("span");
-    dot.className = "snap-dot";
-    dot.textContent = here ? "●" : "○";
-    const num = document.createElement("span");
-    num.className = "snap-v";
-    // A did-not-exist checkpoint IS a numbered version of the chain (v1, the
-    // creation boundary), so it wears its number. The dash is only for a record
-    // that carried no usable number — "v0" would invent one the store never
-    // wrote.
-    num.textContent = v.version >= 1 ? "v" + v.version : "—";
-    const when = document.createElement("span");
-    when.className = "snap-when";
-    when.textContent = snapAgo(v.mtime);
-    // Version numbers restart per session, so two rows can both say v2; the
-    // session's short id is the only thing that tells them apart.
-    when.title = (v.mtime ? new Date(v.mtime * 1000).toLocaleString() + " · " : "")
-      + "session " + v.session;
-    const d = document.createElement("span");
-    d.className = "snap-d";
-    d.append(snapDelta(v));
-    const caret = document.createElement("span");
-    caret.className = "snap-caret";
-    caret.textContent = open ? "▾" : "▸";
-    row.append(dot, num, when, d, caret);
-    item.append(row);
-    if (open) item.append(snapExpand(v));
-    list.appendChild(item);
+  // One box per RUN, so a chain is drawn as a chain. The rows inside are in the
+  // order the timeline handed them over, untouched — see `snapRuns`.
+  for (const run of snapRuns(timeline.versions)) {
+    const box = document.createElement("div");
+    box.className = "snap-runbox";
+    box.append(snapRunHead(run));
+    for (const v of run.versions) box.append(snapItem(v, timeline));
+    list.appendChild(box);
   }
   note.textContent = timeline.note || "";
+}
+
+// One row, plus its expansion when it is the open one.
+function snapItem(v, timeline) {
+  // The row and its expansion share one box, so the open body is visibly part
+  // of the row it belongs to rather than a panel floating under the list.
+  const item = document.createElement("div");
+  item.className = "snap-item";
+  const row = document.createElement("div");
+  const here = v.id === timeline.position;
+  const open = v.id === snapOpenId;
+  row.className = "snap-row" + (here ? " here" : "") + (open ? " open" : "");
+  row.setAttribute("role", "button");
+  row.setAttribute("aria-expanded", open ? "true" : "false");
+  row.tabIndex = 0;
+  const toggle = () => {
+    snapOpenId = open ? null : v.id;
+    renderSnapshots(snapTimeline);
+  };
+  row.onclick = toggle;
+  row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+  if (here) row.title = "what is on disk now";
+  const dot = document.createElement("span");
+  dot.className = "snap-dot";
+  dot.textContent = here ? "●" : "○";
+  const num = document.createElement("span");
+  num.className = "snap-v";
+  // A did-not-exist checkpoint IS a numbered version of the chain (v1, the
+  // creation boundary), so it wears its number. The dash is only for a record
+  // that carried no usable number — "v0" would invent one the store never
+  // wrote.
+  num.textContent = v.version >= 1 ? "v" + v.version : "—";
+  const when = document.createElement("span");
+  when.className = "snap-when";
+  when.textContent = snapAgo(v.mtime);
+  // The exact time, and the session as well — the run heading above names the
+  // chain, but a row dragged out of context (a screenshot, a scrolled list) still
+  // has to be able to say which "v2" it is.
+  when.title = (v.mtime ? new Date(v.mtime * 1000).toLocaleString() + " · " : "")
+    + "session " + v.session;
+  const d = document.createElement("span");
+  d.className = "snap-d";
+  d.append(snapDelta(v));
+  const caret = document.createElement("span");
+  caret.className = "snap-caret";
+  caret.textContent = open ? "▾" : "▸";
+  row.append(dot, num, when, d, caret);
+  item.append(row);
+  if (open) item.append(snapExpand(v));
+  return item;
+}
+
+// ── runs: why the list is grouped, and why it is not a group-by ──
+//
+// Version numbers RESTART in every session (semantic 4 / SPEC FH-4): the store
+// is `file-history/<sessionId>/<hash>@vN`, so five chats that edited this file
+// give five chains each beginning at v1. Merged and ordered by time — which is
+// the only order comparable across sessions — the flat list showed "v2" three
+// times and read as duplicate rows. The number is real, it is just meaningless
+// outside its own chain, so the chain gets drawn.
+//
+// CONTIGUOUS RUNS, not a `group by session`. The row order is load-bearing:
+// `_locate` walks the merged timeline positionally to decide where a revert
+// lands, and this function must therefore not reorder, merge or re-sort anything
+// — it only inserts boundaries. The visible consequence is deliberate: a session
+// that edited the file, went away, and came back later gets TWO headings, which
+// is what actually happened, rather than having its rows pulled together across
+// somebody else's checkpoints.
+function snapRuns(versions) {
+  const runs = [];
+  for (const v of versions) {
+    const open = runs[runs.length - 1];
+    if (open && open.session === v.session) open.versions.push(v);
+    else runs.push({ session: v.session, versions: [v] });
+  }
+  return runs;
+}
+
+// The heading over one run: WHOSE chain this is, and how long.
+//
+// The name comes from the sidecar's session list — the very same `preview` string
+// the "Recent chats" rows above are labelled with (`addChatRow`), so a chain the
+// user had in this app is named by what they asked for in it, and the two sections
+// agree. `loadRecent()` fills that map, and because it RACES this panel's read
+// rather than reliably preceding it, it repaints the headings when it finishes
+// (see there). This function therefore never waits for anything: it names what is
+// known at paint time and gets called again if that changes.
+//
+// A MISS is ordinary rather than a bug:
+// this store records every Claude Code session that touched the file, including
+// ones started from a terminal or from another file's page, and those were never
+// in this file's sidecar. So the fallback says only what is certain — that it was
+// another chat — and puts the session's short id beside the count, because that id
+// is the one handle that distinguishes two unnamed chains.
+function snapRunHead(run) {
+  const el = document.createElement("div");
+  el.className = "snap-run";
+  const name = document.createElement("span");
+  name.className = "snap-run-name";
+  const known = snapNames.get(run.session);
+  // "chat", not "another chat": on a file whose chains all come from outside this
+  // app — the common case, since the sidecar only knows chats started here — that
+  // word repeats down the whole panel, and five headings saying "another chat" is
+  // noise pretending to be information. The distinguishing fact is the id, and it
+  // sits in the quiet half of the line beside the count.
+  name.textContent = known || "chat";
+  const sub = document.createElement("span");
+  sub.className = "snap-run-sub";
+  const n = run.versions.length;
+  sub.textContent = (known ? "" : run.session.slice(0, 8) + " · ")
+    + n + (n === 1 ? " checkpoint" : " checkpoints");
+  el.title = "session " + run.session;
+  el.append(name, sub);
+  return el;
 }
 
 function snapNote(text) {
@@ -8882,22 +9023,33 @@ async function snapGoBack(plan, bar) {
   }
 }
 
-// ── the section itself: collapsed, and read only when opened ──
+// ── the section itself: listed as soon as the target is known to be a file ──
 //
-// The timeline was fetched on every landing-page build, which is a round trip
-// through the worker on every file open for a history most opens never look at.
-// So the section is offered as soon as the target is known to be a file — a
-// static heading over one pressable row — and the read is deferred to the click
-// on that row.
+// This read was deferred behind a click for one revision, on the theory that a
+// timeline is a round trip most file opens never want. The theory was right about
+// the round trip and wrong about which part of it cost anything. Measured on this
+// very file (453 KB, 12 checkpoints): 292 ms, of which `difflib` inside
+// `file_history._delta` is 290 — two numbers per row — while reading all twelve
+// versions is 7 ms and enumerating them out of the store is 0.2 ms. So the call
+// declines the exact deltas (`deltas: "0"`, and enrichment as before), the read
+// lands in ~6 ms, and a list that costs six milliseconds does not need a door in
+// front of it. The rows still open into a real diff, computed for that one
+// version by the plan behind the click.
 //
 // The list is cached for the life of the page — the target file never changes
-// under it — so re-opening is instant and costs nothing. What invalidates that
-// cache is a WRITE: `snapGoBack` repaints from the post-revert timeline the
-// write itself returned (and falls back to a refetch), which is the only event
-// that appends to the chain from here. A failed read caches nothing, so the
-// next expand retries rather than leaving the section permanently empty.
+// under it — so returning from a chat repaints rather than refetching. What
+// invalidates that cache is a WRITE: `snapGoBack` repaints from the post-revert
+// timeline the write itself returned, and a finished turn drops it
+// (`snapInvalidate`). A failed read caches nothing, so the retry on the heading
+// (and the next landing) asks again rather than leaving the section stuck on the
+// failure for the life of the page.
 let snapLoaded = false;
-let snapExpanded = false;
+// Has this page a panel at all? FALSE for every folder and app-folder target,
+// where `mountSnapshots` returns without revealing anything — and the flag exists
+// because `snapInvalidate` fires from the end of EVERY turn, including those. The
+// hidden section would swallow the render, but the round trip would still be
+// spent and `agent.py` would still refuse a folder, once per turn, for ever.
+let snapMounted = false;
 
 // A FINISHED TURN is the other way this chain grows. Claude edits the file, and
 // Claude Code checkpoints what it edits — exactly what a revert does, and the
@@ -8907,10 +9059,14 @@ let snapExpanded = false;
 // loop's `done` branch, and resumeRun's, for a turn this frame was not attached
 // to), beside `annResolveSent` — the same "that turn is over" moment.
 //
-// The lazy contract survives: a COLLAPSED panel drops the cache and reads
-// nothing, because a turn is not an expand. An OPEN one refetches and repaints
-// now, for the reason the revert path repaints rather than waiting — a list left
-// on screen saying the wrong thing is worse than one that costs a round trip.
+// It refetches and repaints NOW rather than only dropping the cache, for the
+// reason the revert path repaints rather than waiting: the list is on screen from
+// the moment the panel mounts, and a list left up saying the wrong thing is worse
+// than one that costs a round trip. (While the panel was collapsed this branch
+// was conditional on its being open — with nothing to leave stale, the cheaper
+// half was to read nothing at all.) A page with no panel spends nothing: see
+// `snapMounted`.
+//
 // The expanded ROW is left open on purpose: `snapExpand` fetches its plan fresh
 // on every render, so it re-reads against the new bytes rather than going stale,
 // and closing it under the user would lose the thing they were reading.
@@ -8918,14 +9074,15 @@ let snapExpanded = false;
 // Hoisted past its own `let`s, like the rest of this section: every caller is an
 // async continuation that cannot run until the script has finished executing.
 function snapInvalidate() {
+  if (!snapMounted) return;
   snapLoaded = false;
-  if (snapExpanded) loadSnapshots();
+  loadSnapshots();
 }
 
-// Reveal the collapsed section. Called on every path onto the landing page; it
-// fetches nothing, and it deliberately does NOT reset `snapExpanded` — a user
-// who opened the panel, entered a chat and came back is still looking at the
-// same file's history.
+// Reveal the section and fill it. Called on every path onto the landing page,
+// and the CACHE is what makes that free after the first: a user who read the
+// history, entered a chat and came back is looking at the same file, so the
+// second mount repaints the timeline it already has.
 async function mountSnapshots() {
   // FILES only, and `targetNoun` is the page's ONE answer to what the target is
   // (set by paneURL from the stat). Reusing it rather than re-probing is what
@@ -8940,70 +9097,53 @@ async function mountSnapshots() {
   // UX, the module is the guarantee (MD-11).
   await paneReady;
   if (targetNoun !== "file") return;
+  snapMounted = true;
   document.getElementById("snaps").hidden = false;
-}
-
-const snapOpenRow = document.getElementById("snapsopen");
-const snapHideBtn = document.getElementById("snapshide");
-const SNAP_OPEN_LABEL = "Show version history";
-
-// FOUR states in one function, because they are one question — what is on
-// screen — and three booleans set from four call sites is how two of them end
-// up disagreeing. `loading` keeps the placeholder row exactly where it is and
-// only changes its words, so the wait costs no layout jump; `error` puts that
-// same row back (it is the retry) with the note underneath it.
-function snapShow(state) {
-  snapExpanded = state === "open";
-  snapOpenRow.querySelector(".snap-open-label").textContent =
-    state === "loading" ? "Loading…" : SNAP_OPEN_LABEL;
-  snapOpenRow.hidden = snapExpanded;
-  snapOpenRow.setAttribute("aria-expanded", snapExpanded ? "true" : "false");
-  // Nothing to show while collapsed, and nothing to show WHILE READING either:
-  // an empty bordered body under the row would be a box that says nothing.
-  document.getElementById("snapsbody").hidden = state === "collapsed" || state === "loading";
-  snapHideBtn.hidden = !snapExpanded;
-}
-
-const snapToggle = () => {
-  if (snapExpanded) { snapShow("collapsed"); return; }
-  // Cached: the target file cannot change under this page, so a second open is
-  // instant and costs no round trip.
-  if (snapLoaded) { snapShow("open"); return; }
-  snapShow("loading");
+  // Already read once on this page: repaint what we have rather than spend the
+  // round trip again. The list is on screen either way by the time this returns.
+  if (snapLoaded && snapTimeline) { renderSnapshots(snapTimeline); return; }
   loadSnapshots();
-};
-// A div with role=button gets Enter and Space by hand — the same wiring the
-// snapshot rows below it use, for the same reason.
-snapOpenRow.onclick = snapToggle;
-snapOpenRow.onkeydown = (e) => {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); snapToggle(); }
-};
-snapHideBtn.onclick = snapToggle;
+}
 
-// The read. Only ever reached from an expand (or from a revert whose write did
-// not hand back a timeline), so the gate is `mountSnapshots`' and this call is
-// free to assume the target is a file. The waiting state is the ROW's business
-// (snapShow), not this function's.
+const snapRetryBtn = document.getElementById("snapsretry");
+snapRetryBtn.onclick = () => loadSnapshots();
+
+// The read. Only ever reached with the panel mounted (`mountSnapshots`, the retry
+// beside its heading, an invalidated turn, or a revert whose write did not hand
+// back a timeline), so it is free to assume the target is a file.
+//
+// The WAIT is a note where the rows will be, not a spinner and not a layout jump:
+// the section is already on screen, so the one honest thing to put in it is a
+// sentence saying it is being read.
 async function loadSnapshots() {
   const note = document.getElementById("snapsnote");
+  const list = document.getElementById("snapslist");
   note.textContent = "";
+  snapRetryBtn.hidden = true;
+  // Only on a FIRST paint. A refetch (a finished turn, a retry) leaves the rows
+  // it already has up: replacing a good list with "reading…" is a flicker that
+  // makes the panel look like it lost the history it is about to reprint.
+  if (!list.firstChild) list.append(snapNote("reading the version history…"));
   try {
-    // No `enrich`: enrichment reads session transcripts (5 MB+). The unenriched
-    // timeline cannot see the creation boundary, which is why this panel never
-    // claims a chain is complete.
-    const timeline = await fused.runPython(AGENT, { action: "snapshots", file: FILE }, { key: null });
+    // Neither knob: enrichment reads session transcripts (5 MB+), and the exact
+    // deltas are `difflib` per version — 290 ms of a 292 ms read on this file, for
+    // two numbers a row (see the section comment). The unenriched timeline cannot
+    // see the creation boundary, which is why this panel never claims a chain is
+    // complete; the undiffed one softens its counts to net lines, which is why
+    // `snapDelta` renders them with a "~".
+    const timeline = await fused.runPython(
+      AGENT, { action: "snapshots", file: FILE, deltas: "0" }, { key: null });
     if (timeline.error) throw new Error(timeline.error);
     snapLoaded = true;
     renderSnapshots(timeline);
-    snapShow("open");
   } catch (err) {
     // An ordinary absence, never the red overlay: a file Claude has never
     // touched is the common case, not a bug in this view. `snapLoaded` stays
-    // false so the next expand asks again instead of leaving the section stuck
-    // on the failure for the life of the page — which is exactly why the
-    // pressable row comes BACK rather than the section opening onto an error.
+    // false, and the retry appears on the heading — a failure the user can do
+    // something about, rather than a section stuck on it for the life of the page.
     console.warn("snapshots failed:", err.message);
-    snapShow("error");
+    list.textContent = "";
+    snapRetryBtn.hidden = false;
     note.textContent = "The snapshots could not be read (" + err.message + ").";
   }
 }

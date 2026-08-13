@@ -48,8 +48,10 @@ Actions:
                                       -> {"answered": ...}
   main(action="sessions", file=...)   -> {"sessions": [...]}   (sidecar only)
   main(action="history", file=..., session_id=...) -> {"turns": [...]}
-  main(action="snapshots", file=..., enrich=...)
+  main(action="snapshots", file=..., enrich=..., deltas=...)
       -> file_history.timeline(...) — Claude Code's checkpoints for this FILE
+         (enrich="1" reads transcripts for the creation boundary; deltas="0"
+          declines the per-version difflib, which is ~99% of the read)
   main(action="snapshot_plan", file=..., version_id=...)
       -> what going back to that snapshot would do (diff, counts, stash
          predicate), or `ok: False` + `error` saying why it cannot
@@ -2397,7 +2399,7 @@ def _sessions(file: str) -> dict:
     return {"sessions": sessions}
 
 
-def _snapshots(file: str, enrich: bool) -> dict:
+def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
     """Claude Code's file-history checkpoints for `file` (SPEC §34).
 
     A pass-through to `shared/file_history.timeline`, which is the ONE reader
@@ -2419,9 +2421,20 @@ def _snapshots(file: str, enrich: bool) -> dict:
     module is the guarantee (MD-11): a hand-written call cannot reach a state
     the panel does not offer.
 
-    `enrich` is honoured here and nowhere else, exactly as the annotate panel
-    had it: enrichment reads session transcripts (5 MB+), so the boot call skips
-    them and only a deliberate expansion pays.
+    TWO cost knobs, both defaulting to the expensive-and-complete answer so a
+    hand-written call gets the whole truth, and both declined by the page:
+
+      * `enrich` reads session transcripts (5 MB+) and is what makes the
+        creation boundary visible. Honoured here and nowhere else, exactly as
+        the annotate panel had it.
+      * `deltas` runs `difflib` once per version for the exact added/removed
+        pair. It is the entire cost of a timeline — measured at 290 ms of a
+        292 ms read on a 453 KB file with 12 checkpoints, against 0.2 ms to
+        enumerate the store — and the page declines it because those two numbers
+        are row decoration: the diff a user actually reads comes from
+        `snapshot_plan`, per version, on the click that opens the row. Nothing
+        structural moves either way (`file_history.timeline`), so the list is the
+        same list with softer counts.
 
     ImportError alone is caught, and it means one thing: this folder was copied
     without its `shared/` sibling. A blanket `except Exception` would report a
@@ -2437,7 +2450,7 @@ def _snapshots(file: str, enrich: bool) -> dict:
         return {"error": "file history helper (../shared/file_history.py) "
                          "is not available"}
     try:
-        return file_history.timeline(file, enrich=enrich)
+        return file_history.timeline(file, enrich=enrich, deltas=deltas)
     except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
         return {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -2835,7 +2848,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          run_id: str = "", request_id: str = "", decision: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
-         version_id: str = "", confirm_unique: str = "",
+         deltas: str = "", version_id: str = "", confirm_unique: str = "",
          answers: str = "", note: str = "") -> dict:
     if action == "start":
         if not file:
@@ -2878,7 +2891,14 @@ def main(action: str = "start", file: str = "", message: str = "",
         # `enrich` arrives as a STRING like every other param (the binder is
         # str-shaped), so "" and "0" both mean don't — the boot call sends
         # nothing and pays for no transcript reads.
-        return _snapshots(file, enrich not in ("", "0", "false"))
+        #
+        # `deltas` is read the other way round: ABSENT means yes, because the
+        # complete answer is the one a caller who did not think about it should
+        # get, and only "0"/"false" decline. The page sends "0" and pays for no
+        # difflib; the two knobs read in opposite directions because their honest
+        # defaults are opposite.
+        return _snapshots(file, enrich not in ("", "0", "false"),
+                          deltas not in ("0", "false"))
     if action == "snapshot_plan":
         return _snapshot_plan(file, version_id)
     if action == "snapshot_revert":
