@@ -42,7 +42,7 @@ AUTO_OPTIMIZE_MAX_BYTES = int(
 PREVIEW_MAX_SIZE = int(os.environ.get("MAP_VIEWER_PREVIEW_MAX_SIZE", "512"))
 PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
-MAX_OPEN_READERS = int(os.environ.get("MAP_VIEWER_READER_POOL", "4"))
+MAX_IDLE_PER_LOCATOR = int(os.environ.get("MAP_VIEWER_READER_POOL", "4"))
 MAX_IDLE_READERS = int(os.environ.get("MAP_VIEWER_READER_POOL_IDLE", "24"))
 RASTER_SUFFIXES = {
     ".tif",
@@ -288,67 +288,72 @@ class _ReaderPool:
     Reopening a Reader for every XYZ tile re-parses the COG header — cheap for a
     local file but a fresh set of range reads for a ``/vsicurl/`` source — and
     churns file handles under concurrent bursts. rasterio datasets are not safe
-    for concurrent reads, so each locator hands out a bounded number of Reader
-    handles, one per thread at a time, reusing idle handles instead of
-    reopening. The caller supplies the GDAL environment so a freshly opened
-    handle picks up the same options.
+    for concurrent reads, so a handle is only ever lent to one thread at a time:
+    it lives in the idle pool or is checked out, never both. Checkout never
+    blocks — a fresh Reader is opened when no idle handle is available — and idle
+    handles are reused, bounded per locator and overall. The caller supplies the
+    GDAL environment so a freshly opened handle picks up the same options.
     """
 
-    def __init__(self, max_per_locator: int, max_idle: int):
-        self.max_per_locator = max_per_locator
+    def __init__(self, max_idle_per_locator: int, max_idle: int):
+        self.max_idle_per_locator = max_idle_per_locator
         self.max_idle = max_idle
         self.lock = threading.Lock()
         self.idle: OrderedDict[str, list[Any]] = OrderedDict()
-        self.semaphores: dict[str, threading.BoundedSemaphore] = {}
         self.idle_count = 0
-
-    def _semaphore(self, locator: str) -> threading.BoundedSemaphore:
-        with self.lock:
-            semaphore = self.semaphores.get(locator)
-            if semaphore is None:
-                semaphore = threading.BoundedSemaphore(self.max_per_locator)
-                self.semaphores[locator] = semaphore
-            return semaphore
 
     @contextlib.contextmanager
     def borrow(self, locator: str):
+        from rio_tiler.errors import TileOutsideBounds
         from rio_tiler.io import Reader
 
-        semaphore = self._semaphore(locator)
-        semaphore.acquire()
         reader = None
         with self.lock:
             stack = self.idle.get(locator)
             if stack:
                 reader = stack.pop()
                 self.idle_count -= 1
+                if not stack:
+                    del self.idle[locator]
         if reader is None:
             reader = Reader(locator)
+        healthy = True
         try:
             yield reader
+        except TileOutsideBounds:
+            raise
         except Exception:
-            with contextlib.suppress(Exception):
-                reader.close()
-            reader = None
+            healthy = False
             raise
         finally:
-            if reader is not None:
-                with self.lock:
-                    self.idle.setdefault(locator, []).append(reader)
+            self._return(locator, reader, healthy)
+
+    def _return(self, locator: str, reader: Any, healthy: bool) -> None:
+        pooled = False
+        if healthy:
+            with self.lock:
+                stack = self.idle.setdefault(locator, [])
+                if len(stack) < self.max_idle_per_locator:
+                    stack.append(reader)
                     self.idle.move_to_end(locator)
                     self.idle_count += 1
+                    pooled = True
                     self._evict()
-            semaphore.release()
+                elif not stack:
+                    del self.idle[locator]
+        if not pooled:
+            with contextlib.suppress(Exception):
+                reader.close()
 
     def _evict(self) -> None:
         while self.idle_count > self.max_idle and self.idle:
             locator, stack = next(iter(self.idle.items()))
             reader = stack.pop()
             self.idle_count -= 1
+            if not stack:
+                del self.idle[locator]
             with contextlib.suppress(Exception):
                 reader.close()
-            if not stack:
-                self.idle.pop(locator, None)
 
 
 class RasterEngine:
@@ -362,7 +367,7 @@ class RasterEngine:
         self.upstreams: dict[str, tuple[str, str]] = {}
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
-        self.readers = _ReaderPool(MAX_OPEN_READERS, MAX_IDLE_READERS)
+        self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
         self._transparent: bytes | None = None
 
     def locator(self, source: str, target: str) -> str:
