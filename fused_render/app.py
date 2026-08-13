@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import secrets
+import shlex
 import socket
 import subprocess
 import sys
@@ -463,15 +464,88 @@ def begin_quit(state: dict, *, terminate=None, start=None,
     return True
 
 
+def bundle_path() -> str | None:
+    """The .app bundle root when running packaged, None otherwise.
+
+    sys.executable is …/FusedRender.app/Contents/MacOS/python under py2app
+    (same anatomy fusedcli.setup_cli_hint and installed.installed_version
+    rely on).
+    """
+    if getattr(sys, "frozen", None) != "macosx_app":
+        return None
+    contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+    return os.path.dirname(contents)
+
+
+# The relauncher's poll cadence while it waits for this process to die. Fast
+# enough that the relaunch feels immediate after the teardown (bounded by
+# QUIT_HARD_DEADLINE_S), slow enough to cost nothing.
+RELAUNCH_POLL_S = 0.2
+
+
+def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
+    """Detached shell child that waits for `pid` to exit, then `open`s the
+    bundle. A dying app cannot start its own successor — `open` on a bundle
+    that is still running only foregrounds it — so the wait has to happen in a
+    process that survives us: its own session, no inherited pipes.
+
+    The poll loop has no timeout of its own: the pid it waits on is guaranteed
+    to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the
+    app past it, teardown finished or not), so a bounded wait here would only
+    duplicate that guarantee."""
+    quoted = shlex.quote(bundle)
+    script = (
+        f"while /bin/kill -0 {int(pid)} 2>/dev/null; do sleep {RELAUNCH_POLL_S}; done; "
+        f"exec /usr/bin/open {quoted}"
+    )
+    return popen(
+        ["/bin/sh", "-c", script],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def begin_relaunch(*, quit_action, bundle=None, spawn=None) -> bool:
+    """fused-render://relaunch: quit through the normal teardown and park a
+    relauncher on our pid. True if the relaunch was started.
+
+    No-ops when unpackaged (no bundle to respawn — the app keeps running) and
+    when a quit is already in flight — respawning an app the user is quitting
+    would be worse than ignoring the link. The in-flight case rides
+    `quit_action`'s return (begin_quit's claim bool) rather than reading
+    state["quitting"] here: that flag's check-then-set is only atomic under
+    _quit_lock, and begin_quit already owns that critical section. Spawning
+    only after a claimed quit is safe because the teardown drains for seconds
+    (bounded by QUIT_HARD_DEADLINE_S) — the relauncher is parked long before
+    the process can die."""
+    if bundle is None:
+        bundle = bundle_path()
+    if bundle is None:
+        logger.info("relaunch deep link ignored: not running from a bundle")
+        return False
+    if not quit_action():
+        logger.info("relaunch deep link ignored: quit already in progress")
+        return False
+    if spawn is None:
+        spawn = spawn_relauncher
+    spawn(bundle, os.getpid())
+    return True
+
+
 def make_quit_action(state: dict, *, terminate, start=None, remove_pidfile=None):
     """The Quit action for the two surfaces WE own — the rumps menu item and the
     popover's `quitApp_`, which receives it through the controller's actions
     dict. Module-level (not a `main()` closure) so it is testable without AppKit;
     it takes `main()`'s `state` dict because the server and its thread only exist
     once the bootstrap thread has published them."""
-    def _do_quit() -> None:
-        begin_quit(state, terminate=terminate, start=start,
-                   remove_pidfile=remove_pidfile)
+    def _do_quit() -> bool:
+        # The claim bool matters to one caller — begin_relaunch only parks a
+        # relauncher behind a quit THIS call started. The menu/popover surfaces
+        # ignore it.
+        return begin_quit(state, terminate=terminate, start=start,
+                          remove_pidfile=remove_pidfile)
 
     return _do_quit
 
@@ -650,12 +724,22 @@ def main() -> None:
     # openurls_target_path tells the two apart (mirrors the scheme check in
     # winopen.py's _open()).
     def application_openURLs_(self, _app, urls):
-        from fused_render.deeplink import is_launch_url
+        from fused_render.deeplink import is_launch_url, is_relaunch_url
 
         raws = [str(u.absoluteString()) for u in urls]
         logger.info("deep-link open-URLs event: %s", raws)
         state["docs"] = True  # a deep-link launch shouldn't also open the home tab
         for raw in raws:
+            if is_relaunch_url(raw):
+                # fused-render://relaunch (the update-restart banner's button):
+                # park a relauncher on our pid and quit through the normal
+                # teardown — the successor boots from the bundle on disk, and
+                # the page that linked here reconnects + reloads on its own
+                # (server-status.ts). `_do_quit` is assigned later in main(),
+                # before the run loop starts delivering URL events.
+                logger.info("relaunch deep link: quitting to respawn from disk")
+                begin_relaunch(quit_action=_do_quit)
+                continue
             if is_launch_url(raw):
                 # fused-render://launch (D128): the OS launching/foregrounding
                 # this app IS the whole action — the server boot is already in

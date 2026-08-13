@@ -18,6 +18,7 @@ from fused_render.deeplink import (
     clone_or_pull,
     github_url_from,
     is_launch_url,
+    is_relaunch_url,
     parse_github_url,
 )
 from fused_render.server import create_app
@@ -113,6 +114,42 @@ def test_is_launch_url_accepts(src):
 )
 def test_is_launch_url_rejects(src):
     assert is_launch_url(src) is False
+
+
+# ---- relaunch action -----------------------------------------------------------
+# Same strict, payload-free grammar as launch: the running app quits itself and
+# respawns from the (possibly newer) bundle on disk.
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "fused-render://relaunch",
+        "fused-render://relaunch/",
+        "fused-render:relaunch",  # some carriers strip the empty authority
+        "FUSED-RENDER://RELAUNCH",
+        "  fused-render://relaunch  ",
+    ],
+)
+def test_is_relaunch_url_accepts(src):
+    assert is_relaunch_url(src) is True
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "",
+        None,
+        "fused-render://relaunch?x=1",  # relaunch is payload-free by definition
+        "fused-render://relaunch/extra",
+        "fused-render://relaunchpad",
+        "fused-render://launch",  # the sibling action must not match
+        DEEPLINK,
+        "https://github.com/o/r",
+    ],
+)
+def test_is_relaunch_url_rejects(src):
+    assert is_relaunch_url(src) is False
 
 
 def test_github_url_from_passthrough():

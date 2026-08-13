@@ -425,6 +425,17 @@
   color: var(--fg);
 }
 
+/* Update variants (server-status.ts): a newer version is available — either
+   the tab is stale (refresh) or the running server is (restart the app).
+   Informational, not an outage, so warning tones instead of error red. */
+.server-status-update {
+  border-color: var(--warning-strong);
+}
+
+.server-status-update .server-status-title {
+  color: var(--warning-strong);
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;

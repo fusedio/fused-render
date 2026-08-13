@@ -56,6 +56,14 @@ _LAUNCH_FORMS = frozenset(
     {"fused-render://launch", "fused-render://launch/", "fused-render:launch"}
 )
 
+# The relaunch action: quit the running app and respawn it from the bundle on
+# disk, so a newer installed version takes over (the update-restart banner's
+# button, server-status.ts). Payload-free under the same strictness rules as
+# launch above.
+_RELAUNCH_FORMS = frozenset(
+    {"fused-render://relaunch", "fused-render://relaunch/", "fused-render:relaunch"}
+)
+
 _CLONE_PAGE = os.path.join(os.path.dirname(__file__), "static", "clone.html")
 
 # Conservative GitHub owner/repo shapes; blocks anything that could smuggle
@@ -89,6 +97,12 @@ def is_launch_url(src: str) -> bool:
     "make sure the app/server is running" form. Case-insensitive, optional
     trailing slash tolerated; a query string or any payload disqualifies it."""
     return (src or "").strip().lower() in _LAUNCH_FORMS
+
+
+def is_relaunch_url(src: str) -> bool:
+    """True for a `fused-render://relaunch` deep link: quit-and-respawn so the
+    version installed on disk takes over. Same strictness as is_launch_url."""
+    return (src or "").strip().lower() in _RELAUNCH_FORMS
 
 
 def github_url_from(src: str) -> str:
