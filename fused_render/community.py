@@ -204,20 +204,33 @@ def _touch(slug):
     return {"status": "ok", "opened_at": opened[slug]}
 
 
+
+# A git lockfile this old cannot belong to a live operation — real git calls
+# hold their locks for seconds, ours are bounded by CLONE_TIMEOUT. Anything
+# younger is left alone: the showcase clone is the USER's tree, and a fresh
+# index.lock may be their own git command (IDE, terminal) in flight.
+STALE_LOCK_AGE = 3600
+
+
 def _remove_stale_locks():
     """Drop leftover git lockfiles in the showcase clone. A git process killed
     mid-operation (a hard kill, app quit) leaves its .lock behind, and every
     later command dies with "Unable to create '….lock': File exists … remove
-    the file manually to continue". This module's git calls are short-lived
-    and serialized by _cache_lock, so any lock seen here is stale."""
+    the file manually to continue". Because the clone is a user-editable
+    workspace tree, a lock here is NOT stale by definition — only ones old
+    enough (STALE_LOCK_AGE) that no live git process can be holding them are
+    removed; a fresh lock just makes this refresh's fetch/merge fail, and the
+    next one retries."""
     import glob
     git_dir = os.path.join(SHOWCASE_DIR, ".git")
+    cutoff = time.time() - STALE_LOCK_AGE
     for lock in (glob.glob(os.path.join(git_dir, "*.lock"))
                  + glob.glob(os.path.join(git_dir, "info", "*.lock"))
                  + glob.glob(os.path.join(git_dir, "refs", "**", "*.lock"),
                              recursive=True)):
         try:
-            os.unlink(lock)
+            if os.path.getmtime(lock) <= cutoff:
+                os.unlink(lock)
         except OSError:
             pass
 
@@ -281,7 +294,18 @@ def _catalog_payload():
     }
 
 
+def _clear_stale_staging():
+    """Sweep leftover .showcase-clone-* staging dirs from interrupted first
+    clones (app quit mid-clone: daemon thread, finally never ran). Runs under
+    _cache_lock, so no clone can be legitimately staging right now — anything
+    matching the prefix is dead weight in the user's workspace."""
+    import glob
+    for leftover in glob.glob(os.path.join(WORKSPACE, ".showcase-clone-*")):
+        shutil.rmtree(leftover, ignore_errors=True)
+
+
 def _refresh():
+    _clear_stale_staging()
     if not _cache_ready():
         if os.path.exists(SHOWCASE_DIR):
             # A showcase folder that isn't our clone (user-made, or a clone
