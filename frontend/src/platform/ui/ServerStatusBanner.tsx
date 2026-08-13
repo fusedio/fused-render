@@ -85,7 +85,13 @@ function useServerStatus(): {
         if (wasDown) {
           window.clearTimeout(dismissTimer);
           dismissTimer = window.setTimeout(() => {
-            if (!disposed) setState(initialStatus());
+            // Hide the card but KEEP the rest of the state — `served` in
+            // particular. Resetting it would make the next version change
+            // look like a first observation (refresh card) instead of the
+            // transition that auto-reloads.
+            if (!disposed) {
+              setState((s) => (s.banner === "reconnected" ? { ...s, banner: "hidden" } : s));
+            }
           }, RECONNECT_DISMISS_MS);
         }
       } else {
