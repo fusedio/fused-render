@@ -336,6 +336,30 @@ def main(
     out_h: int = 0,
     face_w: int = 0,
 ):
+    # Numeric params can arrive as strings from an engine that doesn't coerce by
+    # annotation; coerce here so a blank falls back to the default and a truthy
+    # "0" string can't slip into py360convert and break every projection.
+    def _int(v, d):
+        try:
+            return int(float(v)) if str(v).strip() != "" else d
+        except (TypeError, ValueError):
+            return d
+
+    def _float(v, d):
+        try:
+            return float(v) if str(v).strip() != "" else d
+        except (TypeError, ValueError):
+            return d
+
+    fov = _float(fov, 90.0)
+    yaw = _float(yaw, 0.0)
+    pitch = _float(pitch, 0.0)
+    roll = _float(roll, 0.0)
+    zoom = _float(zoom, 1.0)
+    out_w = _int(out_w, 0)
+    out_h = _int(out_h, 0)
+    face_w = _int(face_w, 0)
+
     if not file:
         raise ValueError("missing 'file' param (the image to view)")
     if action == "open":
