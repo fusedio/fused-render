@@ -5908,7 +5908,11 @@ document.getElementById("back").onclick = () => {
   // true default worth stamping — a session id is an identifier and `run` is
   // in-flight bookkeeping — so absent stays the spelling for "none".
   fused.params.set("session_id", "", { default: "" });
-  fused.params.set("run", "", { default: "" });  // a failed re-attach must not chase us home
+  // `run` additionally takes `{history: "replace"}` where `session_id` does not:
+  // a run id is in-flight bookkeeping, never a place anyone navigated to, so
+  // clearing a REAL one (this button is live on a resumed mid-run session) must
+  // not buy the entry — it would leave a Back that restores a dead run id.
+  fused.params.set("run", "", { history: "replace", default: "" });
   showSession();
   log.innerHTML = "";
   permCards.clear();  // the cards went with the log; don't keep handles to them
@@ -8135,7 +8139,7 @@ async function pollLoop(run_id) {
         } else if (!data.done) typer.update(data.text);
       }
       if (data.done) {
-        fused.params.set("run", "");
+        fused.params.set("run", "", { history: "replace", default: "" });
         w.stop(); w.el.remove();
         // The run this frame sent (or re-attached to) is over: annotations it
         // carried are handled — auto-resolve them. Kept even on error? No: an
@@ -8329,7 +8333,12 @@ async function sendMessage(message) {
     }, { key: null });
     if (error) throw new Error(error);
     started = true;
-    fused.params.set("run", run_id);
+    // A run id is in-flight bookkeeping — what the page re-attaches to after a
+    // reload — and never a place the reader navigated to, so no `run` write of
+    // any kind buys the visit's one entry (PR-3): the push belongs to the first
+    // thing the user actually does, and a Back onto a finished run's id is a
+    // history entry that restores nothing.
+    fused.params.set("run", run_id, { history: "replace" });
     await pollLoop(run_id);
   } catch (err) {
     // The run never launched, so the agent never saw the annotations: give
@@ -8371,7 +8380,7 @@ async function resumeRun(run_id) {
     if (probe.error === "unknown run_id") {
       // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
       // to, and nothing to hand annotations back to: resolve any stragglers
-      fused.params.set("run", "");
+      fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();
       return;
     }
@@ -8389,7 +8398,7 @@ async function resumeRun(run_id) {
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).
-      fused.params.set("run", "");
+      fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();  // the run this frame missed still handled its notes
       snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {
