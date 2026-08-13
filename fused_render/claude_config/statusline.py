@@ -193,10 +193,10 @@ def _preview():
             ["sh", "-c", command],
             input=json.dumps(SAMPLE_PAYLOAD),
             capture_output=True,
-            # lib.TEXT_DECODE, not text=True: a statusline is exactly the kind of
+            # lib.SUBPROCESS_KWARGS, not text=True: a statusline is exactly the kind of
             # script that prints powerline/nerd-font glyphs, and locale-default
             # decoding turns those into a 500 instead of a preview.
-            **lib.TEXT_DECODE,
+            **lib.SUBPROCESS_KWARGS,
             cwd=lib.CLAUDE_DIR,
             timeout=5,
         )

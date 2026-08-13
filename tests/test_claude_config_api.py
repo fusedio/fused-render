@@ -22,8 +22,11 @@ environment with the developer's ~/.gitconfig switched off, and `mdfind` is
 stubbed — a real Spotlight query would return the machine's own CLAUDE.md files
 and make the assertions depend on the developer's disk.
 """
+import ast
 import json
 import os
+import subprocess
+from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -515,26 +518,102 @@ def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
 # -- subprocess decoding: never the locale's guess ---------------------------
 
 
-def test_every_subprocess_in_the_package_pins_utf8_decoding():
-    """`text=True` with no `encoding` decodes with locale.getpreferredencoding,
-    which is ASCII in a GUI-launched process (no LANG). That is what made the
-    MCP page 500 on `claude mcp list`'s ✔ glyph, and it would have taken the
-    History page down the first time a commit message carried an em dash. Every
-    text-decoding subprocess here must therefore go through lib.TEXT_DECODE —
-    asserted at the source level, because the failure only reproduces in an
-    environment a test cannot portably create.
-    """
-    assert lib.TEXT_DECODE == {"text": True, "encoding": "utf-8", "errors": "replace"}
+def _package_sources():
     pkg = os.path.dirname(os.path.abspath(lib.__file__))
-    offenders = []
     for name in sorted(os.listdir(pkg)):
-        if not name.endswith(".py"):
+        if name.endswith(".py"):
+            yield name, open(os.path.join(pkg, name), encoding="utf-8").read()
+
+
+def _spawn_calls(src):
+    """(line no, keywords) for every subprocess.run/Popen call in a source file.
+
+    Parsed, not grepped: the prose in this package explains the very patterns
+    being banned, and a regex over raw source cannot tell a call from the
+    comment describing it.
+    """
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call):
             continue
-        for i, line in enumerate(open(os.path.join(pkg, name), encoding="utf-8"), 1):
-            code = line.split("#", 1)[0]  # the prose explaining the fix says it too
-            if "text=True" in code:
-                offenders.append(f"{name}:{i}")
-    assert offenders == []
+        fn = node.func
+        if (isinstance(fn, ast.Attribute) and fn.attr in ("run", "Popen")
+                and isinstance(fn.value, ast.Name) and fn.value.id == "subprocess"):
+            out.append((node.lineno, node.keywords))
+    return out
+
+
+def _spreads_kwargs(keywords):
+    """True if the call does `**…SUBPROCESS_KWARGS`."""
+    for kw in keywords:
+        if kw.arg is None:  # ** unpacking
+            target = kw.value
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            if name == "SUBPROCESS_KWARGS":
+                return True
+    return False
+
+
+def _keyword_is(keywords, name, value):
+    return any(
+        kw.arg == name and isinstance(kw.value, ast.Constant) and kw.value.value is value
+        for kw in keywords
+    )
+
+
+def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
+    """Both halves of lib.SUBPROCESS_KWARGS, asserted at the source level —
+    because neither failure reproduces in an environment a test can portably
+    create, and both of them killed this feature in production:
+
+      * close_fds=True forks, and a forking spawn in a process with libproj
+        resident runs PROJ's atfork handler into a SIGSEGV before exec. The
+        child dies rc=-11 with EMPTY stderr, so the MCP page said "failed to
+        list MCP servers" and git_ops said "git add -A failed: " with nothing
+        after the colon. pytest never has PROJ loaded, so a green suite proves
+        nothing here; only the source can be checked.
+      * text=True with no encoding decodes with locale.getpreferredencoding —
+        ASCII in a GUI-launched process — and `claude mcp list` prints ✔.
+
+    A call may spread SUBPROCESS_KWARGS or pass close_fds=False itself
+    (archive_zip has to: it reads binary, so it cannot take the text half).
+    """
+    assert lib.SUBPROCESS_KWARGS == {
+        "close_fds": False, "text": True, "encoding": "utf-8", "errors": "replace",
+    }
+    no_spawn_guard, bare_text = [], []
+    calls = 0
+    for name, src in _package_sources():
+        for lineno, keywords in _spawn_calls(src):
+            calls += 1
+            guarded = _spreads_kwargs(keywords) or _keyword_is(keywords, "close_fds", False)
+            if not guarded:
+                no_spawn_guard.append(f"{name}:{lineno}")
+            if _keyword_is(keywords, "text", True):
+                bare_text.append(f"{name}:{lineno}")
+    assert no_spawn_guard == []
+    assert bare_text == []
+    # A guard that silently matched nothing would pass forever.
+    assert calls >= 6
+
+
+def test_git_runs_with_dash_c_rather_than_cwd():
+    """app_git.py's discipline, the other half: `git -C <dir>`, never `cwd=`.
+    A `cwd=` that has gone missing fails inside the spawn — before git — with
+    an error that names the wrong thing."""
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        lib.git("status", "--porcelain")
+
+    assert seen["argv"][:3] == ["git", "-C", lib.CLAUDE_DIR]
+    assert "cwd" not in seen["kwargs"]
+    assert seen["kwargs"]["close_fds"] is False
 
 
 @pytest.mark.skipif(not git_available(), reason="needs git")

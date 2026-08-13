@@ -41,18 +41,42 @@ INSTALLED_PLUGINS_PATH = os.path.join(CLAUDE_DIR, "plugins", "installed_plugins.
 KNOWN_MARKETPLACES_PATH = os.path.join(CLAUDE_DIR, "plugins", "known_marketplaces.json")
 MARKETPLACES_DIR = os.path.join(CLAUDE_DIR, "plugins", "marketplaces")
 
-# The kwargs EVERY subprocess in this package decodes its output with.
+# The kwargs EVERY subprocess in this package is spawned with. Two unrelated
+# defaults, both of which are wrong for a server process, both of which fail in
+# ways that name nothing:
 #
-# `text=True` alone is a latent crash: it decodes with
-# locale.getpreferredencoding(False), and a GUI-launched server inherits no
-# LANG/LC_ALL, so on macOS that resolves to ASCII. The moment a child prints a
-# non-ASCII byte — `claude mcp list` draws ✔/✘/⏸, a commit message has an em
-# dash, a statusline script emits a nerd-font glyph, a project path is
-# accented — the decode raises UnicodeDecodeError and the whole action 500s
-# with an error that says nothing about the real cause. Pinning UTF-8 (what all
-# of these actually emit) with errors="replace" makes the worst case a mojibake
-# character rather than a dead page.
-TEXT_DECODE = {"text": True, "encoding": "utf-8", "errors": "replace"}
+# 1. close_fds=False — the SPAWN discipline app_git.py's module docstring
+#    documents in full (read it; this is the same crash, not a similar one).
+#    Short version: the server has libproj resident, so a plain fork() runs
+#    PROJ's pthread_atfork child handler into a SIGSEGV before exec, and the
+#    default close_fds=True is what takes the fork path on macOS. close_fds=False
+#    makes CPython use posix_spawn, which runs no atfork handlers, and degrades
+#    to CreateProcess on Windows rather than raising.
+#
+#    This is why the MCP page stayed broken after the UTF-8 fix below: every
+#    `claude` and every `git` in this package died rc=-11 with EMPTY stderr, in
+#    0.0s, so the module reported "failed to list MCP servers" and git_ops
+#    reported `git add -A failed: ` with nothing after the colon. The same
+#    commands ran fine from a shell, because a shell has no PROJ loaded.
+#
+# 2. text/encoding/errors — `text=True` alone decodes with
+#    locale.getpreferredencoding(False), and a GUI-launched server inherits no
+#    LANG/LC_ALL, so on macOS that resolves to ASCII. The moment a child prints
+#    a non-ASCII byte — `claude mcp list` draws ✔/✘/⏸, a commit message has an
+#    em dash, a statusline script emits a nerd-font glyph, a project path is
+#    accented — the decode raises UnicodeDecodeError and the whole action 500s.
+#    Pinning UTF-8 (what all of these actually emit) with errors="replace" makes
+#    the worst case a mojibake character rather than a dead page.
+#
+# One dict rather than two, and spread at every call site including the
+# detached Popen — the decode kwargs are inert against its DEVNULL streams, and
+# that is a cheaper price than a second constant nobody remembers to apply.
+SUBPROCESS_KWARGS = {
+    "close_fds": False,
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+}
 
 # One lock serializes all config mutation (read-modify-write of settings.json +
 # the git add/commit that follows), so two concurrent actions can't clobber each
@@ -221,17 +245,17 @@ projects/*/*
 
 
 def git(*args: str, check: bool = True) -> str:
-    """Run a git command inside CLAUDE_DIR, returning stripped stdout.
+    """Run a git command against CLAUDE_DIR, returning stripped stdout.
 
-    `encoding="utf-8"` is not optional here — see TEXT_DECODE below. git speaks
-    UTF-8 (commit messages, paths), and a GUI-launched server would otherwise
-    decode `git log` as ASCII and blow up the History page on the first commit
-    message anyone wrote with an em dash in it."""
+    `git -C <dir>` rather than `cwd=`, and SUBPROCESS_KWARGS rather than the
+    defaults: both halves of the discipline app_git.py's module docstring lays
+    out, for the same reasons — a `cwd=` that no longer exists fails inside the
+    spawn instead of inside git, and a forking spawn dies rc=-11 the moment
+    PROJ is resident in this process."""
     res = subprocess.run(
-        ["git", *args],
-        cwd=CLAUDE_DIR,
+        ["git", "-C", CLAUDE_DIR, *args],
         capture_output=True,
-        **TEXT_DECODE,
+        **SUBPROCESS_KWARGS,
     )
     if check and res.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
@@ -391,7 +415,7 @@ def reveal(path: str) -> bool:
     import sys
     cmd = ["open"] if sys.platform == "darwin" else ["xdg-open"]
     try:
-        subprocess.run([*cmd, path], capture_output=True, timeout=10, **TEXT_DECODE)
+        subprocess.run([*cmd, path], capture_output=True, timeout=10, **SUBPROCESS_KWARGS)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -449,7 +473,7 @@ def claude_cli(*args: str, timeout: int = 25) -> dict:
     env = {**os.environ, "PATH": path_env}
     try:
         res = subprocess.run(
-            [binary, *args], capture_output=True, timeout=timeout, env=env, **TEXT_DECODE
+            [binary, *args], capture_output=True, timeout=timeout, env=env, **SUBPROCESS_KWARGS
         )
         return {
             "ok": res.returncode == 0,
@@ -477,7 +501,7 @@ def claude_cli_detached(*args: str) -> dict:
     subprocess.Popen(
         [binary, *args],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True, env=env,
+        start_new_session=True, env=env, **SUBPROCESS_KWARGS,
     )
     return {"ok": True, "launched": True}
 
@@ -599,14 +623,18 @@ def delete_branch(name: str) -> None:
 
 def archive_zip(name: str) -> bytes:
     """profiles.md §6: the branch's tree as a .zip, returned as raw bytes.
-    `git archive` emits binary, so this bypasses the text git() helper. The tree
-    is only the whitelisted, tracked files (version-control.md §2), so the archive
-    never carries plugins/, ~/.claude.json, or secrets."""
+    `git archive` emits binary, so this bypasses the text git() helper — and
+    therefore SUBPROCESS_KWARGS, whose text/encoding half would corrupt the zip.
+    The spawn half is NOT optional and is spelled out here instead: without
+    close_fds=False this dies rc=-11 like everything else in the package (see
+    SUBPROCESS_KWARGS). The tree is only the whitelisted, tracked files
+    (version-control.md §2), so the archive never carries plugins/,
+    ~/.claude.json, or secrets."""
     ensure_repo()
     res = subprocess.run(
-        ["git", "archive", "--format=zip", name],
-        cwd=CLAUDE_DIR,
+        ["git", "-C", CLAUDE_DIR, "archive", "--format=zip", name],
         capture_output=True,
+        close_fds=False,
     )
     if res.returncode != 0:
         raise RuntimeError(f"git archive {name} failed: {res.stderr.decode(errors='replace').strip()}")
