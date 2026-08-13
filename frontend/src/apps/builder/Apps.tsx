@@ -94,13 +94,15 @@ export default function Apps({ config }: { config: Config }) {
     return { tag: params.get("tag"), category: params.get("category") };
   }, [navEpoch]);
   const setFilter = (facet: FilterMode, next: string | null) => {
-    const current = facet === "repo" ? tag : category;
-    if (next === current) return;
     const params = new URLSearchParams(location.search);
     params.delete("tag");
     params.delete("category");
     if (next !== null) params.set(facet === "repo" ? "tag" : "category", next);
     const search = params.toString();
+    // No-op only when the WHOLE search is unchanged — comparing just this
+    // facet's value would make "All" a dead click while the other facet still
+    // has a (hidden) selection to clear.
+    if (search === new URLSearchParams(location.search).toString()) return;
     // navigateUrl (pushState), not replaceSearch: each chip selection is a
     // history entry so back/forward walks the filter history.
     navigateUrl(location.pathname + (search ? "?" + search : ""));
@@ -196,9 +198,12 @@ export default function Apps({ config }: { config: Config }) {
           </div>
           {chips.length > 0 && (
             <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
+              {/* Active only when NOTHING filters — with a selection hiding in
+                  the other facet, a lit All over a narrowed grid would lie;
+                  clicking it clears both params. */}
               <button
                 type="button"
-                className={"apps-tag-chip" + (active === null ? " is-active" : "")}
+                className={"apps-tag-chip" + (tag === null && category === null ? " is-active" : "")}
                 onClick={() => setFilter(mode, null)}
               >
                 All
