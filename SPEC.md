@@ -6334,7 +6334,18 @@ world from one the user typed.
     long each prompt is. **Only `error` and `missed` tint their border** — the two
     states that need a person — because a pill alone is easy to miss across twenty
     cards, and if every card had an accent the accent would mean "this is a card"
-    rather than "look here".
+    rather than "look here". Those two **restate their tint on `:hover`**, without
+    which the generic card-hover border (two selectors to the modifier's one) wins
+    and pointing at a failed card is what erases the mark saying it failed.
+    The page runs at **two widths**, not one: it is built out of the settings
+    vocabulary, whose `.prefs-page > *` caps children at 760px, so a
+    `minmax(280px, …)` grid needing 868px for a third track sat silently two-up.
+    The sections holding cards get the ~1120px the app's other card grids use
+    (`.apps-cards`, `.fhb-grid`) while the prose inside them keeps the narrow
+    measure — two kinds of content in one page: text read a line at a time, and
+    objects scanned in a grid. Both invariants are arithmetic between rules in two
+    files, which nobody re-checks after changing one, so
+    `tests/test_schedule_css.py` reads the stylesheet's own numbers and pins them.
   - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
     schedule in one place, with cancel and the outcomes, is the part that has
     nowhere else to live; it points at the composer for the scheduling itself.

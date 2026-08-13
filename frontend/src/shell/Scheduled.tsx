@@ -230,7 +230,10 @@ export default function Scheduled() {
   const past = entries.filter((e) => !isLive(e));
 
   return (
-    <div className="prefs-page">
+    // `schedule-page` is not decoration: it is what lets the card sections opt
+    // out of the 760px content column `.prefs-page > *` imposes, while the prose
+    // inside them stays at that measure. See styles/schedule.css.
+    <div className="prefs-page schedule-page">
       <header>
         <h1>Scheduled messages</h1>
         <p className="deploy-muted">

@@ -47,11 +47,15 @@ def spawned(monkeypatch):
         return {"run_id": f"r-{len(calls)}"}
 
     monkeypatch.setattr(claude_spawn, "spawn_helper", fake_spawn)
-    # The sidecar-recording thread is bookkeeping; keep it out of the way rather
-    # than let it exec_module the real agent backend per test.
-    monkeypatch.setattr(claude_spawn, "load_agent", lambda: None)
-    monkeypatch.setattr(claude_spawn, "record_session_when_ready",
-                        lambda agent, run_id: None)
+    # Stub the THREAD BODY, not the function inside it. Stubbing
+    # `record_session_when_ready` used to look equivalent and was not, in two
+    # ways that both bit: the stub's signature drifted from the real function's
+    # (a TypeError raised inside a daemon thread is a warning, never a failure),
+    # and a stub that RETURNS makes `_watch_turn` conclude the poll loop ended,
+    # so it closes the turn as `unknown` — which quietly un-busies the session
+    # these tests use to check that two sends on one session serialize. Nothing
+    # in this file asserts on watcher output; every test drives `turn` by hand.
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
     return calls
 
 
@@ -205,8 +209,7 @@ def test_the_claim_is_written_before_the_spawn(target, monkeypatch):
         return {"run_id": "r-1"}
 
     monkeypatch.setattr(claude_spawn, "spawn_helper", spawn_and_look)
-    monkeypatch.setattr(claude_spawn, "load_agent", lambda: None)
-    monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda a, r: None)
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
 
     schedule.create(str(target), "hi", _in(-5))
     schedule.tick()
@@ -230,8 +233,7 @@ def test_only_the_message_in_flight_is_claimed(target, monkeypatch):
         return {"run_id": f"r-{len(seen)}"}
 
     monkeypatch.setattr(claude_spawn, "spawn_helper", spawn_and_look)
-    monkeypatch.setattr(claude_spawn, "load_agent", lambda: None)
-    monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda *a, **k: None)
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
 
     schedule.create(str(target), "first", _in(-20))
     schedule.create(str(target), "second", _in(-10))
@@ -303,8 +305,7 @@ def test_one_bad_entry_does_not_stop_the_rest_of_the_tick(target, monkeypatch):
         return {"run_id": "r-ok"}
 
     monkeypatch.setattr(claude_spawn, "spawn_helper", flaky)
-    monkeypatch.setattr(claude_spawn, "load_agent", lambda: None)
-    monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda a, r: None)
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
 
     schedule.create(str(target), "boom", _in(-20))
     schedule.create(str(target), "fine", _in(-10))

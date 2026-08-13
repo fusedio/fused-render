@@ -31,7 +31,24 @@
 
    Narrower columns than the apps hub (280 vs 300) because a card here holds a few
    lines of text rather than a 16:10 preview, and three-up beats two-up for
-   scanning a schedule. */
+   scanning a schedule.
+
+   That last sentence is only TRUE because of the rule below. This page is built
+   out of the settings vocabulary, and `.prefs-page > *` caps every child at
+   760px — a good measure for prose and 108px short of three 280px tracks, so
+   the grid silently stayed two-up. The rest of the app's card grids
+   (.apps-cards, .fhb-grid) live in a ~1120px column, so the sections that hold
+   cards get that width and the prose inside them keeps the narrow measure. Two
+   different widths in one page, because there are two different kinds of content
+   in it: text you read a line at a time, and objects you scan a grid of. */
+.schedule-page > .prefs-section {
+  max-width: 1120px;
+}
+
+.schedule-page .prefs-section > p {
+  max-width: 760px;
+}
+
 .schedule-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -66,6 +83,20 @@
 
 .schedule-card--missed {
   border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+
+/* Hover has to restate the tint, and this is not a nicety. `.schedule-card:hover`
+   is two selectors to the modifiers' one, so without these the generic muted
+   hover border WINS and pointing at a failed card is what erases the mark that
+   says it failed — the one state where the user is most likely to have their
+   cursor on it. Stronger than the resting mix rather than equal, so hover still
+   reads as hover. tests/test_schedule_css.py pins the pairing. */
+.schedule-card--error:hover {
+  border-color: color-mix(in srgb, var(--error) 70%, var(--border));
+}
+
+.schedule-card--missed:hover {
+  border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
 }
 
 .schedule-card-head {
