@@ -134,7 +134,18 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   const [avail, setAvail] = useState<AvailablePlugins | null>(null);
   const [availError, setAvailError] = useState<string | null>(null);
   const loadAvail = useCallback(() => {
-    cc.plugins.available().then(setAvail, (e: Error) => setAvailError(e.message));
+    // Both branches write BOTH pieces of state. A sticky `availError` would be
+    // worse than the failure it records: the auto-load gate below is
+    // `!avail && !availError`, so one failed read disables it permanently, and
+    // a later successful refresh would then render the stale ErrorBanner above
+    // a perfectly good list.
+    cc.plugins.available().then(
+      (a) => {
+        setAvail(a);
+        setAvailError(null);
+      },
+      (e: Error) => setAvailError(e.message),
+    );
   }, []);
   useEffect(() => {
     if (tab === "discover" && !avail && !availError) loadAvail();
@@ -213,6 +224,10 @@ export default function PluginsSection({ onChanged }: SectionProps) {
     setTab(next);
     setMarketplace(ALL);
     setPage(0);
+    // Switching lists is also the cheap retry: clearing the error re-opens the
+    // auto-load gate, so coming back to Discover tries once more rather than
+    // showing the same stale banner until the panel remounts.
+    setAvailError(null);
   };
 
   const share = async (command: string) => {

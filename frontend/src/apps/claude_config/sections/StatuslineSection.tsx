@@ -13,7 +13,7 @@
 // "here is your status line". Those facts are all still here — as a definition
 // list UNDER the preview, where metadata belongs — and re-running it is the
 // same toolbar refresh icon every other tab has rather than a bespoke button.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
@@ -24,12 +24,21 @@ export default function StatuslineSection() {
   const load = useCallback(() => cc.statusline.get(), []);
   const { data, error } = useModuleData(load);
   const [running, setRunning] = useState(false);
+  // A ref, not the state flag: two clicks in the same tick both read the same
+  // stale `running === false` before React re-renders.
+  const runningRef = useRef(false);
   const [output, setOutput] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const configured = !!data?.configured;
 
   const preview = useCallback(async () => {
+    // The toolbar disables its refresh while this runs (refreshBusy below), but
+    // the guard lives here too: this is the one place the app executes the
+    // user's own command, and "can't be clicked again" must not depend on the
+    // control that happens to call it.
+    if (runningRef.current) return;
+    runningRef.current = true;
     setRunning(true);
     setPreviewError(null);
     try {
@@ -39,6 +48,7 @@ export default function StatuslineSection() {
     } catch (e) {
       setPreviewError((e as Error).message);
     } finally {
+      runningRef.current = false;
       setRunning(false);
     }
   }, []);
@@ -75,6 +85,7 @@ export default function StatuslineSection() {
         }
         onRefresh={() => void preview()}
         refreshLabel="Re-run preview"
+        refreshBusy={running}
       />
       {/* The hero: what the thing actually looks like. */}
       <pre className="cc-pre cc-mono cc-statusline">

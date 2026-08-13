@@ -140,6 +140,12 @@ def _available() -> dict:
             name = entry.get("name")
             if not isinstance(name, str) or not name:
                 continue
+            # A catalog is third-party content, and its `name` becomes argv for
+            # the CLI further down. Nothing legitimate starts with a dash; an
+            # entry that does is dropped HERE, at the boundary, so no downstream
+            # action has to remember (see lib.option_shaped).
+            if lib.option_shaped(name) or lib.option_shaped(mkt):
+                continue
             pid = f"{name}@{mkt}"
             keywords = entry.get("keywords")
             plugins.append({
@@ -177,7 +183,11 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
         return {"ok": True, "id": id, "enabled": want}
 
     if action == "update":
-        # Guard: only ids we know about are ever handed to the CLI.
+        # Two guards, because membership alone is not safety: settings.json is
+        # hand-editable, so an id being "known" says only that it is in a file
+        # the user can write — not that it is a plugin name rather than a flag.
+        if lib.option_shaped(id):
+            return {"ok": False, "error": "unknown plugin"}
         s = lib.read_settings()
         installed = lib.read_json(lib.INSTALLED_PLUGINS_PATH, {})
         known = set(installed.get("plugins") or {}) | set(s.get("enabledPlugins") or {})
@@ -193,9 +203,16 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
     if action == "install":
         if not id:
             return {"ok": False, "error": "id required"}
-        # Same guard as `update`, against the other source of truth: only an id
-        # a marketplace actually publishes is ever handed to the CLI, so a
-        # crafted string can't become an argv the CLI interprets.
+        # Same guard as `update`, against the other source of truth: the id must
+        # be one a cloned marketplace actually publishes.
+        #
+        # What that buys, stated precisely, because the previous wording claimed
+        # more than it delivered: the catalog is THIRD-PARTY content, so passing
+        # this check does not make a string ours. It makes it a string some
+        # marketplace published. The thing that stops it being read as a flag is
+        # _available() dropping option-shaped names as it builds the catalog
+        # (see lib.option_shaped) — an entry named "--force" never reaches this
+        # set, so it can never match here.
         if id not in {p["id"] for p in _available()["plugins"]}:
             return {"ok": False, "error": "unknown plugin"}
         # -y: this runs headless, and an install that stops on a prompt would

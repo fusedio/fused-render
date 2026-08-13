@@ -55,6 +55,17 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
   // there is no epoch of its own to track — only the explicit re-check.
   const { status, failed, recheck } = useGitStatus(0);
 
+  // On THIS page, "something changed the config" always also means "the drift
+  // card is stale" — the card is right there under the thing that changed it.
+  // Every mutation on the page routes through here (restore, and everything
+  // ProfilesSection does) rather than each remembering to re-check: the tab
+  // strip's dot going clean while the card below still offers to commit three
+  // changes is exactly the contradiction that gap produces.
+  const pageChanged = useCallback(() => {
+    onChanged();
+    recheck();
+  }, [onChanged, recheck]);
+
   const commit = async () => {
     const drift = await guard(cc.gitOps.drift());
     if (!drift) return;
@@ -100,7 +111,7 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
       return;
     }
     toastOk("Restored");
-    onChanged();
+    pageChanged();
     reload();
   };
 
@@ -157,7 +168,7 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
         </Card>
       </Group>
       <Group title="Profiles">
-        <ProfilesSection onChanged={onChanged} />
+        <ProfilesSection onChanged={pageChanged} />
       </Group>
       <Group title="Commits">
         {error && <ErrorBanner>{error}</ErrorBanner>}

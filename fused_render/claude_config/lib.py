@@ -458,6 +458,24 @@ def _resolve_claude(path_env: str) -> Optional[str]:
     return None
 
 
+def option_shaped(value: str) -> bool:
+    """True if `value` would be read as a FLAG rather than as a value.
+
+    An argv array closes off shell injection — nothing here ever builds a
+    command string — but it does not close off OPTION injection: argv[n] is
+    still parsed by the program receiving it, and a leading "-" is what makes
+    it an option. So a plugin published as `--force` yields the id
+    "--force@marketplace", which `claude plugin install` reads as a flag with a
+    junk argument, not as a plugin to install.
+
+    That matters because the strings we hand the CLI are not all ours: a
+    marketplace catalog is third-party content cloned off a git remote, and
+    settings.json is hand-editable. Callers reject rather than escape — there is
+    no legitimate plugin or server whose name starts with a dash, so refusing is
+    both the safe answer and the correct one."""
+    return value.startswith("-")
+
+
 def claude_cli(*args: str, timeout: int = 25) -> dict:
     """Run the `claude` binary with an argv array (never a shell string, so
     args can't inject). Resolves the binary's absolute path (plugins.md §5) so

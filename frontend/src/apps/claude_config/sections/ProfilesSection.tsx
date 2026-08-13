@@ -249,6 +249,11 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       const message = await askCommitFirst(res, "switch", `Save before switching to ${target}`);
       if (!message) return false;
       res = await guard(cc.profiles.switch(target, message));
+      // Report the change BEFORE branching on success: the retry's whole job is
+      // to commit first, so the drift may well be gone even when the switch
+      // that followed it failed. Reporting only on success left the History
+      // card above still offering to commit changes that no longer exist.
+      onChanged();
       if (!res) return false;
     }
     if (!res.ok) {
@@ -310,6 +315,9 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       const message = await askCommitFirst(res, "import", `Save before importing into ${branch}`);
       if (!message) return;
       res = await guard(cc.profiles.import(b64, branch, paths, message));
+      // As in switchInto: the retry commits first, so drift may be gone
+      // regardless of what the import itself did.
+      onChanged();
       if (!res) return;
     }
     if (!res.ok) {

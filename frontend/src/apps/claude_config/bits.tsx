@@ -183,11 +183,20 @@ export function SectionToolbar({
   // Override only where "refresh" is the wrong word for the same act (MD Files
   // re-runs a filesystem scan; Statusline re-runs the preview command).
   refreshLabel = "Refresh",
+  refreshBusy,
 }: {
   summary: ReactNode;
   children?: ReactNode;
   onRefresh?: () => void;
   refreshLabel?: string;
+  // Disables the refresh while its work is in flight. Offered rather than
+  // assumed, because most tabs' refresh is an idempotent read whose worst case
+  // is a wasted fetch — but Statusline's runs the USER'S OWN command through
+  // `sh -c`, where three fast clicks are three concurrent processes and the
+  // results land in completion order, so a slow earlier run can overwrite a
+  // newer one. A control that spawns a process should not be re-entrant just
+  // because it is drawn as an icon.
+  refreshBusy?: boolean;
 }) {
   return (
     <div className="cc-toolbar">
@@ -197,8 +206,10 @@ export function SectionToolbar({
         <button
           type="button"
           className="cc-iconbtn"
-          title={refreshLabel}
+          title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
           aria-label={refreshLabel}
+          aria-busy={refreshBusy || undefined}
+          disabled={refreshBusy}
           onClick={onRefresh}
         >
           <Icon name="refresh" />
@@ -536,7 +547,15 @@ export function useGitStatus(epoch: number): GitStatusState {
   useEffect(() => {
     let alive = true;
     cc.gitOps.status().then(
-      (s) => alive && setStatus(s),
+      (s) => {
+        if (!alive) return;
+        setStatus(s);
+        // Clearing this is not tidiness — it is the difference between a
+        // recoverable failure and a dead page. A stale `failed` outlives the
+        // success that fixed it, and the History card would then render
+        // "Status unavailable" ABOVE a live "Review & commit" button.
+        setFailed(false);
+      },
       () => alive && setFailed(true),
     );
     return () => {

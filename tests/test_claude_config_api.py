@@ -511,6 +511,50 @@ def test_plugins_install_reports_the_cli_s_own_stderr(client, claude_dir, monkey
     assert body == {"ok": False, "error": "no such marketplace"}
 
 
+def test_option_shaped_names_never_reach_the_cli(client, claude_dir, monkeypatch):
+    """An argv array stops COMMAND injection, not OPTION injection.
+
+    A marketplace catalog is third-party content and `name` becomes argv, so an
+    entry called "--force" would produce the id "--force@acme" — which the
+    allowlist would happily confirm is "a plugin some marketplace publishes",
+    and which `claude plugin install` would then read as a flag. It is dropped
+    as the catalog is built, so it is not installable and not even listable.
+    """
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    _marketplace(claude_dir, "acme", {"plugins": [
+        {"name": "--force"}, {"name": "-y"}, {"name": "widget"},
+    ]})
+
+    listed = _post(client, "plugins", action="available").json()["plugins"]
+    assert [p["id"] for p in listed] == ["widget@acme"]
+
+    for flag in ("--force@acme", "-y@acme"):
+        assert _post(client, "plugins", action="install", id=flag).json() == {
+            "ok": False, "error": "unknown plugin"}
+
+
+def test_update_refuses_an_option_shaped_id_even_when_settings_lists_it(
+        client, claude_dir, monkeypatch):
+    # `update` checks membership in settings.json + installed_plugins.json —
+    # both hand-editable, so "known" is not the same as "safe to pass as argv".
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"--version@acme": True}}))
+    body = _post(client, "plugins", action="update", id="--version@acme").json()
+    assert body == {"ok": False, "error": "unknown plugin"}
+
+
+@pytest.mark.parametrize("action", ["login", "logout", "remove", "add"])
+def test_mcp_refuses_an_option_shaped_server_name(client, claude_dir, monkeypatch, action):
+    for fn in ("claude_cli", "claude_cli_detached"):
+        monkeypatch.setattr(lib, fn,
+                            lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    body = _post(client, "mcp", action=action, name="--scope", json="{}").json()
+    assert body == {"ok": False, "error": "invalid server name"}
+
+
 def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
     assert plugins.main(action="nope") == {"ok": False, "error": "unknown action: nope"}
 
