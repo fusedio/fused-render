@@ -72,7 +72,9 @@ export function reduceProbe(
     return { state: next("update-refresh"), reload: false };
   }
   if (wasDown) return { state: next("reconnected"), reload: false };
-  // "reconnected" lingers until the component's dismiss timer hides it.
-  if (state.banner === "reconnected") return { state: next("reconnected"), reload: false };
+  // "reconnected" is dismissed by the component's timer, but never held past
+  // the next probe: an in-flight probe can write a stale "reconnected" back
+  // AFTER the timer fired, with no new timer armed (wasDown is false) — held
+  // here, that card would stick until the next outage.
   return { state: next("hidden"), reload: false };
 }

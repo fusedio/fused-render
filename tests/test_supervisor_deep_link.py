@@ -132,6 +132,13 @@ def test_launch_url_opens_no_tab(opened):
     assert opened == []
 
 
+def test_relaunch_url_opens_no_tab(opened):
+    # Relaunch is macOS-only machinery; here it degrades to launch semantics
+    # (app already running by this point) instead of a /clone error tab.
+    core._open_command(4242, protocol.Open("fused-render://relaunch"))
+    assert opened == []
+
+
 def test_opaque_launch_url_opens_no_tab(opened):
     # `fused-render:launch` (no authority) — some carriers strip the empty host.
     core._open_command(4242, protocol.Open("fused-render:launch"))

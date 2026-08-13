@@ -80,9 +80,13 @@ test("a version transition never auto-reloads while the disk is still ahead", ()
   expect(state.banner).toBe("update-restart");
 });
 
-test("reconnected lingers through later healthy probes until the dismiss timer", () => {
+test("reconnected clears on the following healthy probe", () => {
+  // Backstop for the dismiss-timer race: an in-flight probe can write a stale
+  // "reconnected" back AFTER the timer fired (and no new timer arms, wasDown
+  // being false). The reducer therefore never holds "reconnected" past the
+  // next probe — worst case the card shows for two poll ticks, never forever.
   const { state } = run(initialStatus(), [fail(), fail(), ok(), ok()]);
-  expect(state.banner).toBe("reconnected");
+  expect(state.banner).toBe("hidden");
 });
 
 test("installed version differs from running server: restart banner", () => {

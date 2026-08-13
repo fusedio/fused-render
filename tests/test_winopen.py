@@ -69,6 +69,22 @@ def test_open_launch_deeplink_ensures_server_and_opens_no_tab(monkeypatch, tmp_p
     assert ensured == [None]
 
 
+def test_open_relaunch_deeplink_ensures_server_and_opens_no_tab(monkeypatch, tmp_path):
+    # fused-render://relaunch: on Windows the macOS quit-and-respawn does not
+    # apply (installed_version is None here, the restart card never shows) —
+    # degrade to launch semantics instead of falling through to /clone and
+    # erroring with "unsupported fused-render link".
+    monkeypatch.setattr(winopen, "APP_SUPPORT_DIR", str(tmp_path))
+    monkeypatch.setattr(winopen, "setup_logging", lambda: None)
+    ensured = []
+    monkeypatch.setattr(winopen, "_ensure_server", lambda port: ensured.append(port) or 1777)
+    monkeypatch.setattr(
+        winopen.webbrowser, "open", lambda url: pytest.fail(f"opened a tab: {url}")
+    )
+    winopen._open("fused-render://relaunch", None)
+    assert ensured == [None]
+
+
 def test_open_clone_deeplink_still_opens_confirm_page(monkeypatch, tmp_path):
     monkeypatch.setattr(winopen, "APP_SUPPORT_DIR", str(tmp_path))
     monkeypatch.setattr(winopen, "setup_logging", lambda: None)

@@ -82,6 +82,7 @@ def test_begin_relaunch_claims_the_quit_then_spawns():
         quit_action=quit_action,
         bundle="/Applications/FusedRender.app",
         spawn=lambda bundle, pid: order.append(("spawn", bundle, pid)),
+        running="0.4.8", installed="0.5.0",
     )
     assert started is True
     # Quit first: begin_quit's claim is the atomic (locked) arbiter of whether
@@ -97,6 +98,7 @@ def test_begin_relaunch_without_a_bundle_does_nothing(monkeypatch):
     started = app_mod.begin_relaunch(
         quit_action=lambda: calls.append("quit") or True,
         spawn=lambda *a: calls.append(a),
+        running="0.4.8", installed="0.5.0",
     )
     assert started is False
     assert calls == []  # unpackaged: no respawn possible, so no quit either
@@ -108,9 +110,39 @@ def test_begin_relaunch_joins_a_quit_already_in_flight():
         quit_action=lambda: False,  # begin_quit joined an in-flight teardown
         bundle="/Applications/FusedRender.app",
         spawn=lambda *a: calls.append(a),
+        running="0.4.8", installed="0.5.0",
     )
     assert started is False
     assert calls == []  # never respawn an app the user is quitting
+
+
+def test_begin_relaunch_is_a_noop_when_already_running_the_disk_version():
+    # The OS may LAUNCH a fresh instance just to deliver the relaunch link
+    # (app not running, or a second click landing after the old pid died).
+    # That instance IS the disk version — quitting it to boot itself again
+    # would be a pointless extra cycle, so relaunch only acts when stale.
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda: calls.append("quit") or True,
+        bundle="/Applications/FusedRender.app",
+        spawn=lambda *a: calls.append(a),
+        running="0.5.0", installed="0.5.0",
+    )
+    assert started is False
+    assert calls == []
+
+
+def test_begin_relaunch_is_a_noop_when_the_disk_version_is_unknown():
+    # Unreadable Info.plist: staleness can't be established, so don't quit.
+    calls = []
+    started = app_mod.begin_relaunch(
+        quit_action=lambda: calls.append("quit") or True,
+        bundle="/Applications/FusedRender.app",
+        spawn=lambda *a: calls.append(a),
+        running="0.5.0", installed=None,
+    )
+    assert started is False
+    assert calls == []
 
 
 def test_quit_action_reports_whether_it_claimed_the_teardown():

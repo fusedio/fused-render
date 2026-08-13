@@ -522,12 +522,16 @@ def _open(path: str | None, requested_port: int | None) -> None:
         # whole fused-render:// URL over as %1 — not a filesystem path.
         # Lazy import: deeplink pulls in fastapi, which this launcher must not
         # pay for on the common double-click path (no deep link involved).
-        from fused_render.deeplink import is_launch_url
+        from fused_render.deeplink import is_launch_url, is_relaunch_url
 
-        if is_launch_url(path):
+        if is_launch_url(path) or is_relaunch_url(path):
             # fused-render://launch (D128): ensure the server is running and
             # stop — the page that linked here (D126 banner) reconnects on
             # its own, so opening a tab would just duplicate it.
+            # relaunch (D268) degrades to the same thing here: the macOS
+            # quit-and-respawn doesn't apply (installed_version is None on
+            # Windows, the restart card never shows), and falling through
+            # would error on the /clone page.
             port = _ensure_server(requested_port)
             logger.info("launch deep link: server ready on port %s, no tab opened", port)
             return

@@ -513,13 +513,21 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
     )
 
 
-def begin_relaunch(*, quit_action, bundle=None, spawn=None) -> bool:
+def begin_relaunch(*, quit_action, bundle=None, spawn=None,
+                   running=None, installed=None) -> bool:
     """fused-render://relaunch: quit through the normal teardown and park a
     relauncher on our pid. True if the relaunch was started.
 
-    No-ops when unpackaged (no bundle to respawn — the app keeps running) and
-    when a quit is already in flight — respawning an app the user is quitting
-    would be worse than ignoring the link. The in-flight case rides
+    Acts ONLY when this process is provably stale — the disk version is known
+    and differs from the running one. The OS may LAUNCH a fresh instance just
+    to deliver this link (app not running, or a second click landing after the
+    old pid died): that instance IS the disk version, and quitting it to boot
+    itself again would be a pointless extra cycle that can even race a second
+    instance past the pidfile begin_quit already removed.
+
+    Also no-ops when unpackaged (no bundle to respawn — the app keeps running)
+    and when a quit is already in flight — respawning an app the user is
+    quitting would be worse than ignoring the link. The in-flight case rides
     `quit_action`'s return (begin_quit's claim bool) rather than reading
     state["quitting"] here: that flag's check-then-set is only atomic under
     _quit_lock, and begin_quit already owns that critical section. Spawning
@@ -530,6 +538,16 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None) -> bool:
         bundle = bundle_path()
     if bundle is None:
         logger.info("relaunch deep link ignored: not running from a bundle")
+        return False
+    if running is None:
+        from fused_render import __version__ as running
+    if installed is None:
+        from fused_render.installed import installed_version
+
+        installed = installed_version()
+    if installed is None or installed == running:
+        logger.info("relaunch deep link ignored: running %s, disk %s — nothing to swap",
+                    running, installed)
         return False
     if not quit_action():
         logger.info("relaunch deep link ignored: quit already in progress")
