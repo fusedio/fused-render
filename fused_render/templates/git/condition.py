@@ -9,10 +9,11 @@ mode.
 branches, push/pull. Every one of those is a REPOSITORY-level action, not
 something you do to one file: you do not stash a file, you stash a tree, and the
 working tree a file sits in is its FOLDER's working tree, not the file's. So the
-mode belongs to the folder and is offered there alone. Per-file history is a
-different question with a different answer already shipped — `history` renders
-the commits that touched one path with a timeline this view never had — and that
-one is untouched here: it stays on every file key it had.
+mode belongs to the folder and is offered there alone. The per-file question —
+which commits touched THIS path, and what did the file look like at one of them —
+is answered by this same view rather than by a mode of its own: the commit list is
+SCOPED to the open target, and opening a commit renders the file as of it. There
+is nothing left for a per-file binding to add, so folder-only costs nothing.
 
 The gate and the binding say the same thing twice, on purpose. The registry drops
 `git` from every file extension and keeps it on the universal "/" DIRECTORY key;
@@ -139,13 +140,14 @@ def main(path: str) -> bool:
             return False
 
         # NO peer exclusions here. This gate used to refuse a fused app folder,
-        # and then a git-backed registered linked app, on the grounds that
-        # `history` rendered the same history — one relpath + a `.git` stat for
-        # the first, a whole second `rev-parse` fork for the second, both of
-        # them on every directory the user opened. `git` is the working tree and
-        # `history` is the history; they answer different questions, so a
-        # folder gets both and the two forks go away with the rules that needed
-        # them.
+        # and then a git-backed registered linked app, on the grounds that a
+        # SEPARATE per-path history mode already rendered their history — one
+        # relpath + a `.git` stat for the first, a whole second `rev-parse` fork
+        # for the second, both of them on every directory the user opened. That
+        # peer is gone and this view answers the history question itself, so
+        # there is no longer anything to defer to: a work tree is a work tree
+        # whoever else claims the folder, and the two forks go with the rules
+        # that needed them.
 
         # (2) Folder-only: a file is refused outright. This used to fall back to
         # the file's PARENT directory, back when `git` was offered on file keys

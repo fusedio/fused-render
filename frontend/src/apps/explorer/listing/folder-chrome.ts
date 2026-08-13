@@ -20,7 +20,7 @@
 // A module store rather than a prop because the two components are SIBLINGS —
 // App renders <Breadcrumb> above <Listing>/<Preview>, and which of those the
 // content resolves to is decided several levels down (a directory's `_mode`
-// can leave the listing for `git`/`history` without remounting the bar). The
+// can leave the listing for `git` without remounting the bar). The
 // same shape as lib/ui-overlay and fs-clipboard: state that lives just outside
 // a remount boundary, with a subscribe/snapshot pair for useSyncExternalStore.
 //

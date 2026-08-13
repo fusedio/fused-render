@@ -4,14 +4,27 @@
 //
 // They did disagree. Each carried its own inline copy of the rule, and Home's
 // Recent row had already drifted from the hub's card. The rule now: an app card
-// opens its FOLDER IN THE FILE EXPLORER, as a plain listing — no `_mode` — and
-// only an app whose entry is a lone non-page file opens that file instead.
+// opens the app's ENTRY PAGE — the html FILE itself, in the explorer's ordinary
+// file view — and only an app with no page at all opens its folder as a listing.
 //
-// It used to open the folder in an `app` view (`?_mode=app`) under a builder
-// route of its own, /apps/<tag>/<name>. The route went first (D262), then the
-// app view itself (D264): there is no longer any such thing as opening a folder
-// "as an app", so a card opening the folder's listing is not a compromise
-// between two destinations — it is the only destination there is.
+// That is a REVERSAL, recorded as D269 and made on the owner's explicit
+// instruction: "a folder that has a top-level .html is an app, and every surface
+// that shows or opens that folder should show/open THAT PAGE." For one release
+// the card opened the FOLDER as a plain listing, because the destination it used
+// to have was an `app` view (`?_mode=app`) under a builder route of its own,
+// /apps/<tag>/<name>; the route went first (D262) and the app view itself next
+// (D264), and with no "open as an app" left, the folder's listing looked like
+// the only destination there was. It was not: the entry page is an ordinary
+// FILE, and the explorer has always been able to open one. So the card lands on
+// the page, and D269 brings back NONE of the machinery D262/D264 removed — no
+// builder route, no `app` template, no `_mode`.
+//
+// The page is what the card is a picture of, which is the argument in one line:
+// a card renders that page (live, or the `preview.png` standing in for it) and
+// its title is read out of that page's <title>. Clicking a picture of a page and
+// arriving at a file listing is the card not keeping its own promise — and the
+// listing is one click away from the page (the crumb bar), where the page was
+// several from the listing.
 //
 // OPENING an app is not BUILDING one: the `claude` view (the app beside a
 // Claude chat) is where a new app is created and iterated on, and the create
@@ -34,8 +47,10 @@ export function entryOf(app: AppInfo): string | null {
 }
 
 // Deliberately NO `mode`: `navigate`'s options carry one, and a card must never
-// set it (D262 — the card opens the folder's listing and the user picks the
-// view). A field nothing writes is an invitation, so the type does not offer it.
+// set it (D262/D269 — the card opens the entry page, and a page opens in its own
+// default view like any other file; there is no app mode to ask for and the user
+// picks any other view from the switcher). A field nothing writes is an
+// invitation, so the type does not offer it.
 export interface OpenTarget {
   path: string;
   opts?: { isDir?: boolean };
@@ -46,16 +61,23 @@ export interface OpenTarget {
 // the shell imports is process-wide in bun, and it leaks into whichever suite
 // runs next. A pure function needs no mock at all.
 export function openTargetFor(app: AppInfo): OpenTarget {
-  // A page entry means the folder is the subject — the app view, the chat and
-  // the history all rediscover the entry from the folder, so the folder is what
-  // the card opens, in the explorer's own listing.
-  if (app.entry_html) return { path: app.path, opts: { isDir: true } };
-  // A single file entry that isn't a page opens as the file. No workspace app
-  // reaches this today (its entry is its .html or it has none), but the branch
-  // is the contract `entry` exists for, and it keeps the fallback below meaning
-  // only "nothing to open".
+  // THE ENTRY, WHATEVER KIND IT IS — a page or a lone non-page file. Both are
+  // files in the explorer, so the two branches this function used to have
+  // collapse into one: `entryOf` already prefers `entry` and falls back to
+  // `entry_html` for an older server, and the only thing the page/non-page
+  // distinction still decides is who may point /render at it (api.ts), which is
+  // not a question about where a click lands.
+  //
+  // `isDir: false` is carried rather than omitted: the hint rides in
+  // history.state so the destination paints the right scaffold before its ~1.6s
+  // stat resolves (router's navHintIsDir), and a card KNOWS its entry is a file.
+  // Omitting it would be "unknown", i.e. a blanker frame for no reason.
   const entry = entryOf(app);
-  if (entry) return { path: entry };
+  if (entry) return { path: entry, opts: { isDir: false } };
+  // Nothing to open but the folder — the app has no top-level page (or the
+  // server could not resolve one). Its listing is the honest destination: it is
+  // what the user would see anyway on arriving, and it is where they can find
+  // whatever the folder does hold.
   return { path: app.path, opts: { isDir: true } };
 }
 
@@ -63,7 +85,8 @@ export function openTargetFor(app: AppInfo): OpenTarget {
 // open it in a new tab without the shell's help.
 //
 // Nothing rides in the query string: the destination takes its own default view
-// (a folder's listing), and the params navigate() would otherwise carry are
+// (the page's own template for an entry page, a folder's listing for the
+// entry-less fallback), and the params navigate() would otherwise carry are
 // in-session layout the user toggled, which a new tab does not inherit. Built
 // through the router's own codec, so an app path with a space, a `#` or a
 // non-ASCII name encodes exactly as in-app navigation encodes it.

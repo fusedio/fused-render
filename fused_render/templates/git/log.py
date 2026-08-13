@@ -1059,18 +1059,17 @@ def main(
 ) -> dict:
     """`history=False` drops the commit log from the `overview` payload.
 
-    The `git` view is commit MANAGEMENT — staging, discarding, stashing,
-    committing, branches, push/pull — and draws no History section; the log is
-    the `history` mode's story, rendered there with a timeline this reader's
-    consumer never had. So the view opts out and the `git log` fork does not
-    happen at all on an ordinary open.
+    An escape hatch for a caller that wants the working-tree half and nothing
+    else: with it false the `git log` fork does not happen at all. The `git`
+    view does NOT use it — it draws a scoped Commits section from exactly these
+    `commits`/`has_more`/`capped` fields, which is why they ride along on the
+    overview rather than costing a second read.
 
     Defaulted TRUE rather than flipped, because `overview` is the reader's
-    documented shape and its `commits`/`has_more`/`capped` fields are what every
-    other caller (and this module's own test suite) reads. Opting out empties
-    those fields rather than removing them, so the payload keeps ONE shape.
-    Ignored by every other op — `op="log"` is how you ask for the log on
-    purpose, and it is unaffected."""
+    documented shape and those fields are what every caller (and this module's
+    own test suite) reads. Opting out empties them rather than removing them, so
+    the payload keeps ONE shape. Ignored by every other op — `op="log"` is how
+    you ask for the log on purpose, and it is unaffected."""
     try:
         _check_op(op, sha, entry)
         root, rel, is_dir = _locate(file)

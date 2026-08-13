@@ -8,9 +8,11 @@
 //            otherwise. Reuses the app's own template pipeline for FILES AND
 //            FOLDERS alike — the selection is stat'ed to discover its template
 //            modes and its DEFAULT embeds as the normal /render iframe (which
-//            mode that is, is listing/pane-modes.ts's call). A folder's
-//            `_listing` mode mounts the real shell Listing component (embedded —
-//            no URL writes, no nested pane, no global keyboard).
+//            mode that is, is listing/pane-modes.ts's call). A folder that is an
+//            APP previews as its entry PAGE (D269 — see the retarget below); any
+//            other folder's `_listing` mode mounts the real shell Listing
+//            component (embedded — no URL writes, no nested pane, no global
+//            keyboard).
 //   Claude   the chat, chat-only, about the selected row (about the FOLDER when
 //            the selection names no single row).
 //   Git      the OPEN FOLDER's working tree. The one mode whose subject is not
@@ -25,8 +27,9 @@
 // — whether there is a pane at all, its width, the divider drag, and `_side`
 // itself — stays in Listing; this component owns only what the pane shows.
 import { useEffect, useState } from "react";
-import { resolveConditions, statPath } from "@platform/lib/api";
+import { prefetchListDir, resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
+import { entryHtmlPath } from "@apps/explorer/lib/app-entry";
 import { navigate } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { modeTitle } from "@platform/lib/mode-name";
@@ -107,11 +110,6 @@ export default function ListingPreviewPane({
   onClose: () => void;
 }) {
   const [info, setInfo] = useState<InfoState>({ status: "loading" });
-  // Stat the selection — files and folders alike carry a template mode list
-  // (folders at minimum the `_listing` sentinel). The cleanup flag is the
-  // superseded-click guard: a stale async result for a row that's no longer
-  // selected must not render.
-  const path = row?.path;
   // The self target renders without asking the server anything (no modes — see
   // its branch below), so no fetch is started for it.
   const self = !!row?.self;
@@ -120,6 +118,71 @@ export default function ListingPreviewPane({
   // stat below would be work for an answer nothing reads — including on every
   // selection change, since Claude stays mounted across one.
   const previewing = side === "preview";
+
+  // --- a selected FOLDER that is an app previews as its PAGE (D269) ----------
+  //
+  // The owner's rule: a folder holding a top-level `.html` IS that page, and
+  // every surface that shows the folder shows the page. Selecting `task-forge`
+  // used to fill this pane with a nested listing of task-forge — a listing of a
+  // folder, rendered beside the listing it was selected in — where the thing
+  // the folder is FOR was one row inside it.
+  //
+  // It is resolved by RETARGETING the row, not by a mode of its own: everything
+  // below already knows how to preview an html FILE (stat → templates →
+  // `_render` iframe), so the app page arrives through the same pipeline as any
+  // other page, the expand button opens the page, and no template, sentinel or
+  // pane branch had to be reintroduced for it. (D264 deleted the `app` template
+  // and the pane-only `_app` sentinel; D269 does NOT bring either back — see
+  // lib/app-entry.ts.)
+  //
+  // The cost is one `/api/fs/list` per selected folder, and it is the same page
+  // the embedded `Listing` would have fetched anyway: both go through
+  // `prefetchListDir`, so a folder that falls through to the listing branch
+  // below reuses this very promise rather than fetching twice.
+  //
+  // A folder with no top-level html resolves to null and everything below is
+  // exactly as it was: the embedded listing.
+  const dirPath = row && !row.self && row.isDir && previewing ? row.path : null;
+  const [entryRow, setEntryRow] = useState<PaneTarget | null>(null);
+  // Separate from `info`'s own loading state on purpose: the listing branch must
+  // not paint a nested listing for one frame and then swap it for the page. The
+  // skeleton holds until the folder's entry question is answered.
+  const [resolvingEntry, setResolvingEntry] = useState(dirPath !== null);
+  useEffect(() => {
+    setEntryRow(null);
+    setResolvingEntry(dirPath !== null);
+    if (!dirPath) return;
+    let alive = true;
+    prefetchListDir(dirPath).then(
+      (res) => {
+        if (!alive) return;
+        const entry = entryHtmlPath(dirPath, res.entries);
+        setEntryRow(
+          entry === null
+            ? null
+            : { path: entry, name: entry.slice(entry.lastIndexOf("/") + 1), isDir: false }
+        );
+        setResolvingEntry(false);
+      },
+      // An unreadable folder is "no entry page", never an error of its own: the
+      // listing branch below renders the same folder through the real Listing,
+      // which has its own error reporting for exactly this.
+      () => alive && setResolvingEntry(false)
+    );
+    return () => {
+      alive = false;
+    };
+  }, [dirPath]);
+
+  // Stat what the pane will actually show — the app's page for an app folder,
+  // the selected row itself otherwise (`view`, below the early returns). Files
+  // and folders alike carry a template mode list (folders at minimum the
+  // `_listing` sentinel). The cleanup flag is the superseded-click guard: a
+  // stale async result for a row that's no longer selected must not render.
+  //
+  // `row` stays the truth about WHAT IS SELECTED — the Claude companion below is
+  // still aimed at the folder the user clicked, not at a page it never named.
+  const path = resolvingEntry ? undefined : (entryRow ?? row)?.path;
   useEffect(() => {
     if (!path || self || !previewing) return;
     let alive = true;
@@ -299,7 +362,10 @@ export default function ListingPreviewPane({
     );
   }
 
-  if (info.status === "loading") {
+  // The folder's entry question is still open, or the target is still stat'ing.
+  // Both are the same skeleton: the pane must show one answer, never a listing
+  // that turns into a page.
+  if (resolvingEntry || info.status === "loading") {
     return (
       <div className="listing-pane">
         {strip()}
@@ -319,6 +385,13 @@ export default function ListingPreviewPane({
   }
 
   // --- what `Preview` resolves to for this row --------------------------------
+  //
+  // From here down the subject is `view`, not `row`: for an app folder they
+  // differ by exactly the retarget above — `view` is the entry PAGE, so the mode
+  // list, the embed URL, the expand target and the header title are all the
+  // page's, which is the whole of what D269 changes in this component. They are
+  // the same object for every other selection.
+  const view: PaneTarget = entryRow ?? row;
 
   // Mode order = pane priority, decided in listing/pane-modes.ts. This
   // component only turns that ranking into a rendered frame.
@@ -338,7 +411,7 @@ export default function ListingPreviewPane({
   const modeNames = paneModeList({
     templates: info.templates,
     conditions: info.conditions,
-    isDir: !!row.isDir,
+    isDir: !!view.isDir,
   });
 
   // While that list is still undecided, hold the skeleton — the pane must never
@@ -367,7 +440,7 @@ export default function ListingPreviewPane({
   // listing/pane-modes (paneOpenAction), which documents why a plain folder
   // gets nothing: expanding one means opening its listing, and its listing is
   // what the left half of this very split already is.
-  const open = paneOpenAction(row, activeMode);
+  const open = paneOpenAction(view, activeMode);
   const openTarget = open.kind === "none" ? null : open.target;
   const goToTarget = () => {
     if (!openTarget) return;
@@ -437,10 +510,10 @@ export default function ListingPreviewPane({
   // rather than being passed some other way for the same reason `_file` does —
   // the page is a document, and its URL is the only thing it is handed.
   const srcFor = (t: TemplateEntry): string => {
-    if (t.mode === "_render") return withNoFocus(`/render?path=${encodeURIComponent(row.path)}`);
+    if (t.mode === "_render") return withNoFocus(`/render?path=${encodeURIComponent(view.path)}`);
     const remote = info.remote ? "&_remote=1" : "";
     return withNoFocus(
-      `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(row.path)}${remote}`
+      `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(view.path)}${remote}`
     );
   };
 
@@ -455,18 +528,18 @@ export default function ListingPreviewPane({
           key={activeEntry.mode}
           className="pane-frame"
           src={srcFor(activeEntry)}
-          title={row.name}
+          title={view.name}
         />
       </>
     );
-  } else if (activeMode === "_listing" && row.isDir) {
+  } else if (activeMode === "_listing" && view.isDir) {
     // The real shell Listing, embedded: full sorting/search/selection UI, but
     // URL-silent, paneless and without document-level keyboard (see Listing's
     // `embedded` prop).
     body = (
       <>
         {header}
-        <Listing key={row.path} fsPath={row.path} embedded />
+        <Listing key={view.path} fsPath={view.path} embedded />
       </>
     );
   } else {
@@ -476,15 +549,15 @@ export default function ListingPreviewPane({
       <>
         {strip()}
         <div className="pane-center">
-          <div className="pane-big-icon">{iconForEntry(row.name, false)}</div>
-          <div className="pane-title">{row.name}</div>
+          <div className="pane-big-icon">{iconForEntry(view.name, false)}</div>
+          <div className="pane-title">{view.name}</div>
           <div className="pane-hint">
             No preview for this file type{info.size !== null ? ` — ${formatSize(info.size)}` : ""}.
           </div>
           <button
             type="button"
             className="pane-open-btn"
-            onClick={() => navigate(row.path, { isDir: false })}
+            onClick={() => navigate(view.path, { isDir: false })}
           >
             Open
           </button>

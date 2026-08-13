@@ -1088,11 +1088,32 @@
     document.getElementById("panelToggle").style.display = m==="edit" ? "" : "none";
     syncURL(); renderCanvas(); updateToolbar(); positionSelbox();
   }
+  // Absent `slide` means slide 0 and absent `mode` means "view" — the same two
+  // answers the boot block below feeds back in. Both are true defaults, so both
+  // are STAMPED: the URL carries `slide=0&mode=view` from boot and a copied link
+  // shows the whole state. A write that merely RESTATES what the URL already
+  // means goes through the runtime's replace path so it costs no history entry
+  // (SPEC PR-3); a real move — the next slide, the other mode — still pushes.
+  function setParam(key,value,dflt){
+    const cur=fused.params.get(key);
+    const restating=(cur===undefined||cur===null||cur===""?dflt:cur)===value;
+    fused.params.set(key,value,restating?{history:"replace"}:undefined);
+  }
   function syncURL(){
     // NB: `_file` is a reserved param (set() throws on `_`-prefixed keys); it is
     // already present in the URL from how the page was opened. Only sync our own.
-    fused.params.set("slide",String(S.cur));
-    fused.params.set("mode",S.mode);
+    //
+    // BOTH writes here are restatements in the common path, because syncURL()
+    // has three callers and only one of them changes anything:
+    //   * `setMode()` re-writes `slide` (which it never touches);
+    //   * `gotoSlide()` re-writes `mode` (which it never touches);
+    //   * boot calls `setMode(params.get("mode")||"view")` and so restates the
+    //     mode the URL already carries — and it is reached again AFTER A CLICK,
+    //     via openLibrary() ▸ File ▸ New blank deck, where the runtime's own
+    //     no-gesture guard no longer applies and the push would be real.
+    // Deciding here rather than in setMode/gotoSlide keeps this the one writer.
+    setParam("slide",String(S.cur),"0");
+    setParam("mode",S.mode,"view");
   }
 
   // ========================================================= load the bound file

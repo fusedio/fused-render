@@ -276,7 +276,6 @@ def test_the_dead_framing_params_are_gone_from_their_consumers_too():
     for rel in (
         ("frontend", "src", "apps", "explorer", "listing", "pane.ts"),
         ("frontend", "src", "platform", "lib", "router.ts"),
-        ("fused_render", "templates", "history", "template.html"),
     ):
         with open(os.path.join(*rel), encoding="utf-8") as f:
             code = "\n".join(line for line in f.read().split("\n")
@@ -964,6 +963,31 @@ def test_the_left_view_is_switchable_through_a_pane_local_leftmode_param():
     assert '"annmode", "leftmode", "paneview",' in page
 
 
+def test_every_run_write_is_a_replace_write():
+    """`run` is in-flight bookkeeping — the id of a currently-streaming run, kept
+    in the URL so the page can re-attach to it after a reload — and never a place
+    the reader navigated to. So no `run` write may spend the visit's one
+    `pushState` (SPEC PR-3, PT-17).
+
+    The bug this pins is only reachable on a RESUMED page, which is why it stood
+    so long. On a fresh chat every clear writes "" over an absence, `{default:
+    ""}` drops it, and nothing is spent. Resume onto a live run and the id is
+    PRESENT: pressing Chats is then a real change made by a real gesture, it
+    takes the push, and Back restores an entry whose entire content is a run id
+    that has already finished.
+
+    Asserted over the source rather than through the harness because the harness
+    ignores set()'s third argument, so a site regressing to a two-arg call would
+    record an identical [key, value] tuple and every existing expectation would
+    still pass.
+    """
+    code = _pane_code()
+    writes = re.findall(r'fused\.params\.set\("run",[^;]*;', code)
+    assert len(writes) == 5, writes
+    for w in writes:
+        assert 'history: "replace"' in w, w
+
+
 def test_an_unknown_leftmode_falls_back_to_the_default_view_silently():
     """SPEC PT-9's forgiving rule, applied to the pane's own copy of it: a
     `leftmode` naming a view this target does not offer — a renamed template, or
@@ -1459,16 +1483,15 @@ def test_the_registry_binds_the_split_view_to_files_and_keeps_the_directory_key(
     # mode needed a display name of its own.
     assert registry["/"].count("claude") == 1
 
-    # Chat before history on every FILE key that has them — no longer adjacent:
-    # `history` trails every list it is bound to
-    # (test_templates.py::test_history_is_the_last_mode_wherever_bound). The
-    # `/` key is excluded deliberately: its order is the directory story
-    # (`_listing`, then the app modes, then the chat and the history views).
+    # The chat sits after the CONTENT views on every file key that has it: it is
+    # a companion to reading the bytes, never the way you read them. The `/` key
+    # is excluded deliberately — its order is the directory story (`_listing`
+    # first, then the gated peers).
     for key, names in registry.items():
         if key.endswith("/") or not isinstance(names, list):
             continue
-        if "claude" in names and "history" in names:
-            assert names.index("claude") < names.index("history"), key
+        if "claude" in names:
+            assert names.index("claude") > 0, key
 
 
 def test_the_gates_docstring_does_not_justify_itself_with_the_deleted_pane():

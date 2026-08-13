@@ -50,11 +50,11 @@ describe("parsePaneSide", () => {
   });
 
   test("an unknown value falls back silently, pane still open", () => {
-    // A hand-typed mode, or a `history` carried in from a file view — the router
-    // keeps `_side` across a directory hop. Same silent fallback an unknown
-    // `_mode` gets, and NOT a closed pane: a value nobody recognises must not
-    // take the folder view's other half away.
-    expect(parsePaneSide("history")).toEqual({ open: true, mode: "preview" });
+    // A hand-typed mode, or a stale `_side` carried in from a file view — the
+    // router keeps `_side` across a directory hop. Same silent fallback an
+    // unknown `_mode` gets, and NOT a closed pane: a value nobody recognises must
+    // not take the folder view's other half away.
+    expect(parsePaneSide("notes")).toEqual({ open: true, mode: "preview" });
     expect(parsePaneSide("graph")).toEqual({ open: true, mode: "preview" });
     expect(parsePaneSide("")).toEqual({ open: true, mode: "preview" });
   });

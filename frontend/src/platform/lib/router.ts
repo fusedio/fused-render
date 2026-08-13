@@ -49,8 +49,15 @@ export const IS_EMBED =
   location.pathname === "/explorer/embed";
 
 // A FROZEN TREE, not a live folder: the framing a view uses when it embeds a
-// materialised historical snapshot (`history`, which extracts a commit into
-// ~/.fused-render/app-versions/<key>/<sha>/ and frames that directory).
+// materialised historical snapshot — a commit extracted into
+// ~/.fused-render/app-versions/<key>/<sha>/ with that directory framed.
+//
+// NO VIEW WRITES OR FRAMES ONE ANY MORE: the per-path timeline mode that
+// materialised these trees is gone, and the git view that replaced it renders a
+// revision's bytes on read (/api/git/show) with nothing on disk. The flag stays
+// because trees an older version left behind are still browsable by URL, and
+// because it is the shell's one "you are being framed" bit (the fourth
+// consequence below) — but it currently has no producer inside the app.
 //
 // One flag, and three of its four consequences are chrome that acts on the
 // listing AS A LIVE FOLDER and has no meaning over a frozen copy:

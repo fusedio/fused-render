@@ -442,11 +442,28 @@
       // Cleared optional fields are written as "" (runtime set() has no
       // delete) so a stale value from an earlier run can't survive on the
       // URL — prefill reads "" as an empty field, matching this run.
+      //
+      // Each field is written only when the URL does not already mean it
+      // (SPEC PT-15). This loop sweeps EVERY declared param on every Execute,
+      // not just the ones the user touched, so pressing Execute twice — to
+      // re-run against changed data, the whole point of the button — used to
+      // rewrite the entire form with identical values. Under the runtime's
+      // first-change-push rule (PR-3) the first of those no-ops pushed a
+      // history entry, so a second identical run cost a Back press for a URL
+      // indistinguishable from the one before it. The runtime's no-gesture
+      // guard cannot absorb this: Execute is a click.
+      //
+      // An absent param and "" are the same answer here BY THE COMMENT ABOVE —
+      // prefill reads both as an empty field — which is what `{default: ""}`
+      // tells the runtime, so an empty field is dropped rather than stamping a
+      // bare `&k=` onto a URL that never carried one. These are the request's own
+      // fields, not true defaults: there is no value the URL should be carrying
+      // for a field the user left blank.
       for (const el of page.querySelectorAll("[data-param]")) {
         const k = el.dataset.param;
         const v = collected.params[k];
-        if (v === undefined) fused.params.set(k, "");
-        else fused.params.set(k, typeof v === "string" ? v : JSON.stringify(v));
+        const next = v === undefined ? "" : (typeof v === "string" ? v : JSON.stringify(v));
+        fused.params.set(k, next, { default: "" });
       }
 
       btn.disabled = true;

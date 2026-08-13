@@ -24,11 +24,3 @@ test("keys with a conventional casing keep it", () => {
   expect(modeTitle("geojson")).toBe("GeoJSON");
 });
 
-test("the timeline mode is labelled History", () => {
-  // It reaches that label through the HUMANIZER, not through NICE_NAMES: the
-  // mode's key IS `history` since D243 renamed `versions` into the name (and
-  // the clock icon) of the standalone template it replaced. An explicit entry
-  // would be a second place to state the same string, and the one it replaced
-  // — `versions: "History"` — named a key that no longer exists.
-  expect(modeTitle("history")).toBe("History");
-});

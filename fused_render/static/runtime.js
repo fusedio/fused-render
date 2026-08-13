@@ -74,7 +74,8 @@
  *     "outdated", "not-covered" or null. Unlike runPython there is no supersede
  *     channel: a per-keystroke caller must guard its own renders against an
  *     earlier reply landing last. LOCAL ONLY — a hosted page has no index.
- *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
+ *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
+ *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
  *                page can branch on where it runs and gate any local-only behaviour
@@ -463,21 +464,92 @@
   // writes/30 s, safely under the cap, and the URL still lands on the final
   // value.
   const HISTORY_MIN_INTERVAL_MS = 400;
-  let pendingSearch = null; // what target.location.search WILL be after flush
-  let pendingUrl = null;
+  // What this runtime has written but not yet landed in history, as a KEY→VALUE
+  // delta — never a formed URL.
+  //
+  // A formed URL is a snapshot of somewhere the browser was up to 400 ms ago,
+  // and the location can move underneath it in that window: the shell navigates
+  // (a breadcrumb click tears this iframe down and `pagehide` flushes), the user
+  // presses Back, or another writer — the shell's own `sel`/`_mode`
+  // replaceState — edits the very entry we are about to write. Replaying a
+  // captured URL then does not "land late", it OVERWRITES: it moves a fresh
+  // entry's path back to the old view, resurrects the params the traversal just
+  // dropped, and silently reverts every key someone else changed meanwhile.
+  //
+  // So the flush is a MERGE, not a replay. Only the keys `set()` actually
+  // touched are remembered; the URL is recomputed at flush time from the LIVE
+  // `target.location.search` (with the `_layout` span preserved, D51), so
+  // everything the runtime did not touch survives by construction. The pending
+  // VALUE is real user intent and is kept; only the stale surroundings are
+  // dropped. The one thing that does invalidate the intent is a history
+  // TRAVERSAL (see onPopState): the entry the write was meant for is no longer
+  // the one we are standing on, and the user asked for the old state instead.
+  let pendingDelta = null; // Map<key, value> | null
+  // The pathname the pending delta was aimed at. A merge fixes the case where
+  // the SEARCH moved underneath us, but not the case where the whole PAGE did:
+  // if the shell navigated (breadcrumb click, tab open, a link) the current
+  // entry is a different view, and folding `zz=8` into it does not land late,
+  // it INVENTS a param on a page that never had one — visible in the address
+  // bar, bookmarkable, and carried by every subsequent write. So a pending
+  // write whose pathname no longer matches is dropped, exactly as a traversal
+  // drops it: the entry it was meant for is gone.
+  let pendingPath = null;
   let historyTimer = null;
   let lastHistoryWrite = 0;
 
+  // True when the queued write no longer belongs to the entry we are standing
+  // on. Read by BOTH the overlay and the flush so the two never disagree.
+  function pendingIsStale() {
+    return pendingPath !== null && pendingPath !== target.location.pathname;
+  }
+
+  // The live target search with the pending delta applied — what
+  // target.location.search WILL be once the flush lands. Computed per read (not
+  // cached as a string) for exactly the reason above: the base can move.
+  function applyDelta(search, delta) {
+    if (!delta || delta.size === 0) return search;
+    const { layoutSpan, rest } = splitSearch(search);
+    const params = new URLSearchParams(rest);
+    for (const [key, value] of delta) params.set(key, value);
+    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
+    // layout stays readable (no URLSearchParams.toString() percent-soup) and
+    // the global/local boundary stays visually stable.
+    let out = params.toString();
+    if (layoutSpan) out += (out ? "&" : "") + layoutSpan;
+    return out ? "?" + out : "";
+  }
+
   function targetSearch() {
-    return pendingSearch !== null ? pendingSearch : target.location.search;
+    if (pendingIsStale()) return target.location.search;
+    return applyDelta(target.location.search, pendingDelta);
+  }
+
+  // Drop a pending coalesced write without landing it. Used when a history
+  // traversal makes the write's target entry the wrong one.
+  function cancelPending() {
+    pendingDelta = null;
+    pendingPath = null;
+    if (historyTimer !== null) {
+      try {
+        clearTimeout(historyTimer);
+      } catch (e) {
+        /* timer already gone */
+      }
+      historyTimer = null;
+    }
   }
 
   function flushHistory() {
     historyTimer = null;
-    if (pendingUrl === null) return;
-    const url = pendingUrl;
-    pendingUrl = null;
-    pendingSearch = null;
+    if (pendingDelta === null) return;
+    const delta = pendingDelta;
+    const stale = pendingIsStale();
+    pendingDelta = null;
+    pendingPath = null;
+    if (stale) return; // the page moved on; this write has no entry to land on
+    const search = applyDelta(target.location.search, delta);
+    if (search === target.location.search) return; // the URL already means this
+    const url = target.location.pathname + search;
     lastHistoryWrite = Date.now();
     try {
       target.history.replaceState(target.history.state, "", url);
@@ -490,6 +562,46 @@
 
   function currentParams() {
     return new URLSearchParams(splitSearch(targetSearch()).rest);
+  }
+
+  // ---- user-gesture gate for the once-per-visit push (D268) -----------------
+  // The first-change-push below may only be spent on a write the USER caused.
+  // A page that seeds a param during initialization (computing a default and
+  // writing it into the URL from its boot path) is describing the state it
+  // ALREADY loaded in — that is not a navigation step anyone took, so it must
+  // not cost a history entry, and re-seeding it after a Back must never push
+  // again. Without this gate a seeding view is a Back trap: entry A (pristine)
+  // → boot seeds the param → push entry B → user presses Back → lands on A →
+  // the view remounts → boot seeds again → push B again, truncating the
+  // forward branch. Back could never leave the view.
+  //
+  // Detection is our OWN capture-phase listeners, not navigator.userActivation:
+  // WKWebView is a supported host (§25) and cross-frame activation semantics
+  // are subtle, while a sticky flag set by a real pointerdown/keydown is the
+  // same answer everywhere. Capture phase so a template that stops propagation
+  // on its own controls still counts as a gesture; sticky because the point is
+  // "this document has been interacted with at all", not "within N ms".
+  let sawGesture = false;
+  function markGesture() {
+    sawGesture = true;
+  }
+  // The runtime's own document, plus the target's when the target is an
+  // ancestor shell (a click landing in the shell's chrome is still the user).
+  const gestureDocs = [document];
+  try {
+    if (target !== window && target.document && target.document !== document) {
+      gestureDocs.push(target.document);
+    }
+  } catch (e) {
+    /* ancestor became unreachable — our own document is enough */
+  }
+  for (const doc of gestureDocs) {
+    try {
+      doc.addEventListener("pointerdown", markGesture, true);
+      doc.addEventListener("keydown", markGesture, true);
+    } catch (e) {
+      /* document gone; the gate just stays closed for this frame */
+    }
   }
 
   const listeners = new Set();
@@ -561,7 +673,36 @@
     return result;
   }
 
-  function set(key, value) {
+  // set(key, value, opts?) — opts is two independent knobs, and they compose:
+  //
+  //   { history: "replace" }  Never spend the visit's push on this write, and
+  //     leave the entry PRISTINE (`fusedParamEntry` unset) so the user's first
+  //     real change still gets its one entry. Two callers need it and neither
+  //     can be served by a value guard, because both genuinely change the URL:
+  //       * STAMPING A TRUE DEFAULT. A value the user could have chosen and
+  //         that the URL is the record of (`mode`, `sheet`, `offset`, `sort`,
+  //         `panel`, …) belongs IN the URL even at its default, so the address
+  //         bar shows the whole state and a copied link carries it — but the
+  //         stamp is a description of the state the page already loaded in, not
+  //         a step anyone took, so it must cost nothing.
+  //       * A LOAD-TIME WRITE BEHIND AN `await`. The gesture gate (D268) is
+  //         read when the write LANDS, not when boot started, so a click during
+  //         a Python round trip opens it before the seed arrives and the seed
+  //         takes a real pushState. Asking for a replace at the call site is
+  //         the only thing that can see the difference.
+  //
+  //   { default: d }  An ABSENT param MEANS d, so writing d over an absence
+  //     moves nothing and is dropped. set() can only short-circuit on a
+  //     byte-identical search string; which absence means which default is
+  //     per-key knowledge only the caller has (absent `mode` is `edit`, absent
+  //     `offset` is page 0, absent anything-else is often ""). Without this the
+  //     comparison is re-implemented per template — there were four private
+  //     copies of `clearParam` and ~10 of `setParam` before it existed.
+  //
+  // Composed, `{ history: "replace", default: d }` is the load-time write that
+  // may or may not change anything: drop it when the URL already means the
+  // value, and when it does change something, change it without an entry.
+  function set(key, value, options) {
     if (isReserved(key)) {
       throw new Error(`fused.params.set: '${key}' is a reserved param name and cannot be set`);
     }
@@ -570,34 +711,63 @@
         `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
       );
     }
-    const { layoutSpan, rest } = splitSearch(targetSearch());
-    const params = new URLSearchParams(rest);
-    params.set(key, value);
-    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
-    // layout stays readable (no URLSearchParams.toString() percent-soup) and
-    // the global/local boundary stays visually stable.
-    let search = params.toString();
-    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
-    const newSearch = search ? "?" + search : "";
+    const opts = options || {};
+    // Reject a misspelled knob loudly. Silently ignoring `{history: "replce"}`
+    // would hand back the push it was passed to avoid — a history bug that
+    // shows up as a dead Back press three templates away from the typo.
+    if (opts.history !== undefined && opts.history !== "replace") {
+      throw new Error(
+        `fused.params.set: options.history must be "replace", got ${JSON.stringify(opts.history)}`
+      );
+    }
+    if (opts.default !== undefined && typeof opts.default !== "string") {
+      throw new Error(
+        `fused.params.set: options.default for '${key}' must be a string, got ${typeof opts.default}`
+      );
+    }
+    // `get()` rather than a raw params lookup, so a hand-typed global (D72)
+    // counts as present: an ancestor that carries the key is the effective
+    // value, and writing our own copy over it is a real change.
+    const meansDefault =
+      opts.default !== undefined && value === opts.default && get(key) === undefined;
+    const newSearch = applyDelta(targetSearch(), new Map([[key, value]]));
     const newUrl = target.location.pathname + newSearch;
-    // First-change-push: the first param write on a pristine history entry
-    // pushes a new entry (preserving the as-loaded state for Back), every
-    // later write replaces on top of it — so param churn costs at most one
-    // entry per visit. "Pristine" is tracked via a flag on history.state, not
-    // a JS variable: the flag travels with the entry, so after Back to the
-    // pristine entry the next write correctly pushes again (truncating the
-    // old forward branch), and it survives reloads. Existing state (e.g. the
-    // tab shell's fusedActiveTab) is merged, not clobbered.
+    // First-change-push: the first USER-CAUSED param write on a pristine
+    // history entry pushes a new entry (preserving the as-loaded state for
+    // Back), every later write replaces on top of it — so param churn costs at
+    // most one entry per visit. "Pristine" is tracked via a flag on
+    // history.state, not a JS variable: the flag travels with the entry, so
+    // after Back to the pristine entry the next user-caused write correctly
+    // pushes again (truncating the old forward branch), and it survives
+    // reloads. Existing state (e.g. the tab shell's fusedActiveTab) is merged,
+    // not clobbered.
+    //
+    // A write made before any gesture in this document (D268) takes the
+    // coalesced replace path instead AND leaves the entry pristine: a param
+    // the page computed for itself at load IS the as-loaded state, so it is
+    // folded into the entry the user is standing on rather than costing one —
+    // and the entry stays unflagged, so the user's first REAL interaction
+    // still gets its one entry, with Back restoring the seeded default.
     const prevState = target.history.state;
-    const unchanged = newSearch === targetSearch();
+    // Two ways a write is a no-op: the URL already says this byte-for-byte, or
+    // (opts.default) it already MEANS this by saying nothing.
+    const unchanged = meansDefault || newSearch === targetSearch();
     if (unchanged) {
       // Nothing to write; fall through to the notification below.
-    } else if (prevState && prevState.fusedParamEntry) {
-      // Replace-on-top writes are the scrub-hot path: coalesce them (D99).
+    } else if (opts.history === "replace" || !sawGesture || (prevState && prevState.fusedParamEntry)) {
+      // Replace-on-top writes, pre-gesture seeds and explicit
+      // `{history:"replace"}` stamps are the scrub-hot path:
+      // coalesce them (D99). replaceState keeps history.state as-is, so a
+      // pre-gesture seed leaves the entry pristine for the real first change.
       // Readers see the new value immediately via the overlay; the history
       // write happens now if the budget allows, else on the trailing timer.
-      pendingSearch = newSearch;
-      pendingUrl = newUrl;
+      // Only the KEY is queued — the URL is recomputed from the live location
+      // at flush time (see pendingDelta).
+      if (pendingDelta === null || pendingIsStale()) {
+        pendingDelta = new Map();
+        pendingPath = target.location.pathname;
+      }
+      pendingDelta.set(key, value);
       if (!historyTimer) {
         const wait = Math.max(
           0,
@@ -610,8 +780,9 @@
       // The once-per-visit push: immediate, so Back gets its entry even if
       // the page dies within the debounce window.
       const nextState = Object.assign({}, prevState, { fusedParamEntry: true });
-      pendingSearch = null;
-      pendingUrl = null;
+      // The push lands the whole state including anything queued, so the queue
+      // is spent, not abandoned.
+      cancelPending();
       lastHistoryWrite = Date.now();
       try {
         target.history.pushState(nextState, "", newUrl);
@@ -647,6 +818,42 @@
   for (const win of hookedWindows) {
     win.addEventListener("fused:urlchange", notifyIfChanged);
   }
+
+  // ---- history traversal is the OTHER way params change (PR-4) --------------
+  // `fused:urlchange` covers writes — ours and the shell's wrapped
+  // push/replaceState. It cannot cover Back/Forward: a traversal writes
+  // nothing, it fires `popstate`. In the browser shell that was masked because
+  // App's nav epoch remounts the view wholesale, so the page re-read its params
+  // on a fresh document; on a standalone /render page, the hosted stub and the
+  // WKWebView popover — the hosts D99/PR-4 exist for — nothing remounts, so the
+  // URL and `params.getAll()` were correct while onChange never fired and the
+  // template's UI stayed stale forever.
+  //
+  // Order matters: the pending write is cancelled BEFORE notifying, so a
+  // listener reading getAll() sees settled state rather than the value the user
+  // just navigated away from. Cancelling is the right answer and dropping the
+  // value is not a loss of intent: a traversal is a LATER and stronger user
+  // action than the param write it interrupts, and the write was aimed at the
+  // entry we just left. Without this, a Back inside the 400 ms window inverts
+  // history — the flush lands the abandoned value on the entry just traversed
+  // TO, so Back appears to do nothing, Forward moves backwards, and the
+  // pristine as-loaded entry is destroyed with no way to get it back.
+  //
+  // Listened for on this window AND the target/ancestor chain: which window a
+  // traversal fires `popstate` in depends on which browsing context's entry
+  // moved, and any of them moving invalidates a write aimed at the old one.
+  function onPopState() {
+    cancelPending();
+    notifyIfChanged();
+  }
+  const popstateWindows = [window];
+  for (const win of hookedWindows) {
+    if (popstateWindows.indexOf(win) === -1) popstateWindows.push(win);
+  }
+  for (const win of popstateWindows) {
+    win.addEventListener("popstate", onPopState);
+  }
+
   window.addEventListener("pagehide", () => {
     // A pending coalesced write (D99) must not die with this document — the
     // URL is the bookmarkable truth.
@@ -657,6 +864,13 @@
     for (const win of hookedWindows) {
       try {
         win.removeEventListener("fused:urlchange", notifyIfChanged);
+      } catch (e) {
+        /* window already gone */
+      }
+    }
+    for (const win of popstateWindows) {
+      try {
+        win.removeEventListener("popstate", onPopState);
       } catch (e) {
         /* window already gone */
       }
@@ -802,6 +1016,103 @@
       }).catch(() => {});
     } catch (e) {
       /* reporting is best-effort; never let it break a run */
+    }
+  }
+
+  // ---- revision reads (`_rev`) ---------------------------------------------
+  //
+  // A frame whose OWN url carries `_rev=<sha>` is showing the target file AS OF
+  // that commit: every read helper further down (rawUrl, and readFile/stat
+  // through it) resolves through /api/git/show instead of the live filesystem,
+  // and every write is refused. Declared up HERE, beside the other ancestor-hop
+  // plumbing and above the install loader, rather than next to the helpers it
+  // serves: the loader block down there is lifted verbatim into a node harness by
+  // tests/test_server_env_install.py, and a module-level read of `ownQuery`
+  // inside that slice is a ReferenceError under node (the same trap noteFsChanged
+  // fell into — see that file's prelude comment). The git sidebar puts a page into
+  // this state by telling the shell which commit was clicked (window
+  // ._fusedSelectRev, below); the shell rebuilds the content frame's src with the
+  // param on it. Reading it HERE is what makes the whole feature cost templates
+  // zero lines: a template still calls fused.readFile(fused.params.get("_file")),
+  // and which bytes that means is decided by the frame's url.
+  //
+  // Read once, not per call: `_rev` rides the frame's own URL, and a change to
+  // that url is a navigation — a new document with a fresh copy of this script.
+  // (`_file` is read per call because it can also come from an ANCESTOR's query;
+  // a revision deliberately never does. It must not be inheritable — a sha chosen
+  // for one file's pane leaking into another frame is exactly the bug that keeps
+  // this param off the shell's address bar in the first place.)
+  //
+  // Hex only, and validated here as well as server-side: the value goes into a
+  // query string this script builds, and a junk `_rev` must read as "no revision"
+  // rather than produce a broken read on every file the page touches.
+  const rev = (function () {
+    const raw = ownQuery("_rev");
+    return raw && /^[0-9a-fA-F]{4,64}$/.test(raw) ? raw : null;
+  })();
+
+  function revUrl(path) {
+    return "/api/git/show?path=" + encodeURIComponent(path) +
+      "&sha=" + encodeURIComponent(rev);
+  }
+
+  // Whether a path read by this page resolves through git rather than the disk.
+  // ABSOLUTE paths only, deliberately: a relative path is resolved against the
+  // PAGE's own directory (SPEC RH-1) — the template's own assets, which live in
+  // the app's install tree and have nothing to do with the target file's
+  // repository. Those stay live.
+  function revResolves(path) {
+    return rev !== null && typeof path === "string" && path[0] === "/";
+  }
+
+  // THE WRITE GATE, AND WHAT IT IS NOT.
+  //
+  // This is a RUNTIME-LEVEL refusal, not a server-enforced one. /api/fs/write and
+  // friends have no idea a caller is looking at a past revision — the path a
+  // revision pane holds is the LIVE path — so nothing stops a page that builds its
+  // own fetch() from writing today's file while showing yesterday's bytes. The
+  // guarantee here is exactly: a template that reaches the filesystem through the
+  // documented `fused.*` helpers cannot silently do that. Making it a server
+  // property would mean teaching every mutating route about a UI mode, which is
+  // the wrong place for it; making it a lie would be worse than either.
+  function revRefusal(what) {
+    const err = new Error(
+      what + " is not possible here: this pane is showing the file as of commit " +
+      rev.slice(0, 7) + ", which is read-only. Close the revision to edit the "
+      + "current file.");
+    // `readonly` is the type the helpers already reject with for a file the
+    // filesystem refuses (see writeFile), and a template's existing
+    // `err.type === "readonly"` branch is the right handler for this too.
+    err.type = "readonly";
+    return Promise.reject(err);
+  }
+
+  // Tell every same-origin ancestor which commit the user just selected (or, with
+  // null, that the selection is gone). Same shape and the same climbing/try-catch
+  // discipline as noteFsChanged above, for the same reasons (D3/D4: a global on
+  // the ancestor, not a postMessage) — and underscore-prefixed for the same
+  // reason as _fusedSidecarPath: it is plumbing between the built-in git template
+  // and the shell that ships with it, NOT a documented `fused.*` contract.
+  //
+  // Deliberately not a param. `fused.params.set` writes the ancestor's URL, and
+  // the shell's address bar is the one place this value must never appear: a path
+  // change preserves the query verbatim (so a sha picked from file A's commit list
+  // would be carried onto file B), the session sidecar PUTs the whole query string
+  // and replays it on the next bare open (so it would survive a restart), and
+  // bookmarks store the search too. `_file` and `chat_only=1` already live on an
+  // iframe src alone for the same reason; `_rev` is the third param of that kind.
+  function noteRevSelected(sha) {
+    const value = typeof sha === "string" && sha ? sha : null;
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedRevSelected === "function") t._fusedRevSelected(value);
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
     }
   }
 
@@ -1292,6 +1603,31 @@
       );
   }
 
+  // KNOWN GAP — `_rev` DOES NOT REACH A PYTHON READER. Deliberate, deferred, not
+  // an oversight; the seam is here because here is where it would have to be
+  // closed.
+  //
+  // The read helpers above resolve a revision (fused.readFile / rawUrl / stat all
+  // route through /api/git/show while this frame carries `_rev`), so every
+  // template whose bytes come from those — code, markdown, json, images, media —
+  // renders the past revision truthfully with no change of its own. A template
+  // whose bytes come from a READER `.py` is different: `main()` receives the real
+  // absolute path and `open()`s the LIVE file, so a parquet/xlsx/notebook pane
+  // would show CURRENT content under a heading that says otherwise.
+  //
+  // Closing it means the reader can no longer be handed a path: it needs the bytes
+  // (a temp materialization, which is exactly the on-disk snapshot this design
+  // removed) or a file-like object over the revision route (a Python-side shim
+  // every reader would have to accept). That is phase 2b, and it is a change to the
+  // `main()` contract rather than a patch here — hence the deferral.
+  //
+  // WHAT KEEPS IT HONEST MEANWHILE: nothing here silently lies. The shell's
+  // revision indicator names the limitation next to the sha (Preview.tsx —
+  // RevisionPill), so a pane is never labelled as a past revision with no warning
+  // that a Python-backed view may not be one. Reads are not blocked here: refusing
+  // runPython under `_rev` would leave those modes with a broken pane instead of a
+  // qualified one, and the same reader also serves modes that legitimately do not
+  // read the target's bytes at all.
   function runPython(pyPath, params, opts) {
     opts = opts || {};
     // Default channel = the .py path; opts.key === null opts out, a string regroups.
@@ -1426,6 +1762,9 @@
   // against the bundle's _asset route by the same key. An absolute path needs no
   // base and is sent unchanged.
   function rawUrl(path) {
+    // A revision pane's <img>/<embed>/download URL points at the object database,
+    // not the working tree (see revResolves for why only absolute paths).
+    if (revResolves(path)) return revUrl(path);
     let url = "/api/fs/raw?path=" + encodeURIComponent(path);
     if (path && path[0] !== "/") {
       const ownPath = new URLSearchParams(window.location.search).get("path");
@@ -1441,7 +1780,43 @@
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (!res.ok) throw new Error((data && data.error) || "HTTP " + res.status);
-        return data;
+        if (!revResolves(path)) return data;
+        return revStat(path, data);
+      });
+  }
+
+  // A stat under `_rev`. The live stat is still the source of everything that is
+  // about the PATH rather than about the bytes (name, is_dir, remote, the mode
+  // list a template may consult) — but two fields would otherwise describe the
+  // wrong file:
+  //
+  //   writable   FALSE, always. This is the field every template checks before it
+  //              offers an edit UI (the code editor's whole save path hangs off
+  //              it), so a revision pane must answer no here or the editor
+  //              renders enabled over bytes it cannot write back.
+  //   size       the blob's size AT THIS REVISION, from a HEAD on the revision
+  //              route. Templates use it as a read guard ("too big to render"),
+  //              and today's size is the wrong number to guard a past read with.
+  //
+  // A failing HEAD is propagated rather than swallowed: "this path did not exist
+  // at that commit" is the honest answer to stat, and a size guard that silently
+  // fell back to the live file's size would be the lying pane again.
+  function revStat(path, live) {
+    return fetch(revUrl(path), { method: "HEAD", headers: callHeaders() })
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("failed to stat " + path + " at " + rev.slice(0, 7) +
+                          " (HTTP " + res.status + ")");
+        }
+        const length = parseInt(res.headers.get("content-length") || "", 10);
+        return Object.assign({}, live, {
+          writable: false,
+          size: Number.isFinite(length) ? length : live.size,
+          // The sha the numbers above describe. Not part of the documented stat
+          // shape — a template needs no knowledge of revisions — but it is what
+          // makes a logged stat payload readable when one goes wrong.
+          rev: rev,
+        });
       });
   }
 
@@ -1476,6 +1851,7 @@
   // things (this one is "it is already there", the lock's is "it changed"), and
   // a caller that offers overwrite-anyway on a conflict must not offer it here.
   function writeFile(path, content, opts) {
+    if (rev !== null) return revRefusal("Saving");
     const payload = { path: path, content: content };
     if (opts && opts.expectedMtime !== undefined && opts.expectedMtime !== null) {
       payload.expected_mtime = opts.expectedMtime;
@@ -1602,6 +1978,7 @@
   // no optimistic lock and no `create`: a freshly pasted blob has no prior
   // version to conflict with.
   function uploadFile(path, blob) {
+    if (rev !== null) return revRefusal("Uploading");
     const form = new FormData();
     form.append("path", path);
     form.append("file", blob);
@@ -1630,6 +2007,7 @@
   // for the same reason: "it is already there" is a different fact from "it
   // changed", and an ensure-this-directory caller wants to treat it as success.
   function mkdir(path) {
+    if (rev !== null) return revRefusal("Creating a directory");
     return fetch("/api/fs/mkdir", {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -2503,6 +2881,13 @@
   // `window.fused` (see the file header). Not present in the hosted runtime.
   window._fusedSidecarPath = sidecarPath;
   window._fusedTargetPathFromSidecarPath = targetPathFromSidecarPath;
+  // The git sidebar's revision hop, internal for the same reason (see
+  // noteRevSelected): the built-in git template calls this with the sha of the
+  // commit the user clicked, or null to go back to live content, and the shell
+  // rebuilds the CONTENT frame's src with `_rev` on it. A window with no
+  // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
+  // does nothing.
+  window._fusedSelectRev = noteRevSelected;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).

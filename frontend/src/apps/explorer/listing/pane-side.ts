@@ -14,15 +14,14 @@
 //            a working tree belongs to the folder, so `git` is bound to the
 //            universal "/" key alone and the pane borrows the folder's entry.
 //
-// Deliberately NO `history`. The file sidebar offers it because "what happened to
-// this file" is a question about the thing you are looking at; over a folder the
-// thing you are looking at is a LIST, and a per-row history in a column beside it
-// is a fourth pill for a view nobody browses into. It stays one click away — open
-// the row, and the file sidebar has it.
+// Closed at three, and a per-ROW companion is deliberately not a fourth: over a
+// folder the thing you are looking at is a LIST, so a column that talks about one
+// row is a pill for a view nobody browses into. Anything of that shape stays one
+// click away — open the row, and the file sidebar has it.
 //
 // This also RETIRES the pane's old per-template switcher (`_panelMode`), which
 // offered every mode the selected row resolved — image/photos/pano for a .png,
-// and `claude`/`history` among them. Two mode controls over one row is the thing
+// and `claude` among them. Two mode controls over one row is the thing
 // the bars' grammar has been converging away from (see Preview's headerActions on
 // why a folder has no top-bar switcher), and the companions are not row views at
 // all, which is the whole premise of the split. What is genuinely lost is picking
@@ -71,7 +70,7 @@ function isPaneSide(v: string): v is PaneSide {
 // (PT-9 — selecting the default deletes the param).
 //
 // An unknown value reads as the default rather than as an error: a hand-typed
-// `_side=graph`, or a `_side=history` carried in from a file view (router's
+// `_side=graph`, or a stale `_side` carried in from a file view (router's
 // navigate keeps the param across a DIRECTORY hop), lands on `preview` with the
 // pane open. Same silent fallback an unknown `_mode` gets.
 export function parsePaneSide(raw: string | null): PaneSideState {

@@ -50,16 +50,30 @@ def _app_dir(workspace, name, htmls=("index.html",), title=None, tag="local"):
 # -------------------------------------------------------------------- listing
 
 def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
-    _app_dir(workspace, "one")                                # exactly one html
-    _app_dir(workspace, "none", htmls=())                     # zero htmls
-    _app_dir(workspace, "many", htmls=("a.html", "b.html"))   # ambiguous
-    (workspace / "loose.html").write_text("<html></html>")    # a file, not a tag dir
+    """Entry resolution as the cards see it, on the D269 rule: a folder with a
+    top-level page HAS an entry, and only a folder with none opens as a folder.
+
+    `many` and `indexed` are the two halves of what D269 changed. Both used to
+    report `entry_html: null` as "ambiguous", which made a card of a multi-page
+    app open a file listing — the outcome the owner's rule forbids.
+    """
+    _app_dir(workspace, "one")                                 # exactly one html
+    _app_dir(workspace, "none", htmls=())                      # zero htmls
+    _app_dir(workspace, "many", htmls=("b.html", "a.html"))    # first in NAME order
+    _app_dir(workspace, "indexed", htmls=("a.html", "index.html"))  # index wins
+    (workspace / "loose.html").write_text("<html></html>")     # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
-    assert set(apps) == {"one", "none", "many"}
+    assert set(apps) == {"one", "none", "many", "indexed"}
     assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
     assert apps["none"]["entry_html"] is None
-    assert apps["many"]["entry_html"] is None
+    assert apps["many"]["entry_html"] == str(workspace / "local" / "many" / "a.html")
+    assert apps["indexed"]["entry_html"] == str(
+        workspace / "local" / "indexed" / "index.html"
+    )
+    # `entry` — the file a card OPENS — is the same file, so the card and the
+    # /render iframe cannot disagree about which page the folder is.
+    assert apps["many"]["entry"] == apps["many"]["entry_html"]
     assert apps["one"]["path"] == str(workspace / "local" / "one")
     assert apps["one"]["tag"] == "local"
 
