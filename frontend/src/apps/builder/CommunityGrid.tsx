@@ -16,7 +16,8 @@
 // community.py records a `touch` per open, merged with the app builder's own
 // recents so opens of the cloned copy from the regular grid count too.
 import { useEffect, useMemo, useState } from "react";
-import { getConfig, getJson, postJson, rawUrl } from "@platform/lib/api";
+import { getJson, rawUrl } from "@platform/lib/api";
+import { runCommunity, touchCommunityApp as touch } from "@platform/lib/community";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { timeAgo } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -41,46 +42,6 @@ interface Catalog {
   message?: string;
   cache_root?: string;
   apps?: CommunityApp[];
-}
-
-// -- community.py bridge ------------------------------------------------
-
-// The mounted backend's path never changes within a session; getConfig() is
-// awaited once and the result reused by every action call.
-let pyPathPromise: Promise<string> | null = null;
-function communityPy(): Promise<string> {
-  if (!pyPathPromise) {
-    pyPathPromise = getConfig().then((config) => {
-      if (!config.mounts_root) throw new Error("community content is not available yet");
-      return `${config.mounts_root.replace(/\/+$/, "")}/community/community.py`;
-    });
-    // A failed config fetch must not poison every later call.
-    pyPathPromise.catch(() => (pyPathPromise = null));
-  }
-  return pyPathPromise;
-}
-
-// /api/run's wire shape ({ok, result, error}); community.py additionally
-// reports its own user-facing failures as {status:"error", message}.
-interface RunEnvelope<T> {
-  ok: boolean;
-  result: T;
-  error?: { message?: string };
-}
-
-async function runCommunity<T extends { status?: string; message?: string }>(
-  params: Record<string, unknown>,
-): Promise<T> {
-  const py = await communityPy();
-  const r = await postJson<RunEnvelope<T>>("/api/run", { py, params });
-  if (!r.ok) throw new Error(r.error?.message || "community backend failed");
-  if (r.result?.status === "error") throw new Error(r.result.message || "community backend failed");
-  return r.result;
-}
-
-// Fire-and-forget open marker — ordering metadata only, never blocks the open.
-function touch(slug: string): void {
-  void runCommunity({ action: "touch", slug }).catch(() => undefined);
 }
 
 // -- catalog loading (stale-while-revalidate) -----------------------------
@@ -243,7 +204,9 @@ function CommunityCard({
       <span className="app-pcard-body">
         <span className="app-pcard-title">{title}</span>
         <span className="app-pcard-meta">
-          <span className="app-pcard-tag">{COMMUNITY_TAG}</span>
+          {/* Display name only — the tag VALUE stays "community" everywhere
+              (dirs, ?tag=, community.py). */}
+          <span className="app-pcard-tag">showcase</span>
           {app.installed && <span className="app-pcard-name">cloned</span>}
           {ago && <span className="app-pcard-ago">{ago}</span>}
           {openError && <span className="app-pcard-ago">{openError}</span>}
@@ -303,7 +266,7 @@ export function CommunityGrid({ query, sort }: { query: string; sort: "recent" |
 
   if (catalog.status === "error") return <ErrorBanner>{catalog.message}</ErrorBanner>;
   if (catalog.status === "loading")
-    return <SkeletonLines rows={4} label="Loading community apps" />;
+    return <SkeletonLines rows={4} label="Loading showcase apps" />;
   return (
     <>
       <div className="apps-count">

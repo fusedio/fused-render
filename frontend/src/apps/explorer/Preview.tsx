@@ -38,6 +38,7 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { pushToast } from "@platform/lib/toast";
+import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   isModePending,
@@ -111,6 +112,51 @@ function TopbarActions({ children }: { children: ReactNode }) {
 // renders the box: same arrangement as TopbarActions above, other way round.
 function usePreviewSideSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
+}
+
+// A file inside the community CATALOG CACHE (~/.fused-render/community/repo/)
+// is the read-only preview tree — `refresh` resets it on every catalog pull, so
+// edits made there silently die. The preview locks every non-render mode and
+// offers this instead.
+const COMMUNITY_LOCK_MSG =
+  "This is the read-only showcase copy — clone the app to make changes.";
+
+// "Clone" in the preview header of a community cache app: install the app into
+// the workspace (Fused/local/<slug>, community.py's `install`) and navigate to
+// the cloned copy — the same open convention the /apps community grid uses.
+function CloneCommunityButton({ slug }: { slug: string }) {
+  const [busy, setBusy] = useState(false);
+  const doClone = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await runCommunity<{ status?: string; message?: string; path?: string }>({
+        action: "install",
+        slug,
+      });
+      // `already-installed` also carries the path — an app cloned elsewhere
+      // still opens the user's copy rather than erroring.
+      if (!r.path) throw new Error(r.message || "clone failed");
+      touchCommunityApp(slug);
+      navigate(r.path, { isDir: true });
+    } catch (e) {
+      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
+      setBusy(false);
+    }
+    // Success navigates away and unmounts this button; no busy reset needed.
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={"Clone this app into Fused/local/" + slug + " and open your copy"}
+      onClick={doClone}
+      disabled={busy}
+    >
+      {busy && <span className="mode-icon-spinner" />}
+      {busy ? "Cloning…" : "Clone"}
+    </button>
+  );
 }
 
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
@@ -506,7 +552,12 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
+  // Read-only community cache app (see COMMUNITY_LOCK_MSG): the split never
+  // opens — its companions (claude/git/history) fall back into the content
+  // list, where they render as disabled rows explaining themselves.
+  const communitySlug = communityCacheSlug(fsPath);
+  const communityLocked = communitySlug !== null;
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !communityLocked;
   const parts = partitionModes(templates);
 
   // --- the BORROWED companion: `git`, from this file's parent folder ----------
@@ -590,7 +641,14 @@ function TemplatePreview({
   // no frame at all (a blank pane), then mounted a frame for the dropped mode
   // whose `srcFor` is null, and only unwound it once the state caught up.
   const [mode, setModeState] = useState<string>(() => activeTemplate(contentModes).mode);
-  const entry = contentModes.find((t) => t.mode === mode) || defaultEntry;
+  const requestedEntry = contentModes.find((t) => t.mode === mode) || defaultEntry;
+  // Locked community cache: clamp to the render mode whatever the URL asked
+  // for (`?_mode=history` deep links included) — clicks are only half the ways
+  // in. Files with no "_render" entry keep their default.
+  const renderEntry = communityLocked
+    ? contentModes.find((t) => t.mode === "_render" && !isPending(t))
+    : undefined;
+  const entry = renderEntry ?? requestedEntry;
   const activeMode = entry.mode;
   // Reconcile the request with what actually rendered. Purely bookkeeping now
   // (the switcher's selection, and the guard in setMode) — no rendering waits
@@ -768,6 +826,11 @@ function TemplatePreview({
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const setMode = async (next: string) => {
     if (next === activeMode || switching.current) return;
+    // Locked community cache: only the render mode is reachable.
+    if (communityLocked && next !== "_render") {
+      pushToast({ msg: COMMUNITY_LOCK_MSG, tone: "info" });
+      return;
+    }
     // Unresolved gate: not selectable (the switcher disables it too).
     const target = contentModes.find((t) => t.mode === next);
     if (target && isPending(target)) return;
@@ -996,6 +1059,9 @@ function TemplatePreview({
           the guard keeps that true even if a registry ever says otherwise).
           Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
           entirely unless the user has turned Deploy on. */}
+      {/* Community cache app: the way out of the read-only preview, left of
+          the mode control it explains. */}
+      {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
       {!stat.is_dir &&
         deployEnabled &&
         templates.some((t) => t.mode === "_render") &&
@@ -1046,6 +1112,8 @@ function TemplatePreview({
             mode: t.mode,
             icon: templateModeIcon(t),
             pending: isPending(t),
+            disabledReason:
+              communityLocked && t.mode !== "_render" ? COMMUNITY_LOCK_MSG : undefined,
           }))}
           active={entry.mode}
           /* Spinner from the click until the incoming frame has actually taken
