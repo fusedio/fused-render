@@ -454,14 +454,16 @@
       // guard cannot absorb this: Execute is a click.
       //
       // An absent param and "" are the same answer here BY THE COMMENT ABOVE —
-      // prefill reads both as an empty field — so `has` collapses them rather
-      // than stamping a bare `&k=` onto a URL that never carried one.
+      // prefill reads both as an empty field — which is what `{default: ""}`
+      // tells the runtime, so an empty field is dropped rather than stamping a
+      // bare `&k=` onto a URL that never carried one. These are the request's own
+      // fields, not true defaults: there is no value the URL should be carrying
+      // for a field the user left blank.
       for (const el of page.querySelectorAll("[data-param]")) {
         const k = el.dataset.param;
         const v = collected.params[k];
         const next = v === undefined ? "" : (typeof v === "string" ? v : JSON.stringify(v));
-        if ((fused.params.get(k) || "") === next) continue;
-        fused.params.set(k, next);
+        fused.params.set(k, next, { default: "" });
       }
 
       btn.disabled = true;

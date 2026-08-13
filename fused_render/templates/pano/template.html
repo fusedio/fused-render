@@ -293,17 +293,19 @@
 
   const P = {
     get: (k) => fused.params.get(k) ?? DEFAULTS[k],
-    // Compared against P.get, NOT against the raw param: an absent key already
-    // MEANS DEFAULTS[k], so the two are the same answer and neither deserves a
-    // history entry (SPEC PT-15). The raw comparison this replaces let a drag
-    // that ended back at the default — yaw 0 on a pano opened without a yaw,
-    // the common "I looked around and came back" gesture — write `yaw=0` over
-    // an absent param and burn a Back press under the runtime's
-    // first-change-push rule (PR-3). The runtime's no-gesture guard cannot help
-    // here: a drag is emphatically a gesture. Same shape as the usd template's
-    // P.set, which had it right.
-    set: (k, v) => { v = String(v);
-      if (P.get(k) !== v) fused.params.set(k, v); },
+    // `{default: DEFAULTS[k]}` rather than a raw comparison: an absent key
+    // already MEANS DEFAULTS[k], so the two are the same answer and neither
+    // deserves a history entry (SPEC PT-15). A raw comparison let a drag that
+    // ended back at the default — yaw 0 on a pano opened without a yaw, the
+    // common "I looked around and came back" gesture — write `yaw=0` over an
+    // absent param and burn a Back press under the runtime's first-change-push
+    // rule (PR-3). The runtime's no-gesture guard cannot help here: a drag is
+    // emphatically a gesture. The camera is DERIVED from the drag, not a value
+    // the URL should be stamping before anyone has moved, so this stays a drop.
+    // (`mode` has no DEFAULTS entry — there is no absence to collapse, so it
+    // passes no option and relies on the runtime's byte-identical drop alone.)
+    set: (k, v) =>
+      fused.params.set(k, String(v), k in DEFAULTS ? { default: DEFAULTS[k] } : undefined),
     num: (k) => parseFloat(fused.params.get(k) ?? DEFAULTS[k]),
   };
   const mode = () => {

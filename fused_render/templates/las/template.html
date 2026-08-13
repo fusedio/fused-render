@@ -326,20 +326,21 @@ function syncControls(){
 }
 
 // ---------------- controls ----------------
-// Single writer, and it writes ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW
-// VALUE (SPEC PT-15) — pressing Load on the path already loaded, or re-picking
-// the current colour mode, is not a navigation step, and under the runtime's
+// These write ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC
+// PT-15) — pressing Load on the path already loaded, or re-picking the current
+// colour mode, is not a navigation step, and under the runtime's
 // first-change-push rule (PR-3) an unguarded no-op still costs a Back press.
-// These all sit behind clicks and change events, so the runtime's own
-// no-gesture guard cannot absorb them; the check has to be here.
-function setParam(key, value) {
-  if ((fused.params.get(key) || '') === value) return;
-  fused.params.set(key, value);
-}
-els.load.onclick = () => setParam('file', els.path.value.trim());
+// They all sit behind clicks and change events, so the runtime's own no-gesture
+// guard cannot absorb them; the default has to be named here.
+// `{default: ''}` — an ABSENT param MEANS '' here (no file loaded, the mode's own
+// fallback), so writing '' over an absence is dropped rather than appending `k=`.
+// None of these is a true default worth stamping: `file` is a path, and `color`
+// and `maxpts` are seeded from the controls, so there is no default value the URL
+// should be carrying when the reader has chosen nothing.
+els.load.onclick = () => fused.params.set('file', els.path.value.trim(), { default: '' });
 els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
-els.colorMode.onchange = () => setParam('color', els.colorMode.value);
-els.maxPts.onchange = () => setParam('maxpts', els.maxPts.value);
+els.colorMode.onchange = () => fused.params.set('color', els.colorMode.value, { default: '' });
+els.maxPts.onchange = () => fused.params.set('maxpts', els.maxPts.value, { default: '' });
 els.ptSize.oninput = () => render(false);
 els.metaBtn.onclick = () => els.metaPanel.style.display = els.metaPanel.style.display === 'block' ? 'none' : 'block';
 els.fitBtn.onclick = () => { if (deckgl && data) deckgl.setProps({initialViewState: {...initialViewState(), transitionDuration: 300}}); };

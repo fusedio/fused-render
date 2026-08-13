@@ -342,16 +342,14 @@ async function loadFile(){
 }
 
 // ---------------- controls ----------------
-// Single writer, and it writes ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW
-// VALUE (SPEC PT-15) — pressing Load on the archive already loaded is not a
-// navigation step, and under the runtime's first-change-push rule (PR-3) an
-// unguarded no-op still costs a Back press. These sit behind a click, so the
-// runtime's own no-gesture guard cannot absorb them; the check has to be here.
-function setParam(key, value) {
-  if ((fused.params.get(key) || '') === value) return;
-  fused.params.set(key, value);
-}
-els.load.onclick = () => setParam('file', els.path.value.trim());
+// Writes ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC PT-15) —
+// pressing Load on the archive already loaded is not a navigation step, and under
+// the runtime's first-change-push rule (PR-3) an unguarded no-op still costs a
+// Back press. It sits behind a click, so the runtime's own no-gesture guard cannot
+// absorb it. `{default: ''}` states the part the runtime cannot know: an ABSENT
+// `file` MEANS '' (no archive loaded), so writing '' over an absence is dropped
+// rather than appending `file=`. A path is not a true default worth stamping.
+els.load.onclick = () => fused.params.set('file', els.path.value.trim(), { default: '' });
 els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
 els.opacity.oninput = applyOpacity;
 els.basemap.onchange = () => {

@@ -712,7 +712,15 @@
       }
       return null;
     }
-    function save(arr, deletedIds, keep) {
+    // `opts` is forwarded straight to the runtime's set() for the ONE caller that
+    // is not a reader action: the deep-link hydration below reads the sidecar
+    // behind `await fused.readFile(...)` and merges the logged review into the
+    // URL, so it really does change `comments` — no value comparison can absorb
+    // it — and D268's no-gesture gate has long since been opened by the click
+    // that followed the link. Hydrating a shared link is the state the page
+    // loaded in, not a step the reader took, so it asks for `{history:"replace"}`
+    // and leaves the entry pristine for their first real edit.
+    function save(arr, deletedIds, keep, opts) {
       let dropped = 0;
       while (urlSize(arr) > BUDGET) {
         const oldest = evictTarget(arr, keep);
@@ -729,7 +737,7 @@
           : "";
       // Always a string — the runtime's set() rejects non-strings (there is
       // no delete API), so an emptied list persists as "[]".
-      fused.params.set("comments", JSON.stringify(arr));
+      fused.params.set("comments", JSON.stringify(arr), opts);
       // Mirror the review into the target file's `<file>.json` sidecar as a
       // write-only history log (upsert-by-id; absence never deletes) — the same
       // sidecar the claude chat (agent.py) and bookmark history use. An
@@ -849,16 +857,18 @@
     // write of a pristine entry (D8), and an absent `offset` MEANS page 0 while
     // an absent `sheet` MEANS the first one, so the naive write turns "flash the
     // pin I can already see" into "and now Back does nothing visible". This is
-    // PT-15's guard: only write when the URL does not already mean the value.
-    // (runtime.js drops a literally-identical write on its own; what it cannot
-    // know is which absence means which default, and the defaults are the whole
-    // problem here — clicking a rail card for row 3 of an unparameterised table
-    // is exactly the common case.)
-    const revealParam = (key, value, whenAbsent) => {
-      const cur = fused.params.get(key);
-      if ((cur === undefined ? whenAbsent : cur) === value) return;
-      fused.params.set(key, value);
-    };
+    // PT-15's rule, which is the runtime's `{default: d}`: only write when the
+    // URL does not already mean the value. (runtime.js drops a literally-identical
+    // write on its own; what it cannot know is which absence means which default,
+    // and the defaults are the whole problem here — clicking a rail card for row 3
+    // of an unparameterised table is exactly the common case.) These stay DROPS
+    // rather than stamps: where the reader is scrolled to is not state the URL is
+    // the record of until they navigate there themselves.
+    // `?? undefined` because sheetName() answers null when the sheet picker has
+    // not been built yet: there is then no known default to collapse an absence
+    // against, so the write falls back to the runtime's byte comparison alone.
+    const revealParam = (key, value, whenAbsent) =>
+      fused.params.set(key, value, { default: whenAbsent ?? undefined });
     const ID_RESOLVERS = [
       { // PDF page canvas past the render cap: nameable but not navigable.
         re: /^__fr_page_(\d+)$/,
@@ -1302,7 +1312,9 @@
               if (e && typeof e.id === "string" && !e.deleted_at) byId.set(e.id, strip(e));
             }
             for (const live of comments) byId.set(live.id, live); // live wins by id
-            save([...byId.values()]); // re-records to the sidecar — a harmless upsert no-op
+            // Replace, not push: hydrating a shared deep link describes the state
+            // this page loaded in (see save()'s note on `opts`).
+            save([...byId.values()], undefined, undefined, { history: "replace" });
             // Re-read what actually persisted: save() evicts oldest RESOLVED
             // comments when the URL budget overflows, so the wanted id may not
             // have survived — focusing a card that isn't rendered lights nothing.

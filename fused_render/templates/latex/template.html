@@ -627,34 +627,35 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     }
   }
 
-  // ==================================================== URL writes (PT-15)
-  // Every param write in this file goes through here, and it WRITES ONLY WHEN
-  // THE URL DOES NOT ALREADY MEAN THE NEW VALUE. `dflt` is what an ABSENT param
-  // means, so an absent `mode` and `mode=edit` are the same answer and neither
-  // is worth a history entry.
+  // ==================================================== URL writes (PT-15/PR-3)
+  // Every param write in this file goes through here. It ALWAYS WRITES — a true
+  // default belongs in the URL, so `mode=edit` is stamped even though absent
+  // already means `edit`, and the address bar shows the whole state — but a
+  // write that merely RESTATES what the URL already means takes the runtime's
+  // replace path and costs no history entry. `dflt` is what an ABSENT param
+  // means, which is how "restating" is recognised.
   //
-  // The reason is the runtime's first-change-push rule (SPEC PR-3 / D8): the
-  // first param write on a pristine history entry does a `pushState`, so a
-  // write that changes nothing still costs a Back press. This template has four
-  // ways to produce exactly that write, and only the first is a load-time seed
-  // the runtime's own no-gesture guard would absorb:
+  // The reason the distinction is needed is the runtime's first-change-push rule
+  // (SPEC PR-3 / D8): the first param write on a pristine history entry does a
+  // `pushState`, so a write that changes nothing would still cost a Back press.
+  // This template has four ways to produce exactly that write, and only the
+  // first is a load-time seed the runtime's own no-gesture guard would absorb:
   //   * boot: `setMode(qMode)` re-states the mode the URL already carries;
   //   * `startWorkspace()` is RE-ENTRANT — Home ▸ open another project runs the
   //     same boot block again, now downstream of a click, so the runtime sees a
-  //     user gesture and pushes for a mode that did not change;
+  //     user gesture and would push for a mode that did not change;
   //   * a clean compile calls `setDrawerCollapsed(true)` on an already-collapsed
   //     drawer, from an async callback that a Recompile click started;
   //   * `setZoom` clamps, so pressing zoom-in at 300 % rewrites 300 %.
-  // Guarding at the funnel rather than at each of those was deliberate: a check
+  // Deciding at the funnel rather than at each of those was deliberate: a check
   // per call site is a check the fifth call site will forget.
   //
-  // Rejected: skipping the write and letting the URL stay stale. The URL is the
-  // state here (a shared link must reopen the same view), and "absent" already
-  // encodes the default faithfully — there is nothing to make explicit.
+  // A real change — the user pressing View — still pushes, so Back undoes it.
   function setParam(key, value, dflt) {
     const cur = fused.params.get(key);
-    if ((cur === undefined || cur === null || cur === "" ? (dflt ?? "") : cur) === value) return;
-    fused.params.set(key, value);
+    const restating =
+      (cur === undefined || cur === null || cur === "" ? (dflt ?? "") : cur) === value;
+    fused.params.set(key, value, restating ? { history: "replace" } : undefined);
   }
 
   // =========================================================== compile
@@ -1224,7 +1225,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.classList.toggle("mode-view", mode === "view");
     document.body.classList.toggle("mode-edit", mode === "edit");
     $("modeSeg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
-    setParam("mode", mode, "edit");   // boot AND every re-entry of startWorkspace() re-states the mode already in the URL
+    setParam("mode", mode, "edit");   // stamped at boot (and on every re-entry of startWorkspace) as a replace; a real switch pushes
     if (mode === "edit" && S.view) setTimeout(() => S.view.requestMeasure(), 50);
     if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
   }

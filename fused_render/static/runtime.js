@@ -74,7 +74,8 @@
  *     "outdated", "not-covered" or null. Unlike runPython there is no supersede
  *     channel: a per-keystroke caller must guard its own renders against an
  *     earlier reply landing last. LOCAL ONLY — a hosted page has no index.
- *   fused.params.get(key) / getAll() / set(key, value) / onChange(cb) -> unsubscribe
+ *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
+ *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *   fused.env -> "local" — the runtime identity. This is the local fused-render app;
  *                the hosted/exported runtime (fused wheel) sets "hosted" instead, so a
  *                page can branch on where it runs and gate any local-only behaviour
@@ -672,7 +673,36 @@
     return result;
   }
 
-  function set(key, value) {
+  // set(key, value, opts?) — opts is two independent knobs, and they compose:
+  //
+  //   { history: "replace" }  Never spend the visit's push on this write, and
+  //     leave the entry PRISTINE (`fusedParamEntry` unset) so the user's first
+  //     real change still gets its one entry. Two callers need it and neither
+  //     can be served by a value guard, because both genuinely change the URL:
+  //       * STAMPING A TRUE DEFAULT. A value the user could have chosen and
+  //         that the URL is the record of (`mode`, `sheet`, `offset`, `sort`,
+  //         `panel`, …) belongs IN the URL even at its default, so the address
+  //         bar shows the whole state and a copied link carries it — but the
+  //         stamp is a description of the state the page already loaded in, not
+  //         a step anyone took, so it must cost nothing.
+  //       * A LOAD-TIME WRITE BEHIND AN `await`. The gesture gate (D268) is
+  //         read when the write LANDS, not when boot started, so a click during
+  //         a Python round trip opens it before the seed arrives and the seed
+  //         takes a real pushState. Asking for a replace at the call site is
+  //         the only thing that can see the difference.
+  //
+  //   { default: d }  An ABSENT param MEANS d, so writing d over an absence
+  //     moves nothing and is dropped. set() can only short-circuit on a
+  //     byte-identical search string; which absence means which default is
+  //     per-key knowledge only the caller has (absent `mode` is `edit`, absent
+  //     `offset` is page 0, absent anything-else is often ""). Without this the
+  //     comparison is re-implemented per template — there were four private
+  //     copies of `clearParam` and ~10 of `setParam` before it existed.
+  //
+  // Composed, `{ history: "replace", default: d }` is the load-time write that
+  // may or may not change anything: drop it when the URL already means the
+  // value, and when it does change something, change it without an entry.
+  function set(key, value, options) {
     if (isReserved(key)) {
       throw new Error(`fused.params.set: '${key}' is a reserved param name and cannot be set`);
     }
@@ -681,6 +711,25 @@
         `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
       );
     }
+    const opts = options || {};
+    // Reject a misspelled knob loudly. Silently ignoring `{history: "replce"}`
+    // would hand back the push it was passed to avoid — a history bug that
+    // shows up as a dead Back press three templates away from the typo.
+    if (opts.history !== undefined && opts.history !== "replace") {
+      throw new Error(
+        `fused.params.set: options.history must be "replace", got ${JSON.stringify(opts.history)}`
+      );
+    }
+    if (opts.default !== undefined && typeof opts.default !== "string") {
+      throw new Error(
+        `fused.params.set: options.default for '${key}' must be a string, got ${typeof opts.default}`
+      );
+    }
+    // `get()` rather than a raw params lookup, so a hand-typed global (D72)
+    // counts as present: an ancestor that carries the key is the effective
+    // value, and writing our own copy over it is a real change.
+    const meansDefault =
+      opts.default !== undefined && value === opts.default && get(key) === undefined;
     const newSearch = applyDelta(targetSearch(), new Map([[key, value]]));
     const newUrl = target.location.pathname + newSearch;
     // First-change-push: the first USER-CAUSED param write on a pristine
@@ -700,11 +749,14 @@
     // and the entry stays unflagged, so the user's first REAL interaction
     // still gets its one entry, with Back restoring the seeded default.
     const prevState = target.history.state;
-    const unchanged = newSearch === targetSearch();
+    // Two ways a write is a no-op: the URL already says this byte-for-byte, or
+    // (opts.default) it already MEANS this by saying nothing.
+    const unchanged = meansDefault || newSearch === targetSearch();
     if (unchanged) {
       // Nothing to write; fall through to the notification below.
-    } else if (!sawGesture || (prevState && prevState.fusedParamEntry)) {
-      // Replace-on-top writes (and pre-gesture seeds) are the scrub-hot path:
+    } else if (opts.history === "replace" || !sawGesture || (prevState && prevState.fusedParamEntry)) {
+      // Replace-on-top writes, pre-gesture seeds and explicit
+      // `{history:"replace"}` stamps are the scrub-hot path:
       // coalesce them (D99). replaceState keeps history.state as-is, so a
       // pre-gesture seed leaves the entry pristine for the real first change.
       // Readers see the new value immediately via the overlay; the history

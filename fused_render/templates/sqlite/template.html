@@ -384,25 +384,28 @@
       return base.concat([["is_null", "is empty"], ["not_null", "is not empty"]]);
     }
 
-    // Writing a param the URL ALREADY MEANS is a semantic no-op that is not a
-    // textual one: `set("sort", "")` on an absent key appends `sort=` and
-    // `set("offset", "0")` appends `offset=0`, and runtime.js sees a changed URL
-    // and spends this entry's once-per-visit history push on it (D8/PR-3) — the
-    // same shape as the claude template's `annmode` boot default (PT-15). It
-    // matters most on Reset: that button is live whether or not anything is
-    // sorted or filtered, so pressing it on an untouched grid used to mint a
-    // history entry for a screen that did not change, and the Back that undid it
-    // looked broken for the same reason. These two guards read the RAW param
-    // rather than currentSort()/currentOffset(): absent, empty and a malformed
-    // leftover all parse to the same "no sort" / "page one", so truthiness is
-    // exactly the question ("is there anything in the URL to clear?").
+    // `sort` and `offset` are TRUE DEFAULTS — values the reader could have
+    // chosen, of which the URL is the record — so they are STAMPED at boot (see
+    // the bottom of this block): the grid's URL says `sort=&offset=0` from the
+    // start, the address bar shows the whole state, and a copied link reopens it.
+    // The stamp is written with `{history:"replace"}` because it describes the
+    // state the page loaded in rather than a step anyone took, and once it is in
+    // place every later restatement — Reset on an untouched grid, the third
+    // click that clears a sort that was never set — is a BYTE-IDENTICAL write
+    // that runtime.js drops on its own. That is what keeps Reset from minting a
+    // history entry for a screen that did not change (D8/PR-3, PT-15).
     //
-    // Not extended to a general setParam() wrapper: the default a value has to
-    // be compared against is per-key knowledge (offset defaults to 0, sort to
-    // none, `table` to whatever the file's first table turns out to be), and a
-    // wrapper that guessed would be wrong for the third one.
-    const clearParam = (k) => { if (fused.params.get(k)) fused.params.set(k, ""); };
-    const resetOffset = () => { if (fused.params.get("offset")) fused.params.set("offset", "0"); };
+    // `filters` is NOT stamped: it is a JSON blob, not one of the named
+    // true-default keys, and an empty `filters=` in a shared link says nothing a
+    // reader wants. It keeps the drop instead, expressed as the runtime's
+    // `{default: ""}` — absent and `""` are the same answer, and only this
+    // template knows that.
+    //
+    // `table` is neither: its default is SERVER-side (the file's first table),
+    // so the template cannot tell whether an absent param already means the one
+    // it is about to write.
+    const clearFilters = () => fused.params.set("filters", "", { default: "" });
+    const resetOffset = () => fused.params.set("offset", "0");
 
     // Cycle a column's sort on header click: none -> asc -> desc -> none.
     function cycleSort(col) {
@@ -410,16 +413,15 @@
       const next = (!s || s.column !== col) ? col + ":asc"
                  : s.dir === "asc" ? col + ":desc" : "";
       resetOffset();
-      // The third click clears the sort; on an already-unsorted column there is
-      // nothing to clear and nothing to write.
-      if (next) fused.params.set("sort", next);
-      else clearParam("sort");
+      // The third click clears the sort; on an already-unsorted column that is a
+      // byte-identical write of the stamped `sort=`, which the runtime drops.
+      fused.params.set("sort", next);
     }
 
     function clearSortFilters() {
       resetOffset();
-      clearParam("sort");
-      clearParam("filters");
+      fused.params.set("sort", "");
+      clearFilters();
     }
 
     // ---- filter bar: one or more {column, op, value?} conditions, ANDed
@@ -429,7 +431,7 @@
     function setFilters(filters) {
       resetOffset();
       if (filters && filters.length) fused.params.set("filters", JSON.stringify(filters));
-      else clearParam("filters");   // Apply with every row removed clears nothing new
+      else clearFilters();   // Apply with every row removed clears nothing new
     }
 
     const colOptions = (cols, sel) => cols.map((c) =>
@@ -860,14 +862,14 @@
     tableSel.addEventListener("change", () => {
       resetOffset();
       // A new table has different columns, so any sort/filter keyed to the old
-      // one no longer applies — clear them (guarded: switching tables from an
-      // unsorted, unfiltered page must not append `sort=&filters=` just to say
-      // what the URL already said — see clearParam).
-      clearParam("sort");
-      clearParam("filters");
-      // `table` itself is unguarded on purpose: this IS the navigation, and the
-      // reader's default table is server-side (the file's first table), so the
-      // template cannot tell whether an absent param already means this one.
+      // one no longer applies — clear them. Switching tables from an unsorted,
+      // unfiltered page writes nothing here: `sort` is stamped so `sort=` is
+      // byte-identical, and `filters` carries its own absent≡"" default.
+      fused.params.set("sort", "");
+      clearFilters();
+      // `table` is the navigation, and its default is server-side (the file's
+      // first table), so the template cannot tell whether an absent param
+      // already means the one it is about to write — no default, no stamp.
       fused.params.set("table", tableSel.value);
     });
     addBtn.addEventListener("click", () => { staged.inserts.push({ values: {} }); renderAll(); });
@@ -877,6 +879,13 @@
     resetBtn.addEventListener("click", () => { if (!isDirty()) clearSortFilters(); });
 
     fused.params.onChange(load);
+    // Stamp the two true defaults so the grid's URL is a complete, copyable
+    // record from the first paint — and as replaces, so the stamp costs no
+    // history entry and leaves the visit's one push for the reader's first real
+    // change. Written from the raw params so a malformed leftover is normalised
+    // to the value the reader is actually looking at.
+    fused.params.set("sort", fused.params.get("sort") || "", { history: "replace" });
+    fused.params.set("offset", String(currentOffset()), { history: "replace" });
     load();
   </script>
 </body>

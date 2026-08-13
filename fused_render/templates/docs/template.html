@@ -1261,13 +1261,16 @@
   }
 
   // ================= right panel =================
-  // Single writer for this template's two params, and it WRITES ONLY WHEN THE
-  // URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC PT-15). `dflt` is what an
-  // ABSENT param means — no panel is both `panel=""` and no `panel` at all,
-  // and no `mode` is `mode=view` — so those pairs must not be told apart.
+  // Single writer for this template's two params. Both are true defaults, so it
+  // ALWAYS WRITES — the URL carries `panel=` and `mode=view` from boot, so the
+  // address bar shows the whole state and a copied link reopens it — but a write
+  // that merely RESTATES what the URL already means goes through the runtime's
+  // replace path and costs no history entry. `dflt` is what an ABSENT param
+  // means — no panel is both `panel=""` and no `panel` at all, and no `mode` is
+  // `mode=view` — which is how a restatement is recognised.
   //
-  // Without this, three writes that change nothing each cost a Back press under
-  // the runtime's first-change-push rule (PR-3):
+  // Without that, three writes that change nothing would each cost a Back press
+  // under the runtime's first-change-push rule (PR-3):
   //   * boot restores the panel with `openPanel(panelParam)`, re-writing the
   //     tab the URL just supplied;
   //   * boot calls `setMode(params.get("mode") || "view")`, restating the mode
@@ -1276,12 +1279,12 @@
   //   * `addComment()` calls `openPanel("comments")` from a click, with the
   //     comments panel usually already open — the runtime's no-gesture guard
   //     cannot help there, because there very much was a gesture.
-  // Rejected: guarding only the boot pair. `addComment` proves the class is not
-  // load-time-only, and a per-call-site check is one the next caller forgets.
+  // Rejected: deciding only at the boot pair. `addComment` proves the class is
+  // not load-time-only, and a per-call-site check is one the next caller forgets.
   function setParam(key, value, dflt) {
     const cur = fused.params.get(key);
-    if ((cur === undefined || cur === null || cur === "" ? dflt : cur) === value) return;
-    fused.params.set(key, value);
+    const restating = (cur === undefined || cur === null || cur === "" ? dflt : cur) === value;
+    fused.params.set(key, value, restating ? { history: "replace" } : undefined);
   }
   function openPanel(tab) {
     S.panelTab = tab; $("panel").classList.remove("hidden");
@@ -1737,6 +1740,10 @@
   setMode(fused.params.get("mode") || "view");
   const panelParam = fused.params.get("panel");
   if (panelParam === "comments" || panelParam === "history") openPanel(panelParam);
+  // Closed is a state the URL is the record of, so stamp it rather than leaving
+  // the param invisible until something opens. setParam recognises this as a
+  // restatement and writes it with replaceState — no history entry.
+  else setParam("panel", "", "");
   updateSavedTag();
   if (revisions) toast("This document has tracked changes, shown here as accepted — saving an edit writes the accepted version.", 8000);
 })();

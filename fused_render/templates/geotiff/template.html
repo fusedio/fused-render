@@ -422,10 +422,14 @@ window.addEventListener('mouseup', () => {
 // looked broken, because the press it was undoing had had no visible effect
 // either. Same shape as the `annmode` boot default in the claude template
 // (PT-15): write only when the URL does not already MEAN the new state. Absent
-// and empty are the same answer here, which is why the guard is a truthiness
-// test on the raw param and not a comparison against ''.
-const clearParam = (k) => { if (fused.params.get(k)) fused.params.set(k, ''); };
-els.clipReset.onclick = () => { clearParam('vlo'); clearParam('vhi'); };
+// and empty are the same answer here, which is what the runtime's
+// `{default: ''}` says: an ABSENT param MEANS '', so writing '' over it is
+// dropped. (A clip bound is a number the reader typed, not a true default worth
+// stamping — there is no value to put in the URL when there is no clip.)
+els.clipReset.onclick = () => {
+  fused.params.set('vlo', '', { default: '' });
+  fused.params.set('vhi', '', { default: '' });
+};
 
 // stretch controls
 els.stretchBtn.onclick = () => {
@@ -434,21 +438,34 @@ els.stretchBtn.onclick = () => {
   fused.params.set('stretch', chans.map(ch => `${ch.p2},${ch.p98}`).join(','));
 };
 // `autostretch` is off unless it is exactly '1' (P.autoStretch), so absent and
-// '0' are the same answer and only the on→off direction is a real write — the
-// clearParam note above, applied to a param whose default is a flag rather than
-// a value.
+// '0' are the same answer — the `{default}` note above, applied to a param whose
+// default is a flag rather than a value.
 els.stretchReset.onclick = () => {
-  if (P.autoStretch()) fused.params.set('autostretch', '0');
-  clearParam('stretch');
+  fused.params.set('autostretch', '0', { default: '0' });
+  fused.params.set('stretch', '', { default: '' });
 };
 
-// auto stretch: re-stretch colors to the current viewport after every pan/zoom
+// auto stretch: re-stretch colors to the current viewport after every pan/zoom.
+//
+// `stretch` here is a DERIVED value — computed from the map viewport, which this
+// template does not record — and derived values are normally kept out of the URL
+// entirely, with the MODE that produces them (`autostretch=1`) as the whole
+// bookmark. netcdf and h3 do exactly that. geotiff cannot: with no viewport in
+// its URL the number is NOT re-derivable on load, so dropping it would open a
+// shared link in different colours from the one that was shared.
+//
+// So it stays written — but as a REPLACE. Every genuine pan really does change
+// the number, so a value guard cannot help; without this each pan spent the
+// visit's one history entry (D8/PR-3) on a number nobody chose, and Back landed
+// on an old derivation over a new viewport — a state that was never on screen.
+// A replace keeps the colours in the link and costs no entry, and leaves the
+// entry pristine so the reader's first real choice still gets its push.
 function maybeAutoStretch(){
   if (!P.autoStretch()) return;
   const chans = lastHist && lastHist.channels;
   if (!chans || !chans[0] || chans[0].p2 === undefined) return;
   const s = chans.filter(ch => ch.p2 !== undefined).map(ch => `${ch.p2},${ch.p98}`).join(',');
-  if (s && s !== P.stretch()) fused.params.set('stretch', s);
+  if (s) fused.params.set('stretch', s, { history: 'replace' });
 }
 els.autoStretch.onchange = () => {
   fused.params.set('autostretch', els.autoStretch.checked ? '1' : '0');

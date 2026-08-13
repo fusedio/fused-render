@@ -326,6 +326,179 @@ describe("runtime params → history", () => {
     expect(c.url).toBe(VIEW + "?zz=3&_layout=(h:a|b(c&d))");
   });
 
+  // ---- set()'s options: { history: "replace" } and { default: d } -----------
+  // The policy these serve: KEEP TRUE DEFAULTS IN THE URL, WRITE THEM WITH
+  // replaceState, NEVER pushState — and DROP DERIVED VALUES FROM THE URL
+  // ENTIRELY. A true default (`mode`, `sheet`, `offset`, `sort`, `panel`) is
+  // stamped so the address bar shows the whole state and a copied link carries
+  // it, which is what `{history:"replace"}` makes free; a value the view
+  // computed from something not in the URL is dropped, which is what
+  // `{default:d}` recognises when the caller knows what an absence means.
+
+  test("{history:'replace'} never pushes, even long after a gesture", () => {
+    // The gesture gate (D268) is the only thing standing between a boot-path
+    // write and a pushState, and it is already open here — a click landed, and
+    // the entry has been flagged by a real change. A stamp must still cost
+    // nothing: the whole point is that a param the page computed for itself is
+    // the as-loaded state however late it arrives (behind an `await py(...)`).
+    const fused = ctx.mount();
+    ctx.gesture();
+    fused.params.set("dir", "/a"); // the user's one real change: pushes
+    expect(ctx.length).toBe(2);
+    const pushes = ctx.log.filter((l) => l.startsWith("push")).length;
+
+    fused.params.set("mode", "edit", { history: "replace" });
+    fused.params.set("offset", "0", { history: "replace" });
+    ctx.flushTimers();
+
+    // Both defaults are VISIBLE in the URL…
+    expect(ctx.url).toBe(VIEW + "?dir=%2Fa&mode=edit&offset=0");
+    // …and neither cost an entry.
+    expect(ctx.length).toBe(2);
+    expect(ctx.log.filter((l) => l.startsWith("push")).length).toBe(pushes);
+  });
+
+  test("{history:'replace'} leaves the entry pristine on a pristine entry", () => {
+    // Not just "does not push" but "does not SPEND the visit's push": the flag
+    // must stay off, so the user's first real change still gets its own entry
+    // with the stamped default preserved behind it.
+    const fused = ctx.mount();
+    ctx.gesture(); // gate open, so only the option can hold the push back
+    fused.params.set("mode", "edit", { history: "replace" });
+    ctx.flushTimers();
+
+    expect(ctx.url).toBe(VIEW + "?mode=edit");
+    expect(ctx.state && ctx.state.fusedParamEntry).toBeFalsy();
+
+    fused.params.set("mode", "view"); // the user presses View
+    expect(ctx.length).toBe(2);
+    expect(ctx.state.fusedParamEntry).toBe(true);
+    ctx.back();
+    expect(ctx.url).toBe(VIEW + "?mode=edit"); // the stamp is what Back restores
+  });
+
+  test("{default:d} drops the write when an absent param already means d", () => {
+    // The comparison set() cannot make on its own: `set("offset", "0")` on an
+    // absent key appends `offset=0`, a changed URL string that means exactly
+    // what the URL already meant. Only the caller knows that.
+    const fused = ctx.mount();
+    ctx.gesture();
+    fused.params.set("offset", "0", { default: "0" });
+    ctx.flushTimers();
+
+    expect(ctx.url).toBe(VIEW); // no `offset=` appended
+    expect(ctx.log).toEqual([]); // and no history operation of any kind
+    expect(ctx.length).toBe(1);
+  });
+
+  test("{default:d} still writes when the value differs from d", () => {
+    const fused = ctx.mount();
+    ctx.gesture();
+    fused.params.set("offset", "50", { default: "0" });
+
+    expect(ctx.url).toBe(VIEW + "?offset=50");
+    expect(ctx.length).toBe(2); // a real change, so a real entry
+  });
+
+  test("{default:d} does not drop when the param is PRESENT and different", () => {
+    // `default` says what an ABSENCE means, not "never write d". Paging back to
+    // page 0 from page 50 is a real navigation and must land.
+    const c = createContext(VIEW + "?offset=50");
+    const fused = c.mount();
+    c.gesture();
+    fused.params.set("offset", "0", { default: "0" });
+
+    expect(c.url).toBe(VIEW + "?offset=0");
+    expect(c.length).toBe(2);
+  });
+
+  test("{default:d} sees a value this runtime has queued but not landed", () => {
+    // The absence test reads through the pending-delta overlay (D99), not the
+    // raw `location.search`: a value queued 100 ms ago is ALREADY what the URL
+    // means, so a `{default}` write has to compare against it. Reading the raw
+    // search instead would call `offset` absent, conclude "absent means 0, so
+    // writing 0 changes nothing", drop the write — and leave the queued 50 to
+    // land, so paging back to page 0 inside the window would silently not happen.
+    const fused = ctx.mount();
+    fused.params.set("zz", "1"); // lands at once (no budget spent yet)
+    fused.params.set("offset", "50"); // inside the window: queued, not landed
+    fused.params.set("offset", "0", { default: "0" });
+
+    ctx.flushTimers();
+    expect(ctx.url).toBe(VIEW + "?zz=1&offset=0"); // NOT offset=50
+  });
+
+  test("the options compose: a replace that is also dropped when it means d", () => {
+    // pdf_studio's `doc` and annotate's sidecar hydration: a load-time write
+    // that MAY change the URL. Drop it when the URL already means the value;
+    // when it does change something, change it without an entry.
+    const c = createContext(VIEW + "?_file=%2Fa.pdf");
+    const fused = c.mount();
+    c.gesture();
+    fused.params.set("dir", "/x"); // the user's one real change
+    expect(c.length).toBe(2);
+    const before = c.log.length;
+
+    // Boot restates the document it was opened on: absent `doc` means `_file`.
+    fused.params.set("doc", "/a.pdf", { history: "replace", default: "/a.pdf" });
+    c.flushTimers();
+    expect(c.log.length).toBe(before); // nothing written at all
+    expect(c.url).toBe(VIEW + "?_file=%2Fa.pdf&dir=%2Fx");
+
+    // Boot resolves it to a DIFFERENT library path: a real change, no entry.
+    fused.params.set("doc", "/lib/a.pdf", { history: "replace", default: "/a.pdf" });
+    c.flushTimers();
+    expect(c.url).toBe(VIEW + "?_file=%2Fa.pdf&dir=%2Fx&doc=%2Flib%2Fa.pdf");
+    expect(c.length).toBe(2);
+    expect(c.log.filter((l) => l.startsWith("push")).length).toBe(1);
+  });
+
+  test("a misspelled or non-string option is a loud error, not a silent push", () => {
+    // Silently ignoring `{history: "replce"}` would hand back the very push the
+    // option was passed to avoid, and the symptom (a dead Back press) shows up
+    // nowhere near the typo.
+    const fused = ctx.mount();
+    expect(() => fused.params.set("mode", "edit", { history: "replce" })).toThrow(
+      /options\.history must be "replace"/
+    );
+    expect(() => fused.params.set("mode", "edit", { history: "push" })).toThrow();
+    expect(() => fused.params.set("mode", "edit", { default: 0 })).toThrow(
+      /options\.default for 'mode' must be a string/
+    );
+    // An explicit `undefined` for either knob means "not asking for it".
+    fused.params.set("mode", "edit", { history: undefined, default: undefined });
+    ctx.flushTimers();
+    expect(ctx.url).toBe(VIEW + "?mode=edit");
+  });
+
+  test("a replace stamp still coalesces and still merges (D99 invariants hold)", () => {
+    const c = createContext(VIEW + "?sel=a&_layout=(h:a|b(c&d))");
+    const fused = c.mount();
+    c.gesture();
+    fused.params.set("mode", "edit", { history: "replace" });
+    fused.params.set("mode", "view", { history: "replace" }); // queued
+    c.shellReplace(VIEW + "?sel=b&mode=edit&_layout=(h:a|b(c&d))");
+    c.flushTimers();
+
+    // The shell's `sel` survived, the layout span is byte-identical, and the
+    // burst cost one write and no entry.
+    expect(c.url).toBe(VIEW + "?sel=b&mode=view&_layout=(h:a|b(c&d))");
+    expect(c.length).toBe(1);
+    expect(c.log.filter((l) => l.startsWith("push"))).toEqual([]);
+  });
+
+  test("a queued replace stamp is dropped by a traversal, like any other", () => {
+    const fused = ctx.mount();
+    ctx.gesture();
+    fused.params.set("dir", "/a"); // pushes entry 2
+    fused.params.set("mode", "edit", { history: "replace" }); // queued
+    ctx.back(); // → the pristine entry
+    ctx.flushTimers();
+
+    expect(ctx.url).toBe(VIEW); // the stamp did not land on the entry we moved to
+    expect(ctx.length).toBe(2);
+  });
+
   test("onChange fires on Back/Forward, which write nothing at all", () => {
     const fused = ctx.mount();
     ctx.gesture();

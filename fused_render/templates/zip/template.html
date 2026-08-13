@@ -242,23 +242,27 @@
     // breadcrumb ancestor out of a file preview read that torn URL back over
     // the fresh state and re-opened the preview we were leaving.
     //
-    // Each half is ALSO written only when the URL does not already mean it
-    // (SPEC PT-15). Both params are read back by readLocation() as "empty means
-    // the archive root / no member", so an absent `zipPath` and `zipPath=` are
-    // the same answer, and re-stating either costs a history entry for nothing
-    // under the runtime's first-change-push rule (PR-3).
+    // Both params are TRUE DEFAULTS — where the reader is inside the archive,
+    // of which the URL is the record — so both are STAMPED: `zipPath=&zipMember=`
+    // is written at boot even at the archive root, so the address bar shows the
+    // whole location and a copied link reopens it. readLocation() reads both back
+    // as "empty means the archive root / no member", so an absent `zipPath` and
+    // `zipPath=` are the same answer, and a write that merely RESTATES one goes
+    // out as a replace rather than costing a history entry under the runtime's
+    // first-change-push rule (PR-3). Walking into a folder or opening a member
+    // is a real move and keeps its push, so Back walks back out.
     //
-    // The no-op path is the ORDINARY one, not an edge case, and it is reached
+    // The restating path is the ORDINARY one, not an edge case, and it is reached
     // downstream of a gesture where the runtime's own no-gesture guard does not
     // apply. Opening an archive on a member deep link runs `openPreview(selected)`
     // after the entry-list fetch resolves (see the load block below), and that
     // re-writes the exact zipPath/zipMember pair the URL just supplied. The
-    // params.onChange handler reaches openPreview() the same way, so without the
-    // guard our own echo could write back over an externally-changed URL.
+    // params.onChange handler reaches openPreview() the same way, so without
+    // this our own echo could write back over an externally-changed URL.
     let syncing = false;
     function writeParam(key, value) {
-      if ((fused.params.get(key) || "") === value) return;
-      fused.params.set(key, value);
+      const restating = (fused.params.get(key) || "") === value;
+      fused.params.set(key, value, restating ? { history: "replace" } : undefined);
     }
     function writeLocation() {
       syncing = true;
@@ -553,6 +557,11 @@
     });
 
     readLocation();
+    // Stamp where we are before the entry list arrives: on a root-listing open
+    // nothing else ever writes these two, so without this the URL would stay
+    // silent about a location it is supposed to be the record of. Both writes
+    // restate what readLocation() just read, so both are replaces — no entry.
+    writeLocation();
     load();
   </script>
 </body>

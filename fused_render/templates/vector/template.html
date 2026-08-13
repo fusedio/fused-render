@@ -408,19 +408,19 @@ function syncControls(){
   els.colorBy.innerHTML = '<option value="">— single color —</option>' +
     data.schema.map(s => `<option value="${s.name}" ${s.name === P.colorBy() ? 'selected' : ''}>${s.name}</option>`).join('');
 }
-// Single writer, and it writes ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW
-// VALUE (SPEC PT-15) — pressing Load on the path already loaded, or re-picking
-// the colour-by column already in force, is not a navigation step, and under
-// the runtime's first-change-push rule (PR-3) an unguarded no-op still costs a
-// Back press. Every one of these sits behind a click or a change event, so the
-// runtime's own no-gesture guard cannot absorb them; the check has to be here.
-function setParam(key, value) {
-  if ((fused.params.get(key) || '') === value) return;
-  fused.params.set(key, value);
-}
-els.load.onclick = () => setParam('file', els.path.value.trim());
+// These write ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC
+// PT-15) — pressing Load on the path already loaded, or re-picking the colour-by
+// column already in force, is not a navigation step, and under the runtime's
+// first-change-push rule (PR-3) an unguarded no-op still costs a Back press.
+// Both sit behind a click or a change event, so the runtime's own no-gesture
+// guard cannot absorb them. `{default: ''}` states the part the runtime cannot
+// know: an ABSENT param MEANS '' here (no file loaded, "— single color —"), so
+// writing '' over an absence is dropped rather than appending `k=`. Neither is a
+// true default worth stamping — a path and a column name have no default value
+// the URL should carry when the reader has chosen nothing.
+els.load.onclick = () => fused.params.set('file', els.path.value.trim(), { default: '' });
 els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
-els.colorBy.onchange = () => setParam('colorby', els.colorBy.value);
+els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value, { default: '' });
 els.opacity.oninput = () => {
   const op = +els.opacity.value / 100;
   if (map.getLayer('shp-fill')) map.setPaintProperty('shp-fill', 'fill-opacity',

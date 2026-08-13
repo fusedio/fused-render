@@ -1791,32 +1791,32 @@ def test_approving_a_plan_sends_a_plain_allow(card):
     assert not _buttons(got["tree"]) and not [
         n for n in _nodes(got["tree"]) if n["tag"] == "textarea"]
     # No `setMode` rode along (the picker was never given one to sit on in this
-    # probe) AND this probe never set the param at all, so the landing mode the
-    # approval wants — "prompt", the CLI default — is the one an ABSENT param
-    # already means. Nothing is written: a write here would only add a value
-    # that is already in force to the URL, and the first param write on a
-    # pristine history entry buys an entry (D8/PR-3, PT-15). See the
-    # parametrized test below for the full landing-mode matrix, including the
-    # rows where the picker IS somewhere and the write really lands.
-    assert got["paramWrites"] == []
+    # probe), so the approval lands the picker on the CLI default rather than
+    # leaving it on whatever it was — and it WRITES that, even though an absent
+    # param already means "prompt": `permission` is a true default, of which the
+    # URL is the record, so the URL says which mode the next turn spawns in and a
+    # copied link carries it. The write costs nothing because it asks for
+    # `{history: "replace"}` (PR-3) — see the parametrized test below for the full
+    # landing-mode matrix.
+    assert got["paramWrites"] == [["permission", "prompt"]]
 
 
-@pytest.mark.parametrize("picked,mode,written", [
-    ("acceptEdits", "acceptEdits", "acceptEdits"),  # picker sits looser: land there
-    ("auto", "auto", "auto"),
-    ("plan", "", "prompt"),           # …and where it does not, send nothing
-    ("prompt", "", "prompt"),         # tightening mid-turn is the picker's job
-    # An ABSENT param already MEANS "prompt" (the spawn reads
-    # `get("permission") || DEFAULT_PERMISSION`), so the landing mode is already
-    # in force and there is nothing to write. Writing it anyway used to change
-    # the URL without changing the session, and the first param write on a
-    # pristine entry costs a history entry — PT-15's `annmode`, on this surface.
-    ("", "", None),
-    ("bypassPermissions", "", "prompt"),  # unreachable from a card, same gate
-    ("nonsense", "", "prompt"),
+@pytest.mark.parametrize("picked,mode", [
+    ("acceptEdits", "acceptEdits"),   # the picker sits looser: land there
+    ("auto", "auto"),
+    ("plan", ""),                     # …and where it does not, send nothing
+    ("prompt", ""),                   # tightening mid-turn is the picker's job
+    # An absent param already MEANS "prompt" (the spawn reads `get("permission")
+    # || DEFAULT_PERMISSION`) — and it is written anyway, because a true default
+    # belongs IN the URL so the address bar carries the whole state. It is free:
+    # the write asks for `{history: "replace"}`, so it never spends the visit's
+    # push on a mode the session has already switched into (D8/PR-3).
+    ("", ""),
+    ("bypassPermissions", ""),        # unreachable from a card, by the same gate
+    ("nonsense", ""),
 ])
 def test_the_landing_mode_is_the_pickers_only_when_it_is_switchable(
-        card, picked, mode, written):
+        card, picked, mode):
     got = _plan_card(card, params={"permission": picked}, actions="""
   byClass(card.el, "perm-actions")[0].children[0].onclick();
   await settle();
@@ -1825,10 +1825,8 @@ def test_the_landing_mode_is_the_pickers_only_when_it_is_switchable(
     # Approving ALWAYS moves the picker forward, off "plan" — to the granted
     # `setMode` when there was one, "prompt" (the CLI default) otherwise — so a
     # picker left on "plan" (or on anything else that sends no setMode) does not
-    # silently re-enter plan mode on the very next turn. The one row that writes
-    # nothing is the one where the URL already said the answer.
-    expected = [["permission", written]] if written else []
-    assert got["paramWrites"] == expected, got["paramWrites"]
+    # silently re-enter plan mode on the very next turn.
+    assert got["paramWrites"] == [["permission", mode or "prompt"]], got["paramWrites"]
 
 
 def test_keeping_planning_denies_and_carries_the_users_note(card):

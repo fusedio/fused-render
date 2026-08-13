@@ -499,15 +499,20 @@ els.load.onclick = () => {
 };
 els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
 // `set(k, '')` / `set('index', '0')` on an ABSENT key is a semantic no-op that
-// still rewrites the URL, so it is guarded everywhere the value being written is
-// the one the URL already means (PT-15). These particular ones cost no history
-// entry — they always ride behind a real change (`var`, `file`) that already took
-// the entry's one push, and every later write in a visit coalesces (D99) — but a
-// URL that a reader is meant to copy should not carry `var=&index=0&stretch=`
-// stating three defaults.
-const clearParam = (k) => { if (fused.params.get(k)) fused.params.set(k, ''); };
-const resetIndex = () => { if (fused.params.get('index')) fused.params.set('index', '0'); };
-els.var.onchange = () => { fused.params.set('var', els.var.value); resetIndex(); };
+// still rewrites the URL, so it is dropped everywhere the value being written is
+// the one the URL already means — which is exactly the runtime's `{default: d}`:
+// an ABSENT param MEANS d. These particular ones cost no history entry either
+// way — they always ride behind a real change (`var`, `file`) that already took
+// the entry's one push, and every later write in a visit coalesces (D99) — but
+// none of the three is a true default worth stamping: `var`'s default is
+// SERVER-side (the store's first variable, so the template cannot tell whether an
+// absent param already names it) and `stretch` is DERIVED from the data, so a URL
+// a reader is meant to copy should not carry `var=&index=0&stretch=` either
+// stating a default this template did not choose or freezing a derivation.
+els.var.onchange = () => {
+  fused.params.set('var', els.var.value);
+  fused.params.set('index', '0', { default: '0' });
+};
 let idxTimer = null;
 els.idxRange.oninput = () => {
   els.idxLabel.textContent = `${els.idxRange.value} / ${els.idxRange.max}`;
@@ -560,8 +565,11 @@ async function refreshExplorer(dir){
   els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
     const p = row.dataset.p;
     if (row.dataset.d === '1' && !p.endsWith('.zarr')) refreshExplorer(p);
-    else { fused.params.set('dir', p.replace(/\/[^/]*$/, '')); clearParam('var'); resetIndex();
-           clearParam('stretch'); fused.params.set('file', p); els.explorer.style.display = 'none'; }
+    else { fused.params.set('dir', p.replace(/\/[^/]*$/, ''));
+           fused.params.set('var', '', { default: '' });
+           fused.params.set('index', '0', { default: '0' });
+           fused.params.set('stretch', '', { default: '' });
+           fused.params.set('file', p); els.explorer.style.display = 'none'; }
   });
 }
 
