@@ -362,7 +362,9 @@ def test_memory_list_reconstructs_a_hyphenated_component_against_the_disk(
     # a naive "-" -> "/" replace would answer <root>/work/fused/render.
     project = tmp_path / "work" / "fused-render"
     project.mkdir(parents=True)
-    slug = project.as_posix().replace("/", "-").replace(".", "-")
+    # Built with the real transform, not by hand: "_" munges to "-" too, and a
+    # hand-rolled slug that forgets one is not a slug Claude would ever write.
+    slug = memory._munge(str(project))
     _memory_project(claude_dir, slug)
 
     [p] = _post(client, "memory", action="list").json()["projects"]
@@ -371,6 +373,21 @@ def test_memory_list_reconstructs_a_hyphenated_component_against_the_disk(
     # The wrong answer, explicitly: every component of this exists except the
     # last two, and it is what the one-line replace would have produced.
     assert p["path"] != str(tmp_path / "work" / "fused" / "render")
+
+
+def test_memory_list_reconstructs_a_dotted_component(client, claude_dir, tmp_path):
+    # "." munges to "-" like everything else, so ".openfused" splits into an
+    # EMPTY segment plus "openfused" and no amount of rejoining with "-" puts
+    # the dot back. The reconstruction matches munged-to-munged against the real
+    # directory entries instead, which recovers it.
+    project = tmp_path / ".openfused" / "workspaces" / "default"
+    project.mkdir(parents=True)
+    slug = memory._munge(str(project))
+    assert "--" in slug  # the shape this test exists for
+    _memory_project(claude_dir, slug)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["path"] == str(project)
 
 
 def test_memory_list_shows_no_path_when_it_cannot_confirm_one(client, claude_dir):

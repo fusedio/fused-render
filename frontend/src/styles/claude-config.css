@@ -1,18 +1,25 @@
 /* ---- Claude config app (apps/claude_config) ------------------------------- */
 /* Two routes: /claude-config (the settings panel, CLAUDE.md explorer included
-   as its MD Files section) and /claude-artifacts. The cards/rows/pills are the
-   bundled html+py app this replaces, close to value-for-value, so the port is
-   recognisably the same tool.
+   as its MD Files section) and /claude-artifacts.
  *
- * The LAYOUT is not. That app owned the window and put its sections in a 230px
- * left column; here that column landed against the shell's own GlobalSidebar
- * and the page read as two sidebars glued together. So the sections are a
- * horizontal strip (.cc-tabbar/.cc-tab) across the top of .cc-root, and
- * .cc-body below it is the content column plus — for MD Files only — the split
- * preview pane.
+ * The panel is ONE pattern repeated nine times, because it used to be four:
+ * caption row, then .cc-toolbar (summary · controls · refresh), then a list of
+ * .cc-lrow — one line each, expanding where a row has more to say than fits.
+ * The exceptions are deliberate and few: .cc-mdgrid for MD Files (browse and
+ * preview is a different job), .cc-row for Preferences (label plus control is
+ * not an item), and .cc-card, which is no longer a list item at all — just the
+ * add forms and the drift statement.
  *
- * The COLOURS are not either. That app shipped its own warm-coral Claude palette as
- * hardcoded hexes and therefore ignored this app's Light/Dark setting entirely;
+ * Nor is the section nav what the bundled html+py app this replaces had. That
+ * app owned the window and put its sections in a 230px left column; here that
+ * column landed against the shell's own GlobalSidebar and the page read as two
+ * sidebars glued together. So the sections are a horizontal strip
+ * (.cc-tabbar/.cc-tab) across the top of .cc-root — sized to the sidebar's
+ * brand row, so the two bottom borders are one line — and .cc-body below it is
+ * the content column plus, for MD Files only, the split preview pane.
+ *
+ * The COLOURS are not that app's either. It shipped its own warm-coral Claude
+ * palette as hardcoded hexes and therefore ignored the Light/Dark setting;
  * every colour below is a shell palette token (styles/tokens.css) or a
  * color-mix over one, which is what makes light mode possible at all and what
  * tests/test_theme.py enforces.
@@ -324,6 +331,11 @@
 }
 
 /* -- cards ----------------------------------------------------------------- */
+/* No longer the shape of a LIST ITEM — that is .cc-lrow now. What is left is
+   what a card is actually good at: a self-contained block with its own title,
+   prose and buttons. Four survive, all of them one-per-page — the add forms
+   behind the toolbar disclosures (Marketplaces, MCP, Profiles ×2) and the
+   History page's "Uncommitted changes" statement. */
 
 .cc-card {
   padding: 14px 16px;

@@ -19,6 +19,7 @@ for, resolved as described under _project_path.
 import glob
 import json
 import os
+import re
 from typing import Optional
 
 from . import lib
@@ -26,9 +27,9 @@ from . import lib
 PROJECTS_DIR = os.path.join(lib.CLAUDE_DIR, "projects")
 
 # How many "-"-separated segments a slug may have before we stop trying to
-# reconstruct a path out of it. The rejoin search below is exponential in the
-# worst case; real project paths are ~5-10 segments deep, and a pathological
-# slug is not worth thousands of stat calls.
+# reconstruct a path out of it. The rejoin search below backtracks, so it is
+# exponential in the worst case and lists a directory per level; real project
+# paths are ~5-15 segments deep, and a pathological slug is not worth the walk.
 _MAX_SEGMENTS = 24
 
 
@@ -79,20 +80,41 @@ def _transcript_cwd(slug_dir: str) -> Optional[str]:
     return None
 
 
+def _munge(name: str) -> str:
+    """Claude Code's own transform, applied to one path component.
+    templates/claude/agent.py::_munge does this to the whole abspath."""
+    return re.sub(r"[^A-Za-z0-9]", "-", name)
+
+
 def _rejoin(parts: list, base: str) -> Optional[str]:
     """Rebuild a path from munged segments, guided by what exists on disk.
 
-    At each step, try the fewest segments first and extend only when that
-    doesn't resolve — which is what recovers a component with a real hyphen in
-    it ("fused", "render" -> "fused-render", because that directory exists and
-    "fused" does not). Backtracks, because a shorter prefix that happens to
-    exist can still be a dead end further down.
+    Matches MUNGED-TO-MUNGED against the real directory entries rather than
+    trying to un-munge: the transform is many-to-one, but it is cheap to apply,
+    so listing `base` and munging each entry says which one the segment came
+    from without ever guessing. That is what recovers a component the naive
+    direction cannot — ".openfused" munges to "-openfused", so splitting the
+    slug yields an EMPTY segment followed by "openfused" and no amount of
+    rejoining with "-" produces the dot back.
+
+    Fewest segments first, extending only when that doesn't resolve (which is
+    how "fused", "render" becomes "fused-render"), and backtracking, because a
+    shorter prefix that happens to match can still be a dead end further down.
     """
     if not parts:
         return base
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return None
     for take in range(1, len(parts) + 1):
-        candidate = os.path.join(base, "-".join(parts[:take]))
-        if os.path.isdir(candidate):
+        want = "-".join(parts[:take])
+        for entry in entries:
+            if _munge(entry) != want:
+                continue
+            candidate = os.path.join(base, entry)
+            if not os.path.isdir(candidate):
+                continue
             found = _rejoin(parts[take:], candidate)
             if found:
                 return found
