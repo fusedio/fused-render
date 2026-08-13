@@ -6,10 +6,12 @@
  * The panel is ONE pattern repeated nine times, because it used to be four:
  * caption row, then .cc-toolbar (summary · controls · refresh), then a list of
  * .cc-lrow — one line each, expanding where a row has more to say than fits.
- * The exceptions are deliberate and few: .cc-mdgrid for MD Files (browse and
- * preview is a different job), .cc-row for Preferences (label plus control is
- * not an item), and .cc-card, which is no longer a list item at all — just the
- * add forms and the drift statement.
+ * MD Files was the last holdout, on the theory that browse-and-preview is a
+ * different job; it isn't different enough to be worth being the only page in
+ * the app that looks like another application, and its snippet lives in the
+ * expanded row now. Two exceptions remain: .cc-row for Preferences (label plus
+ * control is not an item), and .cc-card, which is no longer a list item at all
+ * — just the add forms and the drift statement.
  *
  * Nor is the section nav what the bundled html+py app this replaces had. That
  * app owned the window and put its sections in a 230px left column; here that
@@ -559,6 +561,16 @@
   color: var(--fg-muted);
 }
 
+/* A secondary that is a PATH. Ellipsized from the LEFT (direction:rtl
+   container, <bdi dir="ltr"> content — the .cc-preview-path pattern) so the
+   project tail stays visible rather than the /Users/... head every path
+   shares. NOT unicode-bidi:plaintext: plaintext re-detects the string as LTR
+   and moves the ellipsis back to the right end. */
+.cc-lrow-sub-path {
+  direction: rtl;
+  text-align: left;
+}
+
 .cc-lrow-meta {
   flex: 0 0 auto;
   font-size: 11.5px;
@@ -593,6 +605,21 @@
   margin: 0;
 }
 
+/* A file's opening lines inside an expanded row (MD Files). Clamped, because
+   the point is "which file is this?", not "read the file here" — the split
+   preview pane and the editor are both one icon away. */
+.cc-lrow-snippet {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 8;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* key: value pairs inside an expanded row (MCP's transport, Skills' source). */
 .cc-lrow-dl {
   display: grid;
@@ -620,9 +647,15 @@
   height: 13px;
 }
 
-/* -- CLAUDE.md card grid ----------------------------------------------------- */
-/* Compact per-file cards (explorer-homepage-card sized): name+pills, path,
-   a clamped content snippet, then meta + icon actions on one footer row. */
+/* -- card grid (shell/AiModels only) ---------------------------------------- */
+/* These were MD Files' per-file cards. MD Files is a list now, like every other
+   tab, and this app renders none of them — but they are NOT dead: shell/AiModels
+   and shell/AiModelsDiscover build their model cards out of this family (see the
+   preamble of styles/ai-models.css, which says so from the other side). They
+   stay here, under a heading that names their one remaining owner, because
+   moving them into ai-models.css is that page's call and not this branch's.
+   The two members MD Files alone used — .cc-mdcard-path and .cc-mdcard-snippet —
+   are gone; .cc-lrow-sub-path and .cc-lrow-snippet do those jobs now. */
 
 .cc-mdgrid {
   display: grid;
@@ -653,38 +686,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The containing directory — the part that actually distinguishes one
-   CLAUDE.md from another. Ellipsized from the LEFT (direction:rtl container,
-   <bdi dir="ltr"> content — the .cc-preview-path pattern) so the project tail
-   stays visible, not the /Users/... head everyone shares. NOT
-   unicode-bidi:plaintext: plaintext re-detects the string as LTR and moves
-   the ellipsis back to the right end. */
-.cc-mdcard-path {
-  font-size: 11.5px;
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-
-.cc-mdcard-snippet {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: var(--fg-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  /* Fixed-height slot (6 clamped lines) so a short file doesn't shrink its
-     card and stagger the grid rows. */
-  min-height: calc(11.5px * 1.55 * 6);
 }
 
 .cc-mdcard-foot {
@@ -1157,15 +1158,22 @@ textarea.cc-textbox {
 
   /* A row gives up its secondary text before it gives up its actions: the
      actions are the reason the row is there, and the secondary text is the one
-     part that has somewhere else to be (the expanded panel, or its title=). */
-  .cc-lrow-sub {
+     part that has somewhere else to be (the expanded panel, or its title=).
+
+     EXCEPT a path. On MD Files the filename is CLAUDE.md on nearly every row,
+     so the directory is the only thing telling one row from another — hiding it
+     turns the tab into thirteen identical lines. Caught in the narrow layout on
+     the running server, not in review. */
+  .cc-lrow-sub:not(.cc-lrow-sub-path) {
     display: none;
   }
 
-  /* Which leaves the body with nothing to fill the line, so the name holds the
-     space instead and the actions stay pinned right. */
+  /* The name may now have to share the line with a surviving path, so let it
+     shrink — but only as a last resort (`0 1 auto`, not `1 1 auto`): the path is
+     the flexible half, and .cc-lrow-actions pins itself right with margin-left
+     regardless, so nothing here needs to GROW to hold the line open. */
   .cc-lrow-name {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

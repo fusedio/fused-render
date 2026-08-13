@@ -281,6 +281,9 @@ export function ListRow({
   // Hover text for the ellipsized secondary: the inline text may be cut, so the
   // full string stays reachable without expanding.
   secondaryTitle,
+  // One extra class on the secondary. Exists for exactly one case — a PATH,
+  // which must ellipsize from the left so the tail survives (MD Files).
+  secondaryClass,
   meta,
   actions,
   details,
@@ -292,6 +295,7 @@ export function ListRow({
   secondary?: ReactNode;
   secondaryMono?: boolean;
   secondaryTitle?: string;
+  secondaryClass?: string;
   meta?: ReactNode;
   actions?: ReactNode;
   details?: ReactNode;
@@ -306,7 +310,11 @@ export function ListRow({
       {pills}
       {secondary != null && (
         <span
-          className={"cc-lrow-sub" + (secondaryMono ? " cc-mono" : "")}
+          className={
+            "cc-lrow-sub" +
+            (secondaryMono ? " cc-mono" : "") +
+            (secondaryClass ? " " + secondaryClass : "")
+          }
           title={secondaryTitle}
         >
           {secondary}
