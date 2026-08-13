@@ -28,7 +28,15 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render.claude_config import claude_md, lib, memory, preferences, refresh_catalog, skills
+from fused_render.claude_config import (
+    claude_md,
+    lib,
+    memory,
+    plugins,
+    preferences,
+    refresh_catalog,
+    skills,
+)
 from fused_render.server import create_app
 from fused_render.server.routers import claude_config as router_mod
 
@@ -56,6 +64,7 @@ def claude_dir(tmp_path, monkeypatch):
                         str(root / "plugins" / "installed_plugins.json"))
     monkeypatch.setattr(lib, "KNOWN_MARKETPLACES_PATH",
                         str(root / "plugins" / "known_marketplaces.json"))
+    monkeypatch.setattr(lib, "MARKETPLACES_DIR", str(root / "plugins" / "marketplaces"))
     monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
     monkeypatch.setattr(memory, "PROJECTS_DIR", str(root / "projects"))
     monkeypatch.setattr(skills, "SKILLS_DIR", str(root / "skills"))
@@ -316,6 +325,116 @@ def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
     # Nothing written anywhere — a truncated refresh must not become the catalog.
     assert not os.path.exists(lib.catalog_override_path())
     assert lib.catalog_read_path() == lib.packaged_catalog_path()
+
+
+# -- plugins: the marketplace catalogs + guarded install ---------------------
+
+
+def _marketplace(claude_dir, name, catalog, dotted=True):
+    """Write a marketplace catalog where the real CLI clones one. `dotted`
+    picks the modern <mkt>/.claude-plugin/marketplace.json over the legacy
+    <mkt>/marketplace.json; `catalog` may be a str to write it malformed."""
+    d = claude_dir / "plugins" / "marketplaces" / name
+    if dotted:
+        d = d / ".claude-plugin"
+    d.mkdir(parents=True)
+    body = catalog if isinstance(catalog, str) else json.dumps(catalog)
+    (d / "marketplace.json").write_text(body)
+
+
+def test_plugins_available_reads_every_catalog_and_joins_installed_state(client, claude_dir):
+    _marketplace(claude_dir, "acme", {
+        "name": "acme",
+        "owner": {"name": "Acme"},
+        "plugins": [
+            {"name": "widget", "description": "Widgets.", "version": "1.2.3",
+             "author": {"name": "Wile E."}, "category": "dev", "keywords": ["a", 7]},
+            {"name": "gadget", "description": "Gadgets."},
+        ],
+    })
+    # The legacy, undotted location must be found too.
+    _marketplace(claude_dir, "legacy", {"name": "legacy", "plugins": [
+        {"name": "old", "author": "A Person"},
+    ]}, dotted=False)
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"widget@acme": True}}))
+    (claude_dir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"plugins": {"widget@acme": [{"version": "1.2.3"}]}}))
+
+    body = _post(client, "plugins", action="available").json()
+    by_id = {p["id"]: p for p in body["plugins"]}
+    assert set(by_id) == {"widget@acme", "gadget@acme", "old@legacy"}
+    assert body["skipped"] == []
+    # The marketplace is the DIRECTORY name, which is what makes the join work.
+    assert by_id["widget@acme"]["installed"] is True
+    assert by_id["widget@acme"]["enabled"] is True
+    assert by_id["gadget@acme"]["installed"] is False
+    assert by_id["gadget@acme"]["enabled"] is False
+    assert by_id["widget@acme"]["author"] == "Wile E."
+    assert by_id["old@legacy"]["author"] == "A Person"  # the bare-string form
+    assert by_id["widget@acme"]["keywords"] == ["a"]  # the non-string is dropped
+
+
+def test_plugins_available_skips_a_broken_catalog_and_names_it(client, claude_dir):
+    _marketplace(claude_dir, "good", {"plugins": [{"name": "fine"}]})
+    _marketplace(claude_dir, "torn", "{ not json at all")
+    _marketplace(claude_dir, "shapeless", {"plugins": "not a list"})
+    (claude_dir / "plugins" / "marketplaces" / "empty").mkdir(parents=True)
+
+    body = _post(client, "plugins", action="available").json()
+    # One bad marketplace must not blank the page...
+    assert [p["id"] for p in body["plugins"]] == ["fine@good"]
+    # ...and must not vanish either: the page says which ones it could not read.
+    assert sorted(body["skipped"]) == ["empty", "shapeless", "torn"]
+
+
+def test_plugins_available_is_empty_when_no_marketplace_is_cloned(client, claude_dir):
+    assert _post(client, "plugins", action="available").json() == {"plugins": [], "skipped": []}
+
+
+def test_plugins_install_refuses_an_id_no_catalog_publishes(client, claude_dir, monkeypatch):
+    # The CLI must never see an unvalidated id — assert it is not reached at all.
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    _marketplace(claude_dir, "acme", {"plugins": [{"name": "widget"}]})
+
+    assert _post(client, "plugins", action="install", id="").json() == {
+        "ok": False, "error": "id required"}
+    for bogus in ("widget", "widget@nope", "; rm -rf /"):
+        body = _post(client, "plugins", action="install", id=bogus).json()
+        assert body == {"ok": False, "error": "unknown plugin"}
+
+
+def test_plugins_install_hands_a_catalog_id_to_the_cli_with_a_generous_timeout(
+        client, claude_dir, monkeypatch):
+    seen = {}
+
+    def fake_cli(*args, timeout=25):
+        seen["args"] = args
+        seen["timeout"] = timeout
+        return {"ok": True, "stdout": "installed", "stderr": ""}
+
+    monkeypatch.setattr(lib, "claude_cli", fake_cli)
+    _marketplace(claude_dir, "acme", {"plugins": [{"name": "widget"}]})
+
+    body = _post(client, "plugins", action="install", id="widget@acme").json()
+    assert body == {"ok": True, "id": "widget@acme", "stdout": "installed"}
+    assert seen["args"] == ("plugin", "install", "widget@acme", "--scope", "user", "-y")
+    # A marketplace clone can take a while; the 25s default would report a
+    # working install as a failure.
+    assert seen["timeout"] >= 60
+
+
+def test_plugins_install_reports_the_cli_s_own_stderr(client, claude_dir, monkeypatch):
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: {"ok": False, "stdout": "", "stderr": "no such marketplace"})
+    _marketplace(claude_dir, "acme", {"plugins": [{"name": "widget"}]})
+    body = _post(client, "plugins", action="install", id="widget@acme").json()
+    assert body == {"ok": False, "error": "no such marketplace"}
+
+
+def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
+    assert plugins.main(action="nope") == {"ok": False, "error": "unknown action: nope"}
 
 
 # -- subprocess decoding: never the locale's guess ---------------------------
