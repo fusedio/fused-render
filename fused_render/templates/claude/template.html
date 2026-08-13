@@ -8648,12 +8648,16 @@ async function sendMessage(message) {
 // a run this frame did not start and may have missed the end of — and handles
 // both cases: still live (render the user line, then `pollLoop` streams the rest)
 // and already finished (repair the transcript from the poll payload).
-// TWO sets, because "already on screen" and "already mentioned" expire
-// differently. A run this frame ATTACHED must never attach twice. A run that
-// belongs to another session is only NOTED — deliberately not marked attached —
-// because this frame can switch to that session (`session_id` changes without a
-// remount) and the turn would then belong here after all. One set for both made
-// the note permanent and the later attach impossible.
+// TWO sets, because "already on screen" and "already mentioned" are different
+// questions. ATTACHED stops a run being rendered twice. NOTED stops the same
+// "ran in another session" line being repeated every 15s while the reader sits on
+// a different session — it is not a claim that the run can never be adopted here.
+//
+// Adoption is `loadHistory`'s job, not this poller's: switching to that session
+// re-renders the transcript FROM history, which already contains the turn. That is
+// also why both sets are cleared there (see scheduleResetForNewTranscript) — an
+// earlier version left a foreign run unmarked so a later switch could attach it,
+// which appended a second copy on top of the one history had just restored.
 const SCHEDULE_ATTACHED = new Set();
 const SCHEDULE_NOTED = new Set();
 let scheduleBaselined = false;
@@ -8672,6 +8676,22 @@ function scheduledRunIsOurs(entry) {
   // With no session yet, a send that resumed nothing created one this frame can
   // adopt; one that resumed someone else's belongs on their screen, not here.
   return !entry.session_id;
+}
+
+// Called by `loadHistory` whenever the visible conversation is REPLACED. The
+// freshly restored transcript is the record of everything that has already fired,
+// so nothing fired before this moment may attach — it is either on screen already
+// or belongs to a session this frame is not showing. Re-baselining is what makes
+// `neverShown` true by construction for the attaches that remain: a run that gets
+// through fired AFTER this render, so it cannot be in it.
+//
+// A run firing DURING the history round trip is baselined away and will not
+// attach. That window is one request wide, and it fails in the recoverable
+// direction — a turn that needs a reload to appear, rather than one shown twice.
+function scheduleResetForNewTranscript() {
+  SCHEDULE_ATTACHED.clear();
+  SCHEDULE_NOTED.clear();
+  scheduleBaselined = false;
 }
 
 async function pollScheduledRuns() {
@@ -8980,6 +9000,10 @@ async function loadHistory(session_id) {
   permCards.clear();
   notedSkills.clear();
   resetCardPolicy();  // a restored transcript opens on its LAST card, nothing else
+  // Same reason as the two clears above: this transcript is about to be REPLACED,
+  // so every per-transcript record has to go with it — including which scheduled
+  // runs are on screen (scheduleResetForNewTranscript).
+  scheduleResetForNewTranscript();
   renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });

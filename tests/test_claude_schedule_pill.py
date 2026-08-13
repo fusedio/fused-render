@@ -320,10 +320,40 @@ def test_an_attached_run_goes_on_the_url(code):
     assert 'fused.params.set("run", entry.run_id' in body
 
 
-def test_another_sessions_run_is_noted_but_not_written_off(code):
-    """One set for both made the note permanent and a later attach impossible: this
-    frame can switch sessions without remounting, and the turn would then belong
-    here after all."""
+def test_replacing_the_transcript_re_baselines_the_watcher(code):
+    """`neverShown` forces matching off for every scheduled attach, which is only
+    sound while "this run fired after the visible transcript was rendered" holds.
+    A session SWITCH breaks that: `loadHistory` restores the new session's history,
+    which already contains any scheduled turn that ran in it, and attaching then
+    appended a second copy of the same prompt and reply.
+
+    So the reset lives where the transcript is thrown away, beside the other
+    per-transcript clears — and it is what makes `neverShown` true by construction
+    for the attaches that survive."""
+    assert "function scheduleResetForNewTranscript(" in code
+    body = code[code.index("function scheduleResetForNewTranscript("):]
+    body = body[:body.index("\n}")]
+    assert "SCHEDULE_ATTACHED.clear()" in body
+    assert "SCHEDULE_NOTED.clear()" in body
+    assert "scheduleBaselined = false" in body, \
+        "the next poll must re-baseline, or already-fired runs attach again"
+
+    # called from loadHistory, BEFORE the visible conversation is replaced
+    lh = code[code.index("async function loadHistory("):]
+    lh = lh[:lh.index("\n}")]
+    assert "scheduleResetForNewTranscript();" in lh
+    assert lh.index("scheduleResetForNewTranscript();") < lh.index("renderLogSkeleton()")
+
+
+def test_another_sessions_run_is_noted_without_being_rendered(code):
+    """Two sets answer two different questions: ATTACHED stops a run being rendered
+    twice, NOTED stops the same "ran in another session" line repeating every 15s.
+
+    NOTED is deliberately NOT a claim that the run can be adopted here later — that
+    was the original reasoning and it was wrong. Switching to that session calls
+    `loadHistory`, which restores the turn from history and re-baselines the watcher
+    (see scheduleResetForNewTranscript); attaching on top of that appended a second
+    copy."""
     assert "SCHEDULE_ATTACHED" in code and "SCHEDULE_NOTED" in code
     body = code[code.index("async function pollScheduledRuns("):]
     body = body[:body.index("\npollScheduledRuns();")]

@@ -6347,7 +6347,15 @@ world from one the user typed.
     match, and the repair stripped everything after it — DELETING that turn's real
     reply to hang the scheduled answer there. The live path strips partial rows on a
     match too, so the suppression is folded into `matches` itself, in one place,
-    covering both.
+    covering both. **And `neverShown` is only sound while the visible transcript
+    postdates every already-fired run**, which a session SWITCH breaks: `loadHistory`
+    restores the new session's history, already containing any scheduled turn that
+    ran in it, so attaching appended a second copy. `scheduleResetForNewTranscript`
+    therefore clears both sets and re-baselines wherever the transcript is replaced,
+    beside the other per-transcript clears — which is what makes `neverShown` true by
+    construction for the attaches that survive, and which supersedes the earlier
+    reasoning that a foreign-session run was left unmarked so a later switch could
+    adopt it. Adoption is history's job, not the poller's.
   - **SCH-11h** **A run is written off only once it is really handled.** Two sets,
     not one: `SCHEDULE_ATTACHED` blocks a second attach, `SCHEDULE_NOTED` blocks a
     repeated mention of a run that belongs to another session — which is
