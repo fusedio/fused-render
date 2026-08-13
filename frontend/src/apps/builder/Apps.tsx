@@ -15,7 +15,6 @@ import { useDeployEnabled } from "@platform/lib/prefs";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
-import { CommunityGrid, COMMUNITY_TAG } from "@apps/builder/CommunityGrid";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
@@ -86,20 +85,12 @@ export default function Apps({ config }: { config: Config }) {
     };
   }, [nonce]);
 
-  // The showcase tab lives alongside the workspace tags but is its own
-  // surface (catalog cards with clone state, not plain workspace cards). The
-  // showcase clone is a real workspace tag dir, so the chip may come from the
-  // scan itself — either way this tag always routes to the catalog grid.
+  // Showcase apps are ordinary workspace apps now: the server clones the
+  // community repo into <workspace>/showcase in the background on startup,
+  // and the two-level scan picks it up like any other tag dir. No synthetic
+  // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
-  const tags = useMemo(() => {
-    const t = [...new Set(all.map((a) => a.tag))].sort();
-    return t.includes(COMMUNITY_TAG) ? t : [...t, COMMUNITY_TAG];
-  }, [all]);
-  const communityTab = tag === COMMUNITY_TAG;
-  // Empty workspace on the "All" tab: instead of a bare "no apps yet" line,
-  // surface the community catalog — something to open on first run.
-  const communityFallback =
-    tag === null && apps.status === "ok" && all.length === 0;
+  const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -188,18 +179,6 @@ export default function Apps({ config }: { config: Config }) {
           )}
         </div>
 
-        {communityTab || communityFallback ? (
-          <>
-            {communityFallback && (
-              <div className="home-empty">
-                No apps yet. Describe one in the composer above to create it, or start from a
-                showcase app below.
-              </div>
-            )}
-            <CommunityGrid query={query} sort={sort} />
-          </>
-        ) : (
-          <>
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
         {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status === "ok" && (
@@ -222,8 +201,6 @@ export default function Apps({ config }: { config: Config }) {
                 ))}
               </div>
             )}
-          </>
-        )}
           </>
         )}
       </div>

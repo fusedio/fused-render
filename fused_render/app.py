@@ -230,6 +230,11 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     the only observable "it has stopped serving")."""
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
     start_dir = ensure_fused_dir()
+    # Showcase apps: clone/sync the community repo into <workspace>/showcase in
+    # the background — the apps grid lists it as an ordinary tag dir once done.
+    from fused_render import community
+
+    community.refresh_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.

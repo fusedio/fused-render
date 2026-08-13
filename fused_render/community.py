@@ -511,6 +511,25 @@ def _uninstall(slug):
     return {"status": "uninstalled", "trashed_to": trashed}
 
 
+def refresh_in_background():
+    """Fire-and-forget showcase clone/sync, called by the server entry points
+    (cli._run_serve, app._start_server_thread) right after ensure_fused_dir —
+    NOT from create_app, so importing the server in tests never clones into a
+    real workspace. First run performs the full clone; later runs fetch+ff.
+    Failures are logged, never raised — the apps page simply shows no showcase
+    tag until a later start (or a Clone action's refresh) succeeds."""
+    import logging
+    import threading
+
+    def _run():
+        res = main(action="refresh")
+        if res.get("status") != "ok":
+            logging.getLogger(__name__).warning(
+                "showcase refresh failed: %s", res.get("message") or res.get("status"))
+
+    threading.Thread(target=_run, daemon=True, name="showcase-refresh").start()
+
+
 def main(action: str = "catalog", slug: str = "", force: bool = False):
     try:
         if action == "catalog":

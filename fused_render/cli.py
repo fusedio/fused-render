@@ -129,6 +129,11 @@ def _run_serve(args: argparse.Namespace) -> None:
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once. Runs
     # regardless of --start-dir — seeding is about the Fused dir, not the start dir.
     ensure_fused_dir()
+    # Showcase apps: clone/sync the community repo into <workspace>/showcase in
+    # the background — the apps grid lists it as an ordinary tag dir once done.
+    from fused_render import community
+
+    community.refresh_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 
