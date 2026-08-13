@@ -1,9 +1,16 @@
-// Shared pieces of the Claude-config app: the row/card/pill vocabulary its
-// sections are built from, the three-state toggle, the change-preview modal,
-// the load-once-with-reload hook every section uses, the git-status hook the
-// tab strip and the History page share, and the split preview pane the MD Files
-// section needs. They lived in ClaudeConfig.tsx; they sit here so a section
-// and the panel can both reach them without importing across pages.
+// Shared pieces of the Claude-config app: the ONE list row every tab's items
+// render as (`ListRow`), the card/pill/group vocabulary around it, the
+// three-state toggle, the change-preview modal, the load-once-with-reload hook
+// every section uses, the git-status hook the tab strip and the History page
+// share, and the split preview pane the MD Files section needs. They lived in
+// ClaudeConfig.tsx; they sit here so a section and the panel can both reach
+// them without importing across pages.
+//
+// The bias is deliberately towards ONE of each thing. Nine tabs doing the same
+// job four ways is four sets of paddings, verbs and action placements for the
+// user to re-learn per tab, and it happened here simply because each section
+// was written on a different day. So: one row, one toolbar, one skeleton
+// length, one empty-state shape.
 //
 // Nothing here re-invents something the shell already ships. Toasts are
 // @platform/lib/toast (the app-root NotificationHost surface — the original
@@ -15,6 +22,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type ReactNode,
@@ -144,9 +152,132 @@ export function Row({
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="cc-empty">{children}</div>;
+// An empty state, with the control that fixes it where there is one. Every list
+// in this app can be empty on a fresh machine, and "nothing here" without a way
+// out is a dead end — so `action` is part of the shape rather than something
+// each section remembers to add.
+export function Empty({ children, action }: { children: ReactNode; action?: ReactNode }) {
+  return (
+    <div className="cc-empty">
+      <div>{children}</div>
+      {action ? <div className="cc-empty-action">{action}</div> : null}
+    </div>
+  );
 }
+
+// -- one list row -------------------------------------------------------------
+
+// Every list in this app renders through this: Plugins, Marketplaces, Skills,
+// MCP, Profiles, Memory and History's log. (MD Files keeps its card grid —
+// browse-and-preview is a different job — and Preferences keeps .cc-row, which
+// is label-plus-control, not an item.) Before this there were four shapes for
+// one job, which is four sets of paddings, fonts and action placements for the
+// user to re-learn per tab.
+//
+// One line AT REST, never wrapping, so every row is the same height and twenty
+// of them can be scanned. But one line must not mean information thrown away:
+// where a row has more to say than fits — a description, a file list, extra
+// fields — it EXPANDS. `details` is what makes a row expandable, so a row with
+// nothing behind it has no chevron and no dead affordance.
+//
+// Two triggers open it: the row body and the chevron. That is deliberate (the
+// body is the big target; the chevron is the one that LOOKS like a disclosure)
+// and both carry aria-expanded/aria-controls over the same panel, which is what
+// ARIA expects of two buttons controlling one region. The open state is the
+// row's own — a tab change remounts the section, so it resets by construction
+// and never belongs in the URL.
+export function ListRow({
+  lead,
+  name,
+  nameMono,
+  pills,
+  secondary,
+  secondaryMono,
+  // Hover text for the ellipsized secondary: the inline text may be cut, so the
+  // full string stays reachable without expanding.
+  secondaryTitle,
+  meta,
+  actions,
+  details,
+}: {
+  lead?: ReactNode;
+  name?: ReactNode;
+  nameMono?: boolean;
+  pills?: ReactNode;
+  secondary?: ReactNode;
+  secondaryMono?: boolean;
+  secondaryTitle?: string;
+  meta?: ReactNode;
+  actions?: ReactNode;
+  details?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const toggle = () => setOpen((v) => !v);
+
+  const inner = (
+    <>
+      {name != null && <span className={"cc-lrow-name" + (nameMono ? " cc-mono" : "")}>{name}</span>}
+      {pills}
+      {secondary != null && (
+        <span
+          className={"cc-lrow-sub" + (secondaryMono ? " cc-mono" : "")}
+          title={secondaryTitle}
+        >
+          {secondary}
+        </span>
+      )}
+    </>
+  );
+
+  return (
+    <div className={"cc-lrow" + (open ? " open" : "")}>
+      <div className="cc-lrow-line">
+        {lead}
+        {details ? (
+          <button
+            type="button"
+            className="cc-lrow-body"
+            aria-expanded={open}
+            aria-controls={panelId}
+            onClick={toggle}
+          >
+            {inner}
+          </button>
+        ) : (
+          <span className="cc-lrow-body cc-lrow-body-flat">{inner}</span>
+        )}
+        {meta}
+        <div className="cc-lrow-actions">
+          {actions}
+          {details && (
+            <button
+              type="button"
+              className="cc-iconbtn cc-lrow-chev"
+              aria-expanded={open}
+              aria-controls={panelId}
+              aria-label={open ? "Hide details" : "Show details"}
+              title={open ? "Hide details" : "Show details"}
+              onClick={toggle}
+            >
+              <Icon name="chevron" />
+            </button>
+          )}
+        </div>
+      </div>
+      {details && open && (
+        <div className="cc-lrow-details" id={panelId}>
+          {details}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The rows a list skeleton stands in for. One number for every tab: the lists
+// are the same kind of thing, and 3-here-4-there was only ever whoever wrote
+// the section that day.
+export const SKELETON_ROWS = 4;
 
 export type PillTone = "neutral" | "on" | "ro" | "err";
 
@@ -397,9 +528,17 @@ export function fileToB64(file: File): Promise<string> {
 export function Icon({
   name,
 }: {
-  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy";
+  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy" | "chevron" | "plus";
 }) {
   const paths: Record<string, ReactNode> = {
+    // Points down at rest; .cc-lrow.open rotates it (CSS, so no second glyph).
+    chevron: <polyline points="6 9 12 15 18 9" />,
+    plus: (
+      <>
+        <line x1="12" y1="5" x2="12" y2="19" />
+        <line x1="5" y1="12" x2="19" y2="12" />
+      </>
+    ),
     clock: (
       <>
         <circle cx="12" cy="12" r="9" />

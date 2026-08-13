@@ -10,9 +10,11 @@ import type { MarketplaceKind } from "../api";
 import {
   Card,
   CardActions,
-  CardSub,
   CardTitle,
+  Icon,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
   toastErr,
   toastOk,
   useModuleData,
@@ -69,7 +71,10 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
   };
 
   const share = async (command: string) => {
-    if (await copyToClipboard(command)) toastOk("Copied add command");
+    // "Copy install command" everywhere it appears (Plugins, Skills, here):
+    // one name for one act, even though what this one copies is the
+    // `marketplace add` line.
+    if (await copyToClipboard(command)) toastOk("Copied install command");
     else toastErr("Copy failed");
   };
 
@@ -110,32 +115,42 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
         </CardActions>
       </Card>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!data && !error && <SkeletonLines rows={3} label="Loading marketplaces" />}
-      {data?.marketplaces.map((m) => (
-        <Card key={m.name}>
-          <CardTitle>
-            {m.name} {!m.editable && <Pill tone="ro">read-only</Pill>}
-          </CardTitle>
-          <CardSub mono>{m.source.repo || m.source.url || ""}</CardSub>
-          <CardActions>
-            {m.shareCommand && (
-              <button
-                type="button"
-                className="btn"
-                title={m.shareCommand}
-                onClick={() => share(m.shareCommand as string)}
-              >
-                Copy add command
-              </button>
-            )}
-            {m.editable && (
-              <button type="button" className="btn btn-danger" onClick={() => remove(m.name)}>
-                Remove
-              </button>
-            )}
-          </CardActions>
-        </Card>
-      ))}
+      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading marketplaces" />}
+      {/* No chevron: a marketplace IS its name and its source, and both are on
+          the line. There is nothing an expanded panel could add. */}
+      {data?.marketplaces.map((m) => {
+        const source = m.source.repo || m.source.url || "";
+        return (
+          <ListRow
+            key={m.name}
+            name={m.name}
+            pills={!m.editable ? <Pill tone="ro">read-only</Pill> : null}
+            secondary={source}
+            secondaryTitle={source}
+            secondaryMono
+            actions={
+              <>
+                {m.shareCommand && (
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    title={`Copy install command — ${m.shareCommand}`}
+                    aria-label={`Copy the install command for ${m.name}`}
+                    onClick={() => share(m.shareCommand as string)}
+                  >
+                    <Icon name="copy" />
+                  </button>
+                )}
+                {m.editable && (
+                  <button type="button" className="btn btn-danger" onClick={() => remove(m.name)}>
+                    Remove
+                  </button>
+                )}
+              </>
+            }
+          />
+        );
+      })}
     </>
   );
 }

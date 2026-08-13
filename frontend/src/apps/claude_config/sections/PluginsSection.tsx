@@ -1,12 +1,13 @@
 // Plugins section: what is on this machine (Installed) and what the
 // marketplaces you have cloned publish that you don't have yet (Discover).
 //
-// Both lists are ONE LINE PER PLUGIN. The old layout gave each plugin a card
-// with a head row, a sub line and an actions row — three lines and ~90px of
-// height to say "enabled, v1.2.3" about something you scan twenty of. A row
-// that never wraps says the same thing and lets you compare the twenty. The
-// part that flexes and ellipsizes is the id/description; the toggle, version
-// and actions keep their width, because those are what you came to act on.
+// Both lists are ONE LINE PER PLUGIN, through the app's shared `ListRow`. The
+// old layout gave each plugin a card with a head row, a sub line and an actions
+// row — three lines and ~90px of height to say "enabled, v1.2.3" about
+// something you scan twenty of. A row that never wraps says the same thing and
+// lets you compare the twenty. Discover's rows expand, because a catalog
+// description is the thing you are deciding on and must not be ellipsized into
+// nothing; Installed's don't, because `plugins list` has no description to show.
 //
 // The marketplace column beside the list is a FILTER, not a nav: a plain list
 // of rows with counts, no panel background, nothing that could read as a third
@@ -24,7 +25,17 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { AvailablePlugin, AvailablePlugins, Plugin } from "../api";
-import { Empty, Icon, Pill, Toggle3, toastErr, toastOk, useModuleData } from "../bits";
+import {
+  Empty,
+  Icon,
+  ListRow,
+  Pill,
+  SKELETON_ROWS,
+  Toggle3,
+  toastErr,
+  toastOk,
+  useModuleData,
+} from "../bits";
 import type { SectionProps } from "../bits";
 
 type Tab = "installed" | "discover";
@@ -140,7 +151,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={4} label="Loading plugins" />;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading plugins" />;
 
   const installed = data.plugins.filter((p) => matches(query, p.name, p.id));
   // Discover is only the plugins you do NOT have: what you already installed is
@@ -229,56 +240,105 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             </div>
           )}
           {tab === "discover" && !avail && !availError && (
-            <SkeletonLines rows={5} label="Reading marketplace catalogs" />
+            <SkeletonLines rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
           )}
           {tab === "installed" &&
             rowsInstalled.map((p) => {
               const enabled = flipped[p.id] ?? p.enabled;
               return (
-                <div className="cc-prow" key={p.id}>
-                  <Toggle3
-                    label={`Enable ${p.name}`}
-                    value={enabled}
-                    onChange={(next) => toggle(p, next)}
-                  />
-                  <span className="cc-prow-name">{p.name}</span>
-                  <span className="cc-prow-sub cc-mono">{p.id}</span>
-                  {p.version && <span className="cc-prow-meta">v{p.version}</span>}
-                  {!p.installed && <Pill>not installed</Pill>}
-                  <div className="cc-prow-actions">
-                    {p.installed && (
+                // No chevron here: `plugins list` reads settings.json and
+                // installed_plugins.json, neither of which carries a
+                // description — everything this row knows is already on the
+                // line. The catalog blurb lives on Discover, which is where it
+                // is fetched from.
+                <ListRow
+                  key={p.id}
+                  lead={
+                    <Toggle3
+                      label={`Enable ${p.name}`}
+                      value={enabled}
+                      onChange={(next) => toggle(p, next)}
+                    />
+                  }
+                  name={p.name}
+                  pills={!p.installed ? <Pill>not installed</Pill> : null}
+                  secondary={p.id}
+                  secondaryTitle={p.id}
+                  secondaryMono
+                  meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
+                  actions={
+                    <>
+                      {p.installed && (
+                        <button
+                          type="button"
+                          className="cc-iconbtn"
+                          disabled={busy === p.id}
+                          title={busy === p.id ? "Updating…" : "Update this plugin"}
+                          aria-label={`Update ${p.name}`}
+                          onClick={() => update(p)}
+                        >
+                          <Icon name="refresh" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="cc-iconbtn"
-                        disabled={busy === p.id}
-                        title={busy === p.id ? "Updating…" : "Update this plugin"}
-                        aria-label={`Update ${p.name}`}
-                        onClick={() => update(p)}
+                        title={`Copy install command — ${p.shareCommand}`}
+                        aria-label={`Copy the install command for ${p.name}`}
+                        onClick={() => share(p.shareCommand)}
                       >
-                        <Icon name="refresh" />
+                        <Icon name="copy" />
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
-                      title={p.shareCommand}
-                      aria-label={`Copy the install command for ${p.name}`}
-                      onClick={() => share(p.shareCommand)}
-                    >
-                      <Icon name="copy" />
-                    </button>
-                  </div>
-                </div>
+                    </>
+                  }
+                />
               );
             })}
           {tab === "discover" &&
             rowsDiscover.map((p) => (
-              <div className="cc-prow" key={p.id}>
-                <span className="cc-prow-name">{p.name}</span>
-                <span className="cc-prow-sub">{p.description}</span>
-                {p.version && <span className="cc-prow-meta">v{p.version}</span>}
-                <span className="cc-prow-meta cc-mono">{p.marketplace}</span>
-                <div className="cc-prow-actions">
+              <ListRow
+                key={p.id}
+                name={p.name}
+                secondary={p.description}
+                secondaryTitle={p.description}
+                // Deciding whether to install something is exactly when the
+                // marketing copy matters, and a catalog description runs to a
+                // paragraph — so the row shows as much as fits and the panel
+                // shows all of it, with who wrote it and what it is filed under.
+                details={
+                  p.description || p.author || p.category || p.keywords.length ? (
+                    <>
+                      {p.description && <p>{p.description}</p>}
+                      <dl className="cc-lrow-dl">
+                        {p.author && (
+                          <>
+                            <dt className="cc-lrow-dt">Author</dt>
+                            <dd className="cc-lrow-dd">{p.author}</dd>
+                          </>
+                        )}
+                        {p.category && (
+                          <>
+                            <dt className="cc-lrow-dt">Category</dt>
+                            <dd className="cc-lrow-dd">{p.category}</dd>
+                          </>
+                        )}
+                        {p.keywords.length > 0 && (
+                          <>
+                            <dt className="cc-lrow-dt">Keywords</dt>
+                            <dd className="cc-lrow-dd">{p.keywords.join(", ")}</dd>
+                          </>
+                        )}
+                      </dl>
+                    </>
+                  ) : null
+                }
+                meta={
+                  <>
+                    {p.version && <span className="cc-lrow-meta">v{p.version}</span>}
+                    <span className="cc-lrow-meta cc-mono">{p.marketplace}</span>
+                  </>
+                }
+                actions={
                   <button
                     type="button"
                     className="btn"
@@ -288,8 +348,8 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                   >
                     {busy === p.id ? "Installing…" : "Install"}
                   </button>
-                </div>
-              </div>
+                }
+              />
             ))}
           {(tab === "installed" || avail) && rowCount === 0 && (
             <Empty>

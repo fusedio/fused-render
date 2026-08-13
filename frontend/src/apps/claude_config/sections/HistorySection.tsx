@@ -27,7 +27,9 @@ import {
   CardTitle,
   Empty,
   Group,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
   guard,
   toastErr,
   toastOk,
@@ -144,21 +146,34 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
       </Group>
       <Group title="Commits">
         {error && <ErrorBanner>{error}</ErrorBanner>}
-        {!data && !error && <SkeletonLines rows={5} label="Loading history" />}
-        {data && !data.log.length && <Empty>No history yet.</Empty>}
+        {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading history" />}
+        {data && !data.log.length && (
+          <Empty>No history yet. Your first edit to any setting commits here.</Empty>
+        )}
+        {/* A commit has nothing behind it that isn't already on the line, so
+            these rows carry no chevron: the message is the row, and the date and
+            sha are meta. */}
         {data?.log.map((e, i) => (
-          <div className="cc-log-entry" key={e.sha}>
-            <span className="cc-log-msg">{e.message}</span>
-            <span className="cc-log-date">{new Date(e.date).toLocaleString()}</span>
-            <span className="cc-log-sha cc-mono">{e.sha.slice(0, 8)}</span>
-            {i === 0 ? (
-              <Pill tone="on">current</Pill>
-            ) : (
-              <button type="button" className="btn" onClick={() => restore(e.sha)}>
-                Restore
-              </button>
-            )}
-          </div>
+          <ListRow
+            key={e.sha}
+            secondary={e.message}
+            secondaryTitle={e.message}
+            meta={
+              <>
+                <span className="cc-lrow-meta">{new Date(e.date).toLocaleString()}</span>
+                <span className="cc-lrow-meta cc-mono">{e.sha.slice(0, 8)}</span>
+              </>
+            }
+            actions={
+              i === 0 ? (
+                <Pill tone="on">current</Pill>
+              ) : (
+                <button type="button" className="btn" onClick={() => restore(e.sha)}>
+                  Restore
+                </button>
+              )
+            }
+          />
         ))}
       </Group>
     </>

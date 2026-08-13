@@ -11,11 +11,10 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import {
-  Card,
-  CardActions,
-  CardSub,
-  CardTitle,
   Empty,
+  Icon,
+  ListRow,
+  SKELETON_ROWS,
   guard,
   toastOk,
   useChangePreview,
@@ -52,7 +51,7 @@ export default function MemorySection({ onChanged }: SectionProps) {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={3} label="Loading memory" />;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading memory" />;
   if (!data.projects.length)
     return <Empty>No persistent memory found under projects/*/memory/.</Empty>;
 
@@ -61,37 +60,52 @@ export default function MemorySection({ onChanged }: SectionProps) {
       {modal}
       {data.projects.map((p) => {
         const dirty = p.changes.length;
+        const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
         return (
-          <Card key={p.project}>
-            <CardTitle mono>
-              {p.project}{" "}
-              <span className="cc-count">
-                {p.files.length} file{p.files.length === 1 ? "" : "s"}
-              </span>{" "}
-              {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
-            </CardTitle>
-            <CardSub>{p.files.join(" · ")}</CardSub>
-            <CardActions>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => guard(cc.memory.open(p.project))}
-              >
-                Reveal in Finder
-              </button>
-              <button
-                type="button"
-                className="btn"
-                disabled={dirty === 0}
-                onClick={() => commit(p.project)}
-              >
-                Commit
-              </button>
-              <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
-                Clear
-              </button>
-            </CardActions>
-          </Card>
+          <ListRow
+            key={p.project}
+            name={p.project}
+            nameMono
+            secondary={count}
+            // The file names ARE the content of this tab — which folder holds
+            // what — so they move from a `·`-joined line that ellipsized into
+            // nothing to the expanded panel, one per line.
+            details={
+              p.files.length ? (
+                <dl className="cc-lrow-dl">
+                  <dt className="cc-lrow-dt">Files</dt>
+                  <dd className="cc-lrow-dd cc-mono">{p.files.join("\n")}</dd>
+                </dl>
+              ) : null
+            }
+            meta={
+              dirty > 0 ? <span className="cc-change">{dirty} uncommitted</span> : null
+            }
+            actions={
+              <>
+                <button
+                  type="button"
+                  className="cc-iconbtn"
+                  title="Reveal in Finder"
+                  aria-label={`Reveal ${p.project} in Finder`}
+                  onClick={() => guard(cc.memory.open(p.project))}
+                >
+                  <Icon name="folder" />
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={dirty === 0}
+                  onClick={() => commit(p.project)}
+                >
+                  Commit
+                </button>
+                <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
+                  Clear
+                </button>
+              </>
+            }
+          />
         );
       })}
     </>

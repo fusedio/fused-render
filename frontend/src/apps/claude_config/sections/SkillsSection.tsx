@@ -9,12 +9,11 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import {
-  Card,
-  CardActions,
-  CardSub,
-  CardTitle,
   Empty,
+  Icon,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
   guard,
   toastErr,
   toastOk,
@@ -31,35 +30,63 @@ export default function SkillsSection() {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={3} label="Loading skills" />;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading skills" />;
   if (!data.skills.length) return <Empty>No local skills under skills/*/SKILL.md.</Empty>;
 
   return (
     <>
       {data.skills.map((s) => (
-        <Card key={s.slug}>
-          <CardTitle>
-            {s.name} {s.linked && <Pill>linked</Pill>}
-          </CardTitle>
-          <CardSub>{s.description}</CardSub>
-          <CardActions>
-            <button type="button" className="btn" onClick={() => guard(cc.skills.open(s.slug))}>
-              Reveal in Finder
-            </button>
-            {s.shareCommand ? (
+        <ListRow
+          key={s.slug}
+          name={s.name}
+          pills={s.linked ? <Pill>linked</Pill> : null}
+          secondary={s.description}
+          secondaryTitle={s.description}
+          // A skill's description is its whole contract with the model and is
+          // routinely a paragraph — exactly the text a one-line row must not
+          // destroy, so it is repeated in full here along with where the folder
+          // came from.
+          details={
+            s.description || s.source ? (
+              <>
+                {s.description && <p>{s.description}</p>}
+                {s.source && (
+                  <dl className="cc-lrow-dl">
+                    <dt className="cc-lrow-dt">Source</dt>
+                    <dd className="cc-lrow-dd cc-mono">{s.source}</dd>
+                  </dl>
+                )}
+              </>
+            ) : null
+          }
+          actions={
+            <>
+              {!s.shareCommand && (
+                <span className="cc-unset">no recorded source</span>
+              )}
               <button
                 type="button"
-                className="btn"
-                title={s.shareCommand}
-                onClick={() => share(s.shareCommand as string)}
+                className="cc-iconbtn"
+                title="Reveal in Finder"
+                aria-label={`Reveal ${s.name} in Finder`}
+                onClick={() => guard(cc.skills.open(s.slug))}
               >
-                Copy install command
+                <Icon name="folder" />
               </button>
-            ) : (
-              <span className="cc-unset">not shareable (no recorded source)</span>
-            )}
-          </CardActions>
-        </Card>
+              {s.shareCommand && (
+                <button
+                  type="button"
+                  className="cc-iconbtn"
+                  title={`Copy install command — ${s.shareCommand}`}
+                  aria-label={`Copy the install command for ${s.name}`}
+                  onClick={() => share(s.shareCommand as string)}
+                >
+                  <Icon name="copy" />
+                </button>
+              )}
+            </>
+          }
+        />
       ))}
     </>
   );

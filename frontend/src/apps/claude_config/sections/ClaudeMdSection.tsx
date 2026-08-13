@@ -26,6 +26,7 @@ import {
   Empty,
   Icon,
   Pill,
+  SKELETON_ROWS,
   guard,
   toastErr,
   toastOk,
@@ -181,7 +182,7 @@ export default function ClaudeMdSection({
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={4} label="Loading CLAUDE.md files" />;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading CLAUDE.md files" />;
   if (!data.files.length) return <Empty>No CLAUDE.md files found.</Empty>;
 
   const emptyCount = data.files.filter((f) => f.empty).length;

@@ -24,7 +24,9 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
   fileToB64,
   guard,
   toastErr,
@@ -402,29 +404,38 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
         </CardActions>
       </Card>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!data && !error && <SkeletonLines rows={3} label="Loading profiles" />}
+      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading profiles" />}
+      {/* No chevron: a profile is a branch name and two flags, all of which fit
+          on the line — the interesting detail about a profile is the diff, and
+          that already has a home in the switch preview. */}
       {data?.profiles.map((p) => (
-        <Card key={p.name}>
-          <CardTitle>
-            {p.name} {p.current && <Pill tone="on">current</Pill>}{" "}
-            {p.isDefault && <Pill>default</Pill>}
-          </CardTitle>
-          <CardActions>
-            {!p.current && (
-              <button type="button" className="btn" onClick={() => switchInto(p.name)}>
-                Switch
+        <ListRow
+          key={p.name}
+          name={p.name}
+          pills={
+            <>
+              {p.current && <Pill tone="on">current</Pill>}
+              {p.isDefault && <Pill>default</Pill>}
+            </>
+          }
+          actions={
+            <>
+              {!p.current && (
+                <button type="button" className="btn" onClick={() => switchInto(p.name)}>
+                  Switch
+                </button>
+              )}
+              <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
+                Export .zip
               </button>
-            )}
-            <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
-              Export .zip
-            </button>
-            {!p.current && !p.isDefault && (
-              <button type="button" className="btn btn-danger" onClick={() => remove(p.name)}>
-                Delete
-              </button>
-            )}
-          </CardActions>
-        </Card>
+              {!p.current && !p.isDefault && (
+                <button type="button" className="btn btn-danger" onClick={() => remove(p.name)}>
+                  Delete
+                </button>
+              )}
+            </>
+          }
+        />
       ))}
     </>
   );

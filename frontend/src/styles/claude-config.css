@@ -222,6 +222,13 @@
   color: var(--fg-muted);
 }
 
+/* The way out of an empty list, under the sentence that named what's missing. */
+.cc-empty-action {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
 .cc-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -429,27 +436,61 @@
   min-width: 0;
 }
 
-/* -- one-line plugin row --------------------------------------------------- */
-/* One plugin, one line, never wrapping: you scan twenty of these, and a row
-   that reflows costs more height than everything it says. Only .cc-prow-sub
-   (the id, or the description) shrinks and ellipsizes — the toggle, version and
-   actions are fixed, because those are what you came to act on. */
+/* -- the one list row (bits.tsx ListRow) ----------------------------------- */
+/* One item, one line, never wrapping: you scan twenty of these, and a row that
+   reflows costs more height than everything it says. Only .cc-lrow-sub (the id,
+   the endpoint, the description) shrinks and ellipsizes — the lead control, the
+   meta figures and the actions keep their width, because those are what you
+   came to act on.
+ *
+ * A row that has more to say than fits opens .cc-lrow-details underneath, which
+ * is where the text an ellipsis would have destroyed actually lives. */
 
-.cc-prow {
+.cc-lrow {
+  border-bottom: 1px solid var(--border);
+}
+
+.cc-lrow-line {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 7px 0;
   white-space: nowrap;
-  border-bottom: 1px solid var(--border);
 }
 
-.cc-prow-name {
+/* The row body is the disclosure's big click target where the row expands, and
+   a plain span where it doesn't — so it resets a button's own box either way. */
+.cc-lrow-body {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cc-lrow-body-flat {
+  cursor: default;
+}
+
+.cc-lrow-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.cc-lrow-name {
   flex: 0 0 auto;
   font-weight: 500;
 }
 
-.cc-prow-sub {
+.cc-lrow-sub {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -458,18 +499,59 @@
   color: var(--fg-muted);
 }
 
-.cc-prow-meta {
+.cc-lrow-meta {
   flex: 0 0 auto;
   font-size: 11.5px;
   color: var(--fg-muted);
 }
 
-.cc-prow-actions {
+.cc-lrow-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
   margin-left: auto;
+}
+
+.cc-lrow.open .cc-lrow-chev .cc-icon {
+  transform: rotate(180deg);
+}
+
+/* The expanded panel: prose, so it wraps and drops the row's nowrap. Indented
+   to the row's text column and quiet — it is the same item, not a new one. */
+.cc-lrow-details {
+  padding: 2px 0 12px 10px;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: normal;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.cc-lrow-details dl,
+.cc-lrow-details p {
+  margin: 0;
+}
+
+/* key: value pairs inside an expanded row (MCP's transport, Skills' source). */
+.cc-lrow-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin-top: 6px;
+}
+
+.cc-lrow-dt {
+  color: var(--fg-muted);
+}
+
+/* pre-line, so a value that is a LIST (Memory's file names) can be one string
+   with newlines rather than a nested list element per entry. */
+.cc-lrow-dd {
+  margin: 0;
+  color: var(--fg);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .cc-icon {
@@ -727,29 +809,6 @@
   outline-offset: 2px;
 }
 
-/* -- history log ----------------------------------------------------------- */
-
-.cc-log-entry {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.cc-log-msg {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.cc-log-date,
-.cc-log-sha {
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
 /* -- preformatted output (statusline preview, file view/edit) --------------- */
 
 .cc-pre {
@@ -987,6 +1046,35 @@ textarea.cc-textbox {
 
   .cc-caption-note {
     display: none;
+  }
+
+  /* A row gives up its secondary text before it gives up its actions: the
+     actions are the reason the row is there, and the secondary text is the one
+     part that has somewhere else to be (the expanded panel, or its title=). */
+  .cc-lrow-sub {
+    display: none;
+  }
+
+  /* Which leaves the body with nothing to fill the line, so the name holds the
+     space instead and the actions stay pinned right. */
+  .cc-lrow-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The marketplace filter column would leave the list ~120px at this width. */
+  .cc-split {
+    flex-direction: column;
+  }
+
+  .cc-index {
+    flex: 0 0 auto;
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    position: static;
   }
 
   .cc-preview {

@@ -17,7 +17,9 @@ import {
   CardSub,
   CardTitle,
   Empty,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
   guard,
   toastErr,
   toastOk,
@@ -39,6 +41,14 @@ const GROUPS: { kind: McpKind; heading: string }[] = [
   { kind: "connector", heading: "claude.ai connectors" },
   { kind: "plugin", heading: "Plugin-provided (read-only)" },
 ];
+
+// Where a server came from, spelled out for the expanded row — the group
+// heading says it too, but a row you opened should stand on its own.
+const KIND_LABEL: Record<McpKind, string> = {
+  user: "you, at user scope",
+  connector: "a claude.ai connector",
+  plugin: "a plugin",
+};
 
 // The CLI's stderr is the useful detail for a failed add/logout/remove; the
 // module's own `error` is the fallback.
@@ -166,7 +176,7 @@ export default function McpSection() {
           200 with {ok:false} — it is the section's whole content when it
           happens, so it reads as an empty state rather than a banner. */}
       {data && !data.ok && <Empty>{data.error || "Could not list MCP servers."}</Empty>}
-      {!data && !error && <SkeletonLines rows={3} label="Loading MCP servers" />}
+      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading MCP servers" />}
       {data?.ok && servers.length === 0 && <Empty>No MCP servers configured.</Empty>}
       {data?.ok &&
         GROUPS.map(({ kind, heading }) => {
@@ -183,15 +193,32 @@ export default function McpSection() {
                 // have no action bar at all rather than an empty one.
                 const showLogin = s.canAuth && s.needsAuth;
                 const showLogout = s.canAuth && s.connected;
-                const hasActions = showLogin || showLogout || s.removable;
                 return (
-                  <Card key={s.name}>
-                    <CardTitle>
-                      {s.name} <Pill tone={st.tone}>{st.label}</Pill> <Pill>{s.transport}</Pill>
-                    </CardTitle>
-                    <CardSub mono>{s.endpoint}</CardSub>
-                    {hasActions && (
-                      <CardActions>
+                  <ListRow
+                    key={s.name}
+                    name={s.name}
+                    pills={<Pill tone={st.tone}>{st.label}</Pill>}
+                    secondary={s.endpoint}
+                    secondaryTitle={s.endpoint}
+                    secondaryMono
+                    // The endpoint is the long part and the row cuts it, so the
+                    // panel restates it whole — plus the transport and kind,
+                    // which used to be pills competing with the status for the
+                    // one thing on this tab you actually read.
+                    details={
+                      <dl className="cc-lrow-dl">
+                        <dt className="cc-lrow-dt">Endpoint</dt>
+                        <dd className="cc-lrow-dd cc-mono">{s.endpoint || "—"}</dd>
+                        <dt className="cc-lrow-dt">Transport</dt>
+                        <dd className="cc-lrow-dd">{s.transport}</dd>
+                        <dt className="cc-lrow-dt">Status</dt>
+                        <dd className="cc-lrow-dd">{st.label}</dd>
+                        <dt className="cc-lrow-dt">Registered by</dt>
+                        <dd className="cc-lrow-dd">{KIND_LABEL[s.kind]}</dd>
+                      </dl>
+                    }
+                    actions={
+                      <>
                         {showLogin && (
                           <button type="button" className="btn" onClick={() => login(s)}>
                             Authenticate
@@ -211,9 +238,9 @@ export default function McpSection() {
                             Remove
                           </button>
                         )}
-                      </CardActions>
-                    )}
-                  </Card>
+                      </>
+                    }
+                  />
                 );
               })}
             </div>

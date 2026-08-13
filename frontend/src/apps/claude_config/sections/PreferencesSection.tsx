@@ -16,7 +16,16 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { PrefEntry } from "../api";
-import { Group, Icon, Row, Toggle3, toastErr, toastOk, useModuleData } from "../bits";
+import {
+  Group,
+  Icon,
+  Row,
+  SKELETON_ROWS,
+  Toggle3,
+  toastErr,
+  toastOk,
+  useModuleData,
+} from "../bits";
 import type { SectionProps } from "../bits";
 
 // What to show where a value would be, when there is none. The catalog's own
@@ -131,7 +140,7 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={5} label="Loading preferences" />;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading preferences" />;
 
   const groups: { name: string; items: PrefEntry[] }[] = [];
   for (const d of data.schema) {

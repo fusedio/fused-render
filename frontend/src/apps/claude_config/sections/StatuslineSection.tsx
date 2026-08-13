@@ -11,7 +11,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import { renderAnsi } from "../ansi";
-import { Card, CardSub, CardTitle, Empty, useModuleData } from "../bits";
+import { Card, CardSub, CardTitle, Empty, SKELETON_ROWS, useModuleData } from "../bits";
 
 export default function StatuslineSection() {
   const load = useCallback(() => cc.statusline.get(), []);
@@ -44,7 +44,7 @@ export default function StatuslineSection() {
   }, [configured, preview]);
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={3} label="Loading status line" />;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading status line" />;
   if (!data.configured) return <Empty>No status line configured.</Empty>;
 
   const sc = data.script;
