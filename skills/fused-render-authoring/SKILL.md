@@ -245,7 +245,7 @@ curl -s -X POST http://127.0.0.1:1777/api/ai -H 'X-Fused: 1' \
   -d '{"prompt": "Reply with exactly the word pong.", "effort": "low"}'
 ```
 
-The first failing means the claude CLI isn't installed (that's `ai_unavailable`, not your bug); the second exercises the exact endpoint the page uses. Full worked example — dataset, chart, Ask-AI box, typed-error UI: `examples_seed/ai_demo/`.
+The first failing means the claude CLI isn't installed (that's `ai_unavailable`, not your bug); the second exercises the exact endpoint the page uses.
 
 ## The canonical wiring pattern
 
@@ -488,7 +488,7 @@ Escape hatch: because fused-render runs your own trusted code on your own machin
 - Using `readFile` for an image/video and stuffing bytes into the DOM → use `fused.rawUrl(path)` as the element's `src` instead.
 - Walking the filesystem (`os.walk`, `glob`, shelling out to `find`) to answer "how many / how big / where are all my X files" → the index already knows, without a single stat; use `fused.fileIndex.query()` or read its parquet directly (`fused-render-index`).
 - `fused.ai` rejecting with `.type === "ai_unavailable"` → the claude CLI isn't installed or found (the message says what to install or set); show that state in the UI instead of a raw overlay.
-- Dumping the full dataset into a `fused.ai` prompt → token blowout and a worse answer; reduce to compact aggregates first (see "AI calls" above and `examples_seed/ai_demo/`).
+- Dumping the full dataset into a `fused.ai` prompt → token blowout and a worse answer; reduce to compact aggregates first (see "AI calls" above).
 - Forgetting `fused.ai` has no stale-cancel → a double-click fires two concurrent calls; disable the button while one is in flight.
 - Calling `fused.ai` on a page meant for export → the exporter rejects it (SPEC RH-11); gate on `fused.env === "local"`.
 - Starting long work with `fused.trackJob` and never calling `finish`/`fail`/`cancelled` → the row sits there and goes "stalled" after 30 s, telling the user the page was closed when really the job just ended. Report a terminal state on every exit path of the poll loop.
