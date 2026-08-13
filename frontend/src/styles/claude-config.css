@@ -4,14 +4,14 @@
    bundled html+py app this replaces, close to value-for-value, so the port is
    recognisably the same tool.
  *
- * The one thing that is NOT value-for-value is the section nav. That app owned
- * the window and put its sections in a 230px left column; here that column
- * landed against the shell's own GlobalSidebar and the page read as two
- * sidebars glued together. So the sections are a horizontal strip
- * (.cc-tabbar/.cc-tab) across the top of .cc-root, and .cc-body below it is the
- * content column plus — for MD Files only — the split preview pane.
+ * The LAYOUT is not. That app owned the window and put its sections in a 230px
+ * left column; here that column landed against the shell's own GlobalSidebar
+ * and the page read as two sidebars glued together. So the sections are a
+ * horizontal strip (.cc-tabbar/.cc-tab) across the top of .cc-root, and
+ * .cc-body below it is the content column plus — for MD Files only — the split
+ * preview pane.
  *
- * The COLOURS are not. That app shipped its own warm-coral Claude palette as
+ * The COLOURS are not either. That app shipped its own warm-coral Claude palette as
  * hardcoded hexes and therefore ignored this app's Light/Dark setting entirely;
  * every colour below is a shell palette token (styles/tokens.css) or a
  * color-mix over one, which is what makes light mode possible at all and what

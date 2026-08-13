@@ -118,9 +118,13 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
             {status?.dirty && <Pill tone="ro">drift</Pill>}
           </CardTitle>
           <CardSub>
-            {status?.dirty
-              ? "One commit folds all of them into the log below. Review first — it sweeps up every pending edit, not just the one you were making."
-              : "Your Claude config on disk matches the newest commit."}
+            {failed
+              ? "git could not be reached, so whether anything is uncommitted is unknown."
+              : status?.dirty
+                ? "One commit folds all of them into the log below. Review first — it sweeps up every pending edit, not just the one you were making."
+                : status
+                  ? "Your Claude config on disk matches the newest commit."
+                  : "Reading git status…"}
           </CardSub>
           <CardActions>
             {status?.dirty ? (
