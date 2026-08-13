@@ -8,6 +8,11 @@ interface Window {
   _fusedUrlHooked?: boolean;
 }
 
+// Baked in by vite.config.js `define` from fused_render/__init__.py — the
+// version this bundle was built from, compared against /api/config's served
+// version to detect a stale tab (server-status.ts).
+declare const __BUILD_VERSION__: string;
+
 // Vite handles CSS side-effect imports at build time.
 declare module "*.css";
 

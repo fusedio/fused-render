@@ -437,12 +437,14 @@ def _open_command(port: int, command: protocol.Command) -> None:
             # _view_url_codec.is_launch_url below, which matches any URL.
             from fused_render import deeplink
 
-            if deeplink.is_launch_url(command.path):
+            if deeplink.is_launch_url(command.path) or deeplink.is_relaunch_url(command.path):
                 # D128 launch: by this point in the primary the server is up
                 # (and a forwarded Open reaches here only after startup). The
                 # server-down banner just needs the app running — the page that
                 # linked here reconnects on its own, so open NO tab (matching
-                # macOS app.py and Windows winopen._open).
+                # macOS app.py and Windows winopen._open). relaunch (D273)
+                # degrades to the same: the quit-and-respawn is macOS-only
+                # machinery, and /clone would just error on the link.
                 return
         if is_launch_url(command.path):
             # A `fused-render:` deep link or a `file:`/scheme:// URL: there is

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from fused_render import __version__
 from fused_render import calls as shell_calls
+from fused_render.installed import installed_version
 from fused_render.server import dirpicker
 from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
@@ -37,6 +38,10 @@ def api_config(
         "fused_dir": fused_dir(),
         # The fused-render package version, surfaced in the sidebar brand.
         "version": __version__,
+        # Version installed on disk (bundle Info.plist), None when unpackaged.
+        # Drifts from `version` after a DMG install replaces the bundle under
+        # this still-running process — the shell then asks for an app restart.
+        "installed_version": installed_version(),
         # Which /api/run engine is in effect (D69/§20): "fused" | "builtin".
         # Read per request — it can change under the Preferences switch.
         "engine": shell_prefs.effective_engine(),

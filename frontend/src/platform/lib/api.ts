@@ -9,6 +9,10 @@ export interface Config {
   // The Fused workspace dir (~/Documents/Fused) — the sidebar's "Fused" entry.
   fused_dir: string;
   version: string;
+  // Version installed on disk (bundle Info.plist), null when unpackaged.
+  // Drifts from `version` after a DMG install replaces the bundle under a
+  // still-running process — ServerStatusBanner then asks for an app restart.
+  installed_version: string | null;
   // Root of the mounts dir (~/.fused-render/mounts). The sidebar's "Learn"
   // entry navigates to `${mounts_root}/learn`, the builtin read-only mount
   // of the bundled learn.zip (D123) — same dir every mount lives under.
