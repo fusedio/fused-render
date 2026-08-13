@@ -3,12 +3,14 @@ the workspace's app folders (entry = the single direct-child .html), and
 POST /api/apps/new scaffolds a folder from the app starter kit and optionally
 starts a detached Claude session on its index.html.
 
-Apps live one to three levels under the workspace (app_listing.workspace_apps).
-A tag is the first path segment — there is no registry, so these tests cover
+Apps live one to three levels under the workspace (app_listing.workspace_apps),
+and a tag is the first path segment — there is no registry, so these tests cover
 arbitrary tag names alongside "local" (where POST /api/apps/new always lands).
-At depths 1 and 2 ANY non-hidden folder is an app, page or no page, so a tag
-folder such as `local/` is itself one of the listed (entry-less) cards; several
-of these assertions name it for that reason.
+Every workspace staged here puts its apps at depth 2, where the rule is the
+original one: any non-hidden folder, page or no page. The tag folder itself does
+not list — a page-less folder at depth 1 is a shelf of apps, not an app — so
+these assertions are unchanged by the walk becoming recursive. The depth rules
+are exercised directly in tests/test_app_listing.py.
 
 The spawn is stubbed at the module seam (_start_app_session) — no test here
 launches a real claude.
@@ -67,9 +69,7 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     (workspace / "loose.html").write_text("<html></html>")     # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
-    # `local` is in there too: a page-less folder at depth 1 or 2 is an
-    # entry-less card, and the tag dir is one (see the module docstring).
-    assert set(apps) == {"local", "one", "none", "many", "indexed"}
+    assert set(apps) == {"one", "none", "many", "indexed"}
     assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
     assert apps["none"]["entry_html"] is None
     assert apps["many"]["entry_html"] == str(workspace / "local" / "many" / "a.html")
@@ -115,10 +115,7 @@ def test_sorted_by_tag_then_name(client, workspace):
     _app_dir(workspace, "b", tag="zzz")
     _app_dir(workspace, "a", tag="aaa")
     apps = client.get("/api/apps").json()["apps"]
-    # The tag folders list as their own (entry-less) apps, under their own tag.
-    assert [(a["tag"], a["name"]) for a in apps] == [
-        ("aaa", "a"), ("aaa", "aaa"), ("zzz", "b"), ("zzz", "zzz"),
-    ]
+    assert [(a["tag"], a["name"]) for a in apps] == [("aaa", "a"), ("zzz", "b")]
 
 
 def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
@@ -130,9 +127,7 @@ def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
     (v / ".draft.html").write_text("<html></html>")  # hidden: doesn't make it ambiguous
 
     apps = client.get("/api/apps").json()["apps"]
-    # `.hidden-tag` and `.hidden-app` contribute nothing at any depth; `local`
-    # is the (entry-less) card for the tag folder itself.
-    assert [a["name"] for a in apps] == ["app", "local"]
+    assert [a["name"] for a in apps] == ["app"]
     assert apps[0]["entry_html"] == str(v / "view.html")
 
 
@@ -148,7 +143,7 @@ def test_sorted_case_insensitively(client, workspace):
     for name in ("beta", "Alpha", "gamma"):
         _app_dir(workspace, name)
     apps = client.get("/api/apps").json()["apps"]
-    assert [a["name"] for a in apps] == ["Alpha", "beta", "gamma", "local"]
+    assert [a["name"] for a in apps] == ["Alpha", "beta", "gamma"]
 
 
 def test_title_parsed_from_entry_head(client, workspace):
@@ -178,9 +173,7 @@ def test_unreadable_tag_dir_is_skipped_not_fatal(client, workspace):
         apps = client.get("/api/apps").json()["apps"]
     finally:
         os.chmod(locked, stat.S_IRWXU)
-    # unreadable tag dir skipped ENTIRELY — not even as an entry-less card,
-    # since its own entry could not be resolved — and no 500.
-    assert [a["name"] for a in apps] == ["local", "ok"]
+    assert [a["name"] for a in apps] == ["ok"]  # unreadable tag dir skipped, no 500
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
@@ -194,8 +187,7 @@ def test_unreadable_project_dir_is_skipped_not_fatal(client, workspace):
         apps = client.get("/api/apps").json()["apps"]
     finally:
         os.chmod(locked, stat.S_IRWXU)
-    # unreadable project dir skipped, no 500 (`local` is the tag folder's card)
-    assert [a["name"] for a in apps] == ["local", "ok"]
+    assert [a["name"] for a in apps] == ["ok"]  # unreadable project dir skipped, no 500
 
 
 def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
@@ -225,7 +217,7 @@ def test_an_unreadable_project_dir_is_skipped_at_any_uid(client, workspace,
     monkeypatch.setattr(app_listing, "app_entry", refuse)
     apps = client.get("/api/apps").json()["apps"]
 
-    assert [a["name"] for a in apps] == ["local", "ok"]
+    assert [a["name"] for a in apps] == ["ok"]
 
 
 def test_missing_workspace_lists_empty(client, workspace):

@@ -194,28 +194,34 @@ def workspace_apps(root: str) -> list[dict]:
     to the page, and so was an app one level below a tag dir. The walk is now
     recursive, with the depth bound and the per-level rules below.
 
-    Per level, relative to `root`:
+    Per level, relative to `root`, an app is a non-hidden directory that:
 
-      * DEPTH 1 and 2 — unchanged from the two-level walk, deliberately: ANY
-        non-hidden directory is an app, whether or not it holds a page, with the
-        entry resolved by `app_entry` (which may be None — an entry-less folder
-        is still a card that opens the folder). Depth 2 was the whole of the old
-        listing, so anything stricter here would silently retire cards people
+      * DEPTH 1 — HAS A PAGE. Any `*.html` will do (whatever `app_entry`
+        resolves), so a folder saved straight into the workspace
+        (`~/Documents/Fused/sine/sine.html`) is an app. A page-less one is NOT:
+        the workspace's top level is where `examples/`, `local/` and `showcase/`
+        live, and a shelf of apps is not itself an app — listing one would put a
+        blank card on the page for every tag folder a user has.
+      * DEPTH 2 — anything, page or no page. Unchanged from the two-level walk,
+        deliberately: this level WAS the whole of the old listing, and an
+        entry-less folder has always been a card that opens the folder (see
+        `app_dict`), so anything stricter here silently retires cards people
         already have.
-      * DEPTH 3 — a directory is an app only if it DIRECTLY holds an
-        `index.html`. The permissive rule cannot be carried this deep: a
-        checked-out code repo in the workspace turns every third-level folder
-        into a card (measured: 55 candidates on one repo, 47 of them a single
-        `templates/` tree). An explicit `index.html` is the author saying "this
-        folder is a page", which is the only signal worth trusting that far down.
+      * DEPTH 3 — has an `index.html`, directly. The permissive rule cannot be
+        carried this deep: a checked-out code repo in the workspace turns every
+        third-level folder into a card (measured: 55 candidates on one repo, 47
+        of them a single `templates/` tree). An explicit `index.html` is the
+        author saying "this folder is a page", the only signal worth trusting
+        that far down.
 
     DESCENT stops at an app that HAS a page (depth 2 onward): its subfolders are
     its assets and its extra pages, not further apps — without that, an app with
     an `index.html` and a `sub/index.html` would list twice, and a multi-page app
     would scatter its own pages across the grid as separate cards. Depth 1 is the
-    exception and is always descended: the top level is the workspace's shelf of
-    tag/repo folders, and one of those happening to hold a landing page must not
-    delete every app underneath it.
+    exception and is ALWAYS descended, page or no page: the top level is the
+    workspace's shelf of tag/repo folders, and one of those happening to hold a
+    landing page (a `showcase/index.html`) must not delete every app underneath
+    it. So a top-level folder with a page lists AND its children still list.
 
     `tag` — the page's "Repo" facet — is THE FIRST PATH SEGMENT at every depth,
     so `showcase/sub/bar` files under `showcase` exactly as `showcase/bar` does.
@@ -262,7 +268,14 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict]) -> None:
             if entry_html and os.path.basename(entry_html).lower() == "index.html":
                 apps.append(app_dict(path, name, tag, entry_html))
             continue
-        apps.append(app_dict(path, name, tag, entry_html))
+        # Depth 1 emits only WITH a page: an entry-less top-level folder is a
+        # shelf of apps (`local/`, `showcase/`), not an app. Depth 2 emits either
+        # way — that is the old two-level rule, kept to the letter.
+        if depth > 1 or entry_html is not None:
+            apps.append(app_dict(path, name, tag, entry_html))
+        # Descent is a separate question from emission, and at depth 1 the answer
+        # is always yes: a tag folder with a landing page is still the shelf its
+        # apps sit on.
         if depth == 1 or entry_html is None:
             _walk_apps(path, root, depth + 1, apps)
 
