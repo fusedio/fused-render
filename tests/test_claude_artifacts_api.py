@@ -249,3 +249,56 @@ def test_parallel_publishes_in_one_message_all_keep_their_metadata(
     assert by_url[URL_A]["favicon"] == "🅰️"
     assert by_url[URL_B]["description"] == "Second."
     assert by_url[URL_B]["favicon"] == "🅱️"
+
+
+def test_republish_without_description_keeps_the_earlier_metadata(
+    client, projects_dir, tmp_path
+):
+    # A republish routinely omits the optional description/favicon — that means
+    # "unchanged", not "cleared". Within a session the tool inputs merge; across
+    # sessions the newer row inherits any display field it didn't carry.
+    page = tmp_path / "page.html"
+    _session(projects_dir, "-tmp-proj", "s1", "/tmp/proj", [
+        _publish(page, favicon="🐢", description="The summary."),
+        _frame_link("s1", page, URL_A, "First", "2026-07-16T09:00:00Z"),
+        _publish(page),  # update: no description, no favicon
+        _frame_link("s1", page, URL_A, "Second", "2026-07-16T10:00:00Z"),
+    ])
+    # And an update from a DIFFERENT session (via the tool's url parameter),
+    # whose transcript never carried the original metadata at all.
+    _session(projects_dir, "-tmp-other", "s2", "/tmp/other", [
+        _publish(page, url=URL_A),
+        _frame_link("s2", page, URL_A, "Third", "2026-07-16T11:00:00Z"),
+    ])
+    artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
+    assert len(artifacts) == 1
+    entry = artifacts[0]
+    assert entry["title"] == "Third"
+    assert entry["description"] == "The summary."
+    assert entry["favicon"] == "🐢"
+    assert entry["session_id"] == "s2"
+
+
+def test_mount_backed_file_is_not_stated_and_reports_not_local(
+    client, projects_dir, tmp_path, monkeypatch
+):
+    # A path under the mounts dir must never reach the kernel stat — that
+    # GETATTR is what wedges a dead mount, once per card per listing. The card
+    # falls back to its hosted link, so False is the safe answer even when the
+    # remote file is really there.
+    from fused_render.shell.mounts import access as mounts_access
+
+    page = tmp_path / "mounts-root" / "s3" / "page.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<title>On a mount</title>")
+    monkeypatch.setattr(mounts_access, "mounts_dir", lambda: str(tmp_path / "mounts-root"))
+    _session(projects_dir, "-tmp-proj", "s1", "/tmp/proj", [
+        _frame_link("s1", page, URL_A, "Mounted", "2026-07-16T09:00:00Z"),
+    ])
+    stats = []
+    real_isfile = claude_artifacts_mod.os.path.isfile
+    monkeypatch.setattr(claude_artifacts_mod.os.path, "isfile",
+                        lambda p: (stats.append(p), real_isfile(p))[1])
+    artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
+    assert artifacts[0]["exists"] is False
+    assert str(page) not in stats

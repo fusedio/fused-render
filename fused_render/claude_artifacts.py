@@ -133,7 +133,20 @@ def artifact_dict(
     field that can change without any transcript changing (the published file
     was in a scratchpad and got cleaned up), so it must never come out of the
     per-transcript cache the rest of these fields do.
+
+    A mount-backed path is never stat'ed and reports `exists: False`. The
+    kernel os.stat is the GETATTR that wedges a dead mount (see
+    server/mount.py), and this runs once per artifact on every listing — one
+    bad mount would hang the whole page. False is also the SAFE answer, not
+    just the cheap one: `exists: True` would make the UI render a live iframe
+    preview per card, each of which is a read through the same mount. The card
+    falls back to its hosted claude.ai link, which is always openable.
     """
+    # Lazy import, following server/mount.py's own use of this helper: the
+    # mounts machinery would be a heavy top-level dependency for a module that
+    # is otherwise pure transcript parsing.
+    from fused_render.shell.mounts import is_mount_backed
+
     return {
         # The local file that was published, in the shell's canonical form
         # (forward slashes — see canonical_fs_path, and the same call in the
@@ -142,7 +155,7 @@ def artifact_dict(
         # re-resolved: that string is what the publish actually used, and it is
         # already absolute.
         "file_path": canonical_fs_path(file_path),
-        "exists": os.path.isfile(file_path),
+        "exists": not is_mount_backed(file_path) and os.path.isfile(file_path),
         "remote_url": remote_url,
         "title": title,
         "description": description,
@@ -253,8 +266,14 @@ def _parse_transcript(jsonl_path: str) -> list[dict]:
                     for data in _artifact_tool_inputs(obj):
                         path = _text(data.get("file_path"))
                         prior = tool_inputs.get(path)
-                        if prior is None or order >= prior[0]:
+                        if prior is None:
                             tool_inputs[path] = (order, data)
+                        elif order >= prior[0]:
+                            # Merged, not replaced: a republish routinely omits
+                            # the optional description (it means "unchanged",
+                            # not "cleared"), and losing it would strip the
+                            # card of its summary after every update.
+                            tool_inputs[path] = (order, {**prior[1], **data})
     except OSError:
         return []  # unreadable/vanished transcript: contributes nothing
 
@@ -311,6 +330,12 @@ def _absorb(merged: dict[str, dict], record: dict) -> None:
     Newest publish owns the display fields; the span always widens. This is the
     across-session half of the dedupe — the same page updated from a second
     session is one row, dated from its first publish to its last.
+
+    Owning is not wiping: a display field the newer publish DIDN'T carry
+    (an update via the tool's `url` parameter states no description/favicon,
+    and its title can fail to join) falls back to the older publish's value.
+    Metadata only ever gets more complete; a plain republish can't blank a
+    card that used to have a summary and an emoji.
     """
     url = record["remote_url"]
     existing = merged.get(url)
@@ -320,8 +345,15 @@ def _absorb(merged: dict[str, dict], record: dict) -> None:
     newer = _is_newer(record.get("updated_at"), existing.get("updated_at"))
     created = _min_stamp(existing.get("created_at"), record.get("created_at"))
     updated = _max_stamp(existing.get("updated_at"), record.get("updated_at"))
+    # Whichever publish ends up owning the row, fill its gaps from the loser —
+    # transcripts arrive in glob order, not time order, so the older publish
+    # can just as well be the SECOND one absorbed.
+    loser = existing if newer else record
     if newer:
         merged[url] = dict(record)
+    for field in ("title", "description", "favicon"):
+        if merged[url][field] is None:
+            merged[url][field] = loser[field]
     merged[url]["created_at"] = created
     merged[url]["updated_at"] = updated
 
