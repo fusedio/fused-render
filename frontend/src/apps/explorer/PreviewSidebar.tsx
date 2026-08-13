@@ -1,5 +1,5 @@
-// The file preview's right-hand SIDEBAR: the companion modes (`claude`, `git`,
-// `history` — lib/mode-visibility's SIDEBAR_MODES) rendered BESIDE the content
+// The file preview's right-hand SIDEBAR: the companion modes (`claude`, `git`
+// — lib/mode-visibility's SIDEBAR_MODES) rendered BESIDE the content
 // pane instead of in place of it.
 //
 // Why it exists: those are not other ways of looking at a file, they are things

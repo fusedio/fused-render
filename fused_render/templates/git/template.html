@@ -1678,12 +1678,12 @@ function changeLine(repo, change, selected, kind) {
    want once you have PICKED a commit, so it lives in the selected state, where
    there is room to show it whole instead of truncated to 12ch.
 
-   The density is the `history` template's — subject first, one quiet line of
-   metadata behind it — but none of its markup: that view's `.commit`,
-   `.subject` and `.meta` are different rules under the same names, and
-   borrowing them would import a second styling vocabulary into a file that
-   already has one. This is a `.row` with `.subject` and `.when`, exactly like
-   every other list row here.
+   The density is the one the removed per-path timeline mode used — subject
+   first, one quiet line of metadata behind it — but none of its markup: its
+   `.commit`, `.subject` and `.meta` were different rules under the same names,
+   and borrowing them would have imported a second styling vocabulary into a file
+   that already has one. This is a `.row` with `.subject` and `.when`, exactly
+   like every other list row here.
 
    The dropped fields are still on the row as its `title`, because a tooltip is
    not density — it is the answer to "which commit is this?" without a click.
@@ -1851,8 +1851,7 @@ function commitMeta(entry, sha) {
       ? entry.date : when.toLocaleString() }));
   }
   /* Dotted, not just gapped: four fields of similar length in one grey line run
-     together without a separator, and the `history` template's own metadata line
-     reads "sha · when" for the same reason. */
+     together without a separator. */
   const dotted = [];
   for (const bit of bits) {
     if (dotted.length) dotted.push(el("span", { className: "dot", textContent: "·" }));
@@ -2194,8 +2193,8 @@ function render(data, stashes, diff) {
      of `git commit`. `_pathspec(rel)` bounds it exactly as it bounds the status
      read, so a view opened on `pkg/` lists the commits that touched `pkg/` and
      nothing else — the section is the history OF THIS PATH, not of the
-     repository, and that is what makes it belong next to the working tree
-     rather than duplicate the `history` mode's repo-wide timeline.
+     repository, and that is what makes it belong next to the working tree: the
+     repo-wide timeline is what `git log` in a terminal is for.
      Recent-first, because that is the order `git log` answers in and the order
      the question "what just happened here?" is asked in. */
   const commits = data.commits || [];

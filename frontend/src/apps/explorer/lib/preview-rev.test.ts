@@ -30,7 +30,7 @@ describe("activeRev — the three clearing invariants", () => {
   });
 
   it("is gone when the sidebar switches to another companion", () => {
-    for (const side of ["claude", "history"]) {
+    for (const side of ["claude", "notes"]) {
       expect(activeRev(sel(), side, FILE)).toBe(null);
     }
   });

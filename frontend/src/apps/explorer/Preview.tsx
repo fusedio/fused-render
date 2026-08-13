@@ -583,7 +583,7 @@ function TemplatePreview({
 
   // --- the content/sidebar split (`_side`) ----------------------------------
   // ONE surface splits: a single FILE opened on the explorer route in its own
-  // window. Everything else keeps `claude`/`history` as ordinary content modes,
+  // window. Everything else keeps `claude` as an ordinary content mode,
   // and deliberately:
   //   * a DIRECTORY's chat is the folder-scoped one and has no file preview to
   //     sit beside; its mode list is governed from the listing's pane instead
@@ -615,7 +615,7 @@ function TemplatePreview({
   const borrowedGit = ownGit ? null : parentGit.entry;
   const borrowedPending = !ownGit && parentGit.pending;
   // Registry order for the file's own companions, then SIDEBAR_MODES order over
-  // the assembled list — Claude / Git / History, whatever the registry ranked
+  // the assembled list — Claude / Git, whatever the registry ranked
   // (see orderSidebarModes). `on` vs `offered` is the pending placeholder's whole
   // story and lib/preview-side is where it is written down: while the borrowed
   // probe is in flight the entry may be LISTED (so a `?_side=git` deep link is not
@@ -708,7 +708,7 @@ function TemplatePreview({
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
   // because the toggle button RENDERS from it — it wears the icon of the mode it
-  // would open, so a closed sidebar that last showed History shows the History
+  // would open, so a closed sidebar that last showed Git shows the Git
   // glyph, and a ref read during render is a value React does not promise is
   // current.
   const [lastSide, setLastSide] = useState<string | null>(null);
@@ -1179,8 +1179,8 @@ function TemplatePreview({
           switches a folder's own `_mode` from the explorer any more. The pane's
           menu writes `_side` — which of the PANE's three the pane is showing
           (Preview / Claude / Git, listing/pane-side.ts) — and the chip only ever
-          offers the listing⇄counterpart pair. So a folder's `_mode=history` /
-          `_mode=graph` views are entered by URL (a bookmark, the file menu's Open
+          offers the listing⇄counterpart pair. So a folder's other `_mode`
+          views (`graph`, say) are entered by URL (a bookmark, the file menu's Open
           With) and left by the chip. The user chose that over two switchers in one
           view: for a folder, the pane IS the explorer, and its peers are opt-in
           tools rather than ways of looking at the listing.
@@ -1192,7 +1192,7 @@ function TemplatePreview({
       {!stat.is_dir && (
         <ModeMenu
           /* Content modes only where the split is on: the companions
-             (`claude`, `git`, `history`) are the SIDEBAR's list, and offering them
+             (`claude`, `git`) are the SIDEBAR's list, and offering them
              here as well would be one control writing two different halves of
              the screen. See the partition above. */
           entries={contentModes.map((t) => ({
@@ -1216,7 +1216,7 @@ function TemplatePreview({
           closed sidebar that last showed Git shows the Git glyph.
 
           Absent entirely when this file has no companion at all (no `claude`, no
-          `git` in the parent, no `history`, or a gate denied them): a control for
+          `git` in the parent, or a gate denied them): a control for
           nothing is worse than no control. */}
       {sideTargetEntry && !activeSide && (
         <SideToggleButton
@@ -1344,7 +1344,7 @@ function TemplatePreview({
             missing top-bar switcher left that state with no way back to the
             listing. Removed by owner call: floating over the template's own
             content it read as a stray tooltip rather than as chrome (a
-            full-width `history` view wore it on its HISTORY header), and
+            full-width timeline view once wore it on its own header), and
             the way back out of a mode you navigated into is the browser's Back
             button, which costs the view nothing to provide.
 

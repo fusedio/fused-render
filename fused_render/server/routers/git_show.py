@@ -2,9 +2,10 @@
 
 This is the read side of the git sidebar's revision selection: click a commit in
 the `git` companion and the CONTENT pane beside it renders the open file as that
-commit left it. The predecessor design (`history`) answered the same question by
-`git archive`-ing a whole snapshot into `~/.fused-render/app-versions/<key>/<sha>/`
-and pointing the frame at the temp path. Nothing is written here: the bytes are
+commit left it. The predecessor design (a per-path timeline mode, since removed)
+answered the same question by `git archive`-ing a whole snapshot into
+`~/.fused-render/app-versions/<key>/<sha>/` and pointing the frame at the temp
+path. Nothing is written here: the bytes are
 resolved on read, straight out of the object database, so closing the sidebar
 leaves nothing behind to clean up and no half-extracted tree to go stale.
 

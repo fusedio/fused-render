@@ -6,8 +6,8 @@
 //
 // THE TWO SOURCES, and the whole reason this module exists:
 //
-//   OWN         the companions in the file's own stat.templates — `claude`,
-//               `history`, and a `git` only if a user registry bound one to the
+//   OWN         the companions in the file's own stat.templates — `claude`, and
+//               a `git` only if a user registry bound one to the
 //               extension. These EXIST as of the stat; a conditional one's GATE
 //               may still be in flight (CT-12), but the entry is real.
 //   BORROWED    `git`, from the file's PARENT FOLDER (lib/dir-mode). Until that
@@ -39,7 +39,7 @@
 // landed, which is a worse flash than the one this module removes.
 //
 // THE THIRD LIST, `menu`, and why it is not either of the two above: what the
-// SWITCHER shows is now ALL THREE COMPANIONS, ALWAYS — the ones this file has not
+// SWITCHER shows is now EVERY COMPANION, ALWAYS — the ones this file has not
 // got listed as disabled rows carrying the reason why (mode-visibility's
 // `unavailableReason`, where the argument for saying it out loud is written down).
 // So the sidebar's header reads the same over every file, and a file outside a
@@ -128,9 +128,9 @@ export interface SideSplit {
 //
 // A disabled row wears the mode's OWN icon wherever the mode is bound at all —
 // `bound` above says where those come from and why it matters. The letter box
-// templateModeIcon falls back to is reached only by a mode NOTHING binds (a file
-// type with no `history` template registered anywhere), where there is no real
-// glyph in existence to use.
+// templateModeIcon falls back to is reached only by a mode NOTHING binds (a
+// companion no registry anywhere registers a template for), where there is no
+// real glyph in existence to use.
 //
 // The trailing loop is for a companion that is NOT one of SIDEBAR_MODES — a user
 // registry binding one of its own into this half. It has no canned reason and no

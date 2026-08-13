@@ -250,7 +250,8 @@ function RouteFallback() {
 //
 // There was a third, "app", for the /apps/<tag>/<name> route: no breadcrumb, the
 // builder's sidebar, and the mode switcher pinned to an APP_MODES allowlist
-// (`app`, `claude`, `history`). Route and variant are both gone — an app folder
+// (`app`, `claude`, and a per-path timeline mode). Route and variant are both
+// gone — an app folder
 // is browsed on the explorer route now, where it gets the breadcrumb it always
 // had a path for and the switcher's full list, whose extra directory entries
 // (`git`, `graph`, `zarr_aoi`) the pin existed to hide and which are perfectly

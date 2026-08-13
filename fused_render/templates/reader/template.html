@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <title>Reader</title>
 <style>
-  /* Tokens borrow the app's dark chrome (annotate/history/markdown): near-black
+  /* Tokens borrow the app's dark chrome (annotate/markdown): near-black
      bg, off-white ink, muted grays, lime accent — so listen mode reads as the
      same product, just a clean reading column instead of the raw view. */
   :root {
@@ -596,7 +596,7 @@
   // template (D235 folded the two into one) and it must be listed — it is bound
   // to nearly every key reader is bound to, so leaving it out would offer "read
   // the chat aloud" in reader's own view picker.
-  const META = new Set(["reader", "annotate", "history", "claude"]);
+  const META = new Set(["reader", "annotate", "claude"]);
   const CAP = 3000;          // rendered/playable block cap (SPEC)
   const HARD_EXTRACT = 20000; // absolute ceiling on extraction work
   const WPM = 170;           // for the listen-time estimate

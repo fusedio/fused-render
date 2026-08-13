@@ -22,7 +22,7 @@
 // it goes through `activeRev`, which is a DERIVATION and not a cache:
 //
 //   * gone whenever the sidebar is not showing `git` — closing the sidebar, or
-//     switching it to Claude/History, returns the pane to live content;
+//     switching it to Claude, returns the pane to live content;
 //   * gone when the open file changes — a sha picked from one file's commit list
 //     says nothing about the next file, and this is the exact leak a URL param
 //     would have caused;
