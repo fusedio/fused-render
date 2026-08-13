@@ -141,6 +141,31 @@ export interface Plugin {
   shareCommand: string;
 }
 
+// A plugin as its MARKETPLACE describes it (the catalog), not as this machine
+// has it — a different source from `Plugin` above, hence a different type. The
+// overlap is `installed`/`enabled`, joined on server-side so Discover can hide
+// or mark what is already here.
+export interface AvailablePlugin {
+  id: string;
+  name: string;
+  marketplace: string;
+  description: string;
+  version?: string | null;
+  author?: string | null;
+  category?: string | null;
+  keywords: string[];
+  installed: boolean;
+  enabled: boolean;
+}
+
+// `skipped` names the marketplaces whose catalog could not be read. One bad
+// marketplace.json is not fatal, but it IS reportable: without this the page
+// would silently show a short list.
+export interface AvailablePlugins {
+  plugins: AvailablePlugin[];
+  skipped: string[];
+}
+
 export interface UpdateResult extends OkResult {
   id?: string;
   stdout?: string;
@@ -148,6 +173,7 @@ export interface UpdateResult extends OkResult {
 
 export const plugins = {
   list: () => callModule<{ plugins: Plugin[] }>("plugins", { action: "list" }),
+  available: () => callModule<AvailablePlugins>("plugins", { action: "available" }),
   toggle: (id: string, enabled: boolean) =>
     callModule<OkResult & { id?: string; enabled?: boolean }>("plugins", {
       action: "toggle",
@@ -155,6 +181,9 @@ export const plugins = {
       enabled,
     }),
   update: (id: string) => callModule<UpdateResult>("plugins", { action: "update", id }),
+  // Slow by nature (the CLI may clone a repo); the server allows it ~120s, so
+  // the caller must show a busy state rather than assume a quick answer.
+  install: (id: string) => callModule<UpdateResult>("plugins", { action: "install", id }),
 };
 
 // -- marketplaces -------------------------------------------------------------
@@ -186,7 +215,15 @@ export const marketplaces = {
 // -- memory -------------------------------------------------------------------
 
 export interface MemoryProject {
+  // The projects/ directory name — a munged cwd. Still the IDENTIFIER every
+  // other memory action is keyed on (the server path-guards on it), which is
+  // why it stays on the wire even though `path` is what a human reads.
   project: string;
+  // The real folder the slug stands for, or null when the server could not
+  // confirm one (no transcript recorded a cwd, and nothing on disk matched).
+  // The munge is lossy, so a null here means "we refuse to guess", not "none".
+  path: string | null;
+  pathConfirmed: boolean;
   files: string[];
   changes: FileDelta[];
 }
@@ -349,6 +386,11 @@ export interface McpServer {
   endpoint: string;
   transport: string;
   status: McpStatus;
+  // The CLI's own explanation, where it gave one — "HTTP 400: … Authorization
+  // header is badly formatted". Empty for the statuses that need none. Row
+  // chrome shows the status; this is the part that tells you what to DO, so it
+  // belongs in the expanded panel rather than on the line.
+  statusDetail: string;
   kind: McpKind;
   connected: boolean;
   needsAuth: boolean;

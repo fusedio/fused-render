@@ -22,13 +22,24 @@ environment with the developer's ~/.gitconfig switched off, and `mdfind` is
 stubbed — a real Spotlight query would return the machine's own CLAUDE.md files
 and make the assertions depend on the developer's disk.
 """
+import ast
 import json
 import os
+import subprocess
+from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render.claude_config import claude_md, lib, memory, preferences, refresh_catalog, skills
+from fused_render.claude_config import (
+    claude_md,
+    lib,
+    memory,
+    plugins,
+    preferences,
+    refresh_catalog,
+    skills,
+)
 from fused_render.server import create_app
 from fused_render.server.routers import claude_config as router_mod
 
@@ -56,6 +67,7 @@ def claude_dir(tmp_path, monkeypatch):
                         str(root / "plugins" / "installed_plugins.json"))
     monkeypatch.setattr(lib, "KNOWN_MARKETPLACES_PATH",
                         str(root / "plugins" / "known_marketplaces.json"))
+    monkeypatch.setattr(lib, "MARKETPLACES_DIR", str(root / "plugins" / "marketplaces"))
     monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
     monkeypatch.setattr(memory, "PROJECTS_DIR", str(root / "projects"))
     monkeypatch.setattr(skills, "SKILLS_DIR", str(root / "skills"))
@@ -316,6 +328,421 @@ def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
     # Nothing written anywhere — a truncated refresh must not become the catalog.
     assert not os.path.exists(lib.catalog_override_path())
     assert lib.catalog_read_path() == lib.packaged_catalog_path()
+
+
+# -- memory: the project slug back to a real folder --------------------------
+# Claude Code's project dirs are munged cwds (every non-alphanumeric char -> "-"),
+# which is lossy: "/", ".", "_" and a literal "-" are indistinguishable
+# afterwards. These pin the three ways the module answers "which folder is this?"
+
+
+def _memory_project(claude_dir, slug, files=("MEMORY.md",), transcript_cwd=None):
+    d = claude_dir / "projects" / slug / "memory"
+    d.mkdir(parents=True)
+    for name in files:
+        (d / name).write_text(f"# {name}\n")
+    if transcript_cwd is not None:
+        (claude_dir / "projects" / slug / "abc123.jsonl").write_text(
+            json.dumps({"type": "summary"}) + "\n"
+            + json.dumps({"cwd": transcript_cwd, "type": "user"}) + "\n")
+
+
+def test_memory_list_reads_the_real_cwd_out_of_a_transcript(client, claude_dir, tmp_path):
+    # The recorded cwd is the truth and needs no guessing — note it contains a
+    # "_" and a "." too, neither of which survives the munge.
+    real = str(tmp_path / "work" / "my_repo.v2")
+    _memory_project(claude_dir, "-tmp-work-my-repo-v2", transcript_cwd=real)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["project"] == "-tmp-work-my-repo-v2"  # the slug stays the identifier
+    assert p["path"] == real
+    assert p["pathConfirmed"] is True
+
+
+def test_memory_list_reconstructs_a_hyphenated_component_against_the_disk(
+        client, claude_dir, tmp_path, monkeypatch):
+    # No transcript. The correct decode needs a real "-" INSIDE a component, so
+    # a naive "-" -> "/" replace would answer <root>/work/fused/render.
+    project = tmp_path / "work" / "fused-render"
+    project.mkdir(parents=True)
+    # Built with the real transform, not by hand: "_" munges to "-" too, and a
+    # hand-rolled slug that forgets one is not a slug Claude would ever write.
+    slug = memory._munge(str(project))
+    _memory_project(claude_dir, slug)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["path"] == str(project)
+    assert p["pathConfirmed"] is True
+    # The wrong answer, explicitly: every component of this exists except the
+    # last two, and it is what the one-line replace would have produced.
+    assert p["path"] != str(tmp_path / "work" / "fused" / "render")
+
+
+def test_memory_list_reconstructs_a_dotted_component(client, claude_dir, tmp_path):
+    # "." munges to "-" like everything else, so ".openfused" splits into an
+    # EMPTY segment plus "openfused" and no amount of rejoining with "-" puts
+    # the dot back. The reconstruction matches munged-to-munged against the real
+    # directory entries instead, which recovers it.
+    project = tmp_path / ".openfused" / "workspaces" / "default"
+    project.mkdir(parents=True)
+    slug = memory._munge(str(project))
+    assert "--" in slug  # the shape this test exists for
+    _memory_project(claude_dir, slug)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["path"] == str(project)
+
+
+def test_memory_list_shows_no_path_when_it_cannot_confirm_one(client, claude_dir):
+    # No transcript, and nothing on disk matches — a memory folder can outlive
+    # the project it belonged to. Inventing a path here would be a lie about
+    # someone's filesystem, so there is none.
+    _memory_project(claude_dir, "-nowhere-in-particular-gone")
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["project"] == "-nowhere-in-particular-gone"
+    assert p["path"] is None
+    assert p["pathConfirmed"] is False
+
+
+# -- plugins: the marketplace catalogs + guarded install ---------------------
+
+
+def _marketplace(claude_dir, name, catalog, dotted=True):
+    """Write a marketplace catalog where the real CLI clones one. `dotted`
+    picks the modern <mkt>/.claude-plugin/marketplace.json over the legacy
+    <mkt>/marketplace.json; `catalog` may be a str to write it malformed."""
+    d = claude_dir / "plugins" / "marketplaces" / name
+    if dotted:
+        d = d / ".claude-plugin"
+    d.mkdir(parents=True)
+    body = catalog if isinstance(catalog, str) else json.dumps(catalog)
+    (d / "marketplace.json").write_text(body)
+
+
+def test_plugins_available_reads_every_catalog_and_joins_installed_state(client, claude_dir):
+    _marketplace(claude_dir, "acme", {
+        "name": "acme",
+        "owner": {"name": "Acme"},
+        "plugins": [
+            {"name": "widget", "description": "Widgets.", "version": "1.2.3",
+             "author": {"name": "Wile E."}, "category": "dev", "keywords": ["a", 7]},
+            {"name": "gadget", "description": "Gadgets."},
+        ],
+    })
+    # The legacy, undotted location must be found too.
+    _marketplace(claude_dir, "legacy", {"name": "legacy", "plugins": [
+        {"name": "old", "author": "A Person"},
+    ]}, dotted=False)
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"widget@acme": True}}))
+    (claude_dir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"plugins": {"widget@acme": [{"version": "1.2.3"}]}}))
+
+    body = _post(client, "plugins", action="available").json()
+    by_id = {p["id"]: p for p in body["plugins"]}
+    assert set(by_id) == {"widget@acme", "gadget@acme", "old@legacy"}
+    assert body["skipped"] == []
+    # The marketplace is the DIRECTORY name, which is what makes the join work.
+    assert by_id["widget@acme"]["installed"] is True
+    assert by_id["widget@acme"]["enabled"] is True
+    assert by_id["gadget@acme"]["installed"] is False
+    assert by_id["gadget@acme"]["enabled"] is False
+    assert by_id["widget@acme"]["author"] == "Wile E."
+    assert by_id["old@legacy"]["author"] == "A Person"  # the bare-string form
+    assert by_id["widget@acme"]["keywords"] == ["a"]  # the non-string is dropped
+
+
+def test_plugins_available_skips_a_broken_catalog_and_names_it(client, claude_dir):
+    _marketplace(claude_dir, "good", {"plugins": [{"name": "fine"}]})
+    _marketplace(claude_dir, "torn", "{ not json at all")
+    _marketplace(claude_dir, "shapeless", {"plugins": "not a list"})
+    (claude_dir / "plugins" / "marketplaces" / "empty").mkdir(parents=True)
+
+    body = _post(client, "plugins", action="available").json()
+    # One bad marketplace must not blank the page...
+    assert [p["id"] for p in body["plugins"]] == ["fine@good"]
+    # ...and must not vanish either: the page says which ones it could not read.
+    assert sorted(body["skipped"]) == ["empty", "shapeless", "torn"]
+
+
+def test_plugins_available_is_empty_when_no_marketplace_is_cloned(client, claude_dir):
+    assert _post(client, "plugins", action="available").json() == {"plugins": [], "skipped": []}
+
+
+def test_plugins_install_refuses_an_id_no_catalog_publishes(client, claude_dir, monkeypatch):
+    # The CLI must never see an unvalidated id — assert it is not reached at all.
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    _marketplace(claude_dir, "acme", {"plugins": [{"name": "widget"}]})
+
+    assert _post(client, "plugins", action="install", id="").json() == {
+        "ok": False, "error": "id required"}
+    for bogus in ("widget", "widget@nope", "; rm -rf /"):
+        body = _post(client, "plugins", action="install", id=bogus).json()
+        assert body == {"ok": False, "error": "unknown plugin"}
+
+
+def test_plugins_install_hands_a_catalog_id_to_the_cli_with_a_generous_timeout(
+        client, claude_dir, monkeypatch):
+    seen = {}
+
+    def fake_cli(*args, timeout=25):
+        seen["args"] = args
+        seen["timeout"] = timeout
+        return {"ok": True, "stdout": "installed", "stderr": ""}
+
+    monkeypatch.setattr(lib, "claude_cli", fake_cli)
+    _marketplace(claude_dir, "acme", {"plugins": [{"name": "widget"}]})
+
+    body = _post(client, "plugins", action="install", id="widget@acme").json()
+    assert body == {"ok": True, "id": "widget@acme", "stdout": "installed"}
+    assert seen["args"] == ("plugin", "install", "widget@acme", "--scope", "user", "-y")
+    # A marketplace clone can take a while; the 25s default would report a
+    # working install as a failure.
+    assert seen["timeout"] >= 60
+
+
+def test_plugins_install_reports_the_cli_s_own_stderr(client, claude_dir, monkeypatch):
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: {"ok": False, "stdout": "", "stderr": "no such marketplace"})
+    _marketplace(claude_dir, "acme", {"plugins": [{"name": "widget"}]})
+    body = _post(client, "plugins", action="install", id="widget@acme").json()
+    assert body == {"ok": False, "error": "no such marketplace"}
+
+
+def test_option_shaped_names_never_reach_the_cli(client, claude_dir, monkeypatch):
+    """An argv array stops COMMAND injection, not OPTION injection.
+
+    A marketplace catalog is third-party content and `name` becomes argv, so an
+    entry called "--force" would produce the id "--force@acme" — which the
+    allowlist would happily confirm is "a plugin some marketplace publishes",
+    and which `claude plugin install` would then read as a flag. It is dropped
+    as the catalog is built, so it is not installable and not even listable.
+    """
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    _marketplace(claude_dir, "acme", {"plugins": [
+        {"name": "--force"}, {"name": "-y"}, {"name": "widget"},
+    ]})
+
+    listed = _post(client, "plugins", action="available").json()["plugins"]
+    assert [p["id"] for p in listed] == ["widget@acme"]
+
+    for flag in ("--force@acme", "-y@acme"):
+        assert _post(client, "plugins", action="install", id=flag).json() == {
+            "ok": False, "error": "unknown plugin"}
+
+
+def test_update_refuses_an_option_shaped_id_even_when_settings_lists_it(
+        client, claude_dir, monkeypatch):
+    # `update` checks membership in settings.json + installed_plugins.json —
+    # both hand-editable, so "known" is not the same as "safe to pass as argv".
+    monkeypatch.setattr(lib, "claude_cli",
+                        lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"--version@acme": True}}))
+    body = _post(client, "plugins", action="update", id="--version@acme").json()
+    assert body == {"ok": False, "error": "unknown plugin"}
+
+
+@pytest.mark.parametrize("action", ["login", "logout", "remove", "add"])
+def test_mcp_refuses_an_option_shaped_server_name(client, claude_dir, monkeypatch, action):
+    for fn in ("claude_cli", "claude_cli_detached"):
+        monkeypatch.setattr(lib, fn,
+                            lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
+    body = _post(client, "mcp", action=action, name="--scope", json="{}").json()
+    assert body == {"ok": False, "error": "invalid server name"}
+
+
+def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
+    assert plugins.main(action="nope") == {"ok": False, "error": "unknown action: nope"}
+
+
+# -- parsing `claude mcp list` -----------------------------------------------
+# The CLI has no structured output, so this parser is the whole contract. It is
+# pure, which makes it the cheapest thing in the package to pin down properly.
+
+# The real line, copied from `claude mcp list` on a machine where this server is
+# genuinely broken. It is the fixture that matters: the reason is joined with an
+# EM DASH, so an exact-match lookup against the trailing segment classified the
+# one actually-failing server as "unknown" — the UI refused to call broken the
+# only thing that was.
+_REAL_FAILED = (
+    "plugin:github:github: https://api.githubcopilot.com/mcp/ (HTTP) - "
+    "✘ Failed to connect — HTTP 400: Streamable HTTP error: Error POSTing to "
+    "endpoint: bad request: Authorization header is badly formatted"
+)
+
+
+def test_mcp_parses_the_real_failed_line_as_failed_and_keeps_the_reason():
+    [s] = lib.parse_mcp_list(_REAL_FAILED)
+    assert s["status"] == "failed"
+    assert s["name"] == "plugin:github:github"
+    assert s["endpoint"] == "https://api.githubcopilot.com/mcp/"
+    assert s["transport"] == "http"
+    assert s["connected"] is False
+    # The reason is the point: "failed" alone is a dead end for the user.
+    assert s["statusDetail"].startswith("HTTP 400:")
+    assert "Authorization header is badly formatted" in s["statusDetail"]
+    # The em dash joining status to reason is not part of the reason.
+    assert not s["statusDetail"].startswith("—")
+
+
+@pytest.mark.parametrize("marker,phrase,status", [
+    ("✔", "Connected", "connected"),
+    ("!", "Needs authentication", "needs-auth"),
+    ("✘", "Failed to connect", "failed"),
+    ("⏸", "Pending approval", "pending"),
+])
+def test_mcp_status_markers_parse_bare_and_with_an_appended_reason(marker, phrase, status):
+    """Every marker, both shapes. The CLI is free to append a reason to ANY
+    status, so none of them may depend on the segment being exactly the phrase."""
+    bare = f"srv: https://x.test/mcp (HTTP) - {marker} {phrase}"
+    [s] = lib.parse_mcp_list(bare)
+    assert s["status"] == status
+    assert s["statusDetail"] == ""
+
+    with_reason = f"{bare} — HTTP 500: something went wrong"
+    [s] = lib.parse_mcp_list(with_reason)
+    assert s["status"] == status
+    assert s["statusDetail"] == "HTTP 500: something went wrong"
+
+
+def test_mcp_reason_containing_a_dash_separator_keeps_the_endpoint_intact():
+    # Splitting on the LAST " - " would cut inside the reason and drag the
+    # endpoint along with it. The marker is the landmark, not the separator.
+    line = "srv: https://x.test/mcp (HTTP) - ✘ Failed to connect — retrying - see logs"
+    [s] = lib.parse_mcp_list(line)
+    assert s["status"] == "failed"
+    assert s["endpoint"] == "https://x.test/mcp"
+    assert s["statusDetail"] == "retrying - see logs"
+
+
+def test_mcp_unrecognised_marker_is_unknown_and_keeps_what_the_cli_said():
+    line = "srv: https://x.test/mcp (HTTP) - ⚡ Warp speed"
+    [s] = lib.parse_mcp_list(line)
+    assert s["status"] == "unknown"
+    # Not silently dropped: we don't know what it means, so show it verbatim.
+    assert s["statusDetail"] == "⚡ Warp speed"
+
+
+def test_mcp_list_skips_the_health_banner():
+    parsed = lib.parse_mcp_list(
+        "Checking MCP server health…\n\n"
+        "srv: /usr/local/bin/thing - ✔ Connected\n"
+    )
+    assert [s["name"] for s in parsed] == ["srv"]
+    assert parsed[0]["transport"] == "stdio"
+
+
+# -- subprocess decoding: never the locale's guess ---------------------------
+
+
+def _package_sources():
+    pkg = os.path.dirname(os.path.abspath(lib.__file__))
+    for name in sorted(os.listdir(pkg)):
+        if name.endswith(".py"):
+            yield name, open(os.path.join(pkg, name), encoding="utf-8").read()
+
+
+def _spawn_calls(src):
+    """(line no, keywords) for every subprocess.run/Popen call in a source file.
+
+    Parsed, not grepped: the prose in this package explains the very patterns
+    being banned, and a regex over raw source cannot tell a call from the
+    comment describing it.
+    """
+    out = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if (isinstance(fn, ast.Attribute) and fn.attr in ("run", "Popen")
+                and isinstance(fn.value, ast.Name) and fn.value.id == "subprocess"):
+            out.append((node.lineno, node.keywords))
+    return out
+
+
+def _spreads_kwargs(keywords):
+    """True if the call does `**…SUBPROCESS_KWARGS`."""
+    for kw in keywords:
+        if kw.arg is None:  # ** unpacking
+            target = kw.value
+            name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
+            if name == "SUBPROCESS_KWARGS":
+                return True
+    return False
+
+
+def _keyword_is(keywords, name, value):
+    return any(
+        kw.arg == name and isinstance(kw.value, ast.Constant) and kw.value.value is value
+        for kw in keywords
+    )
+
+
+def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
+    """Both halves of lib.SUBPROCESS_KWARGS, asserted at the source level —
+    because neither failure reproduces in an environment a test can portably
+    create, and both of them killed this feature in production:
+
+      * close_fds=True forks, and a forking spawn in a process with libproj
+        resident runs PROJ's atfork handler into a SIGSEGV before exec. The
+        child dies rc=-11 with EMPTY stderr, so the MCP page said "failed to
+        list MCP servers" and git_ops said "git add -A failed: " with nothing
+        after the colon. pytest never has PROJ loaded, so a green suite proves
+        nothing here; only the source can be checked.
+      * text=True with no encoding decodes with locale.getpreferredencoding —
+        ASCII in a GUI-launched process — and `claude mcp list` prints ✔.
+
+    A call may spread SUBPROCESS_KWARGS or pass close_fds=False itself
+    (archive_zip has to: it reads binary, so it cannot take the text half).
+    """
+    assert lib.SUBPROCESS_KWARGS == {
+        "close_fds": False, "text": True, "encoding": "utf-8", "errors": "replace",
+    }
+    no_spawn_guard, bare_text = [], []
+    calls = 0
+    for name, src in _package_sources():
+        for lineno, keywords in _spawn_calls(src):
+            calls += 1
+            guarded = _spreads_kwargs(keywords) or _keyword_is(keywords, "close_fds", False)
+            if not guarded:
+                no_spawn_guard.append(f"{name}:{lineno}")
+            if _keyword_is(keywords, "text", True):
+                bare_text.append(f"{name}:{lineno}")
+    assert no_spawn_guard == []
+    assert bare_text == []
+    # A guard that silently matched nothing would pass forever.
+    assert calls >= 6
+
+
+def test_git_runs_with_dash_c_rather_than_cwd():
+    """app_git.py's discipline, the other half: `git -C <dir>`, never `cwd=`.
+    A `cwd=` that has gone missing fails inside the spawn — before git — with
+    an error that names the wrong thing."""
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        lib.git("status", "--porcelain")
+
+    assert seen["argv"][:3] == ["git", "-C", lib.CLAUDE_DIR]
+    assert "cwd" not in seen["kwargs"]
+    assert seen["kwargs"]["close_fds"] is False
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
+    lib.ensure_repo()  # the seed commit, so the edit below is a commit of its own
+    (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
+    assert lib.commit("Enable — plugin ✔")
+    assert lib.log()[0]["message"] == "Enable — plugin ✔"
 
 
 def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(

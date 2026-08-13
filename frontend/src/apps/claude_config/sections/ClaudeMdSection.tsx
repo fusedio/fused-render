@@ -1,5 +1,22 @@
-// CLAUDE.md section: every CLAUDE.md-family file on the machine, grouped by
-// directory, with preview / view-edit / reveal / delete per file.
+// CLAUDE.md section: every CLAUDE.md-family file on the machine, one row each,
+// with view-edit / preview / reveal / delete per file.
+//
+// It renders through the app's shared ListRow like every other tab. It used to
+// be a card grid, exempted on the grounds that browsing files is a different
+// job from configuring things — but once the other eight tabs became a toolbar
+// over one-line rows, the grid was simply the one page that looked like a
+// different application. The snippet that made the card worth having is not
+// lost: it is what the row expands to show.
+//
+// Deliberately NOT grouped by directory: on this machine the list is 13 files
+// across 13 distinct directories, and grouping would put a heading above every
+// single row. The directory is the row's secondary text instead, which is where
+// it earns its space — the filename is CLAUDE.md on nearly all of them, so the
+// directory is the only part that identifies anything.
+//
+// Two different states, kept apart on purpose: EXPANDING a row shows the
+// snippet underneath it, PREVIEW (the eye) opens the file in the split pane on
+// the right. Each has its own control; neither triggers the other.
 //
 // Discovery is the module's job (Spotlight ∪ the projects Claude Code has run
 // in ∪ the global one). File CONTENT is NOT: it round-trips the shell's own
@@ -25,7 +42,10 @@ import type { ClaudeMdFile } from "../api";
 import {
   Empty,
   Icon,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastErr,
   toastOk,
@@ -181,8 +201,7 @@ export default function ClaudeMdSection({
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={4} label="Loading CLAUDE.md files" />;
-  if (!data.files.length) return <Empty>No CLAUDE.md files found.</Empty>;
+  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading CLAUDE.md files" />;
 
   const emptyCount = data.files.filter((f) => f.empty).length;
 
@@ -200,87 +219,118 @@ export default function ClaudeMdSection({
           }}
         />
       )}
-      <div className="cc-toolbar">
-        <span className="cc-unset">
-          {data.files.length} file(s) via {data.engine}
-          {emptyCount ? ` · ${emptyCount} empty` : ""}
-        </span>
-        <button type="button" className="btn" onClick={reload}>
-          <Icon name="refresh" />
-          Rescan
-        </button>
-      </div>
-      {/* Compact grid, one small card per file — name + pills, its own path
-          line, a few clamped lines of content (server-supplied snippet), and
-          icon-only actions in the footer. The explorer homepage's bookmark
-          cards are the visual reference; full-width cards made a 30-file scan
-          a lot of scrolling for very little information. */}
-      <div className="cc-mdgrid">
-        {data.files.map((f) => (
-          <div key={f.path} className="cc-mdcard">
-            <div className="cc-mdcard-head">
-              <span className="cc-mdcard-name cc-mono">{f.name}</span>
+      {/* "Rescan" rather than "Refresh": this one re-runs a filesystem-wide
+          search, not a re-read of a file we already know about. */}
+      <SectionToolbar
+        summary={`${data.files.length} file(s) via ${data.engine}${
+          emptyCount ? ` · ${emptyCount} empty` : ""
+        }`}
+        onRefresh={reload}
+        refreshLabel="Rescan"
+      />
+      {/* The toolbar renders even with nothing found, because the way out of
+          this particular empty state IS the rescan in it — Spotlight can be
+          mid-index, and a page with no controls at all leaves you nowhere. */}
+      {!data.files.length && (
+        <Empty
+          action={
+            <button type="button" className="btn" onClick={reload}>
+              <Icon name="refresh" />
+              Rescan
+            </button>
+          }
+        >
+          No CLAUDE.md files found on this machine, via {data.engine}.
+        </Empty>
+      )}
+      {data.files.map((f) => (
+        <ListRow
+          key={f.path}
+          name={f.name}
+          nameMono
+          pills={
+            <>
               {f.empty && <Pill tone="err">empty</Pill>}
               {f.name === "CLAUDE.local.md" && <Pill>local</Pill>}
               {f.scope === "global" && <Pill tone="on">global</Pill>}
-            </div>
-            <div className="cc-mdcard-path cc-mono" title={f.path}>
-              {/* bdi keeps the path's characters in logical order inside the
-                  rtl (left-ellipsizing) container — see .cc-mdcard-path. */}
-              <bdi dir="ltr">{f.dir}</bdi>
-            </div>
-            {f.empty ? (
-              <div className="cc-mdcard-snippet cc-unset">(empty file)</div>
-            ) : (
-              <pre className="cc-mdcard-snippet cc-mono">{f.snippet}</pre>
-            )}
-            <div className="cc-mdcard-foot">
-              <span className="cc-mdcard-meta">
-                {formatSize(f.size)} · {new Date(f.mtime * 1000).toLocaleDateString()}
-              </span>
-              <span className="cc-mdcard-actions">
-                <button
-                  type="button"
-                  className="cc-iconbtn"
-                  title="View / Edit"
-                  aria-label={`View or edit ${f.path}`}
-                  onClick={() => open(f)}
-                >
-                  <Icon name="edit" />
-                </button>
-                <button
-                  type="button"
-                  className={"cc-iconbtn" + (preview === f.path ? " cc-btn-on" : "")}
-                  title="Preview"
-                  aria-label={`Preview ${f.path}`}
-                  aria-pressed={preview === f.path}
-                  onClick={() => onPreview(preview === f.path ? null : f.path)}
-                >
-                  <Icon name="eye" />
-                </button>
-                <button
-                  type="button"
-                  className="cc-iconbtn"
-                  title="Reveal in Finder"
-                  aria-label={`Reveal ${f.path} in Finder`}
-                  onClick={() => guard(cc.claudeMd.open(f.path))}
-                >
-                  <Icon name="folder" />
-                </button>
-                <button
-                  type="button"
-                  className="cc-iconbtn cc-iconbtn-danger"
-                  title="Delete"
-                  aria-label={`Delete ${f.path}`}
-                  onClick={() => remove(f)}
-                >
-                  <Icon name="trash" />
-                </button>
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
+            </>
+          }
+          // The directory is what distinguishes one CLAUDE.md from another —
+          // the filename is the same on nearly all of them — so it is the
+          // secondary text, ellipsized from the LEFT (.cc-lrow-sub-path) so the
+          // project tail survives rather than the /Users/... head everyone
+          // shares. <bdi dir="ltr"> keeps its own characters in logical order
+          // inside that rtl container.
+          secondary={<bdi dir="ltr">{f.dir}</bdi>}
+          secondaryTitle={f.path}
+          secondaryMono
+          secondaryClass="cc-lrow-sub-path"
+          // The snippet is the whole reason this tab is browsable: it is how
+          // you tell which CLAUDE.md is which without opening four of them. It
+          // moves into the panel rather than disappearing with the card.
+          details={
+            <>
+              {f.empty ? (
+                <p className="cc-unset">(empty file)</p>
+              ) : (
+                <pre className="cc-lrow-snippet cc-mono">{f.snippet}</pre>
+              )}
+              <dl className="cc-lrow-dl">
+                <dt className="cc-lrow-dt">Path</dt>
+                <dd className="cc-lrow-dd cc-mono">{f.path}</dd>
+                <dt className="cc-lrow-dt">File</dt>
+                <dd className="cc-lrow-dd">
+                  {formatSize(f.size)} · modified {new Date(f.mtime * 1000).toLocaleString()}
+                </dd>
+              </dl>
+            </>
+          }
+          actions={
+            <>
+              <button
+                type="button"
+                className="cc-iconbtn"
+                title="View / Edit"
+                aria-label={`View or edit ${f.path}`}
+                onClick={() => open(f)}
+              >
+                <Icon name="edit" />
+              </button>
+              {/* Preview is its OWN control, separate from the row's expansion:
+                  one opens the split pane on the right, the other opens the
+                  snippet underneath, and neither should fire the other. */}
+              <button
+                type="button"
+                className={"cc-iconbtn" + (preview === f.path ? " cc-btn-on" : "")}
+                title="Preview"
+                aria-label={`Preview ${f.path}`}
+                aria-pressed={preview === f.path}
+                onClick={() => onPreview(preview === f.path ? null : f.path)}
+              >
+                <Icon name="eye" />
+              </button>
+              <button
+                type="button"
+                className="cc-iconbtn"
+                title="Reveal in Finder"
+                aria-label={`Reveal ${f.path} in Finder`}
+                onClick={() => guard(cc.claudeMd.open(f.path))}
+              >
+                <Icon name="folder" />
+              </button>
+              <button
+                type="button"
+                className="cc-iconbtn cc-iconbtn-danger"
+                title="Delete"
+                aria-label={`Delete ${f.path}`}
+                onClick={() => remove(f)}
+              >
+                <Icon name="trash" />
+              </button>
+            </>
+          }
+        />
+      ))}
     </>
   );
 }
