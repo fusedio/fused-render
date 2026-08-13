@@ -208,6 +208,37 @@ export function SectionToolbar({
   );
 }
 
+// The toolbar control that opens an add form inline above the list. Three tabs
+// (Marketplaces, MCP, Profiles) used to OPEN with their add form expanded —
+// Profiles with two of them stacked — so the content you came for started half
+// a page down on a tab you mostly visit to look at what's already there.
+// Adding is the rarer act, so it asks first, and the same button cancels.
+export function DisclosureButton({
+  open,
+  controls,
+  label,
+  onToggle,
+}: {
+  open: boolean;
+  // The id of the form this reveals — aria-controls, so the relationship is on
+  // the element and not just in the layout.
+  controls: string;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={"btn" + (open ? " cc-btn-on" : "")}
+      aria-expanded={open}
+      aria-controls={controls}
+      onClick={onToggle}
+    >
+      {open ? "Cancel" : <><Icon name="plus" />{label}</>}
+    </button>
+  );
+}
+
 // -- one list row -------------------------------------------------------------
 
 // Every list in this app renders through this: Plugins, Marketplaces, Skills,

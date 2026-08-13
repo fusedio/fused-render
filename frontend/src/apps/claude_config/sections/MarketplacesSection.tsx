@@ -1,7 +1,12 @@
 // Marketplaces section: add/remove the user's own entries in settings.json →
 // extraKnownMarketplaces. Anything resolved from plugins/known_marketplaces.json
 // is Claude's, not ours — those render with a read-only pill and no Remove.
-import { useCallback, useState } from "react";
+//
+// The add form is a toolbar DISCLOSURE, collapsed by default. It used to be an
+// always-open card at the top, which pushed the actual content — the list you
+// came to look at — half a page down, on a tab you mostly open to check what is
+// already there. Adding is the rarer act, so it asks first.
+import { useCallback, useId, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -11,6 +16,7 @@ import {
   Card,
   CardActions,
   CardTitle,
+  DisclosureButton,
   Icon,
   ListRow,
   Pill,
@@ -29,6 +35,8 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
   const [kind, setKind] = useState<MarketplaceKind>("github");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const formId = useId();
 
   const add = async () => {
     const n = name.trim();
@@ -47,6 +55,9 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
       toastOk("Added");
       setName("");
       setValue("");
+      // A successful add collapses the form: the thing you wanted is now in the
+      // list below, and leaving an empty form open says otherwise.
+      setAdding(false);
       onChanged();
       reload();
     } catch (e) {
@@ -84,10 +95,19 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
       <SectionToolbar
         summary={data ? `${data.marketplaces.length} marketplace(s)` : "…"}
         onRefresh={reload}
-      />
-      <Card>
-        <CardTitle>Add a marketplace</CardTitle>
-        <CardActions>
+      >
+        <DisclosureButton
+          open={adding}
+          controls={formId}
+          label="Add"
+          onToggle={() => setAdding((v) => !v)}
+        />
+      </SectionToolbar>
+      {adding && (
+        <div id={formId}>
+          <Card>
+            <CardTitle>Add a marketplace</CardTitle>
+            <CardActions>
           <input
             className="field-control"
             aria-label="Marketplace name"
@@ -117,8 +137,10 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
           <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
             Add
           </button>
-        </CardActions>
-      </Card>
+            </CardActions>
+          </Card>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading marketplaces" />}
       {/* No chevron: a marketplace IS its name and its source, and both are on

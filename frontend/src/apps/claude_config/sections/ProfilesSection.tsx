@@ -13,7 +13,7 @@
 //   * A successful switch/import reloads the page. Every other section has
 //     already read the config that just got swapped underneath it, and a
 //     targeted refresh of ten sections is a worse contract than one reload.
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -24,9 +24,11 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  DisclosureButton,
   ListRow,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   fileToB64,
   guard,
   toastErr,
@@ -202,6 +204,11 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
   const { node: modal, ask } = useChangePreview();
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
+  // Which add form is open, if any — one at a time, because they are two ways
+  // to do the same thing and having both open says neither is the way.
+  const [form, setForm] = useState<"new" | "import" | null>(null);
+  const newId = useId();
+  const importId = useId();
   // The staged .zip: held between "inspect" and the picker's decision, so the
   // bytes are read from disk once.
   const [staged, setStaged] = useState<{ b64: string; entries: ZipEntry[] } | null>(null);
@@ -271,6 +278,7 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       const switched = await switchInto(name);
       if (!switched) {
         setNewName("");
+        setForm(null);
         onChanged();
         reload();
       }
@@ -362,47 +370,77 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
           onImport={runImport}
         />
       )}
-      <Card>
-        <CardTitle>New profile</CardTitle>
-        <CardSub>
-          Forks the current profile (<span className="cc-mono">{data?.current ?? "…"}</span>) and
-          switches into it.
-        </CardSub>
-        <CardActions>
-          <input
-            className="field-control"
-            aria-label="New profile name"
-            placeholder="e.g. work, experiment"
-            value={newName}
-            disabled={busy}
-            onChange={(e) => setNewName(e.target.value)}
-          />
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={create}>
-            Create &amp; switch
-          </button>
-        </CardActions>
-      </Card>
-      <Card>
-        <CardTitle>Import profile</CardTitle>
-        <CardSub>
-          Pick files/folders from an exported <span className="cc-mono">.zip</span> to overlay onto a
-          new profile. Your current profile is untouched.
-        </CardSub>
-        <CardActions>
-          <input
-            className="field-control"
-            type="file"
-            accept=".zip"
-            aria-label="Profile archive"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              // Cleared so re-picking the same file fires change again.
-              e.target.value = "";
-              if (file) void pickZip(file);
-            }}
-          />
-        </CardActions>
-      </Card>
+      <SectionToolbar
+        summary={
+          data ? `${data.profiles.length} profile(s) · on ${data.current}` : "…"
+        }
+        onRefresh={reload}
+      >
+        {/* Two disclosures behind two buttons, one open at a time — these were
+            two permanently-expanded cards, which put ~200px of forms above the
+            profile list on a page that already opens with a drift card. */}
+        <DisclosureButton
+          open={form === "new"}
+          controls={newId}
+          label="New"
+          onToggle={() => setForm((f) => (f === "new" ? null : "new"))}
+        />
+        <DisclosureButton
+          open={form === "import"}
+          controls={importId}
+          label="Import"
+          onToggle={() => setForm((f) => (f === "import" ? null : "import"))}
+        />
+      </SectionToolbar>
+      {form === "new" && (
+        <div id={newId}>
+          <Card>
+            <CardTitle>New profile</CardTitle>
+            <CardSub>
+              Forks the current profile (<span className="cc-mono">{data?.current ?? "…"}</span>)
+              and switches into it.
+            </CardSub>
+            <CardActions>
+              <input
+                className="field-control"
+                aria-label="New profile name"
+                placeholder="e.g. work, experiment"
+                value={newName}
+                disabled={busy}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={create}>
+                Create &amp; switch
+              </button>
+            </CardActions>
+          </Card>
+        </div>
+      )}
+      {form === "import" && (
+        <div id={importId}>
+          <Card>
+            <CardTitle>Import profile</CardTitle>
+            <CardSub>
+              Pick files/folders from an exported <span className="cc-mono">.zip</span> to overlay
+              onto a new profile. Your current profile is untouched.
+            </CardSub>
+            <CardActions>
+              <input
+                className="field-control"
+                type="file"
+                accept=".zip"
+                aria-label="Profile archive"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  // Cleared so re-picking the same file fires change again.
+                  e.target.value = "";
+                  if (file) void pickZip(file);
+                }}
+              />
+            </CardActions>
+          </Card>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading profiles" />}
       {/* No chevron: a profile is a branch name and two flags, all of which fit

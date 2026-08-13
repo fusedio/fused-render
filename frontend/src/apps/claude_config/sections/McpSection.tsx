@@ -6,7 +6,7 @@
 // Authentication is a fire-and-forget hand-off: the CLI opens a browser and
 // blocks well past any request timeout, so the module spawns it detached and the
 // UI says so, then re-lists when the user confirms they're done.
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
@@ -16,6 +16,7 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  DisclosureButton,
   Empty,
   ListRow,
   Pill,
@@ -64,6 +65,8 @@ export default function McpSection() {
   const [name, setName] = useState("");
   const [json, setJson] = useState("");
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const formId = useId();
 
   const add = async () => {
     const n = name.trim();
@@ -82,6 +85,7 @@ export default function McpSection() {
       toastOk(`Added ${n}`);
       setName("");
       setJson("");
+      setAdding(false);
       reload();
     } catch (e) {
       toastErr((e as Error).message);
@@ -147,14 +151,23 @@ export default function McpSection() {
           data?.ok ? `${servers.length} server(s) · ${connected} connected` : "…"
         }
         onRefresh={reload}
-      />
-      <Card>
-        <CardTitle>Add a server</CardTitle>
-        <CardSub>
-          Registers a user-scoped MCP server via <span className="cc-mono">claude mcp add-json</span>
-          .
-        </CardSub>
-        <CardActions>
+      >
+        <DisclosureButton
+          open={adding}
+          controls={formId}
+          label="Add server"
+          onToggle={() => setAdding((v) => !v)}
+        />
+      </SectionToolbar>
+      {adding && (
+        <div id={formId}>
+          <Card>
+            <CardTitle>Add a server</CardTitle>
+            <CardSub>
+              Registers a user-scoped MCP server via{" "}
+              <span className="cc-mono">claude mcp add-json</span>.
+            </CardSub>
+            <CardActions>
           <input
             className="field-control"
             aria-label="Server name"
@@ -171,14 +184,16 @@ export default function McpSection() {
             disabled={busy}
             onChange={(e) => setJson(e.target.value)}
           />
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
-            Add
-          </button>
           {/* The `Refresh` button that used to sit here is gone: re-listing the
               servers has nothing to do with adding one, and it now lives in the
               toolbar's refresh slot like every other tab's. */}
-        </CardActions>
-      </Card>
+          <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
+            Add
+          </button>
+            </CardActions>
+          </Card>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {/* The module's own refusal (the CLI missing, or a non-zero list) is a
           200 with {ok:false} — it is the section's whole content when it
