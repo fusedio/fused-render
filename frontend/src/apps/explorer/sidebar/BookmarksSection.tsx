@@ -1,5 +1,5 @@
 // The explorer's bookmark tree — extracted from the shell Sidebar when
-// bookmarks became an explorer concept (super-app step 2): search, nested
+// bookmarks became an explorer concept (super-app step 2): nested
 // folders, drag-reorder, inline rename, icon picker, hover card. Renders both
 // as the explorer sidebar's Bookmarks section and as the /explorer homepage's
 // launcher (FilesHome).
@@ -41,11 +41,9 @@ import {
   useArmedVersion,
 } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
-import { fuzzyMatch, highlightSegments } from "@platform/lib/fuzzy";
-import type { FuzzyResult } from "@platform/lib/fuzzy";
 
 // The fs path a bookmark targets, decoded from its explorer url (same rule as
-// the hover card). Used for search matching and the tooltip. The bare legacy
+// the hover card). Used for the tooltip. The bare legacy
 // "/view/" prefix still decodes (bookmarks saved before the /explorer rename).
 export function bookmarkFsPath(url: string): string {
   const qIdx = url.indexOf("?");
@@ -68,16 +66,16 @@ function bookmarkDropPath(url: string): string | null {
   return isView ? bookmarkFsPath(url) : null;
 }
 
-function renderHighlight(text: string, positions: number[]) {
-  return highlightSegments(text, positions).map((seg, i) =>
-    seg.match ? (
-      <mark key={i} className="search-mark">
-        {seg.text}
-      </mark>
-    ) : (
-      <span key={i}>{seg.text}</span>
-    )
-  );
+// Whole-section fold flag (see the heading in BookmarksSection) — sidebar
+// layout, so it lives beside the sidebar's own localStorage state.
+const BOOKMARKS_COLLAPSED_KEY = "fused-render:bookmarks-collapsed";
+
+// Leaf bookmarks at every depth — the collapsed heading's count pill, same
+// signal as the Recents heading's.
+function countBookmarks(list: BookmarkItem[]): number {
+  let n = 0;
+  for (const it of list) n += isFolder(it) ? countBookmarks(it.children) : 1;
+  return n;
 }
 
 // Folder shape drawn inline so it inherits currentColor — an emoji folder
@@ -186,7 +184,6 @@ interface BookmarkRowProps {
   missing: boolean; // target confirmed gone from disk (server's GET-time flag)
   isRenaming: boolean;
   justSaved: boolean; // transient ✓ on the save button after a successful export
-  namePositions?: number[]; // search-match highlight positions in b.name
   onNameClick: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   onSave: (e: React.MouseEvent<HTMLButtonElement>) => void;
   onRename: (e: React.MouseEvent<HTMLButtonElement>) => void;
@@ -204,7 +201,7 @@ interface BookmarkRowProps {
 }
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
-function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, justSaved, namePositions, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onGlyphClick, onMouseEnter, onMouseLeave, registerRef, dragProps, fsDropPath }: BookmarkRowProps) {
+function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, justSaved, onNameClick, onSave, onRename, onDelete, onCommitRename, onCancelRename, onGlyphClick, onMouseEnter, onMouseLeave, registerRef, dragProps, fsDropPath }: BookmarkRowProps) {
   // Where "Save to disk" would write — shown on the button itself (title) so
   // the destination is visible before the click; null disables the button.
   const saveTarget = bookmarkSaveTarget(b);
@@ -239,7 +236,7 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, j
         <RenameInput initialName={b.name} onCommit={onCommitRename} onCancel={onCancelRename} />
       ) : (
         <a className="bookmark-name" href={b.url} draggable={false} onClick={onNameClick}>
-          {namePositions && namePositions.length ? renderHighlight(b.name, namePositions) : b.name}
+          {b.name}
           {dirty && "*"}
         </a>
       )}
@@ -347,11 +344,22 @@ export default function BookmarksSection() {
   // component already rendered — so the armed store notifies separately.
   useArmedVersion();
 
+  // Whole-section fold, like the Recents heading. Local to this machine
+  // (localStorage) rather than the bookmark store — it is sidebar layout,
+  // not bookmark data.
+  const [sectionCollapsed, setSectionCollapsed] = useState(
+    () => localStorage.getItem(BOOKMARKS_COLLAPSED_KEY) === "1"
+  );
+  const toggleSectionCollapsed = () => {
+    const next = !sectionCollapsed;
+    localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, next ? "1" : "0");
+    setSectionCollapsed(next);
+  };
+
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Bookmark just exported to disk: its save button shows ✓ for a moment.
   const [savedId, setSavedId] = useState<string | null>(null);
   const savedTimer = useRef<number | null>(null);
-  const [bmQuery, setBmQuery] = useState("");
   const [hover, setHover] = useState<HoverState | null>(null);
   // Icon picker: which bookmark's glyph was clicked + where to anchor it.
   const [iconPicker, setIconPicker] = useState<{ id: string; top: number; left: number } | null>(
@@ -371,16 +379,26 @@ export default function BookmarksSection() {
   // tree of any size sits below the fold — so scroll it into view once the row
   // has rendered. Keyed off the bookmark-store version (the same signal that
   // rendered the row), and the id is consumed once by the store, so unrelated
-  // later mutations don't re-scroll. The row is missing from rowRefs only
-  // while a search filter is showing (those rows don't register) — nothing to
-  // scroll to then, so skip.
+  // later mutations don't re-scroll.
+  // A new bookmark while the section is folded would consume the one-shot id
+  // with no row to scroll to — park it here, unfold, and scroll on the re-run.
+  const pendingScrollId = useRef<string | null>(null);
   useEffect(() => {
-    const id = takeLastAddedBookmarkId();
+    const id = takeLastAddedBookmarkId() ?? pendingScrollId.current;
     if (!id) return;
+    if (sectionCollapsed) {
+      // Unfold to reveal the row the user just created; the effect re-runs
+      // once the rows have mounted and scrolls then.
+      pendingScrollId.current = id;
+      localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, "0");
+      setSectionCollapsed(false);
+      return;
+    }
+    pendingScrollId.current = null;
     // block: "nearest" scrolls the section's own overflow container the
     // minimum amount, and won't drag the page around it.
     rowRefs.current.get(id)?.scrollIntoView({ block: "nearest" });
-  }, [bookmarksVersion]);
+  }, [bookmarksVersion, sectionCollapsed]);
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   // Folders at every depth, keyed by id — drop handlers resolve their
@@ -396,72 +414,6 @@ export default function BookmarksSection() {
   };
   indexFolders(items);
   const topOrder = items.map((it) => it.id); // top-level display order
-
-  // Bookmark search: a non-empty query flattens the tree to matching rows.
-  // Matches a bookmark fuzzily on its name (or its folder's name — a folder
-  // match pulls in all children), or on its target path as a contiguous
-  // case-insensitive substring (fuzzy on a long path matched nearly anything).
-  // Highlight positions come from the name match (a path-only or folder-name
-  // hit shows the name unhighlighted). Ranked like the explorer search within
-  // name matches: longest consecutive matched run first (a contiguous
-  // substring hit beats a scattered subsequence one), then higher fuzzy score,
-  // then alphabetical. Path-substring-only matches always rank below name
-  // matches, alphabetically.
-  const bq = bmQuery.trim();
-  const bmSearching = bq !== "";
-  const matched: { b: Bookmark; namePositions: number[] }[] = [];
-  if (bmSearching) {
-    const bqLower = bq.toLowerCase();
-    const pathHit = (url: string) => bookmarkFsPath(url).toLowerCase().includes(bqLower);
-    const ranked: { b: Bookmark; namePositions: number[]; nameHit: boolean; longestRun: number; score: number }[] = [];
-    // The strength of a match across all name fields that hit, for ranking. A
-    // folder name match contributes its own run/score to every child it pulls in.
-    const rank = (folderM: FuzzyResult | null, ...ms: (FuzzyResult | null)[]) => {
-      let longestRun = 0;
-      let score = -Infinity;
-      for (const m of [folderM, ...ms]) {
-        if (!m) continue;
-        if (m.longestRun > longestRun) longestRun = m.longestRun;
-        if (m.score > score) score = m.score;
-      }
-      return { longestRun, score };
-    };
-    // Walk all depths; `folderM` carries the strongest match among the
-    // bookmark's ancestor folder names (any matching ancestor pulls in its
-    // whole subtree, same as the old one-level folder-match rule).
-    const walk = (list: BookmarkItem[], folderM: FuzzyResult | null): void => {
-      for (const it of list) {
-        if (isFolder(it)) {
-          const ownM = fuzzyMatch(bq, it.name);
-          walk(it.children, ownM && (!folderM || ownM.score > folderM.score) ? ownM : folderM);
-        } else {
-          const nameM = fuzzyMatch(bq, it.name);
-          if (folderM || nameM || pathHit(it.url)) {
-            const { longestRun, score } = rank(folderM, nameM);
-            ranked.push({ b: it, namePositions: nameM ? nameM.positions : [], nameHit: !!(folderM || nameM), longestRun, score });
-          }
-        }
-      }
-    };
-    walk(items, null);
-    ranked.sort((a, b) => {
-      if (a.nameHit !== b.nameHit) return a.nameHit ? -1 : 1;
-      if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
-      if (b.score !== a.score) return b.score - a.score;
-      return a.b.name.localeCompare(b.b.name, undefined, { sensitivity: "base" });
-    });
-    for (const { b, namePositions } of ranked) matched.push({ b, namePositions });
-  }
-
-  // Rows in search results are not reorderable; a no-op drag keeps the shared
-  // BookmarkRow contract without letting a filtered view mutate the store order.
-  const noDrag: DragProps = {
-    onDragStart: (e) => e.preventDefault(),
-    onDragOver: () => {},
-    onDragLeave: () => {},
-    onDrop: () => {},
-    onDragEnd: () => {},
-  };
 
   // Position the tooltip after its content has rendered, same timing as the
   // vanilla code reading tooltipEl.offsetHeight right after setting innerHTML.
@@ -947,60 +899,20 @@ export default function BookmarksSection() {
 
   return (
     <div className="sidebar-section sidebar-bookmarks">
-      <div className="sidebar-heading">Bookmarks</div>
-      {items.length === 0 ? (
-        <div className="sidebar-empty">No bookmarks yet</div>
-      ) : (
-        <>
-          <div className="bookmark-search">
-            <input
-              type="search"
-              className="bookmark-search-input"
-              placeholder="Search bookmarks…"
-              value={bmQuery}
-              onChange={(e) => setBmQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setBmQuery("");
-                  e.currentTarget.blur();
-                }
-              }}
-            />
-          </div>
-          {bmSearching ? (
-            matched.length ? (
-              matched.map(({ b, namePositions }) => (
-                <BookmarkRow
-                  key={b.id}
-                  b={b}
-                  namePositions={namePositions}
-                  active={rowActive(b)}
-                  dirty={rowDirty(b)}
-                  missing={isBookmarkMissing(b.id)}
-                  isRenaming={renamingId === b.id}
-                  justSaved={savedId === b.id}
-                  registerRef={() => {}}
-                  onNameClick={(e) => onBookmarkNameClick(e, b)}
-                  onSave={(e) => onSaveBookmark(e, b)}
-                  onRename={(e) => onRenameBookmark(e, b.id)}
-                  onDelete={(e) => onDeleteBookmark(e, b.id)}
-                  onCommitRename={(value) => commitRename(b.id, value, b.name)}
-                  onCancelRename={cancelRename}
-                  onMouseEnter={(e) => onRowMouseEnter(e, b)}
-                  onMouseLeave={hideTooltip}
-                  onGlyphClick={(e) => onBookmarkGlyphClick(e, b.id)}
-                  dragProps={noDrag}
-                />
-              ))
-            ) : (
-              <div className="sidebar-empty">No matches</div>
-            )
-          ) : (
-            renderItems(items, null)
-          )}
-        </>
-      )}
+      <div
+        className="sidebar-heading recents-heading"
+        title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
+        onClick={toggleSectionCollapsed}
+      >
+        Bookmarks
+        {sectionCollapsed && <span className="recents-count">{countBookmarks(items)}</span>}
+      </div>
+      {!sectionCollapsed &&
+        (items.length === 0 ? (
+          <div className="sidebar-empty">No bookmarks yet</div>
+        ) : (
+          renderItems(items, null)
+        ))}
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}
       </div>

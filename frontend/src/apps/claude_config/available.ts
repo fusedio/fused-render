@@ -2,7 +2,7 @@
 //
 // Split out of index.ts on purpose: index.ts also re-exports the heavy
 // `ClaudeConfig` panel (ClaudeConfig.tsx + its sections/bits/ansi
-// dependencies), and shell/ShellSidebar.tsx needs this probe on every route to
+// dependencies), and shell/GlobalSidebar.tsx needs this probe on every route to
 // decide whether to show the CLAUDE sidebar entries at all — eagerly, not
 // behind the `/claude-config` route. If that eager check imported the hook
 // through the barrel, the barrel's static re-export of `ClaudeConfig` would

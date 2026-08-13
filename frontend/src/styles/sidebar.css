@@ -254,6 +254,33 @@ a.sidebar-rail-btn {
   opacity: 0.85;
 }
 
+/* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
+   .sidebar-item look — resets the UA button chrome so it sits in the list
+   like the <a> rows above it. */
+button.sidebar-prefs-trigger {
+  width: 100%;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  font-size: 13.5px;
+}
+
+/* The pop-up it opens: the shared .context-menu chassis, pinned by its
+   bottom edge just above the trigger (inline style), growing upward. */
+.sidebar-prefs-menu {
+  min-width: 180px;
+}
+
+.sidebar-prefs-menu .context-menu-item.active {
+  background: rgba(var(--tint), 0.08);
+}
+
+.sidebar-prefs-menu .account-signedin-dot {
+  position: static;
+  margin-left: auto;
+}
+
 .sidebar-heading {
   padding: 10px 10px 6px;
   font-size: 11px;

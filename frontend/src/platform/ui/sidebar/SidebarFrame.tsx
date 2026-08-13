@@ -38,6 +38,9 @@ export interface SidebarRailItem {
   /** Set on the FIRST item of a bottom-pinned cluster (the shell's settings
       list) — pushes it and everything after to the rail's bottom edge. */
   pinBottom?: boolean;
+  /** Override the exact-pathname highlight, mirroring NavItem's `active` —
+      for icons that are "home" to a family of routes. */
+  active?: boolean;
 }
 
 export interface SidebarFrameProps {
@@ -61,18 +64,23 @@ export function NavItem({
   icon,
   id,
   extra,
+  active,
 }: {
   href: string;
   label: string;
   icon: React.ReactNode;
   id?: string;
   extra?: React.ReactNode;
+  /** Override the exact-pathname highlight — for entries that are "home" to a
+      whole family of routes (the global sidebar's Explorer row is active on
+      every fs-path/panel/tab route, not just /explorer itself). */
+  active?: boolean;
 }) {
   return (
     <a
       href={href}
       id={id}
-      className={"sidebar-item" + (location.pathname === href ? " active" : "")}
+      className={"sidebar-item" + ((active ?? location.pathname === href) ? " active" : "")}
       onClick={(e) => {
         e.preventDefault();
         navigateUrl(href);
@@ -175,7 +183,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
                 <a
                   href={item.href}
                   className={
-                    "sidebar-rail-btn" + (location.pathname === item.href ? " active" : "")
+                    "sidebar-rail-btn" +
+                    ((item.active ?? location.pathname === item.href) ? " active" : "")
                   }
                   aria-label={item.label}
                   title={item.label}

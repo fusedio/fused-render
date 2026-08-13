@@ -1613,9 +1613,8 @@ table.listing-table tr.skel-row:hover {
   opacity: 0.86;
 }
 
-/* Shared search-input chrome (explorer header + sidebar bookmarks). */
-.listing-search-input,
-.bookmark-search-input {
+/* Search-input chrome (explorer header). */
+.listing-search-input {
   width: 100%;
   font: inherit;
   font-size: 13px;
@@ -1626,20 +1625,18 @@ table.listing-table tr.skel-row:hover {
   padding: 6px 10px;
 }
 
-.listing-search-input::placeholder,
-.bookmark-search-input::placeholder {
+.listing-search-input::placeholder {
   color: var(--fg-muted);
 }
 
 /* Focus affordance: a muted border brighten, not the accent yellow — still
    clearly perceivable against the resting --border, just not loud. */
-.listing-search-input:focus,
-.bookmark-search-input:focus {
+.listing-search-input:focus {
   outline: none;
   border-color: var(--fg-muted);
 }
 
-/* Matched-substring highlight in search results (explorer + bookmarks). */
+/* Matched-substring highlight in search results (explorer). */
 .search-mark {
   background: rgba(var(--accent-rgb), 0.22);
   color: var(--fg);
@@ -1650,12 +1647,6 @@ table.listing-table tr.skel-row:hover {
 .search-path {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-/* Sidebar bookmark search box: sits just under the "Bookmarks" heading,
-   aligned with the row padding. */
-.bookmark-search {
-  padding: 0 8px 6px;
 }
 
 /* Fixed layout is what makes the list unscrollable sideways: with `auto`, the

@@ -18,7 +18,7 @@
 // Deliberately NOT a third tab: the Claude Config panel (apps/claude_config)
 // briefly sat here, and a settings page hosting a second settings app — with
 // its own section nav and scroll containers — inside one of its tabs never read
-// as one page. It has its own sidebar routes now (shell/ShellSidebar).
+// as one page. It has its own sidebar routes now (shell/GlobalSidebar).
 // The active tab lives in the URL (`?tab=account`), same pattern as
 // Templates' bindings/library tabs.
 // Template bindings live in the dedicated /view/_templates view.

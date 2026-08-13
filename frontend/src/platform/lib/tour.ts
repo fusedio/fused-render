@@ -144,11 +144,18 @@ export function maybeAutoStartTour(): boolean {
   if (seen) return true;
   if (!document.querySelector("#sidebar")) return false;
   // The walkthrough is built around the explorer chrome (bookmarks, listing
-  // search, breadcrumb, split). A first visit lands on /apps, whose shell
-  // sidebar matches a few early steps — starting there would run a truncated
-  // tour AND mark it seen. Wait until the explorer is actually on screen; the
-  // caller retries on every route change.
-  if (!document.querySelector(".sidebar-bookmarks")) return false;
+  // search, breadcrumb, split). A first visit lands on /apps or /explorer,
+  // where the global sidebar matches a few early steps — starting there would
+  // run a truncated tour AND mark it seen. `.sidebar-bookmarks` no longer
+  // separates the routes (the sidebar is global, so it's on every one); the
+  // folder listing's split pane is the chrome that only a real fs folder view
+  // has. Wait for it; the caller retries on every route change.
+  if (!document.querySelector(".listing-split")) return false;
+  // A collapsed sidebar is a rail with none of the tour's sidebar targets
+  // (.sidebar-brand, #explorer-link, .sidebar-bookmarks) — starting there
+  // would run a truncated walkthrough and mark it seen. The brand row exists
+  // only in the expanded frame, so it is the expansion check.
+  if (!document.querySelector(".sidebar-brand")) return false;
   const steps = presentSteps();
   if (steps.length === 0) return false;
   runTour(steps);
