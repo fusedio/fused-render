@@ -1580,16 +1580,30 @@ function render(data, stashes, diff) {
         + "than this view will read." })
     : null;
 
-  const stagedSection = listSection("Staged changes", String(staged.length),
+  /* Each block is built only when it has something to say. An empty "Staged
+     changes / Changes / Untracked / Stashes" quartet is four headings telling
+     the reader the same nothing, and on a clean tree it pushed the one line
+     that mattered off the top. A section still renders while empty when it is
+     CARRYING something — a pending confirmation lives inside its section
+     (`ask.where`), and the truncation note hangs off Changes — because hiding
+     the block would hide the prompt with it. */
+  const sections = [];
+  const askIn = (where) => (ask && ask.where === where ? ask.node : null);
+
+  const stagedAsk = askIn("staged");
+  if (staged.length || stagedAsk) sections.push(listSection(
+    "Staged changes", String(staged.length),
     staged.length ? action("unstage_all", "− Unstage all", {
       onClick: () => run("unstage_all", { op: "unstage_all" }),
     }) : null,
     staged.map((c) => changeLine(data.repo, c, c.path === wt, "staged")),
     "Nothing is staged under this path.",
-    ask && ask.where === "staged" ? ask.node : null,
-    headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet"));
+    stagedAsk,
+    headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet")));
 
-  const changesSection = listSection("Changes", String(unstaged.length),
+  const changesAsk = askIn("changes");
+  if (unstaged.length || changesAsk || truncNote) sections.push(listSection(
+    "Changes", String(unstaged.length),
     unstaged.length ? [
       action("stage_all", "+ Stage all", {
         onClick: () => run("stage_all", { op: "stage_all" }),
@@ -1600,14 +1614,16 @@ function render(data, stashes, diff) {
     unstaged.map((c) => changeLine(data.repo, c, c.path === wt, "changes")),
     data.repo.dirty ? "No unstaged changes under this path."
                     : "Working tree is clean.",
-    ask && ask.where === "changes" ? ask.node : truncNote);
+    changesAsk || truncNote));
 
   /* This one section stages an explicit path LIST rather than the scope
      pathspec, so it has to apply `writable` itself — one out-of-scope row in the
      list would make ops.py refuse the whole call, taking the in-scope ones with
      it. */
   const stageableUntracked = untracked.filter((c) => writable(data.repo, c.path));
-  const untrackedSection = listSection("Untracked", String(untracked.length),
+  const untrackedAsk = askIn("untracked");
+  if (untracked.length || untrackedAsk) sections.push(listSection(
+    "Untracked", String(untracked.length),
     stageableUntracked.length ? action("stage_untracked", "+ Stage all", {
       onClick: () => run("stage_untracked", {
         op: "stage", paths: stageableUntracked.map((c) => c.path),
@@ -1615,12 +1631,23 @@ function render(data, stashes, diff) {
     }) : null,
     untracked.map((c) => changeLine(data.repo, c, c.path === wt, "untracked")),
     "Nothing untracked under this path.",
-    ask && ask.where === "untracked" ? ask.node : null);
+    untrackedAsk));
 
-  const stashSection = listSection("Stashes", String(stashes.length), null,
+  const stashAsk = askIn("stashes");
+  if (stashes.length || stashAsk) sections.push(listSection(
+    "Stashes", String(stashes.length), null,
     stashes.map(stashLine),
     "Nothing stashed.",
-    ask && ask.where === "stashes" ? ask.node : null);
+    stashAsk));
+
+  /* Every block empty is itself a state worth naming — the reader gets one
+     honest line instead of a blank column. */
+  if (!sections.length) {
+    sections.push(el("section", null, el("div", { className: "rows" },
+      el("div", { className: "none", textContent: data.repo.has_commits
+        ? "Nothing staged, changed, untracked, or stashed under this path."
+        : "Nothing to commit — this repository has no commits yet." }))));
+  }
 
   /* No History section, and no "load more" paging behind it. The commit LOG is
      the `history` mode's view of this repository — it renders the same commits
@@ -1628,8 +1655,7 @@ function render(data, stashes, diff) {
      on every target inside a work tree, drawing it here too was one story told
      twice. What is left is the working tree: what is staged, what changed, what
      is untracked, what is stashed. */
-  const left = el("div", { className: "col" },
-    stagedSection, changesSection, untrackedSection, stashSection);
+  const left = el("div", { className: "col" }, ...sections);
 
   const cols = el("div", { className: "cols" + (diff ? "" : " no-diff") }, left);
   if (diff) cols.append(el("div", { className: "col" }, diff));
