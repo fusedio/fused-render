@@ -2264,6 +2264,11 @@ export interface ScheduledMessage {
   // "unknown" = the watch ended without a verdict (the app stopped being able to
   // say). The work may well have finished; `run_id` is how to go and read it.
   turn?: "" | "ok" | "failed" | "cancelled" | "unknown";
+  // The Claude Code session the turn actually ran in — filled in by the watcher,
+  // and distinct from `session_id` (which is the input: resume this one, or ""
+  // for a fresh one). This is the id the Inbox addresses a session by, so it is
+  // what a row links to. Absent on entries stored before it existed.
+  claude_session_id?: string;
 }
 
 export interface ScheduleResult {

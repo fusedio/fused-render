@@ -218,6 +218,21 @@ def test_the_model_and_effort_pills_validate_their_param(code):
         assert default in body
 
 
+def test_the_page_links_a_ran_message_to_its_session_in_the_inbox():
+    """This page can say a message ran; only the transcript knows what it DID. The
+    Inbox addresses a session by the id the watcher captured (`?peek=<id>`), so a
+    row that has one hands the reader straight to the conversation — and a row that
+    does not simply offers no link rather than pointing at nothing."""
+    with open(os.path.join("frontend", "src", "shell", "Scheduled.tsx"),
+              encoding="utf-8") as f:
+        page = f.read()
+    assert "/sessions?peek=" in page
+    assert "entry.claude_session_id &&" in page, "the link must be gated on having an id"
+    # the shell's own navigation, not a full page load
+    assert "navigateUrl(" in page
+    assert "encodeURIComponent" in page
+
+
 def test_the_settings_page_no_longer_asks_for_what_the_composer_knows():
     """The page keeps the LIST (nowhere else shows every folder's schedule at
     once) and loses the compose form, which asked the user to retype the folder

@@ -52,11 +52,14 @@ def sent(monkeypatch):
     monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
 
 
-def _overdue(target, message="do the thing"):
+def _overdue_time():
     from datetime import datetime, timedelta, timezone
 
-    return schedule.create(str(target), message,
-                           datetime.now(timezone.utc) - timedelta(seconds=5))
+    return datetime.now(timezone.utc) - timedelta(seconds=5)
+
+
+def _overdue(target, message="do the thing", **kw):
+    return schedule.create(str(target), message, _overdue_time(), **kw)
 
 
 def _kinds():
@@ -153,6 +156,45 @@ def test_a_turn_parked_on_a_permission_card_says_so(target, sent):
                          "permissions": [{"id": "p1", "tool": "Bash"}]})
 
     assert jobs.list_jobs()[0]["detail"] == "waiting for permission"
+
+
+def test_the_session_the_turn_ran_in_is_captured(target, sent):
+    """A FRESH scheduled send creates a session nothing else in the app knows the
+    id of, and the Inbox addresses a session by exactly that id — so without this
+    the row has nothing to link to."""
+    entry = _overdue(target)
+    schedule.tick()
+
+    schedule._turn_tick(entry, "r-1", FakeAgent(),
+                        {"done": False, "session_id": "sess-new", "phase": "thinking"})
+
+    stored = schedule.list_entries()[0]
+    assert stored["claude_session_id"] == "sess-new"
+    # …and the INPUT is left alone, so a fresh send is not retroactively relabelled
+    # as a continuation of something
+    assert stored["session_id"] == ""
+
+
+def test_a_resumed_send_records_the_same_session_it_continued(target, sent):
+    entry = schedule.create(str(target), "and another thing",
+                            _overdue_time(), session_id="sess-a")
+    schedule.tick()
+    schedule._turn_tick(entry, "r-1", FakeAgent(),
+                        {"done": True, "session_id": "sess-a", "error": ""})
+
+    stored = schedule.list_entries()[0]
+    assert stored["session_id"] == "sess-a"
+    assert stored["claude_session_id"] == "sess-a"
+
+
+def test_a_run_that_never_reports_a_session_leaves_the_field_empty(target, sent):
+    """No id, no link — the row simply does not offer one rather than pointing at
+    a session that does not exist."""
+    entry = _overdue(target)
+    schedule.tick()
+    schedule._turn_tick(entry, "r-1", FakeAgent(), {"done": True, "error": "died early"})
+
+    assert schedule.list_entries()[0]["claude_session_id"] == ""
 
 
 def test_a_finished_turn_lands_ok_on_all_three_surfaces(target, sent):

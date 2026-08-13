@@ -426,6 +426,12 @@ def create(target: str, message: str, due, session_id: str = "",
         # call, and reporting that as a send failure would send the user looking
         # in the wrong place.
         "turn": "",
+        # The Claude Code session this message's turn actually ran in, filled in by
+        # the watcher from the run's first reporting tick. Distinct from
+        # `session_id` above (the input) precisely so a fresh send does not end up
+        # looking like a continuation, and it is what the page links to the Inbox
+        # with — that app addresses a session by this id and nothing else.
+        "claude_session_id": "",
     }
     with _lock:
         entries = _read()
@@ -496,7 +502,7 @@ def _claim_due(now: datetime) -> list[dict]:
     The events this pass decides on are collected and emitted AFTER the lock
     (`_emit` takes its own), so the two locks are never nested."""
     cutoff = now - timedelta(seconds=max_late_seconds())
-    due: list[str] = []
+    due: list[tuple[datetime, str]] = []
     announce: list[tuple[str, dict, str]] = []
     with _lock:
         entries = _read()
@@ -538,7 +544,7 @@ def _claim_due(now: datetime) -> list[dict]:
                 announce.append((EVENT_MISSED, dict(entry), entry["error"]))
                 continue
             # Due and sendable. Left PENDING — `_claim` takes it, one at a time.
-            due.append(str(entry["id"]))
+            due.append((when, str(entry["id"])))
         due_times = _pending_due(entries) if changed else None
         if changed:
             _write(entries)
@@ -546,7 +552,15 @@ def _claim_due(now: datetime) -> list[dict]:
         _emit(kind, entry, detail)
     if due_times is not None:
         _sync_wake(due_times)
-    return due
+    # BY DUE TIME, not by store order. The store is in creation order, and the two
+    # disagree the moment a catch-up pass finds several messages overdue at once:
+    # something scheduled this morning for tonight would go before something
+    # scheduled at lunch for 2pm. It matters most for same-session sends, where the
+    # hold in `tick` turns "which goes first" into "which conversation turn happens
+    # first", but a batch firing in the order the user asked for is the right
+    # behaviour for all of them. Ties break on the id, itself due-time-derived.
+    due.sort(key=lambda pair: (pair[0], pair[1]))
+    return [entry_id for _, entry_id in due]
 
 
 def _claim(entry_id: str, now: datetime) -> dict | None:
@@ -631,6 +645,16 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     and for an unattended session that is the single most likely way to be
     stuck."""
     entry_id = entry["id"]
+    # CAPTURE THE SESSION THE TURN RAN IN, on whichever tick first reports it.
+    # `session_id` on the entry is an INPUT — "resume this one", empty meaning
+    # "start a fresh one" — so it cannot double as the answer without retroactively
+    # relabelling every fresh send as a continuation. This is the answer, and it is
+    # what makes the row linkable: the Inbox addresses a session by exactly this id
+    # (`?peek=<id>`), and for a fresh send nothing else in the app knows it.
+    ran = str(data.get("session_id") or "")
+    if ran and ran != entry.get("claude_session_id"):
+        entry["claude_session_id"] = ran
+        _update(entry_id, claude_session_id=ran)
     if data.get("done"):
         reason = str(data.get("error") or "")
         if reason:

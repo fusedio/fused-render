@@ -340,6 +340,36 @@ def test_two_messages_resuming_one_session_do_not_overlap(target, spawned):
     assert [c["message"] for c in spawned] == ["first", "second"]
 
 
+def test_a_catch_up_batch_fires_in_DUE_order_not_creation_order(target, spawned):
+    """The store is in creation order and the two disagree the moment a catch-up
+    pass finds several overdue at once: something scheduled this morning for
+    tonight would go before something scheduled at lunch for 2pm.
+
+    It bites hardest on same-session sends, where the per-session hold turns
+    "which goes first" into "which conversation TURN happens first" — so this
+    creates them in the wrong order deliberately."""
+    schedule.create(str(target), "later", _in(-60))    # created first, due last
+    schedule.create(str(target), "sooner", _in(-600))  # created second, due first
+
+    schedule.tick()
+
+    assert [c["message"] for c in spawned] == ["sooner", "later"]
+
+
+def test_a_held_same_session_follow_up_still_goes_in_due_order(target, spawned):
+    schedule.create(str(target), "second turn", _in(-60), session_id="s")
+    schedule.create(str(target), "first turn", _in(-600), session_id="s")
+
+    schedule.tick()
+    assert [c["message"] for c in spawned] == ["first turn"]
+
+    first = next(e for e in schedule.list_entries() if e["message"] == "first turn")
+    schedule._update(first["id"], turn="ok")
+    schedule.tick()
+
+    assert [c["message"] for c in spawned] == ["first turn", "second turn"]
+
+
 def test_different_sessions_and_fresh_sends_never_block_each_other(target, spawned):
     """The hold is per-session, and a fresh-session entry ("" session_id) collides
     with nothing — otherwise one slow conversation would stall every message."""

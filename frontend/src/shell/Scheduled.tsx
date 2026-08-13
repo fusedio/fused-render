@@ -26,6 +26,7 @@ import { useEffect, useState } from "react";
 import { cancelScheduledMessage, getSchedule } from "@platform/lib/api";
 import type { ScheduledMessage, ScheduleResult, ScheduledState } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
+import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -163,6 +164,26 @@ function EntryRow({
         {entry.session_id ? " · continues an existing session" : " · new session"}
         {entry.permission_mode !== "auto" ? ` · ${entry.permission_mode} permissions` : ""}
       </p>
+      {/* The transcript is the only place that knows what the turn actually DID —
+          this page can say a message ran, never what came of it. The Inbox
+          addresses a session by exactly this id, so once the watcher has captured
+          it the row can hand the reader straight to the conversation.
+          Not gated on the sessions mount being ready: the /sessions route already
+          shows its own honest "Preparing…" state, and threading that readiness in
+          here would buy a disabled link instead of a slightly slow one. */}
+      {entry.claude_session_id && (
+        <p className="deploy-muted">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() =>
+              navigateUrl(`/sessions?peek=${encodeURIComponent(entry.claude_session_id!)}`)
+            }
+          >
+            Open in Inbox
+          </button>
+        </p>
+      )}
       {entry.error && <p className="deploy-muted">{entry.error}</p>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
