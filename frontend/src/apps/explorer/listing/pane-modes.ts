@@ -31,8 +31,12 @@ export interface PaneModeInput {
 // It used to hoist an APP entry to the lead — a folder's own app being what
 // that folder IS, so it outranked the opt-in tools aimed at it — with a
 // pane-only `_app` sentinel standing in wherever the registry's `app` mode was
-// absent or gate-denied. Both are gone with the app concept itself (D264): a
-// folder previews as its listing, like every other folder.
+// absent or gate-denied. Both are gone with the app concept itself (D264) and
+// D269 brought neither back: a folder that IS an app never reaches this module
+// at all, because the pane resolves it to its entry PAGE before asking for a
+// mode list (ListingPreviewPane's retarget), and what arrives here is then an
+// html FILE like any other. Every folder this module still sees previews as its
+// listing, like every other folder.
 //
 // Every entry here is a REAL mode: the list says what the pane can show, never
 // that it should show nothing. An EMPTY list means a target with nothing to

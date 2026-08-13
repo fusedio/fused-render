@@ -7,12 +7,13 @@
 // fused-render's own explorer, as distinct from "Reveal in Finder", which hands
 // the path to the OS file manager.
 //
-// It is no longer distinct from "Open" for the ordinary app (a folder with a
-// page): a card opens that folder in the explorer now, so the two entries land
-// in the same place. The entry stays anyway, because it is the only one that is
-// ALWAYS the folder — an app whose entry is a lone non-page file opens that
-// FILE (appEntry's `entry` branch), and "Open in Explorer" is how you get to the
-// folder around it.
+// It is distinct from "Open" again, and for the ordinary app (a folder with a
+// page) this is the entry that answers the other half of the card: "Open" lands
+// on the app's entry PAGE (appEntry, D269), so this is the only entry that is
+// ALWAYS the folder — the files around the page, which is where you go to edit
+// the app rather than use it. For one release the two landed in the same place
+// (D264's card opened the folder) and this entry was kept for the lone non-page
+// `entry` case alone; it has its own job back.
 import { revealPath, type AppInfo } from "./api";
 import { openApp } from "./appEntry";
 import { copyToClipboard } from "./clipboard";
