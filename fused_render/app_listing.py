@@ -14,6 +14,7 @@ its `OSError` out so the CALLER can tell "unreadable, skip it" from "no entry,
 list it as a folder" — see `app_dict`.
 """
 import html
+import json
 import os
 import re
 import stat
@@ -114,6 +115,23 @@ def app_preview_image(dir_path: str) -> str | None:
     return os.path.abspath(p) if stat.S_ISREG(st.st_mode) and st.st_size > 0 else None
 
 
+def app_category(dir_path: str) -> str | None:
+    """The app's authored category: the `category` field of a `metadata.json`
+    at the folder's root — the same per-app metadata shape the showcase repo
+    ships. None when the file is absent, unreadable, malformed, or the field
+    isn't a non-empty string; an app without a category only ever appears
+    under the UI's "All" filter. Never raises — a listing degrades."""
+    try:
+        with open(os.path.join(dir_path, "metadata.json"), "rb") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    cat = meta.get("category") if isinstance(meta, dict) else None
+    if not isinstance(cat, str):
+        return None
+    return cat.strip() or None
+
+
 def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     """One app's listing entry — the single place the shape is built.
 
@@ -144,6 +162,9 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
         # `preview.png` at the folder's root, else None and the card falls back
         # to rendering `entry_html` live.
         "preview_image": app_preview_image(path),
+        # The authored category from `metadata.json`, or None. Drives the apps
+        # page's category filter; None means "All only".
+        "category": app_category(path),
         "title": entry_title(entry_html) if entry_html else None,
         "updated_at": dir_updated_at(path),
     }

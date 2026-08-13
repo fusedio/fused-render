@@ -1834,6 +1834,10 @@ export interface AppInfo {
   // scaled iframe of `entry_html` — an author's chosen still beats whatever the
   // page happens to look like with no data in it.
   preview_image?: string | null;
+  // The authored category from the app folder's `metadata.json` (the showcase
+  // repo's per-app metadata shape), or null when absent/invalid. Undefined on
+  // older backends. Apps without one only appear under the "All" filter.
+  category?: string | null;
   title: string | null;
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
