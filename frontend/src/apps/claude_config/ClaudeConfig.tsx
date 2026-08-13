@@ -127,7 +127,14 @@ export default function ClaudeConfig() {
   const { status } = useGitStatus(badgeEpoch);
 
   const raw = new URLSearchParams(location.search).get(SECTION_PARAM);
-  const active: SectionId = isSectionId(raw) ? raw : "preferences";
+  // `?cctab=profiles` was a tab of its own until Profiles became a block of the
+  // History page. An old bookmark should land where its content went, not on
+  // the default tab.
+  const active: SectionId = raw === "profiles"
+    ? HISTORY.id
+    : isSectionId(raw)
+      ? raw
+      : "preferences";
   const meta = PAGES.find((s) => s.id === active) ?? PAGES[0];
 
   const setActive = (next: SectionId) => {
