@@ -11,7 +11,8 @@ self-contained and import-cheap, and the endpoint is a sync def so its git
 subprocess calls run on FastAPI's threadpool, never the event loop.
 
 Actions:
-  catalog   — index.json from the showcase clone joined with installs.json
+  catalog   — a scan of the showcase clone (one folder per app, each with its
+              own metadata.json) joined with installs.json
               ({status:"no-cache"} before the first refresh; never touches
               the network)
   refresh   — clone (first run) or fetch+ff the community repo into
@@ -239,12 +240,45 @@ def _cache_ready():
     return os.path.isdir(os.path.join(SHOWCASE_DIR, ".git"))
 
 
-def _read_index():
+def _read_metadata(slug):
+    """The app folder's own metadata.json, or None when absent/broken."""
     try:
-        with open(os.path.join(SHOWCASE_DIR, "index.json"), encoding="utf-8") as f:
-            return json.load(f)
+        with open(os.path.join(SHOWCASE_DIR, slug, "metadata.json"),
+                  encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _app_commit(slug):
+    """Last commit that touched the app's folder — the per-app freshness
+    marker installs.json records and update detection compares against."""
+    r = _git(SHOWCASE_DIR, "log", "-1", "--format=%H", "--", slug)
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def _entry(slug, meta):
+    return {**meta, "slug": slug, "commit": _app_commit(slug)}
+
+
+def _scan_catalog():
+    """One catalog entry per app folder in the clone: any top-level directory
+    carrying a metadata.json (skips .git, hidden dirs, README and friends)."""
+    apps = []
+    try:
+        names = sorted(os.listdir(SHOWCASE_DIR))
+    except OSError:
+        return apps
+    for name in names:
+        if not _is_slug(name):
+            # Also skips .git, hidden dirs, and anything install/update could
+            # never target (they validate slugs with the same pattern).
+            continue
+        meta = _read_metadata(name)
+        if meta is not None:
+            apps.append(_entry(name, meta))
+    return apps
 
 
 def _install_state(slug, entry, installs):
@@ -266,15 +300,15 @@ def _install_state(slug, entry, installs):
 
 
 def _catalog_payload():
-    index = _read_index()
-    if index is None:
+    if not _cache_ready():
         return {"status": "no-cache"}
     installs = _read_installs()
     opened = _read_opened()
-    by_slug = {a.get("slug"): a for a in index.get("apps", [])}
+    entries = _scan_catalog()
+    by_slug = {a["slug"]: a for a in entries}
     apps = []
-    for entry in index.get("apps", []):
-        slug = entry.get("slug")
+    for entry in entries:
+        slug = entry["slug"]
         apps.append({**entry, **_install_state(slug, entry, installs),
                      "opened_at": opened.get(slug)})
     # Installed apps whose slug vanished from the catalog (yanked upstream):
@@ -285,10 +319,10 @@ def _catalog_payload():
         apps.append({"slug": slug, "name": slug, "description": "",
                      "yanked": True, "opened_at": opened.get(slug),
                      **_install_state(slug, None, installs)})
+    head = _git(SHOWCASE_DIR, "rev-parse", "HEAD")
     return {
         "status": "ok",
-        "generated_at": index.get("generated_at"),
-        "commit": index.get("commit"),
+        "commit": head.stdout.strip() if head.returncode == 0 else None,
         "cache_root": SHOWCASE_DIR,
         "apps": apps,
     }
@@ -359,20 +393,21 @@ def _app_folder(slug):
     return folder
 
 
-def _require_slug(slug):
+def _is_slug(slug):
     # Same shape CI enforces repo-side; also keeps a crafted slug from ever
     # forming a path outside the clone/workspace.
     import re
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", slug or ""):
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", slug or ""))
+
+
+def _require_slug(slug):
+    if not _is_slug(slug):
         raise ActionError(f"invalid app slug: {slug!r}")
 
 
 def _catalog_entry(slug):
-    index = _read_index() or {}
-    for entry in index.get("apps", []):
-        if entry.get("slug") == slug:
-            return entry
-    return None
+    meta = _read_metadata(slug)
+    return _entry(slug, meta) if meta is not None else None
 
 
 def _claim_dir(staging, dest_base):
