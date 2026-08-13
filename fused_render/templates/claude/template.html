@@ -1438,7 +1438,65 @@
      row inherits the fix rather than rediscovering it. */
   .pill:hover:not([aria-pressed="true"]) { background-color: var(--surface-2); color: var(--fg); }
   .pill[aria-pressed="true"]:hover { filter: brightness(1.1); }
+  /* Still styled, because the native popup is only SUPPRESSED for the pointer
+     (openSelPop): a keyboard user who presses Space still gets the platform
+     menu, and it should not arrive white. */
   .pill option { background: var(--bg); color: var(--fg); }
+  /* The pills' own dropdown (openSelPop), replacing the OS popup — the one piece
+     of this composer the template could not skin, arriving light and rounded in
+     the middle of a dark row. Drawn as the THIRD popup in this file, not as a
+     fourth idea: same box as #leftmodepop and #kebabpop (panel, --border-strong,
+     10px, one shadow) so the menus in this template are one family, with the
+     shell mode menu's structure inside — a muted heading naming the list, then
+     one row per value, the current one wearing an accent wash.
+     `position: fixed` and not absolute: the composer clips (overflow) and sits at
+     the very bottom of a pane, so an in-flow popup would be cut off. */
+  .selpop {
+    position: fixed;
+    z-index: 40;
+    padding: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--shadow);
+  }
+  /* Same story as #leftmodepop: `position: fixed` outranks the UA's [hidden]. */
+  .selpop[hidden] { display: none; }
+  /* Names what the list IS (the select's optgroup label), which the pill itself
+     cannot say — it only ever shows the current value. Not a row: no hover, no
+     pointer, nothing to aim at. */
+  .selpop-head {
+    padding: 4px 9px 6px;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--faint);
+    letter-spacing: .02em;
+    user-select: none;
+  }
+  .selpop-opt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    white-space: nowrap;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--fg);
+    cursor: pointer;
+    text-align: left;
+  }
+  .selpop-opt:hover, .selpop-opt:focus-visible { background: var(--surface-2); }
+  /* THE ONE RULE about hover and an active state again (see .pill): the selected
+     row hovers WITHIN its wash instead of being repainted neutral by it. The
+     wash alone carries the state — no tick glyph — and the ink stays --fg:
+     --accent is a fill here, never text on its own tint. */
+  .selpop-opt.on { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .selpop-opt.on:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
   .send {
     width: 32px;
     height: 32px;
@@ -5619,26 +5677,25 @@ const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_
 // handed out by a missing param.
 const DEFAULT_PERMISSION = "prompt";
 // Real values only — no placeholder row: curModel()/curEffort() always
-// resolve to a concrete value, so the dropdown never needs a "model"/"effort"
-// entry the user shouldn't pick.
-function fillSelect(el, values) {
+// resolve to a concrete value, so the dropdown never needs a selectable
+// "model"/"effort" entry. The optgroup label is the opposite of that: a
+// non-selectable heading that names what the list IS, since the pill itself
+// only shows the current value.
+function fillSelect(el, values, groupLabel, labels) {
+  const group = document.createElement("optgroup");
+  group.label = groupLabel;
   for (const v of values) {
     const o = document.createElement("option");
     o.value = v;
-    o.textContent = v;
-    el.appendChild(o);
+    o.textContent = labels ? labels[v] : v;
+    group.appendChild(o);
   }
+  el.appendChild(group);
 }
-document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS));
-document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS));
-document.querySelectorAll(".perm-sel").forEach((el) => {
-  for (const v of PERMISSION_MODES) {
-    const o = document.createElement("option");
-    o.value = v;
-    o.textContent = PERMISSION_LABELS[v];
-    el.appendChild(o);
-  }
-});
+document.querySelectorAll(".model-sel").forEach((el) => fillSelect(el, MODELS, "Model"));
+document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS, "Effort"));
+document.querySelectorAll(".perm-sel").forEach((el) =>
+  fillSelect(el, PERMISSION_MODES, "Approvals", PERMISSION_LABELS));
 
 // An appearance:none select keeps the width of its WIDEST option, so a short
 // value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
@@ -5673,6 +5730,119 @@ document.querySelectorAll(".effort-sel").forEach((el) =>
 document.querySelectorAll(".perm-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("permission", el.value); syncSelects(); }));
 syncSelects();
+
+// ── The pills' dropdown: our own menu over a real <select> ──
+//
+// The <select> stays the state holder — it owns `.value`, it fires `change`, and
+// fillSelect / syncSelects / fitSelect above keep working on it untouched. What
+// is replaced is only the PLATFORM POPUP, by cancelling the pointerdown that
+// would open it: the OS menu is the one surface in this composer the template
+// cannot skin (a light, rounded macOS menu in the middle of a dark row), and
+// every other approach — a <div> listbox like #leftmodepop, a hidden input —
+// would have meant re-implementing the four things the select already does.
+// Cancelling pointerdown also keeps the value where every existing caller looks
+// for it, so a selection here is indistinguishable from a native one.
+//
+// KEYBOARD is deliberately still the select's: a focused pill moves through its
+// values on the arrows and fires `change` for each, with no menu involved, and
+// Space still gets the platform popup. This menu is the POINTER path only, which
+// is why the cancelled pointerdown does not hand focus over either — a focus
+// ring appearing on a click nobody made with the keyboard is its own wart.
+let selPop = null;   // the one popup, built on first open and reused
+let selPopFor = null; // the select it currently belongs to; null = closed
+
+function closeSelPop() {
+  if (!selPopFor) return;
+  selPop.hidden = true;
+  selPopFor = null;
+}
+
+function openSelPop(sel) {
+  if (!selPop) {
+    selPop = document.createElement("div");
+    selPop.className = "selpop";
+    selPop.hidden = true;
+    // On <body>, not beside the pill: a fixed box inside the composer's own
+    // stacking/clipping context is not reliably above the log, and one popup
+    // shared by all six pills cannot live inside any one of them.
+    document.body.appendChild(selPop);
+  }
+  selPopFor = sel;
+  selPop.replaceChildren();
+  selPop.setAttribute("aria-label", sel.getAttribute("aria-label") || "");
+  // The optgroup label is the list's NAME (see fillSelect), so it is a heading
+  // and never a row: the pill shows the current value and nothing else, and
+  // without this the menu is three bare words with no subject.
+  const group = sel.querySelector("optgroup");
+  if (group && group.label) {
+    const head = document.createElement("div");
+    head.className = "selpop-head";
+    head.textContent = group.label;
+    selPop.appendChild(head);
+  }
+  for (const opt of sel.options) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "selpop-opt" + (opt.value === sel.value ? " on" : "");
+    const lbl = document.createElement("span");
+    lbl.textContent = opt.textContent;
+    row.appendChild(lbl);
+    // Write the value, then let the select's own `change` listeners do the rest
+    // (param write, syncSelects, width refit) — this menu knows nothing about
+    // what a model or an approvals mode means. Fired even when the value is
+    // unchanged: picking the value detection guessed is how the user PINS it,
+    // which is the param write, not a no-op.
+    row.onclick = () => {
+      closeSelPop();
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change"));
+    };
+    selPop.appendChild(row);
+  }
+  // Floor the menu to the pill it hangs off (the shell's mode menu does the
+  // same); content may push it wider. Measured only once it is laid out, since
+  // the height decides which side it opens on.
+  const r = sel.getBoundingClientRect();
+  selPop.style.minWidth = `${Math.round(r.width)}px`;
+  selPop.style.left = "0px";
+  selPop.style.top = "0px";
+  selPop.hidden = false;
+  const h = selPop.offsetHeight;
+  const w = selPop.offsetWidth;
+  // ABOVE by default: the composer is pinned to the bottom of the pane, so below
+  // is usually off-screen. Flip down only when there is no room up there, and
+  // clamp either way.
+  const up = r.top - h - 6;
+  const top = up >= 4 ? up : Math.min(r.bottom + 6, window.innerHeight - h - 4);
+  selPop.style.top = `${Math.max(4, top)}px`;
+  selPop.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - w - 4))}px`;
+}
+
+document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach((el) => {
+  el.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault();  // kills the native popup AND the focus it would take
+    // A second press on the same pill closes, rather than closing on the
+    // document handler below and reopening here.
+    const same = selPopFor === el;
+    closeSelPop();
+    if (!same) openSelPop(el);
+  });
+  // Belt and braces: on engines where the popup is a MOUSEDOWN default action and
+  // a cancelled pointerdown does not suppress the compatibility event, this is
+  // what stops the platform menu.
+  el.addEventListener("mousedown", (ev) => ev.preventDefault());
+});
+// Outside press, Escape, and window blur — the last one because a click landing
+// in the preview iframe never reaches this document but does blur this window,
+// and with a pane on screen that is the ordinary case, not the exotic one.
+document.addEventListener("pointerdown", (ev) => {
+  if (selPopFor && !selPop.contains(ev.target) && ev.target !== selPopFor) closeSelPop();
+});
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeSelPop(); });
+window.addEventListener("blur", closeSelPop);
+// Nothing repositions an open menu: a scroll or resize under it would leave it
+// pointing at a pill that has moved, so it goes away instead.
+window.addEventListener("resize", closeSelPop);
 
 // Detection is async and best-effort: the selects show the fallback until it
 // lands, then snap to the real config — unless a pane param already pinned a
@@ -5724,6 +5894,7 @@ document.getElementById("back").onclick = () => {
   log.innerHTML = "";
   permCards.clear();  // the cards went with the log; don't keep handles to them
   notedSkills.clear();  // and the skill rows; a rebuilt log re-announces them
+  resetCardPolicy();  // ...and the collapse overrides: that transcript is gone
   chatEl.classList.add("home");
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
@@ -6889,15 +7060,60 @@ function makeTyper(bodyEl) {
 // centre instead of its own.
 const TOOL_STATUS_GLYPH = { running: "", ok: "", error: "✗" };
 
-// Chips that open themselves. An Edit or a Write IS its diff: hiding it behind
-// a click means the one thing the user most needs to check — what changed in
-// their file — is the one thing they have to hunt for. A TodoWrite is the same
-// case for a different reason: its body IS the plan the agent is working to, it
-// is short and fixed-width, and folded it becomes "3/7 done" — a number with no
-// way to see what the seven are. Everything else (a Read's contents, a Bash
-// command's output) is context you look at when something surprises you, so it
-// stays folded.
-const TOOL_OPEN_BY_DEFAULT = new Set(["Edit", "Write", "TodoWrite"]);
+// ── which disclosures are open: the newest one, and nothing else ──
+// Every collapsible card in the transcript — a tool chip, a thinking block —
+// ships COLLAPSED except the most recent one, which is open. A single turn can
+// make twenty tool calls, and twenty open bodies is a log where the reply is
+// somewhere far below, whereas the one card whose body is still news is always
+// the one that just arrived. So a new card opens and the card it replaced folds
+// itself back up.
+//
+// The user's own click OUTRANKS that, in both directions and permanently: a
+// card they opened is never auto-folded, and one they closed is never
+// auto-opened — not even while it is the newest. The override is recorded from
+// the SUMMARY's click rather than the `toggle` event, because `toggle` fires
+// asynchronously and fires for programmatic opens too, so it cannot tell a
+// user's fold from this policy's.
+//
+// Overrides are keyed rather than held on the element: the re-attach repair
+// branches and loadHistory rebuild the <details> nodes from the payload, and an
+// override living on a discarded node is one the user has to re-apply. A tool
+// call's key is its `tool_use` id — stable across every re-render of that call.
+// A thinking segment has no id, so it is keyed by position (its index inside a
+// numbered segment container), which survives the 400 ms poll but not a rebuild
+// of its turn.
+const cardOverrides = new Map();  // card key -> the open state the user chose
+let newestCard = null;            // { key, el } of the most recent card
+let cardSeq = 0;                  // numbers segment containers, for position keys
+
+// A fresh transcript is a fresh policy: a restored session must open with only
+// its LAST card unfolded, so an override from the conversation that was on
+// screen before cannot leak a card open in one the user has never touched.
+function resetCardPolicy() {
+  cardOverrides.clear();
+  newestCard = null;
+}
+
+// A card's identity for `cardOverrides` (see above for why tools and thinking
+// are keyed differently).
+function cardKey(st, seg, i) {
+  return seg && seg.kind === "tool" && seg.id ? "tool:" + seg.id
+                                             : st.seq + ":" + i;
+}
+
+// Adopt one <details> as the newest card, folding the one it replaces.
+function registerCard(el, head, key) {
+  head.addEventListener("click", () => {
+    // Runs BEFORE the disclosure's own default action, so `el.open` is still
+    // the state being left behind — the user is asking for its opposite.
+    cardOverrides.set(key, !el.open);
+  });
+  if (newestCard && newestCard.el !== el && !cardOverrides.has(newestCard.key)) {
+    newestCard.el.open = false;
+  }
+  el.open = cardOverrides.has(key) ? cardOverrides.get(key) : true;
+  newestCard = { key, el };
+}
 
 // How many lines of a diff a chip shows before it scrolls. Held together with
 // the `max-height` on `.toolchip pre.diff` (14 * 1.55em, the line height there):
@@ -7190,10 +7406,9 @@ function fillToolChipBody(body, seg) {
 // re-rendered on every 400 ms poll — first `running` with no output, later
 // `ok`/`error` with one — and it has to be the SAME <details> throughout, or a
 // chip the user opened would snap shut under them every tick.
-function buildToolChip(seg) {
+function buildToolChip(seg, key) {
   const el = document.createElement("details");
   el.className = "toolchip";
-  if (TOOL_OPEN_BY_DEFAULT.has(seg.name)) el.open = true;
   const head = document.createElement("summary");
   const glyph = document.createElement("span");
   const name = document.createElement("span");
@@ -7228,6 +7443,7 @@ function buildToolChip(seg) {
   const body = document.createElement("div");
   body.className = "chip-body";
   el.append(head, body);
+  registerCard(el, head, key);
 
   // What the DOM currently says, as one string. Re-rendering an unchanged chip
   // every 400 ms would drop scroll position inside a long output and fight the
@@ -7278,11 +7494,12 @@ function buildToolChip(seg) {
   return { kind: "tool", el, update };
 }
 
-// Thinking, folded. Collapsed and unlabelled by content on purpose: the point
-// of showing it at all is that it HAPPENED and is inspectable, and a reasoning
-// trace summarised in the summary line would be a second thing to read for
-// every one the user actually wanted to open.
-function buildThinkingView() {
+// Thinking. Unlabelled by content on purpose: the point of showing it at all is
+// that it HAPPENED and is inspectable, and a reasoning trace summarised in the
+// summary line would be a second thing to read for every one the user actually
+// wanted to open. Open or folded is not this function's call — registerCard
+// decides it, the same way it does for a tool chip.
+function buildThinkingView(key) {
   const el = document.createElement("details");
   el.className = "thinking";
   const head = document.createElement("summary");
@@ -7290,6 +7507,7 @@ function buildThinkingView() {
   const body = document.createElement("div");
   body.className = "thinking-body";
   el.append(head, body);
+  registerCard(el, head, key);
   return {
     kind: "thinking", el, text: null,
     render(t) { body.innerHTML = renderMd(t); },
@@ -7309,9 +7527,9 @@ function buildTextView() {
   };
 }
 
-function buildSegmentView(seg) {
-  if (seg.kind === "tool") return buildToolChip(seg);
-  if (seg.kind === "thinking") return buildThinkingView();
+function buildSegmentView(seg, key) {
+  if (seg.kind === "tool") return buildToolChip(seg, key);
+  if (seg.kind === "thinking") return buildThinkingView(key);
   return buildTextView();  // "text", and anything a newer agent.py invents
 }
 
@@ -7331,7 +7549,10 @@ function renderSegments(container, segments, opts) {
   const typer = (opts && opts.typer) || null;
   const list = Array.isArray(segments) ? segments : [];
   let st = segStates.get(container);
-  if (!st) { st = { views: [], typed: -1 }; segStates.set(container, st); }
+  // `seq` numbers this container for the life of the page: it is the half of a
+  // position key (cardKey) that keeps two turns' second thinking block from
+  // sharing one collapse override.
+  if (!st) { st = { views: [], typed: -1, seq: ++cardSeq }; segStates.set(container, st); }
   // ONLY a text segment at the very end of the list is still growing. One
   // anywhere else is finished by definition — something came after it — and a
   // typer aimed at it would re-animate settled prose on every poll.
@@ -7363,7 +7584,7 @@ function renderSegments(container, segments, opts) {
       // neighbours merge in agent.py) — but rebuilding beats rendering a tool
       // call into a prose element if that ever stops being true.
       if (view) view.el.remove();
-      view = buildSegmentView(seg);
+      view = buildSegmentView(seg, cardKey(st, seg, i));
       st.views[i] = view;
       container.appendChild(view.el);
     }
@@ -8260,6 +8481,7 @@ async function loadHistory(session_id) {
   sending = true;
   permCards.clear();
   notedSkills.clear();
+  resetCardPolicy();  // a restored transcript opens on its LAST card, nothing else
   renderLogSkeleton();  // replace the visible conversation, don't append to it
   try {
     const { turns } = await fused.runPython(AGENT, { action: "history", file: FILE, session_id }, { key: null });
