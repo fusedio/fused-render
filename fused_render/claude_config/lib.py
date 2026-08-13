@@ -526,14 +526,66 @@ def claude_cli_detached(*args: str) -> dict:
 
 # mcp.md §2: `claude mcp list` has no structured output, so parse its human-readable
 # lines. Names carry both spaces and colons (`claude.ai Slack`,
-# `plugin:context-mode:context-mode`), so split status on the LAST " - " and the
-# name/endpoint boundary on the FIRST ": " (colon-space, which bare-colon names lack).
-_MCP_STATUS = {
-    "✔ connected": "connected",
-    "! needs authentication": "needs-auth",
-    "✘ failed to connect": "failed",
-    "⏸ pending approval": "pending",
-}
+# `plugin:context-mode:context-mode`), so the name/endpoint boundary is the FIRST
+# ": " (colon-space, which bare-colon names lack).
+#
+# The status is a PREFIX, not the whole trailing segment. A status may carry a
+# reason after it, and the CLI joins that reason with an em dash:
+#
+#   plugin:github:github: https://… (HTTP) - ✘ Failed to connect — HTTP 400: …
+#
+# An exact-match lookup against the trailing segment therefore failed on exactly
+# the servers that are broken — the only status that ever HAS a reason — and the
+# one server that was genuinely down was the one the UI called "unknown". Match
+# on the leading marker plus its phrase; everything after that is detail, and
+# the detail is kept (statusDetail) rather than thrown away, because "failed"
+# alone is a dead end and "failed — Authorization header is badly formatted" is
+# something the user can act on.
+_MCP_STATUS = (
+    ("✔ connected", "connected"),
+    ("! needs authentication", "needs-auth"),
+    ("✘ failed to connect", "failed"),
+    ("⏸ pending approval", "pending"),
+)
+
+# What the CLI puts between a status and its reason. Stripped from the front of
+# the detail so it reads as a sentence rather than as a fragment.
+_DETAIL_JOINERS = "—–-: "
+
+
+def _split_status(line: str) -> tuple:
+    """(body, status_part), split at the status marker.
+
+    Deliberately NOT `rpartition(" - ")`: a reason is free-form CLI text and may
+    itself contain " - ", which would put the split inside the reason and take
+    the endpoint with it. The marker glyph is the reliable landmark, so find the
+    FIRST " - <marker>" and cut there; fall back to the last " - " only when no
+    marker is recognised, which is the `unknown` path.
+    """
+    best = -1
+    for prefix, _ in _MCP_STATUS:
+        found = line.find(" - " + prefix[0])
+        if found != -1 and (best == -1 or found < best):
+            best = found
+    if best == -1:
+        body, _, status_part = line.rpartition(" - ")
+        return body, status_part
+    return line[:best], line[best + len(" - "):]
+
+
+def _classify_status(status_part: str) -> tuple:
+    """(status, detail) from the trailing segment of a list line."""
+    tail = status_part.strip()
+    low = tail.lower()
+    for prefix, value in _MCP_STATUS:
+        if low.startswith(prefix):
+            # Slice the ORIGINAL by the prefix's length — the two differ only in
+            # case, so the offset holds and the detail keeps its own casing.
+            return value, tail[len(prefix):].strip().lstrip(_DETAIL_JOINERS).strip()
+    # An unrecognised marker: report it as unknown rather than guessing, and
+    # keep the whole segment as the detail so the UI can still show what the CLI
+    # actually said.
+    return "unknown", tail
 
 
 def parse_mcp_list(text: str) -> list:
@@ -543,12 +595,12 @@ def parse_mcp_list(text: str) -> list:
         line = raw.rstrip()
         if " - " not in line or ": " not in line:
             continue  # banner ("Checking MCP server health…"), blanks
-        body, _, status_part = line.rpartition(" - ")
+        body, status_part = _split_status(line)
         name, _, endpoint = body.partition(": ")
         name, endpoint = name.strip(), endpoint.strip()
         if not name:
             continue
-        status = _MCP_STATUS.get(status_part.strip().lower(), "unknown")
+        status, status_detail = _classify_status(status_part)
 
         transport = ""
         for marker, kind_ in (("(HTTP)", "http"), ("(SSE)", "sse")):
@@ -573,6 +625,9 @@ def parse_mcp_list(text: str) -> list:
             "endpoint": endpoint,
             "transport": transport,
             "status": status,
+            # The CLI's own words about WHY, where it gave any — "" for the
+            # statuses that need no explanation (connected, needs-auth).
+            "statusDetail": status_detail,
             "kind": kind,
             "connected": status == "connected",
             "needsAuth": status == "needs-auth",

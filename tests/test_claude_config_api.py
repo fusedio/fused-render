@@ -559,6 +559,83 @@ def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
     assert plugins.main(action="nope") == {"ok": False, "error": "unknown action: nope"}
 
 
+# -- parsing `claude mcp list` -----------------------------------------------
+# The CLI has no structured output, so this parser is the whole contract. It is
+# pure, which makes it the cheapest thing in the package to pin down properly.
+
+# The real line, copied from `claude mcp list` on a machine where this server is
+# genuinely broken. It is the fixture that matters: the reason is joined with an
+# EM DASH, so an exact-match lookup against the trailing segment classified the
+# one actually-failing server as "unknown" — the UI refused to call broken the
+# only thing that was.
+_REAL_FAILED = (
+    "plugin:github:github: https://api.githubcopilot.com/mcp/ (HTTP) - "
+    "✘ Failed to connect — HTTP 400: Streamable HTTP error: Error POSTing to "
+    "endpoint: bad request: Authorization header is badly formatted"
+)
+
+
+def test_mcp_parses_the_real_failed_line_as_failed_and_keeps_the_reason():
+    [s] = lib.parse_mcp_list(_REAL_FAILED)
+    assert s["status"] == "failed"
+    assert s["name"] == "plugin:github:github"
+    assert s["endpoint"] == "https://api.githubcopilot.com/mcp/"
+    assert s["transport"] == "http"
+    assert s["connected"] is False
+    # The reason is the point: "failed" alone is a dead end for the user.
+    assert s["statusDetail"].startswith("HTTP 400:")
+    assert "Authorization header is badly formatted" in s["statusDetail"]
+    # The em dash joining status to reason is not part of the reason.
+    assert not s["statusDetail"].startswith("—")
+
+
+@pytest.mark.parametrize("marker,phrase,status", [
+    ("✔", "Connected", "connected"),
+    ("!", "Needs authentication", "needs-auth"),
+    ("✘", "Failed to connect", "failed"),
+    ("⏸", "Pending approval", "pending"),
+])
+def test_mcp_status_markers_parse_bare_and_with_an_appended_reason(marker, phrase, status):
+    """Every marker, both shapes. The CLI is free to append a reason to ANY
+    status, so none of them may depend on the segment being exactly the phrase."""
+    bare = f"srv: https://x.test/mcp (HTTP) - {marker} {phrase}"
+    [s] = lib.parse_mcp_list(bare)
+    assert s["status"] == status
+    assert s["statusDetail"] == ""
+
+    with_reason = f"{bare} — HTTP 500: something went wrong"
+    [s] = lib.parse_mcp_list(with_reason)
+    assert s["status"] == status
+    assert s["statusDetail"] == "HTTP 500: something went wrong"
+
+
+def test_mcp_reason_containing_a_dash_separator_keeps_the_endpoint_intact():
+    # Splitting on the LAST " - " would cut inside the reason and drag the
+    # endpoint along with it. The marker is the landmark, not the separator.
+    line = "srv: https://x.test/mcp (HTTP) - ✘ Failed to connect — retrying - see logs"
+    [s] = lib.parse_mcp_list(line)
+    assert s["status"] == "failed"
+    assert s["endpoint"] == "https://x.test/mcp"
+    assert s["statusDetail"] == "retrying - see logs"
+
+
+def test_mcp_unrecognised_marker_is_unknown_and_keeps_what_the_cli_said():
+    line = "srv: https://x.test/mcp (HTTP) - ⚡ Warp speed"
+    [s] = lib.parse_mcp_list(line)
+    assert s["status"] == "unknown"
+    # Not silently dropped: we don't know what it means, so show it verbatim.
+    assert s["statusDetail"] == "⚡ Warp speed"
+
+
+def test_mcp_list_skips_the_health_banner():
+    parsed = lib.parse_mcp_list(
+        "Checking MCP server health…\n\n"
+        "srv: /usr/local/bin/thing - ✔ Connected\n"
+    )
+    assert [s["name"] for s in parsed] == ["srv"]
+    assert parsed[0]["transport"] == "stdio"
+
+
 # -- subprocess decoding: never the locale's guess ---------------------------
 
 

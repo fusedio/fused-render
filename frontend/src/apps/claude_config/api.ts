@@ -386,6 +386,11 @@ export interface McpServer {
   endpoint: string;
   transport: string;
   status: McpStatus;
+  // The CLI's own explanation, where it gave one — "HTTP 400: … Authorization
+  // header is badly formatted". Empty for the statuses that need none. Row
+  // chrome shows the status; this is the part that tells you what to DO, so it
+  // belongs in the expanded panel rather than on the line.
+  statusDetail: string;
   kind: McpKind;
   connected: boolean;
   needsAuth: boolean;

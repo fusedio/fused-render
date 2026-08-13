@@ -248,6 +248,16 @@ export default function McpSection() {
                         <dd className="cc-lrow-dd">{s.transport}</dd>
                         <dt className="cc-lrow-dt">Status</dt>
                         <dd className="cc-lrow-dd">{st.label}</dd>
+                        {/* Why, in the CLI's own words. This is the whole
+                            reason a failed row is worth expanding: the pill can
+                            only say "failed", and what the user needs is
+                            "Authorization header is badly formatted". */}
+                        {s.statusDetail && (
+                          <>
+                            <dt className="cc-lrow-dt">Detail</dt>
+                            <dd className="cc-lrow-dd">{s.statusDetail}</dd>
+                          </>
+                        )}
                         <dt className="cc-lrow-dt">Registered by</dt>
                         <dd className="cc-lrow-dd">{KIND_LABEL[s.kind]}</dd>
                       </dl>
