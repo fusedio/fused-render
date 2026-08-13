@@ -13,7 +13,6 @@ import {
 // user reads, so a test that re-derives them from the same constant would agree
 // with any rewording, silently, including a bad one.
 const NO_REPO = "Not inside a git repository";
-const NO_HISTORY = "No history for this file";
 const NO_CLAUDE = "Claude is not available for this file";
 
 // A registered template, icon and all — the icon matters here because a disabled
@@ -32,7 +31,10 @@ const GIT: TemplateEntry = t("git");
 
 const image = t("image");
 const claude = t("claude");
-const history = t("history");
+// A companion a USER REGISTRY bound into this half: it is in the file's own
+// list, but nothing here ranks or explains it. It stands in wherever a test
+// needs a second own-companion beside the chat.
+const notes = t("notes");
 
 const names = (entries: TemplateEntry[]) => entries.map((e) => e.mode);
 // A switcher row as the header describes it: the mode, and the reason it is
@@ -50,8 +52,8 @@ const file = (own: TemplateEntry[], git: "pending" | "yes" | "no"): SideSplitInp
 });
 
 describe("sideSplit", () => {
-  // THE BUG: a companion-less file (a .pdf, a video, anything with no chat and
-  // no history binding) borrowed a PENDING git placeholder and the split came on
+  // THE BUG: a companion-less file (a .pdf, a video, anything with no chat
+  // binding) borrowed a PENDING git placeholder and the split came on
   // for it — which put a Git toggle in the bar for the length of the probe and
   // took it away again when the parent turned out not to be a repository.
   it("does not turn the split on for a pending borrowed git alone", () => {
@@ -91,16 +93,16 @@ describe("sideSplit", () => {
   // A file with a companion of its OWN splits from the first paint, verdict or
   // not — the pending placeholder rides along in `all` without deciding anything.
   it("splits on the file's own companions while the borrowed one is pending", () => {
-    const s = sideSplit(file([claude, history], "pending"));
+    const s = sideSplit(file([claude, notes], "pending"));
     expect(s.on).toBe(true);
-    expect(names(s.settled)).toEqual(["claude", "history"]);
-    expect(names(s.all)).toEqual(["claude", "git", "history"]);
+    expect(names(s.settled)).toEqual(["claude", "notes"]);
+    expect(names(s.all)).toEqual(["claude", "git", "notes"]);
   });
 
   it("puts the settled borrowed entry in SIDEBAR_MODES order, not the input's", () => {
-    const s = sideSplit(file([history, claude], "yes"));
-    expect(names(s.all)).toEqual(["claude", "git", "history"]);
-    expect(names(s.settled)).toEqual(["claude", "git", "history"]);
+    const s = sideSplit(file([notes, claude], "yes"));
+    expect(names(s.all)).toEqual(["claude", "git", "notes"]);
+    expect(names(s.settled)).toEqual(["claude", "git", "notes"]);
   });
 
   // Both sides or neither: a file whose only visible mode is `claude` has no
@@ -119,23 +121,22 @@ describe("sideSplit", () => {
   });
 });
 
-// THE SWITCHER'S ROWS: always three, the unavailable ones explaining themselves.
+// THE SWITCHER'S ROWS: always the whole closed list, the unavailable ones
+// explaining themselves.
 describe("sideSplit's menu", () => {
   it("lists every companion over a file that has none of them", () => {
     // A .pdf outside a repository: nothing is on offer, and the menu says so
-    // three times instead of collapsing to a control that isn't there.
+    // for each companion instead of collapsing to a control that isn't there.
     expect(rows(sideSplit(file([], "no")).menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
-      ["history", NO_HISTORY],
     ]);
   });
 
   it("explains only the ones that are missing", () => {
-    expect(rows(sideSplit(file([claude], "yes")).menu)).toEqual([
-      ["claude", null],
+    expect(rows(sideSplit(file([], "yes")).menu)).toEqual([
+      ["claude", NO_CLAUDE],
       ["git", null],
-      ["history", NO_HISTORY],
     ]);
   });
 
@@ -143,11 +144,10 @@ describe("sideSplit's menu", () => {
   // whole list exists for: the file used to show "Claude" alone, and a menu of
   // one hid itself, so there was no switcher at all.
   it("keeps a denied borrowed git on the list, disabled", () => {
-    const menu = sideSplit(file([claude, history], "no")).menu;
+    const menu = sideSplit(file([claude], "no")).menu;
     expect(rows(menu)).toEqual([
       ["claude", null],
       ["git", NO_REPO],
-      ["history", null],
     ]);
     // A placeholder is a row, not a template: nothing to frame.
     expect(menu.find((e) => e.mode === "git")!.path).toBe(null);
@@ -160,7 +160,6 @@ describe("sideSplit's menu", () => {
     expect(rows(menu)).toEqual([
       ["claude", null],
       ["git", null],
-      ["history", NO_HISTORY],
     ]);
     expect(menu.find((e) => e.mode === "git")).toBe(GIT_PLACEHOLDER);
   });
@@ -169,7 +168,7 @@ describe("sideSplit's menu", () => {
   // is the whole reason `menu` is a third list rather than a flag on `all`.
   it("decides nothing", () => {
     const s = sideSplit(file([], "no"));
-    expect(s.menu.length).toBe(3);
+    expect(s.menu.length).toBe(2);
     expect(s.on).toBe(false);
     expect(s.offered).toBe(false);
     expect(names(s.settled)).toEqual([]);
@@ -182,24 +181,22 @@ describe("sideSplit's menu", () => {
 
   // A DISABLED ROW IS THE MODE WITH THE CLICK TAKEN AWAY, so it keeps the mode's
   // own glyph. It shipped without this and the screenshot said it plainly: the
-  // sidebar drew Claude's real icon beside a boxed "G" and a boxed "H", which
-  // reads as two unknown modes rather than as two unavailable familiar ones.
+  // sidebar drew a boxed "C" beside a boxed "G", which reads as unknown modes
+  // rather than as unavailable familiar ones.
   it("dresses a disabled row in the mode's real icon", () => {
-    // The file BINDS claude and history — the gate is what denied them, and the
-    // filter that dropped them took the icons with it (Preview re-supplies them
+    // The file BINDS claude — the gate is what denied it, and the
+    // filter that dropped it took the icon with it (Preview re-supplies them
     // from the raw stat).
-    const s = sideSplit({ ...file([], "no"), bound: [claude, history, GIT] });
+    const s = sideSplit({ ...file([], "no"), bound: [claude, GIT] });
     expect(s.menu.map((e) => [e.mode, e.icon])).toEqual([
       ["claude", iconOf("claude")],
       ["git", iconOf("git")],
-      ["history", iconOf("history")],
     ]);
     // ...and they are still disabled rows, not entries: no path, and the reason
     // is what makes them unselectable.
     expect(rows(s.menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
-      ["history", NO_HISTORY],
     ]);
     expect(s.menu.every((e) => e.path === null)).toBe(true);
   });
@@ -215,22 +212,20 @@ describe("sideSplit's menu", () => {
   });
 
   it("falls back to no icon only where the mode is bound nowhere", () => {
-    // Nothing registers `history` for this file type anywhere, so there is no
+    // Nothing registers `claude` for this file type anywhere, so there is no
     // real glyph in existence; the caller draws its last-resort letter box.
-    const s = sideSplit({ ...file([claude], "yes"), bound: [claude, GIT] });
-    expect(s.menu.find((e) => e.mode === "history")!.icon).toBe(null);
+    const s = sideSplit({ ...file([], "yes"), bound: [GIT] });
+    expect(s.menu.find((e) => e.mode === "claude")!.icon).toBe(null);
   });
 
   // A user registry may bind a companion of its own into this half. It has no
-  // canned reason and no rank, so it lands after the three rather than being
-  // dropped from the rows the way an unknown mode is dropped from the order.
+  // canned reason and no rank, so it lands after the ranked ones rather than
+  // being dropped from the rows the way an unknown mode is dropped from the order.
   it("keeps an unknown companion at the end", () => {
-    const notes = t("notes");
     const s = sideSplit({ ...file([claude], "yes"), own: [claude, notes] });
     expect(rows(s.menu)).toEqual([
       ["claude", null],
       ["git", null],
-      ["history", NO_HISTORY],
       ["notes", null],
     ]);
   });
@@ -249,7 +244,7 @@ describe("initialSide", () => {
   });
 
   it("honours a settled companion", () => {
-    expect(initialSide("?_side=history", sideSplit(file([history], "pending")))).toBe("history");
+    expect(initialSide("?_side=claude", sideSplit(file([claude], "pending")))).toBe("claude");
   });
 
   it("migrates a legacy ?_mode=claude into the sidebar", () => {
@@ -282,19 +277,19 @@ describe("sideToggleTarget", () => {
   });
 
   it("never outranks a settled companion with a pending one", () => {
-    // defaultSidebarMode's order is Claude / Git / History, so an unfiltered
-    // list would have opened the pending Git over this file's real History.
-    expect(sideToggleTarget(targets(file([history], "pending")), null, null)).toBe("history");
+    // defaultSidebarMode ranks Git above an unranked companion, so an unfiltered
+    // list would have opened the pending Git over this file's real one.
+    expect(sideToggleTarget(targets(file([notes], "pending")), null, null)).toBe("notes");
     // ...and picks Git once it is real.
-    expect(sideToggleTarget(targets(file([history], "yes")), null, null)).toBe("git");
+    expect(sideToggleTarget(targets(file([notes], "yes")), null, null)).toBe("git");
   });
 
   it("prefers the chat when the file has one", () => {
-    expect(sideToggleTarget(targets(file([claude, history], "yes")), null, null)).toBe("claude");
+    expect(sideToggleTarget(targets(file([claude, notes], "yes")), null, null)).toBe("claude");
   });
 
   it("reopens the last companion the user had open", () => {
-    expect(sideToggleTarget(targets(file([claude, history], "yes")), null, "history")).toBe("history");
+    expect(sideToggleTarget(targets(file([claude, notes], "yes")), null, "notes")).toBe("notes");
     // ...unless it is no longer on offer here.
     expect(sideToggleTarget(targets(file([claude], "no")), null, "git")).toBe("claude");
     // ...including when it is only PENDING: the button must not offer to open a
@@ -376,8 +371,8 @@ describe("reconcileSideSearch", () => {
       })
     ).toBe("zoom=2&_side=claude");
     expect(
-      reconcileSideSearch("?zoom=2", { splitCapable: true, offered: true, activeSide: "history" })
-    ).toBe("zoom=2&_side=history");
+      reconcileSideSearch("?zoom=2", { splitCapable: true, offered: true, activeSide: "git" })
+    ).toBe("zoom=2&_side=git");
   });
 });
 

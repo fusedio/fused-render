@@ -4,14 +4,15 @@ folder resolves to.
 The rule: `index.html` if the folder has one, else the FIRST non-hidden
 top-level `.html` in name order, else nothing. Only ONE consumer is left —
 `templates/claude/app.py`, whose split view frames a folder's page beside the
-chat — plus `templates/history`, which asks the same predicate of an extracted
-snapshot tree to decide whether that revision renders as a page or is browsed as
-a directory. The other consumer, the `app` template, is gone (D264) and took its
-own tests with it; this file is what survived, because the rule did.
+chat. The other two are gone: the `app` template (D264, which took its own tests
+with it) and the per-path timeline mode, which asked the same predicate of an
+extracted snapshot tree to decide whether a revision rendered as a page or was
+browsed as a directory. This file is what survived, because the rule did.
 
-Deliberately still SHARED rather than folded into claude/app.py: history asks it
-of a materialised tree through `shared/`, so a copy inside one template would be
-a second answer to "which page is this folder's page".
+Deliberately still SHARED rather than folded into claude/app.py: "which page is
+this folder's page" is the kind of question that grows second answers the moment
+it lives inside one template, which is exactly what happened while there were
+three callers.
 
 The module is exec'd standalone, exactly as production does (a template must not
 import `fused_render`, SPEC PY-15 / D166), so nothing here goes through a

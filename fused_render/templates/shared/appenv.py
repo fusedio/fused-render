@@ -147,8 +147,13 @@ def is_linked_app_dir(path: str) -> bool:
 def linked_app_dir_for(path: str) -> str:
     """The registered linked-app folder containing `path` (the folder itself
     or anything below it), or "" when there is none. The linked-app analogue
-    of the workspace `<tag>/<name>` containment rule — what `history` uses to
-    find the repo a file belongs to. Pure path arithmetic, no I/O."""
+    of the workspace `<tag>/<name>` containment rule, for finding the repo a
+    file belongs to. Pure path arithmetic, no I/O.
+
+    NO TEMPLATE CALLS THIS TODAY — its one caller was the per-path timeline mode
+    that has since been removed. Kept as part of the shared env contract (see
+    `linked_app_dirs`), which the server still exports on every registry
+    write."""
     ap = os.path.abspath(path)
     for d in linked_app_dirs():
         ad = os.path.abspath(d)
