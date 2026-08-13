@@ -188,7 +188,7 @@ export default function Apps({ config }: { config: Config }) {
                   onClick={() => setTag(tag === t ? null : t)}
                 >
                   {/* The catalog chip WEARS the marketplace's user-facing name
-                      ("showcase", like the sidebar entry and /community page)
+                      ("showcase")
                       while keeping "community" as its value — the tag dirs,
                       the ?tag= param, and community.py all speak that. A real
                       workspace tag dir named "community" is not the catalog
