@@ -492,6 +492,46 @@
     return new URLSearchParams(splitSearch(targetSearch()).rest);
   }
 
+  // ---- user-gesture gate for the once-per-visit push (D268) -----------------
+  // The first-change-push below may only be spent on a write the USER caused.
+  // A page that seeds a param during initialization (computing a default and
+  // writing it into the URL from its boot path) is describing the state it
+  // ALREADY loaded in — that is not a navigation step anyone took, so it must
+  // not cost a history entry, and re-seeding it after a Back must never push
+  // again. Without this gate a seeding view is a Back trap: entry A (pristine)
+  // → boot seeds the param → push entry B → user presses Back → lands on A →
+  // the view remounts → boot seeds again → push B again, truncating the
+  // forward branch. Back could never leave the view.
+  //
+  // Detection is our OWN capture-phase listeners, not navigator.userActivation:
+  // WKWebView is a supported host (§25) and cross-frame activation semantics
+  // are subtle, while a sticky flag set by a real pointerdown/keydown is the
+  // same answer everywhere. Capture phase so a template that stops propagation
+  // on its own controls still counts as a gesture; sticky because the point is
+  // "this document has been interacted with at all", not "within N ms".
+  let sawGesture = false;
+  function markGesture() {
+    sawGesture = true;
+  }
+  // The runtime's own document, plus the target's when the target is an
+  // ancestor shell (a click landing in the shell's chrome is still the user).
+  const gestureDocs = [document];
+  try {
+    if (target !== window && target.document && target.document !== document) {
+      gestureDocs.push(target.document);
+    }
+  } catch (e) {
+    /* ancestor became unreachable — our own document is enough */
+  }
+  for (const doc of gestureDocs) {
+    try {
+      doc.addEventListener("pointerdown", markGesture, true);
+      doc.addEventListener("keydown", markGesture, true);
+    } catch (e) {
+      /* document gone; the gate just stays closed for this frame */
+    }
+  }
+
   const listeners = new Set();
 
   // Only the visible (non-reserved) params matter to onChange; snapshotting
@@ -580,20 +620,30 @@
     if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
     const newSearch = search ? "?" + search : "";
     const newUrl = target.location.pathname + newSearch;
-    // First-change-push: the first param write on a pristine history entry
-    // pushes a new entry (preserving the as-loaded state for Back), every
-    // later write replaces on top of it — so param churn costs at most one
-    // entry per visit. "Pristine" is tracked via a flag on history.state, not
-    // a JS variable: the flag travels with the entry, so after Back to the
-    // pristine entry the next write correctly pushes again (truncating the
-    // old forward branch), and it survives reloads. Existing state (e.g. the
-    // tab shell's fusedActiveTab) is merged, not clobbered.
+    // First-change-push: the first USER-CAUSED param write on a pristine
+    // history entry pushes a new entry (preserving the as-loaded state for
+    // Back), every later write replaces on top of it — so param churn costs at
+    // most one entry per visit. "Pristine" is tracked via a flag on
+    // history.state, not a JS variable: the flag travels with the entry, so
+    // after Back to the pristine entry the next user-caused write correctly
+    // pushes again (truncating the old forward branch), and it survives
+    // reloads. Existing state (e.g. the tab shell's fusedActiveTab) is merged,
+    // not clobbered.
+    //
+    // A write made before any gesture in this document (D268) takes the
+    // coalesced replace path instead AND leaves the entry pristine: a param
+    // the page computed for itself at load IS the as-loaded state, so it is
+    // folded into the entry the user is standing on rather than costing one —
+    // and the entry stays unflagged, so the user's first REAL interaction
+    // still gets its one entry, with Back restoring the seeded default.
     const prevState = target.history.state;
     const unchanged = newSearch === targetSearch();
     if (unchanged) {
       // Nothing to write; fall through to the notification below.
-    } else if (prevState && prevState.fusedParamEntry) {
-      // Replace-on-top writes are the scrub-hot path: coalesce them (D99).
+    } else if (!sawGesture || (prevState && prevState.fusedParamEntry)) {
+      // Replace-on-top writes (and pre-gesture seeds) are the scrub-hot path:
+      // coalesce them (D99). replaceState keeps history.state as-is, so a
+      // pre-gesture seed leaves the entry pristine for the real first change.
       // Readers see the new value immediately via the overlay; the history
       // write happens now if the budget allows, else on the trailing timer.
       pendingSearch = newSearch;
