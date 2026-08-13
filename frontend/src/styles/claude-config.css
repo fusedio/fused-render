@@ -1,9 +1,15 @@
 /* ---- Claude config app (apps/claude_config) ------------------------------- */
 /* Two routes: /claude-config (the settings panel, CLAUDE.md explorer included
-   as its MD Files section) and /claude-artifacts. The LAYOUT is the bundled html+py app it replaces, close to
-   value-for-value — a 210px section nav, a single content column, a split
-   preview pane, cards/rows/pills at the same sizes — so the port is
+   as its MD Files section) and /claude-artifacts. The cards/rows/pills are the
+   bundled html+py app this replaces, close to value-for-value, so the port is
    recognisably the same tool.
+ *
+ * The one thing that is NOT value-for-value is the section nav. That app owned
+ * the window and put its sections in a 230px left column; here that column
+ * landed against the shell's own GlobalSidebar and the page read as two
+ * sidebars glued together. So the sections are a horizontal strip
+ * (.cc-tabbar/.cc-tab) across the top of .cc-root, and .cc-body below it is the
+ * content column plus — for MD Files only — the split preview pane.
  *
  * The COLOURS are not. That app shipped its own warm-coral Claude palette as
  * hardcoded hexes and therefore ignored this app's Light/Dark setting entirely;
@@ -16,10 +22,10 @@
  * .field-control (styles/fields.css) rather than re-skinning either. */
 
 /* The page box both routes fill (shell/App.tsx wraps each in one): a bounded
-   flex column for .cc-root to grow into. Full-bleed — no padding, so the
-   panel's inner sidebar meets the shell sidebar edge-to-edge exactly like the
-   Sessions inbox does, instead of floating in a padded, bordered card that
-   read as an embedded iframe. */
+   flex column for .cc-root to grow into. Full-bleed — no padding, so the tab
+   strip and the preview pane meet the window edges exactly like the Sessions
+   inbox does, instead of floating in a padded, bordered card that read as an
+   embedded iframe. */
 .cc-page {
   flex: 1 1 auto;
   min-height: 0;
@@ -29,9 +35,9 @@
 
 .cc-root {
   display: flex;
-  /* Fills what .cc-page leaves it — the nav, the content column and the preview
-     pane each scroll inside this box rather than the page scrolling as a
-     whole. */
+  /* Tab strip on top, then the body — each of whose columns scrolls inside this
+     box rather than the page scrolling as a whole. */
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
@@ -39,95 +45,77 @@
   font-size: 13px;
 }
 
-/* -- section nav ----------------------------------------------------------- */
-
-/* Sized and weighted to match the Sessions inbox's sidebar (230px, panel bg,
-   tight 5px rows, neutral hover, bold-on-active) so the two Claude pages read
-   as siblings rather than two different products. */
-.cc-nav {
-  flex: 0 0 230px;
-  width: 230px;
+.cc-body {
   display: flex;
-  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* -- section tab strip ----------------------------------------------------- */
+/* Horizontal, full width, pinned above the content. Scrolls sideways rather
+   than wrapping when the window is narrow: a wrapped strip changes the page's
+   header height as you resize, which moves the content under the pointer. */
+
+.cc-tabbar {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
   gap: 2px;
-  padding: 12px 8px;
-  overflow-y: auto;
+  padding: 8px 12px;
+  overflow-x: auto;
+  scrollbar-width: thin;
   background: var(--bg-alt);
-  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
-.cc-nav-title {
-  margin: 4px 8px 4px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.cc-nav-tagline {
-  margin: 0 8px 16px;
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--fg-muted);
-}
-
-.cc-nav-item {
+.cc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
   font: inherit;
-  font-size: 13px;
-  text-align: left;
-  padding: 5px 8px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  padding: 5px 10px;
   border: none;
   border-radius: 6px;
   background: none;
-  color: var(--fg);
-  cursor: pointer;
-}
-
-.cc-nav-item:hover {
-  background: rgba(var(--tint), 0.06);
-}
-
-.cc-nav-item.active {
-  background: rgba(var(--tint), 0.08);
-  font-weight: 600;
-}
-
-.cc-nav-item:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* The git badge, pinned to the nav's bottom edge: the panel's one always-visible
-   statement about whether anything is unsaved, and the button that commits it. */
-.cc-badge {
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  margin-top: auto;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: none;
   color: var(--fg-muted);
   cursor: pointer;
 }
 
-.cc-badge.clean {
-  color: var(--success);
+.cc-tab:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--fg);
 }
 
-.cc-badge.dirty {
-  color: var(--warning);
-  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
-  background: color-mix(in srgb, var(--warning) 9%, var(--bg-alt));
+.cc-tab.active {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+  font-weight: 600;
 }
 
-.cc-badge:disabled {
-  cursor: default;
-  opacity: 0.7;
-}
-
-.cc-badge:focus-visible {
+.cc-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* History is not one of the sections — it is the page you go to about the repo
+   itself, so it sits alone at the far edge with a hairline of its own. */
+.cc-tab-history {
+  margin-left: auto;
+  border: 1px solid var(--border);
+}
+
+/* The dirty signal the nav's git badge used to carry, reduced to a dot: on any
+   tab you still learn the config has uncommitted drift. Same --warning hue the
+   badge used, so "there is drift" keeps one colour across the app. */
+.cc-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
 }
 
 /* -- content column -------------------------------------------------------- */
@@ -154,19 +142,36 @@
   overflow-wrap: anywhere;
 }
 
-/* A title row for the pages that have no section nav (shell/ClaudeArtifacts):
-   heading on the left, and — where one is mounted — the git badge on the right,
-   since the nav's bottom edge it normally pins to isn't there. */
+/* The config panel's caption line: the file this tab edits on the left, and the
+   standing "what happens when you edit anything here" note on the right (the
+   sentence the section nav's tagline used to carry — one fact about the whole
+   app, so it does not deserve a column, and its full wording is the title=). */
+.cc-caption-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.cc-caption-row .cc-caption {
+  margin-bottom: 0;
+}
+
+.cc-caption-note {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* A title row for the pages that are not the config panel (shell/AiModels,
+   shell/ClaudeArtifacts): heading and caption on the left, actions on the
+   right. */
 .cc-page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-}
-
-.cc-page-head .cc-badge {
-  flex: 0 0 auto;
-  margin-top: 0;
 }
 
 .cc-toolbar {
@@ -816,35 +821,20 @@ textarea.cc-textbox {
 }
 
 /* -- narrow windows -------------------------------------------------------- */
-/* Below ~900px the three columns don't fit. The nav becomes a horizontal strip
-   of wrapping chips above the content (its badge included) and the preview pane
-   stacks under the content column instead of beside it. */
+/* Below ~900px the content and the preview pane don't fit side by side, so the
+   pane stacks under the content column instead. The tab strip needs no rule of
+   its own: it scrolls sideways at every width. What DOES go is the caption's
+   standing note — at this width the file the tab edits is the only half of that
+   row worth the space, and the note survives as the row's title=. */
 
 @media (max-width: 900px) {
-  .cc-root {
+  .cc-body {
     flex-direction: column;
     overflow-y: auto;
   }
 
-  .cc-nav {
-    flex: 0 0 auto;
-    width: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 4px;
-    padding: 10px 12px;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .cc-nav-title,
-  .cc-nav-tagline {
+  .cc-caption-note {
     display: none;
-  }
-
-  .cc-badge {
-    margin-top: 0;
-    margin-left: auto;
   }
 
   .cc-preview {

@@ -1,6 +1,8 @@
 // Profiles section: a profile is a git branch over the Claude config dir, so
 // creating one forks, switching one checks out, and exporting one archives the
-// branch's tracked files.
+// branch's tracked files. Which is also why it has no tab of its own — it is a
+// block of the History page (sections/HistorySection.tsx), composed rather than
+// copied, so this file stays the single owner of the switch/import flow.
 //
 // Two invariants shape the whole section:
 //

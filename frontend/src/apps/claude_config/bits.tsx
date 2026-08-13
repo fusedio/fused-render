@@ -1,8 +1,8 @@
 // Shared pieces of the Claude-config app: the row/card/pill vocabulary its
 // sections are built from, the three-state toggle, the change-preview modal,
-// the load-once-with-reload hook every section uses, and the two bits of page
-// chrome the panel mounts (git badge, and the split preview pane the MD Files
-// section needs). They lived in ClaudeConfig.tsx; they sit here so a section
+// the load-once-with-reload hook every section uses, the git-status hook the
+// tab strip and the History page share, and the split preview pane the MD Files
+// section needs. They lived in ClaudeConfig.tsx; they sit here so a section
 // and the panel can both reach them without importing across pages.
 //
 // Nothing here re-invents something the shell already ships. Toasts are
@@ -298,23 +298,24 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
 
 // -- page chrome --------------------------------------------------------------
 
-// The git badge: the repo's uncommitted-change count, and the way to commit it.
-// Clean, it is just a re-check; dirty, it previews the drift first — a commit
-// here folds every pending edit into one, so what it sweeps up has to be
-// visible before it happens.
-export function StatusBadge({
-  epoch,
-  onCommitted,
-}: {
-  epoch: number;
-  onCommitted: () => void;
-}) {
+export interface GitStatusState {
+  // null until the first read lands; stays null if it failed.
+  status: cc.GitStatus | null;
+  failed: boolean;
+  // Re-read WITHOUT bumping the caller's epoch — a plain re-check must not
+  // remount anything the way a commit does.
+  recheck: () => void;
+}
+
+// One `git status` read per epoch, shared by the two places that need it: the
+// tab strip's History button (which only renders the dirty dot) and the History
+// page's "Uncommitted changes" card (which acts on it). A hook rather than a
+// component because those two render the same fact completely differently, and
+// the thing worth sharing is the fetch — one status call per epoch, no more.
+export function useGitStatus(epoch: number): GitStatusState {
   const [status, setStatus] = useState<cc.GitStatus | null>(null);
   const [failed, setFailed] = useState(false);
-  // A plain re-check is the badge's own business: it must not remount the
-  // section the way a commit does.
-  const [recheck, setRecheck] = useState(0);
-  const { node: modal, ask } = useChangePreview();
+  const [n, setN] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -325,51 +326,9 @@ export function StatusBadge({
     return () => {
       alive = false;
     };
-  }, [epoch, recheck]);
+  }, [epoch, n]);
 
-  const click = async () => {
-    if (!status?.dirty) {
-      setRecheck((n) => n + 1);
-      return;
-    }
-    const drift = await guard(cc.gitOps.drift());
-    if (!drift) return;
-    const choice = await ask<"commit" | false>({
-      title: "Uncommitted changes",
-      preview: drift,
-      buttons: [
-        { label: "Close", value: false },
-        { label: "Commit", value: "commit", primary: true },
-      ],
-    });
-    if (choice !== "commit") return;
-    if (!(await guard(cc.gitOps.commit()))) return;
-    toastOk("Committed");
-    onCommitted();
-  };
-
-  const label = failed
-    ? "status unavailable"
-    : !status
-      ? "checking…"
-      : status.dirty
-        ? `${status.files.length} uncommitted change(s)`
-        : "✓ all changes committed";
-
-  return (
-    <>
-      {modal}
-      <button
-        type="button"
-        className={"cc-badge" + (status?.dirty ? " dirty" : status ? " clean" : "")}
-        disabled={failed}
-        title={status?.dirty ? "Review and commit the pending changes" : "Re-check git status"}
-        onClick={click}
-      >
-        {label}
-      </button>
-    </>
-  );
+  return { status, failed, recheck: useCallback(() => setN((v) => v + 1), []) };
 }
 
 // fs path -> the encoded tail of an /explorer/view/ or /explorer/embed/ URL.
@@ -433,8 +392,31 @@ export function fileToB64(file: File): Promise<string> {
 
 // Feather-style stroke icons for the card actions. stroke=currentColor so each
 // one inherits its button's text colour, including a danger hover.
-export function Icon({ name }: { name: "edit" | "eye" | "folder" | "trash" | "refresh" }) {
+export function Icon({
+  name,
+}: {
+  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy" | "download";
+}) {
   const paths: Record<string, ReactNode> = {
+    clock: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <polyline points="12 7 12 12 15.5 14" />
+      </>
+    ),
+    copy: (
+      <>
+        <rect x="9" y="9" width="12" height="12" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </>
+    ),
+    download: (
+      <>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </>
+    ),
     edit: <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />,
     eye: (
       <>
