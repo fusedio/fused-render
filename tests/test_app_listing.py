@@ -164,6 +164,37 @@ def test_an_apps_own_subfolder_is_not_a_second_app(tmp_path):
     assert _names(tmp_path) == ["foo"]
 
 
+def test_a_stray_html_at_the_second_level_does_not_hide_the_apps_below_it(tmp_path):
+    """A page-named-anything must NOT claim the folder's whole subtree.
+
+    Only `index.html` is an author declaring "this folder IS the page and what is
+    below it is my assets". A repo cloned to `<ws>/local/<repo>/` routinely ships
+    a `coverage.html`, a `docs.html`, a report — and treating one of those as that
+    declaration deleted EVERY app in the repo from the grid, which is the exact
+    failure the depth-1 always-descend exception exists to prevent, one level
+    further down where user-cloned repos actually land.
+    """
+    repo = tmp_path / "local" / "repo"
+    _app(repo, "dash")
+    _app(repo, "maps")
+    (repo / "coverage.html").write_text("<html></html>", encoding="utf-8")
+
+    # The repo itself is a card (depth 2 lists anything, and it does have a
+    # page), and its two apps are still there.
+    assert _names(tmp_path) == ["repo", "dash", "maps"]
+
+
+def test_an_index_html_at_the_second_level_does_claim_the_subtree(tmp_path):
+    """The other side of the rule: rename that page to `index.html` and the
+    folder owns what is below it. This is the pair — the two tests together are
+    the whole rule, and either one alone reads as an arbitrary choice."""
+    repo = tmp_path / "local" / "repo"
+    _app(repo, "dash")
+    (repo / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    assert _names(tmp_path) == ["repo"]
+
+
 def test_a_second_level_folder_with_any_html_still_lists(tmp_path):
     """Regression guard: depth 2 was the WHOLE of the old listing, and its rule
     is unchanged — a page under any name is an app's entry there."""
@@ -184,13 +215,102 @@ def test_a_second_level_folder_with_no_html_still_lists_entry_less(tmp_path):
     assert app["updated_at"] is not None
 
 
-def test_vendor_and_package_dirs_contribute_nothing(tmp_path):
-    """Pruned by name (the index's shared vendor floor) and by the leaf rule
-    (macOS packages), neither listed nor descended. A workspace holds checked-out
-    repos, and `node_modules` is neither an app nor 40k files worth walking."""
-    _app(tmp_path / "repo" / "node_modules", "pkg")
-    _app(tmp_path / "repo" / "Bundle.app", "Contents")
-    _app(tmp_path / "repo", "real")
+def test_vendor_dirs_contribute_nothing_whatever_their_case(tmp_path):
+    """Pruned by name, neither listed nor descended: a workspace holds
+    checked-out repos, and `node_modules` is neither an app nor 40k files worth
+    walking on a page load.
+
+    Case-folded, which the index's own set lookup is not: a `NODE_MODULES` that
+    got walked while `node_modules` was pruned is a difference nobody can see
+    until the same folder lists differently on two machines.
+
+    The two spellings go under DIFFERENT parents on purpose. Created as siblings
+    they are one directory on a case-insensitive filesystem (macOS, Windows), so
+    the second `mkdir` lands inside the first and the case half of this test
+    asserts nothing at all — which is exactly how it passed with the rule
+    mutated back to case-sensitive.
+    """
+    _app(tmp_path / "lower" / "node_modules", "pkg")
+    _app(tmp_path / "upper" / "NODE_MODULES", "pkg2")
+    _app(tmp_path / "mixed" / "__PyCache__", "pkg3")
+    _app(tmp_path / "lower", "real")
+
+    assert _names(tmp_path) == ["real"]
+
+
+def test_an_opaque_container_is_dropped_but_a_dot_app_folder_with_a_page_is_not(
+    tmp_path,
+):
+    """The leaf rule is NARROWED here, and this is why.
+
+    `index/ignore.is_leaf_dir` also covers `.app`, because for the INDEX a macOS
+    package must be invisible. On the apps page invisibility is the wrong
+    failure: a user's folder named `todo.app` would be missing from their grid
+    with nothing to explain it. So a `.app` with a page is an app, a `.app`
+    without one is a bundle (no card), neither is ever descended, and only the
+    suffixes nobody names a project after are dropped outright.
+    """
+    _app(tmp_path / "local", "todo.app")                    # a folder, with a page
+    bundle = _app(tmp_path / "local", "Sample.app", entry=None)  # a real bundle
+    _app(bundle, "Contents")                                # its innards
+    _app(tmp_path / "local", "Some.framework")
+    _app(tmp_path / "local", "Photos.photoslibrary")
+
+    # `todo.app` lists; the bundle, its `Contents`, and the two opaque
+    # containers contribute nothing at all.
+    assert _names(tmp_path) == ["todo.app"]
+
+
+def test_symlinked_directories_are_listed_but_never_walked(tmp_path):
+    """A link is a card, not a doorway.
+
+    It still LISTS when it resolves to a folder with a page — that worked under
+    the two-level walk and linking an app folder into the workspace is a
+    reasonable thing to do. But the walk stops there, and at three levels deep
+    that matters twice over: `<ws>/loop -> <ws>` would otherwise duplicate the
+    whole listing under a bogus tag (and `loop/loop` under that), and a link into
+    a remote mount would pay three levels of kernel listing on every page load.
+    """
+    _app(tmp_path / "local", "real")
+    elsewhere = tmp_path.parent / "elsewhere"
+    _app(elsewhere, "linked")
+    os.symlink(elsewhere / "linked", tmp_path / "local" / "link-to-app")
+    os.symlink(tmp_path, tmp_path / "loop")  # an ancestor loop
+
+    names = _names(tmp_path)
+    # The link to an app folder is a card; the ancestor loop is not (the
+    # workspace root has no page of its own) and, crucially, nothing under it
+    # was walked — no second `real`, no `loop/loop`.
+    assert names == ["link-to-app", "real"]
+
+
+def test_nothing_under_a_mount_is_even_stat_ed(tmp_path, monkeypatch):
+    """MountGuard, consulted BEFORE the first syscall on a candidate.
+
+    A single kernel listing on a flat remote prefix has wedged an rclone mount in
+    production, and a `stat` on a wedged mount blocks the thread serving
+    /api/apps. So this asserts the ORDER, not just the outcome: the stand-ins
+    below fail the test if the walk touches the guarded path at all.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))  # a home is guarded whole
+    _app(tmp_path / "local", "real")
+    _app(home / "branches" / "main", "mounts")
+
+    for fn in ("isdir", "islink"):
+        real = getattr(os.path, fn)
+        monkeypatch.setattr(os.path, fn, lambda p, _r=real, *a, **kw: (
+            pytest.fail(f"os.path.{fn} on a guarded path: {p}")
+            if str(home) in str(p) else _r(p)
+        ))
+    real_listdir = os.listdir
+
+    def listdir(path, *a, **kw):
+        if str(home) in str(path):
+            pytest.fail(f"os.listdir on a guarded path: {path}")
+        return real_listdir(path, *a, **kw)
+
+    monkeypatch.setattr(os, "listdir", listdir)
 
     assert _names(tmp_path) == ["real"]
 
