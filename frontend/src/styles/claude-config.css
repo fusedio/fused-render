@@ -832,7 +832,8 @@
   background: var(--on-accent);
 }
 
-/* Unset: muted, dashed, knob centred — neither on nor off. */
+/* Unset with no known default: muted, dashed, knob centred — neither on nor
+   off, because we genuinely don't know which Claude will pick. */
 .cc-switch input:indeterminate + .cc-slider {
   background: transparent;
   border: 1px dashed var(--fg-muted);
@@ -840,6 +841,23 @@
 
 .cc-switch input:indeterminate + .cc-slider::before {
   transform: translateX(8px);
+  background: var(--fg-muted);
+}
+
+/* Unset but DOCUMENTED: the knob sits at Claude's default position (so the row
+   states what will actually happen) while keeping the dashed, muted treatment
+   of the middle state — the same visual grammar, so "not your choice" reads the
+   same whether or not we know the value. Notably it must NOT take the accent
+   fill of a checked switch: accent is what an explicit choice looks like, and
+   the two must stay distinguishable at a glance in both themes. */
+.cc-switch.inherited .cc-slider,
+.cc-switch.inherited input:checked + .cc-slider {
+  background: transparent;
+  border: 1px dashed var(--fg-muted);
+}
+
+.cc-switch.inherited .cc-slider::before,
+.cc-switch.inherited input:checked + .cc-slider::before {
   background: var(--fg-muted);
 }
 

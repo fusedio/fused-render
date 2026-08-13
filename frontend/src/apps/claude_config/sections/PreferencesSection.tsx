@@ -7,10 +7,15 @@
 // picks the change up without a code change.
 //
 // Unset is a first-class state, never "off"/"empty": a key with no value in
-// settings.json is using Claude's OWN default, which may well be `true`. So a
-// toggle renders indeterminate, a select shows an italic "— default: … —"
-// placeholder, and the reset link (which patches null, deleting the leaf) only
-// appears once a key actually has a value.
+// settings.json is using Claude's OWN default, which may well be `true`. But
+// "unset" and "we don't know what happens" are not the same thing, and the
+// catalog usually documents the default — so a toggle shows THAT position,
+// dashed and muted, and only falls back to the indeterminate middle when the
+// catalog has no boolean to show. A select shows an italic "— default: … —"
+// placeholder. Either way the "Claude default" text stays beside the control
+// and the reset link (which patches null, deleting the leaf) only appears once
+// a key actually has a value — those two are what keep an inherited value
+// distinguishable from a chosen one.
 import { useCallback, useEffect, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -36,6 +41,23 @@ function unsetLabel(d: PrefEntry): string {
   if (d.unsetLabel) return d.unsetLabel;
   if (d.default !== null && d.default !== undefined) return `default: ${JSON.stringify(d.default)}`;
   return "Claude default";
+}
+
+// A toggle showing its inherited default already SHOWS the value, so spelling
+// it out again ("default: true" beside a switch sitting at on) is the same fact
+// twice. The catalog's own override still wins where it has one.
+function toggleUnsetLabel(d: PrefEntry): string {
+  return d.unsetLabel || "Claude default";
+}
+
+// The documented default for a TOGGLE, or null when we don't have one.
+// Strictly `typeof === "boolean"`: the catalog's `default` is any JSON scalar
+// and `null` is ambiguous there (it means both "not documented" and "documented
+// as null", see api.ts), so anything that isn't already a boolean means we do
+// not know — and the switch must stay in the indeterminate middle rather than
+// coerce "true"/1 into a position we'd be asserting on Claude's behalf.
+function boolDefault(d: PrefEntry): boolean | null {
+  return typeof d.default === "boolean" ? d.default : null;
 }
 
 // A text/number field. Local draft state so typing isn't a write per keystroke;
@@ -195,12 +217,28 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                         reset
                       </button>
                     ) : (
-                      <span className="cc-unset">{unsetLabel(d)}</span>
+                      // Stays for every unset key, toggles included: once a
+                      // toggle can sit at Claude's default position, THIS is
+                      // what distinguishes an inherited value from a chosen
+                      // one in words rather than in styling alone.
+                      <span className="cc-unset">
+                        {d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
+                      </span>
                     )}
                     {d.control === "toggle" && (
+                      // Unset + a documented boolean -> show that position,
+                      // muted; unset with nothing documented -> null, the
+                      // indeterminate middle. Clicking an inherited `true`
+                      // writes an explicit `false` (the browser flips
+                      // e.target.checked off the position it is showing), so
+                      // the one thing you cannot do from here is explicitly
+                      // pin the value that already equals the default — which
+                      // is a no-op write anyway, and `reset` still makes the
+                      // return trip.
                       <Toggle3
                         label={d.label}
-                        value={isSet ? !!val : null}
+                        value={isSet ? !!val : boolDefault(d)}
+                        inherited={!isSet && boolDefault(d) !== null}
                         onChange={(next) => patch(d.key, next)}
                       />
                     )}

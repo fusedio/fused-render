@@ -330,20 +330,31 @@ export function Pill({ tone = "neutral", children }: { tone?: PillTone; children
 
 // -- three-state toggle -------------------------------------------------------
 
-// on / off / unset. Unset is a THIRD state (indeterminate), never rendered as
-// off: a Claude default that happens to be `true` would otherwise read as an
-// explicit `false` the user chose. `indeterminate` has no JSX attribute — it is
-// a DOM property only — hence the ref write.
+// on / off / unset. Unset is a THIRD state, never silently rendered as off: a
+// Claude default that happens to be `true` must not read as an explicit `false`
+// the user chose. It has two renderings, because there are two kinds of unset:
+//
+//   * we know the documented default -> `inherited`: the switch sits at that
+//     position, so the page states what Claude will actually do, but stays
+//     dashed and muted so it reads as inherited rather than chosen. The
+//     "Claude default" text beside it is what carries set-vs-unset in words.
+//   * we don't -> `value: null`, the indeterminate middle. Reserved for
+//     genuinely not knowing. (`indeterminate` has no JSX attribute — it is a DOM
+//     property only — hence the ref write.)
 export function Toggle3({
   value,
   label,
   disabled,
+  inherited,
   onChange,
 }: {
-  // null = unset (using Claude's own default).
+  // null = unset with no known default (renders indeterminate).
   value: boolean | null;
   label: string;
   disabled?: boolean;
+  // The position shown is Claude's, not the user's. Styling only — the value
+  // still round-trips as itself.
+  inherited?: boolean;
   onChange: (next: boolean) => void;
 }) {
   const ref = useRef<HTMLInputElement>(null);
@@ -351,7 +362,7 @@ export function Toggle3({
     if (ref.current) ref.current.indeterminate = value === null;
   }, [value]);
   return (
-    <span className="cc-switch">
+    <span className={"cc-switch" + (inherited ? " inherited" : "")}>
       <input
         ref={ref}
         type="checkbox"
