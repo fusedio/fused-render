@@ -15,8 +15,6 @@ Seeding concerns the Fused dir, independent of the server's --start-dir.
 import os
 import shutil
 
-from fused_render._view_url_codec import view_url_path
-
 # Seed examples live at the repo root (examples_seed/) and are force-included
 # into the wheel at fused_render/examples_seed/ (pyproject
 # [tool.hatch.build.targets.wheel.force-include]). Installed wheels find them
@@ -33,13 +31,10 @@ PACKAGE_SEED_DIR = (
     else _REPO_ROOT
 )
 
-# Showcase is the first-launch landing page (see ensure_fused_dir_and_landing).
-#
 # Seeded under "examples/" (not the workspace root) so it carries the
 # "examples" tag in the Home apps grid (root/<tag>/<project> — apps.py scans
 # any top-level dir as a tag, any dir directly inside it as a project).
 _EXAMPLES_SUBDIR = "examples"
-_SHOWCASE_HTML = os.path.join(_EXAMPLES_SUBDIR, "showcase", "index.html")
 
 
 def fused_dir() -> str:
@@ -120,26 +115,7 @@ def _seed_examples(fdir: str) -> bool:
 def ensure_fused_dir() -> str:
     """Create ~/Documents/Fused and seed examples into it once (empty dir only).
     Idempotent, non-destructive on upgrades. Returns the abs Fused dir."""
-    return ensure_fused_dir_and_landing()[0]
-
-
-def ensure_fused_dir_and_landing() -> tuple[str, str | None]:
-    """ensure_fused_dir plus the first-launch landing URL.
-
-    Returns (fused_dir, landing): `landing` is the /view/ URL of the seeded
-    showcase page iff THIS run performed the one-time example seed — the same
-    first-run condition that gates everything else here — so a brand-new
-    install's first browser tab opens on the showcase instead of the bare
-    workspace listing. Every later run (dir already non-empty) returns None
-    and the entry points open the root URL exactly as before."""
     fdir = os.path.abspath(fused_dir())
     os.makedirs(fdir, exist_ok=True)
-
-    seeded = _seed_examples(fdir)
-
-    landing = None
-    if seeded:
-        showcase = os.path.join(fdir, _SHOWCASE_HTML)
-        if os.path.isfile(showcase):
-            landing = view_url_path(showcase)
-    return fdir, landing
+    _seed_examples(fdir)
+    return fdir

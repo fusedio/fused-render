@@ -35,7 +35,7 @@ from fused_render.server import create_app, export_app_env, set_server_origin_en
 # mounts package in, so this costs nothing — because a deadline that has to
 # outlast them must be computed FROM them, not restated.
 from fused_render.shell.mounts import _QUIT_UNMOUNT_BUDGET_S, RCD_REAP_WORST_CASE_S
-from fused_render.shell.seed import ensure_fused_dir_and_landing
+from fused_render.shell.seed import ensure_fused_dir
 
 logger = logging.getLogger("fused_render")
 
@@ -223,15 +223,13 @@ def _remove_pidfile() -> None:
             pass
 
 
-def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread, str | None]:
+def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     """Start uvicorn serving create_app(start_dir=Fused dir) on a daemon thread.
-    Returns the server, its thread (quit drains it — `should_exit` alone is
+    Returns the server and its thread (quit drains it — `should_exit` alone is
     fire-and-forget, and uvicorn never resets `started`, so the thread ending is
-    the only observable "it has stopped serving"), and the first-launch landing
-    path (the seeded showcase page's /view/ URL) when THIS run performed the
-    one-time example seed, else None."""
+    the only observable "it has stopped serving")."""
     # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
-    start_dir, landing = ensure_fused_dir_and_landing()
+    start_dir = ensure_fused_dir()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
@@ -243,7 +241,7 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread, s
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    return server, thread, landing
+    return server, thread
 
 
 # ---- quit teardown (SPEC DM-7; INCIDENT 2026-07-29) -------------------------
@@ -721,7 +719,7 @@ def main() -> None:
 
     def _bootstrap_server() -> None:
         logger.info("starting server on port %s", port)
-        server, server_thread, landing = _start_server_thread(port)
+        server, server_thread = _start_server_thread(port)
         state["server"] = server
         state["server_thread"] = server_thread
         if not desktop_probe.wait_until_ready(port, desktop_token, 15.0, poll_interval=0.2):
@@ -744,11 +742,9 @@ def main() -> None:
         pending, state["pending"] = state["pending"], []
         for target in pending:
             webbrowser.open(target)
-        # Home tab only when this launch wasn't a document double-click. A
-        # brand-new install's very first launch lands on the seeded showcase
-        # page instead of the workspace root.
+        # Home tab only when this launch wasn't a document double-click.
         if not state["docs"] and not os.environ.get("FUSED_RENDER_NO_BROWSER"):
-            webbrowser.open(f"http://127.0.0.1:{port}{landing}" if landing else url)
+            webbrowser.open(url)
 
     class FusedRenderStatusApp(rumps.App):
         def __init__(self):
