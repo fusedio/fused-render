@@ -16,7 +16,8 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { CommunityGrid, COMMUNITY_TAG } from "@apps/builder/CommunityGrid";
-import { useCommunityMountReady } from "@platform/lib/hooks";
+import { useCommunityMountReady, useNavEpoch } from "@platform/lib/hooks";
+import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -42,7 +43,23 @@ function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
 export default function Apps({ config }: { config: Config }) {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
   const [query, setQuery] = useState("");
-  const [tag, setTag] = useState<string | null>(null);
+  // The selected tag lives in the URL (`?tag=`), not in state — the AiModels
+  // pattern: it makes the filter bookmarkable, survives a reload, and puts the
+  // choice on the back button. useNavEpoch counts pushState and popstate
+  // alike, so back/forward re-reads the URL. Default (All) is the ABSENCE of
+  // the param, keeping /apps the clean URL for the page.
+  const navEpoch = useNavEpoch();
+  const tag = useMemo(() => new URLSearchParams(location.search).get("tag"), [navEpoch]);
+  const setTag = (next: string | null) => {
+    if (next === tag) return;
+    const params = new URLSearchParams(location.search);
+    if (next === null) params.delete("tag");
+    else params.set("tag", next);
+    const search = params.toString();
+    // navigateUrl (pushState), not replaceSearch: each tag selection is a
+    // history entry so back/forward walks the filter history.
+    navigateUrl(location.pathname + (search ? "?" + search : ""));
+  };
   const [sort, setSort] = useState<SortKey>("recent");
   // Whether deploying is switched on at all — the import entry follows it (see the toolbar).
   const deployEnabled = useDeployEnabled();

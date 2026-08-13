@@ -736,10 +736,16 @@ export default function App({ config }: { config: Config }) {
   } else if (isApps) {
     // Apps hub — the app home. No breadcrumb bar; the page owns its own
     // header. The shell sidebar renders beside it.
+    //
+    // Not keyed on `epoch` (same exception as AiModels above): the page's only
+    // same-route navigation is its tag filter, which lives in the URL
+    // (`?tag=`) so back/forward can undo it — and remounting would reload
+    // every app-preview iframe just to switch a chip. The page subscribes to
+    // the URL itself. Arriving from any other route still mounts it fresh.
     main = (
-      <div id="content" key={epoch}>
+      <div id="content">
         <Suspense fallback={<RouteFallback />}>
-          <Apps key={epoch} config={config} />
+          <Apps config={config} />
         </Suspense>
       </div>
     );
