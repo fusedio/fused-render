@@ -1006,10 +1006,17 @@ const PUSH_GLYPH = ["M12 21V9", "M7 14l5-5 5 5", "M4 4h16"];
    a menu it does not have. The flip is CSS off `aria-expanded` (see `.caret`). */
 const CARET_GLYPH = ["M6 9l6 6 6-6"];
 
-/* A clock hand turned back: "show the file as it was at this commit". The same
-   glyph the shell's revision badge wears (Preview.tsx RevisionPill), so the
-   control and the state it produces read as one thing across the two surfaces. */
-const PREVIEW_GLYPH = ["M3 5v5h5", "M3.5 10.5a9 9 0 1 1 2.6 8", "M12 8v4.5l3 1.8"];
+/* An eye: "look at the file as it was at this commit". Deliberately NOT a
+   rewind/clock/circular arrow — this control writes nothing, it only changes
+   what the content pane shows, and a restore symbol sitting in a row next to
+   the real mutating actions (stage, unstage, revert) reads as "reset to here".
+   The lens is two mirrored curves that meet exactly at (3,12) and (21,12) so it
+   closes into a lens rather than a broken pair of arcs at 14px. The same glyph
+   the shell's revision badge wears (Preview.tsx RevisionPill), so the control
+   and the state it produces read as one thing across the two surfaces. */
+const PREVIEW_GLYPH = ["M3 12c2.4-3.6 5.4-5.4 9-5.4s6.6 1.8 9 5.4",
+                       "M21 12c-2.4 3.6-5.4 5.4-9 5.4s-6.6-1.8-9-5.4",
+                       "M12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6"];
 
 function caret() {
   const svg = icon(CARET_GLYPH, 12);

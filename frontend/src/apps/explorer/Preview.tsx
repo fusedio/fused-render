@@ -524,8 +524,11 @@ function RevisionPill({ sha, onLive }: { sha: string; onLive: () => void }) {
       }
     >
       <span className="preview-rev-label" aria-hidden="true">
-        {/* A clock hand turned back: the same 16px currentColor stroke every glyph
-            in these bars is drawn in (SideChrome). */}
+        {/* An eye — "you are looking at an old version", not a rewind/clock,
+            which would read as "restore to here" for a badge that changes
+            nothing on disk. Same paths as the git view's row toggle
+            (templates/git/template.html PREVIEW_GLYPH); drawn in the same 16px
+            currentColor stroke every glyph in these bars uses (SideChrome). */}
         <svg
           viewBox="0 0 24 24"
           width="14"
@@ -536,9 +539,9 @@ function RevisionPill({ sha, onLive }: { sha: string; onLive: () => void }) {
           strokeLinecap="round"
           strokeLinejoin="round"
         >
-          <path d="M3 5v5h5" />
-          <path d="M3.5 10.5a9 9 0 1 1 2.6 8" />
-          <path d="M12 8v4.5l3 1.8" />
+          <path d="M3 12c2.4-3.6 5.4-5.4 9-5.4s6.6 1.8 9 5.4" />
+          <path d="M21 12c-2.4 3.6-5.4 5.4-9 5.4s-6.6-1.8-9-5.4" />
+          <path d="M12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6" />
         </svg>
       </span>
       {/* Both facts VISIBLE, not tooltipped: which commit, and that the pane
