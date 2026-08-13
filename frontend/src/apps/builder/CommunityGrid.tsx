@@ -204,7 +204,9 @@ function CommunityCard({
       <span className="app-pcard-body">
         <span className="app-pcard-title">{title}</span>
         <span className="app-pcard-meta">
-          <span className="app-pcard-tag">{COMMUNITY_TAG}</span>
+          {/* Display name only — the tag VALUE stays "community" everywhere
+              (dirs, ?tag=, community.py). */}
+          <span className="app-pcard-tag">showcase</span>
           {app.installed && <span className="app-pcard-name">cloned</span>}
           {ago && <span className="app-pcard-ago">{ago}</span>}
           {openError && <span className="app-pcard-ago">{openError}</span>}
@@ -264,7 +266,7 @@ export function CommunityGrid({ query, sort }: { query: string; sort: "recent" |
 
   if (catalog.status === "error") return <ErrorBanner>{catalog.message}</ErrorBanner>;
   if (catalog.status === "loading")
-    return <SkeletonLines rows={4} label="Loading community apps" />;
+    return <SkeletonLines rows={4} label="Loading showcase apps" />;
   return (
     <>
       <div className="apps-count">

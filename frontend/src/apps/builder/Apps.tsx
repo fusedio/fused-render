@@ -187,7 +187,15 @@ export default function Apps({ config }: { config: Config }) {
                   className={"apps-tag-chip" + (tag === t ? " is-active" : "")}
                   onClick={() => setTag(tag === t ? null : t)}
                 >
-                  {t}
+                  {/* The catalog chip WEARS the marketplace's user-facing name
+                      ("showcase", like the sidebar entry and /community page)
+                      while keeping "community" as its value — the tag dirs,
+                      the ?tag= param, and community.py all speak that. A real
+                      workspace tag dir named "community" is not the catalog
+                      and keeps its own name. */}
+                  {t === COMMUNITY_TAG && communityReady && !all.some((a) => a.tag === COMMUNITY_TAG)
+                    ? "showcase"
+                    : t}
                 </button>
               ))}
             </div>
@@ -199,7 +207,7 @@ export default function Apps({ config }: { config: Config }) {
             {communityFallback && (
               <div className="home-empty">
                 No apps yet. Describe one in the composer above to create it, or start from a
-                community app below.
+                showcase app below.
               </div>
             )}
             <CommunityGrid query={query} sort={sort} />

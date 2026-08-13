@@ -333,7 +333,7 @@ function cardHtml(a) {
         <h3>${esc(a.name || a.slug)}</h3>
         <p>${esc(a.description || "")}</p>
         <div class="meta">
-          <span class="pill">community</span>
+          <span class="pill">showcase</span>
           ${badge(a)}
           <span class="slug">${esc(a.slug)}</span>
           <span class="end">${esc(a.author?.name || "")}${a.version ? " · v" + esc(a.version) : ""}</span>
@@ -462,7 +462,7 @@ async function renderDetail(slug) {
     <div class="actions">${buttons.join("")}</div>
     ${preview ? `<img class="detail-preview" src="${preview}" alt="" onerror="this.remove()">` : ""}
     ${d.yanked
-      ? `<p class="fineprint">This app was removed from the community catalog upstream. Your clone
+      ? `<p class="fineprint">This app was removed from the showcase catalog upstream. Your clone
           still works as-is — Open it or remove the clone.</p>`
       : `<div class="readme">${md(d.readme || "*no readme*", d.folder)}</div>
     <p class="fineprint">Preview renders the app from the local catalog cache — it already runs the
@@ -530,7 +530,7 @@ async function act(action, slug, d) {
   if (action === "install") {
     const ok = await confirmModal({
       title: `Clone ${entry.name || slug}?`,
-      body: `<p>By ${esc(entry.author?.name || "unknown")} · from the community repo.</p>
+      body: `<p>By ${esc(entry.author?.name || "unknown")} · from the showcase repo.</p>
         <p>Installed apps run with the <strong>same trust as your own files</strong>${entry.requires_python ? ", including running Python on this machine" : ""}.
         Every app enters the catalog through a reviewed pull request, but install only what you trust.</p>
         <p>It will be copied to <code>Fused/local/${esc(slug)}</code> — yours to edit from there.</p>`,
@@ -593,7 +593,7 @@ async function loadCatalog(allowRefresh) {
   } catch (err) { content.innerHTML = `<div class="state error">${esc(err.message)}</div>`; return; }
   if (res.status === "no-cache") {
     if (!allowRefresh) return;
-    content.innerHTML = `<div class="state">Fetching the community catalog…</div>`;
+    content.innerHTML = `<div class="state">Fetching the showcase catalog…</div>`;
     return refresh();
   }
   catalog = res;

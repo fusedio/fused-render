@@ -119,7 +119,7 @@ function usePreviewSideSlot(): HTMLElement | null {
 // edits made there silently die. The preview locks every non-render mode and
 // offers this instead.
 const COMMUNITY_LOCK_MSG =
-  "This is the read-only community copy — clone the app to make changes.";
+  "This is the read-only showcase copy — clone the app to make changes.";
 
 // "Clone" in the preview header of a community cache app: install the app into
 // the workspace (Fused/local/<slug>, community.py's `install`) and navigate to
