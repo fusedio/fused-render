@@ -1,11 +1,14 @@
-"""Backend for the Community marketplace sub-app (index.html).
+"""Backend for the community marketplace (the /apps hub's Showcase tab).
 
-One bare `main(action=...)` dispatcher, called via fused.runPython. Runs in
-the executor's user-code subprocess, which deliberately cannot import
-fused_render — so the few pieces of shell logic it needs (home dir, workspace
-dir, atomic dir-claim, git-init-with-first-commit) are vendored here, matching
+One bare `main(action=...)` dispatcher, exposed by the server as
+POST /api/community (server/routers/community.py). It began life as a mounted
+core_app script run via fused.runPython, which could not import fused_render —
+so the few pieces of shell logic it needs (home dir, workspace dir, atomic
+dir-claim, git-init-with-first-commit) are vendored here, matching
 shell/storage.home_dir, shell/seed.fused_dir, zip_import.move_into_new_dir and
-app_git.init_repo behavior (see docs/COMMUNITY_MARKETPLACE_SPEC.md §3).
+app_git.init_repo behavior. That vendoring is kept: this module stays
+self-contained and import-cheap, and the endpoint is a sync def so its git
+subprocess calls run on FastAPI's threadpool, never the event loop.
 
 Actions:
   catalog   — cached index.json joined with installs.json ({status:"no-cache"}
@@ -24,13 +27,10 @@ Actions:
   touch     — record that an app was opened (preview or installed copy);
               feeds the "last opened" ordering of community cards
 
-State lives under ~/.fused-render/community/ (repo/ cache + installs.json);
-the mount this file is served from is read-only. Every git call runs with
-GIT_TERMINAL_PROMPT=0 and a timeout well under the executor's 60 s cap — a
+State lives under ~/.fused-render/community/ (repo/ cache + installs.json).
+Every git call runs with GIT_TERMINAL_PROMPT=0 and a bounded timeout — a
 first clone of a large catalog that can't finish in time surfaces as a
-friendly retry error rather than a hang. If the catalog outgrows that budget,
-the upgrade path is a detached worker reporting through fused.trackJob
-(SPEC "Long-running work"); not needed at current sizes.
+friendly retry error rather than a hang.
 """
 import contextlib
 import errno
@@ -66,8 +66,8 @@ COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "local")
 # The always-materialized browse set: catalog + every app's card assets.
 SPARSE_BROWSE = ["/index.json", "/*/preview.png", "/*/metadata.json"]
 
-GIT_TIMEOUT = 45  # < the executor's 60 s kill; clone is the longest call
-LOCK_TIMEOUT = 50  # generous under the executor's 60 s hard kill
+GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error; clone is the longest call
+LOCK_TIMEOUT = 50  # bounded so a wedged peer surfaces as a retry error
 IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
 
@@ -79,7 +79,7 @@ class ActionError(Exception):
 @contextlib.contextmanager
 def _cache_lock():
     """Serialize every action that touches the on-disk cache repo (refresh,
-    detail, install, update) across concurrent runPython calls — the browse
+    detail, install, update) across concurrent requests — the browse
     page's background refresh, a detail fetch on card-open, and a write can
     all be in flight at once against the same repo otherwise. An OS advisory
     lock (not a Python-level one: each call may run in its own subprocess)
@@ -200,7 +200,7 @@ def _touch(slug):
 
 def _remove_stale_locks():
     """Drop leftover git lockfiles in the cache repo. A git process killed
-    mid-operation (the executor's hard kill, app quit) leaves its .lock
+    mid-operation (a hard kill, app quit) leaves its .lock
     behind, and every later command dies with "Unable to create '….lock':
     File exists … remove the file manually to continue". The cache is
     managed exclusively by this module and its git calls are short-lived,

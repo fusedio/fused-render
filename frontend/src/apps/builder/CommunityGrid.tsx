@@ -2,16 +2,15 @@
 // catalog (docs/COMMUNITY_MARKETPLACE_SPEC.md). Unlike the workspace grid the
 // thumbnail is the catalog's static preview.png, not a live iframe — these
 // apps aren't on disk until previewed/cloned, and the sparse-checked browse
-// set always has the png. Data comes from the same backend the /community
-// page uses: POST /api/run against the mounted community.py (the marketplace
+// set always has the png. Data comes from the marketplace backend:
+// POST /api/run against the mounted community.py (the marketplace
 // is html+py content; there is no dedicated REST surface, and community.py
 // deliberately can't be imported by the server — it runs in the executor's
 // user-code subprocess).
 //
 // Click = open: a cloned app opens its workspace copy (/apps/local/<name>,
 // same in-app route as any local card); an uncloned one opens the live
-// preview from the cache (/explorer/embed/…, the same URL the /community
-// page's Preview button uses — a full page load, since the embed shell and
+// preview from the cache (/explorer/embed/… — a full page load, since the embed shell and
 // the apps shell are different boot modes). Ordering is last-opened-first:
 // community.py records a `touch` per open, merged with the app builder's own
 // recents so opens of the cloned copy from the regular grid count too.
@@ -48,7 +47,7 @@ interface Catalog {
 
 // Module-scope cache: switching tabs within a session re-renders instantly
 // from the last catalog; a background refresh (once per session) folds in
-// upstream changes. Same posture as the /community page's own loader.
+// upstream changes.
 let cachedCatalog: Catalog | null = null;
 let refreshedThisSession = false;
 
@@ -74,8 +73,8 @@ function useCommunityCatalog(): Loaded {
       try {
         // Always re-join on mount, even when a catalog is already cached:
         // `catalog` is a cheap local read (installs.json + index.json, no
-        // network), and install/update/uninstall performed elsewhere (the
-        // /community page) only shows up here through a fresh read of it.
+        // network), and install/update/uninstall performed elsewhere only
+        // shows up here through a fresh read of it.
         // Without this, this tab kept the install flags from whenever it
         // first mounted this session.
         const catalog = await runCommunity<Catalog>({ action: "catalog" });

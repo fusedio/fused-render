@@ -1,6 +1,6 @@
 """The community marketplace's `touch` action and its catalog merge.
 
-`core_apps/community/community.py` records "this app was opened" per slug in
+`fused_render/community.py` records "this app was opened" per slug in
 ~/.fused-render/community/opened.json (action `touch`), and `catalog` folds
 the timestamp into every app entry as `opened_at` — what the /apps hub's
 community tab sorts by. Pinned here: the write is recorded and re-read, an
@@ -8,20 +8,14 @@ invalid slug is refused, and apps never opened report opened_at None.
 """
 import json
 import os
-import sys
 
 import pytest
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_APP = os.path.join(os.path.dirname(_HERE), "core_apps", "community")
 
 
 @pytest.fixture()
 def community_mod(tmp_path, monkeypatch):
-    """community.py with its state + cache pointed at tmp."""
-    monkeypatch.syspath_prepend(_APP)
-    sys.modules.pop("community", None)
-    import community as mod
+    """fused_render.community with its state + cache pointed at tmp."""
+    from fused_render import community as mod
 
     state = tmp_path / "state"
     cache = state / "repo"

@@ -2,9 +2,8 @@
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
 // primary nav on top (Explorer / Build App / Inbox), the explorer's Recents
 // and Bookmarks below it, and a single Settings trigger pinned to the
-// bottom that opens a menu holding everything else (Showcase / Artifacts /
-// Config / App Basics for now, plus Templates / Mounts / AI Models /
-// Preferences).
+// bottom that opens a menu holding everything else (Config / App Basics for
+// now, plus Templates / Mounts / AI Models / Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
 // (SidebarFrame) and explorer-owned sections (Recents/Bookmarks), which only
@@ -19,7 +18,6 @@ import {
   useUrlVersion,
   useLearnMountReady,
   useSessionsMountReady,
-  useCommunityMountReady,
 } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -47,15 +45,6 @@ const APPS_ICON = (
   </svg>
 );
 
-// Community marketplace (a globe): apps shared by other users.
-const COMMUNITY_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="12" cy="12" r="9" />
-    <path d="M3 12h18" />
-    <path d="M12 3c-2.5 2.6-3.8 5.7-3.8 9s1.3 6.4 3.8 9c2.5-2.6 3.8-5.7 3.8-9S14.5 5.6 12 3z" />
-  </svg>
-);
-
 // Sliders — the Claude Config app is a settings panel over ~/.claude.
 const CLAUDE_CONFIG_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -76,15 +65,6 @@ const SESSIONS_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M22 12h-6l-2 3h-4l-2-3H2" />
     <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-  </svg>
-);
-
-// Stacked layers — the Artifacts page lists the project folders Claude Code
-// has left sessions in.
-const ARTIFACTS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <polygon points="12 2 22 8.5 12 15 2 8.5 12 2" />
-    <polyline points="2 15.5 12 22 22 15.5" />
   </svg>
 );
 
@@ -229,7 +209,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const learnMountReady = useLearnMountReady(config.learn_mount_ready);
   const sessionsMountReady = useSessionsMountReady(config.sessions_mount_ready);
-  const communityMountReady = useCommunityMountReady(config.community_mount_ready);
   const claudeConfigAvailable = useClaudeConfigAvailable();
 
   // A model resident in memory is the one piece of app state that costs
@@ -253,16 +232,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const explorerActive = pathname === "/explorer" || pathname.startsWith("/explorer/");
 
   // Everything that is not primary nav lives in the bottom menu for now:
-  // the former sidebar entries (Showcase / Artifacts / Config / App Basics),
-  // then the settings pages. Same gates as before — an entry a machine can't
-  // use stays hidden.
+  // the former sidebar entries (Config / App Basics), then the settings
+  // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
-    ...(communityMountReady
-      ? [{ href: "/community", label: "Showcase", icon: COMMUNITY_ICON }]
-      : []),
-    ...(sessionsMountReady || claudeConfigAvailable
-      ? [{ href: "/claude-artifacts", label: "Artifacts", icon: ARTIFACTS_ICON }]
-      : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Config", icon: CLAUDE_CONFIG_ICON }]
       : []),

@@ -1792,8 +1792,12 @@ def test_approving_a_plan_sends_a_plain_allow(card):
         n for n in _nodes(got["tree"]) if n["tag"] == "textarea"]
     # No `setMode` rode along (the picker was never given one to sit on in this
     # probe), so the approval lands the picker on the CLI default rather than
-    # leaving it on whatever it was — see the parametrized test below for the
-    # full landing-mode matrix.
+    # leaving it on whatever it was — and it WRITES that, even though an absent
+    # param already means "prompt": `permission` is a true default, of which the
+    # URL is the record, so the URL says which mode the next turn spawns in and a
+    # copied link carries it. The write costs nothing because it asks for
+    # `{history: "replace"}` (PR-3) — see the parametrized test below for the full
+    # landing-mode matrix.
     assert got["paramWrites"] == [["permission", "prompt"]]
 
 
@@ -1802,6 +1806,11 @@ def test_approving_a_plan_sends_a_plain_allow(card):
     ("auto", "auto"),
     ("plan", ""),                     # …and where it does not, send nothing
     ("prompt", ""),                   # tightening mid-turn is the picker's job
+    # An absent param already MEANS "prompt" (the spawn reads `get("permission")
+    # || DEFAULT_PERMISSION`) — and it is written anyway, because a true default
+    # belongs IN the URL so the address bar carries the whole state. It is free:
+    # the write asks for `{history: "replace"}`, so it never spends the visit's
+    # push on a mode the session has already switched into (D8/PR-3).
     ("", ""),
     ("bypassPermissions", ""),        # unreachable from a card, by the same gate
     ("nonsense", ""),

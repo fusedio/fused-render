@@ -98,8 +98,10 @@ test("Open in Explorer opens the app FOLDER in the internal explorer", () => {
 });
 
 test("Open goes where a left click on the card goes", () => {
-  // Same target as hrefFor — the app folder in the builder namespace, in the
-  // plain-app mode.
+  // Same target as hrefFor — the app's ENTRY PAGE (D269), which is a file, so
+  // the nav carries no isDir scaffold hint. "Open in Explorer" above is the
+  // entry that is always the folder, and this asserts they now differ.
   const pushes = capturePushes(() => itemNamed(appCardMenu(app()), "Open").onClick!());
-  expect(pushes).toEqual([{ url: hrefFor(app()), state: { fsDir: true } }]);
+  expect(pushes).toEqual([{ url: hrefFor(app()), state: { fsDir: false } }]);
+  expect(hrefFor(app())).toBe("/explorer/view/w/local/demo/index.html");
 });

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rebuild the builtin-mount zips (learn.zip, sessions.zip, community.zip) into
+# Rebuild the builtin-mount zips (learn.zip, sessions.zip) into
 # .dev-zips/ from the repo's live core_apps/ content — the dev-server analog of
 # build_dmg.sh step 4e. Called by dev.sh once at startup AND by
 # dev_server_run.sh before every watchfiles server restart, so an edit under
@@ -19,7 +19,7 @@ DEV_ZIPS="$REPO_ROOT/.dev-zips"
 command -v zip >/dev/null 2>&1 || exit 0
 mkdir -p "$DEV_ZIPS"
 
-stage() { # $1 = content dir name (learn|sessions|community), $2 = env var name
+stage() { # $1 = content dir name (learn|sessions), $2 = env var name
   local src="$REPO_ROOT/core_apps/$1" dest="$DEV_ZIPS/$1.zip" override="${!2:-}"
   [[ -d "$src" ]] || return 0
   if [[ -n "$override" && "$override" != "$dest" ]]; then
@@ -35,4 +35,3 @@ stage() { # $1 = content dir name (learn|sessions|community), $2 = env var name
 
 stage learn FUSED_RENDER_LEARN_ZIP
 stage sessions FUSED_RENDER_SESSIONS_ZIP
-stage community FUSED_RENDER_COMMUNITY_ZIP

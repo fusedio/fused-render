@@ -234,7 +234,6 @@ class DesktopPaths:
             # didn't bundle a zip.
             "FUSED_RENDER_LEARN_ZIP": str(tools_dir.parent / "assets" / "learn.zip"),
             "FUSED_RENDER_SESSIONS_ZIP": str(tools_dir.parent / "assets" / "sessions.zip"),
-            "FUSED_RENDER_COMMUNITY_ZIP": str(tools_dir.parent / "assets" / "community.zip"),
             "TEMP": str(self.temp),
             "TMP": str(self.temp),
             # POSIX tempfile consults TMPDIR first (TEMP/TMP are the Windows

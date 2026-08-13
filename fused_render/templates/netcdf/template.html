@@ -192,6 +192,15 @@ async function styleReady(){
 let daemon = null, meta = null, geographic = false;
 let histTimer = null, histAbort = null;
 
+// The auto-stretch's own answer, held HERE and not in the URL (see
+// maybeAutoStretch). '' = nothing computed yet, so the URL's `stretch` stands.
+let autoStretchVal = '';
+// What the tiles should actually be rendered with. `autostretch` (a MODE, and
+// in the URL where it belongs) means "recompute from the viewport", so when it
+// is on its answer wins over whatever `stretch` a bookmark carried; off, the
+// URL's value is the only value.
+const activeStretch = () => (P.autoStretch() && autoStretchVal) ? autoStretchVal : P.stretch();
+
 async function ensureDaemon(){
   if (daemon && daemon.port) return daemon;
   const r = await fused.runPython('./grid_tile_server.py', {}).catch(() => null);
@@ -208,7 +217,8 @@ function sliceQuery(){
 function renderQuery(){
   const q = sliceQuery();
   q.set('cmap', P.cmap());
-  if (P.stretch()) q.set('stretch', P.stretch());
+  const st = activeStretch();
+  if (st) q.set('stretch', st);
   if (P.vlo() !== '' && P.vhi() !== ''){ q.set('vlo', P.vlo()); q.set('vhi', P.vhi()); }
   return q.toString();
 }
@@ -319,21 +329,66 @@ els.clipReset.onclick = () => { fused.params.set('vlo', ''); fused.params.set('v
 els.stretchBtn.onclick = () => {
   const ch = lastHist && lastHist.channels && lastHist.channels[0];
   if (!ch || ch.p2 === undefined) return;
+  // An explicit press outranks the auto value it would otherwise be shadowed by
+  // (activeStretch prefers autoStretchVal while `autostretch` is on).
+  autoStretchVal = '';
   fused.params.set('stretch', `${ch.p2},${ch.p98}`);
 };
 els.stretchReset.onclick = () => { fused.params.set('autostretch', '0'); fused.params.set('stretch', ''); };
 
-// auto stretch: re-stretch colors to the current viewport after every pan/zoom
+// auto stretch: re-stretch colors to the current viewport after every pan/zoom.
+//
+// This DELIBERATELY does not write the `stretch` param, and that is a change
+// from how it used to work. The value is derived from the map viewport, and the
+// map viewport is not in the URL at all — so putting the derivation there was
+// wrong twice over:
+//
+//  * It cost the visit's ONE history entry (runtime.js first-change-push, D8)
+//    on a number the user never chose. Back then landed on the pre-pan stretch
+//    over the post-pan viewport: a state that had never been on screen.
+//  * Worse, it was a Back TRAP. Back restores the pristine entry, the restored
+//    `stretch` differs from what this viewport computes, refreshHist (already
+//    queued by the same moveend machinery) writes it again — and since a
+//    gesture HAS been seen by then, runtime's no-gesture gate (D268) does not
+//    apply and the write pushes a fresh entry over the branch we just came
+//    back to. Back could never leave the view.
+//
+// Keeping the number in a variable removes the trap at the root instead of
+// papering over it: `autostretch=1` is already in the URL, and it is the whole
+// bookmark — reopening that URL recomputes the same stretch from the same data.
+// Rejected: writing it and hoping the value guard below is enough. The guard
+// stops the LOOP (it did, before), but every genuine pan still changes the
+// number, so it never stopped the trap.
 function maybeAutoStretch(){
   if (!P.autoStretch()) return;
   const chans = lastHist && lastHist.channels;
   if (!chans || !chans[0] || chans[0].p2 === undefined) return;
   const s = chans.filter(ch => ch.p2 !== undefined).map(ch => `${ch.p2},${ch.p98}`).join(',');
-  if (s && s !== P.stretch()) fused.params.set('stretch', s);
+  if (!s || s === autoStretchVal) return;
+  autoStretchVal = s;
+  // No param write means no onChange, so the repaint is ours to do. Mirrors the
+  // `renderQuery` half of onParamsChanged, including the loadedQuery bookkeeping
+  // that keeps a later param change from re-rendering the same tiles.
+  const q = renderQuery();
+  if (q === loadedQuery) return;
+  loadedQuery = q;
+  if (geographic) setRasterTiles();
+  else showImgFallback();
 }
 els.autoStretch.onchange = () => {
-  fused.params.set('autostretch', els.autoStretch.checked ? '1' : '0');
-  if (els.autoStretch.checked) maybeAutoStretch();
+  // Read the box ONCE, up front. The `stretch` write below fires onChange
+  // synchronously, and onParamsChanged → syncControls() re-asserts
+  // `checked = P.autoStretch()` off a URL that does not carry the new
+  // `autostretch` yet — so a second read here would report the value the user
+  // just turned OFF and write it straight back on.
+  const on = els.autoStretch.checked;
+  // Turning auto-stretch OFF freezes the colors where they are, so the number
+  // it had been computing becomes a user-chosen one and belongs in the URL from
+  // here on. Written first so both land in the same coalescing window (D99) and
+  // the pair costs one entry, not two.
+  if (!on && autoStretchVal) fused.params.set('stretch', autoStretchVal);
+  fused.params.set('autostretch', on ? '1' : '0');
+  if (on) maybeAutoStretch();
 };
 
 // ---------------- hover readout ----------------

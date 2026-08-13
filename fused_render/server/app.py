@@ -42,6 +42,7 @@ from fused_render.server.common import (
 from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
+from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.clipboard import router as clipboard_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
@@ -338,6 +339,9 @@ def create_app(start_dir: str) -> FastAPI:
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
+    # Community marketplace backend for the /apps hub's Showcase tab and the
+    # explorer preview's Clone button (routers/community.py).
+    app.include_router(community_router)
     # Git repositories on this machine for the Explorer homepage's "Repos" tab
     # (routers/git_repos.py) — candidates come from the file index, never a
     # fresh walk, so it cannot touch a mount. Read-only, no auth guard.

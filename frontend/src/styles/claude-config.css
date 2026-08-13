@@ -1,6 +1,7 @@
 /* ---- Claude config app (apps/claude_config) ------------------------------- */
-/* Two routes: /claude-config (the settings panel, CLAUDE.md explorer included
-   as its MD Files section) and /claude-artifacts.
+/* One route: /claude-config (the settings panel, CLAUDE.md explorer included
+   as its MD Files section). /claude-artifacts used to share this stylesheet;
+   that page is gone (#492), and what it owned went with it.
  *
  * The panel is ONE pattern repeated nine times, because it used to be four:
  * caption row, then .cc-toolbar (summary · controls · refresh), then a list of
@@ -199,9 +200,12 @@
   cursor: help;
 }
 
-/* A title row for the pages that are not the config panel (shell/AiModels,
-   shell/ClaudeArtifacts): heading and caption on the left, actions on the
-   right. */
+/* A title row: heading and caption on the left, actions on the right. Nothing
+   in THIS app uses it any more — the config panel has a tab strip, and
+   /claude-artifacts, the other page that did, is gone (#492). Its one remaining
+   caller is shell/AiModels, which also borrows .cc-heading and .cc-mdcard from
+   here (see styles/ai-models.css). Kept for that reason and no other; it is not
+   part of the panel's vocabulary. */
 .cc-page-head {
   display: flex;
   align-items: flex-start;
