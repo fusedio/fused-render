@@ -86,19 +86,16 @@ export default function Apps({ config }: { config: Config }) {
     };
   }, [nonce]);
 
-  // The community tab lives alongside the workspace tags but is its own
-  // surface (catalog cards, not workspace apps). The backend is native
-  // server-side (POST /api/community) so it is always available — no mount
-  // gate any more.
+  // The showcase tab lives alongside the workspace tags but is its own
+  // surface (catalog cards with clone state, not plain workspace cards). The
+  // showcase clone is a real workspace tag dir, so the chip may come from the
+  // scan itself — either way this tag always routes to the catalog grid.
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => {
     const t = [...new Set(all.map((a) => a.tag))].sort();
     return t.includes(COMMUNITY_TAG) ? t : [...t, COMMUNITY_TAG];
   }, [all]);
-  // The chip only means the catalog when it's the appended one — a real
-  // workspace tag dir named "community" keeps its normal filtering.
-  const communityTab =
-    tag === COMMUNITY_TAG && !all.some((a) => a.tag === COMMUNITY_TAG);
+  const communityTab = tag === COMMUNITY_TAG;
   // Empty workspace on the "All" tab: instead of a bare "no apps yet" line,
   // surface the community catalog — something to open on first run.
   const communityFallback =
@@ -184,15 +181,7 @@ export default function Apps({ config }: { config: Config }) {
                   className={"apps-tag-chip" + (tag === t ? " is-active" : "")}
                   onClick={() => setTag(tag === t ? null : t)}
                 >
-                  {/* The catalog chip WEARS the marketplace's user-facing name
-                      ("showcase")
-                      while keeping "community" as its value — the tag dirs,
-                      the ?tag= param, and community.py all speak that. A real
-                      workspace tag dir named "community" is not the catalog
-                      and keeps its own name. */}
-                  {t === COMMUNITY_TAG && !all.some((a) => a.tag === COMMUNITY_TAG)
-                    ? "showcase"
-                    : t}
+                  {t}
                 </button>
               ))}
             </div>

@@ -20,7 +20,10 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { hueFor } from "@apps/builder/AppCard";
 
-export const COMMUNITY_TAG = "community";
+// The showcase clone is a real workspace tag dir (<workspace>/showcase), so
+// the chip value and the on-disk tag are the same word now — Apps.tsx routes
+// this tag to the catalog grid instead of the plain workspace grid.
+export const COMMUNITY_TAG = "showcase";
 
 export interface CommunityApp {
   slug: string;
