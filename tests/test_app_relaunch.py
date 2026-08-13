@@ -46,8 +46,13 @@ def test_relauncher_waits_for_this_pid_then_opens_the_bundle():
     assert argv[:2] == ["/bin/sh", "-c"]
     script = argv[2]
     assert "kill -0 4242" in script          # poll THIS pid until it dies
-    assert "open" in script
+    assert "open -a" in script
     assert "/Applications/FusedRender.app" in script
+    # Launch via the launch deep link, not a plain bundle open: a plain open
+    # is a normal launch, which boots onto a fresh home tab and steals focus
+    # from the page that asked for the restart. The launch action's handler
+    # sets state["docs"] and opens nothing (D128).
+    assert "fused-render://launch" in script
     # The relauncher must survive its parent's death and hold no pipes to it.
     assert kwargs["start_new_session"] is True
     assert kwargs["stdin"] is subprocess.DEVNULL

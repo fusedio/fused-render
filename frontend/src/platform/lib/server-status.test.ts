@@ -66,6 +66,20 @@ test("recovery onto a new version auto-reloads", () => {
   expect(reload).toBe(true);
 });
 
+test("served version changing between healthy probes auto-reloads", () => {
+  // A restart can be quicker than the down threshold (one missed poll, or
+  // none if the tab was hidden) — the version transition itself is proof the
+  // server swapped under this tab.
+  const { reload } = run(initialStatus(), [ok(), ok("0.4.9")]);
+  expect(reload).toBe(true);
+});
+
+test("a version transition never auto-reloads while the disk is still ahead", () => {
+  const { state, reload } = run(initialStatus(), [ok(), ok("0.4.9", "0.5.0")]);
+  expect(reload).toBe(false);
+  expect(state.banner).toBe("update-restart");
+});
+
 test("reconnected lingers through later healthy probes until the dismiss timer", () => {
   const { state } = run(initialStatus(), [fail(), fail(), ok(), ok()]);
   expect(state.banner).toBe("reconnected");

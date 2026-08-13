@@ -493,10 +493,16 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen):
     to die within QUIT_HARD_DEADLINE_S (start_quit's watchdog terminates the
     app past it, teardown finished or not), so a bounded wait here would only
     duplicate that guarantee."""
+    # `open -a <bundle> fused-render://launch`, not a plain `open <bundle>`:
+    # a plain open is a normal launch, which boots onto a fresh home tab and
+    # steals focus from the page that asked for the restart. Delivering the
+    # launch action instead makes the successor's handler set state["docs"]
+    # and open nothing (D128); -a pins WHICH copy launches, so the deep link
+    # can't resolve to some other registered install.
     quoted = shlex.quote(bundle)
     script = (
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do sleep {RELAUNCH_POLL_S}; done; "
-        f"exec /usr/bin/open {quoted}"
+        f"exec /usr/bin/open -a {quoted} fused-render://launch"
     )
     return popen(
         ["/bin/sh", "-c", script],

@@ -20,6 +20,8 @@ export type ServerBanner =
 export interface StatusState {
   banner: ServerBanner;
   fails: number;
+  /** Last served version a healthy probe reported; undefined before one. */
+  served?: string;
 }
 
 export interface ProbeResult {
@@ -44,24 +46,33 @@ export function reduceProbe(
   if (!probe.ok) {
     const fails = state.fails + 1;
     const banner = fails >= FAIL_THRESHOLD ? "down" : state.banner;
-    return { state: { banner, fails }, reload: false };
+    return { state: { banner, fails, served: state.served }, reload: false };
   }
 
   const wasDown = state.banner === "down";
   const served = probe.version;
   const installed = probe.installedVersion ?? null;
+  const next = (banner: ServerBanner) => ({
+    banner,
+    fails: 0,
+    served: served ?? state.served,
+  });
 
   if (served && installed && installed !== served) {
-    return { state: { banner: "update-restart", fails: 0 }, reload: false };
+    return { state: next("update-restart"), reload: false };
   }
   if (served && served !== buildVersion) {
-    // Recovering from "down" onto a new version means the server restarted
-    // updated — the user was blocked anyway, so reload without asking.
-    if (wasDown) return { state: { banner: "reconnected", fails: 0 }, reload: true };
-    return { state: { banner: "update-refresh", fails: 0 }, reload: false };
+    // A version can only change under a process swap, so seeing it move —
+    // either across a "down" gap or between two healthy probes (a restart
+    // faster than the down threshold, or one that happened while the tab was
+    // hidden) — means the server restarted updated. The user asked for that
+    // (or was blocked by it), so reload without asking; views are URL-synced.
+    const transitioned = wasDown || (state.served !== undefined && state.served !== served);
+    if (transitioned) return { state: next("reconnected"), reload: true };
+    return { state: next("update-refresh"), reload: false };
   }
-  if (wasDown) return { state: { banner: "reconnected", fails: 0 }, reload: false };
+  if (wasDown) return { state: next("reconnected"), reload: false };
   // "reconnected" lingers until the component's dismiss timer hides it.
-  if (state.banner === "reconnected") return { state, reload: false };
-  return { state: { banner: "hidden", fails: 0 }, reload: false };
+  if (state.banner === "reconnected") return { state: next("reconnected"), reload: false };
+  return { state: next("hidden"), reload: false };
 }
