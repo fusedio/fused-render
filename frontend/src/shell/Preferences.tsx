@@ -4,7 +4,7 @@
 //     chat and fused.ai reach for when nothing else has said), Call log
 //     (capture/redaction/retention for
 //     fused_render/calls.py), Deploy to Fused account (the opt-in Deploy-button
-//     toggle), Accessibility, and last Execution engine. Always present; the
+//     toggle), and Accessibility. Always present; the
 //     default (clean URL). No Tour button — the tour still runs itself on a
 //     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
 //     preference. The app's OWN log is not here either: it is disposable
@@ -30,7 +30,6 @@ import {
   putCallsRetentionDays,
   putDefaultModel,
   putDeployEnabled,
-  putEnginePref,
   putReaderEnabled,
 } from "@platform/lib/api";
 import type { CallsParamsMode, Prefs } from "@platform/lib/api";
@@ -93,97 +92,6 @@ function AppearanceSection() {
           <b>Dark</b> — always dark, whatever your desktop is set to.
         </span>
       </label>
-    </section>
-  );
-}
-
-function EngineSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const engine = prefs.engine;
-  const locked = engine.forced_by !== null;
-
-  const select = async (value: "builtin" | "fused") => {
-    if (busy || value === engine.selected) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putEnginePref(value));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Execution engine</h2>
-      <p className="deploy-muted">
-        How <code>fused.runPython</code> runs a page's Python. <b>Both engines run on this
-        machine</b> — neither uses your configured Fused environments (those are only deploy
-        targets, chosen in a page's Deploy dialog). Changes apply to the next run — no restart
-        needed. With nothing chosen here the <b>Fused engine</b> is used when its package is
-        importable, and Local otherwise (D204).
-      </p>
-      <label className={"prefs-radio" + (locked ? " locked" : "")}>
-        <input
-          type="radio"
-          name="engine"
-          checked={engine.selected === "builtin"}
-          disabled={locked || busy}
-          onChange={() => select("builtin")}
-        />
-        <span>
-          <b>Local (built-in)</b> — a fresh subprocess per call, in the environment that
-          launched this server.
-        </span>
-      </label>
-      {/* Since D204 an unset pref reports `selected: "fused"`, so on a machine
-          without the package this radio renders CHECKED and disabled — the common
-          case now, not an edge one. It is not left unexplained: the inline
-          "(unavailable…)" span below, the title, and the "Currently running: Local
-          (built-in) — falling back…" line together say what is running and why,
-          and the Local radio stays live so the choice can still be pinned. */}
-      <label
-        className={"prefs-radio" + (locked || !engine.fused_available ? " locked" : "")}
-        title={
-          engine.fused_available
-            ? undefined
-            : "The fused package is not importable in the server's environment — install it from a page's Deploy dialog, or pip install \"fused-render[fused]\""
-        }
-      >
-        <input
-          type="radio"
-          name="engine"
-          checked={engine.selected === "fused"}
-          disabled={locked || busy || !engine.fused_available}
-          onChange={() => select("fused")}
-        />
-        <span>
-          <b>Fused engine (default)</b> — the fused package's local runner: a folder's{" "}
-          <code>pyproject.toml</code> dependencies resolved into cached venvs
-          (<code>~/.fused-render/venvs</code>), plus{" "}
-          <code>@fused.udf</code> / <code>result</code> entrypoints.
-          {!engine.fused_available && (
-            <span className="deploy-muted"> (unavailable — the fused package isn't installed)</span>
-          )}
-        </span>
-      </label>
-      <div className="deploy-muted">
-        Currently running: <b>{engine.effective === "fused" ? "Fused engine" : "Local (built-in)"}</b>
-        {locked && (
-          <>
-            {" "}
-            — locked by <code>FUSED_RENDER_ENGINE={engine.forced_by}</code> for this process; the
-            switch applies once the variable is removed.
-          </>
-        )}
-        {!locked && engine.selected === "fused" && engine.effective === "builtin" && (
-          <> — falling back to Local while the fused package is unavailable.</>
-        )}
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
 }
@@ -573,11 +481,6 @@ export default function Preferences() {
                   onOpenAccount={() => setTab("account")}
                 />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
-                {/* Last: the engine is the setting a user is least likely to
-                    come here to change (builtin is right for almost everyone,
-                    and an env var pins it in the cases that matter), so it does
-                    not deserve the position above the ones they do. */}
-                <EngineSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "indexing" && <IndexingPanel />}

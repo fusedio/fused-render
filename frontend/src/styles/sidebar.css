@@ -299,6 +299,25 @@ button.sidebar-prefs-trigger {
   gap: 1px;
 }
 
+/* The section is its own scroll container, so the heading must pin itself or
+   it rides out of view with the rows. The section's 8px top padding moves INTO
+   the heading: sticky pins to the content box, so padding on the container is
+   an uncovered strip the rows would scroll through above the heading. The
+   box-shadow paints over the flex gap below the heading for the same reason. */
+.sidebar-bookmarks {
+  padding-top: 0;
+}
+.sidebar-bookmarks > .sidebar-heading {
+  position: sticky;
+  top: 0;
+  background: var(--bg-alt);
+  /* Above the rows' own stacking contexts (.bookmark-glyph/.bookmark-badge
+     are position:relative + z-index:1, and later in the DOM). */
+  z-index: 2;
+  padding-top: 18px;
+  box-shadow: 0 1px 0 var(--bg-alt);
+}
+
 .sidebar-empty {
   padding: 6px 10px;
   color: var(--fg-muted);

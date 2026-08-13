@@ -93,7 +93,7 @@ export function displayRecents(): RecentEntry[] {
   return slotPaths.flatMap((p) => byPath.get(p) ?? []);
 }
 
-// Drop the rows for a path the user just DELETED (or moved to the Bin), and for
+// Drop the rows for a path the user just DELETED (trashed or hard-deleted), and for
 // everything inside it when that path was a folder — the same prefix + "/"
 // containment test `clearClipboardIfDeleted` uses.
 //

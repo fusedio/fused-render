@@ -48,7 +48,7 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M4 8V6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
     </svg>
   ),
-  // Move to Bin — trash can with lid + two ribs.
+  // Delete — trash can with lid + two ribs.
   trash: (
     <svg {...svgProps}>
       <path d="M4 7h16" />
