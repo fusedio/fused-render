@@ -16,7 +16,7 @@
 //              asked for something that did not happen, so it is not an info.
 //  - done    → info, auto-dismissing. Your message ran; no decision to make.
 import { useEffect, useRef } from "react";
-import { getScheduleEvents } from "@platform/lib/api";
+import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
 import { IS_EMBED, navigateUrl } from "@platform/lib/router";
 import { dismissToast, pushToast } from "@platform/lib/toast";
 import { toastForEvent } from "@platform/lib/schedule-toast";
@@ -25,14 +25,18 @@ import type { ScheduleToast } from "@platform/lib/schedule-toast";
 const POLL_MS = 15_000;
 
 export function useScheduleEvents(): void {
-  // The highest event id already turned into a toast. A ref (not state) so it
-  // survives re-renders without re-arming the interval, and so overlapping polls
-  // can't re-narrate the same event. -1 means "no baseline yet".
-  const lastEventId = useRef(-1);
-  // The FIRST successful poll is a silent baseline — opening the app must not
-  // replay a backlog of last week's outcomes as toasts. Tied to success, not to
-  // the first attempt, so a failed initial read doesn't leave the mark at -1.
-  const baselined = useRef(false);
+  // The highest event id already turned into a toast IN THIS PAGE. A ref (not
+  // state) so it survives re-renders without re-arming the interval, and so two
+  // overlapping polls can't narrate the same event twice while the ack for the
+  // first is still in flight.
+  //
+  // There is deliberately **no silent baseline** here, unlike useMountHealth.
+  // The server only hands over events nobody has confirmed narrating
+  // (`/api/schedule/events` + the ack below), so a reload is quiet without the
+  // client having to guess — and, the part that matters, a catch-up `missed`
+  // verdict emitted by the scheduler's first tick still gets said out loud when
+  // the shell finally loads. A client-side baseline swallowed exactly those.
+  const lastEventId = useRef(0);
 
   useEffect(() => {
     // Only the top-level shell narrates: every embed iframe would otherwise poll
@@ -50,13 +54,20 @@ export function useScheduleEvents(): void {
       if (!alive) return;
 
       const fresh = body.events.filter((e) => e.id > lastEventId.current);
-      lastEventId.current = Math.max(lastEventId.current, ...fresh.map((e) => e.id));
-      const isBaseline = !baselined.current;
-      baselined.current = true;
       if (fresh.length === 0) return;
-      if (isBaseline) return; // baseline pass — mark seen, stay silent
+      const highest = Math.max(...fresh.map((e) => e.id));
+      lastEventId.current = Math.max(lastEventId.current, highest);
 
       for (const e of fresh) push(toastForEvent(e));
+      // Confirm only AFTER narrating: a page that dies in between sees these
+      // once more, which is a duplicate toast rather than a silent miss — the
+      // right way round for the one thing here that must not go unsaid.
+      try {
+        await ackScheduleEvents(highest);
+      } catch {
+        // The local mark already stops this page repeating them; the server will
+        // simply offer them again to the next one.
+      }
     };
 
     // The rules live in `toastForEvent`; this only turns one into a real toast.

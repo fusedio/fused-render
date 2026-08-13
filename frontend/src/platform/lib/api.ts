@@ -2317,6 +2317,17 @@ export interface ScheduleEvent {
   ts: number;
 }
 
+// Undelivered events only — the SERVER remembers which those are, so a reload is
+// quiet without the client guessing, and a `missed` verdict emitted by the
+// scheduler's first tick (before any shell had loaded) still gets narrated.
 export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
   return getJson<{ events: ScheduleEvent[] }>("/api/schedule/events");
+}
+
+// Confirm every event up to `id` has been shown. Called AFTER narrating, so a
+// client that dies in between gets a duplicate toast rather than a silent miss.
+// A POST, not a drain-on-read: a GET with that side effect would let any page
+// silently consume the user's notifications with a no-cors fetch.
+export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
+  return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
 }

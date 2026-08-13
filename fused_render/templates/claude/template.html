@@ -2235,6 +2235,10 @@
             <select id="model" class="pill model-sel" aria-label="Model"></select>
             <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
+            <!-- Scheduling lives HERE, in the composer, and not on a settings
+                 page: this row already knows the folder and already holds the
+                 message, so "later" is the only thing left to say. -->
+            <select id="when" class="pill when-sel" aria-label="When to send this"></select>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -2273,6 +2277,7 @@
             <select id="hmodel" class="pill model-sel" aria-label="Model"></select>
             <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
+            <select id="hwhen" class="pill when-sel" aria-label="When to send this"></select>
             <span class="spacer"></span>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
@@ -5697,6 +5702,85 @@ document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS,
 document.querySelectorAll(".perm-sel").forEach((el) =>
   fillSelect(el, PERMISSION_MODES, "Approvals", PERMISSION_LABELS));
 
+// ── the When pill: send this message now, or leave it for later ──
+//
+// Scheduling is the composer's business because the composer is where the two
+// hard parts already are: WHICH FOLDER (this template is bound to one) and WHAT
+// TO SAY. Everything a separate page would have to ask for again, this row
+// already has, so all it adds is the one word it was missing.
+//
+// PRESETS, not a date picker. The pill row is a fixed vocabulary — a
+// `datetime-local` field wedged between the pills would look like a different
+// app, and "later today / tomorrow morning" is what a scheduled prompt actually
+// wants. `/api/schedule` still takes an exact `due`, so nothing is lost for a
+// caller that needs 03:14.
+//
+// Deliberately NOT persisted in `fused.params`, unlike the model/effort/approval
+// pills: those describe how this chat behaves and should outlive a reload, while
+// "send it at 6pm" is a property of ONE message. A scheduling choice that
+// survived its own send would silently defer the next thing the user typed.
+const WHEN_NOW = "now";
+const WHEN_OPTIONS = [WHEN_NOW, "1h", "3h", "evening", "tomorrow", "monday"];
+const WHEN_LABELS = {
+  [WHEN_NOW]: "Send now",
+  "1h": "In 1 hour",
+  "3h": "In 3 hours",
+  "evening": "This evening",
+  "tomorrow": "Tomorrow 9am",
+  "monday": "Monday 9am",
+};
+// Local wall-clock times, resolved at SEND time rather than when the pill was
+// touched — "tomorrow 9am" means tomorrow from the moment you commit to it.
+// Each returns a Date, or null when the preset has already gone by today (the
+// evening case), which the caller reports rather than silently shifting a day.
+const WHEN_RESOLVERS = {
+  "1h": () => new Date(Date.now() + 3600e3),
+  "3h": () => new Date(Date.now() + 3 * 3600e3),
+  "evening": () => {
+    const d = new Date();
+    d.setHours(18, 0, 0, 0);
+    return d > new Date() ? d : null;
+  },
+  "tomorrow": () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+    return d;
+  },
+  "monday": () => {
+    const d = new Date();
+    // 1 = Monday; always the NEXT one, so choosing it on a Monday means a week.
+    d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7));
+    d.setHours(9, 0, 0, 0);
+    return d;
+  },
+};
+document.querySelectorAll(".when-sel").forEach((el) =>
+  fillSelect(el, WHEN_OPTIONS, "Send", WHEN_LABELS));
+
+// The naive local `YYYY-MM-DDTHH:mm` the server reads as local time
+// (schedule.parse_due) — so the time the user picked is the time that is stored,
+// with no timezone arithmetic on either side of the wire.
+function localDueString(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+    + `T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function whenChoice() {
+  const el = document.querySelector(".when-sel");
+  return el && WHEN_OPTIONS.includes(el.value) ? el.value : WHEN_NOW;
+}
+
+// Back to "Send now" after every send. See the note above: a deferral must not
+// outlive the message it was chosen for.
+function resetWhen() {
+  document.querySelectorAll(".when-sel").forEach((el) => {
+    el.value = WHEN_NOW;
+    fitSelect(el);
+  });
+}
+
 // An appearance:none select keeps the width of its WIDEST option, so a short
 // value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
 // space before the next pill — the row's gaps looked uneven. Hug the selected
@@ -5721,8 +5805,17 @@ function syncSelects() {
   document.querySelectorAll(".perm-sel").forEach((el) => {
     el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
   });
-  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach(fitSelect);
+  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel, .when-sel").forEach(fitSelect);
 }
+// The When pill keeps no params state (see WHEN_OPTIONS), so its only listener is
+// the width fit every pill needs, plus keeping the two composers' copies in step.
+document.querySelectorAll(".when-sel").forEach((el) =>
+  el.addEventListener("change", () => {
+    document.querySelectorAll(".when-sel").forEach((other) => {
+      other.value = el.value;
+      fitSelect(other);
+    });
+  }));
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
 document.querySelectorAll(".effort-sel").forEach((el) =>
@@ -8212,6 +8305,52 @@ function setRunningUi(on) {
   });
 }
 
+// Hand the composer's message to the scheduler instead of starting a run now.
+// Returns true when it was stored, false when it was not (and has said why), so
+// the caller knows whether to clear the box.
+//
+// Annotations are deliberately NOT folded in, unlike sendMessage: a note is a
+// crop of what is on screen RIGHT NOW plus a pointer into this render of the
+// page, and by the time the message is sent the pane may show something else
+// entirely. A scheduled message is the words, and the pending notes stay pending.
+async function scheduleMessage(message, choice) {
+  const resolve = WHEN_RESOLVERS[choice];
+  const at = resolve ? resolve() : null;
+  if (!at) {
+    addNote(`${WHEN_LABELS[choice]} has already passed today — pick another time.`,
+            null, "◷");
+    return false;
+  }
+  const perm = document.querySelector(".perm-sel");
+  try {
+    const res = await fetch("/api/schedule", {
+      method: "POST",
+      // X-Fused is the D3 write guard; without it the endpoint answers 403.
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({
+        target: FILE,
+        message,
+        due: localDueString(at),
+        // The approvals pill applies to the scheduled turn too — it is the same
+        // question, and a message sent while nobody is watching is the case where
+        // the answer matters most.
+        permission_mode: perm ? perm.value : "",
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      addNote(`Could not schedule: ${data.error || res.status}`, null, "◷");
+      return false;
+    }
+    addNote(`Scheduled for ${at.toLocaleString()}. It runs here, in this folder,`
+            + ` as long as fused-render is open.`, null, "◷");
+    return true;
+  } catch (e) {
+    addNote(`Could not schedule: ${e.message}`, null, "◷");
+    return false;
+  }
+}
+
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
@@ -8457,6 +8596,25 @@ function submitChat() {
   const message = box.value.trim();
   // notes alone are sendable
   if (!message && !annPending().length) return;
+  // Deferred: hand it to the scheduler and leave the box alone until it is
+  // actually stored, so a refused schedule does not eat what the user typed. A
+  // scheduled message must have WORDS — there is nothing to defer in a bare
+  // annotation, whose whole meaning is the screen it was drawn on.
+  const when = whenChoice();
+  if (when !== WHEN_NOW) {
+    if (!message) {
+      addNote("A scheduled message needs some text — a note on its own only "
+              + "means anything now.", null, "◷");
+      return;
+    }
+    scheduleMessage(message, when).then((ok) => {
+      if (!ok) return;
+      box.value = "";
+      growBox();
+      resetWhen();
+    });
+    return;
+  }
   box.value = "";
   growBox();
   sendMessage(message);
@@ -8483,6 +8641,27 @@ document.getElementById("card").onsubmit = (e) => {
   const message = homebox.value.trim();
   // notes alone are sendable
   if (!message && !annPending().length) return;
+  const when = whenChoice();
+  if (when !== WHEN_NOW) {
+    if (!message) {
+      enterChat();
+      addNote("A scheduled message needs some text — a note on its own only "
+              + "means anything now.", null, "◷");
+      return;
+    }
+    // enterChat FIRST: addNote writes into the transcript, which the home view
+    // hides, so a confirmation left on this screen would be invisible. Landing in
+    // the chat is also the honest destination — it is where the message will
+    // appear when it runs.
+    enterChat();
+    scheduleMessage(message, when).then((ok) => {
+      if (!ok) return;
+      homebox.value = "";
+      growHome();
+      resetWhen();
+    });
+    return;
+  }
   homebox.value = "";
   growHome();
   enterChat();

@@ -28,10 +28,11 @@ def no_real_wake(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clean_event_log():
-    """The event log is process-global and in memory, so it would otherwise
-    carry one test's events into the next one's assertions."""
+def clean_event_log(monkeypatch):
+    """The event log and its delivery mark are process-global and in memory, so
+    they would otherwise carry one test's events into the next one's assertions."""
     schedule._events.clear()
+    monkeypatch.setattr(schedule, "_delivered", 0)
     yield
     schedule._events.clear()
 
@@ -156,6 +157,31 @@ def test_the_event_log_is_its_own_light_endpoint(client, target):
     assert list(body) == ["events"]  # the entries are NOT in here
     assert body["events"][0]["kind"] == schedule.EVENT_MISSED
     assert body["events"][0]["message"] == "stale"
+
+
+def test_the_ack_drains_and_is_guarded(client, target):
+    """A POST, not a drain-on-read: a GET with that side effect would let any
+    page the user visits silently consume their notifications with a no-cors
+    fetch, which is what the D3 header guard exists to refuse."""
+    schedule._emit(schedule.EVENT_FAILED,
+                   {"id": "e1", "target": str(target), "message": "boom"}, "why")
+    event_id = client.get("/api/schedule/events").json()["events"][0]["id"]
+
+    # unguarded: refused, and the notification survives
+    assert client.post("/api/schedule/events/ack", json={"id": event_id}).status_code == 403
+    assert len(client.get("/api/schedule/events").json()["events"]) == 1
+
+    acked = client.post("/api/schedule/events/ack", headers=WRITE, json={"id": event_id})
+    assert acked.status_code == 200
+    assert acked.json()["delivered"] == event_id
+    assert client.get("/api/schedule/events").json()["events"] == []
+
+
+def test_the_ack_wants_a_real_event_id(client):
+    for body in ({}, {"id": "3"}, {"id": None}, {"id": True}):
+        res = client.post("/api/schedule/events/ack", headers=WRITE, json=body)
+        assert res.status_code == 400, body
+        assert "id" in res.json()["error"]
 
 
 def test_cancelling_an_unknown_id_is_a_404(client):

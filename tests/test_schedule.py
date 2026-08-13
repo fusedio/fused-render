@@ -81,6 +81,16 @@ def test_create_stores_a_pending_entry(target):
     assert schedule.list_entries() == [entry]
 
 
+@pytest.mark.parametrize("mode", ["prompt", "auto", "acceptEdits", "plan"])
+def test_every_mode_the_composer_can_offer_is_accepted(target, mode):
+    """The composer hands its approvals pill straight through, so a mode it can
+    show but the store refuses is a 400 naming a value the user never chose.
+    `acceptEdits` was exactly that bug — see PERMISSION_MODES. The two lists are
+    held together by test_claude_schedule_pill.py; this end pins the values."""
+    assert schedule.create(str(target), "hi", _in(600),
+                           permission_mode=mode)["permission_mode"] == mode
+
+
 def test_create_rejects_what_a_caller_can_get_wrong(target):
     with pytest.raises(ValueError, match="message"):
         schedule.create(str(target), "   ", _in(600))
@@ -98,6 +108,24 @@ def test_create_refuses_a_due_time_already_past_the_catch_up_bound(target):
     `missed`, so the caller is told now instead of never."""
     with pytest.raises(ValueError, match="catch-up bound"):
         schedule.create(str(target), "hi", _in(-schedule.max_late_seconds() - 60))
+
+
+@pytest.mark.parametrize("due", [
+    "2038-01-19T03:14",              # EXACTLY what a datetime-local input sends
+    "2038-01-19T03:14:07",
+    "2038-01-19T03:14:07Z",
+    "2038-01-19T03:14:07+02:00",
+    "2038-01-19T03:14:07.123456+00:00",
+])
+def test_every_shape_a_caller_actually_sends_parses(target, due):
+    """Minute precision is first in this list because it is the one the page
+    sends and the one the tests did not cover: every other case here was written
+    with `.isoformat()`, which always emits seconds.
+
+    Verified against 3.10 as well as the pinned 3.12 — `requires-python` is
+    >=3.10 and CI runs it, and pre-3.11 `fromisoformat` accepts only what
+    `isoformat()` emits, which is why `Z` is normalised before the parse."""
+    assert schedule.create(str(target), "hi", due)["state"] == schedule.PENDING
 
 
 def test_naive_due_time_is_read_as_local_not_utc(target, monkeypatch):
@@ -184,6 +212,55 @@ def test_the_claim_is_written_before_the_spawn(target, monkeypatch):
     schedule.tick()
 
     assert seen["state"] == schedule.SENDING
+
+
+def test_only_the_message_in_flight_is_claimed(target, monkeypatch):
+    """Claiming the whole due batch up front inverted the point of claiming: a
+    tick sends sequentially, so a process dying inside the FIRST helper left its
+    siblings persisted as `sending` with no spawn behind them, and the stuck
+    sweep then reported messages that were never attempted as interrupted.
+
+    Only the one actually in flight may be claimed; the rest stay `pending` and
+    are still sendable on the next tick or the next launch."""
+    seen = []
+
+    def spawn_and_look(target_, prompt, mode, session_id=""):
+        # what the store says about EVERY entry while this one is away
+        seen.append({e["message"]: e["state"] for e in schedule.list_entries()})
+        return {"run_id": f"r-{len(seen)}"}
+
+    monkeypatch.setattr(claude_spawn, "spawn_helper", spawn_and_look)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: None)
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready", lambda *a, **k: None)
+
+    schedule.create(str(target), "first", _in(-20))
+    schedule.create(str(target), "second", _in(-10))
+    schedule.tick()
+
+    # while "first" is in the helper, "second" has not been touched
+    assert seen[0] == {"first": schedule.SENDING, "second": schedule.PENDING}
+    # and it is claimed only when its own turn comes
+    assert seen[1]["second"] == schedule.SENDING
+    assert {e["message"]: e["state"] for e in schedule.list_entries()} == {
+        "first": schedule.SENT, "second": schedule.SENT}
+
+
+def test_a_cancel_landing_between_the_sweep_and_the_claim_wins(target, spawned,
+                                                               monkeypatch):
+    """The sweep's verdict is a moment old by the time the claim runs, so the
+    claim re-reads: a message cancelled in that window must not be sent."""
+    entry = schedule.create(str(target), "never mind", _in(-5))
+    real_claim = schedule._claim
+
+    def cancel_then_claim(entry_id, now):
+        schedule.cancel(entry_id)
+        return real_claim(entry_id, now)
+
+    monkeypatch.setattr(schedule, "_claim", cancel_then_claim)
+
+    assert schedule.tick() == []
+    assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
+    assert entry["id"] == schedule.list_entries()[0]["id"]
 
 
 def test_an_entry_stuck_in_sending_is_reported_not_retried(target, spawned):

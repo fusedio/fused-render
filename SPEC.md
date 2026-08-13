@@ -6102,8 +6102,10 @@ world from one the user typed.
   model (the mounts registry lives above it). A scheduled turn is an agent turned
   loose on a path; scheduling one against a FUSE mount would route around the
   gate `templates/claude/condition.py` exists solely to be.
-- **SCH-7** **Routes.** `GET /api/schedule` lists (unguarded, like every read);
-  `POST /api/schedule` schedules and `POST /api/schedule/cancel` withdraws, both
+- **SCH-7** **Routes.** `GET /api/schedule` lists and `GET /api/schedule/events`
+  reads undelivered outcomes (both unguarded, like every read);
+  `POST /api/schedule` schedules, `POST /api/schedule/cancel` withdraws, and
+  `POST /api/schedule/events/ack` confirms narration — all three
   behind the D3 X-Fused guard — one schedules code execution and the other stops
   it. Create takes **exactly one** of `due` (ISO 8601) or `delay_seconds`, so a
   caller offering "in 30 minutes" never does timezone arithmetic; a **naive**
@@ -6150,9 +6152,18 @@ world from one the user typed.
     `GET /api/schedule/events`) — append-only, monotonically ided, bounded. A
     separate endpoint from the listing for the reason the mount-health log is
     separate: this poll runs app-wide in every shell forever and must not carry
-    the page's payload. `useScheduleEvents` mirrors `useMountHealth` exactly,
-    including the silent first-successful-poll baseline (opening the app must not
-    replay last week's outcomes). Kinds: `done` → info, auto-dismissing; `failed`
+    the page's payload. **The SERVER decides what is undelivered**
+    (`undelivered_events` + a guarded `ack` the shell POSTs after narrating), and
+    that is the correction to the first shape, which copied `useMountHealth`'s
+    "first successful poll is a silent baseline". That rule is right for mounts —
+    which emit nothing at startup by design — and exactly wrong here: the catch-up
+    pass emits its `missed` verdicts on the scheduler's FIRST tick, long before a
+    shell has loaded, so a client-side baseline swallowed precisely the events the
+    log exists to deliver. Acking after narrating means a client that dies in
+    between gets a duplicate toast rather than a silent miss, and a reload is quiet
+    without the client having to guess. It is an ack POST rather than a
+    drain-on-read because a GET with that side effect would let any page the user
+    visits silently consume their notifications. Kinds: `done` → info, auto-dismissing; `failed`
     and `missed` → persistent errors with an action onto `/scheduled`. `missed` is
     worded differently from `failed` on purpose — nothing went wrong, the app was
     not running — but it still needs a person, because the user asked for
@@ -6173,3 +6184,39 @@ world from one the user typed.
     or not anything is watching, so an observer is never allowed to abandon a run.
     Every report is best-effort — a registry that refuses a field must not cost a
     message its send.
+- **SCH-11** **Scheduling happens in the claude template's composer, not on a
+  settings page** (`templates/claude/template.html`, the **Send now** pill beside
+  the model/effort/approvals pills). The composer already holds the two hard
+  parts — WHICH FOLDER (the template is bound to one target, `FILE`) and WHAT TO
+  SAY — so the only thing it was missing is *when*. A settings page asking for a
+  path and a message again was making the user do twice what they had already
+  done once, and typing an absolute path by hand was the worst affordance in the
+  feature.
+  - **SCH-11a** **Presets, not a date picker.** The pill row is a fixed
+    vocabulary and a `datetime-local` field wedged between the pills would read as
+    a different app; "in an hour / this evening / tomorrow 9am / Monday 9am" is
+    what a deferred prompt actually wants. `POST /api/schedule` still takes an
+    exact `due`, so nothing is lost for a caller that needs 03:14. Presets resolve
+    at SEND time — "tomorrow 9am" means tomorrow from the moment the user commits,
+    not from whenever the pill was touched — and a preset already past today (the
+    evening case) is reported rather than silently shifted a day.
+  - **SCH-11b** **The choice does not outlive its message.** Model, effort and
+    approvals persist in `fused.params` because they describe how the chat
+    behaves; "send it at 6pm" describes ONE message, so the pill resets to
+    **Send now** after every send. A deferral that survived its own send would
+    silently defer whatever the user typed next.
+  - **SCH-11c** **The approvals pill applies to the scheduled turn**, which is the
+    same question asked about the case where the answer matters most. The
+    composer's four modes and `schedule.PERMISSION_MODES` are therefore held
+    together by a test (`test_claude_schedule_pill.py`): the first version of that
+    copied tuple omitted `acceptEdits`, so a composer sitting on that mode had its
+    schedule refused with a 400 naming modes the user had never chosen.
+  - **SCH-11d** **Annotations are not folded into a scheduled message**, unlike a
+    sent one. A note is a crop of what is on screen *now* plus a pointer into this
+    render of the pane, and by the time the message runs the pane may show
+    something else. A scheduled message is the words; the pending notes stay
+    pending. An annotation-only send is therefore refused with a reason rather
+    than deferred.
+  - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
+    schedule in one place, with cancel and the outcomes, is the part that has
+    nowhere else to live; it points at the composer for the scheduling itself.

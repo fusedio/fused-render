@@ -117,13 +117,19 @@ _SENDING_STUCK_S = 300
 # turn nobody is watching can honestly be given.
 _SCHEDULED_PERMISSION_MODE = "auto"
 
-# The modes agent.py accepts. Hardcoded rather than imported: importing it means
-# loading the template backend (a module-level `exec_module`) on every
-# validation, and this list is a four-word contract that a stricter mode would
-# only ever be REMOVED from. `_start` re-validates anyway and falls back to the
-# strictest on anything it does not recognise, so a drift here cannot buy a
-# scheduled turn more auto-approval than the template offers.
-PERMISSION_MODES = ("prompt", "auto", "plan")
+# The modes agent.py accepts — the same four, in the same spelling. Hardcoded
+# rather than imported, because importing means loading the template backend (a
+# module-level `exec_module`) on every validation.
+#
+# Copying it is only safe because a TEST holds the copies together
+# (test_claude_schedule_pill.py, the technique agent.py's own SWITCHABLE_MODES
+# comment names). The first version of this line omitted `acceptEdits` while its
+# comment called the list four words long, and the failure mode is worth
+# recording: `_start` re-validating downstream means drift can never buy a
+# scheduled turn MORE auto-approval than the template offers — but it can do the
+# opposite, and did. A composer sitting on `acceptEdits` had its schedule refused
+# with "expected one of (...)", naming a mode the user had never chosen.
+PERMISSION_MODES = ("prompt", "auto", "acceptEdits", "plan")
 
 # ------------------------------------------------------------------ reporting
 #
@@ -159,6 +165,23 @@ EVENT_KINDS = (EVENT_DONE, EVENT_FAILED, EVENT_MISSED)
 
 _events: list[dict] = []
 _event_seq = 0
+# The highest event id a client has confirmed it narrated. **Server-side on
+# purpose**, and the correction to the first shape of this feature, which copied
+# the mount-health poller's "first successful poll is a silent baseline" rule.
+#
+# That rule is right for mounts and exactly wrong here. Mount health emits
+# nothing at startup by design (a mount already broken at boot is left alone),
+# so its baseline only ever swallows a previous session's log. THIS log's most
+# important events — the `missed` verdicts from the catch-up pass — are emitted
+# by the loop's first tick, which lands well before the shell has loaded. A
+# client-side baseline therefore marked them seen and never said a word, which is
+# the precise failure the log was added to prevent.
+#
+# So the client narrates everything it is given and confirms what it narrated;
+# the server is what remembers, which also makes a reload silent for free. The
+# mark is in memory next to the ring it indexes: both describe THIS run of the
+# app, and the durable record of every outcome is the store.
+_delivered = 0
 _events_lock = threading.Lock()
 
 # Serialises the read-modify-write of the store. `storage.write_json` is atomic
@@ -218,9 +241,35 @@ def _emit(kind: str, entry: dict, detail: str = "") -> None:
 
 
 def event_log() -> list[dict]:
-    """Every event still in the ring, oldest first."""
+    """Every event still in the ring, oldest first — regardless of delivery.
+    For tests and debugging; the shell reads `undelivered_events`."""
     with _events_lock:
         return list(_events)
+
+
+def undelivered_events() -> list[dict]:
+    """Events no client has confirmed narrating yet, oldest first.
+
+    A plain read: draining is `ack_events`, so a page that merely LOOKS at this
+    (a duplicate poll, a second window, a speculative fetch) cannot cost the user
+    a notification."""
+    with _events_lock:
+        return [e for e in _events if e["id"] > _delivered]
+
+
+def ack_events(event_id: int) -> int:
+    """Confirm every event up to `event_id` has been narrated; returns the mark.
+
+    Only ever moves FORWARD, so an out-of-order or replayed ack cannot re-arm
+    events that were already shown. The client acks AFTER narrating, which means
+    a client that dies in between sees them once more on its next poll — a
+    duplicate toast rather than a silent miss, which is the right way round for a
+    feature whose whole job is telling you what you did not see."""
+    global _delivered
+    with _events_lock:
+        if isinstance(event_id, int) and event_id > _delivered:
+            _delivered = event_id
+        return _delivered
 
 
 def _job_id(entry_id: str) -> str:
@@ -431,18 +480,23 @@ def _claim_due(now: datetime) -> list[dict]:
     """Move every entry that should act now out of `pending`, and return the
     ones to actually send.
 
-    ONE locked read-modify-write for the whole tick: claiming and sweeping
-    together means a due entry cannot be read as pending by a second caller
-    between the two, and a tick that spawns nothing still persists its
-    `missed` verdicts.
+    ONE locked read-modify-write for the sweep, so a tick that spawns nothing
+    still persists its `missed` verdicts.
 
-    Returned entries are copies already written as `sending`; the caller spawns
-    for each and reports back through `_update`.
+    **The due entries are returned STILL PENDING, and each is claimed
+    individually right before its own spawn** (`_claim`). Claiming the whole
+    batch here was the first shape and it was wrong in a way that inverts the
+    point of claiming at all: `tick` spawns sequentially, so a process that died
+    inside the first helper left every SIBLING persisted as `sending` with no
+    spawn behind it — and the stuck sweep then reported them interrupted, so
+    messages that had never been attempted were never sent. Claiming protects
+    the ONE message actually in flight; anything not yet attempted must stay
+    `pending` so the next tick (or the next launch) still sends it.
 
     The events this pass decides on are collected and emitted AFTER the lock
     (`_emit` takes its own), so the two locks are never nested."""
     cutoff = now - timedelta(seconds=max_late_seconds())
-    claimed: list[dict] = []
+    due: list[str] = []
     announce: list[tuple[str, dict, str]] = []
     with _lock:
         entries = _read()
@@ -476,16 +530,15 @@ def _claim_due(now: datetime) -> list[dict]:
                 continue
             if when > now:
                 continue
-            changed = True
             if when < cutoff:
+                changed = True
                 entry["state"] = MISSED
                 entry["error"] = ("not sent: the app was not running between "
                                  "this time and the catch-up bound")
                 announce.append((EVENT_MISSED, dict(entry), entry["error"]))
                 continue
-            entry["state"] = SENDING
-            entry["fired"] = now.isoformat()
-            claimed.append(dict(entry))
+            # Due and sendable. Left PENDING — `_claim` takes it, one at a time.
+            due.append(str(entry["id"]))
         due_times = _pending_due(entries) if changed else None
         if changed:
             _write(entries)
@@ -493,6 +546,33 @@ def _claim_due(now: datetime) -> list[dict]:
         _emit(kind, entry, detail)
     if due_times is not None:
         _sync_wake(due_times)
+    return due
+
+
+def _claim(entry_id: str, now: datetime) -> dict | None:
+    """Take ONE entry for sending: `pending` -> `sending`, written before the
+    caller spawns anything. Returns the claimed copy, or None if it is no longer
+    pending (cancelled between the sweep and here, or already taken).
+
+    The re-read under the lock is what makes that None real rather than
+    theoretical: the sweep's verdict is a moment old by the time we get here, and
+    a cancel landing in that window must win."""
+    with _lock:
+        entries = _read()
+        for entry in entries:
+            if entry.get("id") != entry_id:
+                continue
+            if entry.get("state") != PENDING:
+                return None
+            entry["state"] = SENDING
+            entry["fired"] = now.isoformat()
+            _write(entries)
+            claimed = dict(entry)
+            due_times = _pending_due(entries)
+            break
+        else:
+            return None
+    _sync_wake(due_times)
     return claimed
 
 
@@ -598,13 +678,23 @@ def _watch_turn(entry: dict, run_id: str) -> None:
 
 
 def tick(now: datetime | None = None) -> list[dict]:
-    """One pass: claim what is due, send each claim. Returns the claimed
-    entries (what this pass acted on) — the seam the tests drive directly
-    instead of waiting on the loop."""
-    claimed = _claim_due(now or _now())
-    for entry in claimed:
+    """One pass: sweep, then claim-and-send each due message ONE AT A TIME.
+
+    The claim happens inside this loop rather than in the sweep so that a
+    process dying inside one helper leaves its siblings `pending` — still
+    sendable on the next tick — instead of stranded mid-claim (see `_claim_due`).
+
+    Returns the entries actually claimed and attempted, which is the seam the
+    tests drive directly instead of waiting on the loop."""
+    now = now or _now()
+    sent: list[dict] = []
+    for entry_id in _claim_due(now):
+        entry = _claim(entry_id, now)
+        if entry is None:
+            continue  # cancelled in the window between the sweep and the claim
+        sent.append(entry)
         _send(entry)
-    return claimed
+    return sent
 
 
 def _loop() -> None:

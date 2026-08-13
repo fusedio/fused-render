@@ -29,6 +29,7 @@ def clean_registries(monkeypatch):
     jobs.reset()
     schedule._events.clear()
     monkeypatch.setattr(schedule, "_event_seq", 0)
+    monkeypatch.setattr(schedule, "_delivered", 0)
     monkeypatch.setattr(schedule_wake, "sync", lambda due: None)
     yield
     jobs.reset()
@@ -255,6 +256,61 @@ def test_the_log_is_bounded(target, sent, monkeypatch):
     log = schedule.event_log()
     assert len(log) == 5
     assert [e["entry_id"] for e in log] == [f"e{i}" for i in range(7, 12)]
+
+
+def test_startup_events_survive_until_a_shell_actually_narrates_them(target, sent,
+                                                                    monkeypatch):
+    """The bug the delivery mark exists for.
+
+    The catch-up pass emits its `missed` verdicts on the scheduler's FIRST tick,
+    which lands long before a shell has loaded. Under the original design (a
+    client-side "first poll is a silent baseline", copied from the mount-health
+    poller) that first poll marked them seen and never said a word — swallowing
+    precisely the events the log was added to deliver."""
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("FUSED_RENDER_SCHEDULE_MAX_LATE", "60")
+    schedule.create(str(target), "missed while away",
+                    datetime.now(timezone.utc) - timedelta(seconds=30))
+    # the app was closed for the whole window; this is the first tick after launch
+    schedule.tick(now=datetime.now(timezone.utc) + timedelta(seconds=120))
+
+    # a shell that loads later still gets it
+    pending = schedule.undelivered_events()
+    assert [e["kind"] for e in pending] == [schedule.EVENT_MISSED]
+
+    # ...and once it confirms, a reload is quiet
+    schedule.ack_events(pending[-1]["id"])
+    assert schedule.undelivered_events() == []
+    # while the durable record is untouched — the store, not the ring, is history
+    assert schedule.list_entries()[0]["state"] == schedule.MISSED
+    assert len(schedule.event_log()) == 1
+
+
+def test_acking_only_ever_moves_forward(target, sent):
+    entry = _overdue(target)
+    schedule.tick()
+    schedule._turn_tick(entry, "r-1", FakeAgent(), {"done": True, "error": ""})
+    latest = schedule.event_log()[-1]["id"]
+
+    assert schedule.ack_events(latest) == latest
+    # a replayed or out-of-order ack must not re-arm what was already shown
+    assert schedule.ack_events(1) == latest
+    assert schedule.ack_events(-5) == latest
+    assert schedule.undelivered_events() == []
+
+
+def test_a_read_alone_never_consumes_a_notification(target, sent):
+    """Draining is the ack's job. A duplicate poll, a second window, or a
+    speculative fetch must not cost the user a toast."""
+    entry = _overdue(target)
+    schedule.tick()
+    schedule._turn_tick(entry, "r-1", FakeAgent(), {"done": True, "error": ""})
+
+    first = schedule.undelivered_events()
+    assert len(first) == 1
+    assert schedule.undelivered_events() == first
+    assert schedule.undelivered_events() == first
 
 
 def test_reporting_failures_never_break_a_send(target, monkeypatch):

@@ -1,5 +1,12 @@
-// Scheduled messages page — a durable list of prompts to send Claude later,
-// and the form that adds to it.
+// Scheduled messages page — the durable list of prompts waiting to go to Claude,
+// and how the ones already sent turned out.
+//
+// It does NOT schedule anything, deliberately. Scheduling lives in the claude
+// template's composer (templates/claude/template.html, the "Send now" pill),
+// because that row already knows the folder and already holds the message —
+// asking for both again here was making the user do twice what they had done
+// once. What is left is the part with nowhere else to live: everything scheduled
+// across every folder, in one list, with a way to call it off.
 //
 // Backend: fused_render/schedule.py (the store and the loop that fires it),
 // server/routers/schedule.py (this page's three calls). The app does the sending
@@ -16,51 +23,16 @@
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
 import { useEffect, useState } from "react";
-import {
-  cancelScheduledMessage,
-  getSchedule,
-  scheduleMessage,
-} from "@platform/lib/api";
+import { cancelScheduledMessage, getSchedule } from "@platform/lib/api";
 import type { ScheduledMessage, ScheduleResult, ScheduledState } from "@platform/lib/api";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { Field, TextArea, TextInput } from "@platform/ui/field/fields";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
 // How often the list re-reads itself. A `pending` entry becomes `sent` on the
 // server's own tick (30s), so anything much slower than this shows a message as
 // still-waiting for a while after it went out.
 const POLL_MS = 20000;
-
-// The quick-pick offsets, in minutes. Deliberately short: these are the "later
-// today" cases, where computing a wall-clock time by hand is the annoying part.
-// Anything further out is what the date field is for.
-const QUICK_PICKS: { label: string; minutes: number }[] = [
-  { label: "In 1 hour", minutes: 60 },
-  { label: "In 3 hours", minutes: 180 },
-  { label: "Tomorrow morning", minutes: -1 }, // computed; see quickPickValue
-];
-
-// `datetime-local` wants "YYYY-MM-DDTHH:mm" in LOCAL time — which is also
-// exactly what the server reads a naive timestamp as (schedule.parse_due), so
-// the value the user sees is the value that gets scheduled, with no conversion
-// on either side.
-function toLocalInputValue(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
-  );
-}
-
-function quickPickValue(minutes: number): string {
-  if (minutes >= 0) return toLocalInputValue(new Date(Date.now() + minutes * 60000));
-  // Tomorrow at 9am local, the one absolute time worth a chip.
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  d.setHours(9, 0, 0, 0);
-  return toLocalInputValue(d);
-}
 
 function formatDue(iso: string): string {
   const d = new Date(iso);
@@ -196,13 +168,6 @@ function EntryRow({
 export default function Scheduled() {
   const [state, setState] = useState<ScheduleResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [target, setTarget] = useState("");
-  const [message, setMessage] = useState("");
-  const [due, setDue] = useState(() => quickPickValue(60));
-  const [busy, setBusy] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-
   const reload = () => {
     getSchedule().then(
       (r) => {
@@ -219,26 +184,6 @@ export default function Scheduled() {
     return () => window.clearInterval(id);
   }, []);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setFormError(null);
-    setNote(null);
-    try {
-      // `due` is the naive local string from the input; the server reads it as
-      // local time, so it is sent through unchanged rather than converted here.
-      const { entry } = await scheduleMessage({ target, message, due });
-      setNote(`Scheduled for ${formatDue(entry.due)}.`);
-      setMessage("");
-      reload();
-    } catch (err) {
-      setFormError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const entries = state?.entries ?? [];
   const live = entries.filter(isLive);
   const past = entries.filter((e) => !isLive(e));
@@ -248,69 +193,18 @@ export default function Scheduled() {
       <header>
         <h1>Scheduled messages</h1>
         <p className="deploy-muted">
-          Send Claude a message later. When it comes due, fused-render starts the session
-          itself — in the same folder, with the same skills and permissions as a chat you
-          open by hand.
+          Messages waiting to be sent to Claude, and how the ones already sent turned out.
+          When a message comes due, fused-render starts the session itself — in the same
+          folder, with the same skills and permissions as a chat you open by hand.
+        </p>
+        <p className="deploy-muted">
+          {/* Scheduling is NOT here, deliberately. The chat already knows the folder
+              and already holds the message, so asking for both again on a settings
+              page was work the user had done once already. */}
+          To schedule one, open a chat on the folder or file you want it to run in and
+          pick a time from the <strong>Send now</strong> menu in the composer.
         </p>
       </header>
-
-      <section className="prefs-section">
-        <h2>Schedule a message</h2>
-        <form className="schedule-form" onSubmit={submit}>
-          <Field
-            label="Folder or file"
-            required
-            hint="The session runs here, exactly as if you opened a chat on it."
-          >
-            <TextInput
-              type="text"
-              value={target}
-              placeholder="~/Documents/Fused/local/my-app"
-              onChange={(ev) => setTarget(ev.target.value)}
-              required
-            />
-          </Field>
-          <Field label="Message" required>
-            <TextArea
-              value={message}
-              rows={4}
-              placeholder="Update the changelog for everything that landed today."
-              onChange={(ev) => setMessage(ev.target.value)}
-              required
-            />
-          </Field>
-          <Field label="When" required hint="Your local time.">
-            <TextInput
-              type="datetime-local"
-              value={due}
-              onChange={(ev) => setDue(ev.target.value)}
-              required
-            />
-          </Field>
-          <div className="schedule-quick">
-            {QUICK_PICKS.map((q) => (
-              <button
-                key={q.label}
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setDue(quickPickValue(q.minutes))}
-              >
-                {q.label}
-              </button>
-            ))}
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? "Scheduling…" : "Schedule"}
-            </button>
-          </div>
-        </form>
-        {formError && <ErrorBanner>{formError}</ErrorBanner>}
-        {note && <p className="deploy-muted">{note}</p>}
-        <p className="deploy-muted">
-          A scheduled message runs unattended, so it uses automatic permissions: Claude's own
-          classifier approves what it judges safe and parks anything else for you to answer in
-          that folder's chat.
-        </p>
-      </section>
 
       {loadError && <ErrorBanner>Failed to load scheduled messages: {loadError}</ErrorBanner>}
       {!state && !loadError && <SkeletonLines rows={2} label="Loading scheduled messages" />}

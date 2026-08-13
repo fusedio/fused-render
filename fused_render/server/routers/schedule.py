@@ -42,15 +42,41 @@ def api_schedule():
 
 @router.get("/api/schedule/events")
 def api_schedule_events():
-    """The running narration of what scheduled messages did — what the shell
-    polls to raise a toast for a message that ran, failed, or was missed while
-    the user was elsewhere.
+    """What scheduled messages did that nobody has been told about yet — what the
+    shell polls to raise a toast for a message that ran, failed, or was missed
+    while the user was elsewhere.
 
     A SEPARATE endpoint from the listing above, for the reason the mount-health
     log is separate: this one is polled app-wide, by every shell, forever, and
     making that poll carry the full entry list would be paying for the page's
-    payload on a request that only ever reads a handful of ids."""
-    return {"events": schedule.event_log()}
+    payload on a request that only ever reads a handful of ids.
+
+    Undelivered-only, and the SERVER is what remembers which those are. The
+    alternative — a client-side "first poll is a silent baseline", copied from the
+    mount-health poller — is wrong for this log specifically: the catch-up pass
+    emits its `missed` verdicts on the scheduler's first tick, long before a shell
+    has loaded, so the baseline swallowed precisely the events the log exists to
+    deliver."""
+    return {"events": schedule.undelivered_events()}
+
+
+@router.post("/api/schedule/events/ack")
+def api_schedule_events_ack(body: dict = Body(...),
+                            x_fused: str | None = Header(default=None)):
+    """Confirm the shell has narrated every event up to `id`.
+
+    Guarded like the other writes, and not folded into the GET above for exactly
+    that reason: a drain-on-read would let any page the user visits silently
+    consume their notifications with a no-cors fetch, which is the shape D3's
+    header guard exists to refuse."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    event_id = body.get("id")
+    if not isinstance(event_id, int) or isinstance(event_id, bool):
+        return _error("id: expected an integer event id", status=400)
+    return {"delivered": schedule.ack_events(event_id)}
 
 
 @router.post("/api/schedule")
