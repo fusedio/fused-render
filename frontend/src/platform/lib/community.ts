@@ -5,6 +5,9 @@
 // user-facing failures as {status:"error", message}, surfaced verbatim here.
 import { postJson } from "@platform/lib/api";
 
+// The workspace tag dir the showcase clone lands in (community.py SHOWCASE_DIR).
+export const SHOWCASE_TAG = "showcase";
+
 export async function runCommunity<T extends { status?: string; message?: string }>(
   params: Record<string, unknown>,
 ): Promise<T> {
@@ -18,15 +21,16 @@ export function touchCommunityApp(slug: string): void {
   void runCommunity({ action: "touch", slug }).catch(() => undefined);
 }
 
-// The slug of the community CATALOG CACHE app a path belongs to, or null.
-// Apps sit directly under ~/.fused-render/community/repo/<slug>/ (community.py
-// CACHE_REPO + _materialize), and slugs are [a-z0-9-] by the same file's
-// _require_slug — so a match here is a path inside the read-only preview cache,
-// the tree `refresh` resets on every catalog pull. The workspace copy an
+// The slug of the SHOWCASE CLONE app a path belongs to, or null. Apps sit
+// directly under <workspace>/showcase/<slug>/ (community.py SHOWCASE_DIR),
+// and slugs are [a-z0-9-] by the same file's _require_slug. The default
+// workspace name ("Fused") is hardcoded here — same pragmatism as the old
+// ~/.fused-render/community/repo match; a FUSED_RENDER_DIR override with a
+// different basename just loses the Clone button. The workspace copy an
 // install produces lives elsewhere (Fused/local/<slug>) and never matches.
 export function communityCacheSlug(fsPath: string): string | null {
   // Windows callers may carry backslashes; normalize like urlForFsPath does.
   const norm = fsPath.replace(/\\/g, "/");
-  const m = norm.match(/\/\.fused-render\/community\/repo\/([a-z0-9][a-z0-9-]{1,63})(?:\/|$)/);
+  const m = norm.match(/\/Fused\/showcase\/([a-z0-9][a-z0-9-]{1,63})(?:\/|$)/);
   return m ? m[1] : null;
 }

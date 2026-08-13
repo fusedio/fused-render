@@ -36,11 +36,15 @@ const PREVIEW_SCALE = 0.25;
 export function AppPreviewCard({
   app,
   onContextMenu,
+  badge,
 }: {
   app: AppInfo;
   // Right-click: the card only forwards the event and its own app — the menu
   // state lives one level up (Apps.tsx), so the whole grid shares one portal.
   onContextMenu?: (e: React.MouseEvent, app: AppInfo) => void;
+  // Extra word in the meta row (e.g. "cloned" on a showcase app the user has
+  // copied into Fused/local). Decoration only — the card behaves the same.
+  badge?: string;
 }) {
   const title = app.title || app.name;
   const ago = timeAgo(app.updated_at);
@@ -65,6 +69,7 @@ export function AppPreviewCard({
         <span className="app-pcard-meta">
           <span className="app-pcard-tag">{app.tag}</span>
           {title !== app.name && <span className="app-pcard-name">{app.name}</span>}
+          {badge && <span className="app-pcard-name">{badge}</span>}
           {ago && <span className="app-pcard-ago">{ago}</span>}
         </span>
       </span>

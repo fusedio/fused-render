@@ -10,12 +10,12 @@ import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
+import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
-import { CommunityGrid, COMMUNITY_TAG } from "@apps/builder/CommunityGrid";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
@@ -38,6 +38,49 @@ function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
   // "recent" = last-modified desc; apps without a timestamp sink to the end.
   else sorted.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
   return sorted;
+}
+
+type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
+
+const clonedSet = (c: ShowcaseCatalog) =>
+  new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug));
+
+// Read the showcase install records once per mount; feeds the "cloned"
+// badges on showcase cards.
+//
+// `catalog` first — a cheap local read (installs.json + index.json), no lock,
+// no network, so badges never wait on git. Only when it reports no-cache
+// (the clone is missing or the startup clone is still running) does this
+// escalate to `refresh`: that call parks on the cache lock behind an
+// in-flight startup clone (or performs the clone itself after a failed
+// start), and its completion is the signal that <workspace>/showcase just
+// landed — `onSynced` then refetches the grid so the first visit doesn't
+// keep a stale listing until reload. An already-cloned catalog never
+// touches the network here (server start owns the fetch+ff sync), so a
+// Clone click right after mount isn't stuck behind a fetch holding the
+// lock. Decoration plus refetch only — failures just mean no badges.
+function useShowcaseSync(onSynced: () => void): Set<string> {
+  const [slugs, setSlugs] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const local = await runCommunity<ShowcaseCatalog>({ action: "catalog" });
+      if (!alive) return;
+      if (local.status !== "no-cache") {
+        setSlugs(clonedSet(local));
+        return;
+      }
+      const synced = await runCommunity<ShowcaseCatalog>({ action: "refresh" });
+      if (!alive) return;
+      setSlugs(clonedSet(synced));
+      onSynced();
+    })().catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
+  }, []);
+  return slugs;
 }
 
 export default function Apps({ config }: { config: Config }) {
@@ -86,23 +129,13 @@ export default function Apps({ config }: { config: Config }) {
     };
   }, [nonce]);
 
-  // The community tab lives alongside the workspace tags but is its own
-  // surface (catalog cards, not workspace apps). The backend is native
-  // server-side (POST /api/community) so it is always available — no mount
-  // gate any more.
+  // Showcase apps are ordinary workspace apps now: the server clones the
+  // community repo into <workspace>/showcase in the background on startup,
+  // and the two-level scan picks it up like any other tag dir. No synthetic
+  // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
-  const tags = useMemo(() => {
-    const t = [...new Set(all.map((a) => a.tag))].sort();
-    return t.includes(COMMUNITY_TAG) ? t : [...t, COMMUNITY_TAG];
-  }, [all]);
-  // The chip only means the catalog when it's the appended one — a real
-  // workspace tag dir named "community" keeps its normal filtering.
-  const communityTab =
-    tag === COMMUNITY_TAG && !all.some((a) => a.tag === COMMUNITY_TAG);
-  // Empty workspace on the "All" tab: instead of a bare "no apps yet" line,
-  // surface the community catalog — something to open on first run.
-  const communityFallback =
-    tag === null && apps.status === "ok" && all.length === 0;
+  const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -184,33 +217,13 @@ export default function Apps({ config }: { config: Config }) {
                   className={"apps-tag-chip" + (tag === t ? " is-active" : "")}
                   onClick={() => setTag(tag === t ? null : t)}
                 >
-                  {/* The catalog chip WEARS the marketplace's user-facing name
-                      ("showcase")
-                      while keeping "community" as its value — the tag dirs,
-                      the ?tag= param, and community.py all speak that. A real
-                      workspace tag dir named "community" is not the catalog
-                      and keeps its own name. */}
-                  {t === COMMUNITY_TAG && !all.some((a) => a.tag === COMMUNITY_TAG)
-                    ? "showcase"
-                    : t}
+                  {t}
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        {communityTab || communityFallback ? (
-          <>
-            {communityFallback && (
-              <div className="home-empty">
-                No apps yet. Describe one in the composer above to create it, or start from a
-                showcase app below.
-              </div>
-            )}
-            <CommunityGrid query={query} sort={sort} />
-          </>
-        ) : (
-          <>
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
         {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
         {apps.status === "ok" && (
@@ -229,12 +242,17 @@ export default function Apps({ config }: { config: Config }) {
             ) : (
               <div className="apps-cards">
                 {shown.map((app) => (
-                  <AppPreviewCard key={app.path} app={app} onContextMenu={openCardMenu} />
+                  <AppPreviewCard
+                    key={app.path}
+                    app={app}
+                    onContextMenu={openCardMenu}
+                    badge={
+                      app.tag === SHOWCASE_TAG && clonedSlugs.has(app.name) ? "cloned" : undefined
+                    }
+                  />
                 ))}
               </div>
             )}
-          </>
-        )}
           </>
         )}
       </div>

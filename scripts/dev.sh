@@ -347,16 +347,11 @@ if [[ "$RELOAD" -eq 1 ]]; then
       # Only open if the server actually came up — otherwise (e.g. the port
       # guard SystemExited on a stale server) we'd pop a dead tab after timeout.
       if [[ "$ready" -eq 1 ]]; then
-        # Match cli.py's first-run onboarding: open the seeded showcase landing
-        # page on a brand-new install, else the root. ensure_fused_dir_and_landing
-        # is idempotent (cli.py calls it too) and returns (fused_dir, landing);
-        # landing is a "/view/…" path on first run, else None → fall back to root.
-        LANDING="$("$PY" -c 'from fused_render.shell.seed import ensure_fused_dir_and_landing; _, l = ensure_fused_dir_and_landing(); print(l or "")' 2>/dev/null || true)"
-        if [[ -n "$LANDING" ]]; then URL="http://127.0.0.1:$PORT$LANDING"; else URL="http://127.0.0.1:$PORT/"; fi
+        URL="http://127.0.0.1:$PORT/"
         # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
         # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
         # builtin, not a binary on PATH). Pass the URL through argv, not
-        # interpolated into the -c source: a landing path with an apostrophe
+        # interpolated into the -c source: a path with an apostrophe
         # (e.g. a home dir containing ') would otherwise break the string literal.
         "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
       fi

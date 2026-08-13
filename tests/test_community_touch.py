@@ -18,17 +18,16 @@ def community_mod(tmp_path, monkeypatch):
     from fused_render import community as mod
 
     state = tmp_path / "state"
-    cache = state / "repo"
     monkeypatch.setattr(mod, "STATE_DIR", str(state))
-    monkeypatch.setattr(mod, "CACHE_REPO", str(cache))
+    monkeypatch.setattr(mod, "SHOWCASE_DIR", str(tmp_path / "workspace" / "showcase"))
     monkeypatch.setattr(mod, "INSTALLS_JSON", str(state / "installs.json"))
     monkeypatch.setattr(mod, "OPENED_JSON", str(state / "opened.json"))
     return mod
 
 
 def _fake_cache(mod, apps):
-    os.makedirs(os.path.join(mod.CACHE_REPO, ".git"), exist_ok=True)
-    with open(os.path.join(mod.CACHE_REPO, "index.json"), "w", encoding="utf-8") as f:
+    os.makedirs(os.path.join(mod.SHOWCASE_DIR, ".git"), exist_ok=True)
+    with open(os.path.join(mod.SHOWCASE_DIR, "index.json"), "w", encoding="utf-8") as f:
         json.dump({"apps": apps}, f)
 
 
