@@ -6,16 +6,115 @@ controls (change status, commit, clear). Memory *contents* are authored by
 Claude Code, never edited here.
 
 main(action=...):
-  list   -> {projects: [{project, files, changes}]}
+  list   -> {projects: [{project, path, pathConfirmed, files, changes}]}
   commit -> {ok, committed}   params: project  (path-limited commit)
   clear  -> {ok, committed}   params: project  (delete *.md + commit deletion)
   open   -> {ok}              params: project  (reveal folder in OS explorer)
+
+`project` is always the SLUG (the projects/ directory name). It stays the
+identifier on the wire because it is what lib.safe_subdir guards and what the
+other three actions are keyed on; `path` is the human-readable folder it stands
+for, resolved as described under _project_path.
 """
+import glob
+import json
 import os
+from typing import Optional
 
 from . import lib
 
 PROJECTS_DIR = os.path.join(lib.CLAUDE_DIR, "projects")
+
+# How many "-"-separated segments a slug may have before we stop trying to
+# reconstruct a path out of it. The rejoin search below is exponential in the
+# worst case; real project paths are ~5-10 segments deep, and a pathological
+# slug is not worth thousands of stat calls.
+_MAX_SEGMENTS = 24
+
+
+# --- slug -> real folder ----------------------------------------------------
+# Claude Code names each project dir by munging the cwd:
+# re.sub(r"[^A-Za-z0-9]", "-", abspath) — see templates/claude/agent.py's
+# _munge(). That is LOSSY and irreversible: "/", ".", "_" and a literal "-" all
+# collapse to "-". So a "-" -> "/" replace turns
+# "-Users-me-Work-fused-render" into "/Users/me/Work/fused/render", a path that
+# does not exist. Rendering a confidently-wrong path in a UI over someone's
+# dotfiles is worse than rendering the slug, so this never guesses:
+#
+#   1. read the truth out of a transcript's `cwd` (what
+#      server/routers/claude_sessions.py does — see the note on _transcript_cwd);
+#   2. failing that, reconstruct against the filesystem, keeping only a
+#      candidate whose every component actually exists;
+#   3. failing that, return None, and the UI shows the slug.
+
+
+def _transcript_cwd(slug_dir: str) -> Optional[str]:
+    """The `cwd` recorded in one of this project's transcripts, or None.
+
+    A local mirror of server/routers/claude_sessions.py's _session_cwd() —
+    duplicated rather than imported because this package must not depend on the
+    server's routers (it is callable standalone, as an html+py app was). If the
+    transcript format ever changes, both need the change; that is the cost of
+    the layering, stated here so the two don't drift silently.
+
+    Stops at the first line carrying a `cwd`, which is normally the first line —
+    a transcript can be many MB.
+    """
+    for jsonl in sorted(glob.glob(os.path.join(slug_dir, "*.jsonl"))):
+        try:
+            with open(jsonl, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    cwd = obj.get("cwd")
+                    if isinstance(cwd, str) and cwd:
+                        return cwd
+        except OSError:
+            continue
+    return None
+
+
+def _rejoin(parts: list, base: str) -> Optional[str]:
+    """Rebuild a path from munged segments, guided by what exists on disk.
+
+    At each step, try the fewest segments first and extend only when that
+    doesn't resolve — which is what recovers a component with a real hyphen in
+    it ("fused", "render" -> "fused-render", because that directory exists and
+    "fused" does not). Backtracks, because a shorter prefix that happens to
+    exist can still be a dead end further down.
+    """
+    if not parts:
+        return base
+    for take in range(1, len(parts) + 1):
+        candidate = os.path.join(base, "-".join(parts[:take]))
+        if os.path.isdir(candidate):
+            found = _rejoin(parts[take:], candidate)
+            if found:
+                return found
+    return None
+
+
+def _project_path(slug: str) -> Optional[str]:
+    """The real folder a project slug stands for, or None if we can't confirm
+    one. Never returns a path that was merely plausible."""
+    cwd = _transcript_cwd(os.path.join(PROJECTS_DIR, slug))
+    # A recorded cwd is the truth even if the folder has since been deleted:
+    # it is where those sessions ran, not a guess we are making now.
+    if cwd:
+        return cwd
+    # Only an absolute POSIX path can be reconstructed: the leading "-" is the
+    # munged root separator, and without it there is no anchor to walk from.
+    if not slug.startswith("-"):
+        return None
+    parts = slug[1:].split("-")
+    if not parts or len(parts) > _MAX_SEGMENTS:
+        return None
+    return _rejoin(parts, os.sep)
 
 
 def _memory_dir(project: str) -> str:
@@ -36,7 +135,18 @@ def _list() -> dict:
                 continue
             # MEMORY.md first, then alphabetical
             files.sort(key=lambda n: (n != "MEMORY.md", n.lower()))
-            projects.append({"project": slug, "files": files, "changes": changes.get(slug, [])})
+            path = _project_path(slug)
+            projects.append({
+                "project": slug,
+                "path": path,
+                # Redundant with `path is not None` on purpose: it is the wire's
+                # statement of the rule ("we only ever send a folder we could
+                # confirm"), so a client branches on a named flag instead of
+                # inferring policy from a null.
+                "pathConfirmed": path is not None,
+                "files": files,
+                "changes": changes.get(slug, []),
+            })
     return {"projects": projects}
 
 

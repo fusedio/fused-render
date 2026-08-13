@@ -215,7 +215,15 @@ export const marketplaces = {
 // -- memory -------------------------------------------------------------------
 
 export interface MemoryProject {
+  // The projects/ directory name — a munged cwd. Still the IDENTIFIER every
+  // other memory action is keyed on (the server path-guards on it), which is
+  // why it stays on the wire even though `path` is what a human reads.
   project: string;
+  // The real folder the slug stands for, or null when the server could not
+  // confirm one (no transcript recorded a cwd, and nothing on disk matched).
+  // The munge is lossy, so a null here means "we refuse to guess", not "none".
+  path: string | null;
+  pathConfirmed: boolean;
   files: string[];
   changes: FileDelta[];
 }

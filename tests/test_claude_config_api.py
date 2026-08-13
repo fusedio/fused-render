@@ -327,6 +327,64 @@ def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
     assert lib.catalog_read_path() == lib.packaged_catalog_path()
 
 
+# -- memory: the project slug back to a real folder --------------------------
+# Claude Code's project dirs are munged cwds (every non-alphanumeric char -> "-"),
+# which is lossy: "/", ".", "_" and a literal "-" are indistinguishable
+# afterwards. These pin the three ways the module answers "which folder is this?"
+
+
+def _memory_project(claude_dir, slug, files=("MEMORY.md",), transcript_cwd=None):
+    d = claude_dir / "projects" / slug / "memory"
+    d.mkdir(parents=True)
+    for name in files:
+        (d / name).write_text(f"# {name}\n")
+    if transcript_cwd is not None:
+        (claude_dir / "projects" / slug / "abc123.jsonl").write_text(
+            json.dumps({"type": "summary"}) + "\n"
+            + json.dumps({"cwd": transcript_cwd, "type": "user"}) + "\n")
+
+
+def test_memory_list_reads_the_real_cwd_out_of_a_transcript(client, claude_dir, tmp_path):
+    # The recorded cwd is the truth and needs no guessing — note it contains a
+    # "_" and a "." too, neither of which survives the munge.
+    real = str(tmp_path / "work" / "my_repo.v2")
+    _memory_project(claude_dir, "-tmp-work-my-repo-v2", transcript_cwd=real)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["project"] == "-tmp-work-my-repo-v2"  # the slug stays the identifier
+    assert p["path"] == real
+    assert p["pathConfirmed"] is True
+
+
+def test_memory_list_reconstructs_a_hyphenated_component_against_the_disk(
+        client, claude_dir, tmp_path, monkeypatch):
+    # No transcript. The correct decode needs a real "-" INSIDE a component, so
+    # a naive "-" -> "/" replace would answer <root>/work/fused/render.
+    project = tmp_path / "work" / "fused-render"
+    project.mkdir(parents=True)
+    slug = project.as_posix().replace("/", "-").replace(".", "-")
+    _memory_project(claude_dir, slug)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["path"] == str(project)
+    assert p["pathConfirmed"] is True
+    # The wrong answer, explicitly: every component of this exists except the
+    # last two, and it is what the one-line replace would have produced.
+    assert p["path"] != str(tmp_path / "work" / "fused" / "render")
+
+
+def test_memory_list_shows_no_path_when_it_cannot_confirm_one(client, claude_dir):
+    # No transcript, and nothing on disk matches — a memory folder can outlive
+    # the project it belonged to. Inventing a path here would be a lie about
+    # someone's filesystem, so there is none.
+    _memory_project(claude_dir, "-nowhere-in-particular-gone")
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["project"] == "-nowhere-in-particular-gone"
+    assert p["path"] is None
+    assert p["pathConfirmed"] is False
+
+
 # -- plugins: the marketplace catalogs + guarded install ---------------------
 
 
