@@ -133,9 +133,13 @@ interface PrefsMenuEntry {
 function PreferencesMenu({
   entries,
   dot,
+  active,
 }: {
   entries: (PrefsMenuEntry | "separator")[];
   dot?: React.ReactNode;
+  /** The current route is one of the menu's destinations — the trigger is
+      the only sidebar chrome that can show it. */
+  active: boolean;
 }) {
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -163,10 +167,7 @@ function PreferencesMenu({
     <div ref={rootRef}>
       <button
         type="button"
-        className={
-          "sidebar-item sidebar-prefs-trigger" +
-          (location.pathname === "/preferences" ? " active" : "")
-        }
+        className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
         aria-haspopup="menu"
         aria-expanded={pos !== null}
         onClick={(e) => {
@@ -251,15 +252,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const pathname = location.pathname;
   const explorerActive = pathname === "/explorer" || pathname.startsWith("/explorer/");
 
-  const rail: SidebarRailItem[] = [
-    { key: "explorer", label: "Explorer", icon: EXPLORER_ICON, href: "/explorer" },
-    { key: "apps", label: "Build App", icon: APPS_ICON, href: "/apps" },
-    ...(sessionsMountReady
-      ? [{ key: "sessions", label: "Inbox", icon: SESSIONS_ICON, href: "/sessions" }]
-      : []),
-    { key: "preferences", label: "Preferences", icon: PREFERENCES_ICON, href: "/preferences", pinBottom: true },
-  ];
-
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Showcase / Artifacts / Config / App Basics),
   // then the settings pages. Same gates as before — an entry a machine can't
@@ -292,6 +284,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     }
   );
 
+  // The trigger (and its rail icon) is the only sidebar chrome that can show
+  // "you are on one of the menu's pages" — highlight it on any of them.
+  const prefsActive = menuEntries.some((e) => e !== "separator" && e.href === pathname);
+
+  const rail: SidebarRailItem[] = [
+    { key: "explorer", label: "Explorer", icon: EXPLORER_ICON, href: "/explorer", active: explorerActive },
+    { key: "apps", label: "Build App", icon: APPS_ICON, href: "/apps" },
+    ...(sessionsMountReady
+      ? [{ key: "sessions", label: "Inbox", icon: SESSIONS_ICON, href: "/sessions" }]
+      : []),
+    { key: "preferences", label: "Preferences", icon: PREFERENCES_ICON, href: "/preferences", pinBottom: true, active: prefsActive },
+  ];
+
   // The trigger's own dot mirrors the strongest signal inside the menu, so
   // neither is silently hidden while the menu is closed.
   const triggerDot =
@@ -316,7 +321,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       <RecentsSection />
       <BookmarksSection />
       <div className="sidebar-section sidebar-settings">
-        <PreferencesMenu entries={menuEntries} dot={triggerDot} />
+        <PreferencesMenu entries={menuEntries} dot={triggerDot} active={prefsActive} />
       </div>
     </SidebarFrame>
   );

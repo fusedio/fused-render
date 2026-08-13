@@ -380,13 +380,25 @@ export default function BookmarksSection() {
   // has rendered. Keyed off the bookmark-store version (the same signal that
   // rendered the row), and the id is consumed once by the store, so unrelated
   // later mutations don't re-scroll.
+  // A new bookmark while the section is folded would consume the one-shot id
+  // with no row to scroll to — park it here, unfold, and scroll on the re-run.
+  const pendingScrollId = useRef<string | null>(null);
   useEffect(() => {
-    const id = takeLastAddedBookmarkId();
+    const id = takeLastAddedBookmarkId() ?? pendingScrollId.current;
     if (!id) return;
+    if (sectionCollapsed) {
+      // Unfold to reveal the row the user just created; the effect re-runs
+      // once the rows have mounted and scrolls then.
+      pendingScrollId.current = id;
+      localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, "0");
+      setSectionCollapsed(false);
+      return;
+    }
+    pendingScrollId.current = null;
     // block: "nearest" scrolls the section's own overflow container the
     // minimum amount, and won't drag the page around it.
     rowRefs.current.get(id)?.scrollIntoView({ block: "nearest" });
-  }, [bookmarksVersion]);
+  }, [bookmarksVersion, sectionCollapsed]);
 
   const items = loadBookmarks(); // top-level items: bookmarks and folders
   // Folders at every depth, keyed by id — drop handlers resolve their

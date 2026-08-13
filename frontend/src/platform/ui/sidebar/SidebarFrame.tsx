@@ -38,6 +38,9 @@ export interface SidebarRailItem {
   /** Set on the FIRST item of a bottom-pinned cluster (the shell's settings
       list) — pushes it and everything after to the rail's bottom edge. */
   pinBottom?: boolean;
+  /** Override the exact-pathname highlight, mirroring NavItem's `active` —
+      for icons that are "home" to a family of routes. */
+  active?: boolean;
 }
 
 export interface SidebarFrameProps {
@@ -180,7 +183,8 @@ export function SidebarFrame({ title, version, homeHref = "/apps", rail, childre
                 <a
                   href={item.href}
                   className={
-                    "sidebar-rail-btn" + (location.pathname === item.href ? " active" : "")
+                    "sidebar-rail-btn" +
+                    ((item.active ?? location.pathname === item.href) ? " active" : "")
                   }
                   aria-label={item.label}
                   title={item.label}
