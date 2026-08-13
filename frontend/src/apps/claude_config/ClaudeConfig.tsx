@@ -174,23 +174,30 @@ export default function ClaudeConfig() {
 
   return (
     <div className="cc-root">
-      <div className="cc-tabbar" role="tablist" aria-label="Claude config sections">
-        {TABS.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            role="tab"
-            aria-selected={s.id === active}
-            className={"cc-tab" + (s.id === active ? " active" : "")}
-            onClick={() => setActive(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
+      <div className="cc-tabbar">
+        {/* The tablist holds the TABS and nothing else — History is not one of
+            them, so it sits outside as a plain button with aria-current. A
+            tablist whose children aren't all tabs mis-announces the set's size
+            and position ("tab 9 of 9" for a thing that isn't a tab). Keeping it
+            out also means the strip can scroll sideways while History stays
+            pinned at the edge, which is the behaviour it wants anyway. */}
+        <div className="cc-tablist" role="tablist" aria-label="Claude config sections">
+          {TABS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              role="tab"
+              aria-selected={s.id === active}
+              className={"cc-tab" + (s.id === active ? " active" : "")}
+              onClick={() => setActive(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
-          role="tab"
-          aria-selected={active === HISTORY.id}
+          aria-current={active === HISTORY.id ? "page" : undefined}
           className={"cc-tab cc-tab-history" + (active === HISTORY.id ? " active" : "")}
           title={
             status?.dirty

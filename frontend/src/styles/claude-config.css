@@ -53,20 +53,30 @@
 }
 
 /* -- section tab strip ----------------------------------------------------- */
-/* Horizontal, full width, pinned above the content. Scrolls sideways rather
-   than wrapping when the window is narrow: a wrapped strip changes the page's
-   header height as you resize, which moves the content under the pointer. */
+/* Horizontal, full width, pinned above the content. The TABS scroll sideways
+   rather than wrapping when the window is narrow: a wrapped strip changes the
+   page's header height as you resize, which moves the content under the
+   pointer. The scroll lives on .cc-tablist, not on the bar, so the History
+   button at the far edge stays put while the tabs slide under it. */
 
 .cc-tabbar {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
-  gap: 2px;
+  gap: 8px;
   padding: 8px 12px;
-  overflow-x: auto;
-  scrollbar-width: thin;
   background: var(--bg-alt);
   border-bottom: 1px solid var(--border);
+}
+
+.cc-tablist {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .cc-tab {
