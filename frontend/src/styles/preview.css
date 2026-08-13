@@ -145,6 +145,56 @@
   }
 }
 
+/* The content pane's REVISION badge (Preview.tsx RevisionPill): this pane is
+   showing the file as of a past commit, read-only. It sits in the same bar as the
+   mode control and the sidebar toggle and borrows their metrics (.bar-ctl:
+   28px tall, 6px radius, 12px type) so it reads as one row — but it is a STATE
+   BADGE and not a control, hence the filled plate and the accent-tinted ink: the
+   one thing in these bars that is deliberately not quiet, because a pane that is
+   not the live file must not be mistakable for one. Its "Live" button IS an
+   ordinary .bar-ctl and keeps that recipe untouched. */
+.preview-rev {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(var(--tint), 0.08);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.preview-rev-label {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.75;
+}
+
+.preview-rev-sha {
+  /* The app's monospace, because this is an object name the user will compare
+     against the row they clicked and against `git log` in a terminal. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.preview-rev-note {
+  color: var(--fg-muted);
+}
+
+/* On a narrow window the badge is the first thing that may give up room, and the
+   part it gives up is the WORD — the sha is the identity and stays. */
+@media (max-width: 720px) {
+  .preview-rev-note {
+    display: none;
+  }
+}
+
 .pane-mode-item.pending {
   opacity: 0.55;
   cursor: default;

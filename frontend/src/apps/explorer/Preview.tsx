@@ -54,6 +54,13 @@ import {
   sideToggleTarget,
   reconcileSideSearch,
 } from "@apps/explorer/lib/preview-side";
+import {
+  activeRev,
+  revFromHook,
+  revSrc,
+  shortSha,
+  type RevSelection,
+} from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
@@ -65,6 +72,17 @@ import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs
 import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
 import { useSplitIsWide } from "@apps/explorer/listing/pane";
+
+// The window global the injected runtime calls to hand this shell the commit the
+// git sidebar just selected (static/runtime.js `noteRevSelected`, reached from the
+// template as `window._fusedSelectRev`). Declared here, beside the assignment that
+// installs it, exactly as main.tsx declares `_fusedFsChanged` beside its own — the
+// other half of the same ancestor-global contract with that runtime.
+declare global {
+  interface Window {
+    _fusedRevSelected?: (sha: unknown) => void;
+  }
+}
 
 interface HeaderProps {
   fsPath: string;
@@ -472,6 +490,71 @@ function DeployButton({ fsPath }: { fsPath: string }) {
   );
 }
 
+// The shell-level revision indicator: what a content pane wears while it is
+// showing a PAST commit instead of the live file.
+//
+// It exists because the pane itself cannot say so. A revision pane is the ordinary
+// template rendering ordinary bytes — the code editor looks exactly like the code
+// editor — so without this the only difference between "your file" and "your file
+// as it was in March" is a save that quietly refuses. So: which commit, said in the
+// same 7-character form the sidebar's rows and `git log --oneline` use, and one
+// obvious way back.
+//
+// Chrome, not a new visual language: a `.bar-ctl`-sized pill in the same bar the
+// mode control and the sidebar toggle sit in (preview.css), reading as a state
+// badge rather than as an action, with the way out being an ordinary bar button.
+//
+// THE HONEST BIT, and the reason the caveat is in the title rather than nowhere:
+// `fused.runPython` readers and the "_render" mode still read the LIVE file
+// (static/runtime.js, above runPython — phase 2b), so a parquet/xlsx pane, or an
+// .html file previewed as a page, can show current content under this badge. The
+// alternative — declining the revision for those modes — would need the shell to
+// know which modes get their bytes from Python, which it cannot know for a
+// user-registered template, and would leave the user with a Git commit list whose
+// clicks silently did nothing on some files.
+function RevisionPill({ sha, onLive }: { sha: string; onLive: () => void }) {
+  const short = shortSha(sha);
+  return (
+    <span
+      className="preview-rev"
+      title={
+        `Showing this file as of commit ${short} — read-only. ` +
+        "Views that read the file through a Python reader (or run it as a page) " +
+        "may still show its current content."
+      }
+    >
+      <span className="preview-rev-label" aria-hidden="true">
+        {/* A clock hand turned back: the same 16px currentColor stroke every glyph
+            in these bars is drawn in (SideChrome). */}
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <path d="M3 5v5h5" />
+          <path d="M3.5 10.5a9 9 0 1 1 2.6 8" />
+          <path d="M12 8v4.5l3 1.8" />
+        </svg>
+      </span>
+      {/* Both facts VISIBLE, not tooltipped: which commit, and that the pane
+          cannot be edited. A badge saying only `abc1234` leaves "why did my save
+          refuse?" to a hover nobody performs. */}
+      <code className="preview-rev-sha">{short}</code>
+      <span className="preview-rev-note">read-only</span>
+      <button type="button" className="bar-ctl" onClick={onLive}>
+        {/* "Live", not "Close": the pane is not being dismissed, it is being
+            returned to the file as it is now. */}
+        Live
+      </button>
+    </span>
+  );
+}
+
 function TemplatePreview({
   fsPath,
   stat,
@@ -637,6 +720,42 @@ function TemplatePreview({
   const sideTargets = sideOn ? split.settled : [];
   const sideTarget = sideToggleTarget(sideTargets, activeSide, lastSide);
   const sideTargetEntry = sideTargets.find((e) => e.mode === sideTarget) ?? null;
+
+  // --- the CONTENT pane's revision (`_rev`) ---------------------------------
+  // A commit clicked in the git sidebar makes the content pane render this file as
+  // of that commit. The sha arrives from the sidebar's frame through the runtime's
+  // ancestor-window hop — a global on this window, the same idiom
+  // `_fusedFsChanged` uses (static/runtime.js), and deliberately NOT a param: see
+  // lib/preview-rev for the three places a `_rev` in the address bar would leak to.
+  //
+  // State, held as {sha, path}, and read ONLY through `activeRev` — which is what
+  // makes the clearing rules invariants rather than effects. Nothing here clears
+  // anything: a revision chosen for another file, or one left over from a sidebar
+  // that has since closed or switched companion, simply does not resolve. See the
+  // header of lib/preview-rev.
+  const [revSel, setRevSel] = useState<RevSelection | null>(null);
+  useEffect(() => {
+    // Only the splitting surface installs the hook: it is the one surface with a
+    // git sidebar to select in, and two instances racing for one window global
+    // (a panel of panes) would have the last mount win the callback for all of
+    // them. Re-installed per file so the report is stamped with the file that was
+    // open when it arrived.
+    if (!splitCapable) return;
+    window._fusedRevSelected = (sha: unknown) => setRevSel(revFromHook(sha, fsPath));
+    return () => {
+      delete window._fusedRevSelected;
+    };
+  }, [splitCapable, fsPath]);
+  const rev = activeRev(revSel, activeSide, fsPath);
+  // HOUSEKEEPING, not the guarantee. `activeRev` above already refuses a stale
+  // selection on the paint that makes it stale, so nothing depends on this effect
+  // running — but a selection kept in memory after its sidebar closed would come
+  // BACK the moment the same sidebar reopened, for the few milliseconds before the
+  // template's own frame loads and announces "live". Dropping it here means the
+  // reopened pane starts live and stays live until a row is clicked again.
+  useEffect(() => {
+    if (revSel && (activeSide !== "git" || revSel.path !== fsPath)) setRevSel(null);
+  }, [revSel, activeSide, fsPath]);
 
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
@@ -827,12 +946,32 @@ function TemplatePreview({
   // `_remote=1` forwards stat's remote flag (bytes come from a mount) so a
   // page can prefer ranged HTTP reads (/api/fs/raw) over local file I/O.
   // `_listing` builds no src — it renders a shell component, not an iframe.
+  //
+  // `_rev` rides here and NOWHERE ELSE (lib/preview-rev): a revision is a property
+  // of what this frame is showing, not of where the user is, so it lives on the
+  // iframe src exactly as `_file` and `chat_only=1` do. The runtime reads it off
+  // the frame's own query and resolves readFile/rawUrl/stat through
+  // /api/git/show instead of the live filesystem — which is why no template
+  // changes a line for this.
+  //
+  // It goes onto the "_render" frame too, and that one is a KNOWN partial: /render
+  // serves the file's own bytes from disk, so an .html file previewed as itself
+  // shows the live page under a revision heading. Same family as the runPython gap
+  // (static/runtime.js, above runPython) and deferred with it — the pill below is
+  // what keeps it honest. The param is still worth carrying there: any read the
+  // page makes through `fused.*` does resolve to the revision, and the write gate
+  // applies.
   const remote = stat.remote ? "&_remote=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
-    if (m === "_render") return `/render?path=${encodeURIComponent(fsPath)}`;
+    if (m === "_render") return revSrc(`/render?path=${encodeURIComponent(fsPath)}`, rev);
     const t = templates.find((x) => x.mode === m);
-    return t ? `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}` : null;
+    return t
+      ? revSrc(
+          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}`,
+          rev
+        )
+      : null;
   };
 
   // The SIDEBAR's iframe URL. Built here rather than through `srcFor` above,
@@ -987,6 +1126,17 @@ function TemplatePreview({
 
   const headerActions = (
     <>
+      {/* FIRST in the bar, left of the mode control: it describes what the pane is
+          SHOWING, and the controls that follow act on it. Rendered only while a
+          revision actually resolves (lib/preview-rev's `activeRev`), so it cannot
+          outlive the pane it describes — and "Live" clears the same state the
+          sidebar sets, which is why it does not touch the URL either.
+          The sidebar is not touched by it: its own pane still shows the commit's
+          DIFF, which is a true statement about that column and the subject its row
+          highlight names. The one cost is that re-selecting the SAME row then
+          toggles it off first (the template treats a click on the selected row as
+          "deselect"), so getting the revision back takes a second click. */}
+      {rev && <RevisionPill sha={rev} onLive={() => setRevSel(null)} />}
       {/* Deployable = the mode list carries the "_render" sentinel AND the
           file is .html/.htm — the exporter's actual contract. The extension
           check matters because a registry rebind can put "_render" on any
@@ -1144,6 +1294,29 @@ function TemplatePreview({
                    simply absent, which is exactly how the template is told
                    there is nothing to annotate. */
                 data-fused-annotate-target={
+                  splitCapable && m === shown ? "" : undefined
+                }
+                /* The REVISION capability, and a second mark rather than a
+                   second reading of the one above: they are stamped under the
+                   same condition today and they do not mean the same thing —
+                   one says "this frame is what notes point at", the other says
+                   "a revision can be driven into this frame". A sidebar reading
+                   the annotate mark to decide whether to offer a commit preview
+                   would be inferring one capability from another, and the day
+                   either condition moves it would silently be wrong.
+
+                   Same contract shape as the annotate mark, for the same reason
+                   and read the same way (the git template polls
+                   `parent.document` for it): PRESENT ONLY WHERE THE CAPABILITY
+                   REALLY EXISTS. `splitCapable` is what makes this the single-
+                   file explorer preview — the one surface with both a content
+                   pane and a git sidebar to select in — and `m === shown` keeps
+                   it on the frame the reader is actually looking at, since the
+                   held-frame swap can leave two mounted. A folder's listing
+                   preview pane renders no frame at all and so stamps nothing,
+                   which is exactly how the git template running in THAT pane
+                   learns it has nothing to drive. */
+                data-fused-rev-target={
                   splitCapable && m === shown ? "" : undefined
                 }
                 onLoad={(e) => {

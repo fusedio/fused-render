@@ -245,6 +245,12 @@
   .btn.primary[disabled] { background: var(--surface-2); border-color: var(--line); color: var(--ink-3); }
   .btn.danger[disabled] { color: var(--ink-3); border-color: var(--line); }
   .btn[aria-expanded="true"] { color: var(--ink); background: var(--surface-2); border-color: var(--line-hover); }
+  /* A TOGGLE that is on — today just the commit rows' "show the file as of this
+     commit". Accented rather than merely darker, because the state it reports is
+     not in this column at all: the pane it changed is on the other side of the
+     sidebar, so the row is the only place that can say which commit is driving
+     it. */
+  .btn[aria-pressed="true"] { color: var(--accent); background: var(--surface-2); border-color: var(--accent-dim); }
   /* An SVG glyph in a button is a BOX, not a character: inline it would sit on
      the text baseline and ride a descender's worth high, so it is taken off the
      baseline and left to the flex centring `.btn` already declares. */
@@ -728,23 +734,48 @@
  * destructive confirmation.
  *
  *   pages=<n>     how many log windows are loaded (1-based; the "load more" count)
- *   rev=<sha>     the selected commit  }  mutually exclusive: the right-hand pane
- *   wt=<relpath>  the selected change  }  has ONE subject, so setting either
- *                                         clears the other
  *   panel=branch|stash   which toolbar dropdown is open
  *   msg=<text>    the commit message draft
  *   ask=<key>     the destructive action awaiting confirmation, e.g.
  *                 "discard:pkg/mod.py", "discard_all", "stash_drop:0"
  *
- * `rev` carries the FULL object name, not the abbreviation on the row: it is the
- * one piece of this view's state another layer is meant to read (the explorer
- * sidebar will render the target file as of the selected commit), and an
- * abbreviation is a display form that has to be re-resolved to be used.
- *
  * `msg` and `ask` are the two additions that are easy to argue against and
  * belong here anyway. A commit message is the most expensive thing in this view
  * to retype, so losing it to a refresh is the worst small bug it could have; and
  * a confirmation that survives a refresh cannot be bypassed by one.
+ *
+ * TWO PIECES OF STATE THAT ARE NOT PARAMS, and they are different things:
+ *
+ *   `selection`  the RIGHT-HAND PANE's subject — a commit's diff or a working-tree
+ *                change's diff (see `select`).
+ *   `previewed`  which commit the EXPLORER's CONTENT PANE, on the other side of
+ *                this sidebar, is showing the open file as of (see `preview`).
+ *
+ * `selection` used to be two params, `rev=<sha>` and `wt=<relpath>`, mutually
+ * exclusive because the pane has ONE subject, with the exclusion held up by a
+ * convention: every writer of one cleared the other. One variable holding kind +
+ * value replaces both, for two independent reasons, either of which would be
+ * enough:
+ *
+ *   ONE SLOT, STRUCTURALLY. A variable that holds one thing cannot hold two, so
+ *   "the pane cannot have two masters" stops being something four call sites have
+ *   to remember and becomes something they cannot get wrong. Precedent in this
+ *   same file: `branchQuery` is module-level and deliberately not a param.
+ *
+ *   A SHA MUST NOT REACH THE SHELL'S ADDRESS BAR. A param written here mirrors up
+ *   into the explorer's URL (that is what makes `?_side=git&panel=branch` a
+ *   working deep link), and up there a revision is actively harmful: a path change
+ *   preserves the query verbatim, so a sha picked from THIS file's commit list
+ *   would be carried onto the next file; the session sidecar PUTs the whole query
+ *   string and replays it on the next bare open, so it would outlive a restart;
+ *   and bookmarks store the search too. So `previewed` travels to the shell as an
+ *   ancestor-window call instead (`window._fusedSelectRev`, see `hopRev`), the
+ *   same idiom `_fusedFsChanged` uses, and leaves nothing behind.
+ *
+ * The cost, accepted: neither survives a refresh any more. That is the right trade
+ * for both — they are READING surfaces, reconstructed in one click, and every
+ * piece of state that is expensive to retype (`msg`) or unsafe to lose (`ask`) is
+ * still a param.
  */
 /* One click of "load more" widens the window by this much. It is the reader's
    own DEFAULT_LOG_LIMIT — the page grows `limit`, it does not page. */
@@ -780,6 +811,127 @@ let drawn = null;
 let busy = null;
 let flash = null;
 
+/* WHAT THE RIGHT-HAND PANE IS SHOWING: `null`, or ONE of
+ *   { kind: "rev", value: <full sha> }        a commit
+ *   { kind: "wt",  value: <repo-relative> }   a working-tree change
+ * One variable, so the pane's one-subject rule is structural rather than
+ * conventional — see the state header for why this is not a param.
+ */
+let selection = null;
+const selectedRev = () => (selection && selection.kind === "rev" ? selection.value : "");
+const selectedWt = () => (selection && selection.kind === "wt" ? selection.value : "");
+
+/* The ONE writer of `selection`. Every row, the Close button and Escape come
+ * through here, which is what makes the repaint impossible to forget: a param
+ * write used to trigger `draw` through `onChange`, and this does it explicitly —
+ * `draw(true)`, the same path that write produced, forced past the `structural()`
+ * short-circuit and repainting from the held snapshot rather than refetching the
+ * lists (see `draw`).
+ *
+ * A no-op is dropped, so a second click on a row that is already selected cannot
+ * cost a repaint (the same skip `setParams` makes for a no-op write).
+ */
+function select(kind, value) {
+  const next = kind && value ? { kind, value } : null;
+  const same = (!selection && !next)
+    || (selection && next && selection.kind === next.kind
+        && selection.value === next.value);
+  if (same) return;
+  selection = next;
+  void draw(true);
+}
+
+/* ------------------------------------------------- previewing a commit's file
+ *
+ * A SECOND, INDEPENDENT thing, and it is worth being clear about which is which:
+ *
+ *   `selection`  what THIS column's right-hand pane shows — a diff.
+ *   `previewed`  which commit the EXPLORER's content pane, on the other side of
+ *                this sidebar, is rendering the open file as of. Read-only,
+ *                resolved out of the object database on read; nothing is written
+ *                to disk for it.
+ *
+ * They are deliberately not one piece of state. Reading a commit's diff and
+ * putting that commit's version of a file in the pane next door are different
+ * requests, and collapsing them would mean a click meant for one always performs
+ * the other — including on surfaces where the second is not even possible.
+ *
+ * The sha travels through the runtime's ancestor-window hop (`_fusedSelectRev` —
+ * the `_fusedFsChanged` idiom), never through a param, so it cannot reach the
+ * shell's address bar, its session sidecar or a bookmark. See the state header.
+ */
+let previewed = null;
+
+/* Whether there is a content pane to drive AT ALL — a CAPABILITY HANDSHAKE with
+ * the host, not a guess about where this page is running.
+ *
+ * This template renders in two places. In the file preview's sidebar there is a
+ * content pane beside it and a revision has somewhere to go. In a folder's
+ * LISTING PREVIEW PANE there is no such frame, so a preview control there would
+ * be a button that does nothing — the exact affordance-for-nothing the claude
+ * template's annotate switch already refuses to be.
+ *
+ * The host answers by MARKING the frame it can drive (`data-fused-rev-target`,
+ * Preview.tsx). A mark, not a position: it cannot be fooled by a layout change,
+ * and it does not care how many frames the host keeps mounted. Every failure is
+ * the same answer — no parent (opened directly), a cross-origin parent
+ * (`parent.document` THROWS), a host that marks nothing — and that answer is
+ * "no", never an error.
+ *
+ * POLLED, exactly as the claude template polls its own mark, and for the same
+ * reason: the mark ARRIVES and DEPARTS after this page has mounted (the host's
+ * mode switcher moves it, a listing removes it), and a MutationObserver held on
+ * someone else's document for the life of the session is not worth the one cheap
+ * read it would replace. On focus, plus a slow timer.
+ */
+const REV_TARGET_POLL_MS = 750;
+function revMarkedFrame() {
+  try {
+    const host = window.parent;
+    if (!host || host === window) return null;
+    const el = host.document.querySelector("[data-fused-rev-target]");
+    return el && el.tagName === "IFRAME" ? el : null;
+  } catch (err) {
+    return null;
+  }
+}
+let canPreview = false;
+
+/* The ONE writer of `previewed`, and the only thing that speaks to the shell.
+ * Refuses while the capability is absent, so the state cannot be set by anything
+ * the user cannot see the result of. */
+function preview(sha) {
+  const next = (canPreview && sha) ? sha : null;
+  if (previewed === next) return;
+  previewed = next;
+  hopRev();
+  void draw(true);
+}
+
+/* Guarded: a page opened outside the app's shell — or under the hosted runtime,
+   which has no revision route — simply has no hop, and no pane it would drive. */
+function hopRev() {
+  if (typeof window._fusedSelectRev === "function") {
+    window._fusedSelectRev(previewed);
+  }
+}
+
+function pollRevTarget() {
+  const has = !!revMarkedFrame();
+  if (has === canPreview) return;
+  canPreview = has;
+  /* A capability that has GONE takes the preview with it: the frame that was
+     showing the revision is not there any more (a mode switch, a navigation),
+     so continuing to claim one would be describing a pane nobody can see. The
+     hop still fires, because the shell may yet be holding the sha. */
+  if (!has && previewed !== null) {
+    previewed = null;
+    hopRev();
+  }
+  /* Repaint either way: the rows gain or lose their preview control. */
+  void draw(true);
+}
+
 const num = (key, fallback) => {
   const raw = parseInt(fused.params.get(key) || "", 10);
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
@@ -787,10 +939,10 @@ const num = (key, fallback) => {
 const param = (key) => fused.params.get(key) || "";
 
 /* `fused.params` has no delete — an empty string is how a param is cleared, and
- * it leaves `key=` behind in the URL. So a no-op write is SKIPPED: clearing `wt`
- * while selecting a commit is the common case, and writing it would stamp a bare
- * `&wt=` onto every URL the view produces. It also keeps `onChange` (hence
- * `draw`) from firing for a write that changed nothing. */
+ * it leaves `key=` behind in the URL. So a no-op write is SKIPPED: clearing `ask`
+ * after acting on it is the common case, and writing it when it is already clear
+ * would stamp a bare `&ask=` onto every URL the view produces. It also keeps
+ * `onChange` (hence `draw`) from firing for a write that changed nothing. */
 function setParams(patch) {
   for (const [key, value] of Object.entries(patch)) {
     const next = value === null ? "" : String(value);
@@ -853,6 +1005,11 @@ const PUSH_GLYPH = ["M12 21V9", "M7 14l5-5 5 5", "M4 4h16"];
    the panel toggles carry one; an action button with a caret would be promising
    a menu it does not have. The flip is CSS off `aria-expanded` (see `.caret`). */
 const CARET_GLYPH = ["M6 9l6 6 6-6"];
+
+/* A clock hand turned back: "show the file as it was at this commit". The same
+   glyph the shell's revision badge wears (Preview.tsx RevisionPill), so the
+   control and the state it produces read as one thing across the two surfaces. */
+const PREVIEW_GLYPH = ["M3 5v5h5", "M3.5 10.5a9 9 0 1 1 2.6 8", "M12 8v4.5l3 1.8"];
 
 function caret() {
   const svg = icon(CARET_GLYPH, 12);
@@ -1466,7 +1623,7 @@ function changeLine(repo, change, selected, kind) {
      `-- <path>` against HEAD and git resolves it from the repo ROOT, so the row
      still opens the right diff: the pathspec is repo-relative, not
      scope-relative. Its ACTIONS are a different matter — see `writable`. */
-  row.addEventListener("click", () => setParams({ wt: change.path, rev: null }));
+  row.addEventListener("click", () => select("wt", change.path));
   if (selected) line.setAttribute("aria-current", "true");
   line.append(row);
 
@@ -1526,7 +1683,17 @@ function changeLine(repo, change, selected, kind) {
 
    Clicking the selected row again clears the selection. A row that only ever
    selects leaves the pane with no way back except the Close button, and the row
-   the user just clicked is the thing their pointer is already on. */
+   the user just clicked is the thing their pointer is already on.
+
+   THE SECOND CONTROL, in the row's action cluster like every other per-row verb
+   in this view: show the OPEN FILE as of this commit, in the explorer's content
+   pane next door. It is a separate button and not the row's own click because it
+   is a separate request — the row reads this commit's diff, this reads the file —
+   and because it is CONDITIONAL in a way the row is not: it exists only where
+   there is a pane to drive (`canPreview`). In a folder's listing preview pane
+   there is none, and then there is no button, rather than one that does nothing.
+   Hidden, not disabled, for the reason the claude template's annotate switch is:
+   a control that cannot do anything is not a promise worth keeping on screen. */
 function commitLine(entry, selected) {
   const line = el("div", { className: "line" });
   const row = el("button", {
@@ -1537,12 +1704,39 @@ function commitLine(entry, selected) {
     el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
     el("span", { className: "when", textContent: entry.relative }));
   if (selected) line.setAttribute("aria-current", "true");
-  /* The FULL sha into `rev`, never the abbreviation: this param is the view's
-     public handle on "which commit is selected". Clearing `wt` in the same write
-     is what keeps the right-hand pane single-subject. */
+  /* The FULL object name, never the abbreviation the row displays: this value is
+     what the shell resolves the content pane's bytes with (`_fusedSelectRev` ->
+     /api/git/show), and an abbreviation is a display form that would have to be
+     re-resolved to be used. Nothing here clears a working-tree selection — one
+     variable holds the pane's subject, so writing a commit into it IS clearing
+     the other kind. */
   row.addEventListener("click",
-    () => setParams({ rev: selected ? null : entry.sha, wt: null }));
+    () => select("rev", selected ? null : entry.sha));
   line.append(row);
+
+  if (canPreview) {
+    const on = previewed === entry.sha;
+    const btn = action("preview:" + entry.sha, icon(PREVIEW_GLYPH, 14), {
+      className: "icon",
+      label: (on ? "Stop showing" : "Show") + " the open file as of " + entry.short,
+      title: on
+        ? "Showing the open file as of " + entry.short + " — click to go back to "
+          + "the current file"
+        : "Show the open file as of " + entry.short + " in the pane (read-only). "
+          + "Views that read the file through a Python reader may still show its "
+          + "current content.",
+      /* Toggle: the button that turned the pane into a revision is the way back
+         out of one, which is what keeps "Live" in the shell's own bar from being
+         the only exit. */
+      onClick: () => preview(on ? null : entry.sha),
+    });
+    /* `aria-pressed`, not `aria-expanded`: this is a two-state toggle, not a
+       disclosure — nothing here opens. (`expanded` is what the panel buttons in
+       the toolbar carry, and it drives the caret rotation, which this has not
+       got.) */
+    btn.setAttribute("aria-pressed", String(on));
+    line.append(el("div", { className: "acts" }, btn));
+  }
   return line;
 }
 
@@ -1670,7 +1864,7 @@ function diffPane(title, sub, payload, meta) {
   /* Both, always: the pane has one subject but two possible owners, and Close
      means "nothing is selected" whichever of them put it there. */
   const close = action("close", "Close", {
-    onClick: () => setParams({ wt: null, rev: null }),
+    onClick: () => select(null, null),
   });
 
   const pane = el("div", { className: "pane" },
@@ -1709,7 +1903,7 @@ function diffPane(title, sub, payload, meta) {
       const row = el("button", { className: "row", type: "button", title: name },
         el("span", { className: "code is-?", textContent: "??" }),
         el("span", { className: "path", textContent: name }));
-      row.addEventListener("click", () => setParams({ wt: name, rev: null }));
+      row.addEventListener("click", () => select("wt", name));
       rows.append(el("div", { className: "line" }, row));
     }
     pane.append(rows);
@@ -1877,8 +2071,8 @@ function pendingConfirm(data) {
 }
 
 function render(data, stashes, diff) {
-  const wt = param("wt");
-  const rev = param("rev");
+  const wt = selectedWt();
+  const rev = selectedRev();
   const pages = num("pages", 1);
   const ask = pendingConfirm(data);
 
@@ -2153,8 +2347,8 @@ async function run(key, args, then, context) {
    the body below them fills in. Without it the placeholder was titled with the
    40-character sha, which then swapped for the subject a moment later. */
 function pendingPane(data) {
-  const rev = param("rev");
-  const wt = param("wt");
+  const rev = selectedRev();
+  const wt = selectedWt();
   if (rev) {
     const known = (data && data.commits ? data.commits : []).find((c) => c.sha === rev);
     return diffPane(known ? (known.subject || "(no subject)") : rev.slice(0, 7),
@@ -2166,8 +2360,8 @@ function pendingPane(data) {
 }
 
 async function loadDiff(data) {
-  const wt = param("wt");
-  const rev = param("rev");
+  const wt = selectedWt();
+  const rev = selectedRev();
   /* A selected commit fills the SAME pane as a selected change, through the same
      `diffPane` — one renderer, because a diff is a diff and the only thing that
      differs is its heading. `op="commit"` restricts the patch to this view's
@@ -2217,10 +2411,13 @@ async function loadBranches(mine) {
   return true;
 }
 
-/* Everything the DOM's shape depends on. A `msg` keystroke is deliberately NOT
-   in here: it changes the URL and must not repaint the view. */
-const structural = () => [param("pages"), param("rev"), param("wt"),
-                          param("panel"), param("ask")].join("\u0000");
+/* Everything the DOM's shape depends on THAT LIVES IN THE URL. A `msg` keystroke
+   is deliberately NOT in here: it changes the URL and must not repaint the view.
+   Neither is the pane's selection, and for a different reason — it is not a param
+   at all any more, so no `onChange` will ever announce it; `select` calls
+   `draw(true)` itself, which forces past the comparison this feeds. */
+const structural = () => [param("pages"), param("panel"),
+                          param("ask")].join("\u0000");
 
 async function draw(force) {
   const key = structural();
@@ -2229,11 +2426,11 @@ async function draw(force) {
 
   const mine = ++seq;
   const pages = num("pages", 1);
-  /* Whether the right-hand pane has a subject at all, whichever param owns it.
-     The two are mutually exclusive by construction — every writer of one clears
-     the other — so this is a choice, never a merge, and what the pane is FOR is
-     decided in one place (`pendingPane`/`loadDiff`) rather than here. */
-  const target = param("rev") || param("wt");
+  /* Whether the right-hand pane has a subject at all, whichever KIND it is. One
+     variable holds it, so there is nothing to merge and no pair to keep exclusive;
+     what the pane is FOR is decided in one place (`pendingPane`/`loadDiff`) rather
+     than here. */
+  const target = selection !== null;
 
   if (!file) {
     renderRefusal({ reason: "missing", message: "No file or folder was selected." });
@@ -2306,20 +2503,50 @@ async function draw(force) {
 }
 
 /* Escape closes whatever is open, innermost first: a pending confirmation, then
-   a dropdown, then the diff pane. `rev` shares the pane's slot with `wt` rather
-   than taking one of its own — they are two names for ONE thing on screen, so a
-   commit selection and a change selection unwind at the same depth and in the
-   same write. Everything else is native — every row and every control is a real
-   <button>, so tab/enter already work. */
+   a dropdown, then the pane. A commit selection and a change selection unwind at
+   the same depth and in the same call because they are ONE piece of state — the
+   ordering here is unchanged by that state leaving the URL, since `ask` and
+   `panel` are still read from it and the pane is still the outermost thing this
+   handler closes. Everything else is native — every row and every control is a
+   real <button>, so tab/enter already work. */
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (param("ask")) { event.preventDefault(); setParams({ ask: null }); return; }
   if (param("panel")) { event.preventDefault(); setParams({ panel: null }); return; }
-  if (param("rev") || param("wt")) {
+  if (selection) {
     event.preventDefault();
-    setParams({ rev: null, wt: null });
+    select(null, null);
+    return;
+  }
+  /* Outermost, and only once this column has nothing of its own open: the
+     previewed revision is the one thing Escape closes that is NOT on this side of
+     the sidebar, so it unwinds last. It is also reachable from two other places
+     (the row's own toggle, and "Live" in the shell's bar), which is why it sits
+     below every step that had no second exit. */
+  if (previewed) {
+    event.preventDefault();
+    preview(null);
   }
 });
+
+/* Announce the empty preview once at load. `previewed` is memory, so a reload of
+   this frame — the runtime's auto-reload after a file change, the user's own
+   refresh, a re-mount by the shell — starts with nothing previewed; a shell still
+   holding the previous sha would leave the content pane on a revision no row here
+   claims. Saying "live" on the way in is what keeps the two ends from disagreeing,
+   and it is a no-op when the shell holds nothing. */
+hopRev();
+
+/* The capability, read once BEFORE the first paint — as a plain assignment and
+   not through `pollRevTarget`, which would ask for a repaint of a view that has
+   not drawn yet and put a second overview read on a channel the first would then
+   never settle on. From here on it is polled: on every focus and on a slow timer,
+   because the host's mark arrives and departs long after this page has mounted
+   (its mode switcher moves it; a listing removes it). Same discipline as the
+   claude template's annotate target, and for the same reason. */
+canPreview = !!revMarkedFrame();
+window.addEventListener("focus", () => pollRevTarget());
+setInterval(() => pollRevTarget(), REV_TARGET_POLL_MS);
 
 fused.params.onChange(() => draw());
 draw(true);
