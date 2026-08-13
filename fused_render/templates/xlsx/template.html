@@ -237,7 +237,16 @@
     sheetSel.addEventListener("change", () => {
       // New sheet starts at the top. Reset offset first so the change lands on
       // page 0, then switch sheet (each set fires onChange → reload).
-      fused.params.set("offset", "0");
+      //
+      // Guarded because an ABSENT `offset` already MEANS page 0 (currentOffset()
+      // reads it that way), so on the overwhelmingly common path — pick a sheet
+      // without having paged first — this line changed nothing. It is not free:
+      // the comment above is right that each set fires onChange → reload, so the
+      // no-op bought an extra reload, and under the runtime's first-change-push
+      // rule (SPEC PR-3) it also pushed the history entry, leaving the real
+      // `sheet` write to merely coalesce into it. Choosing a sheet is one
+      // navigation step and should read as one (PT-15).
+      if (currentOffset() !== 0) fused.params.set("offset", "0");
       fused.params.set("sheet", sheetSel.value);
     });
     fused.params.onChange(load);

@@ -241,12 +241,30 @@
     // as far as the change handler is concerned. Without it, clicking a
     // breadcrumb ancestor out of a file preview read that torn URL back over
     // the fresh state and re-opened the preview we were leaving.
+    //
+    // Each half is ALSO written only when the URL does not already mean it
+    // (SPEC PT-15). Both params are read back by readLocation() as "empty means
+    // the archive root / no member", so an absent `zipPath` and `zipPath=` are
+    // the same answer, and re-stating either costs a history entry for nothing
+    // under the runtime's first-change-push rule (PR-3).
+    //
+    // The no-op path is the ORDINARY one, not an edge case, and it is reached
+    // downstream of a gesture where the runtime's own no-gesture guard does not
+    // apply. Opening an archive on a member deep link runs `openPreview(selected)`
+    // after the entry-list fetch resolves (see the load block below), and that
+    // re-writes the exact zipPath/zipMember pair the URL just supplied. The
+    // params.onChange handler reaches openPreview() the same way, so without the
+    // guard our own echo could write back over an externally-changed URL.
     let syncing = false;
+    function writeParam(key, value) {
+      if ((fused.params.get(key) || "") === value) return;
+      fused.params.set(key, value);
+    }
     function writeLocation() {
       syncing = true;
       try {
-        fused.params.set("zipPath", cwd.join("/"));
-        fused.params.set("zipMember", selected || "");
+        writeParam("zipPath", cwd.join("/"));
+        writeParam("zipMember", selected || "");
       } finally {
         syncing = false;
       }

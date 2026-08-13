@@ -1088,11 +1088,30 @@
     document.getElementById("panelToggle").style.display = m==="edit" ? "" : "none";
     syncURL(); renderCanvas(); updateToolbar(); positionSelbox();
   }
+  // Absent `slide` means slide 0 and absent `mode` means "view" — the same two
+  // answers the boot block below feeds back in. Writing either when the URL
+  // already MEANS it is a semantic no-op that still costs a history entry under
+  // the runtime's first-change-push rule (SPEC PR-3), so each one is guarded.
+  function setParam(key,value,dflt){
+    const cur=fused.params.get(key);
+    if((cur===undefined||cur===null||cur===""?dflt:cur)===value) return;
+    fused.params.set(key,value);
+  }
   function syncURL(){
     // NB: `_file` is a reserved param (set() throws on `_`-prefixed keys); it is
     // already present in the URL from how the page was opened. Only sync our own.
-    fused.params.set("slide",String(S.cur));
-    fused.params.set("mode",S.mode);
+    //
+    // BOTH writes here are no-ops in the common path and both had to be guarded,
+    // because syncURL() has three callers and only one of them changes anything:
+    //   * `setMode()` re-writes `slide` (which it never touches);
+    //   * `gotoSlide()` re-writes `mode` (which it never touches);
+    //   * boot calls `setMode(params.get("mode")||"view")` and so restates the
+    //     mode the URL already carries — and it is reached again AFTER A CLICK,
+    //     via openLibrary() ▸ File ▸ New blank deck, where the runtime's own
+    //     no-gesture guard no longer applies and the push is real.
+    // Guarding here rather than in setMode/gotoSlide keeps this the one writer.
+    setParam("slide",String(S.cur),"0");
+    setParam("mode",S.mode,"view");
   }
 
   // ========================================================= load the bound file

@@ -1261,13 +1261,35 @@
   }
 
   // ================= right panel =================
+  // Single writer for this template's two params, and it WRITES ONLY WHEN THE
+  // URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC PT-15). `dflt` is what an
+  // ABSENT param means — no panel is both `panel=""` and no `panel` at all,
+  // and no `mode` is `mode=view` — so those pairs must not be told apart.
+  //
+  // Without this, three writes that change nothing each cost a Back press under
+  // the runtime's first-change-push rule (PR-3):
+  //   * boot restores the panel with `openPanel(panelParam)`, re-writing the
+  //     tab the URL just supplied;
+  //   * boot calls `setMode(params.get("mode") || "view")`, restating the mode
+  //     already there — and `applyReadonly()` reaches setMode("view") again on
+  //     a file that was already in view mode;
+  //   * `addComment()` calls `openPanel("comments")` from a click, with the
+  //     comments panel usually already open — the runtime's no-gesture guard
+  //     cannot help there, because there very much was a gesture.
+  // Rejected: guarding only the boot pair. `addComment` proves the class is not
+  // load-time-only, and a per-call-site check is one the next caller forgets.
+  function setParam(key, value, dflt) {
+    const cur = fused.params.get(key);
+    if ((cur === undefined || cur === null || cur === "" ? dflt : cur) === value) return;
+    fused.params.set(key, value);
+  }
   function openPanel(tab) {
     S.panelTab = tab; $("panel").classList.remove("hidden");
     $("panel").querySelectorAll(".ptab").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-    fused.params.set("panel", tab);
+    setParam("panel", tab, "");
     renderPanel();
   }
-  function closePanel() { $("panel").classList.add("hidden"); fused.params.set("panel", ""); }
+  function closePanel() { $("panel").classList.add("hidden"); setParam("panel", "", ""); }
   function togglePanel(tab) { if (!$("panel").classList.contains("hidden") && S.panelTab === tab) closePanel(); else openPanel(tab); }
   async function renderPanel() {
     const body = $("panelBody"); if ($("panel").classList.contains("hidden")) return;
@@ -1358,7 +1380,7 @@
     $("modeSeg").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
     if (S.view) { S.view.setProps({ editable: () => mode === "edit" }); if (mode === "edit") { focusView(); syncToolbar(); } }
     buildTOC();
-    fused.params.set("mode", mode);
+    setParam("mode", mode, "view");
   }
 
   // ---- save / export ----
