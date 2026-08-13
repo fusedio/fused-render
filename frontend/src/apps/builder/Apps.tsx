@@ -189,28 +189,26 @@ export default function Apps({ config }: { config: Config }) {
 
         <div className="apps-toolbar">
           {/* Facet selector: which chip set filters the grid. Switching facets
-              is browse, not commit — the active filter only changes when a
-              chip is picked, so an off-facet selection quietly persists. */}
+              resets the filter to All — a selection from the old facet would
+              otherwise keep narrowing the grid invisibly under the new chips. */}
           <div className="apps-filter-mode" role="group" aria-label="Filter by">
             {MODES.map((m) => (
               <button
                 key={m.key}
                 type="button"
                 className={"apps-filter-mode-btn" + (mode === m.key ? " is-active" : "")}
-                onClick={() => setMode(m.key)}
+                onClick={() => {
+                  setMode(m.key);
+                  setFilter(m.key, null);
+                }}
               >
                 {m.label}
               </button>
             ))}
           </div>
-          {/* Also shown with zero chips while a filter narrows the grid — the
-              other facet's selection persists across a facet switch, and All
-              is the only control that clears it from this chip set. */}
           {(chips.length > 0 || tag !== null || category !== null) && (
             <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
-              {/* Active only when NOTHING filters — with a selection hiding in
-                  the other facet, a lit All over a narrowed grid would lie;
-                  clicking it clears both params. */}
+              {/* Active only when nothing filters; clicking clears both params. */}
               <button
                 type="button"
                 className={"apps-tag-chip" + (tag === null && category === null ? " is-active" : "")}
