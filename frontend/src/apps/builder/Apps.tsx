@@ -203,7 +203,10 @@ export default function Apps({ config }: { config: Config }) {
               </button>
             ))}
           </div>
-          {chips.length > 0 && (
+          {/* Also shown with zero chips while a filter narrows the grid — the
+              other facet's selection persists across a facet switch, and All
+              is the only control that clears it from this chip set. */}
+          {(chips.length > 0 || tag !== null || category !== null) && (
             <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
               {/* Active only when NOTHING filters — with a selection hiding in
                   the other facet, a lit All over a narrowed grid would lie;
