@@ -174,9 +174,16 @@
   section > h2 .sep { color: var(--ink-3); font-weight: 400; }
 
   /* ================= toolbar ================= */
+  /* ONE line, always. A wrapped toolbar reads as two toolbars — the chip alone
+     on top, the remote ops stranded underneath — and it moves the buttons
+     vertically the moment a branch name grows, which is exactly the kind of
+     re-arrangement clipping the name was meant to stop. So the bar never wraps;
+     the squeeze is absorbed inside it instead (see `.bar > .btn` below), and
+     once even that is not enough the labels drop off Fetch/Pull/Push (see the
+     372px query further down, where the number is derived). */
   .bar {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 6px;
     padding: 6px;
@@ -187,18 +194,34 @@
   /* The bar holds two clusters, not one row of controls: the branch chip says
      WHERE you are, the remote group acts on it. `margin-left: auto` on the group
      is what splits them, and it sits on a real group element rather than on a
-     spacer between loose buttons for the wrap: a spacer only takes the leftover
-     of the FIRST line, so a narrow pane would strand Push alone at the left of
-     the second. Grouped, the three buttons travel and wrap together, and the
-     auto margin keeps them on the right edge of whichever line they land on. */
+     spacer between loose buttons: grouped, the three remote ops are one
+     indivisible block that stays hard right and keeps its own 6px rhythm.
+     `flex: none` says the block is NOT what gives when the bar runs out of
+     room — a control that shrinks toward its own icon while you read it is
+     worse than a name that shortens, and these three are the width the
+     breakpoint is derived from. */
   .bar .remote {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: flex-end;
     gap: 6px;
-    min-width: 0;
+    flex: none;
     margin-left: auto;
+  }
+  /* The branch chip is the one element that absorbs a narrow pane. `0 1 auto`,
+     not `1 1 auto`: it must SHRINK but never GROW, because growing would make
+     it eat the bar's whole free width on a wide pane and leave a mostly-empty
+     button with a 24ch name adrift at its left edge (flex-grow resolves before
+     auto margins, so a growing chip would also cancel `.remote`'s `margin-left:
+     auto`). Sized by its name, then squeezed. `min-width: 0` overrides the
+     `min-width: auto` every flex item gets, which is the rule that otherwise
+     pins the button at its content width and never lets the ellipsis inside
+     engage at all; the real floor lives on `.branch-name` instead, where it can
+     be stated in characters of NAME rather than in chip chrome. */
+  .bar > .btn {
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   /* One button shape for every action in the view; the variants only change
@@ -259,24 +282,62 @@
      driven off the same `aria-expanded` the button already carries, which is
      what keeps the picture and the a11y flag from ever disagreeing. */
   .btn .caret { color: var(--ink-3); transition: transform 120ms cubic-bezier(0.2, 0, 0, 1); }
-  /* A branch name has no length limit; the rest of the toolbar does. The remote
-     cluster (three 12px labels, each with a 14px glyph, 9px side padding and
-     6px gaps) measures ~220px, and the bar's own padding and the gap to it take
-     ~18px more, so on a ~400px preview pane roughly 24ch is what is left for
-     the chip before Fetch/Pull/Push are shoved onto a line of their own. That
-     is the cap: a name is clipped exactly at the width where keeping it whole
-     would start re-arranging every other control. `ch` rather than px so the
-     cap tracks the font size and the browser's zoom instead of baking in one
-     character count at one size.
+  /* A branch name has no length limit; the rest of the toolbar does. So the name
+     is the one thing in the bar that is bounded at BOTH ends, in `ch` rather
+     than px so both bounds track the font size and the browser's zoom instead
+     of baking in one character count at one size:
+
+       max-width: 24ch  — the CAP. Past two dozen characters a branch name is
+         not being read, it is being recognised, and the leading segment does
+         that; letting the chip keep growing only buys empty bar. On a pane wide
+         enough for the whole name the chip simply stops here (it cannot grow —
+         see `.bar > .btn`), and the extra width stays as the gap between the
+         two clusters, which is where a reader expects slack to go.
+       min-width: 8ch   — the FLOOR. Squeezing is what keeps the bar on one
+         line, but a chip squeezed to `g…` names nothing; eight characters is
+         about where a branch name stops being identifiable at a glance
+         ("git-temp…" against "feat/log…"). At the floor the chip is 8ch plus
+         its chrome, and it is that floor the icon-only breakpoint is derived
+         from. Below the width where floor + full-text cluster fit, the labels
+         go rather than the name.
+
      Only the TEXT clips. The caret is the "this opens a panel" affordance, and
      `.btn svg { flex: none }` above already keeps it at full size, hard against
      the right edge of the button, however short the name in front of it gets. */
   .btn .branch-name {
-    min-width: 0;
+    min-width: 8ch;
     max-width: 24ch;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Fetch / Pull / Push go ICON-ONLY in a narrow pane. The breakpoint is not a
+     round number, it is the width at which the bar stops fitting, added up from
+     the parts (12px UI font, so `ch` ≈ 6.7px):
+
+       one button   = 18px padding + 2px border            = 20px chrome
+       Fetch  20 + 14 glyph + 6 gap + ~32 text             =  72px
+       Pull   20 + 14 + 6 + ~26 text + 6 gap + ~16 badge   =  88px
+       Push   20 + 14 + 6 + ~27 text + 6 gap + ~16 badge   =  89px
+       + two 6px gaps inside the cluster                   =  12px
+       remote cluster, labelled, both counts showing       = 261px
+       chip at floor: 20px chrome + 12px caret + 6px gap
+                      + 8ch (~54px) of name                =  92px
+       bar's own 6px padding and 1px border, both sides    =  14px
+       the 6px gap between the two clusters                =   6px
+       ------------------------------------------------------------
+       everything fits down to                             = 373px
+
+     so 372px and below is where it no longer does, and the labels come off:
+     the cluster drops to 158px and the chip gets ~40px of name back rather
+     than the ellipsis it would otherwise be reduced to. Only the LABEL hides —
+     the count badge is a sibling span, untouched, because "3 commits to push"
+     is the most informative thing on that button and the whole point of the
+     degradation is to keep the informative parts. The glyph and the badge are
+     the two survivors; `aria-label` and `title` (set in `toolbar`) carry the
+     word for a screen reader and for a hover. */
+  @media (max-width: 372px) {
+    .bar .remote .btn-label { display: none; }
   }
   .btn[aria-expanded="true"] .caret { color: inherit; transform: rotate(180deg); }
   .btn.primary {
@@ -1043,6 +1104,13 @@ function caret() {
   return svg;
 }
 
+/* A button's word, wrapped so CSS can take it away. The wrapper exists purely so
+   there is something to `display: none` when the toolbar goes icon-only: a bare
+   text node cannot be hidden without hiding the glyph and the count with it. */
+function btnLabel(text) {
+  return el("span", { className: "btn-label", textContent: text });
+}
+
 function emptyState(title, message) {
   return el("div", { className: "empty" },
     el("div", { className: "glyph" }, icon(BRANCH_GLYPH, 30)),
@@ -1142,13 +1210,26 @@ function toolbar(data) {
 
   const remote = repo.remote;
   const group = el("div", { className: "remote" });
-  group.append(action("fetch", [icon(FETCH_GLYPH, 14), "Fetch"], {
+  /* The three remote ops are ONE markup for two shapes: glyph + label + count
+     wide, glyph + count narrow, with CSS hiding `.btn-label` under the
+     breakpoint (see the 372px query). Deliberately not two builds chosen at a
+     JS-measured width — CSS re-decides for free on every resize, a measurement
+     would have to be re-taken and re-rendered, and the two would drift.
+     Because the word can be absent, each carries an explicit `label`
+     (`aria-label`) and a `title`: the name for a screen reader and the same
+     thing for a hover. The label REPEATS the count rather than leaning on the
+     badge, because setting `aria-label` at all replaces the button's contents
+     as its accessible name — the badge would otherwise go unread exactly in
+     the state where it is the only text left. */
+  group.append(action("fetch", [icon(FETCH_GLYPH, 14), btnLabel("Fetch")], {
+    label: "Fetch",
     disabled: !remote,
     title: remote ? "git fetch --prune " + remote
                   : "This repository has no remote to fetch from.",
     onClick: () => run("fetch", { op: "fetch" }),
   }));
-  group.append(action("pull", [icon(PULL_GLYPH, 14), "Pull"], {
+  group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Pull")], {
+    label: repo.behind ? "Pull " + plural(repo.behind, "commit") : "Pull",
     disabled: !remote,
     count: repo.behind || null,
     title: repo.behind
@@ -1161,13 +1242,19 @@ function toolbar(data) {
      toolbar whenever a branch gained an upstream. The distinction is real —
      without one this CREATES the remote branch and records it — so it is kept
      where it costs no geometry, in the tooltip. */
-  group.append(action("push", [icon(PUSH_GLYPH, 14), "Push"], {
+  const ahead = repo.upstream ? (repo.ahead || null) : null;
+  group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Push")], {
+    label: ahead ? "Push " + plural(ahead, "commit") : "Push",
     disabled: !remote || repo.detached,
-    count: repo.upstream ? (repo.ahead || null) : null,
+    count: ahead,
+    /* Every branch of this tooltip has to start by saying PUSH: with the word
+       gone from the face of the button, the tooltip is the only place a hover
+       learns which of the three glyphs it is on, and "Create x on origin and
+       track it" named the side effect without naming the act. */
     title: repo.detached ? "HEAD is detached — there is no branch to push."
       : repo.upstream ? "git push to " + repo.upstream
-      : "Create " + (repo.branch || "this branch") + " on " + (remote || "the remote")
-        + " and track it",
+      : "git push — create " + (repo.branch || "this branch") + " on "
+        + (remote || "the remote") + " and track it",
     onClick: () => run("push", { op: "push" }),
   }));
   bar.append(group);
