@@ -218,6 +218,49 @@ def test_the_model_and_effort_pills_validate_their_param(code):
         assert default in body
 
 
+def test_a_chat_left_open_picks_up_its_own_scheduled_send(code):
+    """The gap this closes, reported from use: a scheduled message is spawned by
+    the SERVER, so nothing in the page ever set `activeRun` and the turn ran
+    entirely off-screen. A chat left open past its own scheduled time sat on
+    "Scheduled for 12:20" while the session ran, finished and edited files.
+
+    It goes through `resumeRun`, which is already written for a run this frame did
+    not start — live (stream the rest) or already finished (repair the
+    transcript) — rather than a second attach path beside it."""
+    assert "function pollScheduledRuns(" in code
+    body = code[code.index("async function pollScheduledRuns("):]
+    body = body[:body.index("\nsetInterval(pollScheduledRuns")]
+    assert "resumeRun(entry.run_id)" in body
+    assert 'e.target === FILE' in body or "entry.target === FILE" in body, \
+        "only this template's own target"
+    # never over a live turn — resumeRun would fight pollLoop for the frame
+    assert "if (activeRun || sending) return;" in body
+    # and the first pass is silent, or every already-recorded run would re-render
+    assert "baseline" in body
+    assert "setInterval(pollScheduledRuns" in code
+
+
+def test_it_only_attaches_a_run_that_belongs_on_this_screen(code):
+    """Splicing another conversation's turn into this transcript would be the page
+    telling a lie about what was said where — worse than not attaching at all."""
+    assert "function scheduledRunIsOurs(" in code
+    body = code[code.index("function scheduledRunIsOurs("):]
+    body = body[:body.index("\n}")]
+    # a session on screen: only that same conversation, by either id
+    assert "entry.session_id === mine" in body
+    assert "ran === mine" in body
+    # no session on screen: only a send that resumed nothing, so there is a fresh
+    # session for this frame to adopt
+    assert "return !entry.session_id;" in body
+
+
+def test_the_confirmation_promises_only_what_the_page_now_delivers(code):
+    """It says the turn will appear here, which is true only because
+    pollScheduledRuns exists. The two have to move together."""
+    assert "appears" in code and "here when it does" in code
+    assert "function pollScheduledRuns(" in code
+
+
 def test_the_page_links_a_ran_message_to_its_session_in_the_inbox():
     """This page can say a message ran; only the transcript knows what it DID. The
     Inbox addresses a session by the id the watcher captured (`?peek=<id>`), so a

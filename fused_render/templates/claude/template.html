@@ -8464,7 +8464,8 @@ async function scheduleMessage(message, choice) {
     const label = (PERMISSION_LABELS && PERMISSION_LABELS[mode]) || mode;
     addNote(`Scheduled for ${at.toLocaleString()}`
             + `${session ? ", continuing this chat" : ""}, with approvals set to`
-            + ` "${label}". It runs here as long as fused-render is open.`,
+            + ` "${label}". It runs as long as fused-render is open, and appears`
+            + ` here when it does — leave this open and you will see it happen.`,
             null, "◷");
     return true;
   } catch (e) {
@@ -8633,6 +8634,74 @@ async function sendMessage(message) {
 // switch / reload): only the poll loop died with the frame — the detached
 // claude subprocess kept working. The poll replays the WHOLE turn's text, so
 // any partial rows the history restore already rendered are trimmed first.
+// ── a scheduled send firing while this chat is open ───────────────────────
+//
+// The gap this closes: a scheduled message is spawned by the SERVER, so nothing
+// here ever set `activeRun` and the turn happened entirely off-screen. A chat
+// left open past its own scheduled time sat on "Scheduled for 12:20" while the
+// session ran, finished, and edited files — with the page's only route to the
+// truth being a reload. Reported from use, and it made the composer a worse place
+// to schedule from than the settings page it replaced: at least there, nobody
+// expected the conversation to be on screen.
+//
+// `resumeRun` already does the hard half. It is written for exactly this shape —
+// a run this frame did not start and may have missed the end of — and handles
+// both cases: still live (render the user line, then `pollLoop` streams the rest)
+// and already finished (repair the transcript from the poll payload).
+const SCHEDULE_SEEN = new Set();
+let scheduleBaselined = false;
+const SCHEDULE_POLL_MS = 15000;
+
+// Whether a fired entry's turn belongs in the transcript ON THIS SCREEN. Getting
+// this wrong is worse than not attaching at all: splicing another conversation's
+// turn into this one would be a page telling a lie about what was said where.
+function scheduledRunIsOurs(entry) {
+  const mine = fused.params.get("session_id") || "";
+  const ran = entry.claude_session_id || "";
+  // With a session on screen, only that same conversation counts — whether the
+  // entry named it up front (`session_id`, a follow-up scheduled from here) or
+  // reported it once the run started (`claude_session_id`).
+  if (mine) return entry.session_id === mine || ran === mine;
+  // With no session yet, a send that resumed nothing created one this frame can
+  // adopt; one that resumed someone else's belongs on their screen, not here.
+  return !entry.session_id;
+}
+
+async function pollScheduledRuns() {
+  // Never over a live turn: `resumeRun` would fight `pollLoop` for the frame, and
+  // the scheduler's own per-session hold means the next tick will offer it again.
+  if (activeRun || sending) return;
+  if (chatEl.classList.contains("home")) return;  // nothing to render into
+  let data;
+  try {
+    const res = await fetch("/api/schedule");
+    if (!res.ok) return;
+    data = await res.json();
+  } catch (e) {
+    return;  // a blip; the next tick tries again
+  }
+  const fired = (data.entries || []).filter((e) => e.target === FILE && e.run_id);
+  // The FIRST pass is a silent baseline. Every run already recorded happened
+  // before this frame existed, and the transcript restore has already accounted
+  // for the ones that belong here — re-attaching would re-render old turns.
+  const baseline = !scheduleBaselined;
+  scheduleBaselined = true;
+  for (const entry of fired) {
+    if (SCHEDULE_SEEN.has(entry.run_id)) continue;
+    SCHEDULE_SEEN.add(entry.run_id);
+    if (baseline) continue;
+    if (!scheduledRunIsOurs(entry)) {
+      addNote("A scheduled message for this folder just ran in another session.",
+              null, "◷");
+      continue;
+    }
+    addNote("Your scheduled message is running now.", null, "◷");
+    await resumeRun(entry.run_id);
+    return;  // one at a time; the next tick picks up anything behind it
+  }
+}
+setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
+
 async function resumeRun(run_id) {
   if (sending) return;
   sending = true;

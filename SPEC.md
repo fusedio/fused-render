@@ -6306,3 +6306,25 @@ world from one the user typed.
   - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
     schedule in one place, with cancel and the outcomes, is the part that has
     nowhere else to live; it points at the composer for the scheduling itself.
+  - **SCH-11f** **A chat left open picks up its own scheduled send.** The gap this
+    closes was reported from use and it was the composer's worst failure: a
+    scheduled message is spawned by the SERVER, so nothing in the page ever set
+    `activeRun`, and a chat left open past its own scheduled time sat on
+    "Scheduled for 12:20" while the session ran, finished, and edited files — the
+    page's only route to the truth being a reload. That made the composer a worse
+    place to schedule from than the settings page it replaced, where at least
+    nobody expected the conversation on screen. `pollScheduledRuns` reads
+    `/api/schedule` every 15s while the chat view is showing and hands any newly
+    fired run for this target to **`resumeRun`**, which is already written for a
+    run this frame did not start: live, it renders the user line and streams the
+    rest through `pollLoop`; already finished, it repairs the transcript from the
+    poll payload. Three guards, each earning its place: never over a live turn
+    (`resumeRun` would fight `pollLoop` for the frame); the first pass is a silent
+    baseline (every already-recorded run predates this frame, and the transcript
+    restore has accounted for the ones that belong here); and a run only attaches
+    when it BELONGS on this screen — the same session by either id, or, with no
+    session yet, one that resumed nothing and so created a session this frame can
+    adopt. Splicing another conversation's turn into this transcript would be the
+    page lying about what was said where, which is worse than not attaching. The
+    confirmation note promises the turn will appear here, which is true only
+    because this exists; the two move together and a test says so.
