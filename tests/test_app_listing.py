@@ -221,3 +221,47 @@ def test_an_empty_preview_file_is_no_preview(tmp_path):
 
     (app,) = app_listing.two_level_apps(tmp_path)
     assert app["preview_image"] is None
+
+
+# ------------------------------------------------------------- the category
+
+
+def test_metadata_category_is_reported(tmp_path):
+    """A `metadata.json` with a `category` string — the showcase repo's per-app
+    shape — surfaces on the listing entry for the UI's category filter."""
+    d = _app(tmp_path / "showcase", "mapped")
+    (d / "metadata.json").write_text(
+        '{"schema": 1, "name": "Mapped", "category": "geospatial"}', encoding="utf-8"
+    )
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["category"] == "geospatial"
+
+
+def test_no_metadata_json_means_no_category(tmp_path):
+    """An app without metadata.json carries None — it only ever appears under
+    the UI's "All" chip, never in a named category."""
+    _app(tmp_path / "local", "plain")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["category"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "not json at all",
+        '{"schema": 1}',  # no category field
+        '{"category": 7}',  # not a string
+        '{"category": "  "}',  # blank after strip
+        '["category"]',  # not an object
+    ],
+)
+def test_malformed_or_missing_category_degrades_to_none(tmp_path, body):
+    """The listing never fails on a folder's contents: a malformed metadata.json
+    or a non-string/blank category is just "no category"."""
+    d = _app(tmp_path / "local", "odd")
+    (d / "metadata.json").write_text(body, encoding="utf-8")
+
+    (app,) = app_listing.two_level_apps(tmp_path)
+    assert app["category"] is None

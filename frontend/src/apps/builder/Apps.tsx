@@ -2,10 +2,11 @@
 // breadcrumb). Every detected app in the workspace (GET /api/apps) as a grid
 // of big preview cards — each thumbnail is the app itself rendered in a
 // scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
-// search box (name/title/tag, case-insensitive) and tag chips derived from
-// the apps themselves, and ordered by an explicit sort control (recently
-// modified / name). Sorting is a deliberate user action — filtering alone
-// never reorders cards under interaction.
+// filter row — a Category/Repo mode selector with chips derived from the apps
+// themselves (categories from each folder's metadata.json, repos from the
+// top-level tag dirs) — and a search box (name/title/tag/category,
+// case-insensitive). Order is always recently-modified; filtering never
+// reorders cards relative to each other.
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
@@ -23,21 +24,22 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 
 type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
 
-type SortKey = "recent" | "name";
+// Which facet the chips filter by. "category" reads each app's authored
+// metadata.json category; "repo" is the top-level workspace folder (tag):
+// all / examples / local / showcase in a stock workspace.
+type FilterMode = "category" | "repo";
 
-const SORTS: { key: SortKey; label: string }[] = [
-  { key: "recent", label: "Recent" },
-  { key: "name", label: "Name" },
+const MODES: { key: FilterMode; label: string }[] = [
+  { key: "category", label: "Category" },
+  { key: "repo", label: "Repo" },
 ];
 
-function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
+// Always recently-modified desc; apps without a timestamp sink to the end,
+// name breaks ties so the order is stable.
+function sortApps(apps: AppInfo[]): AppInfo[] {
   const byName = (a: AppInfo, b: AppInfo) =>
     (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
-  const sorted = apps.slice();
-  if (sort === "name") sorted.sort(byName);
-  // "recent" = last-modified desc; apps without a timestamp sink to the end.
-  else sorted.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
-  return sorted;
+  return apps.slice().sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
 }
 
 type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
@@ -79,24 +81,38 @@ function useShowcaseSync(onSynced: () => void): Set<string> {
 export default function Apps({ config }: { config: Config }) {
   const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
   const [query, setQuery] = useState("");
-  // The selected tag lives in the URL (`?tag=`), not in state — the AiModels
-  // pattern: it makes the filter bookmarkable, survives a reload, and puts the
-  // choice on the back button. useNavEpoch counts pushState and popstate
-  // alike, so back/forward re-reads the URL. Default (All) is the ABSENCE of
-  // the param, keeping /apps the clean URL for the page.
+  // The selected filter lives in the URL (`?category=` or `?tag=`), not in
+  // state — the AiModels pattern: it makes the filter bookmarkable, survives a
+  // reload, and puts the choice on the back button. useNavEpoch counts
+  // pushState and popstate alike, so back/forward re-reads the URL. Default
+  // (All) is the ABSENCE of both params, keeping /apps the clean URL for the
+  // page. The two params are mutually exclusive — the chips are one selector,
+  // so picking in one facet clears the other.
   const navEpoch = useNavEpoch();
-  const tag = useMemo(() => new URLSearchParams(location.search).get("tag"), [navEpoch]);
-  const setTag = (next: string | null) => {
-    if (next === tag) return;
+  const { tag, category } = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    if (next === null) params.delete("tag");
-    else params.set("tag", next);
+    return { tag: params.get("tag"), category: params.get("category") };
+  }, [navEpoch]);
+  const setFilter = (facet: FilterMode, next: string | null) => {
+    const current = facet === "repo" ? tag : category;
+    if (next === current) return;
+    const params = new URLSearchParams(location.search);
+    params.delete("tag");
+    params.delete("category");
+    if (next !== null) params.set(facet === "repo" ? "tag" : "category", next);
     const search = params.toString();
-    // navigateUrl (pushState), not replaceSearch: each tag selection is a
+    // navigateUrl (pushState), not replaceSearch: each chip selection is a
     // history entry so back/forward walks the filter history.
     navigateUrl(location.pathname + (search ? "?" + search : ""));
   };
-  const [sort, setSort] = useState<SortKey>("recent");
+  // Which chip set is showing. State (not derived) so flipping the selector
+  // with nothing chosen sticks; the effect below re-derives it from the URL so
+  // back/forward restores the facet a bookmarked filter belongs to.
+  const [mode, setMode] = useState<FilterMode>(tag !== null ? "repo" : "category");
+  useEffect(() => {
+    if (tag !== null) setMode("repo");
+    else if (category !== null) setMode("category");
+  }, [tag, category]);
   // Whether deploying is switched on at all — the import entry follows it (see the toolbar).
   const deployEnabled = useDeployEnabled();
   // Bumped when the panel creates an app: refetches the grid without clearing it.
@@ -128,6 +144,12 @@ export default function Apps({ config }: { config: Config }) {
   // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  // Categories scanned from the apps themselves (metadata.json `category`).
+  // Apps without one carry null and so only ever appear under All.
+  const categories = useMemo(
+    () => [...new Set(all.map((a) => a.category).filter((c): c is string => !!c))].sort(),
+    [all],
+  );
   const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
   const q = query.trim().toLowerCase();
   const shown = useMemo(
@@ -136,15 +158,18 @@ export default function Apps({ config }: { config: Config }) {
         all.filter(
           (a) =>
             (tag === null || a.tag === tag) &&
+            (category === null || a.category === category) &&
             (q === "" ||
               a.name.toLowerCase().includes(q) ||
               (a.title ?? "").toLowerCase().includes(q) ||
+              (a.category ?? "").toLowerCase().includes(q) ||
               a.tag.toLowerCase().includes(q)),
         ),
-        sort,
       ),
-    [all, tag, q, sort],
+    [all, tag, category, q],
   );
+  const chips = mode === "repo" ? tags : categories;
+  const active = mode === "repo" ? tag : category;
 
   return (
     <div className="apps-page">
@@ -154,31 +179,42 @@ export default function Apps({ config }: { config: Config }) {
         <HomeHero onCreated={() => setNonce((n) => n + 1)} />
 
         <div className="apps-toolbar">
-          <div className="apps-search">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="M21 21l-4.3-4.3" />
-            </svg>
-            <input
-              type="search"
-              placeholder="Search apps…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              autoFocus
-            />
-          </div>
-          <div className="apps-sort" role="group" aria-label="Sort apps">
-            {SORTS.map((s) => (
+          {/* Facet selector: which chip set filters the grid. Switching facets
+              is browse, not commit — the active filter only changes when a
+              chip is picked, so an off-facet selection quietly persists. */}
+          <div className="apps-filter-mode" role="group" aria-label="Filter by">
+            {MODES.map((m) => (
               <button
-                key={s.key}
+                key={m.key}
                 type="button"
-                className={"apps-sort-btn" + (sort === s.key ? " is-active" : "")}
-                onClick={() => setSort(s.key)}
+                className={"apps-filter-mode-btn" + (mode === m.key ? " is-active" : "")}
+                onClick={() => setMode(m.key)}
               >
-                {s.label}
+                {m.label}
               </button>
             ))}
           </div>
+          {chips.length > 0 && (
+            <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
+              <button
+                type="button"
+                className={"apps-tag-chip" + (active === null ? " is-active" : "")}
+                onClick={() => setFilter(mode, null)}
+              >
+                All
+              </button>
+              {chips.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={"apps-tag-chip" + (active === c ? " is-active" : "")}
+                  onClick={() => setFilter(mode, active === c ? null : c)}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          )}
           {/* Gated on the Deploy-apps preference (SPEC §35 CL-1): with deploying switched
               off the whole surface that produces these links is hidden, so an entry for
               importing one would advertise a feature the user has turned away from. The
@@ -194,27 +230,19 @@ export default function Apps({ config }: { config: Config }) {
               Open deployed app
             </button>
           )}
-          {tags.length > 0 && (
-            <div className="apps-tags" role="group" aria-label="Filter by tag">
-              <button
-                type="button"
-                className={"apps-tag-chip" + (tag === null ? " is-active" : "")}
-                onClick={() => setTag(null)}
-              >
-                All
-              </button>
-              {tags.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className={"apps-tag-chip" + (tag === t ? " is-active" : "")}
-                  onClick={() => setTag(tag === t ? null : t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="apps-search">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+            <input
+              type="search"
+              placeholder="Search apps…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              autoFocus
+            />
+          </div>
         </div>
 
         {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
@@ -230,7 +258,7 @@ export default function Apps({ config }: { config: Config }) {
               <div className="home-empty">
                 {all.length === 0
                   ? "No apps yet. Describe one in the composer above to create it."
-                  : "No apps match — clear the search or tag filter."}
+                  : "No apps match — clear the search or filter."}
               </div>
             ) : (
               <div className="apps-cards">

@@ -22,12 +22,15 @@
   margin-bottom: 14px;
 }
 
+/* Search sits at the row's right edge (margin-left: auto), after the filter
+   selector and chips. */
 .apps-search {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 1 1 240px;
   max-width: 340px;
+  margin-left: auto;
   padding: 0 12px;
   height: 34px;
   background: var(--bg-alt);
@@ -89,9 +92,10 @@
   color: var(--fg-muted);
 }
 
-/* Sort: a small segmented control next to the search box. Neutral fill on the
-   active segment (accent stays reserved for focus/selection). */
-.apps-sort {
+/* Filter facet selector (Category | Repo): a small segmented control that
+   decides which chip set shows. Neutral fill on the active segment (accent
+   stays reserved for focus/selection). */
+.apps-filter-mode {
   display: inline-flex;
   padding: 2px;
   background: var(--bg-alt);
@@ -99,7 +103,7 @@
   border-radius: 8px;
 }
 
-.apps-sort-btn {
+.apps-filter-mode-btn {
   padding: 4px 12px;
   font-size: 12.5px;
   color: var(--fg-muted);
@@ -109,11 +113,11 @@
   cursor: pointer;
 }
 
-.apps-sort-btn:hover {
+.apps-filter-mode-btn:hover {
   color: var(--fg);
 }
 
-.apps-sort-btn.is-active {
+.apps-filter-mode-btn.is-active {
   color: var(--bg);
   background: var(--fg);
 }
