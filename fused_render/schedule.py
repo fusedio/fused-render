@@ -364,11 +364,31 @@ def _sync_wake(due: list[str]) -> None:
 
 
 def list_entries() -> list[dict]:
-    """Every entry, soonest-due first, with the terminal ones after the live
-    ones. What the UI lists; no side effects."""
-    live = {PENDING: 0, SENDING: 1}
-    return sorted(_read(), key=lambda e: (live.get(e.get("state"), 2),
-                                          str(e.get("due") or "")))
+    """Every entry, live ones first, each group ordered by what the reader wants
+    from it. What the UI lists; no side effects.
+
+    The two groups run in OPPOSITE directions, because "most relevant first" means
+    opposite things about the future and the past:
+
+    * **live** (`pending`/`sending`) ascending — soonest first, so the next thing
+      that will happen is at the top;
+    * **handled** (everything terminal) DESCENDING — most recent first, so the
+      latest news is at the top. Ascending here was a straight bug: it buried
+      what just ran under every message ever scheduled, and grew worse the longer
+      the feature was used.
+
+    A handled entry sorts on when it ACTED (`fired`), falling back to its due time
+    for one that never did — `missed` and `cancelled` have no fired stamp. That is
+    also the stamp the row shows, so the order matches what the reader is reading.
+    """
+    live, handled = [], []
+    for entry in _read():
+        bucket = live if entry.get("state") in (PENDING, SENDING) else handled
+        bucket.append(entry)
+    live.sort(key=lambda e: str(e.get("due") or ""))
+    handled.sort(key=lambda e: str(e.get("fired") or e.get("due") or ""),
+                 reverse=True)
+    return live + handled
 
 
 def create(target: str, message: str, due, session_id: str = "",

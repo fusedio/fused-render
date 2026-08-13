@@ -6303,6 +6303,17 @@ world from one the user typed.
     something else. A scheduled message is the words; the pending notes stay
     pending. An annotation-only send is therefore refused with a reason rather
     than deferred.
+  - **SCH-11i** **The two list groups run in OPPOSITE directions**, because "most
+    relevant first" means opposite things about the future and the past: live
+    entries ascending (the next thing that will happen, at the top), handled ones
+    DESCENDING (the latest news, at the top). One direction for both was a straight
+    bug, found by hand: it buried what had just run under every message ever
+    scheduled, and got worse the longer the feature was used. A handled entry sorts
+    on when it ACTED (`fired`), falling back to `due` for one that never did —
+    `missed` and `cancelled` carry no fired stamp — which is also the stamp its row
+    displays, so the order matches what the reader is reading. Ordered by
+    `list_entries`, not the page: the page filters the one list into its two
+    sections and must not re-sort or reverse what it is handed.
   - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
     schedule in one place, with cancel and the outcomes, is the part that has
     nowhere else to live; it points at the composer for the scheduling itself.

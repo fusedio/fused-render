@@ -438,6 +438,55 @@ def test_listing_puts_live_entries_first_then_soonest_due(target, spawned):
     assert listed[2]["state"] == schedule.SENT
 
 
+def test_handled_entries_read_newest_first(target, spawned):
+    """The two groups run in OPPOSITE directions, because "most relevant first"
+    means opposite things about the future and the past. Ascending here was a
+    straight bug (reported from use): it buried what just ran under every message
+    ever scheduled, and got worse the longer the feature was used."""
+    for i, ago in enumerate([-300, -200, -100]):
+        schedule.create(str(target), f"ran {i}", _in(ago))
+        schedule.tick()   # one at a time, so each gets its own `fired` stamp
+
+    listed = schedule.list_entries()
+
+    assert [e["message"] for e in listed] == ["ran 2", "ran 1", "ran 0"]
+
+
+def test_the_two_groups_are_ordered_independently(target, spawned):
+    """Live ascending (the next thing to happen, at the top) and handled
+    descending (the latest news, at the top) in one listing."""
+    schedule.create(str(target), "ran first", _in(-300))
+    schedule.tick()
+    schedule.create(str(target), "ran second", _in(-100))
+    schedule.tick()
+    schedule.create(str(target), "due later", _in(7200))
+    schedule.create(str(target), "due sooner", _in(60))
+
+    assert [e["message"] for e in schedule.list_entries()] == [
+        "due sooner", "due later",      # ascending: soonest first
+        "ran second", "ran first",      # descending: most recent first
+    ]
+
+
+def test_a_handled_entry_that_never_ran_still_sorts(target, spawned, monkeypatch):
+    """`missed` and `cancelled` carry no `fired` stamp, so the fallback to `due` is
+    what keeps them in the order at all rather than bunched at one end."""
+    monkeypatch.setenv("FUSED_RENDER_SCHEDULE_MAX_LATE", "60")
+    # Created INSIDE the bound (create refuses anything already past it), then the
+    # clock walks beyond it with no tick in between — the app was closed.
+    schedule.create(str(target), "missed older", _in(-40))
+    schedule.create(str(target), "missed newer", _in(-20))
+    schedule.tick(now=datetime.now(timezone.utc) + timedelta(seconds=120))
+
+    cancelled = schedule.create(str(target), "cancelled", _in(3600))
+    schedule.cancel(cancelled["id"])
+
+    listed = [e["message"] for e in schedule.list_entries()]
+    # the cancelled one is due furthest ahead, so it leads; then the missed pair,
+    # newest first
+    assert listed == ["cancelled", "missed newer", "missed older"]
+
+
 def test_the_wake_stub_is_never_synced_while_the_store_lock_is_held(target, spawned,
                                                                     monkeypatch):
     """On macOS `sync` shells out to launchctl twice. Holding the store lock

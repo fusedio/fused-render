@@ -264,8 +264,11 @@ export default function Scheduled() {
         <section className="prefs-section">
           <h2>Already handled</h2>
           <p className="deploy-muted">
-            Kept rather than cleared: a message that failed or was missed is exactly the one
-            worth being able to read afterwards.
+            {/* Newest first, which is the server's ordering — the two groups run in
+                opposite directions on purpose (see schedule.list_entries), so this
+                section must not re-sort or reverse what it is given. */}
+            Most recent first. Kept rather than cleared: a message that failed or was missed is
+            exactly the one worth being able to read afterwards.
           </p>
           {past.map((e) => (
             <EntryRow key={e.id} entry={e} onCancelled={reload} />
