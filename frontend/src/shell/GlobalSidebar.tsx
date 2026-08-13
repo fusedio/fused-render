@@ -1,7 +1,7 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
 // primary nav on top (Explorer / Build App / Inbox), the explorer's Recents
-// and Bookmarks below it, and a single Preferences trigger pinned to the
+// and Bookmarks below it, and a single Settings trigger pinned to the
 // bottom that opens a menu holding everything else (Showcase / Artifacts /
 // Config / App Basics for now, plus Templates / Mounts / AI Models /
 // Preferences).
@@ -127,7 +127,7 @@ interface PrefsMenuEntry {
   extra?: React.ReactNode;
 }
 
-// The bottom Preferences trigger + its pop-up menu. A NavItem-shaped row that
+// The bottom Settings trigger + its pop-up menu. A NavItem-shaped row that
 // opens a fixed-position menu growing UP from the row (the row sits on the
 // sidebar's bottom edge). Closes on outside pointerdown / Escape / navigation.
 function PreferencesMenu({
@@ -184,7 +184,7 @@ function PreferencesMenu({
           {PREFERENCES_ICON}
           {dot}
         </span>{" "}
-        Preferences
+        Settings
       </button>
       {pos && (
         <div
