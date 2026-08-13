@@ -296,7 +296,7 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
   return { node, ask };
 }
 
-// -- page chrome --------------------------------------------------------------
+// -- git status ---------------------------------------------------------------
 
 export interface GitStatusState {
   // null until the first read lands; stays null if it failed.
@@ -330,6 +330,8 @@ export function useGitStatus(epoch: number): GitStatusState {
 
   return { status, failed, recheck: useCallback(() => setN((v) => v + 1), []) };
 }
+
+// -- split preview pane -------------------------------------------------------
 
 // fs path -> the encoded tail of an /explorer/view/ or /explorer/embed/ URL.
 // Same codec as router.urlForFsPath, spelled out here because that helper picks
@@ -395,7 +397,7 @@ export function fileToB64(file: File): Promise<string> {
 export function Icon({
   name,
 }: {
-  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy" | "download";
+  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy";
 }) {
   const paths: Record<string, ReactNode> = {
     clock: (
@@ -408,13 +410,6 @@ export function Icon({
       <>
         <rect x="9" y="9" width="12" height="12" rx="2" />
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-      </>
-    ),
-    download: (
-      <>
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
       </>
     ),
     edit: <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />,
