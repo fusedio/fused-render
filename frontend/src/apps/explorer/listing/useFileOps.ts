@@ -522,7 +522,7 @@ export function useFileOps({
     });
   };
 
-  // Move to Bin: a recoverable delete (macOS Trash), so no confirm dialog.
+  // Delete: a recoverable delete (moves to the macOS Trash), so no confirm dialog.
   // Acts on every row passed in (the whole selection). Where the server can't
   // trash (non-macOS → "unsupported") those rows fall back to the existing
   // confirm-then-hard-delete flow, which IS irreversible and so keeps its
@@ -531,7 +531,7 @@ export function useFileOps({
     // As in startDelete: trashing a folder takes everything inside it, so a
     // selection that also holds rows from within that folder must not trash them
     // individually — the second call would hit a vanished path and be counted as
-    // a real failure, replacing the "Moved to Bin" toast with a bogus error.
+    // a real failure, replacing the "Deleted" toast with a bogus error.
     const rows = pruneDescendantRows(allRows);
     if (!rows.length) return;
     void (async () => {
@@ -551,7 +551,7 @@ export function useFileOps({
       }
       if (trashed.length) {
         pushToast({
-          msg: trashed.length === 1 ? "Moved to Bin" : `Moved ${trashed.length} items to Bin`,
+          msg: trashed.length === 1 ? "Deleted" : `Deleted ${trashed.length} items`,
           tone: "info",
         });
         refetch();
@@ -563,7 +563,7 @@ export function useFileOps({
       // nothing errored.
       if (failed !== null) {
         pushToast({
-          msg: friendlyFsError(failed.message, { verb: "move to Bin", name: failed.row.name }),
+          msg: friendlyFsError(failed.message, { verb: "delete", name: failed.row.name }),
           tone: "error",
         });
       } else if (unsupported.length) {
@@ -597,7 +597,7 @@ export function useFileOps({
     const n = rows.length;
     if (n > 1) {
       return [
-        { label: `Move ${n} items to Bin`, icon: MenuIcons.trash, onClick: () => doTrash(rows) },
+        { label: `Delete ${n} items`, icon: MenuIcons.trash, onClick: () => doTrash(rows) },
         "separator",
         { label: `Duplicate ${n} items`, icon: MenuIcons.duplicate, onClick: () => doDuplicate(rows) },
         "separator",
@@ -624,7 +624,7 @@ export function useFileOps({
       { label: "Open", icon: MenuIcons.open, onClick: () => navigate(row.path, { isDir: row.isDir }) },
       { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith(row.path) },
       "separator",
-      { label: "Move to Bin", icon: MenuIcons.trash, onClick: () => doTrash([row]) },
+      { label: "Delete", icon: MenuIcons.trash, onClick: () => doTrash([row]) },
       "separator",
       { label: "Rename…", icon: MenuIcons.rename, onClick: () => startRename(row) },
       { label: "Duplicate", icon: MenuIcons.duplicate, onClick: () => doDuplicate([row]) },

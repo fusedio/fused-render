@@ -270,7 +270,7 @@ function usePreviewFileMenu(
       } else if (r.status === "unsupported") {
         startDelete();
       } else {
-        pushToast({ msg: friendlyFsError(r.message, { verb: "move to Bin", name: stat.name }), tone: "error" });
+        pushToast({ msg: friendlyFsError(r.message, { verb: "delete", name: stat.name }), tone: "error" });
       }
     });
   };
@@ -330,7 +330,7 @@ function usePreviewFileMenu(
   const buildMenu = (): MenuEntry[] => [
     { label: "Open With", icon: MenuIcons.openWith, submenu: loadOpenWith },
     "separator",
-    { label: "Move to Bin", icon: MenuIcons.trash, onClick: doTrash },
+    { label: "Delete", icon: MenuIcons.trash, onClick: doTrash },
     "separator",
     { label: "Rename…", icon: MenuIcons.rename, onClick: startRename },
     { label: "Duplicate", icon: MenuIcons.duplicate, onClick: doDuplicate },

@@ -286,7 +286,7 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
   return `Couldn't ${verb} "${name}". ${raw}`;
 }
 
-// Outcome of a Move to Bin attempt. "unsupported" is the non-macOS 501 case
+// Outcome of a Delete (trash) attempt. "unsupported" is the non-macOS 501 case
 // where the caller should fall back to a hard-delete confirm; "error" is any
 // other failure (surface it as a toast).
 export type TrashOutcome =
@@ -294,7 +294,7 @@ export type TrashOutcome =
   | { status: "unsupported" }
   | { status: "error"; message: string };
 
-// Move to Bin: a recoverable delete (macOS Trash). Where the server can't trash
+// Delete: a recoverable delete (moves to the macOS Trash). Where the server can't trash
 // (non-macOS → 501 "trash unsupported") this reports "unsupported" so the
 // caller can fall back to the irreversible confirm-then-hard-delete flow.
 export async function trashEntry(path: string, isDir: boolean): Promise<TrashOutcome> {

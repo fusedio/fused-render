@@ -247,10 +247,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     />
   ) : undefined;
 
-  // The Explorer row is "home" to every fs route: the homepage, any
-  // /explorer/view|embed path (files, panel, tabs, bookmark sentinels).
+  // Only the Explorer HOMEPAGE lights the row. Viewing a file
+  // (/explorer/view|embed/...) is "being somewhere", not "being on Explorer" —
+  // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
-  const explorerActive = pathname === "/explorer" || pathname.startsWith("/explorer/");
+  const explorerActive = pathname === "/explorer";
 
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Showcase / Artifacts / Config / App Basics),
