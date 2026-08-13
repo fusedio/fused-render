@@ -308,16 +308,158 @@
   margin-top: 12px;
 }
 
-/* A card whose leading control is a toggle (Plugins). */
-.cc-card-head {
+/* -- segmented switch (Plugins: Installed / Discover) ---------------------- */
+/* The .am-tabs pattern from shell/AiModels: two joined buttons in one bordered
+   pill, for a choice BETWEEN LISTS inside a page — distinct from .cc-tab, which
+   navigates the panel. */
+
+.cc-seg {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.cc-seg-btn {
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.cc-seg-btn + .cc-seg-btn {
+  border-left: 1px solid var(--border);
+}
+
+.cc-seg-btn:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.cc-seg-btn.active {
+  color: var(--fg);
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+.cc-seg-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* -- filter index + list (Plugins) ----------------------------------------- */
+/* A narrow column of filter rows beside the list. Deliberately UNDECORATED —
+   no panel background, no border: this sits inside the content area, and any
+   surface of its own would read as a third sidebar stacked against the shell's
+   own. It is a filter, so its rows are buttons with counts, not links. */
+
+.cc-split {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.cc-index {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 180px;
+  width: 180px;
+  gap: 1px;
+  /* Sticks while the (much longer) list scrolls past it. */
+  position: sticky;
+  top: 0;
+}
+
+.cc-index-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.cc-index-item:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--fg);
+}
+
+.cc-index-item.active {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.cc-index-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The count is pushed to the right edge; the name is what gives way. */
+.cc-index-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-rows {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* -- one-line plugin row --------------------------------------------------- */
+/* One plugin, one line, never wrapping: you scan twenty of these, and a row
+   that reflows costs more height than everything it says. Only .cc-prow-sub
+   (the id, or the description) shrinks and ellipsizes — the toggle, version and
+   actions are fixed, because those are what you came to act on. */
+
+.cc-prow {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 7px 0;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
 }
 
-.cc-card-headtext {
+.cc-prow-name {
+  flex: 0 0 auto;
+  font-weight: 500;
+}
+
+.cc-prow-sub {
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-prow-meta {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.cc-prow-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
 }
 
 .cc-icon {
