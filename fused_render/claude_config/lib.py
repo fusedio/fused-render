@@ -39,6 +39,20 @@ CLAUDE_DIR = os.environ.get("CLAUDE_DIR") or os.path.expanduser("~/.claude")
 SETTINGS_PATH = os.path.join(CLAUDE_DIR, "settings.json")
 INSTALLED_PLUGINS_PATH = os.path.join(CLAUDE_DIR, "plugins", "installed_plugins.json")
 KNOWN_MARKETPLACES_PATH = os.path.join(CLAUDE_DIR, "plugins", "known_marketplaces.json")
+MARKETPLACES_DIR = os.path.join(CLAUDE_DIR, "plugins", "marketplaces")
+
+# The kwargs EVERY subprocess in this package decodes its output with.
+#
+# `text=True` alone is a latent crash: it decodes with
+# locale.getpreferredencoding(False), and a GUI-launched server inherits no
+# LANG/LC_ALL, so on macOS that resolves to ASCII. The moment a child prints a
+# non-ASCII byte — `claude mcp list` draws ✔/✘/⏸, a commit message has an em
+# dash, a statusline script emits a nerd-font glyph, a project path is
+# accented — the decode raises UnicodeDecodeError and the whole action 500s
+# with an error that says nothing about the real cause. Pinning UTF-8 (what all
+# of these actually emit) with errors="replace" makes the worst case a mojibake
+# character rather than a dead page.
+TEXT_DECODE = {"text": True, "encoding": "utf-8", "errors": "replace"}
 
 # One lock serializes all config mutation (read-modify-write of settings.json +
 # the git add/commit that follows), so two concurrent actions can't clobber each
@@ -207,12 +221,17 @@ projects/*/*
 
 
 def git(*args: str, check: bool = True) -> str:
-    """Run a git command inside CLAUDE_DIR, returning stripped stdout."""
+    """Run a git command inside CLAUDE_DIR, returning stripped stdout.
+
+    `encoding="utf-8"` is not optional here — see TEXT_DECODE below. git speaks
+    UTF-8 (commit messages, paths), and a GUI-launched server would otherwise
+    decode `git log` as ASCII and blow up the History page on the first commit
+    message anyone wrote with an em dash in it."""
     res = subprocess.run(
         ["git", *args],
         cwd=CLAUDE_DIR,
         capture_output=True,
-        text=True,
+        **TEXT_DECODE,
     )
     if check and res.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
@@ -372,7 +391,7 @@ def reveal(path: str) -> bool:
     import sys
     cmd = ["open"] if sys.platform == "darwin" else ["xdg-open"]
     try:
-        subprocess.run([*cmd, path], capture_output=True, text=True, timeout=10)
+        subprocess.run([*cmd, path], capture_output=True, timeout=10, **TEXT_DECODE)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -430,7 +449,7 @@ def claude_cli(*args: str, timeout: int = 25) -> dict:
     env = {**os.environ, "PATH": path_env}
     try:
         res = subprocess.run(
-            [binary, *args], capture_output=True, text=True, timeout=timeout, env=env
+            [binary, *args], capture_output=True, timeout=timeout, env=env, **TEXT_DECODE
         )
         return {
             "ok": res.returncode == 0,

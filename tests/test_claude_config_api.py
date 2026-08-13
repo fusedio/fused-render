@@ -318,6 +318,39 @@ def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
     assert lib.catalog_read_path() == lib.packaged_catalog_path()
 
 
+# -- subprocess decoding: never the locale's guess ---------------------------
+
+
+def test_every_subprocess_in_the_package_pins_utf8_decoding():
+    """`text=True` with no `encoding` decodes with locale.getpreferredencoding,
+    which is ASCII in a GUI-launched process (no LANG). That is what made the
+    MCP page 500 on `claude mcp list`'s ✔ glyph, and it would have taken the
+    History page down the first time a commit message carried an em dash. Every
+    text-decoding subprocess here must therefore go through lib.TEXT_DECODE —
+    asserted at the source level, because the failure only reproduces in an
+    environment a test cannot portably create.
+    """
+    assert lib.TEXT_DECODE == {"text": True, "encoding": "utf-8", "errors": "replace"}
+    pkg = os.path.dirname(os.path.abspath(lib.__file__))
+    offenders = []
+    for name in sorted(os.listdir(pkg)):
+        if not name.endswith(".py"):
+            continue
+        for i, line in enumerate(open(os.path.join(pkg, name), encoding="utf-8"), 1):
+            code = line.split("#", 1)[0]  # the prose explaining the fix says it too
+            if "text=True" in code:
+                offenders.append(f"{name}:{i}")
+    assert offenders == []
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
+    lib.ensure_repo()  # the seed commit, so the edit below is a commit of its own
+    (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
+    assert lib.commit("Enable — plugin ✔")
+    assert lib.log()[0]["message"] == "Enable — plugin ✔"
+
+
 def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(
         client, catalog_home, monkeypatch):
     def offline():

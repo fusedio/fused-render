@@ -39,7 +39,10 @@ def _mdfind() -> list:
         try:
             out = subprocess.run(
                 ["mdfind", "-name", name],
-                capture_output=True, text=True, timeout=10,
+                # lib.TEXT_DECODE, not text=True: mdfind prints filesystem paths,
+                # and one accented directory name anywhere on the disk would
+                # otherwise ASCII-decode-fail the whole MD Files listing.
+                capture_output=True, timeout=10, **lib.TEXT_DECODE,
             ).stdout
         except (OSError, subprocess.TimeoutExpired):
             return []
