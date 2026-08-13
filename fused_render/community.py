@@ -528,9 +528,10 @@ def refresh_in_background():
     (cli._run_serve, app._start_server_thread) right after ensure_fused_dir —
     NOT from create_app, so importing the server in tests never clones into a
     real workspace. First run performs the full clone; later runs fetch+ff.
-    Failures are logged, never raised — the apps page fires its own background
-    refresh on every visit (Apps.tsx), so a failed startup clone retries there
-    without waiting for the next process start."""
+    Failures are logged, never raised — while the clone is missing, every
+    visit to the apps page escalates to its own refresh (Apps.tsx), so a
+    failed startup clone retries there without waiting for the next process
+    start. Once the clone exists, this startup sync is the only fetch."""
     import logging
     import threading
 
