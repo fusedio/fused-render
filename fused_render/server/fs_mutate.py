@@ -642,8 +642,8 @@ def _fs_delete(body: dict, x_fused: str | None):
     if not path or not os.path.isabs(path):
         return _error("'path' must be an absolute filesystem path")
     # The snapshot tree IS the record, so this covers the root as well as the
-    # files in it. Reclaiming disk under app-versions/ is history.py's business,
-    # not an /api/fs/delete caller's.
+    # files in it. Reclaiming disk under app-versions/ belongs to whatever
+    # manages that cache, not to an /api/fs/delete caller.
     snap = _snapshot_refusal(path)
     if snap is not None:
         return snap

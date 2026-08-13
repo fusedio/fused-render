@@ -276,7 +276,6 @@ def test_the_dead_framing_params_are_gone_from_their_consumers_too():
     for rel in (
         ("frontend", "src", "apps", "explorer", "listing", "pane.ts"),
         ("frontend", "src", "platform", "lib", "router.ts"),
-        ("fused_render", "templates", "history", "template.html"),
     ):
         with open(os.path.join(*rel), encoding="utf-8") as f:
             code = "\n".join(line for line in f.read().split("\n")
@@ -1459,16 +1458,15 @@ def test_the_registry_binds_the_split_view_to_files_and_keeps_the_directory_key(
     # mode needed a display name of its own.
     assert registry["/"].count("claude") == 1
 
-    # Chat before history on every FILE key that has them — no longer adjacent:
-    # `history` trails every list it is bound to
-    # (test_templates.py::test_history_is_the_last_mode_wherever_bound). The
-    # `/` key is excluded deliberately: its order is the directory story
-    # (`_listing`, then the app modes, then the chat and the history views).
+    # The chat sits after the CONTENT views on every file key that has it: it is
+    # a companion to reading the bytes, never the way you read them. The `/` key
+    # is excluded deliberately — its order is the directory story (`_listing`
+    # first, then the gated peers).
     for key, names in registry.items():
         if key.endswith("/") or not isinstance(names, list):
             continue
-        if "claude" in names and "history" in names:
-            assert names.index("claude") < names.index("history"), key
+        if "claude" in names:
+            assert names.index("claude") > 0, key
 
 
 def test_the_gates_docstring_does_not_justify_itself_with_the_deleted_pane():

@@ -6,7 +6,7 @@ The registry is READ-ONLY as of D264: "Add as app" was its only writer and went
 with the app concept, taking `link_app`/`unlink_app` and the link/unlink/status
 routes with it. What is left, and what these tests cover, is everything that
 still READS it — the /apps hub listing, the env export, and the template gates
-and history scoping that ask whether a path belongs to a registered folder.
+and git scoping that ask whether a path belongs to a registered folder.
 Registration happens here through `write_entries`, the module's one remaining
 way in, which is also how a user with an existing registry file gets there.
 """
@@ -216,9 +216,10 @@ def test_recents_resolve_linked_tag_through_the_registry(client, tmp_path):
 # The chat gate accepts a linked folder through the FUSED_RENDER_LINKED_APPS
 # env var (exported on every registry write) — pure env membership, no file
 # reads. The `app` gate used to be the other half of this and is gone with the
-# template (D264). `history` REFUSES to revert there on purpose: its backend
-# writes git history with the Fused identity, and a linked folder is the user's
-# own repository — which is why the env export outlived the registration UI.
+# template (D264); the per-path timeline mode that read the same env var — to
+# refuse a revert into the user's OWN repository — is gone too. The export
+# survives both because it is the shared env contract every gate reads
+# (templates/shared/appenv.py).
 
 
 def _condition(name):
@@ -256,31 +257,19 @@ def _git_repo(d):
     subprocess.run(["git", "-C", str(d), "init", "-q"], check=True)
 
 
-def test_history_gate_accepts_git_backed_linked_folders(client, tmp_path):
-    d = _folder(tmp_path, "notes")
-    cond = _condition("history")
-    _register(d)
-    assert cond.main(str(d)) is False  # linked but no repo: no history to show
-    _git_repo(d)
-    assert cond.main(str(d)) is True
-    assert cond.main(str(d / "index.html")) is True  # files inside too
-
-
-def test_history_gate_finds_the_git_at_an_ancestor(client, tmp_path):
+def test_git_gate_finds_the_git_at_an_ancestor(client, tmp_path):
     """A linked folder is often a SUBFOLDER of the user's repository — the
-    gate asks git (rev-parse ascent), like git/condition.py, instead of
-    statting `.git` on the folder itself."""
+    gate asks git (rev-parse ascent) instead of statting `.git` on the folder
+    itself."""
     repo = tmp_path / "bigrepo"
     d = repo / "sub" / "app"
     d.mkdir(parents=True)
     (d / "index.html").write_text("<html></html>")
     _git_repo(repo)
     _register(d)
-    assert _condition("history").main(str(d)) is True
-    # ...and `git` is offered there too. It used to step aside ("one story, one
-    # mode") with a whole extra `rev-parse` fork on every stat to work out
-    # whether it should. `git` is the working tree and `history` is the
-    # history, so both answer and the fork is gone.
+    # It used to step aside here ("one story, one mode") with a whole extra
+    # `rev-parse` fork on every stat to work out whether a per-path timeline peer
+    # had claimed the folder. That peer is gone, and so is the fork.
     assert _condition("git").main(str(d)) is True
 
 
@@ -291,107 +280,15 @@ def test_git_gate_keeps_serving_ungitted_linked_folders(client, tmp_path, worksp
     _register(d)
     # linked but not git-backed: there is genuinely no repo, so no mode
     assert _condition("git").main(str(d)) is False
-    assert _condition("history").main(str(d)) is False
     # a repo nested DEEPER than the linked folder: git serves it
     nested = d / "vendor"
     nested.mkdir()
     (nested / "f.txt").write_text("x")
     _git_repo(nested)
-    # ...but on the FOLDER, not on a file in it: `git` is folder-only now (the
-    # working tree belongs to the directory, and per-file history is `history`).
+    # ...but on the FOLDER, not on a file in it: `git` is folder-only now — the
+    # working tree belongs to the directory.
     assert _condition("git").main(str(nested / "f.txt")) is False
     assert _condition("git").main(str(nested)) is True
-
-
-def test_history_backend_scopes_to_the_linked_subtree(client, tmp_path):
-    """Linked app inside a larger repo: log lists only commits touching the
-    app's folder, and a snapshot materialises the folder's subtree (its
-    index.html at the top), not the whole repository."""
-    import importlib.util
-    import subprocess
-
-    repo = tmp_path / "bigrepo"
-    d = repo / "sub" / "app"
-    d.mkdir(parents=True)
-    _git_repo(repo)
-
-    def commit(msg):
-        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
-             "commit", "-q", "-m", msg], check=True)
-
-    # `main.html`, not index.html: the snapshot's entry must resolve by the
-    # app-entry rule (single top-level .html), not a hardcoded index.html.
-    (repo / "other.txt").write_text("x")
-    commit("repo-only commit")
-    (d / "main.html").write_text("<html>v1</html>")
-    commit("app commit")
-
-    _register(d)
-
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "templates", "history", "history.py",
-    )
-    spec = importlib.util.spec_from_file_location("test_linked_history_sub", path)
-    history = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(history)
-
-    log = history.main("log", str(d / "index.html"))
-    assert [c["subject"] for c in log["commits"]] == ["app commit"]
-
-    snap = history.main("snapshot", str(d), log["commits"][0]["sha"])
-    assert snap["entry"] and os.path.basename(snap["entry"]) == "main.html"
-    with open(snap["entry"]) as f:
-        assert f.read() == "<html>v1</html>"
-    # subtree only — the repo-level file is not in the snapshot
-    assert not os.path.exists(os.path.join(snap["dir"], "other.txt"))
-
-
-def test_history_backend_shows_history_but_refuses_revert_for_linked(
-    client, tmp_path
-):
-    """View-only history for a linked app: log/snapshot work, revert refuses —
-    the repo is the user's own, no Fused-identity commits (linked_apps.py)."""
-    import importlib.util
-    import subprocess
-
-    d = _folder(tmp_path, "notes")
-    subprocess.run(["git", "-C", str(d), "init", "-q"], check=True)
-    subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
-    subprocess.run(
-        ["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@t",
-         "commit", "-q", "-m", "user commit"],
-        check=True,
-    )
-    _register(d)
-
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "templates", "history", "history.py",
-    )
-    spec = importlib.util.spec_from_file_location("test_linked_history", path)
-    history = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(history)
-
-    log = history.main("log", str(d / "index.html"))
-    assert [c["subject"] for c in log["commits"]] == ["user commit"]
-    assert log["can_revert"] is False
-
-    # snapshot works read-only: materialised under the shell home, repo untouched
-    snap = history.main("snapshot", str(d / "index.html"), log["commits"][0]["sha"])
-    assert snap.get("entry") and os.path.isfile(snap["entry"])
-
-    sha = log["commits"][0]["sha"]
-    res = history.main("revert", str(d / "index.html"), sha)
-    assert "revert is disabled for linked apps" in res["error"]
-    # nothing was written: still exactly the user's one commit
-    out = subprocess.run(
-        ["git", "-C", str(d), "log", "--format=%s"],
-        capture_output=True, text=True, check=True,
-    )
-    assert out.stdout.strip() == "user commit"
 
 
 def test_git_scoping_ignores_linked_folders(client, tmp_path, workspace):

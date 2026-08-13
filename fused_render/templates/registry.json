@@ -4,23 +4,20 @@
     "structure",
     "h3",
     "claude",
-    "geometry_editor",
-    "history"
+    "geometry_editor"
   ],
   ".csv": [
     "duckdb",
     "excel",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".tsv": [
     "duckdb",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".xlsx": [
     "xlsx",
@@ -44,20 +41,17 @@
     "code",
     "duckdb",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".jsonl": [
     "code",
     "duckdb",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".ipynb": [
     "notebook",
-    "claude",
-    "history"
+    "claude"
   ],
   ".calls.jsonl": [
     "log_studio",
@@ -75,8 +69,7 @@
     "code",
     "duckdb",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".csv.gz": [
     "duckdb",
@@ -124,70 +117,60 @@
     "tree",
     "code",
     "claude",
-    "geometry_editor",
-    "history"
+    "geometry_editor"
   ],
   ".md": [
     "markdown",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".markdown": [
     "markdown",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".tex": [
     "latex",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".ltx": [
     "latex",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".latex": [
     "latex",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".svg": [
     "image",
     "code",
-    "claude",
-    "history"
+    "claude"
   ],
   ".png": [
     "image",
     "photos",
     "pano",
-    "claude",
-    "history"
+    "claude"
   ],
   ".jpg": [
     "image",
     "photos",
     "pano",
-    "claude",
-    "history"
+    "claude"
   ],
   ".jpeg": [
     "image",
     "photos",
     "pano",
-    "claude",
-    "history"
+    "claude"
   ],
   ".gif": [
     "image",
@@ -249,180 +232,151 @@
     "code",
     "api",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".js": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".ts": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".tsx": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".jsx": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".cjs": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".mjs": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".cts": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".mts": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".sh": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".zsh": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".fish": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".ps1": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".csh": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".zsh-theme": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".vim": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".yaml": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".yml": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".toml": [
     "canvas",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".ini": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".cfg": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".conf": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".tf": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".hcl": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".css": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".txt": [
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".log": [
     "log_studio",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".html": [
     "_render",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".htm": [
     "_render",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ],
   ".tif": [
     "geotiff",
@@ -449,8 +403,7 @@
     "git",
     "graph",
     "zarr_aoi",
-    "model_card",
-    "history"
+    "model_card"
   ],
   ".zarr/": [
     "zarr_aoi",
@@ -611,7 +564,6 @@
     "plist",
     "code",
     "claude",
-    "reader",
-    "history"
+    "reader"
   ]
 }
