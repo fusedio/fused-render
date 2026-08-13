@@ -1,8 +1,9 @@
 """The entry contract behind `GET /api/apps`, extracted from its router.
 
-An app is a folder with an entry page: `<workspace>/<tag>/<name>/`, whose entry
-is its `index.html`, else its first non-hidden direct-child `.html` in name
-order (`app_entry`, the shared rule — D269). The walk that finds them, and
+An app is a folder in the workspace, one to three levels down, whose entry is
+its `index.html`, else its first non-hidden direct-child `.html` in name
+order (`app_entry`, the shared rule — D269). The walk that finds them
+(`workspace_apps`, which is where the per-level rules are written down), and
 the facts reported about each one — a title read out of the entry, an authored
 `preview.png` thumbnail if there is one, and when the folder was last touched —
 live here rather than inside the route handler, so they can be tested and reused
@@ -18,6 +19,8 @@ import json
 import os
 import re
 import stat
+
+from fused_render.index.ignore import SHARED_IGNORE_DIRS, is_leaf_dir
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
@@ -45,7 +48,7 @@ def app_entry(dir_path: str) -> str | None:
     have all been picking since the shared rule widened.
 
     The ONE divergence that remains is the OSError: this raises where the shared
-    copy swallows, so `two_level_apps` can tell "unreadable, skip this folder"
+    copy swallows, so `workspace_apps` can tell "unreadable, skip this folder"
     from "no entry, list it as a folder" (see `app_dict`). A template has no such
     distinction to draw — it renders a notice either way.
 
@@ -170,47 +173,98 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     }
 
 
-def two_level_apps(root: str) -> list[dict]:
-    """Every app in a Fused-shaped folder: `<root>/<tag>/<name>/`.
+def workspace_apps(root: str) -> list[dict]:
+    """Every app in the workspace: a BOUNDED recursive walk, depths 1-3.
 
-    A "tag" is any non-hidden top-level directory, an "app" any non-hidden
-    directory directly inside one — no registry, so a new tag is just a new
-    folder.
+    It used to be exactly two levels (`<root>/<tag>/<name>/`, and the name said
+    so). Two levels is not where people put their work: a folder dropped
+    straight into the workspace (`~/Documents/Fused/sine/sine.html`) was invisible
+    to the page, and so was an app one level below a tag dir. The walk is now
+    recursive, with the depth bound and the per-level rules below.
+
+    Per level, relative to `root`:
+
+      * DEPTH 1 and 2 — unchanged from the two-level walk, deliberately: ANY
+        non-hidden directory is an app, whether or not it holds a page, with the
+        entry resolved by `app_entry` (which may be None — an entry-less folder
+        is still a card that opens the folder). Depth 2 was the whole of the old
+        listing, so anything stricter here would silently retire cards people
+        already have.
+      * DEPTH 3 — a directory is an app only if it DIRECTLY holds an
+        `index.html`. The permissive rule cannot be carried this deep: a
+        checked-out code repo in the workspace turns every third-level folder
+        into a card (measured: 55 candidates on one repo, 47 of them a single
+        `templates/` tree). An explicit `index.html` is the author saying "this
+        folder is a page", which is the only signal worth trusting that far down.
+
+    DESCENT stops at an app that HAS a page (depth 2 onward): its subfolders are
+    its assets and its extra pages, not further apps — without that, an app with
+    an `index.html` and a `sub/index.html` would list twice, and a multi-page app
+    would scatter its own pages across the grid as separate cards. Depth 1 is the
+    exception and is always descended: the top level is the workspace's shelf of
+    tag/repo folders, and one of those happening to hold a landing page must not
+    delete every app underneath it.
+
+    `tag` — the page's "Repo" facet — is THE FIRST PATH SEGMENT at every depth,
+    so `showcase/sub/bar` files under `showcase` exactly as `showcase/bar` does.
+    A depth-1 app IS that segment, so it is its own tag (an empty tag would add a
+    nameless chip to the facet list and a `?tag=` that filters on "").
+
+    Vendor and build dirs are pruned by name (`SHARED_IGNORE_DIRS`) and opaque
+    package/leaf dirs by `is_leaf_dir` — neither listed nor descended.
 
     Skips whatever it cannot read at every level and returns [] for a root that
     isn't listable (no workspace yet, on a first run) — a listing degrades, it
-    never fails. Sorted at both levels so a partial result is still stable.
+    never fails. Names are sorted at every level, so a partial result is stable.
     """
     apps: list[dict] = []
-    try:
-        tag_names = os.listdir(root)
-    except OSError:
-        return apps
-    for tag in sorted(tag_names):
-        if tag.startswith("."):
-            continue
-        tag_path = os.path.join(root, tag)
-        try:
-            if not os.path.isdir(tag_path):
-                continue
-            names = os.listdir(tag_path)
-        except OSError:
-            continue  # unreadable/racing tag dir: skip, never fail the listing
-        for name in sorted(names):
-            if name.startswith("."):
-                continue
-            path = os.path.join(tag_path, name)
-            try:
-                if not os.path.isdir(path):
-                    continue
-                entry_html = app_entry(path)
-            except OSError:
-                # Unreadable or racing: SKIPPED, not listed as an entry-less
-                # card. Resolving the entry inside this guard is what makes
-                # that distinction — see `app_dict`.
-                continue
-            apps.append(app_dict(path, name, tag, entry_html))
+    _walk_apps(root, root, 1, apps)
     return apps
+
+
+# Deepest level below the workspace root the walk looks at. Level 3 is where the
+# `index.html` requirement applies and where descent stops outright.
+MAX_APP_DEPTH = 3
+
+# Vendor/build directory names that are never an app and never walked into.
+# Taken from the index's shared floor (`index/ignore.SHARED_IGNORE_DIRS`, which
+# `server/walk.WALK_IGNORE_DIRS` and `junk_path` are also built from) rather than
+# spelled out again here: "which directories are machine-managed noise" already
+# has one answer in this codebase and a second copy would drift from it.
+PRUNE_DIR_NAMES = frozenset(SHARED_IGNORE_DIRS)
+
+
+def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict]) -> None:
+    """Collect the apps among `dir_path`'s children, which sit at `depth`, and
+    recurse where the rules in `workspace_apps` allow."""
+    try:
+        names = os.listdir(dir_path)
+    except OSError:
+        return  # unreadable/racing dir: skip, never fail the listing
+    for name in sorted(names):
+        if name.startswith(".") or name in PRUNE_DIR_NAMES or is_leaf_dir(name):
+            continue
+        path = os.path.join(dir_path, name)
+        try:
+            if not os.path.isdir(path):
+                continue
+            entry_html = app_entry(path)
+        except OSError:
+            # Unreadable or racing: SKIPPED, not listed as an entry-less card.
+            # Resolving the entry inside this guard is what makes that
+            # distinction — see `app_dict`.
+            continue
+        # The first segment of the path below the root, which for a depth-1
+        # folder is the folder itself.
+        tag = os.path.relpath(path, root).replace(os.sep, "/").split("/")[0]
+        if depth >= MAX_APP_DEPTH:
+            # An explicit index.html, nothing else, and no descent past here.
+            if entry_html and os.path.basename(entry_html).lower() == "index.html":
+                apps.append(app_dict(path, name, tag, entry_html))
+            continue
+        apps.append(app_dict(path, name, tag, entry_html))
+        if depth == 1 or entry_html is None:
+            _walk_apps(path, root, depth + 1, apps)
 
 
 def entry_title(entry_html: str) -> str | None:

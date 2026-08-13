@@ -86,7 +86,7 @@ def api_apps():
     registry = linked_apps.linked_apps()
     taken = {a["name"] for a in registry}
     workspace = [
-        a for a in app_listing.two_level_apps(fused_dir())
+        a for a in app_listing.workspace_apps(fused_dir())
         if not (a["tag"] == linked_apps.LINKED_TAG and a["name"] in taken)
     ]
     apps = workspace + registry

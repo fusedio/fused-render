@@ -26,6 +26,22 @@ def _app(tag_dir, name, entry="index.html", body="<html><body>hi</body></html>")
 # ------------------------------------------------------------------- the walk
 
 
+def _names(root):
+    return [a["name"] for a in app_listing.workspace_apps(root)]
+
+
+def _one(root, name):
+    """The single listing entry called `name`.
+
+    The walk lists CONTAINERS too — a page-less folder at depth 1 or 2 is still
+    an app card (an entry-less one), so `local/` itself is in the listing beside
+    the app inside it. These tests are about one folder's reported facts, so
+    they pick it out by name rather than asserting the whole listing.
+    """
+    (app,) = [a for a in app_listing.workspace_apps(root) if a["name"] == name]
+    return app
+
+
 def test_a_loose_file_in_a_tag_folder_is_not_an_app(tmp_path):
     """A workspace is a folder a user drops things into, so a stray file lands
     beside the app folders sooner or later (`notes.txt` in `local/`). Only
@@ -36,7 +52,9 @@ def test_a_loose_file_in_a_tag_folder_is_not_an_app(tmp_path):
     (tag / "notes.txt").write_text("scratch", encoding="utf-8")
     (tag / "index.html").write_text("<html></html>", encoding="utf-8")
 
-    assert [a["name"] for a in app_listing.two_level_apps(tmp_path)] == ["real"]
+    # `local` itself is an entry-less card (a page-less folder at depth 1 is
+    # still listed); `notes.txt` and `index.html` are files, so neither is.
+    assert _names(tmp_path) == ["local", "real"]
 
 
 def test_a_loose_file_at_the_top_level_is_not_a_tag(tmp_path):
@@ -45,7 +63,133 @@ def test_a_loose_file_at_the_top_level_is_not_a_tag(tmp_path):
     _app(tmp_path / "local", "real")
     (tmp_path / "README.md").write_text("hi", encoding="utf-8")
 
-    assert [a["tag"] for a in app_listing.two_level_apps(tmp_path)] == ["local"]
+    # `local` (depth 1) is its own tag; the app inside it files under `local`
+    # too — the tag is the first path segment at every depth.
+    assert [(a["tag"], a["name"]) for a in app_listing.workspace_apps(tmp_path)] == [
+        ("local", "local"), ("local", "real"),
+    ]
+
+
+# ------------------------------------------------------------- the depth bound
+
+
+def test_a_folder_dropped_straight_into_the_workspace_is_an_app(tmp_path):
+    """Depth 1 lists. This is the case the two-level walk could not see at all:
+    a user saves `~/Documents/Fused/sine/sine.html` and the apps page stayed
+    empty, because only `<workspace>/<tag>/<name>` counted."""
+    _app(tmp_path, "sine", entry="sine.html")
+
+    (app,) = app_listing.workspace_apps(tmp_path)
+    assert app["name"] == "sine"
+    assert app["entry"] == os.path.abspath(str(tmp_path / "sine" / "sine.html"))
+    # Its own folder IS the top-level segment, so it is its own tag. Not "":
+    # an empty tag adds a nameless chip to the page's Repo facet and a `?tag=`
+    # that filters on nothing.
+    assert app["tag"] == "sine"
+
+
+def test_a_third_level_folder_with_an_index_html_is_an_app(tmp_path):
+    """Depth 3 lists — but only on an explicit `index.html` (see the next two
+    tests). The tag is still the FIRST path segment, so a third-level app files
+    under the same Repo chip as its second-level neighbours."""
+    _app(tmp_path / "showcase" / "sub", "bar")
+
+    apps = {a["name"]: a for a in app_listing.workspace_apps(tmp_path)}
+    assert set(apps) == {"showcase", "sub", "bar"}
+    assert apps["bar"]["tag"] == "showcase"
+    assert apps["bar"]["entry"].endswith(os.path.join("sub", "bar", "index.html"))
+
+
+def test_a_third_level_folder_with_another_html_is_not_an_app(tmp_path):
+    """The permissive "any top-level html" rule stops before depth 3. A code
+    repo checked out into the workspace is full of third-level folders holding
+    some .html file; only `index.html` is an author saying "this is a page"."""
+    _app(tmp_path / "repo" / "docs", "guide", entry="other.html")
+
+    assert _names(tmp_path) == ["repo", "docs"]
+
+
+def test_a_third_level_folder_with_no_html_is_not_an_app(tmp_path):
+    """And a page-less third-level folder is nothing at all — where the same
+    folder one level up would still be an entry-less card."""
+    _app(tmp_path / "repo" / "src", "utils", entry=None)
+
+    assert _names(tmp_path) == ["repo", "src"]
+
+
+def test_the_walk_stops_at_the_third_level(tmp_path):
+    """Depth 4 is never looked at, index.html or not. The bound is what keeps a
+    listing that runs on every page load from being a full recursive crawl."""
+    _app(tmp_path / "repo" / "a" / "b", "deep")
+
+    assert _names(tmp_path) == ["repo", "a"]
+
+
+def test_an_apps_own_subfolder_is_not_a_second_app(tmp_path):
+    """An app's subfolders are its assets and its extra pages, so the walk does
+    not descend into a folder that already has a page. Without this, an app with
+    a `sub/index.html` would list twice — once as itself and once as its own
+    subfolder — and a multi-page app would scatter its pages across the grid."""
+    app_dir = _app(tmp_path / "showcase", "foo")
+    _app(app_dir, "sub")
+    (app_dir / "assets").mkdir()
+
+    assert _names(tmp_path) == ["showcase", "foo"]
+
+
+def test_a_second_level_folder_with_any_html_still_lists(tmp_path):
+    """Regression guard: depth 2 was the WHOLE of the old listing, and its rule
+    is unchanged — a page under any name is an app's entry there."""
+    _app(tmp_path / "local", "board", entry="dashboard.html")
+
+    app = _one(tmp_path, "board")
+    assert app["entry"].endswith("dashboard.html")
+
+
+def test_a_second_level_folder_with_no_html_still_lists_entry_less(tmp_path):
+    """The other half of the guard: a page-less second-level folder is still a
+    card (one that opens the folder), exactly as before. Anything stricter would
+    silently retire cards people already have."""
+    _app(tmp_path / "local", "bare", entry=None)
+
+    app = _one(tmp_path, "bare")
+    assert app["entry"] is None and app["entry_html"] is None
+    assert app["updated_at"] is not None
+
+
+def test_vendor_and_package_dirs_contribute_nothing(tmp_path):
+    """Pruned by name (the index's shared vendor floor) and by the leaf rule
+    (macOS packages), neither listed nor descended. A workspace holds checked-out
+    repos, and `node_modules` is neither an app nor 40k files worth walking."""
+    _app(tmp_path / "repo" / "node_modules", "pkg")
+    _app(tmp_path / "repo" / "Bundle.app", "Contents")
+    _app(tmp_path / "repo", "real")
+
+    assert _names(tmp_path) == ["repo", "real"]
+
+
+def test_an_unreadable_folder_does_not_kill_the_listing(tmp_path, monkeypatch):
+    """A folder the walk cannot list costs its own subtree and nothing else.
+
+    Monkeypatched rather than chmod'ed so it holds for every uid — mode 0 does
+    not stop root, the vacuous-test trap `test_apps_api` documents.
+    """
+    _app(tmp_path / "local", "ok")
+    (tmp_path / "local" / "locked").mkdir()
+    _app(tmp_path / "local" / "locked", "hidden-by-the-error")
+
+    real = os.listdir
+
+    def refuse(path, *a, **kw):
+        if os.path.basename(str(path)) == "locked":
+            raise PermissionError(13, "Permission denied", str(path))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "listdir", refuse)
+
+    # `locked` itself is skipped (its entry could not be resolved) along with
+    # everything below it; every sibling still lists.
+    assert _names(tmp_path) == ["local", "ok"]
 
 
 # ------------------------------------------------------------------ the title
@@ -78,8 +222,7 @@ def test_a_directory_named_index_html_is_not_an_entry(tmp_path):
     app_dir = _app(tmp_path / "local", "odd", entry=None)
     (app_dir / "index.html").mkdir()
 
-    (listed,) = app_listing.two_level_apps(tmp_path)
-    assert listed["name"] == "odd"
+    listed = _one(tmp_path, "odd")
     assert listed["entry"] is None and listed["entry_html"] is None
     assert listed["title"] is None
 
@@ -165,7 +308,7 @@ def test_a_root_preview_png_is_reported_as_the_apps_thumbnail(tmp_path):
     d = _app(tmp_path / "local", "shot")
     (d / "preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "shot")
     assert app["preview_image"] == os.path.abspath(str(d / "preview.png"))
 
 
@@ -174,7 +317,7 @@ def test_no_preview_png_reports_none_rather_than_a_missing_path(tmp_path):
     absence has to be visible as an absence."""
     _app(tmp_path / "local", "plain")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "plain")
     assert app["preview_image"] is None
 
 
@@ -184,7 +327,7 @@ def test_a_directory_named_preview_png_is_not_a_preview(tmp_path):
     d = _app(tmp_path / "local", "trap")
     (d / "preview.png").mkdir()
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "trap")
     assert app["preview_image"] is None
 
 
@@ -195,7 +338,7 @@ def test_only_that_one_name_is_a_preview(tmp_path):
     (d / "preview.jpg").write_bytes(b"\xff\xd8\xff")
     (d / "screenshot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "other")
     assert app["preview_image"] is None
 
 
@@ -208,7 +351,7 @@ def test_the_name_match_is_case_sensitive_on_every_filesystem(tmp_path):
     d = _app(tmp_path / "local", "shouty")
     (d / "Preview.png").write_bytes(b"\x89PNG\r\n\x1a\n")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "shouty")
     assert app["preview_image"] is None
 
 
@@ -219,7 +362,7 @@ def test_an_empty_preview_file_is_no_preview(tmp_path):
     d = _app(tmp_path / "local", "torn")
     (d / "preview.png").write_bytes(b"")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "torn")
     assert app["preview_image"] is None
 
 
@@ -234,7 +377,7 @@ def test_metadata_category_is_reported(tmp_path):
         '{"schema": 1, "name": "Mapped", "category": "geospatial"}', encoding="utf-8"
     )
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "mapped")
     assert app["category"] == "geospatial"
 
 
@@ -243,7 +386,7 @@ def test_no_metadata_json_means_no_category(tmp_path):
     the UI's "All" chip, never in a named category."""
     _app(tmp_path / "local", "plain")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "plain")
     assert app["category"] is None
 
 
@@ -263,5 +406,5 @@ def test_malformed_or_missing_category_degrades_to_none(tmp_path, body):
     d = _app(tmp_path / "local", "odd")
     (d / "metadata.json").write_text(body, encoding="utf-8")
 
-    (app,) = app_listing.two_level_apps(tmp_path)
+    app = _one(tmp_path, "odd")
     assert app["category"] is None
