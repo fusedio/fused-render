@@ -6314,6 +6314,14 @@ world from one the user typed.
     displays, so the order matches what the reader is reading. Ordered by
     `list_entries`, not the page: the page filters the one list into its two
     sections and must not re-sort or reverse what it is handed.
+  - **SCH-11j** **The page's URL is served by `routers/shell.py`**, like every
+    other shell route. Omitting it is invisible to whoever built the page — in-app
+    navigation is a client-side pushState that never asks the server — and 404s for
+    anyone who refreshes or bookmarks. `/scheduled` shipped that way and was found
+    by hand. `test_shell_routes.py` now DERIVES the list from the shell's own route
+    table (the `pathname === "…"` comparisons in App.tsx) and requests each for
+    real, so the next page added without a server entry fails a test rather than
+    waiting for someone to press ⌘R.
   - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
     schedule in one place, with cancel and the outcomes, is the part that has
     nowhere else to live; it points at the composer for the scheduling itself.
