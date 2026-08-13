@@ -8723,9 +8723,10 @@ async function pollScheduledRuns() {
     // param. Without it the stream was simply lost, and the next frame's baseline
     // then wrote the same run off as predating it.
     fused.params.set("run", entry.run_id, { history: "replace" });
-    // appendIfDone: this frame has never had the turn on screen, so a run that
-    // finished between polls must be appended rather than matched.
-    await resumeRun(entry.run_id, { appendIfDone: true });
+    // neverShown: this frame has never had the turn on screen, so nothing already
+    // in the log is this run's line — append it, and never repair over a turn that
+    // merely says the same words.
+    await resumeRun(entry.run_id, { neverShown: true });
     return;  // one at a time; the next tick picks up anything behind it
   }
 }
@@ -8733,19 +8734,28 @@ async function pollScheduledRuns() {
 pollScheduledRuns();
 setInterval(pollScheduledRuns, SCHEDULE_POLL_MS);
 
-// `opts.appendIfDone` — this frame has NEVER had this run's turn on screen, so a
-// finished run must be APPENDED rather than matched against the last bubble.
+// `opts.neverShown` — this frame has never had THIS run's turn on screen, which is
+// something only the caller can know. It does one thing, and doing it in one place
+// is why it is safe: it turns OFF the `matches` heuristic below.
 //
 // The default (false) is the reload case this function was written for, where the
-// restored transcript may already contain the turn: there, appending would
-// duplicate it, which is why the done path below repairs only what it can prove
-// is missing (an empty log, or a last user bubble that IS this run's message).
-// A scheduled send is the opposite situation — it fired after this frame rendered,
-// so the turn cannot be on screen and the caller knows it. Without this, a
-// scheduled turn that finished between two 15s polls fell through both branches
-// and appeared nowhere at all, while the composer's note promised otherwise.
+// restored transcript may already contain the turn. There, matching the last user
+// bubble is how the repair avoids duplicating it, and appending blindly would show
+// the turn twice.
+//
+// A scheduled send is the opposite situation: it fired after this frame rendered,
+// so its turn cannot be on screen. Two bugs came of getting this wrong, and the
+// second is why the flag suppresses matching rather than just adding an append
+// branch. (1) Without any flag, a finished scheduled turn fell through every branch
+// — a non-empty log and no match — and appeared nowhere, while the composer's note
+// promised it would. (2) With an append branch but `matches` still preferred, a
+// prompt sent twice ("run the tests" now, the same words scheduled for later) made
+// the earlier identical bubble match: the repair then stripped everything after it,
+// DELETING that turn's real reply, and hung the scheduled run's answer there. The
+// same coincidence hits the live path, which strips partial rows on a match — so
+// the flag has to kill matching for both, not just for `done`.
 async function resumeRun(run_id, opts) {
-  const appendIfDone = !!(opts && opts.appendIfDone);
+  const neverShown = !!(opts && opts.neverShown);
   if (sending) return;
   sending = true;
   try {
@@ -8766,7 +8776,9 @@ async function resumeRun(run_id, opts) {
     // trims another turn's assistant rows. Worst case for refusing: a duplicated
     // marker row, which is harmless by comparison. `isMarkerOnly` rather than a
     // literal, so a marker added to stripBlocks cannot leave this check behind.
-    const matches = !!lastUser && !isMarkerOnly(probeMsg)
+    // `neverShown` first: with it, identical text is a COINCIDENCE (the same
+    // prompt sent twice), never this run's own line, so no match is legitimate.
+    const matches = !neverShown && !!lastUser && !isMarkerOnly(probeMsg)
                     && lastUser.textContent === probeMsg;
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
@@ -8777,7 +8789,7 @@ async function resumeRun(run_id, opts) {
       if (probe.error) {
         if (matches || !users.length) {
           addError(probe.error);
-        } else if (appendIfDone) {
+        } else if (neverShown) {
           // The turn is not on screen and never was, so the failure needs its own
           // user line to hang under — otherwise the error reads as belonging to
           // whatever the reader last said.
@@ -8795,8 +8807,8 @@ async function resumeRun(run_id, opts) {
         if (probe.text || (probe.segments || []).length) {
           attachCodeCopy(addAssistantTurn(probe.text, probe.segments));
         }
-      } else if ((!users.length || appendIfDone) && probeMsg) {
-        // Appended, not matched: either the log is empty, or the caller has told
+      } else if ((!users.length || neverShown) && probeMsg) {
+        // Appended, never matched: either the log is empty, or the caller has told
         // us this run's turn was never on screen (a scheduled send that fired and
         // finished between polls). Both render the whole turn — user line plus the
         // assistant rows and their tool timeline from the poll payload.

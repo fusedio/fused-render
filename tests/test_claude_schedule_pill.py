@@ -226,11 +226,11 @@ def test_a_chat_left_open_picks_up_its_own_scheduled_send(code):
 
     It goes through `resumeRun`, which is already written for a run this frame did
     not start — live (stream the rest) or already finished (append it, see
-    appendIfDone) — rather than a second attach path beside it."""
+    neverShown) — rather than a second attach path beside it."""
     assert "function pollScheduledRuns(" in code
     body = code[code.index("async function pollScheduledRuns("):]
     body = body[:body.index("\npollScheduledRuns();")]
-    assert "resumeRun(entry.run_id, { appendIfDone: true })" in body
+    assert "resumeRun(entry.run_id, { neverShown: true })" in body
     assert 'e.target === FILE' in body or "entry.target === FILE" in body, \
         "only this template's own target"
     # never over a live turn — resumeRun would fight pollLoop for the frame
@@ -250,11 +250,11 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
     restored transcript may already hold the turn. A scheduled send is the opposite:
     it fired after this frame rendered, so the turn cannot be on screen and the
     caller knows it. Hence an explicit opt-in rather than loosening the default."""
-    assert "appendIfDone" in code
-    assert "{ appendIfDone: true }" in code
+    assert "neverShown" in code
+    assert "{ neverShown: true }" in code
     done = code[code.index("if (probe.done) {"):]
     done = done[:done.index("scrollBottom();")]
-    assert "(!users.length || appendIfDone) && probeMsg" in done, \
+    assert "(!users.length || neverShown) && probeMsg" in done, \
         "a finished run must APPEND when the caller says the turn was never shown"
     # a failed turn needs its own user line too, or the error reads as belonging to
     # whatever the reader last said
@@ -262,6 +262,30 @@ def test_a_scheduled_turn_that_FINISHED_between_polls_is_appended(code):
 
     # and the reload caller keeps the conservative default — passing no opts
     assert "await resumeRun(run_id);" in code
+
+
+def test_never_shown_kills_matching_rather_than_only_adding_a_branch(code):
+    """The second bug in this area, and the reason the flag is not just an extra
+    append branch: with `matches` still preferred, the SAME PROMPT SENT TWICE broke
+    it. Say "run the tests" now, then schedule those same words for later — the
+    earlier identical bubble matched, and the repair stripped everything after it,
+    DELETING that turn's real reply to hang the scheduled answer there.
+
+    The same coincidence hits the live path, which strips partial rows on a match,
+    so the flag has to suppress matching for both — which it does by being folded
+    into `matches` itself, in one place, rather than checked per branch."""
+    fn = code[code.index("async function resumeRun("):]
+    fn = fn[:fn.index("\nfunction submitChat()")]
+    assert "const matches = !neverShown &&" in fn, \
+        "matching must be off entirely when the turn was never on screen"
+    # every destructive strip is reached only through `matches`, so gating it there
+    # covers the live path as well as the done path
+    lines = fn.split("\n")
+    strips = [i for i, l in enumerate(lines) if "lastTurn.nextElementSibling" in l]
+    assert strips, "the strip sites moved — re-check what guards them"
+    for i in strips:
+        guard = next(lines[j] for j in range(i, i - 6, -1) if "if (" in lines[j])
+        assert "if (matches)" in guard, f"unguarded strip near: {lines[i].strip()}"
 
 
 def test_the_baseline_is_taken_at_load_not_one_interval_later(code):

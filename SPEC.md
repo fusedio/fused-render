@@ -6330,7 +6330,7 @@ world from one the user typed.
     confirmation note promises the turn will appear here, which is true only
     because this exists; the two move together and a test says so.
   - **SCH-11g** **A finished scheduled turn is APPENDED, which needed an opt-in**
-    (`resumeRun(run_id, {appendIfDone: true})`). `resumeRun`'s done path repairs
+    (`resumeRun(run_id, {neverShown: true})`). `resumeRun`'s done path repairs
     only what it can prove is missing — an empty log, or a last user bubble that IS
     this run's message — because on the reload path it was written for, the restored
     transcript may already hold the turn and appending would duplicate it. A
@@ -6340,7 +6340,14 @@ world from one the user typed.
     appeared nowhere — which is most of them, since a short turn beats a 15s poll,
     so the first cut of SCH-11f fixed only the live case while the note promised
     otherwise. A failed run appended this way gets its own user line first, or the
-    error reads as belonging to whatever the reader last said.
+    error reads as belonging to whatever the reader last said. **The flag suppresses
+    `matches` outright rather than adding a branch beside it**, which is the second
+    bug in this area: with matching still preferred, the same prompt sent twice ("run
+    the tests" now, those words scheduled for later) let the earlier identical bubble
+    match, and the repair stripped everything after it — DELETING that turn's real
+    reply to hang the scheduled answer there. The live path strips partial rows on a
+    match too, so the suppression is folded into `matches` itself, in one place,
+    covering both.
   - **SCH-11h** **A run is written off only once it is really handled.** Two sets,
     not one: `SCHEDULE_ATTACHED` blocks a second attach, `SCHEDULE_NOTED` blocks a
     repeated mention of a run that belongs to another session — which is
