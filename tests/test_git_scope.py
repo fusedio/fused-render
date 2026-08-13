@@ -274,6 +274,36 @@ def test_the_selection_is_not_a_param(source):
     assert "_fusedParamBoundary" not in source
 
 
+def test_the_commit_draft_replaces_and_never_pushes(source):
+    # `msg` is the commit DRAFT — written on every keystroke and on every AI
+    # chunk so the text survives a repaint — not a place anyone navigated to. A
+    # keystroke IS a gesture, so without this the first character typed spends
+    # the visit's one push (PR-3) on an entry holding half a word.
+    #
+    # It is also the key `structural()` above deliberately omits, and that pair
+    # is what makes the entry unhonourable: Back across it clears the param
+    # while `draw` short-circuits, leaving the typed text on screen with the URL
+    # disagreeing. A key outside the repaint comparison must never push.
+    #
+    # Asserted on the FUNNEL, not on the three call sites: `setParams` is the
+    # single writer, so a fourth `msg` writer cannot forget the rule.
+    assert 'const DRAFT_KEYS = new Set(["msg"]);' in source
+    fn = source[source.index("function setParams("):]
+    fn = fn[:fn.index("\n}")]
+    assert 'DRAFT_KEYS.has(key) ? { ...opts, history: "replace" } : opts' in fn
+
+
+def test_the_post_await_ask_clear_replaces(source):
+    # PT-17's hardest shape: the gate is read where the write LANDS, and this one
+    # lands behind an `await`, by which time the click that started the operation
+    # has opened it. Usually a no-op — the confirmation clears `ask` first — but
+    # `ask` is in the URL precisely so a pending question survives a refresh, and
+    # a page reloaded with `?ask=…` arrives with the question live and the entry
+    # pristine. Any other action clicked from there clears it for real.
+    body = source[source.index("async function run(key, args, then, context)"):]
+    assert 'setParams({ ask: null }, { history: "replace" });' in body
+
+
 def test_the_commit_reaches_the_shell_through_the_ancestor_global(source):
     # Not a param, not a postMessage: the runtime's ancestor-window hop, the same
     # idiom `_fusedFsChanged` uses (D3/D4). Guarded, because a page opened outside
