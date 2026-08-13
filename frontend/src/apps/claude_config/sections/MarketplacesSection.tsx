@@ -17,6 +17,7 @@ import {
   CardActions,
   CardTitle,
   DisclosureButton,
+  Empty,
   Icon,
   ListRow,
   Pill,
@@ -143,6 +144,18 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading marketplaces" />}
+      {data?.marketplaces.length === 0 && (
+        <Empty
+          action={
+            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+              <Icon name="plus" />
+              Add a marketplace
+            </button>
+          }
+        >
+          No marketplaces yet. Add one to install plugins from it.
+        </Empty>
+      )}
       {/* No chevron: a marketplace IS its name and its source, and both are on
           the line. There is nothing an expanded panel could add. */}
       {data?.marketplaces.map((m) => {

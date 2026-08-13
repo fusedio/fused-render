@@ -454,14 +454,39 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               onPage={setPage}
             />
           )}
+          {/* Each empty state names what is missing and offers the control
+              that fixes it — which on this tab is usually the other list. */}
           {(tab === "installed" || avail) && rowCount === 0 && (
-            <Empty>
+            <Empty
+              action={
+                tab === "installed" && data.plugins.length === 0 ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => pick("discover")}
+                  >
+                    Browse Discover
+                  </button>
+                ) : query || marketplace !== ALL ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      search("");
+                      filterTo(ALL);
+                    }}
+                  >
+                    Clear the filter
+                  </button>
+                ) : null
+              }
+            >
               {tab === "installed"
                 ? data.plugins.length === 0
-                  ? "No plugins enabled or installed."
+                  ? "No plugins installed. Discover shows what your marketplaces offer."
                   : "No plugin matches this filter."
                 : (avail?.plugins.length ?? 0) === 0
-                  ? "No marketplace catalog to read. Add one on the Marketplaces tab."
+                  ? "No marketplace catalog to read. Add a marketplace and its plugins show up here."
                   : "Nothing left to install here."}
             </Empty>
           )}

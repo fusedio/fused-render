@@ -18,6 +18,7 @@ import {
   CardTitle,
   DisclosureButton,
   Empty,
+  Icon,
   ListRow,
   Pill,
   SKELETON_ROWS,
@@ -200,7 +201,18 @@ export default function McpSection() {
           happens, so it reads as an empty state rather than a banner. */}
       {data && !data.ok && <Empty>{data.error || "Could not list MCP servers."}</Empty>}
       {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading MCP servers" />}
-      {data?.ok && servers.length === 0 && <Empty>No MCP servers configured.</Empty>}
+      {data?.ok && servers.length === 0 && (
+        <Empty
+          action={
+            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+              <Icon name="plus" />
+              Add a server
+            </button>
+          }
+        >
+          No MCP servers configured. Add one to connect Claude to an external tool.
+        </Empty>
+      )}
       {data?.ok &&
         GROUPS.map(({ kind, heading }) => {
           const list = servers.filter((s) => s.kind === kind);

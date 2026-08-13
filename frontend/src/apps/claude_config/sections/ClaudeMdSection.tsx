@@ -184,7 +184,6 @@ export default function ClaudeMdSection({
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading CLAUDE.md files" />;
-  if (!data.files.length) return <Empty>No CLAUDE.md files found.</Empty>;
 
   const emptyCount = data.files.filter((f) => f.empty).length;
 
@@ -211,6 +210,21 @@ export default function ClaudeMdSection({
         onRefresh={reload}
         refreshLabel="Rescan"
       />
+      {/* The toolbar renders even with nothing found, because the way out of
+          this particular empty state IS the rescan in it — Spotlight can be
+          mid-index, and a page with no controls at all leaves you nowhere. */}
+      {!data.files.length && (
+        <Empty
+          action={
+            <button type="button" className="btn" onClick={reload}>
+              <Icon name="refresh" />
+              Rescan
+            </button>
+          }
+        >
+          No CLAUDE.md files found on this machine, via {data.engine}.
+        </Empty>
+      )}
       {/* Compact grid, one small card per file — name + pills, its own path
           line, a few clamped lines of content (server-supplied snippet), and
           icon-only actions in the footer. The explorer homepage's bookmark
