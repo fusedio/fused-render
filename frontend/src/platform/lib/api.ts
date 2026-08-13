@@ -1815,9 +1815,12 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 }
 
 // -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
-// An app folder two levels under the workspace: <fused_dir>/<tag>/<name>/.
-// `tag` is just the top-level folder's name — any folder qualifies, there is
-// no fixed tag set. `entry_html` is the app's "/" route entry file (absolute
+// An app folder one to three levels under the workspace, found by a bounded
+// recursive walk (the rules live in app_listing.workspace_apps: a page at depth
+// 1, anything at depth 2, an index.html at depth 3, nothing deeper).
+// `tag` is the FIRST path segment — any folder qualifies, there is no fixed tag
+// set, and a third-level app carries the same tag as its second-level
+// neighbours. `entry_html` is the app's "/" route entry file (absolute
 // path), null when the folder has no single resolvable .html entry; `title`
 // comes from that file's <title>, null falls back to the folder name in the
 // UI.

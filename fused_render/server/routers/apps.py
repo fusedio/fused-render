@@ -1,15 +1,19 @@
 """The Home view's apps backend: list the app folders in the Fused workspace
 and scaffold new ones.
 
-Apps live two levels under the workspace (``fused_dir()``, ~/Documents/Fused):
-``<workspace>/<tag>/<name>/``. A "tag" is simply any non-hidden top-level
-directory in the workspace — there is no registry or whitelist, so a new tag
-is just a new folder, discovered on the next listing. An "app" is any
-non-hidden directory directly inside a tag dir. Its entry is its
+Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
+~/Documents/Fused), found by a bounded recursive walk whose per-level rules are
+written down in ``app_listing.workspace_apps``: at depth 1 a folder with a page,
+at depth 2 any folder at all (the old two-level rule, kept), at depth 3 a folder
+with an ``index.html``, and nothing deeper. A "tag" is the FIRST path segment —
+there is no registry or whitelist, so a new tag is just a new folder, discovered
+on the next listing, and a third-level app files under the same tag as its
+second-level neighbours. An app's entry is its
 ``index.html``, else the first non-hidden direct-child ``.html`` in name order
 — the shared entry rule (D269), so the card, the preview pane and the templates
-all resolve one folder to one page. A folder with no top-level ``.html`` still
-lists, but opens as a directory instead of a view (``entry_html: null``).
+all resolve one folder to one page. A depth-2 folder with no top-level ``.html``
+still lists, but opens as a directory instead of a view (``entry_html: null``);
+at depth 1 and 3 a page is what makes the folder an app in the first place.
 
 Alongside the workspace walk, the listing merges in *linked apps*: folders
 anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
