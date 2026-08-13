@@ -843,6 +843,22 @@
       const opts = doc ? doc.querySelectorAll("#sheet option") : null;
       return opts && opts[idx] ? opts[idx].value : null;
     };
+    // A reveal that lands on the page/sheet the view is ALREADY showing must
+    // write nothing. Revealing an on-screen comment is a scroll, not a
+    // navigation — but runtime.js spends a history entry on the first param
+    // write of a pristine entry (D8), and an absent `offset` MEANS page 0 while
+    // an absent `sheet` MEANS the first one, so the naive write turns "flash the
+    // pin I can already see" into "and now Back does nothing visible". This is
+    // PT-15's guard: only write when the URL does not already mean the value.
+    // (runtime.js drops a literally-identical write on its own; what it cannot
+    // know is which absence means which default, and the defaults are the whole
+    // problem here — clicking a rail card for row 3 of an unparameterised table
+    // is exactly the common case.)
+    const revealParam = (key, value, whenAbsent) => {
+      const cur = fused.params.get(key);
+      if ((cur === undefined ? whenAbsent : cur) === value) return;
+      fused.params.set(key, value);
+    };
     const ID_RESOLVERS = [
       { // PDF page canvas past the render cap: nameable but not navigable.
         re: /^__fr_page_(\d+)$/,
@@ -859,15 +875,17 @@
         reveal(m, doc) {
           // Offset first, sheet second — mirrors the sheet selector's own
           // ordering (each set fires onChange; the last decides the load).
-          fused.params.set("offset", pageOf(parseInt(m[2], 10)));
+          revealParam("offset", pageOf(parseInt(m[2], 10)), "0");
           const name = sheetName(doc, parseInt(m[1], 10));
-          if (name) fused.params.set("sheet", name);
+          // Absent `sheet` means the view's first option — the same list this
+          // name was just read out of, so index 0 is that default by name.
+          if (name) revealParam("sheet", name, sheetName(doc, 0));
         },
       },
       { // table cell: absolute row.
         re: /^__fr_r(\d+)_c(\d+)$/,
         label: (m) => "row " + (parseInt(m[1], 10) + 1).toLocaleString(),
-        reveal: (m) => fused.params.set("offset", pageOf(parseInt(m[1], 10))),
+        reveal: (m) => revealParam("offset", pageOf(parseInt(m[1], 10)), "0"),
       },
     ];
     function resolverMatch(anchorId) {

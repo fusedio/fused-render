@@ -559,6 +559,35 @@ const state = {
   md: null,           // last markdown conversion {spec, markdown, chars, pages}
 };
 
+// ---------- param writes that are not navigation steps (PT-15) -------------
+// Every writer below normalises a piece of THIS view's state into the URL, and
+// several of them are reached from boot: setMode/insSetTab straight out of
+// boot(), insOpen through the `?inspect=1` reopen, openDoc through bootDoc.
+// runtime.js spends a history ENTRY on the first param write of a pristine
+// entry, so a boot-time write buys the user a Back press that undoes nothing —
+// and because boot's writes sit behind `await py(...)`, the runtime's own
+// no-gesture gate (D268) does NOT reliably cover them: a click anywhere while
+// the engine is warming opens that gate before the seed lands.
+//
+// The guard is PT-15's, verbatim in spirit: write only when the URL does not
+// already MEAN the new value. An ABSENT param and its default are the same
+// answer, so `?mode=view` added over an absent `mode` changes the URL string
+// while changing nothing the user can see — the worst possible thing to spend
+// the visit's one entry on. (runtime.js already drops a write whose string is
+// LITERALLY unchanged; what it cannot know is which absence means which
+// default. That is template knowledge, so it is stated here.)
+//
+// Rejected: routing these through a "boot mode" flag the writers consult.
+// setMode and insOpen are each reached from four places and a flag is a fifth
+// thing every new caller must remember; the value comparison needs no caller
+// to remember anything and is right for a mid-session no-op too (pressing
+// "100%" at 100%, closing an already-closed drawer).
+function setParam(key, value, whenAbsent) {
+  const cur = fused.params.get(key);
+  if ((cur === undefined ? whenAbsent : cur) === value) return;
+  fused.params.set(key, value);
+}
+
 // ---------- plumbing ----------
 // Backend calls that cannot change which document is open or what is in it.
 // Listing the harmless reads rather than the mutations is deliberate: a mutation
@@ -1148,7 +1177,11 @@ async function openDoc(path) {
   $("banner").classList.toggle("hidden", info.has_text);
   if (!info.has_text) $("banner").textContent =
     "This PDF has no text layer (likely scanned) — page operations work, text editing won't find anything to edit.";
-  fused.params.set("doc", info.path);
+  // The URL already MEANS this document when it arrived as `_file` (how the
+  // shell opens a PDF) or as `doc` — boot re-states it from inside bootDoc,
+  // after an awaited add-to-library round trip, and that restatement must not
+  // be the visit's history entry.
+  setParam("doc", info.path, fused.params.get("_file") || "");
   updateUndoUi();
   renderDocList();
   await renderAll();
@@ -1161,7 +1194,8 @@ function clearOpenDoc() {
   state.doc = ""; state.pdf?.destroy(); state.pdf = null;
   $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
   $("docName").textContent = ""; $("docPages").textContent = "";
-  fused.params.set("doc", "");
+  // Absent `doc` already means "nothing open" — don't add `doc=` to say it.
+  setParam("doc", "", "");
   renderDocList();
 }
 
@@ -1529,7 +1563,10 @@ async function act(name, arg) {
 
 function setZoom(z) {
   state.zoom = Math.min(300, Math.max(40, z));
-  fused.params.set("zoom", String(state.zoom));
+  // The clamp makes no-op zooms routine (＋ at 300 %, − at 40 %, "100 %" on a
+  // URL with no `zoom` at all), and each of those would otherwise be the one
+  // history entry this visit gets. 100 is the boot default, so absent === 100.
+  setParam("zoom", String(state.zoom), "100");
   return renderAll();
 }
 
@@ -1790,7 +1827,10 @@ const INS_TABS = ["overview", "pages", "fonts", "security", "markdown"];
 
 function insOpen(on) {
   document.body.classList.toggle("inspect-on", on);
-  fused.params.set("inspect", on ? "1" : "0");
+  // Absent means closed (boot only opens on an explicit `inspect=1`), so the
+  // reopen path — `act("inspect")` behind an awaited scan, well past any gate
+  // a gesture could still be holding shut — restates `1` over a `1` and stops.
+  setParam("inspect", on ? "1" : "0", "0");
 }
 
 function insToggle() {
@@ -1801,7 +1841,9 @@ function insToggle() {
 function insSetTab(name) {
   state.insTab = name;
   document.querySelectorAll(".ins-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  fused.params.set("itab", name);
+  // `state.insTab` starts at "overview", so that is what an absent `itab`
+  // means — and boot calls through here purely to re-apply the URL's own tab.
+  setParam("itab", name, INS_TABS[0]);
 }
 
 // Every request the drawer makes goes through here, which owns both things a
@@ -2137,7 +2179,11 @@ function setMode(mode) {
   document.body.classList.toggle("mode-view", mode === "view");
   document.body.classList.toggle("mode-edit", mode !== "view");
   document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
-  fused.params.set("mode", mode);
+  // boot() calls this unconditionally with `mode === "edit" ? "edit" : "view"`
+  // — on the overwhelmingly common URL (no `mode` at all) that is a write of
+  // the default over its own absence: PT-15's case exactly, and it cost a Back
+  // press that put the view back where it already was.
+  setParam("mode", mode, "view");
   if (mode === "edit" && state.pdf) primeOverlays();
 }
 
