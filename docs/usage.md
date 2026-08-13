@@ -285,7 +285,7 @@ The binary is found on `PATH`; set `FUSED_RENDER_CLAUDE_BIN` to point at a
 specific binary per process. If the CLI isn't installed, calls reject with an
 `ai_unavailable` error saying what to install or set.
 `fused.ai` is local-only: exported/hosted pages can't use it (see
-[EXPORT.md](EXPORT.md)). A working example ships in `examples_seed/ai_demo/`.
+[EXPORT.md](EXPORT.md)).
 
 ## Export for hosted serving
 

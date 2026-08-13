@@ -228,7 +228,7 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     Returns the server and its thread (quit drains it — `should_exit` alone is
     fire-and-forget, and uvicorn never resets `started`, so the thread ending is
     the only observable "it has stopped serving")."""
-    # First-run onboarding (D81): create ~/Documents/Fused and seed it once.
+    # First-run onboarding (D81): create ~/Documents/Fused.
     start_dir = ensure_fused_dir()
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.

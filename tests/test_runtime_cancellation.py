@@ -9,8 +9,7 @@ computing and drawing them out of order. A superseded call's promise never settl
 benign AbortError the runtime swallows).
 
 These are string-contract checks over the shipped `static/runtime.js`; the end-to-end
-behaviour is exercised separately, but this guards the surface from silently regressing
-(and keeps the seeded sine example on the zero-config default).
+behaviour is exercised separately, but this guards the surface from silently regressing.
 """
 from pathlib import Path
 
@@ -18,12 +17,6 @@ import fused_render
 
 _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
-# Probe the file, not the dir: a stale empty fused_render/examples_seed/ left
-# behind by git must not shadow the repo-root copy (dev checkout).
-_seed_root = Path(fused_render.__file__).parent / "examples_seed"
-if not (_seed_root / "sine" / "sine.html").is_file():
-    _seed_root = Path(fused_render.__file__).parent.parent / "examples_seed"
-SINE = (_seed_root / "sine" / "sine.html").read_text(encoding="utf-8")
 
 
 def test_runtime_exposes_local_env_identity():
@@ -69,9 +62,3 @@ def test_runtime_swallows_own_signal_abort_error():
     # overlay (RH-3/D17) or spam the console.
     assert 'err.name === "AbortError"' in RUNTIME
     assert "event.preventDefault()" in RUNTIME
-
-
-def test_sine_example_relies_on_the_default():
-    # The canonical slider example uses the zero-config default (no opts arg).
-    assert 'fused.runPython("./sine.py", { n: "160", freq: String(freq) });' in SINE
-    assert "key:" not in SINE  # no explicit key/opts needed anymore

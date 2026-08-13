@@ -126,8 +126,8 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     install_no_window_policy()
     log_file = setup_logging()
-    # First-run onboarding (D81): create ~/Documents/Fused and seed it once. Runs
-    # regardless of --start-dir — seeding is about the Fused dir, not the start dir.
+    # First-run onboarding (D81): create ~/Documents/Fused. Runs regardless of
+    # --start-dir — onboarding is about the Fused dir, not the start dir.
     ensure_fused_dir()
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
