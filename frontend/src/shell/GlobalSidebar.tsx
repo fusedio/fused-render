@@ -236,7 +236,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
     ...(claudeConfigAvailable
-      ? [{ href: "/claude-config", label: "Config", icon: CLAUDE_CONFIG_ICON }]
+      ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
     ...(learnMountReady ? [{ href: "/learn", label: "App Basics", icon: <LearnIcon /> }] : []),
   ];
