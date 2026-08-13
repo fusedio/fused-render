@@ -58,9 +58,6 @@ def api_config(
         # Same deal for the builtin sessions mount (the Claude Sessions
         # sub-app): the sidebar's Sessions entry only renders when true.
         "sessions_mount_ready": shell_mounts.sessions_mount_ready(),
-        # And for the builtin community mount (the Community marketplace
-        # sub-app, docs/COMMUNITY_MARKETPLACE_SPEC.md).
-        "community_mount_ready": shell_mounts.community_mount_ready(),
         # The call-log store (calls.py). Same job as `mounts_root` above and
         # for a sharper reason: a call-log file is APPENDED TO by the act of
         # viewing it, so a page watching one reloads, re-reads, appends, and

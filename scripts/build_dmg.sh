@@ -848,24 +848,6 @@ if ! SESSIONS_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${SESSIONS_DEST}" 2>&1)"
 fi
 echo "    sessions.zip OK ($(echo "$SESSIONS_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
 
-# Same treatment for the Community marketplace content (repo core_apps/community/
-# → Contents/Resources/community.zip, mounted by ensure_builtin_mounts).
-echo "==> bundling community.zip"
-COMMUNITY_SRC="$REPO_ROOT/core_apps/community"
-if [[ ! -d "$COMMUNITY_SRC" ]]; then
-  echo "FATAL: $COMMUNITY_SRC does not exist — the community/ content is part of the app." >&2
-  exit 1
-fi
-COMMUNITY_DEST="$APP_DIR/Contents/Resources/community.zip"
-rm -f "$COMMUNITY_DEST"
-(cd "$COMMUNITY_SRC" && zip -qr -X "$COMMUNITY_DEST" . -x '.DS_Store' -x '*/.DS_Store' -x '__pycache__/*' -x '*/__pycache__/*')
-
-if ! COMMUNITY_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${COMMUNITY_DEST}" 2>&1)"; then
-  echo "FATAL: bundled rclone cannot read the bundled community.zip via :archive: :" >&2
-  echo "$COMMUNITY_SMOKE_OUT" >&2
-  exit 1
-fi
-echo "    community.zip OK ($(echo "$COMMUNITY_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
 
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:

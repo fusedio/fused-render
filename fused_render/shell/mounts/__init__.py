@@ -349,13 +349,11 @@ from .credentials import (
 )
 from .automount import (
     BUILTIN_MOUNTS,
-    COMMUNITY_MOUNT_NAME,
     LEARN_MOUNT_NAME,
     SESSIONS_MOUNT_NAME,
     _force_detach_builtin_mount,
     builtin_mount_ready,
     builtin_zip_path,
-    community_mount_ready,
     ensure_builtin_mounts,
     ensure_learn_mount,
     learn_mount_ready,

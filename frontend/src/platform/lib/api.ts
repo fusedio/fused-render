@@ -20,9 +20,6 @@ export interface Config {
   learn_mount_ready: boolean;
   // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
-  // Same gate for the builtin community mount (the Community marketplace
-  // sub-app, docs/COMMUNITY_MARKETPLACE_SPEC.md).
-  community_mount_ready: boolean;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable

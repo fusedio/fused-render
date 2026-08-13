@@ -1,41 +1,16 @@
-// The community.py bridge, shared by every surface that talks to the
-// marketplace backend (the /apps hub's community tab, the explorer preview's
-// Clone button). The marketplace is html+py content: there is no dedicated
-// REST surface, and community.py deliberately can't be imported by the server
-// — actions go through POST /api/run against the mounted script.
-import { getConfig, postJson } from "@platform/lib/api";
-
-// The mounted backend's path never changes within a session; getConfig() is
-// awaited once and the result reused by every action call.
-let pyPathPromise: Promise<string> | null = null;
-function communityPy(): Promise<string> {
-  if (!pyPathPromise) {
-    pyPathPromise = getConfig().then((config) => {
-      if (!config.mounts_root) throw new Error("community content is not available yet");
-      return `${config.mounts_root.replace(/\/+$/, "")}/community/community.py`;
-    });
-    // A failed config fetch must not poison every later call.
-    pyPathPromise.catch(() => (pyPathPromise = null));
-  }
-  return pyPathPromise;
-}
-
-// /api/run's wire shape ({ok, result, error}); community.py additionally
-// reports its own user-facing failures as {status:"error", message}.
-interface RunEnvelope<T> {
-  ok: boolean;
-  result: T;
-  error?: { message?: string };
-}
+// The community marketplace bridge, shared by every surface that talks to
+// the marketplace backend (the /apps hub's Showcase tab, the explorer
+// preview's Clone button). The backend is native server-side now
+// (fused_render/community.py behind POST /api/community); it reports its own
+// user-facing failures as {status:"error", message}, surfaced verbatim here.
+import { postJson } from "@platform/lib/api";
 
 export async function runCommunity<T extends { status?: string; message?: string }>(
   params: Record<string, unknown>,
 ): Promise<T> {
-  const py = await communityPy();
-  const r = await postJson<RunEnvelope<T>>("/api/run", { py, params });
-  if (!r.ok) throw new Error(r.error?.message || "community backend failed");
-  if (r.result?.status === "error") throw new Error(r.result.message || "community backend failed");
-  return r.result;
+  const r = await postJson<T>("/api/community", params);
+  if (r?.status === "error") throw new Error(r.message || "community backend failed");
+  return r;
 }
 
 // Fire-and-forget open marker — ordering metadata only, never blocks the open.

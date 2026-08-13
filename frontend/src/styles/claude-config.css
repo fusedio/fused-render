@@ -1,6 +1,6 @@
 /* ---- Claude config app (apps/claude_config) ------------------------------- */
-/* Two routes: /claude-config (the settings panel, CLAUDE.md explorer included
-   as its MD Files section) and /claude-artifacts. The LAYOUT is the bundled html+py app it replaces, close to
+/* One route: /claude-config (the settings panel, CLAUDE.md explorer included
+   as its MD Files section). The LAYOUT is the bundled html+py app it replaces, close to
    value-for-value — a 210px section nav, a single content column, a split
    preview pane, cards/rows/pills at the same sizes — so the port is
    recognisably the same tool.
@@ -154,7 +154,7 @@
   overflow-wrap: anywhere;
 }
 
-/* A title row for the pages that have no section nav (shell/ClaudeArtifacts):
+/* A title row for the pages that have no section nav (shell/AiModels):
    heading on the left, and — where one is mounted — the git badge on the right,
    since the nav's bottom edge it normally pins to isn't there. */
 .cc-page-head {
