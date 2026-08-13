@@ -384,7 +384,13 @@ export default function Panel({ config }: { config: Config }) {
     const { params } = splitShellSearch(location.search);
     const next = panelUrl(encodeNode(treeRef.current!), params);
     if (location.pathname + location.search !== next) {
-      history.pushState(history.state, "", next);
+      // A FRESH state object, never `history.state`. Copying the current
+      // entry's state into a NEW entry carries `fusedParamEntry` (the runtime's
+      // "this entry has already spent its once-per-visit push", D8/PR-3) across
+      // with it, so the new entry is born pre-flagged and the user's next param
+      // write in a pane silently gets no history entry at all. Symmetric with
+      // Tabs' pushHistory, which already pushes its own object.
+      history.pushState(null, "", next);
     }
   };
 

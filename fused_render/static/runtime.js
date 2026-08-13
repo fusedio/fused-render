@@ -463,21 +463,92 @@
   // writes/30 s, safely under the cap, and the URL still lands on the final
   // value.
   const HISTORY_MIN_INTERVAL_MS = 400;
-  let pendingSearch = null; // what target.location.search WILL be after flush
-  let pendingUrl = null;
+  // What this runtime has written but not yet landed in history, as a KEY→VALUE
+  // delta — never a formed URL.
+  //
+  // A formed URL is a snapshot of somewhere the browser was up to 400 ms ago,
+  // and the location can move underneath it in that window: the shell navigates
+  // (a breadcrumb click tears this iframe down and `pagehide` flushes), the user
+  // presses Back, or another writer — the shell's own `sel`/`_mode`
+  // replaceState — edits the very entry we are about to write. Replaying a
+  // captured URL then does not "land late", it OVERWRITES: it moves a fresh
+  // entry's path back to the old view, resurrects the params the traversal just
+  // dropped, and silently reverts every key someone else changed meanwhile.
+  //
+  // So the flush is a MERGE, not a replay. Only the keys `set()` actually
+  // touched are remembered; the URL is recomputed at flush time from the LIVE
+  // `target.location.search` (with the `_layout` span preserved, D51), so
+  // everything the runtime did not touch survives by construction. The pending
+  // VALUE is real user intent and is kept; only the stale surroundings are
+  // dropped. The one thing that does invalidate the intent is a history
+  // TRAVERSAL (see onPopState): the entry the write was meant for is no longer
+  // the one we are standing on, and the user asked for the old state instead.
+  let pendingDelta = null; // Map<key, value> | null
+  // The pathname the pending delta was aimed at. A merge fixes the case where
+  // the SEARCH moved underneath us, but not the case where the whole PAGE did:
+  // if the shell navigated (breadcrumb click, tab open, a link) the current
+  // entry is a different view, and folding `zz=8` into it does not land late,
+  // it INVENTS a param on a page that never had one — visible in the address
+  // bar, bookmarkable, and carried by every subsequent write. So a pending
+  // write whose pathname no longer matches is dropped, exactly as a traversal
+  // drops it: the entry it was meant for is gone.
+  let pendingPath = null;
   let historyTimer = null;
   let lastHistoryWrite = 0;
 
+  // True when the queued write no longer belongs to the entry we are standing
+  // on. Read by BOTH the overlay and the flush so the two never disagree.
+  function pendingIsStale() {
+    return pendingPath !== null && pendingPath !== target.location.pathname;
+  }
+
+  // The live target search with the pending delta applied — what
+  // target.location.search WILL be once the flush lands. Computed per read (not
+  // cached as a string) for exactly the reason above: the base can move.
+  function applyDelta(search, delta) {
+    if (!delta || delta.size === 0) return search;
+    const { layoutSpan, rest } = splitSearch(search);
+    const params = new URLSearchParams(rest);
+    for (const [key, value] of delta) params.set(key, value);
+    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
+    // layout stays readable (no URLSearchParams.toString() percent-soup) and
+    // the global/local boundary stays visually stable.
+    let out = params.toString();
+    if (layoutSpan) out += (out ? "&" : "") + layoutSpan;
+    return out ? "?" + out : "";
+  }
+
   function targetSearch() {
-    return pendingSearch !== null ? pendingSearch : target.location.search;
+    if (pendingIsStale()) return target.location.search;
+    return applyDelta(target.location.search, pendingDelta);
+  }
+
+  // Drop a pending coalesced write without landing it. Used when a history
+  // traversal makes the write's target entry the wrong one.
+  function cancelPending() {
+    pendingDelta = null;
+    pendingPath = null;
+    if (historyTimer !== null) {
+      try {
+        clearTimeout(historyTimer);
+      } catch (e) {
+        /* timer already gone */
+      }
+      historyTimer = null;
+    }
   }
 
   function flushHistory() {
     historyTimer = null;
-    if (pendingUrl === null) return;
-    const url = pendingUrl;
-    pendingUrl = null;
-    pendingSearch = null;
+    if (pendingDelta === null) return;
+    const delta = pendingDelta;
+    const stale = pendingIsStale();
+    pendingDelta = null;
+    pendingPath = null;
+    if (stale) return; // the page moved on; this write has no entry to land on
+    const search = applyDelta(target.location.search, delta);
+    if (search === target.location.search) return; // the URL already means this
+    const url = target.location.pathname + search;
     lastHistoryWrite = Date.now();
     try {
       target.history.replaceState(target.history.state, "", url);
@@ -610,15 +681,7 @@
         `fused.params.set: value for '${key}' must be a string, got ${typeof value}`
       );
     }
-    const { layoutSpan, rest } = splitSearch(targetSearch());
-    const params = new URLSearchParams(rest);
-    params.set(key, value);
-    // Rebuild with the raw `_layout=(...)` span untouched and LAST (D51): the
-    // layout stays readable (no URLSearchParams.toString() percent-soup) and
-    // the global/local boundary stays visually stable.
-    let search = params.toString();
-    if (layoutSpan) search += (search ? "&" : "") + layoutSpan;
-    const newSearch = search ? "?" + search : "";
+    const newSearch = applyDelta(targetSearch(), new Map([[key, value]]));
     const newUrl = target.location.pathname + newSearch;
     // First-change-push: the first USER-CAUSED param write on a pristine
     // history entry pushes a new entry (preserving the as-loaded state for
@@ -646,8 +709,13 @@
       // pre-gesture seed leaves the entry pristine for the real first change.
       // Readers see the new value immediately via the overlay; the history
       // write happens now if the budget allows, else on the trailing timer.
-      pendingSearch = newSearch;
-      pendingUrl = newUrl;
+      // Only the KEY is queued — the URL is recomputed from the live location
+      // at flush time (see pendingDelta).
+      if (pendingDelta === null || pendingIsStale()) {
+        pendingDelta = new Map();
+        pendingPath = target.location.pathname;
+      }
+      pendingDelta.set(key, value);
       if (!historyTimer) {
         const wait = Math.max(
           0,
@@ -660,8 +728,9 @@
       // The once-per-visit push: immediate, so Back gets its entry even if
       // the page dies within the debounce window.
       const nextState = Object.assign({}, prevState, { fusedParamEntry: true });
-      pendingSearch = null;
-      pendingUrl = null;
+      // The push lands the whole state including anything queued, so the queue
+      // is spent, not abandoned.
+      cancelPending();
       lastHistoryWrite = Date.now();
       try {
         target.history.pushState(nextState, "", newUrl);
@@ -697,6 +766,42 @@
   for (const win of hookedWindows) {
     win.addEventListener("fused:urlchange", notifyIfChanged);
   }
+
+  // ---- history traversal is the OTHER way params change (PR-4) --------------
+  // `fused:urlchange` covers writes — ours and the shell's wrapped
+  // push/replaceState. It cannot cover Back/Forward: a traversal writes
+  // nothing, it fires `popstate`. In the browser shell that was masked because
+  // App's nav epoch remounts the view wholesale, so the page re-read its params
+  // on a fresh document; on a standalone /render page, the hosted stub and the
+  // WKWebView popover — the hosts D99/PR-4 exist for — nothing remounts, so the
+  // URL and `params.getAll()` were correct while onChange never fired and the
+  // template's UI stayed stale forever.
+  //
+  // Order matters: the pending write is cancelled BEFORE notifying, so a
+  // listener reading getAll() sees settled state rather than the value the user
+  // just navigated away from. Cancelling is the right answer and dropping the
+  // value is not a loss of intent: a traversal is a LATER and stronger user
+  // action than the param write it interrupts, and the write was aimed at the
+  // entry we just left. Without this, a Back inside the 400 ms window inverts
+  // history — the flush lands the abandoned value on the entry just traversed
+  // TO, so Back appears to do nothing, Forward moves backwards, and the
+  // pristine as-loaded entry is destroyed with no way to get it back.
+  //
+  // Listened for on this window AND the target/ancestor chain: which window a
+  // traversal fires `popstate` in depends on which browsing context's entry
+  // moved, and any of them moving invalidates a write aimed at the old one.
+  function onPopState() {
+    cancelPending();
+    notifyIfChanged();
+  }
+  const popstateWindows = [window];
+  for (const win of hookedWindows) {
+    if (popstateWindows.indexOf(win) === -1) popstateWindows.push(win);
+  }
+  for (const win of popstateWindows) {
+    win.addEventListener("popstate", onPopState);
+  }
+
   window.addEventListener("pagehide", () => {
     // A pending coalesced write (D99) must not die with this document — the
     // URL is the bookmarkable truth.
@@ -707,6 +812,13 @@
     for (const win of hookedWindows) {
       try {
         win.removeEventListener("fused:urlchange", notifyIfChanged);
+      } catch (e) {
+        /* window already gone */
+      }
+    }
+    for (const win of popstateWindows) {
+      try {
+        win.removeEventListener("popstate", onPopState);
       } catch (e) {
         /* window already gone */
       }
