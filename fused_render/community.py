@@ -11,14 +11,12 @@ self-contained and import-cheap, and the endpoint is a sync def so its git
 subprocess calls run on FastAPI's threadpool, never the event loop.
 
 Actions:
-  catalog   — cached index.json joined with installs.json ({status:"no-cache"}
-              before the first refresh; never touches the network)
-  refresh   — clone (first run) or fetch+ff the community repo cache, sparse-
-              checkout the browse set (index.json, */preview.png, */metadata.json),
-              then return the same payload as `catalog`
-  detail    — materialize one app folder in the cache; return its readme text
-              + install state (the page renders the markdown client-side)
-  install   — copy the cached app folder into <workspace>/local/<slug>,
+  catalog   — index.json from the showcase clone joined with installs.json
+              ({status:"no-cache"} before the first refresh; never touches
+              the network)
+  refresh   — clone (first run) or fetch+ff the community repo into
+              <workspace>/showcase, then return the same payload as `catalog`
+  install   — copy the showcase app folder into <workspace>/local/<slug>,
               git-init it with a pristine first commit, record the install
   update    — clean copy: replace + commit on top; edited copy: refuse with
               {status:"dirty"} unless force=true (which commits local edits
@@ -27,10 +25,18 @@ Actions:
   touch     — record that an app was opened (preview or installed copy);
               feeds the "last opened" ordering of community cards
 
-State lives under ~/.fused-render/community/ (repo/ cache + installs.json).
+The repo is a FULL clone living inside the user's workspace
+(~/Documents/Fused/showcase). It is the user's tree: apps opened from it are
+editable in place, and nothing here ever resets or deletes it — a refresh
+that can't fast-forward (local edits conflict, upstream rewrote history)
+keeps the local tree as-is and still serves the catalog. Cloning an app
+copies its CURRENT state, edits included; that's the point of "edit in the
+showcase, clone to keep".
+
+Bookkeeping (installs.json, opened.json) stays under ~/.fused-render/community/.
 Every git call runs with GIT_TERMINAL_PROMPT=0 and a bounded timeout — a
-first clone of a large catalog that can't finish in time surfaces as a
-friendly retry error rather than a hang.
+first clone that can't finish in time surfaces as a friendly retry error
+rather than a hang.
 """
 import contextlib
 import errno
@@ -53,7 +59,6 @@ REPO_URL = os.environ.get(
 STATE_DIR = os.path.join(
     os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render"),
     "community")
-CACHE_REPO = os.path.join(STATE_DIR, "repo")
 INSTALLS_JSON = os.path.join(STATE_DIR, "installs.json")
 OPENED_JSON = os.path.join(STATE_DIR, "opened.json")
 LOCK_PATH = os.path.join(STATE_DIR, ".lock")
@@ -62,11 +67,12 @@ LOCK_PATH = os.path.join(STATE_DIR, ".lock")
 WORKSPACE = os.path.abspath(
     os.path.expanduser(os.environ.get("FUSED_RENDER_DIR") or "~/Documents/Fused"))
 COMMUNITY_TAG_DIR = os.path.join(WORKSPACE, "local")
+# The full clone of the community repo, inside the user's workspace so the
+# explorer lists it like any other folder and apps are editable in place.
+SHOWCASE_DIR = os.path.join(WORKSPACE, "showcase")
 
-# The always-materialized browse set: catalog + every app's card assets.
-SPARSE_BROWSE = ["/index.json", "/*/preview.png", "/*/metadata.json"]
-
-GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error; clone is the longest call
+GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error
+CLONE_TIMEOUT = 180  # the full clone (every app + preview.png) is the long call
 LOCK_TIMEOUT = 50  # bounded so a wedged peer surfaces as a retry error
 IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
@@ -78,14 +84,11 @@ class ActionError(Exception):
 
 @contextlib.contextmanager
 def _cache_lock():
-    """Serialize every action that touches the on-disk cache repo (refresh,
-    detail, install, update) across concurrent requests — the browse
-    page's background refresh, a detail fetch on card-open, and a write can
-    all be in flight at once against the same repo otherwise. An OS advisory
-    lock (not a Python-level one: each call may run in its own subprocess)
-    also makes `_remove_stale_locks` safe: once this is held, no other
-    action can be concurrently touching the repo, so any git *.lock file
-    found on entry is from a process that's already gone, not a live one."""
+    """Serialize every action that touches the showcase clone's git state
+    (refresh, install, update) across concurrent requests — the browse page's
+    background refresh and a clone can be in flight at once against the same
+    repo otherwise. An OS advisory lock (not a Python-level one: each call may
+    run in its own subprocess)."""
     os.makedirs(STATE_DIR, exist_ok=True)
     fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR)
     try:
@@ -199,14 +202,13 @@ def _touch(slug):
 
 
 def _remove_stale_locks():
-    """Drop leftover git lockfiles in the cache repo. A git process killed
-    mid-operation (a hard kill, app quit) leaves its .lock
-    behind, and every later command dies with "Unable to create '….lock':
-    File exists … remove the file manually to continue". The cache is
-    managed exclusively by this module and its git calls are short-lived,
-    so any lock seen on a retry is stale by definition."""
+    """Drop leftover git lockfiles in the showcase clone. A git process killed
+    mid-operation (a hard kill, app quit) leaves its .lock behind, and every
+    later command dies with "Unable to create '….lock': File exists … remove
+    the file manually to continue". This module's git calls are short-lived
+    and serialized by _cache_lock, so any lock seen here is stale."""
     import glob
-    git_dir = os.path.join(CACHE_REPO, ".git")
+    git_dir = os.path.join(SHOWCASE_DIR, ".git")
     for lock in (glob.glob(os.path.join(git_dir, "*.lock"))
                  + glob.glob(os.path.join(git_dir, "info", "*.lock"))
                  + glob.glob(os.path.join(git_dir, "refs", "**", "*.lock"),
@@ -217,42 +219,13 @@ def _remove_stale_locks():
             pass
 
 
-def _sparse_add(*patterns):
-    """sparse-checkout add, deduped and self-healing.
-
-    Deduped: `git sparse-checkout add` appends to the pattern file blindly,
-    so re-adding on every detail/refresh grows it without bound — skip
-    patterns already present. Self-healing: the add fails on a stale
-    lockfile (git killed mid-sync) or on preview droppings in the tree;
-    both are throwaway by doctrine, so clear and retry once instead of
-    surfacing "remove the file manually to continue" to the user."""
-    r = _git(CACHE_REPO, "sparse-checkout", "list")
-    have = r.stdout.splitlines() if r.returncode == 0 else []
-    seen = set(have)
-    missing = [p for p in patterns if p not in seen]
-    if len(have) != len(seen):
-        # Compact a pattern file bloated by pre-dedupe blind adds: `set`
-        # rewrites it wholesale with the unique patterns (order preserved).
-        cmd = ("sparse-checkout", "set", "--no-cone",
-               *dict.fromkeys(have + missing))
-    elif missing:
-        cmd = ("sparse-checkout", "add", *missing)
-    else:
-        return
-    if _git(CACHE_REPO, *cmd).returncode == 0:
-        return
-    _remove_stale_locks()
-    _clean_cache()
-    _git_ok(CACHE_REPO, *cmd, what=f"sparse-checkout {cmd[1]}")
-
-
 def _cache_ready():
-    return os.path.isdir(os.path.join(CACHE_REPO, ".git"))
+    return os.path.isdir(os.path.join(SHOWCASE_DIR, ".git"))
 
 
 def _read_index():
     try:
-        with open(os.path.join(CACHE_REPO, "index.json"), encoding="utf-8") as f:
+        with open(os.path.join(SHOWCASE_DIR, "index.json"), encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError):
         return None
@@ -300,71 +273,51 @@ def _catalog_payload():
         "status": "ok",
         "generated_at": index.get("generated_at"),
         "commit": index.get("commit"),
-        "cache_root": CACHE_REPO,
+        "cache_root": SHOWCASE_DIR,
         "apps": apps,
     }
 
 
 def _refresh():
-    os.makedirs(STATE_DIR, exist_ok=True)
     if not _cache_ready():
-        # Fresh clone: metadata only, then materialize just the browse set.
-        if os.path.isdir(CACHE_REPO):
-            shutil.rmtree(CACHE_REPO, ignore_errors=True)
-        r = _git(STATE_DIR, "clone", "--filter=blob:none", "--no-checkout",
-                 "--", REPO_URL, CACHE_REPO)
-        if r.returncode != 0:
-            shutil.rmtree(CACHE_REPO, ignore_errors=True)  # no half-clones
-            detail = (r.stderr or "").strip().splitlines()
-            raise ActionError("could not fetch the community catalog: "
-                              f"{detail[-1] if detail else 'clone failed'}")
+        if os.path.exists(SHOWCASE_DIR):
+            # A showcase folder that isn't our clone (user-made, or a clone
+            # whose .git was stripped) is the user's — never delete it.
+            raise ActionError(
+                f"{SHOWCASE_DIR} exists but is not the showcase clone — "
+                "move it aside and hit Refresh to retry")
+        os.makedirs(WORKSPACE, exist_ok=True)
+        # Clone into a hidden staging dir, then claim the final name with one
+        # rename — no half-clone ever flashes up in the explorer listing.
+        staging = tempfile.mkdtemp(dir=WORKSPACE, prefix=".showcase-clone-")
         try:
-            _git_ok(CACHE_REPO, "sparse-checkout", "set", "--no-cone", *SPARSE_BROWSE,
-                    what="sparse-checkout")
-            _git_ok(CACHE_REPO, "checkout", what="checkout")
-        except ActionError:
-            # Half-set-up clone: no index.json, and a later refresh would
-            # take the fetch/merge branch and never re-run this setup —
-            # drop it entirely so the next refresh re-clones from scratch.
-            shutil.rmtree(CACHE_REPO, ignore_errors=True)
-            raise
+            r = _git(WORKSPACE, "clone", "--", REPO_URL,
+                     os.path.join(staging, "showcase"), timeout=CLONE_TIMEOUT)
+            if r.returncode != 0:
+                detail = (r.stderr or "").strip().splitlines()
+                raise ActionError("could not fetch the community catalog: "
+                                  f"{detail[-1] if detail else 'clone failed'}")
+            os.rename(os.path.join(staging, "showcase"), SHOWCASE_DIR)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     else:
         _remove_stale_locks()
-        _clean_cache()
-        # Re-assert the browse patterns on every refresh: a cache cloned under
-        # an older pattern set (e.g. when cards used icon.svg) would otherwise
-        # keep it forever — fetch+ff never rewrites sparse-checkout config.
-        # `add`, not `set`: set would drop the per-app /<slug>/ patterns that
-        # _materialize appended, de-materializing every previewed app. Stale
-        # old patterns linger harmlessly (they match nothing once the files
-        # leave the repo). Idempotent and cheap when nothing changed.
-        _sparse_add(*SPARSE_BROWSE)
-        _git_ok(CACHE_REPO, "fetch", "--", "origin", what="fetch")
-        # ff-only: the cache is managed, never edited, so a non-ff means the
-        # upstream rewrote history — re-clone is the recovery, not a merge.
-        r = _git(CACHE_REPO, "merge", "--ff-only", "FETCH_HEAD")
-        if r.returncode != 0:
-            shutil.rmtree(CACHE_REPO, ignore_errors=True)
-            return _refresh()
+        _git_ok(SHOWCASE_DIR, "fetch", "--", "origin", what="fetch",
+                timeout=CLONE_TIMEOUT)
+        # ff-only, best-effort: the tree is the USER's (apps are editable in
+        # place), so a merge that can't fast-forward — local edits conflict,
+        # upstream rewrote history — keeps the local tree untouched and still
+        # serves the catalog. Never reset, never re-clone over user files.
+        _git(SHOWCASE_DIR, "merge", "--ff-only", "FETCH_HEAD")
     return _catalog_payload()
 
 
-def _materialize(slug):
-    """Ensure the app folder exists in the cache working tree (lazy blobs)."""
+def _app_folder(slug):
+    """The app's folder in the showcase clone (full clone: always on disk)."""
     _require_slug(slug)
-    folder = os.path.join(CACHE_REPO, slug)
+    folder = os.path.join(SHOWCASE_DIR, slug)
     if not _cache_ready():
-        raise ActionError("catalog cache is missing — hit Refresh first")
-    # No --no-cone here: `add` inherits the non-cone mode `set` established
-    # (and rejects the flag on some git versions).
-    _sparse_add(f"/{slug}/")
-    if not os.path.isdir(folder):
-        # Pattern present but folder absent (e.g. a past add wrote the
-        # pattern, then failed applying it): dedupe above skipped the add,
-        # so force a working-tree reapply before concluding the app is gone.
-        _remove_stale_locks()
-        _clean_cache()
-        _git(CACHE_REPO, "sparse-checkout", "reapply")
+        raise ActionError("the showcase clone is missing — hit Refresh first")
     if not os.path.isdir(folder):
         raise ActionError(f"app {slug!r} is not in the catalog — refresh and retry")
     return folder
@@ -372,22 +325,10 @@ def _materialize(slug):
 
 def _require_slug(slug):
     # Same shape CI enforces repo-side; also keeps a crafted slug from ever
-    # forming a path outside the cache/workspace.
+    # forming a path outside the clone/workspace.
     import re
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", slug or ""):
         raise ActionError(f"invalid app slug: {slug!r}")
-
-
-def _clean_cache():
-    """Reset the cache working tree to HEAD: drop tracked-file edits and
-    remove untracked files. Preview renders live from this tree, so a
-    previewed app may have written next to itself (a JSON store, a sqlite db,
-    ./.cache) — that state is deliberately throwaway, and this is where it
-    dies: on refresh, and before anything is copied out (install/update).
-    Want preview state to survive? Install the app; the copy in
-    Fused/local/ is yours."""
-    _git(CACHE_REPO, "checkout", "-q", "--", ".")
-    _git(CACHE_REPO, "clean", "-qfdx")
 
 
 def _catalog_entry(slug):
@@ -430,15 +371,16 @@ def _install(slug):
     state = _install_state(slug, None, installs)
     if state.get("installed"):
         return {"status": "already-installed", "path": state["path"]}
-    src = _materialize(slug)
+    src = _app_folder(slug)
     entry = _catalog_entry(slug) or {}
     os.makedirs(COMMUNITY_TAG_DIR, exist_ok=True)
     # Stage inside the destination tag dir so the final claim is a same-
     # filesystem rename (a home-dir staging dir could sit on another volume).
+    # Copies the folder's CURRENT state — showcase edits ride along, which is
+    # the point of "edit in the showcase, clone to keep".
     staging = tempfile.mkdtemp(dir=COMMUNITY_TAG_DIR, prefix=f".install-{slug}-")
     try:
         stage_app = os.path.join(staging, slug)
-        _clean_cache()   # never copy preview droppings out of the cache
         shutil.copytree(src, stage_app)
         dest = _claim_dir(stage_app, os.path.join(COMMUNITY_TAG_DIR, slug))
     finally:
@@ -523,8 +465,7 @@ def _update(slug, force):
         _git_ok(app_dir, "add", "-A", what="git add")
         _git_ok(app_dir, "commit", "-q", "-m",
                 "Local edits before community update", what="git commit")
-    src = _materialize(slug)
-    _clean_cache()   # never copy preview droppings out of the cache
+    src = _app_folder(slug)
     _replace_contents(app_dir, src)
     _git_ok(app_dir, "add", "-A", what="git add")
     # An update that changes nothing (sha moved but files identical) leaves
@@ -570,49 +511,16 @@ def _uninstall(slug):
     return {"status": "uninstalled", "trashed_to": trashed}
 
 
-def _detail(slug):
-    _require_slug(slug)
-    entry = _catalog_entry(slug)
-    installs = _read_installs()
-    if entry is None and slug in installs["installs"]:
-        # Yanked upstream: gone from the cache repo's tree, so `_materialize`
-        # would always fail here. The install record is what still matters —
-        # skip the cache entirely so Open/Uninstall keep working.
-        return {
-            "slug": slug, "entry": None, "readme": "", "folder": None,
-            "preview_entry": None, "yanked": True,
-            **_install_state(slug, None, installs),
-        }
-    folder = _materialize(slug)
-    readme = ""
-    try:
-        with open(os.path.join(folder, "readme.md"), encoding="utf-8") as f:
-            readme = f.read()
-    except OSError:
-        pass
-    return {
-        "slug": slug,
-        "entry": entry,
-        "readme": readme,
-        "folder": folder,
-        "preview_entry": os.path.join(folder, "index.html"),
-        **_install_state(slug, entry, installs),
-    }
-
-
 def main(action: str = "catalog", slug: str = "", force: bool = False):
     try:
         if action == "catalog":
             return _catalog_payload()
-        # Everything below touches the cache repo's git state — serialize so
-        # a background refresh, a detail fetch, and a write can never race
-        # on the same on-disk repo.
+        # Everything below touches the showcase clone's git state — serialize
+        # so a background refresh and a write can never race on the same
+        # on-disk repo.
         if action == "refresh":
             with _cache_lock():
                 return _refresh()
-        if action == "detail":
-            with _cache_lock():
-                return _detail(slug)
         if action == "install":
             with _cache_lock():
                 return _install(slug)

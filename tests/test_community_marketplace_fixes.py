@@ -1,15 +1,13 @@
-"""Regression tests for a Cursor Bugbot review pass on the community
-marketplace backend (fused_render/community.py):
+"""Regression tests for the community marketplace backend
+(fused_render/community.py):
 
 - force-update no longer discards local edits when the "Local edits before
   community update" snapshot commit itself fails (a pre-commit hook, in this
   suite) — it aborts with an error instead of running `_replace_contents`.
-- a yanked-upstream but still-installed app's `detail` skips `_materialize`
-  entirely (the slug is gone from the cache repo's tree, so it would always
-  fail) so Open/Uninstall keep working from the detail page.
-- a failed `sparse-checkout set`/`checkout` right after a fresh clone leaves
-  no half-set-up `.git` behind — a later refresh re-clones instead of taking
-  the fetch/merge branch against a cache with no `index.json`.
+- `refresh` performs a FULL clone of the community repo into the workspace's
+  showcase folder and serves the catalog from it.
+- a pre-existing showcase folder that is not our clone is never deleted —
+  refresh refuses with a friendly error instead.
 - `_cache_lock` is a real cross-process lock: a call that can't acquire it
   within the timeout fails loudly instead of racing the holder.
 """
@@ -30,9 +28,11 @@ def community_mod(tmp_path, monkeypatch):
     from fused_render import community as mod
 
     state = tmp_path / "state"
-    cache = state / "repo"
+    workspace = tmp_path / "workspace"
     monkeypatch.setattr(mod, "STATE_DIR", str(state))
-    monkeypatch.setattr(mod, "CACHE_REPO", str(cache))
+    monkeypatch.setattr(mod, "WORKSPACE", str(workspace))
+    monkeypatch.setattr(mod, "SHOWCASE_DIR", str(workspace / "showcase"))
+    monkeypatch.setattr(mod, "COMMUNITY_TAG_DIR", str(workspace / "local"))
     monkeypatch.setattr(mod, "INSTALLS_JSON", str(state / "installs.json"))
     monkeypatch.setattr(mod, "OPENED_JSON", str(state / "opened.json"))
     monkeypatch.setattr(mod, "LOCK_PATH", str(state / ".lock"))
@@ -46,9 +46,26 @@ def _write_installs(mod, installs):
 
 
 def _write_index(mod, apps, commit=None):
-    os.makedirs(mod.CACHE_REPO, exist_ok=True)
-    with open(os.path.join(mod.CACHE_REPO, "index.json"), "w", encoding="utf-8") as f:
+    os.makedirs(mod.SHOWCASE_DIR, exist_ok=True)
+    with open(os.path.join(mod.SHOWCASE_DIR, "index.json"), "w", encoding="utf-8") as f:
         json.dump({"apps": apps, "commit": commit}, f)
+
+
+def _make_remote(tmp_path, apps):
+    """A bare remote seeded with index.json + one folder per app slug."""
+    remote = str(tmp_path / "remote.git")
+    seed = str(tmp_path / "seed")
+    os.makedirs(seed)
+    git(seed, "init", "-q")
+    write(seed, "index.json", json.dumps({"apps": apps, "commit": "abc"}))
+    for a in apps:
+        write(seed, os.path.join(a["slug"], "index.html"), "<html></html>")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "seed")
+    bare_repo(remote)
+    git(seed, "remote", "add", "origin", remote)
+    git(seed, "push", "-q", "-u", "origin", "HEAD")
+    return remote
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
@@ -78,11 +95,11 @@ def test_force_update_aborts_when_snapshot_commit_fails(tmp_path, community_mod)
         "widget": {"path": app_dir, "commit": "old-sha", "local_commit": local_commit,
                     "version": "1", "installed_at": "2026-01-01T00:00:00Z"},
     })
-    cache_slug = os.path.join(mod.CACHE_REPO, "widget")
-    os.makedirs(cache_slug, exist_ok=True)
-    with open(os.path.join(cache_slug, "app.py"), "w", encoding="utf-8") as f:
+    showcase_slug = os.path.join(mod.SHOWCASE_DIR, "widget")
+    os.makedirs(showcase_slug, exist_ok=True)
+    with open(os.path.join(showcase_slug, "app.py"), "w", encoding="utf-8") as f:
         f.write("new upstream content\n")
-    os.makedirs(os.path.join(mod.CACHE_REPO, ".git"), exist_ok=True)  # _cache_ready()
+    os.makedirs(os.path.join(mod.SHOWCASE_DIR, ".git"), exist_ok=True)  # _cache_ready()
     _write_index(mod, [{"slug": "widget", "name": "Widget", "commit": "new-sha"}])
 
     res = mod.main(action="update", slug="widget", force=True)
@@ -93,54 +110,81 @@ def test_force_update_aborts_when_snapshot_commit_fails(tmp_path, community_mod)
     assert git(app_dir, "status", "--porcelain").strip()  # still dirty, not silently committed
 
 
-def test_detail_skips_materialize_for_yanked_app(tmp_path, community_mod):
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_refresh_full_clones_into_workspace_showcase(tmp_path, community_mod, monkeypatch):
     mod = community_mod
-    app_dir = str(tmp_path / "installed" / "gone")
-    os.makedirs(app_dir)  # _install_state() only counts it installed if the folder is still there
-    _write_installs(mod, {
-        "gone": {"path": app_dir, "commit": "sha", "local_commit": "sha",
-                  "version": "1", "installed_at": "2026-01-01T00:00:00Z"},
-    })
-    # No index.json at all — _cache_ready()/_materialize would raise if this
-    # path ever reached them (no CACHE_REPO/.git either).
-    d = mod.main(action="detail", slug="gone")
+    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
+    monkeypatch.setattr(mod, "REPO_URL", remote)
 
-    assert d.get("status") != "error"
-    assert d["yanked"] is True
-    assert d["folder"] is None
-    assert d["preview_entry"] is None
-    assert d["installed"] is True
+    res = mod.main(action="refresh")
+
+    assert res["status"] == "ok"
+    assert res["cache_root"] == mod.SHOWCASE_DIR
+    assert [a["slug"] for a in res["apps"]] == ["widget"]
+    # Full clone: the app's files are on disk immediately, no materialize step.
+    assert os.path.isfile(os.path.join(mod.SHOWCASE_DIR, "widget", "index.html"))
+    # No staging droppings left in the workspace.
+    assert not [n for n in os.listdir(mod.WORKSPACE) if n.startswith(".showcase-clone-")]
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_cleans_up_half_set_up_clone(tmp_path, community_mod, monkeypatch):
+def test_refresh_keeps_local_edits(tmp_path, community_mod, monkeypatch):
     mod = community_mod
-    remote = str(tmp_path / "remote.git")
-    seed = str(tmp_path / "seed")
-    os.makedirs(seed)
-    git(seed, "init", "-q")
-    write(seed, "index.json", json.dumps({"apps": [], "commit": "abc"}))
-    git(seed, "add", "-A")
-    git(seed, "commit", "-q", "-m", "seed")
-    bare_repo(remote)
-    git(seed, "remote", "add", "origin", remote)
-    git(seed, "push", "-q", "-u", "origin", "HEAD")
+    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
     monkeypatch.setattr(mod, "REPO_URL", remote)
+    assert mod.main(action="refresh")["status"] == "ok"
 
-    real_git_ok = mod._git_ok
+    # The showcase tree is the user's: an edit must survive the next refresh.
+    edited = os.path.join(mod.SHOWCASE_DIR, "widget", "index.html")
+    with open(edited, "w", encoding="utf-8") as f:
+        f.write("MY EDIT\n")
 
-    def flaky_git_ok(cwd, *args, **kw):
-        if args and args[0] == "checkout":
-            raise mod.ActionError("simulated checkout failure")
-        return real_git_ok(cwd, *args, **kw)
+    res = mod.main(action="refresh")
+    assert res["status"] == "ok"
+    with open(edited, encoding="utf-8") as f:
+        assert f.read() == "MY EDIT\n"
 
-    monkeypatch.setattr(mod, "_git_ok", flaky_git_ok)
+
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_refresh_keeps_conflicting_local_edits_when_upstream_moved(
+        tmp_path, community_mod, monkeypatch):
+    mod = community_mod
+    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
+    monkeypatch.setattr(mod, "REPO_URL", remote)
+    assert mod.main(action="refresh")["status"] == "ok"
+
+    # Local edit AND an upstream commit touching the same file: the ff-only
+    # merge can't apply, and the local tree must survive untouched.
+    edited = os.path.join(mod.SHOWCASE_DIR, "widget", "index.html")
+    with open(edited, "w", encoding="utf-8") as f:
+        f.write("MY EDIT\n")
+    seed = str(tmp_path / "seed")
+    write(seed, os.path.join("widget", "index.html"), "<html>v2</html>")
+    git(seed, "add", "-A")
+    git(seed, "commit", "-q", "-m", "upstream change")
+    git(seed, "push", "-q", "origin", "HEAD")
+
+    res = mod.main(action="refresh")
+
+    assert res["status"] == "ok"  # catalog still serves
+    with open(edited, encoding="utf-8") as f:
+        assert f.read() == "MY EDIT\n"
+
+
+def test_refresh_refuses_foreign_showcase_folder(community_mod):
+    mod = community_mod
+    # A showcase folder the user made themselves (no .git) must never be
+    # deleted or cloned over.
+    os.makedirs(mod.SHOWCASE_DIR)
+    marker = os.path.join(mod.SHOWCASE_DIR, "precious.txt")
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("keep me\n")
 
     res = mod.main(action="refresh")
 
     assert res["status"] == "error"
-    assert not os.path.exists(mod.CACHE_REPO), (
-        "a half-set-up clone must not survive a failed post-clone setup step")
+    assert "not the showcase clone" in res["message"]
+    assert os.path.isfile(marker)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="posix flock path")

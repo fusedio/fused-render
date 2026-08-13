@@ -114,16 +114,11 @@ function usePreviewSideSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
 }
 
-// A file inside the community CATALOG CACHE (~/.fused-render/community/repo/)
-// is the read-only preview tree — `refresh` resets it on every catalog pull, so
-// edits made there silently die. The preview locks every non-render mode and
-// offers this instead.
-const COMMUNITY_LOCK_MSG =
-  "This is the read-only showcase copy — clone the app to make changes.";
-
-// "Clone" in the preview header of a community cache app: install the app into
-// the workspace (Fused/local/<slug>, community.py's `install`) and navigate to
-// the cloned copy — the same open convention the /apps community grid uses.
+// "Clone" in the preview header of a showcase app: copy the app (current
+// state, edits included) into the workspace (Fused/local/<slug>, community.py's
+// `install`) and navigate to the cloned copy — the same open convention the
+// /apps community grid uses. The showcase tree itself is fully editable; the
+// clone is how you keep a copy that catalog refreshes never touch.
 function CloneCommunityButton({ slug }: { slug: string }) {
   const [busy, setBusy] = useState(false);
   const doClone = async () => {
@@ -552,12 +547,10 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  // Read-only community cache app (see COMMUNITY_LOCK_MSG): the split never
-  // opens — its companions (claude/git/history) fall back into the content
-  // list, where they render as disabled rows explaining themselves.
+  // Showcase clone app: fully editable, no mode restrictions — the slug only
+  // decides whether the Clone button renders in the header.
   const communitySlug = communityCacheSlug(fsPath);
-  const communityLocked = communitySlug !== null;
-  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !communityLocked;
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
   // --- the BORROWED companion: `git`, from this file's parent folder ----------
@@ -641,14 +634,7 @@ function TemplatePreview({
   // no frame at all (a blank pane), then mounted a frame for the dropped mode
   // whose `srcFor` is null, and only unwound it once the state caught up.
   const [mode, setModeState] = useState<string>(() => activeTemplate(contentModes).mode);
-  const requestedEntry = contentModes.find((t) => t.mode === mode) || defaultEntry;
-  // Locked community cache: clamp to the render mode whatever the URL asked
-  // for (`?_mode=history` deep links included) — clicks are only half the ways
-  // in. Files with no "_render" entry keep their default.
-  const renderEntry = communityLocked
-    ? contentModes.find((t) => t.mode === "_render" && !isPending(t))
-    : undefined;
-  const entry = renderEntry ?? requestedEntry;
+  const entry = contentModes.find((t) => t.mode === mode) || defaultEntry;
   const activeMode = entry.mode;
   // Reconcile the request with what actually rendered. Purely bookkeeping now
   // (the switcher's selection, and the guard in setMode) — no rendering waits
@@ -826,11 +812,6 @@ function TemplatePreview({
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const setMode = async (next: string) => {
     if (next === activeMode || switching.current) return;
-    // Locked community cache: only the render mode is reachable.
-    if (communityLocked && next !== "_render") {
-      pushToast({ msg: COMMUNITY_LOCK_MSG, tone: "info" });
-      return;
-    }
     // Unresolved gate: not selectable (the switcher disables it too).
     const target = contentModes.find((t) => t.mode === next);
     if (target && isPending(target)) return;
@@ -1059,8 +1040,8 @@ function TemplatePreview({
           the guard keeps that true even if a registry ever says otherwise).
           Gated on the opt-in Deploy pref (Preferences → Deployments): hidden
           entirely unless the user has turned Deploy on. */}
-      {/* Community cache app: the way out of the read-only preview, left of
-          the mode control it explains. */}
+      {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
+          never touch your copy. */}
       {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
       {!stat.is_dir &&
         deployEnabled &&
@@ -1112,8 +1093,6 @@ function TemplatePreview({
             mode: t.mode,
             icon: templateModeIcon(t),
             pending: isPending(t),
-            disabledReason:
-              communityLocked && t.mode !== "_render" ? COMMUNITY_LOCK_MSG : undefined,
           }))}
           active={entry.mode}
           /* Spinner from the click until the incoming frame has actually taken
