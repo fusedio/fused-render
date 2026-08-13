@@ -184,12 +184,21 @@
     border-radius: 10px;
     background: var(--surface);
   }
-  .bar .gap { flex: 1; }
-  .bar .rule {
-    width: 1px;
-    align-self: stretch;
-    margin: 2px 2px;
-    background: var(--line);
+  /* The bar holds two clusters, not one row of controls: the branch chip says
+     WHERE you are, the remote group acts on it. `margin-left: auto` on the group
+     is what splits them, and it sits on a real group element rather than on a
+     spacer between loose buttons for the wrap: a spacer only takes the leftover
+     of the FIRST line, so a narrow pane would strand Push alone at the left of
+     the second. Grouped, the three buttons travel and wrap together, and the
+     auto margin keeps them on the right edge of whichever line they land on. */
+  .bar .remote {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    min-width: 0;
+    margin-left: auto;
   }
 
   /* One button shape for every action in the view; the variants only change
@@ -208,12 +217,43 @@
     font-size: 12px;
     white-space: nowrap;
     cursor: pointer;
-    transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1);
+    transition: background-color 120ms cubic-bezier(0.2, 0, 0, 1),
+                border-color 120ms cubic-bezier(0.2, 0, 0, 1),
+                color 120ms cubic-bezier(0.2, 0, 0, 1);
   }
   .btn:hover:not([disabled]) { color: var(--ink); border-color: var(--line-hover); background: var(--surface-2); }
+  /* A press has to answer, not just a hover: the toolbar's slow ops (fetch,
+     pull, push) go `busy` a beat after the click, and with nothing between the
+     two the button looked like it had missed the click. */
+  .btn:active:not([disabled]) { color: var(--ink); border-color: var(--line-hover); background: var(--line); }
   .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .btn[disabled] { opacity: 0.45; cursor: default; }
+  /* Disabled is its own resting state rather than a dimmed copy of the live
+     one. `opacity: 0.45` alone read as "the same button, slightly faded", which
+     is exactly the reading to avoid when the difference is whether the control
+     does anything at all — Fetch/Pull/Push are dead without a remote, and every
+     control is dead while an op is in flight. Muted ink, a border dropped back
+     to the plain `--line`, and `not-allowed` say it in three ways at once, and
+     no hover or active rule matches, so the pointer confirms it. */
+  .btn[disabled] {
+    color: var(--ink-3);
+    border-color: var(--line);
+    background: transparent;
+    opacity: 0.7;
+    cursor: not-allowed;
+  }
+  .btn[disabled] .count { background: var(--surface); color: var(--ink-3); }
+  .btn.primary[disabled] { background: var(--surface-2); border-color: var(--line); color: var(--ink-3); }
+  .btn.danger[disabled] { color: var(--ink-3); border-color: var(--line); }
   .btn[aria-expanded="true"] { color: var(--ink); background: var(--surface-2); border-color: var(--line-hover); }
+  /* An SVG glyph in a button is a BOX, not a character: inline it would sit on
+     the text baseline and ride a descender's worth high, so it is taken off the
+     baseline and left to the flex centring `.btn` already declares. */
+  .btn svg { display: block; flex: none; }
+  /* The caret marks a control that OPENS A PANEL, so it turns with the panel —
+     driven off the same `aria-expanded` the button already carries, which is
+     what keeps the picture and the a11y flag from ever disagreeing. */
+  .btn .caret { color: var(--ink-3); transition: transform 120ms cubic-bezier(0.2, 0, 0, 1); }
+  .btn[aria-expanded="true"] .caret { color: inherit; transform: rotate(180deg); }
   .btn.primary {
     border-color: var(--accent-dim);
     background: var(--accent);
@@ -382,6 +422,45 @@
   .panel-form input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
   .panel-form label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink-2); font-size: 12px; }
   .panel-form input[type="checkbox"] { accent-color: var(--accent-dim); }
+  /* Inside a panel, rows are a SECTION of it and not a card of their own. The
+     panel already draws the border, the radius and the background, so a nested
+     `.rows` box doubled all three and stood its rows off the panel's own edges —
+     the field above lined up with nothing. Stripped back to a single hairline
+     rule, the panel reads as one stack: head, field, list, create row. */
+  .panel > .rows {
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+  }
+  /* Only the branch ROWS scroll. A checkout with hundreds of local branches
+     turned this dropdown into a page you had to scroll past to reach anything
+     else, and the field above it is the one control that must never leave the
+     screen — you reach for it precisely when the list is too long to scan. The
+     panel's own chrome (the field, the create row, the truncation note) is
+     therefore outside this box and stays put. */
+  .panel .branch-list {
+    max-height: 264px;
+    overflow-y: auto;
+  }
+  /* The create row MAKES something; every row above it only moves between
+     things that already exist. So it does not wear their neutral styling: the
+     accent ink and the leading `+` are the vocabulary "+ Stage all" already uses
+     for "this adds", which is why no new colour is needed to say it. It is a
+     plain section of the panel like the list — one rule above it, the same left
+     edge, no card of its own. */
+  .panel .branch-create { border-top: 1px solid var(--line); }
+  .panel .branch-create .row { color: var(--accent-dim); font-weight: 700; }
+  .panel .branch-create .row:hover:not([disabled]) { background: var(--surface-2); }
+  .panel .branch-create .row[disabled] {
+    color: var(--ink-3);
+    font-weight: 400;
+    cursor: not-allowed;
+  }
+  /* The only tag this row ever carries is the refusal, so it is coloured as
+     one — and it sits on a row that is already disabled, where a pill cannot be
+     mistaken for something to click. */
+  .panel .branch-create .where { border-color: var(--danger-line); color: var(--danger); }
 
   /* ================= rows ================= */
   .rows {
@@ -569,7 +648,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .skel-bar { animation: none; }
-    .row, .more, .btn { transition: none; }
+    .row, .more, .btn, .btn .caret { transition: none; }
   }
   .skel-h2 { height: 11px; width: 120px; margin: 0 0 10px; }
   .skel-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); }
@@ -730,6 +809,27 @@ const BRANCH_GLYPH = ["M6 6v12", "M18 9a9 9 0 0 1-9 9", "M6 6a2 2 0 1 0 0-4 2 2 
    restore-history loop says "revert" without needing the tooltip. */
 const REVERT_GLYPH = ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"];
 
+/* The toolbar's remote ops used to wear `⟳`, `↓` and `↑` as text. A glyph set at
+   the label's own 12px is a small character next to a word, not an icon, and the
+   arrows in particular sat on the baseline looking like punctuation. These are
+   drawn at the same weight as every other icon in the view and placed as boxes,
+   which is what makes them read as controls. */
+const FETCH_GLYPH = ["M21 4v6h-6", "M3 20v-6h6",
+                     "M18.5 9A8 8 0 0 0 6 6.3L3 9", "M5.5 15A8 8 0 0 0 18 17.7l3-2.7"];
+const PULL_GLYPH = ["M12 3v12", "M7 10l5 5 5-5", "M4 20h16"];
+const PUSH_GLYPH = ["M12 21V9", "M7 14l5-5 5 5", "M4 4h16"];
+
+/* The caret that separates "this opens a panel" from "this does a thing". Only
+   the panel toggles carry one; an action button with a caret would be promising
+   a menu it does not have. The flip is CSS off `aria-expanded` (see `.caret`). */
+const CARET_GLYPH = ["M6 9l6 6 6-6"];
+
+function caret() {
+  const svg = icon(CARET_GLYPH, 12);
+  svg.setAttribute("class", "caret");
+  return svg;
+}
+
 function emptyState(title, message) {
   return el("div", { className: "empty" },
     el("div", { className: "glyph" }, icon(BRANCH_GLYPH, 30)),
@@ -803,27 +903,32 @@ function headState(repo) {
 
 /* ------------------------------------------------------------------ toolbar */
 
-function toolbar(data, stashes) {
+function toolbar(data) {
   const repo = data.repo;
   const panel = param("panel");
   const bar = el("div", { className: "bar" });
 
-  bar.append(action("panel-branch", el("span", { textContent: headState(repo) }), {
+  bar.append(action("panel-branch",
+                    [el("span", { textContent: headState(repo) }), caret()], {
     label: "Branch: " + headState(repo) + " — switch or create a branch",
     expanded: panel === "branch",
-    onClick: () => setParams({ panel: panel === "branch" ? null : "branch" }),
+    onClick: () => {
+      /* A filter term belongs to one visit to the panel: coming back later to
+         look for something else should not start inside the last search. */
+      if (panel !== "branch") branchQuery = "";
+      setParams({ panel: panel === "branch" ? null : "branch" });
+    },
   }));
 
-  bar.append(el("div", { className: "rule" }));
-
   const remote = repo.remote;
-  bar.append(action("fetch", "⟳ Fetch", {
+  const group = el("div", { className: "remote" });
+  group.append(action("fetch", [icon(FETCH_GLYPH, 14), "Fetch"], {
     disabled: !remote,
     title: remote ? "git fetch --prune " + remote
                   : "This repository has no remote to fetch from.",
     onClick: () => run("fetch", { op: "fetch" }),
   }));
-  bar.append(action("pull", "↓ Pull", {
+  group.append(action("pull", [icon(PULL_GLYPH, 14), "Pull"], {
     disabled: !remote,
     count: repo.behind || null,
     title: repo.behind
@@ -831,10 +936,12 @@ function toolbar(data, stashes) {
       : "git pull --ff-only",
     onClick: () => run("pull", { op: "pull" }),
   }));
-  /* Two different words for two different acts. With an upstream this pushes to
-     it; without one it CREATES the remote branch and records it, which is a
-     bigger thing than "push" and so says so. */
-  bar.append(action("push", repo.upstream ? "↑ Push" : "↑ Publish branch", {
+  /* One word for both acts, because the label is also a WIDTH: "Publish branch"
+     made this button half again as wide as its neighbours and shifted the whole
+     toolbar whenever a branch gained an upstream. The distinction is real —
+     without one this CREATES the remote branch and records it — so it is kept
+     where it costs no geometry, in the tooltip. */
+  group.append(action("push", [icon(PUSH_GLYPH, 14), "Push"], {
     disabled: !remote || repo.detached,
     count: repo.upstream ? (repo.ahead || null) : null,
     title: repo.detached ? "HEAD is detached — there is no branch to push."
@@ -843,19 +950,10 @@ function toolbar(data, stashes) {
         + " and track it",
     onClick: () => run("push", { op: "push" }),
   }));
-
-  bar.append(el("div", { className: "gap" }));
-
-  bar.append(action("panel-stash", "Stash", {
-    label: "Stash the changes under this path",
-    expanded: panel === "stash",
-    count: stashes.length || null,
-    onClick: () => setParams({ panel: panel === "stash" ? null : "stash" }),
-  }));
+  bar.append(group);
 
   const wrap = el("div", null, bar);
   if (panel === "branch") wrap.append(branchPanel(data));
-  if (panel === "stash") wrap.append(stashPanel(data));
   return wrap;
 }
 
@@ -866,6 +964,37 @@ function toolbar(data, stashes) {
    concept, so checking one out is inherently repo-wide (GT-13), and pretending
    otherwise would be the lie. */
 let branchCache = null;
+
+/* The filter term, and the ONE piece of this view's state that is deliberately
+   not in the URL. Every other control writes a param and lets `draw` repaint,
+   but a param write rebuilds the panel — and an input rebuilt under a typist
+   loses the focus and the caret on every keystroke. (`msg` survives in the URL
+   only because `structural()` leaves it out, and a half-written commit message
+   is worth persisting across a refresh; a filter term is not — it belongs to one
+   visit to this panel.) Module scope rather than a local, so the term outlives
+   the repaints a `run` mutation forces. */
+let branchQuery = "";
+
+/* A cheap pre-filter, NOT a validator. ops.py asks git's own `check-ref-format`
+   and that stays the authority — anything this misses still comes back as a red
+   flash rather than as silence. What it earns is the half-typed name: a term
+   that is only a space, or one starting with `-` (which git would read as an
+   option, and which ops.py refuses outright), should not sit there as a live
+   button advertising a call that cannot succeed. */
+const BAD_BRANCH = /^-|\s|[~^:?*[\\]|\.\.|@\{|\/\/|^\/|[/.]$|\.lock$/;
+
+/* Focus the panel's field once it is actually in the document. The panel is
+   rebuilt wholesale on every repaint, so "focus it when it opens" and "put the
+   focus back after a repaint" are the same act — and the node is still detached
+   when `branchPanel` returns, which is why this waits a frame and re-checks
+   rather than calling `focus()` on the spot. */
+function focusSoon(input) {
+  requestAnimationFrame(() => {
+    if (!input.isConnected || input.disabled) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
 
 function branchPanel(data) {
   const panel = el("div", { className: "panel" },
@@ -881,8 +1010,32 @@ function branchPanel(data) {
     return panel;
   }
 
-  const rows = el("div", { className: "rows" });
-  for (const branch of branchCache.branches) {
+  /* One field for both acts, which is why it says so: the thing you type to
+     look for a branch is the thing you type to name a new one, and asking for
+     the same string in two boxes was the panel's real awkwardness. */
+  const filter = el("input", { type: "text", placeholder: "Find or create a branch…",
+                               value: branchQuery, disabled: busy !== null });
+  filter.setAttribute("aria-label", "Find or create a branch");
+  panel.append(el("div", { className: "panel-form" }, filter));
+
+  const rows = el("div", { className: "rows branch-list" });
+  /* No `.rows`/`.line` wrapper around the create button: those exist to draw a
+     list, and this is one control. Wrapped, it came out as a second bordered
+     card under the first with a gutter between them. */
+  const offer = el("div", { className: "branch-create" });
+  panel.append(rows, offer);
+
+  if (branchCache.truncated) {
+    /* The cap is the READ's, so it bounds the filter too — a term that matches
+       nothing here has not been told there is no such branch, only that there
+       is none among these. Saying so is the difference between a list that is
+       bounded and one that quietly lies. */
+    panel.append(el("p", { className: "note", textContent:
+      "Only the " + branchCache.branches.length + " most recently updated "
+      + "branches are listed, and the filter searches those." }));
+  }
+
+  const branchLine = (branch) => {
     const line = el("div", { className: "line" });
     const row = el("button", {
       className: "row", type: "button",
@@ -909,31 +1062,76 @@ function branchPanel(data) {
         onClick: () => run("del:" + branch.name, { op: "branch_delete", name: branch.name }),
       })));
     }
-    rows.append(line);
-  }
-  if (!branchCache.branches.length) {
-    rows.append(el("div", { className: "none", textContent: "No local branches yet." }));
-  }
-  panel.append(rows);
-  if (branchCache.truncated) {
-    panel.append(el("p", { className: "note", textContent:
-      "Only the " + branchCache.branches.length + " most recently updated "
-      + "branches are listed." }));
-  }
-
-  const name = el("input", { type: "text", placeholder: "new-branch-name",
-                             disabled: busy !== null });
-  const create = (checkout) => {
-    const value = name.value.trim();
-    if (!value) return;
-    run("create", { op: "branch_create", name: value, checkout });
+    return line;
   };
-  name.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") { event.preventDefault(); create(true); }
+
+  /* ONE op and one outcome: creating a branch here always lands you on it, so
+     `checkout` is always true. ops.py runs that as `switch -c`, which means
+     there is no window in which the branch exists and HEAD is still on the old
+     one. The failure path is the ordinary one — `run` turns git's refusal into
+     the flash — which is what makes it safe for the row below to offer a name
+     git may well reject. */
+  const create = (name) => run("create", {
+    op: "branch_create", name, checkout: true,
   });
-  panel.append(el("div", { className: "panel-form" }, name,
-    action("create", "Create + switch", { onClick: () => create(true) }),
-    action("create-only", "Create only", { onClick: () => create(false) })));
+
+  /* "and switch" used to ride the right edge of this row as a pill, in the slot
+     a button had just vacated, so it read as a second control on a row that has
+     exactly one act. The tooltip says it instead. */
+  const createRow = (name) => {
+    const bad = BAD_BRANCH.test(name);
+    const row = el("button", {
+      className: "row", type: "button",
+      disabled: busy !== null || bad,
+      title: bad ? "git will not accept that as a branch name."
+                 : "Create " + name + " from HEAD and switch to it",
+    },
+      el("span", { className: "path", textContent: "+ Create branch " + name }),
+      bad ? el("span", { className: "where", textContent: "invalid name" }) : null);
+    row.addEventListener("click", () => create(name));
+    return row;
+  };
+
+  /* The create row appears on an EXACT miss, not on an empty filter result:
+     typing `fix` while `fix/typo` exists still matches a row, and still means
+     there is no branch called `fix` to switch to. */
+  const missing = (name) => name !== ""
+    && !branchCache.branches.some((branch) => branch.name === name);
+
+  const paint = () => {
+    const query = branchQuery.trim();
+    const needle = query.toLowerCase();
+    const matches = branchCache.branches.filter(
+      (branch) => branch.name.toLowerCase().includes(needle));
+    rows.replaceChildren(...matches.map(branchLine));
+    /* An empty list says nothing worth a line of its own. "No branch matches x"
+       directly above "Create branch x" was the same sentence twice, and the
+       block it sat in left a bordered box around a single grey apology. Gone,
+       the panel answers a miss with the one thing you can do about it. */
+    rows.hidden = !matches.length;
+    offer.replaceChildren();
+    offer.hidden = !missing(query);
+    if (!offer.hidden) offer.append(createRow(query));
+  };
+
+  /* Typing repaints the ROWS and nothing else. Going through `setParams` +
+     `draw` — the way every other control in this view changes what is on screen
+     — would rebuild the panel, and with it this input, on every keystroke,
+     taking the focus and the caret along with it. */
+  filter.addEventListener("input", () => { branchQuery = filter.value; paint(); });
+  filter.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    /* Enter is the create row, reached from the keyboard — same call, same
+       conditions. It never checks out an existing branch: acting on "the one
+       remaining match" would put a working-tree change on a keystroke aimed at
+       whatever the filter happened to leave behind. */
+    const name = branchQuery.trim();
+    if (missing(name) && !BAD_BRANCH.test(name)) create(name);
+  });
+
+  paint();
+  focusSoon(filter);
   return panel;
 }
 
@@ -1589,32 +1787,66 @@ function render(data, stashes, diff) {
      the block would hide the prompt with it. */
   const sections = [];
   const askIn = (where) => (ask && ask.where === where ? ask.node : null);
+  /* The footer slot takes one node, but two things can want it at once (a
+     pending confirmation and the open stash panel), so they go in together as a
+     fragment rather than one silently shadowing the other. */
+  const footer = (...nodes) => {
+    const kept = nodes.filter(Boolean);
+    if (kept.length < 2) return kept[0] || null;
+    const frag = document.createDocumentFragment();
+    frag.append(...kept);
+    return frag;
+  };
 
   const stagedAsk = askIn("staged");
-  if (staged.length || stagedAsk) sections.push(listSection(
+  const showStaged = staged.length || stagedAsk;
+  const changesAsk = askIn("changes");
+  const showChanges = unstaged.length || changesAsk || truncNote;
+
+  /* Stash is a section control, not a toolbar one — it acts on the changes it
+     sits next to. Which section owns it cannot simply be Changes, though:
+     `git stash push` takes the STAGED work along with the unstaged, and with
+     everything staged the Changes section is not drawn at all, so the control
+     would vanish while there was still something to stash. It rides Changes
+     when Changes is drawn and falls back to Staged changes when it is not. When
+     neither is drawn there is nothing stashable and no control, which is the
+     honest answer — `git stash` on a clean tree does nothing. */
+  const stashOpen = param("panel") === "stash";
+  const stashHost = showChanges ? "changes" : showStaged ? "staged" : null;
+  const stashButton = (where) => (where === stashHost
+    ? action("panel-stash", ["Stash", caret()], {
+        label: "Stash the changes under this path",
+        expanded: stashOpen,
+        onClick: () => setParams({ panel: stashOpen ? null : "stash" }),
+      })
+    : null);
+  const stashForm = (where) => (where === stashHost && stashOpen ? stashPanel(data) : null);
+
+  if (showStaged) sections.push(listSection(
     "Staged changes", String(staged.length),
-    staged.length ? action("unstage_all", "− Unstage all", {
+    [staged.length ? action("unstage_all", "− Unstage all", {
       onClick: () => run("unstage_all", { op: "unstage_all" }),
     }) : null,
+     stashButton("staged")],
     staged.map((c) => changeLine(data.repo, c, c.path === wt, "staged")),
     "Nothing is staged under this path.",
-    stagedAsk,
+    footer(stagedAsk, stashForm("staged")),
     headState(data.repo) + (data.repo.has_commits ? "" : " · no commits yet")));
 
-  const changesAsk = askIn("changes");
-  if (unstaged.length || changesAsk || truncNote) sections.push(listSection(
+  if (showChanges) sections.push(listSection(
     "Changes", String(unstaged.length),
-    unstaged.length ? [
+    [...(unstaged.length ? [
       action("stage_all", "+ Stage all", {
         onClick: () => run("stage_all", { op: "stage_all" }),
       }),
       confirmable("discard_all", "↩ Discard all",
                   "Discard every change under this path?", {}),
-    ] : null,
+    ] : []),
+     stashButton("changes")],
     unstaged.map((c) => changeLine(data.repo, c, c.path === wt, "changes")),
     data.repo.dirty ? "No unstaged changes under this path."
                     : "Working tree is clean.",
-    changesAsk || truncNote));
+    footer(changesAsk || truncNote, stashForm("changes"))));
 
   /* This one section stages an explicit path LIST rather than the scope
      pathspec, so it has to apply `writable` itself — one out-of-scope row in the
@@ -1665,7 +1897,7 @@ function render(data, stashes, diff) {
     page.append(el("div", { className: "flash" + (flash.ok ? "" : " bad"),
                             textContent: flash.message }));
   }
-  page.append(toolbar(data, stashes));
+  page.append(toolbar(data));
   /* Guarded, not appended blind: `commitBox` returns null when nothing is
      staged, and `Node.append(null)` inserts the literal text "null". */
   const box = commitBox(data);
