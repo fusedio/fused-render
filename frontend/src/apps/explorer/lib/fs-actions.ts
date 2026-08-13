@@ -280,7 +280,7 @@ export function friendlyFsError(err: unknown, ctx: { verb: string; name: string 
   // Trash move failed after we'd already committed to the recoverable path —
   // reassure that nothing was hard-deleted.
   if (msg.includes("cannot move to trash"))
-    return `Couldn't move "${name}" to the Bin. Nothing was deleted.`;
+    return `Couldn't delete "${name}". It's still in place — nothing was removed.`;
 
   // Network / unknown: keep the original message so it isn't hidden.
   return `Couldn't ${verb} "${name}". ${raw}`;
