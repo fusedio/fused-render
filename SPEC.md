@@ -6322,6 +6322,19 @@ world from one the user typed.
     table (the `pathname === "…"` comparisons in App.tsx) and requests each for
     real, so the next page added without a server entry fails a test rather than
     waiting for someone to press ⌘R.
+  - **SCH-11k** **A scheduled message is a CARD**, in the grid and shell the apps
+    hub already uses (`.apps-cards` / `.app-pcard`: auto-fill columns, `--bg-alt`
+    on a 12px radius, a hover lift) so it reads as the same kind of object as the
+    rest of the app's cards. Borrowed, not re-invented — these carry no thumbnail,
+    so only the shell comes across, and the columns are narrower (280 vs 300)
+    because a card here holds a few lines of text rather than a 16:10 preview. The
+    prompt is the card's subject and gets the body colour, clamped to four lines so
+    a grid keeps an even baseline with the full text in the title. Actions are
+    pinned to the foot (`margin-top: auto`) so buttons line up across a row however
+    long each prompt is. **Only `error` and `missed` tint their border** — the two
+    states that need a person — because a pill alone is easy to miss across twenty
+    cards, and if every card had an accent the accent would mean "this is a card"
+    rather than "look here".
   - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
     schedule in one place, with cancel and the outcomes, is the part that has
     nowhere else to live; it points at the composer for the scheduling itself.

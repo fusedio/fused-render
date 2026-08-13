@@ -104,7 +104,7 @@ function hoursText(seconds: number): string {
   return `${Math.max(1, Math.round(seconds / 60))} minutes`;
 }
 
-function EntryRow({
+function EntryCard({
   entry,
   onCancelled,
 }: {
@@ -123,7 +123,7 @@ function EntryRow({
     } catch (e) {
       // The 404 case is a real race, not a bug: the loop may have sent this
       // message while the user was reaching for Cancel. Show what the server
-      // said and reload, so the row corrects itself.
+      // said and reload, so the card corrects itself.
       setError((e as Error).message);
       onCancelled();
     } finally {
@@ -131,22 +131,48 @@ function EntryRow({
     }
   };
 
+  // A waiting message is described by when it is DUE; one that has already acted,
+  // by when it actually went out — not the same instant when the app caught up on
+  // it after being closed, which is why the title carries both.
+  const waiting = isLive(entry) || !entry.fired;
+  const stamp = waiting ? entry.due : entry.fired;
+  const stampTitle = waiting
+    ? formatDue(entry.due)
+    : `Due ${formatDue(entry.due)} · ran ${formatDue(entry.fired)}`;
+
   return (
-    <div className="prefs-section">
-      <div className="schedule-row-head">
+    <div className={`schedule-card schedule-card--${stateTone(entry)}`}>
+      <div className="schedule-card-head">
         <span className={`schedule-state schedule-state--${stateTone(entry)}`}>
           {stateLabel(entry)}
         </span>
-        {/* A waiting message is described by when it is DUE; one that has already
-            acted, by when it actually went out — which is not the same instant
-            when the app caught up on it after being closed. */}
-        {isLive(entry) || !entry.fired ? (
-          <span title={formatDue(entry.due)}>{relativeDue(entry.due)}</span>
-        ) : (
-          <span title={`Due ${formatDue(entry.due)} · ran ${formatDue(entry.fired)}`}>
-            {relativeDue(entry.fired)}
-          </span>
-        )}
+        <span className="schedule-card-when" title={stampTitle}>
+          {relativeDue(stamp)}
+        </span>
+      </div>
+
+      {/* The prompt is the card's subject — what the reader scans to find the one
+          they mean — so it gets the body colour and the room. Clamped rather than
+          scrolled: a card grid wants even heights, and the full text is one hover
+          away in the title. */}
+      <p className="schedule-card-message" title={entry.message}>
+        {entry.message}
+      </p>
+
+      <p className="schedule-card-meta">
+        <code title={entry.target}>{entry.target}</code>
+        <span>
+          {entry.session_id ? "continues an existing session" : "new session"}
+          {entry.permission_mode !== "auto" ? ` · ${entry.permission_mode} permissions` : ""}
+        </span>
+      </p>
+
+      {entry.error && <p className="schedule-card-why">{entry.error}</p>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+
+      {/* Actions last and pinned to the foot, so cards of different text lengths
+          still line their buttons up across a row. */}
+      <div className="schedule-card-actions">
         {entry.state === "pending" && (
           <button
             type="button"
@@ -157,22 +183,14 @@ function EntryRow({
             {busy ? "Cancelling…" : "Cancel"}
           </button>
         )}
-      </div>
-      <p className="schedule-message">{entry.message}</p>
-      <p className="deploy-muted">
-        <code>{entry.target}</code>
-        {entry.session_id ? " · continues an existing session" : " · new session"}
-        {entry.permission_mode !== "auto" ? ` · ${entry.permission_mode} permissions` : ""}
-      </p>
-      {/* The transcript is the only place that knows what the turn actually DID —
-          this page can say a message ran, never what came of it. The Inbox
-          addresses a session by exactly this id, so once the watcher has captured
-          it the row can hand the reader straight to the conversation.
-          Not gated on the sessions mount being ready: the /sessions route already
-          shows its own honest "Preparing…" state, and threading that readiness in
-          here would buy a disabled link instead of a slightly slow one. */}
-      {entry.claude_session_id && (
-        <p className="deploy-muted">
+        {/* The transcript is the only place that knows what the turn actually DID —
+            this page can say a message ran, never what came of it. The Inbox
+            addresses a session by exactly this id, so once the watcher has captured
+            it the card can hand the reader straight to the conversation.
+            Not gated on the sessions mount being ready: the /sessions route already
+            shows its own honest "Preparing…" state, and threading that readiness in
+            here would buy a disabled link instead of a slightly slow one. */}
+        {entry.claude_session_id && (
           <button
             type="button"
             className="btn btn-secondary"
@@ -182,10 +200,8 @@ function EntryRow({
           >
             Open in Inbox
           </button>
-        </p>
-      )}
-      {entry.error && <p className="deploy-muted">{entry.error}</p>}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
+        )}
+      </div>
     </div>
   );
 }
@@ -255,7 +271,9 @@ export default function Scheduled() {
           {live.length === 0 ? (
             <p className="deploy-muted">Nothing scheduled.</p>
           ) : (
-            live.map((e) => <EntryRow key={e.id} entry={e} onCancelled={reload} />)
+            <div className="schedule-cards">
+              {live.map((e) => <EntryCard key={e.id} entry={e} onCancelled={reload} />)}
+            </div>
           )}
         </section>
       )}
@@ -270,9 +288,11 @@ export default function Scheduled() {
             Most recent first. Kept rather than cleared: a message that failed or was missed is
             exactly the one worth being able to read afterwards.
           </p>
-          {past.map((e) => (
-            <EntryRow key={e.id} entry={e} onCancelled={reload} />
-          ))}
+          <div className="schedule-cards">
+            {past.map((e) => (
+              <EntryCard key={e.id} entry={e} onCancelled={reload} />
+            ))}
+          </div>
         </section>
       )}
     </div>
