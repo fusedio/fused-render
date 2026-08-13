@@ -166,15 +166,35 @@ def test_deferring_shows_the_approvals_mode_that_will_actually_run(code):
     than the parked turn it avoids."""
     assert "function scheduledPerm(" in code
     assert 'mode === "prompt" ? "auto" : mode' in code
-    # the display follows the choice, in both directions
-    assert "function syncPermForWhen(" in code
-    assert code.count("syncPermForWhen()") >= 3  # when-change, perm-change, + itself
+
+    # ONE owner of pill state. The first cut had a second function running after
+    # each syncSelects, and every desync came from a caller that ran one and not
+    # the other — `resetWhen` leaving `auto` on screen after a successful schedule,
+    # a model change writing the params value back over the substitution. So the
+    # deferral is decided INSIDE syncSelects and there is nothing to forget.
+    assert "function syncPermForWhen(" not in code
+    sync = code[code.index("function syncSelects()"):]
+    sync = sync[:sync.index("\n}")]
+    assert "whenChoice()" in sync, "syncSelects must know whether a time is picked"
+    assert "scheduledPerm(" in sync
+    # a mode that cannot be honoured is not OFFERED — the pill informs, it does not
+    # argue with a choice the user just made (which is what substituting on every
+    # change did: picking "ask every time" snapped straight back to auto)
+    assert "opt.disabled = deferred" in sync
+    # never written to params: the CHAT's own mode is not what is being changed
+    assert 'params.set("permission"' not in sync
+
     # and the wire carries the effective mode, not the one that was on screen before
     assert "permission_mode: mode," in _schedule_message_fn(code)
-    # …without writing it to params: the CHAT's own mode is not being changed
-    perm_fn = code[code.index("function syncPermForWhen("):]
-    perm_fn = perm_fn[:perm_fn.index("\n}")]
-    assert "params.set" not in perm_fn
+
+
+def test_resetting_the_time_hands_the_approvals_pill_back(code):
+    """Setting the When value alone left the row reading `auto` with `prompt` still
+    disabled after a successful schedule, while the next send-now would have used
+    `prompt`. It goes through syncSelects, which owns both."""
+    body = code[code.index("function resetWhen()"):]
+    body = body[:body.index("\n}")]
+    assert "syncSelects()" in body
 
 
 def test_the_presets_include_one_short_enough_to_watch(code):

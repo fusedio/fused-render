@@ -316,6 +316,44 @@ def test_one_bad_entry_does_not_stop_the_rest_of_the_tick(target, monkeypatch):
     assert states == {"boom": schedule.ERROR, "fine": schedule.SENT}
 
 
+def test_two_messages_resuming_one_session_do_not_overlap(target, spawned):
+    """A spawn returns when the process is away, not when the turn ends, so two
+    sends that resume the SAME session would otherwise run concurrent
+    `claude --resume` processes over one transcript. The second waits."""
+    schedule.create(str(target), "first", _in(-20), session_id="sess-a")
+    schedule.create(str(target), "second", _in(-10), session_id="sess-a")
+
+    schedule.tick()
+
+    assert [c["message"] for c in spawned] == ["first"]
+    states = {e["message"]: e["state"] for e in schedule.list_entries()}
+    assert states == {"first": schedule.SENT, "second": schedule.PENDING}
+
+    # still busy: the first turn has no verdict yet
+    schedule.tick()
+    assert [c["message"] for c in spawned] == ["first"]
+
+    # once it finishes, the follower goes
+    first = next(e for e in schedule.list_entries() if e["message"] == "first")
+    schedule._update(first["id"], turn="ok")
+    schedule.tick()
+    assert [c["message"] for c in spawned] == ["first", "second"]
+
+
+def test_different_sessions_and_fresh_sends_never_block_each_other(target, spawned):
+    """The hold is per-session, and a fresh-session entry ("" session_id) collides
+    with nothing — otherwise one slow conversation would stall every message."""
+    schedule.create(str(target), "in a", _in(-30), session_id="sess-a")
+    schedule.create(str(target), "in b", _in(-20), session_id="sess-b")
+    schedule.create(str(target), "fresh one", _in(-15))
+    schedule.create(str(target), "fresh two", _in(-10))
+
+    schedule.tick()
+
+    assert sorted(c["message"] for c in spawned) == [
+        "fresh one", "fresh two", "in a", "in b"]
+
+
 def test_session_id_rides_through_to_the_helper(target, spawned):
     """A scheduled message can continue an existing conversation rather than
     always opening a new one."""

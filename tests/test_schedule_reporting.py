@@ -63,6 +63,19 @@ def _kinds():
     return [e["kind"] for e in schedule.event_log()]
 
 
+def _no_watcher_thread(monkeypatch):
+    """Stop `_send` from starting a watcher THREAD, and hand back the real
+    `_watch_turn` to drive synchronously instead.
+
+    A daemon thread that emits is a cross-test leak, not a detail: the event log
+    is process-global and cleared per test, so a watcher still finishing when the
+    next test starts appends into ITS log. That is exactly what turned two
+    unrelated assertions red on CI while passing locally on timing."""
+    real = schedule._watch_turn
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
+    return real
+
+
 class FakeAgent:
     """Stands in for the claude backend: records what was cancelled."""
 
@@ -269,10 +282,14 @@ def test_a_watch_that_ends_without_a_verdict_closes_the_row(target, monkeypatch)
     monkeypatch.setattr(claude_spawn, "load_agent", lambda: FakeAgent())
     monkeypatch.setattr(claude_spawn, "record_session_when_ready",
                         lambda agent, run_id, on_tick=None: None)
+    # Drive the watcher HERE, not on the thread `_send` starts. Letting that
+    # thread run made this test emit into whatever event log was current when it
+    # got round to finishing — it leaked a `failed` into two other tests on CI.
+    watch = _no_watcher_thread(monkeypatch)
 
     entry = _overdue(target)
     schedule.tick()
-    schedule._watch_turn(entry, "r-1")
+    watch(entry, "r-1")
 
     stored = schedule.list_entries()[0]
     assert stored["turn"] == "unknown"        # honest: the app stopped being able to say
@@ -300,10 +317,11 @@ def test_a_load_agent_failure_still_closes_the_row(target, monkeypatch):
     monkeypatch.setattr(claude_spawn, "spawn_helper", lambda *a, **k: {"run_id": "r-2"})
     monkeypatch.setattr(claude_spawn, "load_agent",
                         lambda: (_ for _ in ()).throw(RuntimeError("no backend")))
+    watch = _no_watcher_thread(monkeypatch)
 
     entry = _overdue(target)
     schedule.tick()
-    schedule._watch_turn(entry, "r-2")
+    watch(entry, "r-2")
 
     assert schedule.list_entries()[0]["turn"] == "unknown"
     assert _kinds() == [schedule.EVENT_FAILED]

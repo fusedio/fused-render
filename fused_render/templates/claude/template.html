@@ -5828,25 +5828,32 @@ function scheduledPerm(mode) {
   return mode === "prompt" ? "auto" : mode;
 }
 
-// Show the effective mode while a time is selected, and hand the pills back to
-// their own state when it is not. Never writes `permission` to params: the chat's
-// own mode is not being changed, only the display of what THIS message will use.
-function syncPermForWhen() {
-  const deferred = whenChoice() !== WHEN_NOW;
-  if (!deferred) { syncSelects(); return; }
-  document.querySelectorAll(".perm-sel").forEach((el) => {
-    el.value = scheduledPerm(el.value);
-    fitSelect(el);
-  });
-}
+// NOTE: the deferral's effect on the approvals pill lives inside `syncSelects`,
+// not in a second function beside it. The first cut had `syncPermForWhen` running
+// after each `syncSelects`, and every desync came from the same place — a caller
+// that ran one and not the other:
+//
+//   * `resetWhen` put the pill back to "Send now" without restoring approvals, so
+//     after a successful schedule the row still read `auto` (with `prompt` still
+//     disabled) while the next send-now would have used `prompt`;
+//   * a model or effort change — or `defaults`/prefs landing asynchronously —
+//     called `syncSelects` alone, writing the params value back over the
+//     substitution, so the pill could read "ask every time" for a message that
+//     was going to run as `auto`.
+//
+// Both are "two functions, one state" bugs, so the state has ONE owner. Every
+// existing caller of `syncSelects` is now correct without knowing scheduling
+// exists.
 
 // Back to "Send now" after every send. See the note above: a deferral must not
 // outlive the message it was chosen for.
 function resetWhen() {
-  document.querySelectorAll(".when-sel").forEach((el) => {
-    el.value = WHEN_NOW;
-    fitSelect(el);
-  });
+  document.querySelectorAll(".when-sel").forEach((el) => { el.value = WHEN_NOW; });
+  // Through syncSelects, so the approvals pill is handed back to the user's own
+  // mode and its options are re-enabled. Setting the value alone left the row
+  // reading `auto` (with `prompt` still disabled) after a successful schedule,
+  // while the next send-now would have used `prompt`.
+  syncSelects();
 }
 
 // An appearance:none select keeps the width of its WIDEST option, so a short
@@ -5870,8 +5877,18 @@ function syncSelects() {
   document.querySelectorAll(".model-sel").forEach((el) => { el.value = curModel(); });
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = curEffort(); });
   const perm = fused.params.get("permission");
+  const chosen = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
+  // A DEFERRED message cannot honour every mode (see scheduledPerm), so while a
+  // time is selected the pill shows the one that will actually run and stops
+  // offering the ones that will not. Decided HERE, inside the one function that
+  // owns pill state, so a caller cannot get it half-right — see the note above
+  // scheduledPerm for the desyncs that came of splitting this in two.
+  const deferred = whenChoice() !== WHEN_NOW;
   document.querySelectorAll(".perm-sel").forEach((el) => {
-    el.value = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
+    for (const opt of el.options) {
+      opt.disabled = deferred && opt.value !== scheduledPerm(opt.value);
+    }
+    el.value = deferred ? scheduledPerm(chosen) : chosen;
   });
   document.querySelectorAll(".model-sel, .effort-sel, .perm-sel, .when-sel").forEach(fitSelect);
 }
@@ -5883,9 +5900,9 @@ document.querySelectorAll(".when-sel").forEach((el) =>
       other.value = el.value;
       fitSelect(other);
     });
-    // Picking a time can change which approvals mode actually applies, so the
-    // pill next door is re-read here rather than left showing something else.
-    syncPermForWhen();
+    // Picking a time can change which approvals mode actually applies, and
+    // syncSelects is what knows that — so the whole pill row is re-read.
+    syncSelects();
   }));
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
@@ -5895,9 +5912,6 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
   el.addEventListener("change", () => {
     fused.params.set("permission", el.value);
     syncSelects();
-    // syncSelects has just restored the params value, which for a deferred send
-    // may not be the mode that will run — put the effective one back on screen.
-    syncPermForWhen();
   }));
 syncSelects();
 
@@ -8413,8 +8427,9 @@ async function scheduleMessage(message, choice) {
     return false;
   }
   const perm = document.querySelector(".perm-sel");
-  // The mode that will really run, not merely the one on screen — though after
-  // syncPermForWhen those are the same thing, and this is what keeps them so.
+  // The mode that will really run, not merely the one on screen — though while a
+  // time is selected syncSelects keeps those the same thing, and this is the
+  // backstop that means a desync could never send under a mode nobody saw.
   const mode = scheduledPerm(perm ? perm.value : "");
   // CONTINUE THIS CONVERSATION when there is one. Scheduling from an open chat is
   // "and then do this next", so a fresh session would throw away the thread the

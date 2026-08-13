@@ -711,6 +711,22 @@ def _close_unwatched(entry: dict, reason: str) -> None:
     _emit(EVENT_FAILED, entry, reason)
 
 
+def _busy_sessions(entries: list[dict]) -> set[str]:
+    """Session ids with a scheduled send already in flight — claimed but not yet
+    spawned (`sending`), or spawned with a turn still running (`sent`, no `turn`
+    verdict). Fresh-session entries (`session_id` "") are never busy: they collide
+    with nothing."""
+    busy = set()
+    for entry in entries:
+        session = str(entry.get("session_id") or "")
+        if not session:
+            continue
+        state = entry.get("state")
+        if state == SENDING or (state == SENT and not entry.get("turn")):
+            busy.add(session)
+    return busy
+
+
 def tick(now: datetime | None = None) -> list[dict]:
     """One pass: sweep, then claim-and-send each due message ONE AT A TIME.
 
@@ -718,14 +734,44 @@ def tick(now: datetime | None = None) -> list[dict]:
     process dying inside one helper leaves its siblings `pending` — still
     sendable on the next tick — instead of stranded mid-claim (see `_claim_due`).
 
+    **One send at a time per resumed session.** A spawn returns as soon as the
+    detached process is away, not when the turn ends, so without this two messages
+    that resume the SAME session — two "in 5 minutes" landing in one tick, or a
+    follow-up coming due while an earlier one is still working — would run
+    concurrent `claude --resume` processes over one transcript. Entries targeting a
+    busy session are simply left `pending` and picked up by a later tick; they can
+    in principle be deferred until the catch-up bound calls them `missed`, which is
+    the honest outcome for "the conversation it belongs to never went quiet".
+
+    KNOWN GAP, stated rather than implied: this serialises the SCHEDULER against
+    itself. A scheduled resume can still land while the user's own interactive turn
+    on that session is live, which this module cannot see — the chat owns that run,
+    and the schedule store has no record of it.
+
     Returns the entries actually claimed and attempted, which is the seam the
     tests drive directly instead of waiting on the loop."""
     now = now or _now()
     sent: list[dict] = []
-    for entry_id in _claim_due(now):
+    due = _claim_due(now)
+    if not due:
+        return sent
+    with _lock:
+        entries = _read()
+    busy = _busy_sessions(entries)
+    sessions = {str(e["id"]): str(e.get("session_id") or "") for e in entries}
+    for entry_id in due:
+        session = sessions.get(entry_id, "")
+        if session and session in busy:
+            logger.debug("holding %s: session %s already has a send in flight",
+                         entry_id, session)
+            continue
         entry = _claim(entry_id, now)
         if entry is None:
             continue  # cancelled in the window between the sweep and the claim
+        if session:
+            # This tick's own sends count too, or two entries due in the same pass
+            # would both pass the check above.
+            busy.add(session)
         sent.append(entry)
         _send(entry)
     return sent
