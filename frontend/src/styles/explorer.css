@@ -583,8 +583,22 @@
   border-width: 1.5px;
 }
 
+/* One grid cell, every mode name stacked in it: the hidden ghosts set the
+   slot's width to the WIDEST name, so the trigger (and the popup floored to
+   it) keeps one width no matter which mode is active. */
 .mode-menu-label {
   font-weight: 500;
+  display: inline-grid;
+  text-align: left;
+}
+
+.mode-menu-label > span {
+  grid-area: 1 / 1;
+  white-space: nowrap;
+}
+
+.mode-menu-label-ghost {
+  visibility: hidden;
 }
 
 .bar-caret {
@@ -608,7 +622,7 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  min-width: 180px;
+  width: max-content;
   padding: 4px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -616,13 +630,12 @@
   box-shadow: 0 8px 24px var(--shadow-md);
 }
 
-/* The 180px floor is sized for MODE rows — icon + label, which need to hold a
-   column. An overflow menu carries plain labels, so it sizes to its content
-   instead; on a one-item menu ("Open in explorer") the floor was ~50px of
-   dead width. */
+/* No fixed floor: the popup hugs its content, and the mode menu floors itself
+   to its trigger's width (inline min-width from useMenuAnchor) so the menu
+   never reads wider than the control that opened it. The overflow menu keeps
+   a small floor so a one-item menu stays a comfortable click target. */
 .bar-overflow .bar-menu-popup {
   min-width: 120px;
-  width: max-content;
 }
 
 .bar-menu-item {
@@ -986,6 +999,10 @@
   width: 1px;
   background: var(--border);
   pointer-events: none;
+  /* Above the pane's own sticky table header (th is z-index:1 with an opaque
+     --bg), which otherwise paints over this line for exactly the header row's
+     height — a seam with a bite taken out of it. */
+  z-index: 2;
 }
 
 /* The pane itself: header bar + iframe / mini list / placeholder card. */
@@ -1290,9 +1307,9 @@ table.listing-table tr.skel-row:hover {
    box does not grow, so the free width stays with the crumbs (whose trailing
    whitespace is the click-to-edit target).
 
-   It is only at rest. The first keystroke hands the box the whole strip — see
-   the `.searching` rules below — so this width has to serve the empty state
-   and nothing else. */
+   It is only at rest. Focus hands the box the whole strip — see the
+   `.searching` / `.expanded` rules below — so this width has to serve the
+   unfocused empty state and nothing else. */
 .crumb-search-slot .listing-search-box {
   /* `width`, not a flex-basis. The row is sized by its content, and a flex
      item's contribution to that is its MAX-content — for a bare `type=search`
@@ -1302,7 +1319,10 @@ table.listing-table tr.skel-row:hover {
      intrinsic, so the row measures what it actually shows. */
   flex: 0 1 auto;
   width: 150px;
-  min-width: 96px;
+  /* The squeeze floor, and it moved with the in-field magnifier: the glyph took
+     28px of the input as padding, so the old 96px left ~58px of text and
+     started clipping the placeholder it was chosen to hold. */
+  min-width: 124px;
   /* Same number, declared where JS can read it: the tight-bar fold
      (Listing.tsx) must know how much strip the box will take when it UNFOLDS,
      and while folded its own `width` reads 0 (.iconized below). A custom
@@ -1319,13 +1339,14 @@ table.listing-table tr.skel-row:hover {
 
    But they stop at 120px rather than at zero, because a path bar scrolled down
    to nothing is no longer a path bar. Past that point the search box takes
-   over and gives up its own width, down to 96px — still the full "Search…"
-   placeholder, just with no slack around it. Between the two floors the strip
-   stays one line at any width the split allows, which is what keeps it the
-   same height as the pane header across the divider.
+   over and gives up its own width, down to 124px — still the in-field
+   magnifier and the full "Search…" placeholder, just with no slack around it.
+   Between the two floors the strip stays one line at any width the split
+   allows, which is what keeps it the same height as the pane header across the
+   divider.
 
    And past BOTH floors — the path still ellipsized with the box already at
-   96px — the box stops being worth its strip at all: Listing.tsx measures
+   124px — the box stops being worth its strip at all: Listing.tsx measures
    that state and folds the resting box into a 28px magnifier (.iconized
    below), handing the difference back to the path. The path outranks an idle
    input; a click on the magnifier (or typing, ever) gets the box back. */
@@ -1360,16 +1381,24 @@ table.listing-table tr.skel-row:hover {
   opacity: 0;
 }
 
-/* …and once there is a query, the crumbs get out of the way entirely.
+/* …and once the box is in use, the crumbs get out of the way entirely.
    Sharing the row is a compromise that only pays while both halves are in
-   use, and the moment someone types, the path is the half they are not
-   looking at — the results below no longer belong to it anyway. So the
+   use, and the moment someone reaches for the box, the path is the half they
+   are not looking at — the results below no longer belong to it anyway. So the
    crumbs stand down and the box takes the whole strip (max-width off), which
    is the state where a long query most needs the room.
 
-   Reversible on a keystroke: clearing the query (or Esc) brings the path
-   straight back, so nothing is lost, only deferred. */
-#breadcrumb:has(.listing-search.searching) .crumbs {
+   TWO CLASSES, one geometry. `.searching` is a non-empty query; `.expanded` is
+   the box pinned open (focused, or the tight-bar magnifier clicked — Listing's
+   `pinnedOpen`). Neither implies the other: a query outlives the focus that
+   typed it, and a box is pinned open long before there is anything in it. The
+   full-width state is the same in both, so every rule down to the grow pair
+   below names both rather than picking one and leaving the other narrow.
+
+   Reversible: clearing the query (or Esc), or blurring an empty box, brings
+   the path straight back, so nothing is lost, only deferred. */
+#breadcrumb:has(.listing-search.searching) .crumbs,
+#breadcrumb:has(.listing-search.expanded) .crumbs {
   display: none;
 }
 
@@ -1390,7 +1419,8 @@ table.listing-table tr.skel-row:hover {
    is not disarmed by a keystroke (see useUpdateButton in Breadcrumb.tsx).
    Scoped under #breadcrumb because panel mode renders one star per pane from the
    same component. */
-#breadcrumb:has(.listing-search.searching) .bookmark-star-btn {
+#breadcrumb:has(.listing-search.searching) .bookmark-star-btn,
+#breadcrumb:has(.listing-search.expanded) .bookmark-star-btn {
   display: none;
 }
 
@@ -1398,12 +1428,25 @@ table.listing-table tr.skel-row:hover {
    its box) and so does the BOX (idle `0 1 200px`). Only then does the field
    actually span the strip rather than sitting at its resting width with the
    freed-up crumb width as dead space beside it. */
-#breadcrumb:has(.listing-search.searching) .listing-search {
+#breadcrumb:has(.listing-search.searching) .listing-search,
+#breadcrumb:has(.listing-search.expanded) .listing-search {
   flex: 1 1 auto;
 }
 
-#breadcrumb:has(.listing-search.searching) .listing-search-box {
+#breadcrumb:has(.listing-search.searching) .listing-search-box,
+#breadcrumb:has(.listing-search.expanded) .listing-search-box {
   flex: 1 1 auto;
+  /* The open sweep, and it is declared HERE rather than on the resting box on
+     purpose: a transition only exists while the class that carries it does, so
+     opening animates and closing snaps back. Closing must snap — the box
+     collapsing over 130ms while the crumbs are already back is exactly the
+     window in which the tight-bar fold re-measures (Listing.tsx: its
+     ResizeObserver is live again the instant `pinnedOpen` drops), and it would
+     read the still-wide box as "no free strip" and fold for a frame.
+     `flex-grow` is the animated property because grow, not `width`, is what
+     spans the strip; the row's own grow above is instant, so the field opens
+     leftward from the bar's right edge (`justify-content: flex-end`). */
+  transition: flex-grow 130ms ease-out;
 }
 
 /* Terse now ("1.2K · 45.1K…" rather than the full sentence — Listing.tsx keeps
@@ -1454,6 +1497,30 @@ table.listing-table tr.skel-row:hover {
 .listing-search .listing-search-input {
   width: 100%;
   padding-right: 10px;
+  /* Room for the magnifier below: 9px gutter + a 14px glyph + 5px before the
+     text. The glyph is out of flow, so this padding is the only thing keeping
+     the placeholder and the caret off it. */
+  padding-left: 28px;
+}
+
+/* The magnifier INSIDE the field's left edge — the same glyph the tight-bar
+   fold stands in with (.listing-search-open), so folding and unfolding reads as
+   one icon moving rather than two different marks, and it is the one part of
+   the box that survives the placeholder being typed over.
+
+   Absolutely positioned, so it costs the box no layout at either resting width
+   and the chips pinned at the right edge are untouched. `pointer-events: none`
+   is what makes it feel like part of the input rather than a control on top of
+   it: the press falls through to the input underneath, and that focus is what
+   expands the box (Listing.tsx `pinnedOpen`). */
+.listing-search-glyph {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  color: var(--fg-muted);
+  pointer-events: none;
 }
 
 /* Room for whichever chip is pinned inside the right edge, sized for the

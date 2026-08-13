@@ -87,6 +87,7 @@ import {
   nextSearchSelection,
   rowPressAction,
   selectionClaimed,
+  type RowPressAction,
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
@@ -340,9 +341,11 @@ export default function Listing({
   // out with the PATH still ellipsized on a narrow middle column, while the
   // idle box holds ~100px of placeholder. Past that point the box becomes a
   // 28px icon and the path gets the strip back. `tightBar` is the measured
-  // fact; `pinnedOpen` is the user overriding it (clicked the icon — the box
-  // stays until it blurs empty). A non-empty query outranks both: `.searching`
-  // already stands the crumbs down and takes the whole strip.
+  // fact; `pinnedOpen` is the user overriding it (clicked the icon, or focused
+  // the box — the box stays until it blurs empty), and it now also renders
+  // `.expanded`, so the override is the SAME full-strip box a query gets
+  // rather than a second, narrower open state. A non-empty query outranks
+  // both: `.searching` stands the crumbs down and takes the whole strip too.
   const [tightBar, setTightBar] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
   // How many times the tight-bar measurement may flip at one bar width before
@@ -879,7 +882,12 @@ export default function Listing({
   // Left button only. The right button belongs to the context menu, which does
   // its own selection handling (openRowMenu below), and the middle button is
   // the browser's.
-  const pressRef = useRef<{ path: string; x: number; y: number } | null>(null);
+  const pressRef = useRef<{
+    path: string;
+    x: number;
+    y: number;
+    action: RowPressAction;
+  } | null>(null);
 
   const onRowPointerDown = (e: React.PointerEvent, path: string) => {
     if (e.button !== 0) return;
@@ -888,9 +896,12 @@ export default function Listing({
       shift: e.shiftKey,
       inMultiSelection: selectedSet.has(path) && sel.paths.length > 1,
     });
-    // Remembered for the deferred case only, but recorded for every press so
-    // the release can measure how far the pointer travelled.
-    pressRef.current = action === "defer" ? { path, x: e.clientX, y: e.clientY } : null;
+    // Recorded for EVERY press, not only the deferred one: the release measures
+    // how far the pointer travelled, and in an EMBEDDED listing it also OPENS —
+    // which it may do only for a press this handler read as plain. The decided
+    // action rides along rather than the raw modifiers, so the release can never
+    // disagree with the press about which of the four gestures this was.
+    pressRef.current = { path, x: e.clientX, y: e.clientY, action };
     if (action === "defer") return;
     if (action === "select") {
       selectOnly(path);
@@ -900,6 +911,20 @@ export default function Listing({
     if (action === "extend") extendTo(path);
     else toggleSelected(path);
   };
+
+  // SINGLE CLICK OPENS — in an EMBEDDED listing only, i.e. in the preview
+  // pane's `_listing` mode (ListingPreviewPane). That listing is not a place to
+  // build a selection: it is a look INSIDE the folder the middle panel has
+  // selected, and the one thing to do with a row there is go to it. The middle
+  // panel keeps the unified select-on-press / open-on-double-click model, which
+  // is why the gate is `embedded` and not the pane's presence (see the note on
+  // onRowDoubleClick, and listing/selection's source test).
+  //
+  // Only a PLAIN press opens. Shift and Mod still mean range and toggle even
+  // here, so the pane's own multi-selection (its context menu, its file ops)
+  // stays reachable; those two actions are exactly what this excludes.
+  const openOnRelease = (action: RowPressAction) =>
+    embedded && (action === "select" || action === "defer");
 
   // The deferred half: a plain press inside a multi-selection collapses onto
   // the pressed row when the button comes up, and ONLY if the press stayed
@@ -911,12 +936,20 @@ export default function Listing({
   // press that became a native drag usually never delivers a pointerup at all,
   // so this mostly does not run in that case; the slop covers the rest,
   // including a drag the user cancelled.
+  //
+  // The release is also where an EMBEDDED listing OPENS on a single click
+  // (openOnRelease above). Both halves want the same two facts — same row, press
+  // stayed still — so they share the one handler and the one slop test.
   const onRowPointerUp = (e: React.PointerEvent, path: string) => {
     const press = pressRef.current;
     pressRef.current = null;
     if (!press || press.path !== path) return;
     if (passedDragSlop({ x: press.x, y: press.y }, { x: e.clientX, y: e.clientY })) return;
-    selectOnly(path);
+    if (press.action === "defer") selectOnly(path);
+    if (openOnRelease(press.action)) {
+      const row = rowCtxByPath.get(path);
+      if (row) navigate(row.path, { isDir: row.isDir });
+    }
   };
 
   // Double-click OPENS. Unconditionally: the same gesture in the same folder
@@ -925,7 +958,10 @@ export default function Listing({
   // opens the same target from the keyboard.
   // No single/double-click delay timer: the first click of a double-click
   // selects, which is harmless — any pane fetch it starts is superseded or
-  // unmounted by the navigation the second click triggers.
+  // unmounted by the navigation the second click triggers. In an EMBEDDED
+  // listing that first click has already OPENED (openOnRelease), so this rarely
+  // gets to run there; it stays wired anyway, because a gesture that opens must
+  // not become a no-op in the one surface whose release beat it to it.
   const onRowDoubleClick = (row: RowCtx) => {
     navigate(row.path, { isDir: row.isDir });
   };
@@ -1433,6 +1469,14 @@ export default function Listing({
               className={
                 "listing-search" +
                 (searching ? " searching" : "") +
+                // `expanded` is the FOCUS half of the same geometry `.searching`
+                // owns: a box being typed into gets the whole strip, and it
+                // should not have to wait for the first keystroke to get it.
+                // Two classes rather than one because neither implies the other
+                // — a query can outlive the focus that entered it, and a pinned
+                // box is usually still empty — and the strip-wide rules in
+                // explorer.css name both.
+                (pinnedOpen ? " expanded" : "") +
                 (tightBar && !searching && !pinnedOpen ? " iconized" : "")
               }
             >
@@ -1467,20 +1511,36 @@ export default function Listing({
                   (widePin ? " wide-pin" : "")
                 }
               >
+                {/* The same magnifier the fold stands in with, now inside the
+                    field's left edge — so folding and unfolding is one glyph
+                    moving rather than two different marks, and an expanded box
+                    still says what it is once the placeholder is typed over.
+                    Absolutely positioned and click-through (explorer.css): it
+                    costs the box no layout, leaves the chips pinned at the
+                    right edge alone, and a press on it lands on the input
+                    underneath, which is the focus that expands the box. */}
+                <span className="listing-search-glyph" aria-hidden="true">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="7" />
+                    <line x1="16.5" y1="16.5" x2="21" y2="21" />
+                  </svg>
+                </span>
                 <input
                   ref={searchInputRef}
                   type="search"
                   className="listing-search-input"
                   // Just "Search…": the row shares the crumb bar now, and the
-                  // resting box is deliberately small (it grows to the whole
-                  // strip on the first keystroke), so the placeholder has to
-                  // fit that box rather than set its width. "Start typing to
-                  // search" was instructions for a control that needs none.
+                  // resting box is deliberately small (focus hands it the whole
+                  // strip), so the placeholder has to fit that box rather than
+                  // set its width. "Start typing to search" was instructions
+                  // for a control that needs none.
                   placeholder="Search…"
                   value={query}
-                  // Focus pins the box open, whatever routed it here — the
-                  // magnifier click, or type-to-search landing focus on the
-                  // zero-width folded input (useListingSelection's
+                  // Focus pins the box open — and open means the whole strip
+                  // (`.expanded` above), because a box being typed into is what
+                  // the bar is for. Whatever routed the focus here — a click in
+                  // the field, the magnifier click, or type-to-search landing on
+                  // the zero-width folded input (useListingSelection's
                   // printable-key branch; the .iconized CSS keeps the input
                   // focusable for exactly this). The pin also holds while a
                   // focused user deletes their query — the box must not fold

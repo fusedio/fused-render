@@ -25,10 +25,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 
-// Keep the popup on screen: it is right-aligned to the trigger in spirit, but
-// clamping the LEFT edge is what actually matters near the window's edge.
-const MENU_MIN_W = 180;
-
 // Exactly one of left/right is set: a left-anchored popup grows rightwards from
 // the trigger's left edge; a right-anchored one hangs from its right edge so
 // the two right edges line up — what a right-zone control wants. The mode
@@ -37,6 +33,9 @@ interface MenuPos {
   top: number;
   left?: number;
   right?: number;
+  // The trigger's own width, so the popup can floor itself to it (a menu
+  // noticeably wider than its trigger reads as belonging to something else).
+  width: number;
 }
 
 // Open/close plumbing shared by both menus. Closes on outside pointerdown, on
@@ -81,10 +80,11 @@ function useMenuAnchor(align: "left" | "right" = "left") {
     // the viewport.
     setPos(
       align === "right"
-        ? { top: r.bottom + 4, right: Math.max(4, window.innerWidth - r.right) }
+        ? { top: r.bottom + 4, right: Math.max(4, window.innerWidth - r.right), width: r.width }
         : {
             top: r.bottom + 4,
-            left: Math.max(4, Math.min(r.left, window.innerWidth - MENU_MIN_W - 4)),
+            left: Math.max(4, Math.min(r.left, window.innerWidth - r.width - 4)),
+            width: r.width,
           }
     );
   };
@@ -204,7 +204,18 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
         <span className="mode-menu-icon">
           {switching ? <span className="mode-icon-spinner" /> : activeEntry?.icon}
         </span>
-        <span className="mode-menu-label">{label}</span>
+        {/* The label slot is sized by EVERY mode name at once (hidden ghost
+            rows stacked on one grid cell), so the trigger holds the widest
+            name's width: switching modes doesn't resize the button, and the
+            popup — floored to the trigger — stays the same width too. */}
+        <span className="mode-menu-label">
+          {entries.map((e) => (
+            <span key={e.mode} className="mode-menu-label-ghost" aria-hidden="true">
+              {modeTitle(e.mode)}
+            </span>
+          ))}
+          <span>{label}</span>
+        </span>
         <CaretIcon open={pos !== null} />
       </button>
       {pos && (
@@ -212,7 +223,7 @@ export function ModeMenu({ entries, active, busy, onSelect }: ModeMenuProps) {
           className="bar-menu-popup"
           role="menu"
           aria-label="View mode"
-          style={{ top: pos.top, left: pos.left, right: pos.right }}
+          style={{ top: pos.top, left: pos.left, right: pos.right, minWidth: pos.width }}
         >
           {entries.map((e) => (
             <button
