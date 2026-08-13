@@ -25,8 +25,7 @@ import { useMountHealth } from "@platform/lib/mountHealth";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
-import ShellSidebar from "@shell/ShellSidebar";
-import ExplorerSidebar from "@apps/explorer/sidebar/ExplorerSidebar";
+import GlobalSidebar from "@shell/GlobalSidebar";
 import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -807,16 +806,11 @@ export default function App({ config }: { config: Config }) {
     );
   }
 
-  // Each sub-app owns its sidebar; the shell only picks which one matches the
-  // active route: explorer on fs-path routes, the shell's own app-switcher
-  // everywhere else (homepages, settings, learn). The builder's own sidebar was
-  // the third, chosen by the /apps/<tag>/<name> route — gone with it, and an app
-  // folder now gets the explorer's, which is the sidebar for where it is.
-  const sidebar = fsPath || isPanel || isTabs || isBookmark ? (
-    <ExplorerSidebar config={config} />
-  ) : (
-    <ShellSidebar config={config} />
-  );
+  // ONE sidebar for every route (it replaced the per-context pair: the
+  // explorer's on fs routes, the shell app-switcher elsewhere). The shell no
+  // longer picks — GlobalSidebar carries nav, recents, bookmarks and the
+  // bottom Preferences menu itself.
+  const sidebar = <GlobalSidebar config={config} />;
 
   return (
     <div id="app">

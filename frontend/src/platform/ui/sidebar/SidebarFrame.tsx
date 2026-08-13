@@ -61,18 +61,23 @@ export function NavItem({
   icon,
   id,
   extra,
+  active,
 }: {
   href: string;
   label: string;
   icon: React.ReactNode;
   id?: string;
   extra?: React.ReactNode;
+  /** Override the exact-pathname highlight — for entries that are "home" to a
+      whole family of routes (the global sidebar's Explorer row is active on
+      every fs-path/panel/tab route, not just /explorer itself). */
+  active?: boolean;
 }) {
   return (
     <a
       href={href}
       id={id}
-      className={"sidebar-item" + (location.pathname === href ? " active" : "")}
+      className={"sidebar-item" + ((active ?? location.pathname === href) ? " active" : "")}
       onClick={(e) => {
         e.preventDefault();
         navigateUrl(href);

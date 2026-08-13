@@ -9,7 +9,7 @@
 //
 // The shell gives it one sidebar route under the CLAUDE heading, gated on
 // `useClaudeConfigAvailable` (./available.ts, checked from
-// shell/ShellSidebar.tsx and dispatched in shell/App.tsx): `/claude-config`,
+// shell/GlobalSidebar.tsx and dispatched in shell/App.tsx): `/claude-config`,
 // the settings panel, whose "MD Files" section is the CLAUDE.md explorer
 // (`?cctab=claudemd`; the old `/claude-md` page redirects there). It briefly
 // also hung off the Preferences page as a tab; a settings page with a second
