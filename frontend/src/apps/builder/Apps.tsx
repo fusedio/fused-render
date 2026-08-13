@@ -16,7 +16,7 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 import { CommunityGrid, COMMUNITY_TAG } from "@apps/builder/CommunityGrid";
-import { useCommunityMountReady, useNavEpoch } from "@platform/lib/hooks";
+import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -87,25 +87,22 @@ export default function Apps({ config }: { config: Config }) {
   }, [nonce]);
 
   // The community tab lives alongside the workspace tags but is its own
-  // surface (catalog cards, not workspace apps) — gated on the builtin
-  // community mount so it never appears where the marketplace can't work.
-  // Seeded from the boot config like the sidebar's entry — starting from
-  // `false` made the chip lag behind the sidebar by a poll tick (~2s).
-  const communityReady = useCommunityMountReady(config.community_mount_ready);
-
+  // surface (catalog cards, not workspace apps). The backend is native
+  // server-side (POST /api/community) so it is always available — no mount
+  // gate any more.
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => {
     const t = [...new Set(all.map((a) => a.tag))].sort();
-    return communityReady && !t.includes(COMMUNITY_TAG) ? [...t, COMMUNITY_TAG] : t;
-  }, [all, communityReady]);
+    return t.includes(COMMUNITY_TAG) ? t : [...t, COMMUNITY_TAG];
+  }, [all]);
   // The chip only means the catalog when it's the appended one — a real
   // workspace tag dir named "community" keeps its normal filtering.
   const communityTab =
-    tag === COMMUNITY_TAG && communityReady && !all.some((a) => a.tag === COMMUNITY_TAG);
+    tag === COMMUNITY_TAG && !all.some((a) => a.tag === COMMUNITY_TAG);
   // Empty workspace on the "All" tab: instead of a bare "no apps yet" line,
   // surface the community catalog — something to open on first run.
   const communityFallback =
-    tag === null && communityReady && apps.status === "ok" && all.length === 0;
+    tag === null && apps.status === "ok" && all.length === 0;
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -193,7 +190,7 @@ export default function Apps({ config }: { config: Config }) {
                       the ?tag= param, and community.py all speak that. A real
                       workspace tag dir named "community" is not the catalog
                       and keeps its own name. */}
-                  {t === COMMUNITY_TAG && communityReady && !all.some((a) => a.tag === COMMUNITY_TAG)
+                  {t === COMMUNITY_TAG && !all.some((a) => a.tag === COMMUNITY_TAG)
                     ? "showcase"
                     : t}
                 </button>

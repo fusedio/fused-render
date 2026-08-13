@@ -1,5 +1,5 @@
 """Regression tests for a Cursor Bugbot review pass on the community
-marketplace backend (core_apps/community/community.py):
+marketplace backend (fused_render/community.py):
 
 - force-update no longer discards local edits when the "Local edits before
   community update" snapshot commit itself fails (a pre-commit hook, in this
@@ -21,16 +21,13 @@ import sys
 import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_APP = os.path.join(os.path.dirname(_HERE), "core_apps", "community")
 sys.path.insert(0, _HERE)
 from _git_repo import bare_repo, git, git_available, write  # noqa: E402
 
 
 @pytest.fixture()
 def community_mod(tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(_APP)
-    sys.modules.pop("community", None)
-    import community as mod
+    from fused_render import community as mod
 
     state = tmp_path / "state"
     cache = state / "repo"

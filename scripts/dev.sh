@@ -41,8 +41,8 @@ FRONTEND="$REPO_ROOT/frontend"
 # or a manual wipe. Respect an already-set value so the caller can override.
 export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
 
-# Stage the builtin-mount zips (learn.zip, sessions.zip, community.zip) so a
-# dev server gets the Learn/Sessions/Community sub-apps just like the packaged
+# Stage the builtin-mount zips (learn.zip, sessions.zip) so a
+# dev server gets the Learn/Sessions sub-apps just like the packaged
 # app. The packaged builds create these at DMG/installer time (build_dmg.sh
 # step 4e and its Windows mirror); a dev checkout only has the loose content
 # dirs, so without this the builtin mounts never resolve a zip and the sidebar
@@ -56,8 +56,7 @@ export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fu
 # mount at their own zip (stage_builtin_zips.sh skips those too).
 DEV_ZIPS="$REPO_ROOT/.dev-zips"
 bash "$REPO_ROOT/scripts/stage_builtin_zips.sh"
-for pair in learn:FUSED_RENDER_LEARN_ZIP sessions:FUSED_RENDER_SESSIONS_ZIP \
-            community:FUSED_RENDER_COMMUNITY_ZIP; do
+for pair in learn:FUSED_RENDER_LEARN_ZIP sessions:FUSED_RENDER_SESSIONS_ZIP; do
   name="${pair%%:*}" var="${pair#*:}"
   if [[ -z "${!var:-}" && -f "$DEV_ZIPS/$name.zip" ]]; then
     export "$var=$DEV_ZIPS/$name.zip"
@@ -237,8 +236,8 @@ command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 2
   exit 1
 }
 
-# Header-less scripts (no pyproject.toml — every core_apps/ helper, e.g.
-# community.py) run on "the app's own interpreter" under the fused engine, and
+# Header-less scripts (no pyproject.toml — every core_apps/ helper) run on
+# "the app's own interpreter" under the fused engine, and
 # engine.py resolves that by probing candidates. In a dev checkout the probe
 # can reject everything (sys.executable nuances, PATH pythons without the
 # bundled set) and every builtin sub-app's runPython dies with "could not

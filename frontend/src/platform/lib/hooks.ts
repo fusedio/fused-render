@@ -165,7 +165,6 @@ export function useDocumentTitle(label: string | null | undefined): void {
 const cachedReady: Record<BuiltinMountKey, boolean> = {
   learn_mount_ready: false,
   sessions_mount_ready: false,
-  community_mount_ready: false,
 };
 
 // Two keys, not three: the Claude Config app is no longer a mount. It became
@@ -173,7 +172,7 @@ const cachedReady: Record<BuiltinMountKey, boolean> = {
 // GET /api/claude-config/status (apps/claude_config useClaudeConfigAvailable) —
 // availability is a property of the installation and cannot flip mid-session,
 // which is the only thing the poll below exists for.
-type BuiltinMountKey = "learn_mount_ready" | "sessions_mount_ready" | "community_mount_ready";
+type BuiltinMountKey = "learn_mount_ready" | "sessions_mount_ready";
 
 export function useLearnMountReady(initial: boolean): boolean {
   return useBuiltinMountReady(initial, "learn_mount_ready");
@@ -181,10 +180,6 @@ export function useLearnMountReady(initial: boolean): boolean {
 
 export function useSessionsMountReady(initial: boolean): boolean {
   return useBuiltinMountReady(initial, "sessions_mount_ready");
-}
-
-export function useCommunityMountReady(initial: boolean): boolean {
-  return useBuiltinMountReady(initial, "community_mount_ready");
 }
 
 function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
