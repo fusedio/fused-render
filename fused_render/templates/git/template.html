@@ -598,6 +598,27 @@
     white-space: nowrap;
   }
   .pane-head .sub { color: var(--ink-3); font-size: 11px; }
+  /* The identity of whatever the pane is showing, on its own line under the
+     title. It exists because the LIST no longer carries it: a commit row is a
+     subject and a relative time, so the sha, the author and the exact date are
+     shown here, where the reader has already chosen this commit and the fields
+     can be whole rather than truncated into a 12ch column. Wraps rather than
+     truncates for the same reason — this is the place that answers "which
+     commit exactly?", so it must not be the place that hides half of it. */
+  .pane-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    /* A tight column gap because the fields are dot-separated: 10px either side
+       of a `·` is 20px of nothing between two short greys. */
+    gap: 4px 6px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line);
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+  .pane-meta .sha { color: var(--accent-dim); font-variant-numeric: tabular-nums; }
+  .pane-meta .who { color: var(--ink-2); }
 
   /* The one place wide content lives: its OWN scroll container, so the page
      body never gains a horizontal scrollbar (a diff line is arbitrarily long). */
@@ -696,29 +717,38 @@
 "use strict";
 /* ------------------------------------------------------------------ state
  * This view is COMMIT MANAGEMENT: what is staged, what changed, what is
- * untracked, what is stashed, plus the toolbar's branch/remote actions and the
- * commit box. It draws NO history — the commit log is the `history` mode's
- * view of the same repository, and the two are offered side by side on every
- * target inside a work tree, so a History section here was one story told
- * twice. The overview read opts out of the log entirely (`history: ""`), so
- * opening this view does not run `git log` at all.
+ * untracked, what is stashed, plus the toolbar's branch/remote actions, the
+ * commit box — and, under them, the commits those acts PRODUCE. The working-
+ * tree sections and the Commits section are the same story either side of a
+ * commit, scoped to the same path, which is why they belong in one column.
  *
  * Params ARE the state (the house pattern): every piece of UI state lives in
  * the URL, so a refresh or a bookmark reproduces the exact view — including an
  * open diff pane, an open dropdown, a half-typed commit message and a pending
  * destructive confirmation.
  *
- *   wt=<relpath>  the selected change, whose diff fills the right-hand pane
+ *   pages=<n>     how many log windows are loaded (1-based; the "load more" count)
+ *   rev=<sha>     the selected commit  }  mutually exclusive: the right-hand pane
+ *   wt=<relpath>  the selected change  }  has ONE subject, so setting either
+ *                                         clears the other
  *   panel=branch|stash   which toolbar dropdown is open
  *   msg=<text>    the commit message draft
  *   ask=<key>     the destructive action awaiting confirmation, e.g.
  *                 "discard:pkg/mod.py", "discard_all", "stash_drop:0"
+ *
+ * `rev` carries the FULL object name, not the abbreviation on the row: it is the
+ * one piece of this view's state another layer is meant to read (the explorer
+ * sidebar will render the target file as of the selected commit), and an
+ * abbreviation is a display form that has to be re-resolved to be used.
  *
  * `msg` and `ask` are the two additions that are easy to argue against and
  * belong here anyway. A commit message is the most expensive thing in this view
  * to retype, so losing it to a refresh is the worst small bug it could have; and
  * a confirmation that survives a refresh cannot be bypassed by one.
  */
+/* One click of "load more" widens the window by this much. It is the reader's
+   own DEFAULT_LOG_LIMIT — the page grows `limit`, it does not page. */
+const PAGE_SIZE = 30;
 const READER = "./log.py";
 const OPS = "./ops.py";
 
@@ -1436,7 +1466,7 @@ function changeLine(repo, change, selected, kind) {
      `-- <path>` against HEAD and git resolves it from the repo ROOT, so the row
      still opens the right diff: the pathspec is repo-relative, not
      scope-relative. Its ACTIONS are a different matter — see `writable`. */
-  row.addEventListener("click", () => setParams({ wt: change.path }));
+  row.addEventListener("click", () => setParams({ wt: change.path, rev: null }));
   if (selected) line.setAttribute("aria-current", "true");
   line.append(row);
 
@@ -1472,6 +1502,47 @@ function changeLine(repo, change, selected, kind) {
     }
   }
   line.append(acts);
+  return line;
+}
+
+/* A row in the Commits section: the SUBJECT, and how long ago. Nothing else.
+   The reader returns four fields and the first version of this row drew all
+   four — sha, subject, author, relative — which turned a list you skim into a
+   table you parse: the eye has to cross an id it did not ask for to reach the
+   sentence, and the author column is the same name on every row in most
+   repositories. The identity (short sha, full author, exact date) is what you
+   want once you have PICKED a commit, so it lives in the selected state, where
+   there is room to show it whole instead of truncated to 12ch.
+
+   The density is the `history` template's — subject first, one quiet line of
+   metadata behind it — but none of its markup: that view's `.commit`,
+   `.subject` and `.meta` are different rules under the same names, and
+   borrowing them would import a second styling vocabulary into a file that
+   already has one. This is a `.row` with `.subject` and `.when`, exactly like
+   every other list row here.
+
+   The dropped fields are still on the row as its `title`, because a tooltip is
+   not density — it is the answer to "which commit is this?" without a click.
+
+   Clicking the selected row again clears the selection. A row that only ever
+   selects leaves the pane with no way back except the Close button, and the row
+   the user just clicked is the thing their pointer is already on. */
+function commitLine(entry, selected) {
+  const line = el("div", { className: "line" });
+  const row = el("button", {
+    className: "row",
+    type: "button",
+    title: entry.short + "  " + entry.subject + "\n" + entry.author + " — " + entry.date,
+  },
+    el("span", { className: "subject", textContent: entry.subject || "(no subject)" }),
+    el("span", { className: "when", textContent: entry.relative }));
+  if (selected) line.setAttribute("aria-current", "true");
+  /* The FULL sha into `rev`, never the abbreviation: this param is the view's
+     public handle on "which commit is selected". Clearing `wt` in the same write
+     is what keeps the right-hand pane single-subject. */
+  row.addEventListener("click",
+    () => setParams({ rev: selected ? null : entry.sha, wt: null }));
+  line.append(row);
   return line;
 }
 
@@ -1554,9 +1625,52 @@ function diffBody(text) {
   return pre;
 }
 
-function diffPane(title, sub, payload) {
+/* The selected commit's identity, for the pane. This is the half of the reader's
+   log record the ROW deliberately stops drawing, shown once a commit has been
+   picked: the abbreviated id, who wrote it, and when — the relative time the row
+   showed, plus the absolute one it could never fit.
+ *
+ * There is no file list here. `op="commit"` returns the patch and not a
+ * name-status roll-up (that is `op="pending"`'s shape), and the patch already
+ * names every file it touches a few pixels below this line — a second list
+ * would be a second git fork to repeat what is already on screen.
+ */
+function commitMeta(entry, sha) {
+  const short = entry && entry.short ? entry.short : (sha || "").slice(0, 7);
+  const bits = [el("span", { className: "sha", textContent: short })];
+  if (entry && entry.author) bits.push(el("span", { className: "who", textContent: entry.author }));
+  if (entry && entry.relative) bits.push(el("span", { textContent: entry.relative }));
+  /* The exact timestamp, in the reader's own locale, and NEVER instead of the
+     relative one: "3 days ago" is the fact you read, the datestamp is the fact
+     you quote. A date git gave us that this environment cannot parse is shown
+     verbatim rather than as "Invalid Date". */
+  if (entry && entry.date) {
+    const when = new Date(entry.date);
+    bits.push(el("span", { textContent: Number.isNaN(when.getTime())
+      ? entry.date : when.toLocaleString() }));
+  }
+  /* Dotted, not just gapped: four fields of similar length in one grey line run
+     together without a separator, and the `history` template's own metadata line
+     reads "sha · when" for the same reason. */
+  const dotted = [];
+  for (const bit of bits) {
+    if (dotted.length) dotted.push(el("span", { className: "dot", textContent: "·" }));
+    dotted.push(bit);
+  }
+  return el("div", { className: "pane-meta" }, dotted);
+}
+
+/* The right-hand pane, for BOTH kinds of selection. `meta` is an optional node
+   the caller builds — the commit selection's identity line — and it is a
+   parameter rather than a branch inside here on purpose: this function renders a
+   diff and knows nothing about what was selected to produce one, so changing
+   what a commit selection SHOWS (phase 2's open question) is a change to the
+   caller and not to this. */
+function diffPane(title, sub, payload, meta) {
+  /* Both, always: the pane has one subject but two possible owners, and Close
+     means "nothing is selected" whichever of them put it there. */
   const close = action("close", "Close", {
-    onClick: () => setParams({ wt: null }),
+    onClick: () => setParams({ wt: null, rev: null }),
   });
 
   const pane = el("div", { className: "pane" },
@@ -1564,6 +1678,7 @@ function diffPane(title, sub, payload) {
       el("span", { className: "title", textContent: title }),
       sub ? el("span", { className: "sub", textContent: sub }) : null,
       close));
+  if (meta) pane.append(meta);
 
   if (payload === "loading") {
     pane.append(el("div", { className: "rows" },
@@ -1594,7 +1709,7 @@ function diffPane(title, sub, payload) {
       const row = el("button", { className: "row", type: "button", title: name },
         el("span", { className: "code is-?", textContent: "??" }),
         el("span", { className: "path", textContent: name }));
-      row.addEventListener("click", () => setParams({ wt: name }));
+      row.addEventListener("click", () => setParams({ wt: name, rev: null }));
       rows.append(el("div", { className: "line" }, row));
     }
     pane.append(rows);
@@ -1763,6 +1878,8 @@ function pendingConfirm(data) {
 
 function render(data, stashes, diff) {
   const wt = param("wt");
+  const rev = param("rev");
+  const pages = num("pages", 1);
   const ask = pendingConfirm(data);
 
   const staged = data.changes.filter((c) => c.staged);
@@ -1872,21 +1989,78 @@ function render(data, stashes, diff) {
     "Nothing stashed.",
     stashAsk));
 
+  /* The COMMITS section: the same scope the lists above use, on the other side
+     of `git commit`. `_pathspec(rel)` bounds it exactly as it bounds the status
+     read, so a view opened on `pkg/` lists the commits that touched `pkg/` and
+     nothing else — the section is the history OF THIS PATH, not of the
+     repository, and that is what makes it belong next to the working tree
+     rather than duplicate the `history` mode's repo-wide timeline.
+     Recent-first, because that is the order `git log` answers in and the order
+     the question "what just happened here?" is asked in. */
+  const commits = data.commits || [];
+
+  /* Three terminal states, not two. The page grows its WINDOW (`limit =
+     PAGE_SIZE * pages`) rather than paging, so the reader's ceiling on that
+     window has to be visible here: `has_more` stays honestly true once the clamp
+     bites, and offering "load more" on it would refetch the identical rows
+     forever. So `capped` — not `has_more` — decides whether another click can do
+     anything, and when it has bitten the section SAYS so, in the same note the
+     Changes list uses to admit its own truncation. */
+  const loadMore = (data.has_more && !data.capped)
+    /* Disabled while an op is in flight, like every other control here: a
+       mutation is about to refetch these very rows, and widening the window
+       under it would put a second read on the same channel. */
+    ? el("button", { className: "more", type: "button", disabled: busy !== null,
+                     textContent: "Load " + PAGE_SIZE + " more commits" })
+    : (data.has_more && data.capped)
+      ? el("p", { className: "note", textContent:
+          "Showing the most recent " + commits.length + " commits for this path — "
+          + "this view will not read further back. Use git for deeper history." })
+      : (commits.length
+          ? el("button", { className: "more", type: "button", disabled: true,
+                           textContent: "End of history for this path" })
+          : null);
+  if (loadMore && loadMore.tagName === "BUTTON" && !loadMore.disabled) {
+    loadMore.addEventListener("click", () => setParams({ pages: pages + 1 }));
+  }
+
+  /* Hidden when empty, like every list above it — an empty Commits heading on a
+     path nothing has ever committed is a heading telling the reader nothing. A
+     repository with NO commits at all is not that case and must not read as one:
+     `has_commits` is false there, the section is simply absent, and the
+     all-empty fallback below says "no commits yet" in words.
+     The empty line below it is therefore unreachable today, and is written
+     truthfully anyway: unlike the working-tree sections nothing else can carry
+     this one open (no confirmation lives here), but the day something does, the
+     sentence it shows should already be the right one. */
+  /* No count on this heading, and `null` rather than "" so `listSection` omits
+     the pill instead of drawing an empty one. Every other section's number is a
+     TOTAL — that is all the staged/changed/untracked/stashed entries there are —
+     but this list is one WINDOW of a history whose length nobody has measured
+     (`limit = PAGE_SIZE * pages`), so a number here is the window size wearing a
+     total's clothes: it reads "12 commits touched this path" and means "12 rows
+     are loaded", and it grows by 30 every time you click load more. A true count
+     is a separate `git rev-list --count` per path, which is a fork nobody asked
+     for. Better no number than a confident wrong one. */
+  if (commits.length) sections.push(listSection(
+    "Commits", null, null,
+    commits.map((c) => commitLine(c, c.sha === rev)),
+    "No commits have touched this path yet.",
+    loadMore));
+
   /* Every block empty is itself a state worth naming — the reader gets one
-     honest line instead of a blank column. */
+     honest line instead of a blank column. Reaching here now also means the
+     Commits section is empty, so the sentence covers that too: a path with a
+     clean tree AND no commits is a path git has never heard of, which is a
+     different fact from "this repository is brand new". */
   if (!sections.length) {
     sections.push(el("section", null, el("div", { className: "rows" },
       el("div", { className: "none", textContent: data.repo.has_commits
-        ? "Nothing staged, changed, untracked, or stashed under this path."
+        ? "Nothing staged, changed, untracked or stashed under this path, and no "
+          + "commit has touched it."
         : "Nothing to commit — this repository has no commits yet." }))));
   }
 
-  /* No History section, and no "load more" paging behind it. The commit LOG is
-     the `history` mode's view of this repository — it renders the same commits
-     with a timeline this one never had — and since both modes are now offered
-     on every target inside a work tree, drawing it here too was one story told
-     twice. What is left is the working tree: what is staged, what changed, what
-     is untracked, what is stashed. */
   const left = el("div", { className: "col" }, ...sections);
 
   const cols = el("div", { className: "cols" + (diff ? "" : " no-diff") }, left);
@@ -1973,8 +2147,50 @@ async function run(key, args, then, context) {
 
 /* ------------------------------------------------------------------ loading */
 
+/* The pane as it looks while its diff is still being read. It is built from what
+   the LIST already knows, so a commit's heading and identity line are correct
+   before the read lands and do not change under the reader when it does — only
+   the body below them fills in. Without it the placeholder was titled with the
+   40-character sha, which then swapped for the subject a moment later. */
+function pendingPane(data) {
+  const rev = param("rev");
+  const wt = param("wt");
+  if (rev) {
+    const known = (data && data.commits ? data.commits : []).find((c) => c.sha === rev);
+    return diffPane(known ? (known.subject || "(no subject)") : rev.slice(0, 7),
+                    data && data.repo.rel ? "scoped to " + data.repo.rel : null,
+                    "loading", commitMeta(known, rev));
+  }
+  if (wt) return diffPane(wt, null, "loading");
+  return null;
+}
+
 async function loadDiff(data) {
   const wt = param("wt");
+  const rev = param("rev");
+  /* A selected commit fills the SAME pane as a selected change, through the same
+     `diffPane` — one renderer, because a diff is a diff and the only thing that
+     differs is its heading. `op="commit"` restricts the patch to this view's
+     pathspec, so the pane shows what that commit did HERE, matching the section
+     the row was clicked in.
+     Its own channel: `chan` exists because runPython supersedes by channel and a
+     superseded call never settles, so a commit read must not share one with the
+     worktree read. */
+  if (rev) {
+    const payload = await fused.runPython(READER, { file, op: "commit", sha: rev },
+                                          chan("commit"))
+      .catch((err) => ({ ok: false, message: err.message }));
+    /* The row's own fields are the fallback: a failed read still knows which
+       commit was clicked, and "abc1234 — could not read that diff" is a better
+       answer than a pane titled with a 40-character sha. */
+    const known = (data.commits || []).find((c) => c.sha === rev);
+    const meta = payload.ok ? payload.commit : known;
+    return diffPane(
+      meta ? (meta.subject || "(no subject)") : rev,
+      data.repo.rel ? "scoped to " + data.repo.rel : null,
+      payload,
+      commitMeta(meta, rev));
+  }
   if (wt) {
     const payload = await fused.runPython(READER, { file, op: "worktree", entry: wt },
                                           chan("worktree"))
@@ -2003,7 +2219,8 @@ async function loadBranches(mine) {
 
 /* Everything the DOM's shape depends on. A `msg` keystroke is deliberately NOT
    in here: it changes the URL and must not repaint the view. */
-const structural = () => [param("wt"), param("panel"), param("ask")].join("\u0000");
+const structural = () => [param("pages"), param("rev"), param("wt"),
+                          param("panel"), param("ask")].join("\u0000");
 
 async function draw(force) {
   const key = structural();
@@ -2011,7 +2228,12 @@ async function draw(force) {
   drawn = key;
 
   const mine = ++seq;
-  const wt = param("wt");
+  const pages = num("pages", 1);
+  /* Whether the right-hand pane has a subject at all, whichever param owns it.
+     The two are mutually exclusive by construction — every writer of one clears
+     the other — so this is a choice, never a merge, and what the pane is FOR is
+     decided in one place (`pendingPane`/`loadDiff`) rather than here. */
+  const target = param("rev") || param("wt");
 
   if (!file) {
     renderRefusal({ reason: "missing", message: "No file or folder was selected." });
@@ -2020,14 +2242,15 @@ async function draw(force) {
 
   /* Repaint from the snapshot first when only the SELECTION changed: the lists
      are unchanged, so refetching them would blank a list the user is looking at.
-     The diff then arrives into an already-laid-out pane. The snapshot used to
-     be keyed by the log window (`pages`); with no log to widen, holding it is
-     unconditional. */
-  let data = snapshot ? snapshot.data : null;
-  let stashes = snapshot ? snapshot.stashes : [];
+     The diff then arrives into an already-laid-out pane. Keyed by the log
+     WINDOW, because "load more" is the one change here that leaves the held
+     lists genuinely short — it has to fall through to a refetch. */
+  const reuse = snapshot && snapshot.pages === pages;
+  let data = reuse ? snapshot.data : null;
+  let stashes = reuse ? snapshot.stashes : [];
 
   if (data) {
-    render(data, stashes, wt ? diffPane(wt, null, "loading") : null);
+    render(data, stashes, pendingPane(data));
   }
 
   if (!data) {
@@ -2041,10 +2264,12 @@ async function draw(force) {
          first, the first then hangs forever by design, and `Promise.all` waits
          on it for the life of the page. */
       [payload, stashPayload] = await Promise.all([
-        /* `history: ""` — falsy through the string binder — so the reader
-           skips `git log` altogether. This view draws no commits, so it does
-           not pay to fetch them either. */
-        fused.runPython(READER, { file, op: "overview", history: "" },
+        /* The overview carries the log as well as the status, so the Commits
+           section costs no extra round trip. The window GROWS (`limit`) rather
+           than pages — `page: 0` always — which is what keeps the rows already
+           on screen in place when "load more" widens it. */
+        fused.runPython(READER, { file, op: "overview",
+                                  limit: String(PAGE_SIZE * pages), page: "0" },
                         chan("overview")),
         fused.runPython(READER, { file, op: "stashes" }, chan("stashes")),
       ]);
@@ -2063,32 +2288,36 @@ async function draw(force) {
     }
     data = payload;
     stashes = (stashPayload && stashPayload.ok) ? stashPayload.stashes : [];
-    snapshot = { data, stashes };
-    render(data, stashes, wt ? diffPane(wt, null, "loading") : null);
-    announce(data.changes.length + " uncommitted changes");
+    snapshot = { pages, data, stashes };
+    render(data, stashes, pendingPane(data));
+    announce(data.changes.length + " uncommitted changes, "
+             + (data.commits || []).length + " commits under this path");
   }
 
   if (await loadBranches(mine)) {
     if (mine !== seq) return;
-    render(data, stashes, wt ? diffPane(wt, null, "loading") : null);
+    render(data, stashes, pendingPane(data));
   }
 
-  if (!wt) return;
+  if (!target) return;
   const diff = await loadDiff(data);
   if (mine !== seq) return;
   render(data, stashes, diff);
 }
 
 /* Escape closes whatever is open, innermost first: a pending confirmation, then
-   a dropdown, then the diff pane. Everything else is native — every row and
-   every control is a real <button>, so tab/enter already work. */
+   a dropdown, then the diff pane. `rev` shares the pane's slot with `wt` rather
+   than taking one of its own — they are two names for ONE thing on screen, so a
+   commit selection and a change selection unwind at the same depth and in the
+   same write. Everything else is native — every row and every control is a real
+   <button>, so tab/enter already work. */
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (param("ask")) { event.preventDefault(); setParams({ ask: null }); return; }
   if (param("panel")) { event.preventDefault(); setParams({ panel: null }); return; }
-  if (param("wt")) {
+  if (param("rev") || param("wt")) {
     event.preventDefault();
-    setParams({ wt: null });
+    setParams({ rev: null, wt: null });
   }
 });
 

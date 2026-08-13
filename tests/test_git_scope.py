@@ -1,14 +1,16 @@
 """What the `git` view is FOR, and where it is offered.
 
-Two changes are pinned here, and they are the same change seen from two sides.
+Two things are pinned here, and they are the same view seen from two sides.
 
-**`git` is commit management, not history.** Staging, discarding, stashing,
-committing, branches, push/pull — the things you do to a working tree. The
-commit LOG is `history`'s story: it renders the same commits with a timeline
-the git view never had, and two views of one story is what the peer exclusions
-in the two `condition.py` gates used to spend their complexity avoiding. So the
-git view no longer draws a History section, no longer selects a commit, and no
-longer asks the reader for the log at all.
+**`git` is commit management, and that INCLUDES the commits.** Staging,
+discarding, stashing, committing, branches, push/pull — the things you do to a
+working tree — plus the log of what those acts produced, scoped to the same path
+the working-tree lists are scoped to. Overlapping with `history` is not the same
+as duplicating it: `history` is a repo-wide timeline you go to in order to read
+the past, this is the "what just happened under this path" that belongs beside
+the tree you are about to change. The section is fed by the overview read's own
+`commits`/`has_more`/`capped` fields, so it costs no extra round trip, and
+selecting a row fills the SAME diff pane a working-tree row fills.
 
 **`git` is FOLDER-ONLY.** Staging, discarding, stashing, committing, branches,
 push/pull are all repository-level acts — you do not stash a file, you stash a
@@ -40,6 +42,10 @@ _TEMPLATES = os.path.join(_ROOT, "fused_render", "templates")
 def _load(name):
     path = os.path.join(_TEMPLATES, name, "condition.py")
     spec = importlib.util.spec_from_file_location(f"_cond_{name}", path)
+    # Asserted rather than assumed: `spec_from_file_location` returns None for a
+    # path with no loader, and `module_from_spec(None)` fails several lines later
+    # with an error about NoneType instead of about the file that is missing.
+    assert spec is not None and spec.loader is not None, f"no condition.py for {name}"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -201,30 +207,87 @@ def test_a_path_outside_any_repository_is_refused_by_both(tmp_path, monkeypatch)
     assert _load("history").main(str(plain)) is False
 
 
-# ------------------------------------------------- the view drops the history
+# ------------------------------------------------------ the view draws commits
 
 
-def test_the_view_draws_no_history_section(source):
-    assert "commitLine" not in source
-    assert 'listSection("History"' not in source
-    assert "more commits" not in source
+def test_the_view_draws_a_commits_section(source):
+    assert "commitLine" in source
+    assert 'listSection(\n    "Commits"' in source or 'listSection("Commits"' in source
+    # Built with the section helper every other list uses, so Commits sits in the
+    # same column, in the same vocabulary, as Staged/Changes/Untracked/Stashes.
+    assert "more commits" in source
 
 
-def test_the_view_does_not_select_a_commit(source):
-    # `sel` was the selected-commit param; `pages` grew the log window. Both are
-    # history state and both are gone, so the URL grammar documented in the
-    # header must not advertise them either.
-    assert 'param("sel")' not in source
-    assert 'param("pages")' not in source
-    assert "sel=<sha>" not in source
+def test_the_commits_heading_carries_no_count(source):
+    # The other sections' numbers are TOTALS. This list is one window of a
+    # history nobody has measured (`limit = PAGE_SIZE * pages`), so a number here
+    # would be the window size wearing a total's clothes — and it would grow by
+    # PAGE_SIZE on every "load more". `null` is what makes `listSection` omit the
+    # pill; `String(commits.length)` is the number that must not come back.
+    assert '"Commits", null, null,' in source
+    assert '"Commits", String(commits.length)' not in source
+    # The real totals above it are untouched.
+    for section in ("Staged changes", "Changes", "Untracked", "Stashes"):
+        assert f'"{section}", String(' in source
 
 
-def test_the_view_never_asks_the_reader_for_the_log(source):
-    # Not merely "does not render it": the overview call opts out, so opening
-    # the working-tree view does not run `git log` at all.
-    assert "history: " in source, "the overview call must opt out of the log"
-    # No commit DIFF read either — that was the selected-commit pane. (The
-    # `commit` op on ops.py stays: MAKING a commit is what this view is for,
-    # which is why this looks for the reader's channel rather than the word.)
-    assert 'chan("commit")' not in source
-    assert "READER" in source and 'op: "log"' not in source
+def test_a_commit_row_is_a_subject_and_a_time(source):
+    # The row is what you SKIM: the subject, and how long ago. Drawing the sha
+    # and the author on it too turned the list into a table — an id to cross
+    # before the sentence, and a column repeating the same name on every row.
+    row = source[source.index("function commitLine("):]
+    row = row[:row.index("\nfunction ")]
+    assert 'className: "subject"' in row
+    assert 'className: "when"' in row
+    assert 'className: "sha"' not in row, "the id belongs to the selected state"
+    assert 'className: "who"' not in row, "the author belongs to the selected state"
+    # Not lost, though: the row's tooltip still answers "which commit is this?"
+    assert "entry.short" in row and "entry.author" in row
+
+
+def test_the_identity_moves_into_the_selected_state(source):
+    # …and it is a node the CALLER builds, passed into the shared pane, so what
+    # a commit selection shows can change without touching how a diff renders.
+    assert "function commitMeta(" in source
+    assert "function diffPane(title, sub, payload, meta)" in source
+    assert "commitMeta(meta, rev)" in source
+    # The placeholder pane is built from the row the user clicked, so the
+    # heading does not swap under them when the read lands.
+    assert "commitMeta(known, rev)" in source
+
+
+def test_the_commit_selection_is_an_addressable_param(source):
+    # `rev` is the view's public handle on "which commit is selected" — the one
+    # piece of its state another layer (the explorer sidebar) is meant to read
+    # and drive — so it lives in the URL and is documented in the header grammar.
+    assert 'param("rev")' in source
+    assert "rev=<sha>" in source
+    # And it is the FULL object name, never the abbreviation the row displays.
+    assert "rev: selected ? null : entry.sha" in source
+
+
+def test_the_pane_has_exactly_one_master(source):
+    # `rev` and `wt` both mean "what the right pane shows", so every writer of
+    # one clears the other. Missing either half leaves two selections claiming
+    # one pane, and the pane then answers to whichever the loader tested first.
+    assert "setParams({ wt: change.path, rev: null })" in source
+    assert "rev: selected ? null : entry.sha, wt: null" in source
+    assert "setParams({ wt: null, rev: null })" in source
+    assert "setParams({ rev: null, wt: null })" in source
+
+
+def test_the_view_asks_the_reader_for_the_log(source):
+    # The overview carries the log again, so it must NOT opt out — `history: ""`
+    # would leave the Commits section permanently empty while the section
+    # itself still rendered its "no commits under this path" reading.
+    assert 'history: ""' not in source
+    # The window grows rather than pages: `limit` scales with `pages`, `page`
+    # stays 0, and both `has_more` and `capped` gate the "load more" affordance.
+    assert "limit: String(PAGE_SIZE * pages)" in source
+    assert 'page: "0"' in source
+    assert "data.has_more && !data.capped" in source
+    # The selected-commit pane is a second read on its OWN channel: runPython
+    # supersedes by channel and a superseded call never settles, so sharing the
+    # worktree channel would deadlock the two reads against each other.
+    assert 'chan("commit")' in source
+    assert 'op: "commit", sha: rev' in source
