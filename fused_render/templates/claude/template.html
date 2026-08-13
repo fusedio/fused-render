@@ -5838,7 +5838,16 @@ document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach((el) => 
 document.addEventListener("pointerdown", (ev) => {
   if (selPopFor && !selPop.contains(ev.target) && ev.target !== selPopFor) closeSelPop();
 });
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeSelPop(); });
+// Capture phase, and the event is CONSUMED when it closes a menu: the
+// document-level Escape binding kills a live run (and annotate has its own
+// exit), and dismissing a dropdown must not also do either. Same discipline
+// as the annotate composer's stopPropagation on its Escape.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !selPopFor) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  closeSelPop();
+}, true);
 window.addEventListener("blur", closeSelPop);
 // Nothing repositions an open menu: a scroll or resize under it would leave it
 // pointing at a pill that has moved, so it goes away instead.
