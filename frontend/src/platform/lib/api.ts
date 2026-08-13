@@ -2261,7 +2261,9 @@ export interface ScheduledMessage {
   // started then went. Two fields because they fail independently: a message can
   // send perfectly and its turn still die on the first tool call. "" until the
   // turn ends (and on entries stored before this field existed).
-  turn?: "" | "ok" | "failed" | "cancelled";
+  // "unknown" = the watch ended without a verdict (the app stopped being able to
+  // say). The work may well have finished; `run_id` is how to go and read it.
+  turn?: "" | "ok" | "failed" | "cancelled" | "unknown";
 }
 
 export interface ScheduleResult {

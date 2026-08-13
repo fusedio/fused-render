@@ -258,6 +258,57 @@ def test_the_log_is_bounded(target, sent, monkeypatch):
     assert [e["entry_id"] for e in log] == [f"e{i}" for i in range(7, 12)]
 
 
+def test_a_watch_that_ends_without_a_verdict_closes_the_row(target, monkeypatch):
+    """Every way the watch can stop early — a `load_agent` that raises, a `_poll`
+    that raises, the ~1h tick cap a long turn outruns — used to leave `turn` empty,
+    which the page reads as "Running…" and the toast logic as nothing to say. A row
+    that claims to be running with nobody watching is the frozen-progress-bar lie
+    the job registry's `stalled` state exists to avoid."""
+    monkeypatch.setattr(claude_spawn, "spawn_helper", lambda *a, **k: {"run_id": "r-1"})
+    # the recorder returns having never seen `done` (the tick cap / a raised poll)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: FakeAgent())
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready",
+                        lambda agent, run_id, on_tick=None: None)
+
+    entry = _overdue(target)
+    schedule.tick()
+    schedule._watch_turn(entry, "r-1")
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "unknown"        # honest: the app stopped being able to say
+    assert stored["run_id"] == "r-1"          # and this is how to go and read it
+    assert "stopped reporting" in stored["error"]
+    assert jobs.list_jobs()[0]["state"] == "error"
+    assert _kinds() == [schedule.EVENT_FAILED]
+
+
+def test_closing_an_unwatched_row_never_overwrites_a_real_outcome(target, sent):
+    """`_turn_tick` may have resolved the entry seconds before the recorder
+    returned, so the close re-reads instead of trusting the copy the watcher thread
+    has held since the send."""
+    entry = _overdue(target)
+    schedule.tick()
+    schedule._turn_tick(entry, "r-1", FakeAgent(), {"done": True, "error": ""})
+
+    schedule._close_unwatched(entry, "stopped reporting")
+
+    assert schedule.list_entries()[0]["turn"] == "ok"   # not clobbered to unknown
+    assert _kinds() == [schedule.EVENT_DONE]            # and no second toast
+
+
+def test_a_load_agent_failure_still_closes_the_row(target, monkeypatch):
+    monkeypatch.setattr(claude_spawn, "spawn_helper", lambda *a, **k: {"run_id": "r-2"})
+    monkeypatch.setattr(claude_spawn, "load_agent",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no backend")))
+
+    entry = _overdue(target)
+    schedule.tick()
+    schedule._watch_turn(entry, "r-2")
+
+    assert schedule.list_entries()[0]["turn"] == "unknown"
+    assert _kinds() == [schedule.EVENT_FAILED]
+
+
 def test_startup_events_survive_until_a_shell_actually_narrates_them(target, sent,
                                                                     monkeypatch):
     """The bug the delivery mark exists for.

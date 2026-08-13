@@ -666,15 +666,49 @@ def _watch_turn(entry: dict, run_id: str) -> None:
 
     Wraps `record_session_when_ready` rather than replacing it — that function
     owns the sidecar write and the commit, which must happen whether or not
-    anything is watching. This only adds the observer."""
+    anything is watching. This only adds the observer.
+
+    **The watch can end without a verdict**, and every one of those paths used to
+    leave the entry `turn: ""` — which the page reads as "Running…" and the toast
+    logic as "nothing to say", so a row sat live forever and the user was never
+    told. `_close_unwatched` is the floor under all of them: a `load_agent` that
+    raises, a `_poll` that raises, and the tick cap (~1h) that a genuinely long
+    turn can outrun."""
     try:
         agent = claude_spawn.load_agent()
     except Exception:  # noqa: BLE001
         logger.debug("could not load the agent backend to watch a run", exc_info=True)
+        _close_unwatched(entry, "could not read the run's progress")
         return
     claude_spawn.record_session_when_ready(
         agent, run_id,
         on_tick=lambda data: _turn_tick(entry, run_id, agent, data))
+    # Back here means the poll loop is finished. If `_turn_tick` saw `done` it
+    # already recorded the outcome and this is a no-op; anything else and the watch
+    # ended without one.
+    _close_unwatched(entry, "stopped reporting before the turn finished")
+
+
+def _close_unwatched(entry: dict, reason: str) -> None:
+    """Resolve an entry whose watch ended without a verdict — once.
+
+    Re-reads the store rather than trusting the copy this thread has held since
+    the send: `_turn_tick` may have resolved it seconds ago, and re-closing would
+    overwrite a real outcome with a shrug.
+
+    `turn` becomes `unknown`, which is the honest word. The work may well have
+    finished — the transcript knows, and the run id on the entry is how to go and
+    read it — but this app stopped being able to say, and a row that claims to be
+    running when nothing is watching it is the lie the job registry's `stalled`
+    state exists to avoid telling."""
+    entry_id = entry["id"]
+    with _lock:
+        stored = next((e for e in _read() if e.get("id") == entry_id), None)
+        if stored is None or stored.get("state") != SENT or stored.get("turn"):
+            return  # already resolved, or never got far enough to need this
+    _update(entry_id, turn="unknown", error=reason)
+    _report(entry_id, state="error", message=reason)
+    _emit(EVENT_FAILED, entry, reason)
 
 
 def tick(now: datetime | None = None) -> list[dict]:

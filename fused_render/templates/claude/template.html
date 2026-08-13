@@ -5685,9 +5685,25 @@ let detectedEffort = "";
 // GET /api/prefs like the other /api/… reads in this file — the pref is app
 // state, not a mount- or server-internal fact.
 let prefModel = "";
-const curModel = () =>
-  fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL;
-const curEffort = () => fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT;
+// Both VALIDATE their answer against the list the pill offers, which the perm
+// pill has always done at its sync site and these two did not.
+//
+// The asymmetry was visible: `detectedModel`/`prefModel` are checked against
+// MODELS before assignment, but the PARAM ahead of them is not, so a URL carrying
+// `?model=` with anything else — a full `claude-…` id, a legacy alias, a typo —
+// set a <select> value matching no option. That renders as a BLANK pill: with no
+// `selectedOptions[0]`, fitSelect returns early ("keep the last fitted width")
+// and the caret sits alone in an unfitted box. Validating in the accessor rather
+// than at the sync site fixes the spawn too — `curModel()` is what the run is
+// launched with, and an unknown model reaching the CLI is the worse half.
+const curModel = () => {
+  const want = fused.params.get("model") || detectedModel || prefModel || DEFAULT_MODEL;
+  return MODELS.includes(want) ? want : DEFAULT_MODEL;
+};
+const curEffort = () => {
+  const want = fused.params.get("effort") || detectedEffort || DEFAULT_EFFORT;
+  return EFFORTS.includes(want) ? want : DEFAULT_EFFORT;
+};
 // The strictest mode is the default: more auto-approval is opted into, never
 // handed out by a missing param.
 const DEFAULT_PERMISSION = "prompt";
@@ -5730,9 +5746,13 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // "send it at 6pm" is a property of ONE message. A scheduling choice that
 // survived its own send would silently defer the next thing the user typed.
 const WHEN_NOW = "now";
-const WHEN_OPTIONS = [WHEN_NOW, "1h", "3h", "evening", "tomorrow", "monday"];
+const WHEN_OPTIONS = [WHEN_NOW, "5m", "1h", "3h", "evening", "tomorrow", "monday"];
 const WHEN_LABELS = {
   [WHEN_NOW]: "Send now",
+  // Short enough to watch happen, which makes it the one preset that is also how
+  // you TRY scheduling: pick it, and the whole path (store, tick, spawn, job row,
+  // toast) plays out while you are still looking at the screen.
+  "5m": "In 5 minutes",
   "1h": "In 1 hour",
   "3h": "In 3 hours",
   "evening": "This evening",
@@ -5744,6 +5764,7 @@ const WHEN_LABELS = {
 // Each returns a Date, or null when the preset has already gone by today (the
 // evening case), which the caller reports rather than silently shifting a day.
 const WHEN_RESOLVERS = {
+  "5m": () => new Date(Date.now() + 5 * 60e3),
   "1h": () => new Date(Date.now() + 3600e3),
   "3h": () => new Date(Date.now() + 3 * 3600e3),
   "evening": () => {
@@ -5780,6 +5801,43 @@ function localDueString(d) {
 function whenChoice() {
   const el = document.querySelector(".when-sel");
   return el && WHEN_OPTIONS.includes(el.value) ? el.value : WHEN_NOW;
+}
+
+// The approvals mode a DEFERRED message will really run under, which is not always
+// the one the pill was showing when the user picked a time.
+//
+// "ask every time" cannot work unattended, and the failure is silent: nobody is
+// polling `decide` for a scheduled turn, so the first tool call parks a request in
+// the run's perm dir and blocks until PERMISSION_WAIT expires and the server
+// denies it on the user's behalf — a message that "sent" and did nothing (the
+// same trap agent.py's `_APP_SESSION_PERMISSION_MODE` note describes). So a
+// scheduled send under `prompt` becomes `auto`, the broadest the template offers,
+// where the CLI's own classifier approves what it judges safe and still parks the
+// rest for the folder's chat.
+//
+// SUBSTITUTED VISIBLY, never quietly: the pill switches to show `auto` the moment
+// a time is chosen, so what is on screen is what will be used, and the user can
+// override it or go back to "Send now". That disclosure is the whole point — this
+// loosens approvals, and loosening them behind the user's back would be worse
+// than the parked turn it avoids.
+//
+// `plan` and `acceptEdits` pass through untouched. Both can still park a card, but
+// neither does so on EVERY call the way `prompt` does, and each is a deliberate
+// choice a user may well want waiting for them.
+function scheduledPerm(mode) {
+  return mode === "prompt" ? "auto" : mode;
+}
+
+// Show the effective mode while a time is selected, and hand the pills back to
+// their own state when it is not. Never writes `permission` to params: the chat's
+// own mode is not being changed, only the display of what THIS message will use.
+function syncPermForWhen() {
+  const deferred = whenChoice() !== WHEN_NOW;
+  if (!deferred) { syncSelects(); return; }
+  document.querySelectorAll(".perm-sel").forEach((el) => {
+    el.value = scheduledPerm(el.value);
+    fitSelect(el);
+  });
 }
 
 // Back to "Send now" after every send. See the note above: a deferral must not
@@ -5825,13 +5883,22 @@ document.querySelectorAll(".when-sel").forEach((el) =>
       other.value = el.value;
       fitSelect(other);
     });
+    // Picking a time can change which approvals mode actually applies, so the
+    // pill next door is re-read here rather than left showing something else.
+    syncPermForWhen();
   }));
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
 document.querySelectorAll(".effort-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("effort", el.value); syncSelects(); }));
 document.querySelectorAll(".perm-sel").forEach((el) =>
-  el.addEventListener("change", () => { fused.params.set("permission", el.value); syncSelects(); }));
+  el.addEventListener("change", () => {
+    fused.params.set("permission", el.value);
+    syncSelects();
+    // syncSelects has just restored the params value, which for a deferred send
+    // may not be the mode that will run — put the effective one back on screen.
+    syncPermForWhen();
+  }));
 syncSelects();
 
 // ── The pills' dropdown: our own menu over a real <select> ──
@@ -8321,6 +8388,14 @@ function setRunningUi(on) {
   });
 }
 
+// True while a schedule POST is in flight. A separate flag from `sending`, which
+// belongs to the run path (and is also held by loadHistory and resumeRun's probe):
+// a scheduled message starts no run, so it must neither consult nor occupy that
+// one. It needs its own because the box is cleared only on SUCCESS — the draft has
+// to survive a refusal — so without a guard a second Enter during the round trip
+// stores a second copy of the same unattended job.
+let scheduling = false;
+
 // Hand the composer's message to the scheduler instead of starting a run now.
 // Returns true when it was stored, false when it was not (and has said why), so
 // the caller knows whether to clear the box.
@@ -8338,6 +8413,15 @@ async function scheduleMessage(message, choice) {
     return false;
   }
   const perm = document.querySelector(".perm-sel");
+  // The mode that will really run, not merely the one on screen — though after
+  // syncPermForWhen those are the same thing, and this is what keeps them so.
+  const mode = scheduledPerm(perm ? perm.value : "");
+  // CONTINUE THIS CONVERSATION when there is one. Scheduling from an open chat is
+  // "and then do this next", so a fresh session would throw away the thread the
+  // prompt was written against — the very context that made it worth deferring
+  // from here rather than from a page. Empty on the home view, which is correct:
+  // there is no session yet, and the store reads "" as "start a new one".
+  const session = fused.params.get("session_id") || "";
   try {
     const res = await fetch("/api/schedule", {
       method: "POST",
@@ -8347,10 +8431,11 @@ async function scheduleMessage(message, choice) {
         target: FILE,
         message,
         due: localDueString(at),
+        session_id: session,
         // The approvals pill applies to the scheduled turn too — it is the same
         // question, and a message sent while nobody is watching is the case where
         // the answer matters most.
-        permission_mode: perm ? perm.value : "",
+        permission_mode: mode,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -8358,8 +8443,14 @@ async function scheduleMessage(message, choice) {
       addNote(`Could not schedule: ${data.error || res.status}`, null, "◷");
       return false;
     }
-    addNote(`Scheduled for ${at.toLocaleString()}. It runs here, in this folder,`
-            + ` as long as fused-render is open.`, null, "◷");
+    // The mode is named at the moment of commitment, which is where a substituted
+    // one has to be disclosed (see scheduledPerm) — and where "it will act without
+    // me" is worth reading even when nothing was substituted.
+    const label = (PERMISSION_LABELS && PERMISSION_LABELS[mode]) || mode;
+    addNote(`Scheduled for ${at.toLocaleString()}`
+            + `${session ? ", continuing this chat" : ""}, with approvals set to`
+            + ` "${label}". It runs here as long as fused-render is open.`,
+            null, "◷");
     return true;
   } catch (e) {
     addNote(`Could not schedule: ${e.message}`, null, "◷");
@@ -8596,6 +8687,32 @@ async function resumeRun(run_id) {
 }
 
 function submitChat() {
+  // DEFERRED FIRST, above the live-run branch below. Scheduling is a store write,
+  // not a send, so it does not care whether a turn is running — and putting this
+  // check second meant a message the user had deferred to tomorrow was instead
+  // PARKED by the queue and fired the moment the current turn ended, which is the
+  // one outcome the pill exists to prevent.
+  const when = whenChoice();
+  if (when !== WHEN_NOW) {
+    const draft = box.value.trim();
+    // A scheduled message must have WORDS — there is nothing to defer in a bare
+    // annotation, whose whole meaning is the screen it was drawn on.
+    if (!draft) {
+      addNote("A scheduled message needs some text — a note on its own only "
+              + "means anything now.", null, "◷");
+      return;
+    }
+    if (scheduling) return;  // see `scheduling`: a second Enter must not store a second copy
+    scheduling = true;
+    scheduleMessage(draft, when).then((ok) => {
+      scheduling = false;
+      if (!ok) return;       // refused: the draft stays in the box, unharmed
+      box.value = "";
+      growBox();
+      resetWhen();
+    });
+    return;
+  }
   // A live run queues instead of refusing: the text is parked and fired when
   // the turn ends. Gated on activeRun, NOT `sending` — `sending` is also held
   // by loadHistory and resumeRun's probe, and a message typed while browsing
@@ -8612,25 +8729,6 @@ function submitChat() {
   const message = box.value.trim();
   // notes alone are sendable
   if (!message && !annPending().length) return;
-  // Deferred: hand it to the scheduler and leave the box alone until it is
-  // actually stored, so a refused schedule does not eat what the user typed. A
-  // scheduled message must have WORDS — there is nothing to defer in a bare
-  // annotation, whose whole meaning is the screen it was drawn on.
-  const when = whenChoice();
-  if (when !== WHEN_NOW) {
-    if (!message) {
-      addNote("A scheduled message needs some text — a note on its own only "
-              + "means anything now.", null, "◷");
-      return;
-    }
-    scheduleMessage(message, when).then((ok) => {
-      if (!ok) return;
-      box.value = "";
-      growBox();
-      resetWhen();
-    });
-    return;
-  }
   box.value = "";
   growBox();
   sendMessage(message);
@@ -8665,16 +8763,24 @@ document.getElementById("card").onsubmit = (e) => {
               + "means anything now.", null, "◷");
       return;
     }
+    if (scheduling) return;  // one Enter, one stored message (see `scheduling`)
+    scheduling = true;
     // enterChat FIRST: addNote writes into the transcript, which the home view
     // hides, so a confirmation left on this screen would be invisible. Landing in
     // the chat is also the honest destination — it is where the message will
     // appear when it runs.
     enterChat();
+    homebox.value = "";
+    growHome();
     scheduleMessage(message, when).then((ok) => {
-      if (!ok) return;
-      homebox.value = "";
-      growHome();
-      resetWhen();
+      scheduling = false;
+      if (ok) { resetWhen(); return; }
+      // REFUSED, and the user is now looking at the chat — so the draft goes into
+      // the composer in front of them rather than staying in the home box this
+      // navigation just hid, where it reads as lost.
+      box.value = message;
+      growBox();
+      focusBox(box);
     });
     return;
   }

@@ -79,6 +79,9 @@ function stateLabel(entry: ScheduledMessage): string {
     if (entry.turn === "ok") return "Ran";
     if (entry.turn === "failed") return "Turn failed";
     if (entry.turn === "cancelled") return "Stopped";
+    // Not "Running…": nothing is watching it any more, and saying otherwise is
+    // the frozen-progress-bar lie the job registry's `stalled` state avoids.
+    if (entry.turn === "unknown") return "Stopped reporting";
     return "Running…";
   }
   return STATE_LABELS[entry.state] ?? entry.state;
@@ -87,7 +90,8 @@ function stateLabel(entry: ScheduledMessage): string {
 // Which CSS state class a row paints with. A failed turn reads as a failure even
 // though `state` is the cheerful half of the pair.
 function stateTone(entry: ScheduledMessage): string {
-  if (entry.state === "sent" && entry.turn === "failed") return "error";
+  if (entry.state === "sent" && (entry.turn === "failed" || entry.turn === "unknown"))
+    return "error";
   if (entry.state === "sent" && !entry.turn) return "sending";
   return entry.state;
 }
