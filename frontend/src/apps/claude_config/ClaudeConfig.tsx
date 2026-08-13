@@ -46,7 +46,7 @@
 // app re-rendered.
 import { useCallback, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { Icon, PreviewPane, useGitStatus } from "./bits";
+import { Icon, Pill, PreviewPane, useGitStatus } from "./bits";
 import ClaudeMdSection from "./sections/ClaudeMdSection";
 import HistorySection from "./sections/HistorySection";
 import MarketplacesSection from "./sections/MarketplacesSection";
@@ -69,9 +69,13 @@ const TABS = [
     label: "MD Files",
     file: "CLAUDE.md / CLAUDE.local.md across all projects",
   },
-  { id: "memory", label: "Memory", file: "projects/*/memory/ (read-only viewer)" },
-  { id: "skills", label: "Skills", file: "skills/*/SKILL.md (read-only viewer)" },
-  { id: "statusline", label: "Statusline", file: "settings.json → statusLine (read-only viewer)" },
+  // `readOnly` puts one pill in the caption row. It replaces the
+  // "(read-only viewer)" that used to be baked into three of these strings —
+  // the same fact, said in the same way as the read-only marketplaces and
+  // plugin-provided MCP servers already say it, in one place instead of two.
+  { id: "memory", label: "Memory", file: "projects/*/memory/", readOnly: true },
+  { id: "skills", label: "Skills", file: "skills/*/SKILL.md", readOnly: true },
+  { id: "statusline", label: "Statusline", file: "settings.json → statusLine", readOnly: true },
   {
     id: "mcp",
     label: "MCP",
@@ -219,7 +223,10 @@ export default function ClaudeConfig() {
           {/* title= on the ROW, not on the note: the note itself is hidden on a
               narrow window, and the sentence should still be reachable there. */}
           <div className="cc-caption-row" title={TAGLINE}>
-            <div className="cc-caption cc-mono">{meta.file}</div>
+            <div className="cc-caption cc-mono">
+              {meta.file}{" "}
+              {"readOnly" in meta && meta.readOnly && <Pill tone="ro">read-only</Pill>}
+            </div>
             <div className="cc-caption cc-caption-note">
               Edits commit to git · applies next session
             </div>

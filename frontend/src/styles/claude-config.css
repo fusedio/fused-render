@@ -885,6 +885,35 @@
   overflow-x: auto;
 }
 
+/* The statusline preview is the tab's hero, not a debug dump at the bottom:
+   roomier padding and no top margin, since it is the first thing on the page. */
+.cc-statusline {
+  margin-top: 0;
+  padding: 14px 16px;
+  font-size: 13px;
+}
+
+/* -- definition list (statusline metadata) --------------------------------- */
+/* Facts about a thing, under the thing. Same two-column grammar as an expanded
+   row's .cc-lrow-dl, at page scale rather than inside a row. */
+
+.cc-dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 20px 0 0;
+  font-size: 12.5px;
+}
+
+.cc-dl-key {
+  color: var(--fg-muted);
+}
+
+.cc-dl-val {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .cc-textbox {
   display: block;
   width: 100%;
