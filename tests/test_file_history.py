@@ -222,6 +222,66 @@ def test_a_huge_file_reports_an_inexact_delta_instead_of_diffing(claude_home,
     assert (v["added"], v["removed"]) == (0, 2)  # 1 line vs 3, net only
 
 
+def test_declining_the_deltas_skips_difflib_and_says_so(claude_home, tmp_path,
+                                                        monkeypatch):
+    """`deltas=False` is the same degradation the byte cap already produces, asked
+    for by the caller instead of forced by the content.
+
+    It exists because this call is the ENTIRE cost of a timeline: measured at
+    290 ms of a 292 ms read on a 453 KB file with 12 checkpoints, against 0.2 ms
+    to enumerate the store. A panel that wants to paint a list on sight cannot pay
+    a third of a second for two numbers a row.
+    """
+    fh = _load()
+    f = _target(tmp_path, "keep\ngone1\ngone2\n")
+    write_version(claude_home, "s", f, "keep\nnew1\nnew2\nnew3\n")
+
+    calls = []
+    real = fh.difflib.SequenceMatcher
+    monkeypatch.setattr(fh.difflib, "SequenceMatcher",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    v = fh.list_versions(f, deltas=False)[0]
+    assert not calls, "difflib ran for a caller that declined the deltas"
+    assert v["exact"] is False
+    assert v["differs"] is True          # still a byte comparison
+    assert (v["added"], v["removed"]) == (1, 0)   # 4 lines vs 3, net only
+
+    assert fh.list_versions(f, deltas=True)[0]["exact"] is True
+    assert calls, "difflib must still run for the exact pair"
+
+
+def test_the_deltas_flag_cannot_buy_precision_the_content_forbids(claude_home,
+                                                                  tmp_path,
+                                                                  monkeypatch):
+    """The flag NARROWS only. Above the byte cap the answer is inexact whatever
+    the caller asked for — otherwise `deltas=True` would be a way to reintroduce
+    the quadratic diff the cap exists to prevent."""
+    fh = _load()
+    monkeypatch.setattr(fh, "DIFF_BYTE_CAP", 8)
+    f = _target(tmp_path, "aaaa\nbbbb\ncccc\n")
+    write_version(claude_home, "s", f, "aaaa\n")
+    assert fh.list_versions(f, deltas=True)[0]["exact"] is False
+
+
+def test_the_selection_is_the_same_whether_the_deltas_were_computed(claude_home,
+                                                                    tmp_path):
+    """The positional walk is built on `differs`, a byte comparison — so nothing
+    the deltas flag touches can move where a revert would land. This is the
+    guarantee that lets the panel render a cheap timeline and act on it."""
+    fh = _load()
+    f = _target(tmp_path, "a\nb\nc\n")
+    write_version(claude_home, "s", f, "a\nB\nc\n", mtime=1000)
+    write_version(claude_home, "s", f, "a\nb\nc\n", mtime=2000)
+    write_version(claude_home, "s", f, "a\nb\nc\nd\n", mtime=3000)
+    exact = fh.timeline(f)
+    cheap = fh.timeline(f, deltas=False)
+    for key in ("position", "revert", "offer", "at_earliest", "unconfirmed",
+                "unique_current", "note"):
+        assert exact[key] == cheap[key], key
+    assert [v["id"] for v in exact["versions"]] == [v["id"] for v in cheap["versions"]]
+
+
 # ------------------------------------------------- the null backup (new file)
 
 def test_a_null_backup_becomes_a_file_did_not_exist_entry(claude_home, tmp_path):

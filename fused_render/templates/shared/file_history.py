@@ -265,16 +265,33 @@ def _lines(data):
         return None
 
 
-def _delta(cur_lines, ver_lines, cur_bytes, ver_bytes):
+def _delta(cur_lines, ver_lines, cur_bytes, ver_bytes, exact=True):
     """(added, removed, exact) for restoring `ver` over `cur`.
 
     Stated as WHAT THE RESTORE DOES — lines it introduces, lines it takes away
     — because that is the number a confirm step has to show. The reverse framing
     reads identically on symmetric edits and lies on every asymmetric one.
+
+    `exact=False` asks for the O(1) net counts on purpose, and it is the
+    difference between a timeline a view can paint on sight and one it has to
+    defer behind a click. THIS CALL IS THE WHOLE COST OF A TIMELINE: measured on
+    a 453 KB file with 12 checkpoints, `difflib` is 290 ms of a 292 ms read
+    (4.66M calls in `find_longest_match`), against 7 ms to read all twelve
+    versions off disk and 0.2 ms to enumerate them. Nothing downstream needs the
+    precise pair either — `differs` is a byte comparison, so `_locate` and the
+    whole revert selection are unaffected — which leaves the counts as row
+    decoration, and decoration must not cost a third of a second. The exact pair
+    is still computed where it is actually being read: `revert_plan`, which
+    renders the diff itself.
+
+    The flag NARROWS: an inexact answer stays inexact (the byte cap below is
+    checked either way), so no caller can ask for more precision than the
+    content allows.
     """
     if cur_lines is None or ver_lines is None:
         return None, None, False
-    if max(len(cur_bytes or b""), len(ver_bytes or b"")) > DIFF_BYTE_CAP:
+    if not exact or max(len(cur_bytes or b""),
+                        len(ver_bytes or b"")) > DIFF_BYTE_CAP:
         # Net counts only. Honest and O(1) — and flagged inexact, so the UI can
         # say "~" rather than implying a diff nobody computed.
         return (max(0, len(ver_lines) - len(cur_lines)),
@@ -523,13 +540,19 @@ def _epoch(stamp):
         return 0.0
 
 
-def _scan(file, enrich):
+def _scan(file, enrich, deltas=True):
     """(entries newest-first, skipped, store_error).
 
     `skipped` is not bookkeeping. A dropped version moves where the backward walk
     starts and where it lands (`_locate`), so every drop is recorded with a reason
     and a time, and the automatic revert refuses rather than silently walking to
     a different point in history.
+
+    `deltas=False` asks each entry for net line counts instead of a real diff
+    (see `_delta`). Every version is still READ — `differs` is a byte comparison
+    and the positional walk is built on it, so nothing about the selection
+    changes; what is skipped is only `difflib`, which is essentially all of the
+    time this function spends.
     """
     file = os.path.abspath(file)
     key = path_hash(file)
@@ -563,7 +586,8 @@ def _scan(file, enrich):
                                 "mtime": mtime, "reason": _why(exc, p)})
                 continue
             lines = _lines(data)
-            added, removed, exact = _delta(cur_lines, lines, cur_bytes, data)
+            added, removed, exact = _delta(cur_lines, lines, cur_bytes, data,
+                                           exact=deltas)
             entries.append({
                 "id": "%s@v%d" % (session, version),
                 "session": session,
@@ -596,7 +620,7 @@ def _scan(file, enrich):
     return entries, skipped, store_error
 
 
-def list_versions(file, enrich: bool = False) -> list:
+def list_versions(file, enrich: bool = False, deltas: bool = True) -> list:
     """Every version of `file` across every session, NEWEST FIRST.
 
     Newest-first because every consumer wants that end: the positional walk
@@ -609,8 +633,12 @@ def list_versions(file, enrich: bool = False) -> list:
 
         {id, session, version, existed, path, mtime, size, lines,
          differs, added, removed, exact}
+
+    `deltas=False` trades the exact `added`/`removed` pair for net line counts
+    (and `exact: False` beside them, which every renderer of this shape already
+    handles). Nothing else in the entry changes.
     """
-    return _scan(file, enrich)[0]
+    return _scan(file, enrich, deltas)[0]
 
 
 # ------------------------------------------------------- the revert selection
@@ -748,7 +776,7 @@ def _selection(entries, cur_bytes, skipped):
 
 # ----------------------------------------------------------------- the payload
 
-def timeline(file, enrich: bool = False) -> dict:
+def timeline(file, enrich: bool = False, deltas: bool = True) -> dict:
     """Everything the view needs in one call, including its own empty states.
 
     `note` is the degradation channel: a human sentence for "no store", "no
@@ -756,10 +784,21 @@ def timeline(file, enrich: bool = False) -> dict:
     could not be read". Each of those is an ordinary, expected state — the whole
     point of returning them as data is that the view renders an informative panel
     instead of a traceback overlay.
+
+    TWO independent costs, and they are opt-out separately because a view pays
+    them at different moments. `enrich` reads session transcripts (5 MB+) and
+    buys the creation boundary. `deltas` runs `difflib` per version and buys the
+    exact `added`/`removed` pair — 290 ms of a 292 ms read on a real file, for
+    two numbers on a row. A panel that paints on open declines both; the plan
+    behind a click enriches and diffs for real.
+
+    `deltas=False` changes NOTHING structural: `position`, `revert`, `offer` and
+    `at_earliest` all come off the byte-level `differs`, so the same rows are
+    selected either way and only the counts beside them soften (`exact: False`).
     """
     file = os.path.abspath(file)
     cur, cur_bytes, _cl = _current(file)
-    versions, skipped, store_error = _scan(file, enrich)
+    versions, skipped, store_error = _scan(file, enrich, deltas)
     position, target, at_earliest, unconfirmed, blocking = _selection(
         versions, cur_bytes, skipped)
     root = history_root()

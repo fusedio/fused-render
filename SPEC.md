@@ -4597,7 +4597,11 @@ wanting "what has this file been through" wants §33.
   boot: the session transcripts reach **5 MB+** each and reading one per render
   would be a performance trap. `abspath` is load-bearing, not cosmetic: a
   relative path hashes to something the store never heard of, so the lookup
-  would silently find nothing rather than fail.
+  would silently find nothing rather than fail. **It is also not the cost anyone
+  assumes it is:** the whole walk — `listdir` over every session dir plus a
+  `getmtime` per match — measures **0.2 ms** against a 44-session store, which is
+  why it is not worth deferring, caching, or answering from the file index
+  (FH-19). What costs is `_delta`, and that is the knob.
 - **FH-3** **Versions are checkpoints, not per-edit pre-images, and undo is
   POSITIONAL: find where disk sits in the chain, then step backwards.** Two
   wrong rules were ruled out, in order, and both matter.
@@ -5020,7 +5024,7 @@ wanting "what has this file been through" wants §33.
   user the panel on screen is stale.
 
 - **FH-18** **`claude` shows the snapshots AND goes back to them.** The
-  panel is a COLLAPSED section of the chat template's LANDING page (`#snaps`,
+  panel is a section of the chat template's LANDING page (`#snaps`,
   beside "Recent chats"), fed by `agent.py`'s `action="snapshots"` — a
   pass-through to `file_history.timeline`, adding nothing but the offer. The
   store stays
@@ -5037,62 +5041,100 @@ wanting "what has this file been through" wants §33.
     never `"file"`.) `_snapshots` refuses a directory independently, so a
     hand-written call cannot reach a state the panel does not offer: the gate is
     the UX, the module is the guarantee (MD-11).
-  - **COLLAPSED by default, and read only when OPENED — and what you press is a
-    ROW.** The heading stays a quiet static label, exactly like "Recent chats"
-    above it; below it sits ONE placeholder row (`#snapsopen`) that **reuses
-    `.snap-row`** — dot, "Show version history", caret — so the control is
-    literally a preview of what it opens into: a row that opens into more rows
-    like it. That is the page's own affordance vocabulary (every section here is
-    a static heading over pressable rows), and it is the second answer to this
-    question. The first made the HEADING the button, a full-width bordered pill
-    wearing 11px uppercase letter-spaced micro-type with a lowercase "show" hint
-    beside an uppercase label — neither a heading nor a button, and rejected on
-    sight. The way back out is a quiet `hide ▾` on the heading LINE, present only
-    while the section is open (a "hide" for something not showing is a control
-    for nothing) and deliberately NOT in the heading's type. While the read is in
-    flight the row stays put and only its words change ("Loading…"), so opening
-    costs no layout jump; a FAILED read puts the row back — it is the retry —
-    with the note underneath it, rather than opening the section onto an error.
-    The list and its note live in `#snapsbody`. "Can I get that back?"
-    is a question a user arrives at deliberately, and the timeline was being
-    fetched — a worker round trip — on every single file open for a history most
-    opens never look at. So `mountSnapshots()` only REVEALS the heading and asks
-    the backend nothing; `loadSnapshots()` runs on the FIRST expand.
-    A loaded timeline is then **cached until something appends to the chain**, so
-    re-opening costs nothing; a FAILED read caches nothing, so the next expand
-    retries rather than leaving the section stuck on the failure. **Two** things
-    append. A **revert** repaints from the post-revert timeline the write returned
-    (falling back to a refetch). And a **finished chat turn** — Claude edits the
-    file in this very page and Claude Code checkpoints what it edits, which the
-    panel has no other way to see; cached "for the life of the page" was simply
-    wrong, and a landing page reached after a turn showed the pre-turn position,
-    stale deltas and none of the new versions. So `snapInvalidate()` runs wherever
-    a run ENDS (beside `annResolveSent`, the template's existing "that turn is
-    over" moment: the poll loop's `done` branch and `resumeRun`'s). It respects
-    the lazy contract rather than overriding it — a **collapsed** panel drops the
-    cache and reads nothing, because a turn is not an expand; an **open** one
-    refetches and repaints immediately, for the reason the revert path does. The
-    expanded ROW stays open: `snapshot_plan` is re-fetched on every render, so it
-    re-reads against the new bytes instead of going stale.
-  - **The read does not enrich.** Enrichment reads session transcripts (5 MB+),
-    so the panel takes the unenriched timeline — which is why it never claims a
-    chain is complete (FH-3). (A `snapshot_plan`/`snapshot_revert` always
-    enriches: it is paid once, on an explicit click, and an unenriched plan
-    cannot see the did-not-exist boundary.)
+  - **LISTED on arrival, with no control to open it, because the read got cheap
+    enough to stop hiding.** The heading is a quiet static label over a stack of
+    pressable rows, exactly like "Recent chats" above it, and `mountSnapshots()`
+    reveals the section AND calls `loadSnapshots()`. Two earlier revisions put a
+    door in front of this list and both are gone: first the HEADING was the
+    button (a full-width bordered pill wearing 11px uppercase letter-spaced
+    micro-type with a lowercase "show" hint beside an uppercase label — neither a
+    heading nor a button, rejected on sight), then a placeholder `.snap-row`
+    stood in for the section with `hide ▾` beside the label. The deferral they
+    existed to serve was aimed at the wrong cost. **Measured** on `claude`'s own
+    `template.html` (453 KB, 12 checkpoints): 292 ms for the timeline, of which
+    `difflib` inside `_delta` is **290** — two numbers per row — while reading
+    all twelve versions off disk is 7 ms and enumerating them out of the store
+    (FH-2) is **0.2 ms**. So the call declines the exact deltas
+    (`deltas: "0"`, FH-19) as well as enrichment, lands in **~6 ms**, and a list
+    that costs six milliseconds does not need a click, a caret or a hide. The
+    rows still open into a real diff — `snapshot_plan`, for that one version.
+    While a FIRST read is in flight the section holds a `snap-note` where the rows
+    will be ("reading the version history…"); a refetch leaves the rows it already
+    has up, because swapping a good list for that sentence reads as the panel
+    losing the history it is about to reprint. A FAILED read empties the list, says
+    why in `#snapsnote`, and grows a `try again` on the heading line — the retry is
+    now a control rather than "press the thing you pressed before".
+    A loaded timeline is **cached until something appends to the chain**, so a trip
+    into a chat and back repaints rather than re-asking (`mountSnapshots` renders
+    `snapTimeline` directly when `snapLoaded`); a FAILED read caches nothing, so
+    the retry and the next landing ask again rather than leaving the section stuck
+    on the failure. **Two** things append. A **revert** repaints from the
+    post-revert timeline the write returned (falling back to a refetch). And a
+    **finished chat turn** — Claude edits the file in this very page and Claude
+    Code checkpoints what it edits, which the panel has no other way to see; a
+    landing page reached after a turn showed the pre-turn position, stale deltas
+    and none of the new versions. So `snapInvalidate()` runs wherever a run ENDS
+    (beside `annResolveSent`, the template's existing "that turn is over" moment:
+    the poll loop's `done` branch and `resumeRun`'s), drops the cache and
+    **refetches immediately** — the list is on screen from the moment the panel
+    mounts, so leaving a stale one up is worse than spending the round trip, which
+    is the argument the revert path already made. (While the panel was collapsed
+    this was conditional on its being open; with nothing on screen to go stale,
+    reading nothing was the cheaper half.) It is gated on `snapMounted`, because
+    that same hook fires for FOLDER targets where the panel never mounted, and a
+    hidden section would still have spent a round trip per turn for ever, for an
+    answer `_snapshots` refuses. The expanded ROW stays open: `snapshot_plan` is
+    re-fetched on every render, so it re-reads against the new bytes instead of
+    going stale.
+  - **The list is GROUPED INTO PER-SESSION RUNS, because `vN` restarts in every
+    one.** FH-4 is a fact about the store; listing on arrival made it a fact on
+    screen. Five chats that edited a file give five chains each beginning at v1,
+    and the flat merged list therefore showed "v2" three times — *"why do we have
+    multiple snapshots of the same version"*. The number is real and per-chain, so
+    the chain is drawn: one `.snap-runbox` per run, a rule down its left, and a
+    heading naming it.
+    - **Contiguous RUNS, not a `group by session`.** The row order is
+      load-bearing — `_locate` walks the merged timeline positionally to decide
+      where a revert lands — so `snapRuns` may only insert boundaries, never
+      reorder or merge. A session that edited the file, left, and came back gets
+      TWO headings, which is what happened.
+    - **The heading is named from the SIDECAR**, using the same `preview` string
+      the "Recent chats" rows above it are labelled with, so the two sections of
+      the landing page agree about what a chat is called. `loadRecent()` fills that
+      map and always runs before `mountSnapshots()`. A MISS is ordinary, not a
+      degraded state: this store records every Claude Code session that touched the
+      file, terminal ones included, and those were never in this file's sidecar —
+      so the fallback claims only "chat" and puts the session's short id beside the
+      count, that id being the one handle that separates two unnamed chains. The
+      full id stays on the heading's `title`, and on each row's, so a row read out
+      of context can still say which "v2" it is.
+  - **The read declines BOTH of the reader's costs.** Enrichment reads session
+    transcripts (5 MB+), so the panel takes the unenriched timeline — which is why
+    it never claims a chain is complete (FH-3). The exact deltas are `difflib` per
+    version, so it takes the undiffed one too (FH-19) — which is why its counts
+    wear a `~`. (A `snapshot_plan`/`snapshot_revert` does both for real: paid once,
+    on an explicit click, and an unenriched plan cannot see the did-not-exist
+    boundary while an undiffed one has no diff to show.)
   - **The panel is offered on EVERY path onto the landing page**, the boot with
     no session and "Back to chats" alike. A page opened straight into a resumed
     chat (`?session_id=`) never runs the boot's landing branch, so a panel
     mounted only there could never appear for the rest of that page's life.
-    Returning to the landing page does **not** re-collapse an opened section or
-    drop its cache: it is the same file's history either way.
-  - **Every absence is a LINE OF TEXT inside the opened section**, the reader's
+    Returning to the landing page does **not** drop the cache: it is the same
+    file's history either way.
+  - **Every absence is a LINE OF TEXT inside the section**, the reader's
     own `note`: "no store on this machine" (Claude Code has never run here) and
     "a store with nothing for this file" are distinguished by that sentence
     rather than by whether a panel exists. *This overturns the earlier "no store
-    at all → no panel" rule, which `annotate` also drew:* it was affordable when
-    the timeline was fetched before the section was drawn, and it is not once the
-    section is something the user OPENED — a heading that vanishes under the
-    click that opened it reads as a bug, not as "this feature does not apply".
+    at all → no panel" rule, which `annotate` also drew:* a heading that vanishes
+    once its own read comes back reads as a bug, not as "this feature does not
+    apply".
+  - **A worktree is a different file, and the panel will say so by saying
+    nothing.** The store key is `sha256(abspath)[:16]` (FH-2), so the same file
+    checked out at two paths — a git worktree, a second clone — has two unrelated
+    chains, and the copy that was never edited under *this* path correctly reports
+    "Claude has no recorded versions of this file." Known and not worked around:
+    keying on anything but the absolute path would mean guessing which of two
+    files a checkpoint belongs to.
     The reader still returns its empty states as data rather than raising, which
     is what makes a sentence available to print.
   - **A row expands to its diff and carries one action: "Go back to this
@@ -5124,6 +5166,44 @@ wanting "what has this file been through" wants §33.
     kernel stat on a wedged mount hangs the worker; `condition.py` already keeps
     the whole chat template off those paths, and `_snap_target` is the module's
     own guarantee of the same answer (cannot tell → refuse, CT-12).
+- **FH-19** **The exact line delta is opt-out, because it is the entire cost of a
+  timeline.** `_delta` takes `exact=`, threaded through `_scan`, `list_versions`
+  and `timeline` as `deltas=`, and **defaults to True** — the opposite direction
+  from `enrich`, because the complete answer is what a caller who did not think
+  about it should get. `deltas=False` takes the O(1) net line counts the byte cap
+  (`DIFF_BYTE_CAP`) already produces, flagged `exact: False`, and the flag only
+  ever NARROWS: above the cap the answer stays inexact however it was asked for,
+  or `deltas=True` would be a way back into the quadratic diff the cap exists to
+  prevent.
+  - **What it buys.** Profiled on a 453 KB file with 12 checkpoints: 292 ms total,
+    `difflib.find_longest_match` **290 ms** of it across 4.66M calls, versus 7 ms
+    to read all twelve versions and 0.2 ms to enumerate them. Declining it is
+    **~49×** on that file and is what lets FH-18 paint its list on arrival.
+  - **What it cannot change, and this is the guarantee that makes it safe.**
+    `differs` is a BYTE comparison, so `_locate`, `position`, `revert`, `offer`,
+    `at_earliest` and `unique_current` are bit-identical either way (FH-3). The
+    pair is row decoration; the diff a user actually confirms comes from
+    `revert_plan`, which has no such knob.
+  - **An inexact delta is a SINGLE net term, not a softened pair, and a renderer
+    that prints it as a pair is wrong.** `_delta`'s cheap branch is
+    `max(0, ver − cur)` against `max(0, cur − ver)`, so at most one side can ever
+    be non-zero: `claude`'s `snapDelta` prints `~−43` or `~+12`, and the word
+    "changed" when both are zero (an edit that replaced as many lines as it
+    removed — most of them), after the `differs` check that already owns "on disk
+    now". Printing the pair was the first attempt and it put `~+0 −43` down every
+    row of a file that has only grown, the `+0` being the shape of the arithmetic
+    rather than a measurement. **It took looking at the running app to see it** —
+    every test passed, and the panel was worse than before the change.
+  - **The enumeration is NOT a candidate for the same treatment, and not a
+    candidate for the file index either.** FH-2's filesystem walk is 0.2 ms —
+    0.07% of the read it was assumed to dominate. Answering it from
+    `/api/index/*` instead (§30) measured **8.6 ms** cold and 3.2 ms warm
+    *in-process*, before the HTTP hop and the `/api/index/status` probe the JS
+    bridge adds, and it would import a staleness this panel cannot afford: the
+    index is a background scan, `snapInvalidate` fires the instant a turn ends,
+    and the checkpoint written seconds ago is exactly the row the user is looking
+    for. The index is the right answer for machine-wide questions; a 44-entry
+    `listdir` is already faster than asking anything.
 
 ---
 
