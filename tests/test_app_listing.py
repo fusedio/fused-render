@@ -192,6 +192,36 @@ def test_an_unreadable_folder_does_not_kill_the_listing(tmp_path, monkeypatch):
     assert _names(tmp_path) == ["local", "ok"]
 
 
+def test_a_folder_that_becomes_unreadable_mid_walk_costs_only_itself(tmp_path,
+                                                                    monkeypatch):
+    """The walk's OWN listing guard, distinct from the one around `app_entry`.
+
+    A page-less folder is listed as a card and then DESCENDED INTO, and those are
+    two separate reads: the entry lookup can succeed and the descent still fail
+    (permissions changed, folder deleted, a network volume going away in
+    between). Without the guard the whole page 500s over one folder — so the
+    stand-in refuses `probed`'s SECOND listing, the one the descent does.
+    """
+    _app(tmp_path / "local", "ok")
+    _app(tmp_path / "local" / "probed", "deep")  # `probed` itself has no page
+
+    real = os.listdir
+    seen = set()
+
+    def refuse_on_second_look(path, *a, **kw):
+        if os.path.basename(str(path)) == "probed":
+            if str(path) in seen:
+                raise PermissionError(13, "Permission denied", str(path))
+            seen.add(str(path))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "listdir", refuse_on_second_look)
+
+    # `probed` still lists (its entry resolved, as None); `deep` is lost with
+    # the failed descent; `ok` is untouched.
+    assert _names(tmp_path) == ["local", "ok", "probed"]
+
+
 # ------------------------------------------------------------------ the title
 
 

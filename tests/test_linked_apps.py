@@ -135,9 +135,12 @@ def test_linked_apps_merge_with_workspace_apps_sorted(client, tmp_path, workspac
     _register(d)
 
     listed = client.get("/api/apps").json()["apps"]
+    # `local` is the tag folder's own (entry-less) card — the workspace walk
+    # lists any non-hidden folder at depth 1 or 2 (app_listing.workspace_apps).
     assert [(a["tag"], a["name"]) for a in listed] == [
         ("linked", "zeta"),
         ("local", "alpha"),
+        ("local", "local"),
     ]
 
 
