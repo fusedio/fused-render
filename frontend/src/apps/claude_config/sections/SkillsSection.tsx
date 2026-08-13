@@ -14,6 +14,7 @@ import {
   ListRow,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastErr,
   toastOk,
@@ -22,7 +23,7 @@ import {
 
 export default function SkillsSection() {
   const load = useCallback(() => cc.skills.list(), []);
-  const { data, error } = useModuleData(load);
+  const { data, error, reload } = useModuleData(load);
 
   const share = async (command: string) => {
     if (await copyToClipboard(command)) toastOk("Copied install command");
@@ -31,10 +32,16 @@ export default function SkillsSection() {
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading skills" />;
-  if (!data.skills.length) return <Empty>No local skills under skills/*/SKILL.md.</Empty>;
+
+  const linked = data.skills.filter((s) => s.linked).length;
 
   return (
     <>
+      <SectionToolbar
+        summary={`${data.skills.length} skill(s)${linked ? ` · ${linked} linked` : ""}`}
+        onRefresh={reload}
+      />
+      {!data.skills.length && <Empty>No local skills under skills/*/SKILL.md.</Empty>}
       {data.skills.map((s) => (
         <ListRow
           key={s.slug}

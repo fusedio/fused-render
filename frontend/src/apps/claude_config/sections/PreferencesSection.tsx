@@ -21,6 +21,7 @@ import {
   Icon,
   Row,
   SKELETON_ROWS,
+  SectionToolbar,
   Toggle3,
   toastErr,
   toastOk,
@@ -154,10 +155,13 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
 
   return (
     <>
-      <div className="cc-toolbar">
-        <span className="cc-unset">
-          {data.schema.length} settings from the checked-in catalog
-        </span>
+      {/* Two different acts, deliberately not merged: the icon re-reads
+          settings.json (what every other tab's refresh does), while "Refresh
+          catalog" re-fetches Anthropic's docs and rewrites the catalog itself.
+          Collapsing the second into an icon would hide a network write behind
+          the same glyph as a local re-read. */}
+      <SectionToolbar summary={`${data.schema.length} settings from the checked-in catalog`}
+        onRefresh={reload}>
         <button
           type="button"
           className="btn"
@@ -168,7 +172,7 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
           <Icon name="refresh" />
           {refreshing ? "Refreshing…" : "Refresh catalog"}
         </button>
-      </div>
+      </SectionToolbar>
       {groups.map((g) => (
         <Group key={g.name} title={g.name}>
           {g.items.map((d) => {

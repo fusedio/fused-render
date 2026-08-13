@@ -15,6 +15,7 @@ import {
   ListRow,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   toastErr,
   toastOk,
   useModuleData,
@@ -80,6 +81,10 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
 
   return (
     <>
+      <SectionToolbar
+        summary={data ? `${data.marketplaces.length} marketplace(s)` : "…"}
+        onRefresh={reload}
+      />
       <Card>
         <CardTitle>Add a marketplace</CardTitle>
         <CardActions>

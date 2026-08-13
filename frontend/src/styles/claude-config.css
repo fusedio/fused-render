@@ -196,6 +196,16 @@
   margin-right: auto;
 }
 
+/* What you are looking at, as a fact: "12 marketplaces", "4 servers · 3
+   connected". Not italic — .cc-unset's italic means "this value is absent", and
+   a count is not absent. */
+.cc-summary {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
 .cc-group {
   margin-bottom: 26px;
 }

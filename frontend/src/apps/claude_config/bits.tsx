@@ -165,6 +165,49 @@ export function Empty({ children, action }: { children: ReactNode; action?: Reac
   );
 }
 
+// -- one toolbar --------------------------------------------------------------
+
+// The header row every tab opens with: a plain summary of what you are looking
+// at on the left, the tab's own controls, then — in the same slot on every tab —
+// the refresh icon. Before this, each tab hand-rolled its own header, which is
+// how MCP ended up with a text `Refresh` button INSIDE its add-a-server form,
+// where refreshing has nothing to do with adding.
+//
+// `summary` is deliberately a fact and not a title ("12 marketplaces", "4
+// servers · 3 connected"): the caption above already names the file, and the tab
+// strip already names the tab.
+export function SectionToolbar({
+  summary,
+  children,
+  onRefresh,
+  // Override only where "refresh" is the wrong word for the same act (MD Files
+  // re-runs a filesystem scan; Statusline re-runs the preview command).
+  refreshLabel = "Refresh",
+}: {
+  summary: ReactNode;
+  children?: ReactNode;
+  onRefresh?: () => void;
+  refreshLabel?: string;
+}) {
+  return (
+    <div className="cc-toolbar">
+      <span className="cc-summary">{summary}</span>
+      {children}
+      {onRefresh && (
+        <button
+          type="button"
+          className="cc-iconbtn"
+          title={refreshLabel}
+          aria-label={refreshLabel}
+          onClick={onRefresh}
+        >
+          <Icon name="refresh" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // -- one list row -------------------------------------------------------------
 
 // Every list in this app renders through this: Plugins, Marketplaces, Skills,

@@ -15,6 +15,7 @@ import {
   Icon,
   ListRow,
   SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastOk,
   useChangePreview,
@@ -52,12 +53,19 @@ export default function MemorySection({ onChanged }: SectionProps) {
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading memory" />;
-  if (!data.projects.length)
-    return <Empty>No persistent memory found under projects/*/memory/.</Empty>;
+
+  const files = data.projects.reduce((n, p) => n + p.files.length, 0);
 
   return (
     <>
       {modal}
+      <SectionToolbar
+        summary={`${data.projects.length} project(s) · ${files} file(s)`}
+        onRefresh={reload}
+      />
+      {!data.projects.length && (
+        <Empty>No persistent memory found under projects/*/memory/.</Empty>
+      )}
       {data.projects.map((p) => {
         const dirty = p.changes.length;
         const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;

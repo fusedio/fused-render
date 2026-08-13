@@ -31,6 +31,7 @@ import {
   ListRow,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   Toggle3,
   toastErr,
   toastOk,
@@ -169,12 +170,28 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   const rowsInstalled = installed.filter((p) => inMarketplace(p.marketplace));
   const rowsDiscover = discover.filter((p) => inMarketplace(p.marketplace));
   const rowCount = tab === "installed" ? rowsInstalled.length : rowsDiscover.length;
+  // Counted off the FULL list, not the filtered one: the toolbar summary says
+  // what you have, and the index column already says what the filter left.
+  const enabledCount = data.plugins.filter((p) => flipped[p.id] ?? p.enabled).length;
 
   return (
     <>
-      <div className="cc-toolbar">
+      <SectionToolbar
+        summary={
+          tab === "installed"
+            ? `${data.plugins.length} installed · ${enabledCount} enabled`
+            : avail
+              ? `${avail.plugins.filter((p) => !p.installed).length} available from ${
+                  indexOf(avail.plugins).length
+                } marketplace(s)`
+              : "reading marketplace catalogs…"
+        }
+        // Refetches whichever list is showing — refreshing Installed must not
+        // trigger the catalog read that the Discover switch deliberately defers.
+        onRefresh={tab === "installed" ? reload : loadAvail}
+      >
         <input
-          className="field-control cc-grow"
+          className="field-control cc-scalar"
           type="search"
           aria-label="Filter plugins"
           placeholder="Filter by name, id or description…"
@@ -203,7 +220,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             Discover
           </button>
         </div>
-      </div>
+      </SectionToolbar>
       <div className="cc-split">
         <nav className="cc-index" aria-label="Filter by marketplace">
           <button

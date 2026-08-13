@@ -27,6 +27,7 @@ import {
   Icon,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastErr,
   toastOk,
@@ -201,16 +202,15 @@ export default function ClaudeMdSection({
           }}
         />
       )}
-      <div className="cc-toolbar">
-        <span className="cc-unset">
-          {data.files.length} file(s) via {data.engine}
-          {emptyCount ? ` · ${emptyCount} empty` : ""}
-        </span>
-        <button type="button" className="btn" onClick={reload}>
-          <Icon name="refresh" />
-          Rescan
-        </button>
-      </div>
+      {/* "Rescan" rather than "Refresh": this one re-runs a filesystem-wide
+          search, not a re-read of a file we already know about. */}
+      <SectionToolbar
+        summary={`${data.files.length} file(s) via ${data.engine}${
+          emptyCount ? ` · ${emptyCount} empty` : ""
+        }`}
+        onRefresh={reload}
+        refreshLabel="Rescan"
+      />
       {/* Compact grid, one small card per file — name + pills, its own path
           line, a few clamped lines of content (server-supplied snippet), and
           icon-only actions in the footer. The explorer homepage's bookmark

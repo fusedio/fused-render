@@ -30,6 +30,7 @@ import {
   ListRow,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastErr,
   toastOk,
@@ -106,6 +107,21 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
   return (
     <>
       {modal}
+      {/* One toolbar for the page, in the slot every other tab puts it: it
+          summarises the repo (drift + log length) and its refresh re-reads both
+          of the things this page is about. Profiles keeps a toolbar of its own
+          further down — it is a separate list with its own controls, and
+          ProfilesSection owns that data. */}
+      <SectionToolbar
+        summary={
+          (status?.dirty ? `${status.files.length} uncommitted change(s) · ` : "") +
+          `${data?.log.length ?? 0} commit(s)`
+        }
+        onRefresh={() => {
+          reload();
+          recheck();
+        }}
+      />
       <Group title="Uncommitted changes">
         <Card>
           <CardTitle>
@@ -128,17 +144,16 @@ export default function HistorySection({ onChanged, onCommitted }: HistoryProps)
                   ? "Your Claude config on disk matches the newest commit."
                   : "Reading git status…"}
           </CardSub>
-          <CardActions>
-            {status?.dirty ? (
+          {/* Only when there IS drift: re-checking is the toolbar's refresh, so
+              a clean card is a statement and not a button you have to press to
+              believe it. */}
+          {status?.dirty && (
+            <CardActions>
               <button type="button" className="btn btn-primary" onClick={commit}>
                 Review &amp; commit
               </button>
-            ) : (
-              <button type="button" className="btn" disabled={failed} onClick={recheck}>
-                Re-check
-              </button>
-            )}
-          </CardActions>
+            </CardActions>
+          )}
         </Card>
       </Group>
       <Group title="Profiles">

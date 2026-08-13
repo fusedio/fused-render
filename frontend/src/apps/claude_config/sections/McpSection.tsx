@@ -20,6 +20,7 @@ import {
   ListRow,
   Pill,
   SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastErr,
   toastOk,
@@ -136,10 +137,17 @@ export default function McpSection() {
   };
 
   const servers = data?.servers ?? [];
+  const connected = servers.filter((s) => s.connected).length;
 
   return (
     <>
       {modal}
+      <SectionToolbar
+        summary={
+          data?.ok ? `${servers.length} server(s) · ${connected} connected` : "…"
+        }
+        onRefresh={reload}
+      />
       <Card>
         <CardTitle>Add a server</CardTitle>
         <CardSub>
@@ -166,9 +174,9 @@ export default function McpSection() {
           <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
             Add
           </button>
-          <button type="button" className="btn" onClick={reload}>
-            Refresh
-          </button>
+          {/* The `Refresh` button that used to sit here is gone: re-listing the
+              servers has nothing to do with adding one, and it now lives in the
+              toolbar's refresh slot like every other tab's. */}
         </CardActions>
       </Card>
       {error && <ErrorBanner>{error}</ErrorBanner>}
