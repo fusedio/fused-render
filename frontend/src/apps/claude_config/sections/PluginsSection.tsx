@@ -45,6 +45,12 @@ type Tab = "installed" | "discover";
 // the index rows and the state share one type.
 const ALL = "";
 
+// Rows per page on Discover. claude-plugins-official alone publishes ~287
+// plugins, so an unpaged Discover is a wall you scroll past rather than a list
+// you read. Installed is a handful and pages out at one page, which renders no
+// pager at all.
+const PAGE_SIZE = 25;
+
 // Count per marketplace over whatever list is showing, in first-seen order —
 // which is alphabetical, because both server actions sort their source.
 function indexOf(items: { marketplace: string }[]): { name: string; n: number }[] {
@@ -63,12 +69,60 @@ function matches(q: string, ...fields: (string | null | undefined)[]): boolean {
   return fields.some((f) => (f || "").toLowerCase().includes(needle));
 }
 
+// The pager, which describes the FILTERED set — the marketplace filter and the
+// search have already run by the time it sees a total, so "1–25 of 287" narrows
+// with them. Renders nothing at all when everything fits: a lone disabled
+// "1 of 1" is chrome that only ever says "there is nothing to page".
+function Pager({
+  page,
+  pages,
+  total,
+  onPage,
+}: {
+  page: number;
+  pages: number;
+  total: number;
+  onPage: (next: number) => void;
+}) {
+  if (pages <= 1) return null;
+  const first = page * PAGE_SIZE + 1;
+  const last = Math.min(total, (page + 1) * PAGE_SIZE);
+  return (
+    <nav className="cc-pager" aria-label="Discover results pages">
+      <span className="cc-summary" aria-current="page">
+        {first}–{last} of {total}
+      </span>
+      <button
+        type="button"
+        className="btn"
+        disabled={page === 0}
+        onClick={() => onPage(page - 1)}
+      >
+        Previous
+      </button>
+      <button
+        type="button"
+        className="btn"
+        disabled={page >= pages - 1}
+        onClick={() => onPage(page + 1)}
+      >
+        Next
+      </button>
+    </nav>
+  );
+}
+
 export default function PluginsSection({ onChanged }: SectionProps) {
   const load = useCallback(() => cc.plugins.list(), []);
   const { data, error, reload } = useModuleData(load);
   const [tab, setTab] = useState<Tab>("installed");
   const [query, setQuery] = useState("");
   const [marketplace, setMarketplace] = useState(ALL);
+  // Local, never in the URL: this panel remounts on every `?cctab=` write, so a
+  // URL-held page would be reset by the very navigation meant to preserve it —
+  // and it would re-read every marketplace catalog on the way. Same reasoning
+  // as the row-expansion state in ListRow.
+  const [page, setPage] = useState(0);
   // id -> optimistically-shown enabled flag, overriding the fetched value.
   const [flipped, setFlipped] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -138,12 +192,27 @@ export default function PluginsSection({ onChanged }: SectionProps) {
     }
   };
 
+  // Every filter change goes back to page 1. Without this, searching from page
+  // 6 lands you on an empty page of a three-page result and the list looks
+  // broken — so the three setters that narrow the list are wrapped rather than
+  // called raw anywhere.
+  const search = (next: string) => {
+    setQuery(next);
+    setPage(0);
+  };
+
+  const filterTo = (next: string) => {
+    setMarketplace(next);
+    setPage(0);
+  };
+
   // Switching lists clears the marketplace filter: the two lists have different
   // marketplaces in them, and a filter naming one that isn't in the new index
   // would show an empty list with no visible reason.
   const pick = (next: Tab) => {
     setTab(next);
     setMarketplace(ALL);
+    setPage(0);
   };
 
   const share = async (command: string) => {
@@ -174,16 +243,25 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   // what you have, and the index column already says what the filter left.
   const enabledCount = data.plugins.filter((p) => flipped[p.id] ?? p.enabled).length;
 
+  // Paging is the LAST step, over the already-filtered list, and only on
+  // Discover — Installed is a handful of plugins with a search box over it.
+  // The page is clamped at render rather than corrected in an effect: an
+  // install removes a row from Discover, and the last page can vanish under a
+  // page number that was valid a moment ago.
+  const pages = Math.max(1, Math.ceil(rowsDiscover.length / PAGE_SIZE));
+  const safePage = Math.min(page, pages - 1);
+  const pagedDiscover = rowsDiscover.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
   return (
     <>
       <SectionToolbar
+        // Discover's summary counts the SAME set the pager pages over, so the
+        // two can never disagree about how many results there are.
         summary={
           tab === "installed"
             ? `${data.plugins.length} installed · ${enabledCount} enabled`
             : avail
-              ? `${avail.plugins.filter((p) => !p.installed).length} available from ${
-                  indexOf(avail.plugins).length
-                } marketplace(s)`
+              ? `${rowsDiscover.length} available from ${index.length} marketplace(s)`
               : "reading marketplace catalogs…"
         }
         // Refetches whichever list is showing — refreshing Installed must not
@@ -196,7 +274,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           aria-label="Filter plugins"
           placeholder="Filter by name, id or description…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => search(e.target.value)}
         />
         <div className="cc-seg" role="tablist" aria-label="Plugin source">
           <button
@@ -227,7 +305,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             type="button"
             className={"cc-index-item" + (marketplace === ALL ? " active" : "")}
             aria-pressed={marketplace === ALL}
-            onClick={() => setMarketplace(ALL)}
+            onClick={() => filterTo(ALL)}
           >
             <span className="cc-index-name">All</span>
             <span className="cc-count">{shown.length}</span>
@@ -239,7 +317,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               className={"cc-index-item" + (marketplace === m.name ? " active" : "")}
               aria-pressed={marketplace === m.name}
               title={m.name}
-              onClick={() => setMarketplace(m.name)}
+              onClick={() => filterTo(m.name)}
             >
               <span className="cc-index-name">{m.name}</span>
               <span className="cc-count">{m.n}</span>
@@ -312,7 +390,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               );
             })}
           {tab === "discover" &&
-            rowsDiscover.map((p) => (
+            pagedDiscover.map((p) => (
               <ListRow
                 key={p.id}
                 name={p.name}
@@ -368,6 +446,14 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                 }
               />
             ))}
+          {tab === "discover" && (
+            <Pager
+              page={safePage}
+              pages={pages}
+              total={rowsDiscover.length}
+              onPage={setPage}
+            />
+          )}
           {(tab === "installed" || avail) && rowCount === 0 && (
             <Empty>
               {tab === "installed"

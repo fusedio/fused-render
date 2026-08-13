@@ -464,6 +464,22 @@
   min-width: 0;
 }
 
+/* -- pager (Discover) ------------------------------------------------------ */
+/* Under the list, range on the left and the two controls on the right. Only
+   rendered when there is more than one page, so it is never a row of dead
+   buttons. */
+
+.cc-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 14px;
+}
+
+.cc-pager > :first-child {
+  margin-right: auto;
+}
+
 /* -- the one list row (bits.tsx ListRow) ----------------------------------- */
 /* One item, one line, never wrapping: you scan twenty of these, and a row that
    reflows costs more height than everything it says. Only .cc-lrow-sub (the id,
