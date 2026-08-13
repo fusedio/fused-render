@@ -1018,12 +1018,13 @@ function computeColorByStats(L) {
 function rebuildDeck() {
   const layers = [];
   for (const [key, L] of state.layers) {
-    if (!L.visible || !L.descriptor || L.descriptor.status !== "ok") continue;
+    if (!L.descriptor || L.descriptor.status !== "ok") continue;
     const d = L.descriptor;
     if (d.kind === "raster_image" && d.data.image_path) {
       layers.push(new deck.BitmapLayer({
         id: "r_" + key, image: fused.rawUrl(d.data.image_path),
-        bounds: d.bounds, opacity: L.opacity, _imageCoordinateSystem: undefined,
+        bounds: d.bounds, opacity: L.opacity, visible: L.visible,
+        _imageCoordinateSystem: undefined,
       }));
     } else if (d.kind === "vector_geojson" && L.geojson) {
       layers.push(makeGeoJsonLayer(key, L));
@@ -1079,7 +1080,7 @@ function rebuildRasterTiles() {
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
-    if (L.visible && d && d.status === "ok" && d.kind === "raster_tiles") {
+    if (d && d.status === "ok" && d.kind === "raster_tiles") {
       const ids = rasterIds(L);
       wanted.set(ids.source, { L, ids });
     }
@@ -1096,6 +1097,7 @@ function rebuildRasterTiles() {
     const d = L.descriptor;
     const revision = L.tileRevision || 0;
     const tileUrl = d.data.tile_url + (d.data.tile_url.includes("?") ? "&" : "?") + "rev=" + revision;
+    const visibility = L.visible ? "visible" : "none";
     if (map.getSource(sourceId) && L._tileUrl !== tileUrl) {
       if (map.getLayer(ids.layer)) map.removeLayer(ids.layer);
       map.removeSource(sourceId);
@@ -1111,10 +1113,12 @@ function rebuildRasterTiles() {
     if (!map.getLayer(ids.layer)) {
       map.addLayer({
         id: ids.layer, type: "raster", source: sourceId,
+        layout: { visibility },
         paint: { "raster-opacity": L.opacity ?? 1, "raster-fade-duration": 0 },
       });
     } else {
       map.setPaintProperty(ids.layer, "raster-opacity", L.opacity ?? 1);
+      map.setLayoutProperty(ids.layer, "visibility", visibility);
     }
     if (!map.getSource(ids.boundsSource)) {
       map.addSource(ids.boundsSource, {
@@ -1127,6 +1131,7 @@ function rebuildRasterTiles() {
         id: ids.boundsLayer,
         type: "line",
         source: ids.boundsSource,
+        layout: { visibility },
         paint: {
           "line-color": "#f97316",
           "line-width": 2,
@@ -1134,6 +1139,8 @@ function rebuildRasterTiles() {
           "line-dasharray": [2, 2],
         },
       });
+    } else {
+      map.setLayoutProperty(ids.boundsLayer, "visibility", visibility);
     }
   }
   rasterSourceIds = new Set(wanted.keys());
@@ -1183,7 +1190,7 @@ function rebuildVectorTiles() {
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
-    if (L.visible && d && d.status === "ok" && d.kind === "vector_tiles_mvt") {
+    if (d && d.status === "ok" && d.kind === "vector_tiles_mvt") {
       const ids = vectorIds(L);
       wanted.set(ids.source, { L, ids });
     }
@@ -1197,6 +1204,7 @@ function rebuildVectorTiles() {
   for (const [sourceId, { L, ids }] of wanted) {
     const d = L.descriptor, s = L.style || {};
     const sourceLayer = d.data.source_layer || "layer";
+    const visibility = L.visible ? "visible" : "none";
     if (!map.getSource(sourceId)) {
       map.addSource(sourceId, {
         type: "vector",
@@ -1212,16 +1220,19 @@ function rebuildVectorTiles() {
       map.addLayer({
         id: ids.fill, type: "fill", source: sourceId, "source-layer": sourceLayer,
         filter: ["==", ["geometry-type"], "Polygon"],
+        layout: { visibility },
         paint: { "fill-color": fillColor, "fill-opacity": L.opacity ?? 1 },
       });
     } else {
       map.setPaintProperty(ids.fill, "fill-color", fillColor);
       map.setPaintProperty(ids.fill, "fill-opacity", L.opacity ?? 1);
+      map.setLayoutProperty(ids.fill, "visibility", visibility);
     }
     if (!map.getLayer(ids.line)) {
       map.addLayer({
         id: ids.line, type: "line", source: sourceId, "source-layer": sourceLayer,
         filter: ["in", ["geometry-type"], ["literal", ["LineString", "Polygon"]]],
+        layout: { visibility },
         paint: {
           "line-color": lineColor,
           "line-width": s.line_width ?? 1.5,
@@ -1232,11 +1243,13 @@ function rebuildVectorTiles() {
       map.setPaintProperty(ids.line, "line-color", lineColor);
       map.setPaintProperty(ids.line, "line-width", s.line_width ?? 1.5);
       map.setPaintProperty(ids.line, "line-opacity", L.opacity ?? 1);
+      map.setLayoutProperty(ids.line, "visibility", visibility);
     }
     if (!map.getLayer(ids.point)) {
       map.addLayer({
         id: ids.point, type: "circle", source: sourceId, "source-layer": sourceLayer,
         filter: ["==", ["geometry-type"], "Point"],
+        layout: { visibility },
         paint: {
           "circle-color": fillColor,
           "circle-radius": s.point_radius ?? 5,
@@ -1247,6 +1260,7 @@ function rebuildVectorTiles() {
       map.setPaintProperty(ids.point, "circle-color", fillColor);
       map.setPaintProperty(ids.point, "circle-radius", s.point_radius ?? 5);
       map.setPaintProperty(ids.point, "circle-opacity", L.opacity ?? 1);
+      map.setLayoutProperty(ids.point, "visibility", visibility);
     }
     if (!map.getSource(ids.boundsSource)) {
       map.addSource(ids.boundsSource, {
@@ -1257,6 +1271,7 @@ function rebuildVectorTiles() {
     if (!map.getLayer(ids.boundsLayer)) {
       map.addLayer({
         id: ids.boundsLayer, type: "line", source: ids.boundsSource,
+        layout: { visibility },
         paint: {
           "line-color": lineColor,
           "line-width": 1,
@@ -1264,6 +1279,8 @@ function rebuildVectorTiles() {
           "line-dasharray": [2, 2],
         },
       });
+    } else {
+      map.setLayoutProperty(ids.boundsLayer, "visibility", visibility);
     }
   }
   vectorSourceIds = new Set(wanted.keys());
@@ -1323,7 +1340,7 @@ function makePointsBinaryLayer(key, L) {
     data: { length: b.count, attributes: { getPosition: { value: b.positions, size: 2 } } },
     getFillColor: useCB ? { value: L._colorBuf, size: 4 } : fill,
     getRadius: s.point_radius ?? 4, radiusUnits: "pixels", radiusMinPixels: 1, radiusMaxPixels: 40,
-    stroked: false, opacity: L.opacity, pickable: true,
+    stroked: false, opacity: L.opacity, visible: L.visible, pickable: true,
     updateTriggers: { getFillColor: [!!useCB, s.fill_color, s.color_by, s.colormap], getRadius: [s.point_radius] },
   });
 }
@@ -1381,7 +1398,7 @@ function makeGeoJsonLayer(key, L) {
     getFillColor: getFill, getLineColor: (s.color_by && L._cb) ? getLine : line,
     getLineWidth: s.line_width ?? 1.5, lineWidthUnits: "pixels", lineWidthMinPixels: 1,
     getPointRadius: s.point_radius ?? 5, pointRadiusUnits: "pixels", pointRadiusMinPixels: 2,
-    opacity: L.opacity,
+    opacity: L.opacity, visible: L.visible,
     updateTriggers: {
       getFillColor: [s.fill_color, s.color_by, s.colormap],
       getLineColor: [s.line_color, s.color_by, s.colormap],
