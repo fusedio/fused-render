@@ -27,8 +27,11 @@ def community_mod(tmp_path, monkeypatch):
 
 def _fake_cache(mod, apps):
     os.makedirs(os.path.join(mod.SHOWCASE_DIR, ".git"), exist_ok=True)
-    with open(os.path.join(mod.SHOWCASE_DIR, "index.json"), "w", encoding="utf-8") as f:
-        json.dump({"apps": apps}, f)
+    for app in apps:
+        folder = os.path.join(mod.SHOWCASE_DIR, app["slug"])
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "metadata.json"), "w", encoding="utf-8") as f:
+            json.dump({k: v for k, v in app.items() if k != "slug"}, f)
 
 
 def test_touch_records_and_catalog_merges(community_mod):

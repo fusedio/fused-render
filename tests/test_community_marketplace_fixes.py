@@ -45,20 +45,23 @@ def _write_installs(mod, installs):
         json.dump({"schema": 1, "installs": installs}, f)
 
 
-def _write_index(mod, apps, commit=None):
-    os.makedirs(mod.SHOWCASE_DIR, exist_ok=True)
-    with open(os.path.join(mod.SHOWCASE_DIR, "index.json"), "w", encoding="utf-8") as f:
-        json.dump({"apps": apps, "commit": commit}, f)
+def _write_metadata(mod, slug, meta):
+    folder = os.path.join(mod.SHOWCASE_DIR, slug)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "metadata.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f)
 
 
 def _make_remote(tmp_path, apps):
-    """A bare remote seeded with index.json + one folder per app slug."""
+    """A bare remote seeded with one folder per app slug, each carrying its
+    own metadata.json (the catalog source since index.json was dropped)."""
     remote = str(tmp_path / "remote.git")
     seed = str(tmp_path / "seed")
     os.makedirs(seed)
     git(seed, "init", "-q")
-    write(seed, "index.json", json.dumps({"apps": apps, "commit": "abc"}))
     for a in apps:
+        meta = {k: v for k, v in a.items() if k != "slug"}
+        write(seed, os.path.join(a["slug"], "metadata.json"), json.dumps(meta))
         write(seed, os.path.join(a["slug"], "index.html"), "<html></html>")
     git(seed, "add", "-A")
     git(seed, "commit", "-q", "-m", "seed")
@@ -100,7 +103,7 @@ def test_force_update_aborts_when_snapshot_commit_fails(tmp_path, community_mod)
     with open(os.path.join(showcase_slug, "app.py"), "w", encoding="utf-8") as f:
         f.write("new upstream content\n")
     os.makedirs(os.path.join(mod.SHOWCASE_DIR, ".git"), exist_ok=True)  # _cache_ready()
-    _write_index(mod, [{"slug": "widget", "name": "Widget", "commit": "new-sha"}])
+    _write_metadata(mod, "widget", {"name": "Widget"})
 
     res = mod.main(action="update", slug="widget", force=True)
 
