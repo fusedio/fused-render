@@ -259,6 +259,25 @@
      driven off the same `aria-expanded` the button already carries, which is
      what keeps the picture and the a11y flag from ever disagreeing. */
   .btn .caret { color: var(--ink-3); transition: transform 120ms cubic-bezier(0.2, 0, 0, 1); }
+  /* A branch name has no length limit; the rest of the toolbar does. The remote
+     cluster (three 12px labels, each with a 14px glyph, 9px side padding and
+     6px gaps) measures ~220px, and the bar's own padding and the gap to it take
+     ~18px more, so on a ~400px preview pane roughly 24ch is what is left for
+     the chip before Fetch/Pull/Push are shoved onto a line of their own. That
+     is the cap: a name is clipped exactly at the width where keeping it whole
+     would start re-arranging every other control. `ch` rather than px so the
+     cap tracks the font size and the browser's zoom instead of baking in one
+     character count at one size.
+     Only the TEXT clips. The caret is the "this opens a panel" affordance, and
+     `.btn svg { flex: none }` above already keeps it at full size, hard against
+     the right edge of the button, however short the name in front of it gets. */
+  .btn .branch-name {
+    min-width: 0;
+    max-width: 24ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .btn[aria-expanded="true"] .caret { color: inherit; transform: rotate(180deg); }
   .btn.primary {
     border-color: var(--accent-dim);
@@ -1102,9 +1121,16 @@ function toolbar(data) {
   const panel = param("panel");
   const bar = el("div", { className: "bar" });
 
+  /* The name is CLIPPED when it is long (`.branch-name`), so the whole of it
+     has to stay reachable both ways: `label` is the accessible name, `title`
+     the pointer's tooltip — the same sentence, because a mouse user reading a
+     truncated chip needs exactly what a screen reader is already told. */
+  const head = "Branch: " + headState(repo) + " — switch or create a branch";
   bar.append(action("panel-branch",
-                    [el("span", { textContent: headState(repo) }), caret()], {
-    label: "Branch: " + headState(repo) + " — switch or create a branch",
+                    [el("span", { className: "branch-name",
+                                  textContent: headState(repo) }), caret()], {
+    label: head,
+    title: head,
     expanded: panel === "branch",
     onClick: () => {
       /* A filter term belongs to one visit to the panel: coming back later to
