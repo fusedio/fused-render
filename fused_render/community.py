@@ -73,7 +73,10 @@ SHOWCASE_DIR = os.path.join(WORKSPACE, "showcase")
 
 GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error
 CLONE_TIMEOUT = 180  # the full clone (every app + preview.png) is the long call
-LOCK_TIMEOUT = 50  # bounded so a wedged peer surfaces as a retry error
+# Longer than CLONE_TIMEOUT on purpose: an install (Clone) racing the first
+# background clone should wait it out and then succeed, not die "busy" at 50s
+# while the clone is still legitimately holding the lock.
+LOCK_TIMEOUT = CLONE_TIMEOUT + 20
 IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
 
@@ -135,7 +138,7 @@ def _git(cwd, *args, timeout=GIT_TIMEOUT):
                           "community catalog needs it to sync")
     except subprocess.TimeoutExpired:
         raise ActionError("git timed out syncing the catalog — check your "
-                          "network and hit Refresh to retry")
+                          "network and revisit the apps page to retry")
 
 
 def _git_ok(cwd, *args, what="", timeout=GIT_TIMEOUT):
@@ -285,7 +288,7 @@ def _refresh():
             # whose .git was stripped) is the user's — never delete it.
             raise ActionError(
                 f"{SHOWCASE_DIR} exists but is not the showcase clone — "
-                "move it aside and hit Refresh to retry")
+                "move it aside to let the catalog sync")
         os.makedirs(WORKSPACE, exist_ok=True)
         # Clone into a hidden staging dir, then claim the final name with one
         # rename — no half-clone ever flashes up in the explorer listing.
@@ -301,6 +304,14 @@ def _refresh():
         finally:
             shutil.rmtree(staging, ignore_errors=True)
     else:
+        # OUR clone only: a git repo the user put at this path themselves
+        # (tracking some other remote) must not have its locks yanked, its
+        # remote fetched, or its files fast-forwarded.
+        r = _git(SHOWCASE_DIR, "remote", "get-url", "origin")
+        if r.returncode != 0 or r.stdout.strip() != REPO_URL:
+            raise ActionError(
+                f"{SHOWCASE_DIR} is a git repo but not the showcase clone — "
+                "move it aside to let the catalog sync")
         _remove_stale_locks()
         _git_ok(SHOWCASE_DIR, "fetch", "--", "origin", what="fetch",
                 timeout=CLONE_TIMEOUT)
@@ -317,7 +328,8 @@ def _app_folder(slug):
     _require_slug(slug)
     folder = os.path.join(SHOWCASE_DIR, slug)
     if not _cache_ready():
-        raise ActionError("the showcase clone is missing — hit Refresh first")
+        raise ActionError("the showcase clone is missing — open the apps "
+                          "page to clone it, then retry")
     if not os.path.isdir(folder):
         raise ActionError(f"app {slug!r} is not in the catalog — refresh and retry")
     return folder
@@ -516,8 +528,9 @@ def refresh_in_background():
     (cli._run_serve, app._start_server_thread) right after ensure_fused_dir —
     NOT from create_app, so importing the server in tests never clones into a
     real workspace. First run performs the full clone; later runs fetch+ff.
-    Failures are logged, never raised — the apps page simply shows no showcase
-    tag until a later start (or a Clone action's refresh) succeeds."""
+    Failures are logged, never raised — the apps page fires its own background
+    refresh on every visit (Apps.tsx), so a failed startup clone retries there
+    without waiting for the next process start."""
     import logging
     import threading
 

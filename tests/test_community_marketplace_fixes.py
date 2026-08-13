@@ -171,6 +171,31 @@ def test_refresh_keeps_conflicting_local_edits_when_upstream_moved(
         assert f.read() == "MY EDIT\n"
 
 
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_refresh_refuses_foreign_git_repo_at_showcase_path(tmp_path, community_mod, monkeypatch):
+    mod = community_mod
+    monkeypatch.setattr(mod, "REPO_URL", str(tmp_path / "remote.git"))
+    # A git repo the user put at <workspace>/showcase themselves, tracking a
+    # DIFFERENT remote: refresh must not fetch it, ff it, or yank its locks.
+    theirs = mod.SHOWCASE_DIR
+    os.makedirs(theirs)
+    git(theirs, "init", "-q")
+    git(theirs, "remote", "add", "origin", "https://example.com/other.git")
+    write(theirs, "mine.txt", "keep me\n")
+    git(theirs, "add", "-A")
+    git(theirs, "commit", "-q", "-m", "theirs")
+    stale_lock = os.path.join(theirs, ".git", "index.lock")
+    with open(stale_lock, "w", encoding="utf-8"):
+        pass
+
+    res = mod.main(action="refresh")
+
+    assert res["status"] == "error"
+    assert "not the showcase clone" in res["message"]
+    assert os.path.isfile(os.path.join(theirs, "mine.txt"))
+    assert os.path.isfile(stale_lock)  # their in-flight git op untouched
+
+
 def test_refresh_refuses_foreign_showcase_folder(community_mod):
     mod = community_mod
     # A showcase folder the user made themselves (no .git) must never be

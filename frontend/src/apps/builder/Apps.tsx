@@ -40,25 +40,38 @@ function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
   return sorted;
 }
 
-// Showcase apps the user has already cloned into Fused/local, by slug — reads
-// the marketplace's install records once per mount (a cheap local read; no
-// network). Feeds the "cloned" badge on showcase cards; decoration only, so
-// failures (or a not-yet-cloned catalog) just mean no badges.
-function useClonedShowcaseSlugs(): Set<string> {
+type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
+
+const clonedSet = (c: ShowcaseCatalog) =>
+  new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug));
+
+// Sync the showcase clone and read its install records, once per mount.
+//
+// `refresh` (not just `catalog`): every visit to /apps is the retry path for
+// a startup clone that failed or hasn't happened yet, and its completion is
+// the signal that <workspace>/showcase just landed on disk — `onSynced` then
+// refetches the grid, so a first visit during the clone doesn't keep a stale
+// listing until reload. When refresh itself fails (offline), fall back to the
+// local `catalog` read so the "cloned" badges still render. Decoration plus
+// refetch only — failures just mean no badges and no refetch.
+function useShowcaseSync(onSynced: () => void): Set<string> {
   const [slugs, setSlugs] = useState<Set<string>>(new Set());
   useEffect(() => {
     let alive = true;
-    runCommunity<{ status?: string; apps?: { slug: string; installed?: boolean }[] }>({
-      action: "catalog",
-    })
+    runCommunity<ShowcaseCatalog>({ action: "refresh" })
       .then((c) => {
         if (!alive) return;
-        setSlugs(new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug)));
+        setSlugs(clonedSet(c));
+        onSynced();
       })
-      .catch(() => undefined);
+      .catch(async () => {
+        const c = await runCommunity<ShowcaseCatalog>({ action: "catalog" }).catch(() => null);
+        if (alive && c) setSlugs(clonedSet(c));
+      });
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
   return slugs;
 }
@@ -115,7 +128,7 @@ export default function Apps({ config }: { config: Config }) {
   // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
-  const clonedSlugs = useClonedShowcaseSlugs();
+  const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
