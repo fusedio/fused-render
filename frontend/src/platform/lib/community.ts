@@ -5,6 +5,9 @@
 // user-facing failures as {status:"error", message}, surfaced verbatim here.
 import { postJson } from "@platform/lib/api";
 
+// The workspace tag dir the showcase clone lands in (community.py SHOWCASE_DIR).
+export const SHOWCASE_TAG = "showcase";
+
 export async function runCommunity<T extends { status?: string; message?: string }>(
   params: Record<string, unknown>,
 ): Promise<T> {

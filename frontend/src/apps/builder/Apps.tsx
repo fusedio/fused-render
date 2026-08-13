@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
+import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
@@ -37,6 +38,29 @@ function sortApps(apps: AppInfo[], sort: SortKey): AppInfo[] {
   // "recent" = last-modified desc; apps without a timestamp sink to the end.
   else sorted.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
   return sorted;
+}
+
+// Showcase apps the user has already cloned into Fused/local, by slug — reads
+// the marketplace's install records once per mount (a cheap local read; no
+// network). Feeds the "cloned" badge on showcase cards; decoration only, so
+// failures (or a not-yet-cloned catalog) just mean no badges.
+function useClonedShowcaseSlugs(): Set<string> {
+  const [slugs, setSlugs] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    runCommunity<{ status?: string; apps?: { slug: string; installed?: boolean }[] }>({
+      action: "catalog",
+    })
+      .then((c) => {
+        if (!alive) return;
+        setSlugs(new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug)));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return slugs;
 }
 
 export default function Apps({ config }: { config: Config }) {
@@ -91,6 +115,7 @@ export default function Apps({ config }: { config: Config }) {
   // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  const clonedSlugs = useClonedShowcaseSlugs();
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -197,7 +222,14 @@ export default function Apps({ config }: { config: Config }) {
             ) : (
               <div className="apps-cards">
                 {shown.map((app) => (
-                  <AppPreviewCard key={app.path} app={app} onContextMenu={openCardMenu} />
+                  <AppPreviewCard
+                    key={app.path}
+                    app={app}
+                    onContextMenu={openCardMenu}
+                    badge={
+                      app.tag === SHOWCASE_TAG && clonedSlugs.has(app.name) ? "cloned" : undefined
+                    }
+                  />
                 ))}
               </div>
             )}
