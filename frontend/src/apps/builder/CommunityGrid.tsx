@@ -138,10 +138,10 @@ function basename(p: string): string {
 // -- open behavior ---------------------------------------------------------
 
 function hrefForCommunity(app: CommunityApp, cacheRoot: string | undefined): string {
-  // A cloned app opens its workspace folder in the explorer — same rule as a
-  // workspace card (appEntry.ts, D262: no app route, the listing is the
-  // destination).
-  if (app.installed && app.path) return urlForFsPath(app.path);
+  // A cloned app opens its PAGE, like every other app card (appEntry.ts, D269) —
+  // and like the uncloned branch just below, which has always opened the
+  // catalog's index.html rather than the folder it sits in.
+  if (app.installed && app.path) return urlForFsPath(`${app.path}/index.html`);
   // Uncloned: the preview page from the catalog cache, in the explorer's own
   // view route. Best-effort for middle-click/new-tab — the folder may not be
   // materialized yet (the left-click path materializes it via `detail` first).
@@ -151,7 +151,7 @@ function hrefForCommunity(app: CommunityApp, cacheRoot: string | undefined): str
 async function openCommunityApp(app: CommunityApp, cacheRoot: string | undefined): Promise<void> {
   touch(app.slug);
   if (app.installed && app.path) {
-    navigate(app.path, { isDir: true });
+    navigate(`${app.path}/index.html`, { isDir: false });
     return;
   }
   // Materialize the app folder in the cache (sparse checkout) before loading
