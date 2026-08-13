@@ -35,7 +35,7 @@ import {
   type AiLoadedModel,
   type AiModelsResult,
 } from "@platform/lib/api";
-import { useNavEpoch } from "@platform/lib/hooks";
+import { useNavEpoch, useRefreshOnReturn } from "@platform/lib/hooks";
 import { fetchJobs, type Job } from "@platform/lib/jobs";
 import { formatSize, formatMtimeFull, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
@@ -556,6 +556,13 @@ export default function AiModels() {
   // one); the job rows are read here because only this page joins them onto
   // cards, and only while something is actually running.
   const runtime = useAiRuntime();
+  // Returning to this tab re-checks what's loaded RIGHT NOW rather than
+  // waiting out the idle poll's 10s (aiRuntime.ts) — the same "cheap state,
+  // re-read on return" posture as the deploy dot and account status
+  // (lib/hooks.ts). Deliberately narrower than the disk walk below: that scan
+  // is a filesystem crawl over every blob and stays gated on a KNOWN change
+  // (a delete or a finished download), never on a focus tick.
+  useRefreshOnReturn(refreshAiRuntime);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   // Per-target refusals from the last delete (a symlinked repo, a row that was

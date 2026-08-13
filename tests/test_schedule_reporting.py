@@ -1,4 +1,4 @@
-"""What a scheduled message tells you while it runs, and after (D274 follow-up).
+"""What a scheduled message tells you while it runs, and after (D276).
 
 A scheduled message is the one kind of work in the app that nobody is looking at
 when it happens, so these two surfaces are the feature, not decoration:
