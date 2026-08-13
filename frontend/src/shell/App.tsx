@@ -8,6 +8,7 @@
 //   "/claude-config"         -> Claude config panel (native, no mount)
 //   "/claude-md"             -> legacy; redirects into the panel's MD Files tab
 //   "/claude-artifacts"      -> project folders with Claude Code sessions
+//   "/claude-published"      -> pages Claude published with its Artifact tool
 //   "/ai-models"             -> Hugging Face cache inventory
 //   "/preferences|/templates|/mounts" -> settings pages
 // Legacy pre-rename urls (/view/..., /embed/..., /view/_prefs-family) are
@@ -62,6 +63,7 @@ const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
 );
 const ClaudeArtifacts = lazy(() => import("@shell/ClaudeArtifacts"));
+const ClaudePublished = lazy(() => import("@shell/ClaudePublished"));
 const BookmarkOpen = lazy(() => import("@apps/explorer/BookmarkOpen"));
 
 type StatState =
@@ -582,6 +584,7 @@ export default function App({ config }: { config: Config }) {
   const isCommunity = pathname === "/community";
   const isClaudeConfig = pathname === "/claude-config";
   const isClaudeArtifacts = pathname === "/claude-artifacts";
+  const isClaudePublished = pathname === "/claude-published";
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
@@ -591,7 +594,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isCommunity || isClaudeConfig || isClaudeArtifacts || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isCommunity || isClaudeConfig || isClaudeArtifacts || isClaudePublished || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -625,6 +628,8 @@ export default function App({ config }: { config: Config }) {
                       ? "Claude Config"
                       : isClaudeArtifacts
                       ? "Artifacts"
+                      : isClaudePublished
+                      ? "Published"
                       : isBookmark || bookmarkFile
                       ? "Bookmark"
                       : fsPath
@@ -776,6 +781,17 @@ export default function App({ config }: { config: Config }) {
         <div className="cc-page">
           <Suspense fallback={<RouteFallback />}>
             <ClaudeArtifacts />
+          </Suspense>
+        </div>
+      </div>
+    );
+  } else if (isClaudePublished) {
+    // Published — pages Claude published with its Artifact tool, as a grid.
+    main = (
+      <div id="content" key={epoch}>
+        <div className="cc-page">
+          <Suspense fallback={<RouteFallback />}>
+            <ClaudePublished />
           </Suspense>
         </div>
       </div>

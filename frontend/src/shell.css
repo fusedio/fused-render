@@ -30,4 +30,8 @@
 @import "./styles/templates.css";
 @import "./styles/home.css";
 @import "./styles/reduced-motion.css";
+/* Last, and two pages now layer over its card: the /apps hub owns the file, and
+   /claude-artifacts reuses .apps-cards/.app-pcard with its own `ca-` section at
+   the bottom of it — which can only override the card from here, after
+   claude-config.css, where the rest of that page's chrome lives. */
 @import "./styles/apps.css";

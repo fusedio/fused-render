@@ -1883,6 +1883,42 @@ export function getClaudeSessionFolders(): Promise<{ folders: ClaudeSessionFolde
   return getJson<{ folders: ClaudeSessionFolder[] }>("/api/claude-sessions");
 }
 
+// -- Claude artifacts (GET /api/claude-artifacts) -----------------------------
+// Pages Claude PUBLISHED from this machine with its Artifact tool — the local
+// html/md file it rendered, paired with the claude.ai URL it was published to,
+// for shell/ClaudeArtifacts.tsx. Newest first (`updated_at` desc), one entry per
+// artifact rather than per session, so a session that published three pages
+// contributes three cards.
+//
+// The pairing is what makes the page useful and also what makes both halves
+// nullable: the local file is the only thing that can be PREVIEWED, and the
+// remote URL is the only thing that survives the file being deleted. Hence
+// `exists`, which the server checks per request — a card reads it to choose
+// between opening the file here and opening the published page there.
+export interface ClaudeArtifact {
+  /** The local html/md file Claude rendered. Absolute, ready for navigate(). */
+  file_path: string;
+  /** Whether that file is still on disk, checked server-side per request. */
+  exists: boolean;
+  /** Where it was published: https://claude.ai/code/artifact/<id>. */
+  remote_url: string;
+  /** The page's own <title>, or null when it had none. */
+  title: string | null;
+  description: string | null;
+  /** The tab emoji the publish declared, e.g. "🤿". Null when unset. */
+  favicon: string | null;
+  session_id: string | null;
+  /** Project directory of the session that published it. */
+  cwd: string | null;
+  /** Epoch seconds; null for artifacts whose record predates the field. */
+  created_at: number | null;
+  updated_at: number | null;
+}
+
+export function getClaudeArtifacts(): Promise<{ artifacts: ClaudeArtifact[] }> {
+  return getJson<{ artifacts: ClaudeArtifact[] }>("/api/claude-artifacts");
+}
+
 // -- AI Models (GET /api/ai-models) -------------------------------------
 // What the Hugging Face cache holds on this machine, for the sidebar's "Local
 // models" page (shell/AiModels.tsx). One entry per cached repo, biggest

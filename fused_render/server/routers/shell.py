@@ -36,6 +36,7 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # URLs is a real GET the server has to answer with the shell.
 @router.get("/claude-config")
 @router.get("/claude-artifacts")
+@router.get("/claude-published")
 @router.get("/claude-md")
 @router.get("/preferences")
 @router.get("/templates")

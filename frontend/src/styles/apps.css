@@ -263,3 +263,158 @@
   flex: 0 0 auto;
   margin-left: auto;
 }
+
+/* -- Claude artifacts (/claude-artifacts) -------------------------------------
+   shell/ClaudeArtifacts.tsx reuses this file's card, not the other way round:
+   its grid IS .apps-cards and its cards ARE .app-pcard, thumbnail trick and
+   shield included. Only the three things an artifact card has that an app card
+   does not live here — the emoji identity, a description line, and a SECOND
+   destination (the published claude.ai page) alongside the primary one.
+ *
+ * It therefore has to sit AFTER .app-pcard*, which is why the section is in this
+ * file at the bottom rather than beside the page's own cc- chrome in
+ * claude-config.css: that stylesheet is imported BEFORE this one (see
+ * shell.css), so its rules could not override the card's. */
+
+/* Positioned so the title link's stretched ::after has a containing block — and
+   the inherited `overflow: hidden` then clips that overlay to exactly the card's
+   rounded box, which is the area it is meant to cover. */
+.ca-card {
+  position: relative;
+}
+
+/* Preview on top, text below — the reverse of the app card, because an artifact
+   is a PAGE and the page is what identifies it. So the thumb's hairline moves to
+   the edge it now shares with the body. */
+.ca-card .ca-card-thumb {
+  border-top: none;
+  border-bottom: 1px solid var(--border);
+}
+
+/* No live render (md, or the file is gone): a tinted tile instead of a blank
+   box. Neutral, not accent — accent stays reserved for focus/selection. */
+.ca-card-thumb-tinted {
+  background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg));
+}
+
+.ca-card-glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 52px;
+  line-height: 1;
+}
+
+/* Faded when the file is gone, so the tile reads as an absence at a glance —
+   before the "file removed" line underneath it has been read. */
+.ca-card-thumb-gone .ca-card-glyph {
+  opacity: 0.45;
+}
+
+/* Said quietly at the bottom of the tile: the card still works (its link goes to
+   the published page), so this is a note, not an error. */
+.ca-card-gone {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.ca-card-body {
+  gap: 6px;
+}
+
+.ca-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ca-card-favicon {
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* The card's primary link. Its ::after is stretched over the whole card so every
+   browser gesture that works on an anchor works anywhere on the card — the
+   property AppPreviewCard gets by BEING an anchor, which this card cannot be
+   (it holds a second link, and anchors do not nest). z-index lifts it over the
+   thumbnail's pointer-events shield, which is a plain positioned span. */
+.ca-card-title {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ca-card-title::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.ca-card-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ca-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.ca-card-ago {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Above the stretched overlay (z-index 2 > 1) so it keeps its own click without
+   any event-bubbling trickery — it is not inside the primary link at all. */
+.ca-card-remote {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ca-card-remote:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* The empty state's second line: what an artifact IS, for the very likely reader
+   who has never published one and would otherwise read "none found" as a fault. */
+.ca-empty-sub {
+  max-width: 46ch;
+  margin: 8px auto 0;
+  font-size: 12px;
+  line-height: 1.5;
+}

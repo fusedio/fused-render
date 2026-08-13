@@ -88,6 +88,17 @@ const ARTIFACTS_ICON = (
   </svg>
 );
 
+// Page with an up-and-out arrow — the Published page lists the pages Claude
+// published to claude.ai with its Artifact tool, so the glyph is "a document
+// that left the machine".
+const PUBLISHED_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8" />
+    <path d="M15 3h6v6" />
+    <path d="M21 3l-8 8" />
+  </svg>
+);
+
 // Stacked disks — the AI Models entry is an inventory of what the Hugging
 // Face cache is storing on this machine, so it reads as storage, not as a chip.
 const AI_MODELS_ICON = (
@@ -261,7 +272,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       ? [{ href: "/community", label: "Showcase", icon: COMMUNITY_ICON }]
       : []),
     ...(sessionsMountReady || claudeConfigAvailable
-      ? [{ href: "/claude-artifacts", label: "Artifacts", icon: ARTIFACTS_ICON }]
+      ? [
+          { href: "/claude-artifacts", label: "Artifacts", icon: ARTIFACTS_ICON },
+          { href: "/claude-published", label: "Published", icon: PUBLISHED_ICON },
+        ]
       : []),
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Config", icon: CLAUDE_CONFIG_ICON }]
