@@ -222,10 +222,10 @@ export default function Listing({
   // `pane.on` is purely a measurement of the split container (see pane.ts).
   //
   // A FROZEN-TREE listing is the second no-nesting case, and `embedded` cannot
-  // see it: the browsable snapshot (`history`'s `browse` framing, PT-14) is a
-  // whole shell loaded at `/explorer/embed/<tree>?snapshot=1`, so its Listing
-  // is the page's OWN top-level one — `embedded=false` — inside the history
-  // view's preview column. That column is 70% of the window, which on any
+  // see it: the browsable snapshot (the `browse` framing of the removed timeline
+  // mode, PT-14) is a whole shell loaded at `/explorer/embed/<tree>?snapshot=1`,
+  // so its Listing is the page's OWN top-level one — `embedded=false` — inside
+  // the framing view's preview column. That column was 70% of the window, which on any
   // ordinary screen is comfortably past PANE_SPLIT_MIN_W (measured: 954px in a
   // 1600px window), so the frozen listing grew a preview pane INSIDE a preview
   // pane. `?preview=false` used to stop it and was dropped with the toggle it

@@ -237,10 +237,25 @@
     sheetSel.addEventListener("change", () => {
       // New sheet starts at the top. Reset offset first so the change lands on
       // page 0, then switch sheet (each set fires onChange → reload).
+      //
+      // Unguarded, because `offset` is STAMPED at boot (see below): on the
+      // overwhelmingly common path — pick a sheet without having paged first —
+      // the URL already literally says `offset=0`, so the runtime drops this
+      // write as byte-identical. That matters twice over: each set fires
+      // onChange → reload, so a no-op bought an extra reload, and under the
+      // first-change-push rule (SPEC PR-3) it would take the history entry and
+      // leave the real `sheet` write to merely coalesce into it. Choosing a
+      // sheet is one navigation step and should read as one (PT-15).
       fused.params.set("offset", "0");
       fused.params.set("sheet", sheetSel.value);
     });
     fused.params.onChange(load);
+    // `offset` is a true default and the URL is the record of it, so page 0 is
+    // stamped rather than left invisible: the address bar shows the whole state,
+    // a copied link carries it, and every later restatement of page 0 becomes a
+    // byte-identical no-op. `{history:"replace"}` so the stamp — a description
+    // of the state the page loaded in, not a step anyone took — costs no entry.
+    fused.params.set("offset", String(currentOffset()), { history: "replace" });
     load();
   </script>
 </body>

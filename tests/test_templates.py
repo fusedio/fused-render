@@ -77,13 +77,10 @@ def test_builtin_registry_parses_and_all_names_resolve():
 def test_builtin_html_default_is_render_sentinel():
     entries, error = server._templates_for("/x/page.html", False)
     assert error is None
-    # One timeline mode, and it is called `history`: the old standalone history
-    # view is gone and `versions` was renamed into its name, icon and slot
-    # (D243). No `git` either — that is folder-only now (GT-2). It sits LAST in
-    # every list it is bound to: a timeline is a view about the file, not a way
-    # to read it.
+    # No timeline mode and no `git`: both were folded into the folder-only `git`
+    # view (GT-2), whose commit list is scoped to whatever path it was opened on.
     assert [e["mode"] for e in entries] == [
-        "_render", "code", "claude", "reader", "history"]
+        "_render", "code", "claude", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
     assert entries[1]["path"].endswith("code/template.html")
     assert entries[2]["path"].endswith("claude/template.html")
@@ -93,7 +90,7 @@ def test_builtin_parquet_default_is_duckdb():
     entries, error = server._templates_for("/x/data.parquet", False)
     assert error is None
     assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude",
-            "geometry_editor", "history"]
+            "geometry_editor"]
     assert entries[0]["path"].endswith("duckdb/template.html")
 
 
@@ -103,28 +100,25 @@ def test_builtin_parquet_default_is_duckdb():
 # on text-bearing keys — it used to sit immediately before `annotate`, which is
 # deregistered as of D235 (the annotation tools live in the claude pane now,
 # not in a mode of their own). It is deliberately absent from binary/visual
-# keys (images, 3D, geo, media, archives, parquet data). Only `history` — a
-# view ABOUT the file rather than of it — sits after it.
+# keys (images, 3D, geo, media, archives, parquet data). Nothing sits after it:
+# the trailing timeline mode that used to has been removed.
 
 
 def test_reader_is_the_last_mode_on_text_keys():
     # Reader trails every real view on representative text formats, and is never
     # the default (first entry stays the content view).
     cases = {
-        "/x/notes.md": ["markdown", "code", "claude", "reader", "history"],
-        "/x/data.csv": ["duckdb", "excel", "code", "claude", "reader",
-                        "history"],
+        "/x/notes.md": ["markdown", "code", "claude", "reader"],
+        "/x/data.csv": ["duckdb", "excel", "code", "claude", "reader"],
         "/x/paper.pdf": ["pdf", "pdf_studio", "reader"],
-        "/x/log.txt": ["code", "claude", "reader", "history"],
+        "/x/log.txt": ["code", "claude", "reader"],
     }
     for path, expected in cases.items():
         got, error = modes(path)
         assert error is None, path
         assert got == expected, path
         assert got[0] != "reader", path       # never the default
-        # last among the CONTENT views: only the history timeline may follow
-        rest = [m for m in got if m != "history"]
-        assert rest[-1] == "reader", path
+        assert got[-1] == "reader", path      # and last
 
 
 def test_no_builtin_key_binds_text():
@@ -166,11 +160,12 @@ def test_reader_absent_on_binary_visual_keys():
 # discarding, stashing, committing, branches, push/pull. Every one of those is a
 # repository-level act, so it is a FOLDER-ONLY mode: bound to the universal "/"
 # directory key and to no file extension, and never a default. It spent a while
-# riding along on every key `history` was on, because a folder then had no mode
+# riding along on the text/code/data file keys, because a folder then had no mode
 # switcher of its own — the preview pane's surface acted on the selected ROW,
-# always a file. The pane peeks FOLDER rows now, so the ride is retired. Per-file
-# history stays `history`'s. See tests/test_git_scope.py for the rule itself;
-# this file pins what the resolver hands back.
+# always a file. The pane peeks FOLDER rows now, so the ride is retired. The
+# per-file question is answered by the same view, whose commit list is scoped to
+# the open target. See tests/test_git_scope.py for the rule itself; this file
+# pins what the resolver hands back.
 
 
 def test_git_is_offered_on_directories_and_on_no_file_key():
@@ -186,45 +181,10 @@ def test_git_is_offered_on_directories_and_on_no_file_key():
     assert "git" in modes("/x/somedir", is_dir=True)[0]
 
 
-def test_history_survives_on_every_key_git_left():
-    # De-linking took `git` off the file keys and nothing else with it: the
-    # per-file question still has its answer.
-    for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
-                 "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
-                 "/x/main.tf", "/x/notes.md", "/x/paper.tex",
-                 "/x/readme.txt", "/x/server.log", "/x/page.html"]:
-        got, error = modes(path)
-        assert error is None, path
-        assert "history" in got, path
-
-
-def test_history_trails_git_on_the_directory_key():
-    # The one list that still holds both. They used to sit together with the
-    # timeline first; `history` now trails the whole list like it does on every
-    # key (history-last, below), so the working tree reads first.
-    got, _ = modes("/x/somedir", is_dir=True)
-    assert got.index("git") < got.index("history")
-    assert got[-1] == "history"
-
-
-def test_history_is_the_last_mode_wherever_bound():
-    # The history timeline is a view ABOUT the target, not of it, so it trails
-    # everything: content views, the chat, the working tree, reader. Derived
-    # from the registry rather than a hand-picked path list, so a key bound
-    # later is covered.
-    with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
-              encoding="utf-8") as f:
-        registry = json.load(f)
-    offenders = [k for k, v in registry.items()
-                 if isinstance(v, list) and "history" in v and v[-1] != "history"]
-    assert offenders == []
-
-
-def test_the_file_side_history_and_chat_are_history_and_claude():
-    # The other half of the same split: what `git` and `claude` stopped offering
-    # on a file, `history` and `claude` now do — chat ahead of the timeline,
-    # which trails the whole list (history-last, above), on every key that has
-    # them.
+def test_the_chat_is_offered_on_every_authored_file_key():
+    # The other half of the same split: `git` stopped offering itself on a file,
+    # and the chat did not — it is bound on every key where a human authors or
+    # analyses the bytes, and is never the default.
     for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
                  "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
                  "/x/main.tf", "/x/notes.md", "/x/paper.tex",
@@ -233,10 +193,7 @@ def test_the_file_side_history_and_chat_are_history_and_claude():
         got, error = modes(path)
         assert error is None, path
         assert "claude" in got, path
-        assert "history" in got, path
-        assert got.index("claude") < got.index("history"), path
-        assert got[-1] == "history", path
-        assert got[0] not in ("claude", "history"), path  # never default
+        assert got[0] != "claude", path  # never default
 
 
 def test_there_is_exactly_one_chat_mode_on_every_key():
@@ -276,16 +233,15 @@ def test_git_is_never_the_default_mode():
 
 def test_the_file_side_pair_sits_before_the_trailing_meta_mode():
     # The chat slots in ahead of `reader` (RD) so the content views and then
-    # the companion views read left to right; the history timeline is the one
-    # thing meta enough to sit after reader (history-last, above).
+    # the companion views read left to right, with reader last.
     for path in ["/x/mod.py", "/x/notes.md", "/x/readme.txt"]:
         got, _ = modes(path)
         assert got.index("claude") < got.index("reader"), path
-        assert got.index("reader") < got.index("history"), path
+        assert got[-1] == "reader", path
 
 
 def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
-    # Chat and history are offered where a human authors or analyses the bytes.
+    # The chat is offered where a human authors or analyses the bytes.
     # A spreadsheet, a 3D model, a video, an archive or a PDF is none of those,
     # so those lists are left alone rather than churned.
     for path in ["/x/book.xlsx", "/x/scene.glb", "/x/clip.mp4",
@@ -295,21 +251,18 @@ def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
         assert error is None, path
         assert "git" not in got, path
         assert "claude" not in got, path
-        assert "history" not in got, path
 
 
 def test_gated_directory_peers_follow_the_listing():
     # `_listing` stays the default of the universal `/` key (D81); the gated
     # peers follow it in switcher order (left to right). `app` (the app itself,
     # full-bleed — what OPENING an app lands on) leads them, then the split
-    # build view and the working tree; `history` trails the whole list like it
-    # does on every key (history-last, above), which supersedes #361's
-    # timeline-ahead-of-git ordering. The two model views sit beside `zarr_aoi`
+    # build view and the working tree. The two model views sit beside `zarr_aoi`
     # because they are the same species as it — a gated view for one KIND of
     # directory content, rather than a view of any folder.
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
-    assert got == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"]
+    assert got == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"]
 
 
 def test_git_ships_a_condition_gate_and_an_icon():
@@ -361,9 +314,9 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # gated mode is dropped unless its condition.py says otherwise; see
     # tests/test_graph_condition.py, tests/test_model_templates.py and the
     # zarr_aoi tests below.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
-    assert modes("/", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes("/x/somedir", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes("/x/my.data", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes("/", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -802,7 +755,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
     assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"]
+    assert registry["/"] == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -833,10 +786,10 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
 
 
 def test_v3_group_dir_offered(tmp_path):
@@ -845,10 +798,10 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
 
 
 def test_bare_array_dir_not_offered(tmp_path):
@@ -861,7 +814,7 @@ def test_bare_array_dir_not_offered(tmp_path):
     (store / ".zarray").write_text("{}")
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
 
 def test_v3_bare_array_dir_not_offered(tmp_path):
@@ -873,7 +826,7 @@ def test_v3_bare_array_dir_not_offered(tmp_path):
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "array"}')
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
 
 def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
@@ -896,10 +849,10 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card", "history"], None)
+    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "history": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
     entries, _ = server._templates_for(str(store), True)
     assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
@@ -908,7 +861,7 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     assert entries[3]["mode"] == "graph" and entries[3].get("conditional") is True
     assert entries[4]["mode"] == "zarr_aoi" and entries[4].get("conditional") is True
     assert entries[5]["mode"] == "model_card" and entries[5].get("conditional") is True
-    assert entries[6]["mode"] == "history" and entries[6].get("conditional") is True
+    assert len(entries) == 6
     # `claude` used to sit at index 3 as the one UNCONDITIONAL entry after
     # `_listing` — the "no condition.py at all" case this list also covered. It is
     # deleted; `_listing` at index 0 still covers it.

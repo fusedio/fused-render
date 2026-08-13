@@ -35,7 +35,6 @@ TIER_ONE_TEMPLATES = (
     "duckdb",
     "git",
     "graph",
-    "history",
     "log_studio",
     "markdown",
     "model_card",

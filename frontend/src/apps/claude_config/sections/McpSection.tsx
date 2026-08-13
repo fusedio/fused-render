@@ -6,7 +6,7 @@
 // Authentication is a fire-and-forget hand-off: the CLI opens a browser and
 // blocks well past any request timeout, so the module spawns it detached and the
 // UI says so, then re-lists when the user confirms they're done.
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
@@ -16,8 +16,13 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  DisclosureButton,
   Empty,
+  Icon,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
+  SectionToolbar,
   guard,
   toastErr,
   toastOk,
@@ -40,6 +45,14 @@ const GROUPS: { kind: McpKind; heading: string }[] = [
   { kind: "plugin", heading: "Plugin-provided (read-only)" },
 ];
 
+// Where a server came from, spelled out for the expanded row — the group
+// heading says it too, but a row you opened should stand on its own.
+const KIND_LABEL: Record<McpKind, string> = {
+  user: "you, at user scope",
+  connector: "a claude.ai connector",
+  plugin: "a plugin",
+};
+
 // The CLI's stderr is the useful detail for a failed add/logout/remove; the
 // module's own `error` is the fallback.
 function cliError(res: CliResult, fallback: string): string {
@@ -53,6 +66,8 @@ export default function McpSection() {
   const [name, setName] = useState("");
   const [json, setJson] = useState("");
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const formId = useId();
 
   const add = async () => {
     const n = name.trim();
@@ -71,6 +86,7 @@ export default function McpSection() {
       toastOk(`Added ${n}`);
       setName("");
       setJson("");
+      setAdding(false);
       reload();
     } catch (e) {
       toastErr((e as Error).message);
@@ -126,17 +142,33 @@ export default function McpSection() {
   };
 
   const servers = data?.servers ?? [];
+  const connected = servers.filter((s) => s.connected).length;
 
   return (
     <>
       {modal}
-      <Card>
-        <CardTitle>Add a server</CardTitle>
-        <CardSub>
-          Registers a user-scoped MCP server via <span className="cc-mono">claude mcp add-json</span>
-          .
-        </CardSub>
-        <CardActions>
+      <SectionToolbar
+        summary={
+          data?.ok ? `${servers.length} server(s) · ${connected} connected` : "…"
+        }
+        onRefresh={reload}
+      >
+        <DisclosureButton
+          open={adding}
+          controls={formId}
+          label="Add server"
+          onToggle={() => setAdding((v) => !v)}
+        />
+      </SectionToolbar>
+      {adding && (
+        <div id={formId}>
+          <Card>
+            <CardTitle>Add a server</CardTitle>
+            <CardSub>
+              Registers a user-scoped MCP server via{" "}
+              <span className="cc-mono">claude mcp add-json</span>.
+            </CardSub>
+            <CardActions>
           <input
             className="field-control"
             aria-label="Server name"
@@ -153,21 +185,34 @@ export default function McpSection() {
             disabled={busy}
             onChange={(e) => setJson(e.target.value)}
           />
+          {/* The `Refresh` button that used to sit here is gone: re-listing the
+              servers has nothing to do with adding one, and it now lives in the
+              toolbar's refresh slot like every other tab's. */}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
             Add
           </button>
-          <button type="button" className="btn" onClick={reload}>
-            Refresh
-          </button>
-        </CardActions>
-      </Card>
+            </CardActions>
+          </Card>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {/* The module's own refusal (the CLI missing, or a non-zero list) is a
           200 with {ok:false} — it is the section's whole content when it
           happens, so it reads as an empty state rather than a banner. */}
       {data && !data.ok && <Empty>{data.error || "Could not list MCP servers."}</Empty>}
-      {!data && !error && <SkeletonLines rows={3} label="Loading MCP servers" />}
-      {data?.ok && servers.length === 0 && <Empty>No MCP servers configured.</Empty>}
+      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading MCP servers" />}
+      {data?.ok && servers.length === 0 && (
+        <Empty
+          action={
+            <button type="button" className="btn btn-primary" onClick={() => setAdding(true)}>
+              <Icon name="plus" />
+              Add a server
+            </button>
+          }
+        >
+          No MCP servers configured. Add one to connect Claude to an external tool.
+        </Empty>
+      )}
       {data?.ok &&
         GROUPS.map(({ kind, heading }) => {
           const list = servers.filter((s) => s.kind === kind);
@@ -183,15 +228,42 @@ export default function McpSection() {
                 // have no action bar at all rather than an empty one.
                 const showLogin = s.canAuth && s.needsAuth;
                 const showLogout = s.canAuth && s.connected;
-                const hasActions = showLogin || showLogout || s.removable;
                 return (
-                  <Card key={s.name}>
-                    <CardTitle>
-                      {s.name} <Pill tone={st.tone}>{st.label}</Pill> <Pill>{s.transport}</Pill>
-                    </CardTitle>
-                    <CardSub mono>{s.endpoint}</CardSub>
-                    {hasActions && (
-                      <CardActions>
+                  <ListRow
+                    key={s.name}
+                    name={s.name}
+                    pills={<Pill tone={st.tone}>{st.label}</Pill>}
+                    secondary={s.endpoint}
+                    secondaryTitle={s.endpoint}
+                    secondaryMono
+                    // The endpoint is the long part and the row cuts it, so the
+                    // panel restates it whole — plus the transport and kind,
+                    // which used to be pills competing with the status for the
+                    // one thing on this tab you actually read.
+                    details={
+                      <dl className="cc-lrow-dl">
+                        <dt className="cc-lrow-dt">Endpoint</dt>
+                        <dd className="cc-lrow-dd cc-mono">{s.endpoint || "—"}</dd>
+                        <dt className="cc-lrow-dt">Transport</dt>
+                        <dd className="cc-lrow-dd">{s.transport}</dd>
+                        <dt className="cc-lrow-dt">Status</dt>
+                        <dd className="cc-lrow-dd">{st.label}</dd>
+                        {/* Why, in the CLI's own words. This is the whole
+                            reason a failed row is worth expanding: the pill can
+                            only say "failed", and what the user needs is
+                            "Authorization header is badly formatted". */}
+                        {s.statusDetail && (
+                          <>
+                            <dt className="cc-lrow-dt">Detail</dt>
+                            <dd className="cc-lrow-dd">{s.statusDetail}</dd>
+                          </>
+                        )}
+                        <dt className="cc-lrow-dt">Registered by</dt>
+                        <dd className="cc-lrow-dd">{KIND_LABEL[s.kind]}</dd>
+                      </dl>
+                    }
+                    actions={
+                      <>
                         {showLogin && (
                           <button type="button" className="btn" onClick={() => login(s)}>
                             Authenticate
@@ -211,9 +283,9 @@ export default function McpSection() {
                             Remove
                           </button>
                         )}
-                      </CardActions>
-                    )}
-                  </Card>
+                      </>
+                    }
+                  />
                 );
               })}
             </div>

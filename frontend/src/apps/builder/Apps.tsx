@@ -47,29 +47,36 @@ type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boo
 const clonedSet = (c: ShowcaseCatalog) =>
   new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug));
 
-// Sync the showcase clone and read its install records, once per mount.
+// Read the showcase install records once per mount; feeds the "cloned"
+// badges on showcase cards.
 //
-// `refresh` (not just `catalog`): every visit to /apps is the retry path for
-// a startup clone that failed or hasn't happened yet, and its completion is
-// the signal that <workspace>/showcase just landed on disk — `onSynced` then
-// refetches the grid, so a first visit during the clone doesn't keep a stale
-// listing until reload. When refresh itself fails (offline), fall back to the
-// local `catalog` read so the "cloned" badges still render. Decoration plus
-// refetch only — failures just mean no badges and no refetch.
+// `catalog` first — a cheap local read (installs.json + folder scan), no lock,
+// no network, so badges never wait on git. Only when it reports no-cache
+// (the clone is missing or the startup clone is still running) does this
+// escalate to `refresh`: that call parks on the cache lock behind an
+// in-flight startup clone (or performs the clone itself after a failed
+// start), and its completion is the signal that <workspace>/showcase just
+// landed — `onSynced` then refetches the grid so the first visit doesn't
+// keep a stale listing until reload. An already-cloned catalog never
+// touches the network here (server start owns the fetch+ff sync), so a
+// Clone click right after mount isn't stuck behind a fetch holding the
+// lock. Decoration plus refetch only — failures just mean no badges.
 function useShowcaseSync(onSynced: () => void): Set<string> {
   const [slugs, setSlugs] = useState<Set<string>>(new Set());
   useEffect(() => {
     let alive = true;
-    runCommunity<ShowcaseCatalog>({ action: "refresh" })
-      .then((c) => {
-        if (!alive) return;
-        setSlugs(clonedSet(c));
-        onSynced();
-      })
-      .catch(async () => {
-        const c = await runCommunity<ShowcaseCatalog>({ action: "catalog" }).catch(() => null);
-        if (alive && c) setSlugs(clonedSet(c));
-      });
+    (async () => {
+      const local = await runCommunity<ShowcaseCatalog>({ action: "catalog" });
+      if (!alive) return;
+      if (local.status !== "no-cache") {
+        setSlugs(clonedSet(local));
+        return;
+      }
+      const synced = await runCommunity<ShowcaseCatalog>({ action: "refresh" });
+      if (!alive) return;
+      setSlugs(clonedSet(synced));
+      onSynced();
+    })().catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -196,7 +203,10 @@ export default function Apps({ config }: { config: Config }) {
               </button>
             ))}
           </div>
-          {chips.length > 0 && (
+          {/* Also shown with zero chips while a filter narrows the grid — the
+              other facet's selection persists across a facet switch, and All
+              is the only control that clears it from this chip set. */}
+          {(chips.length > 0 || tag !== null || category !== null) && (
             <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
               {/* Active only when NOTHING filters — with a selection hiding in
                   the other facet, a lit All over a narrowed grid would lie;

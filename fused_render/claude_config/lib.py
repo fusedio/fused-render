@@ -39,6 +39,44 @@ CLAUDE_DIR = os.environ.get("CLAUDE_DIR") or os.path.expanduser("~/.claude")
 SETTINGS_PATH = os.path.join(CLAUDE_DIR, "settings.json")
 INSTALLED_PLUGINS_PATH = os.path.join(CLAUDE_DIR, "plugins", "installed_plugins.json")
 KNOWN_MARKETPLACES_PATH = os.path.join(CLAUDE_DIR, "plugins", "known_marketplaces.json")
+MARKETPLACES_DIR = os.path.join(CLAUDE_DIR, "plugins", "marketplaces")
+
+# The kwargs EVERY subprocess in this package is spawned with. Two unrelated
+# defaults, both of which are wrong for a server process, both of which fail in
+# ways that name nothing:
+#
+# 1. close_fds=False — the SPAWN discipline app_git.py's module docstring
+#    documents in full (read it; this is the same crash, not a similar one).
+#    Short version: the server has libproj resident, so a plain fork() runs
+#    PROJ's pthread_atfork child handler into a SIGSEGV before exec, and the
+#    default close_fds=True is what takes the fork path on macOS. close_fds=False
+#    makes CPython use posix_spawn, which runs no atfork handlers, and degrades
+#    to CreateProcess on Windows rather than raising.
+#
+#    This is why the MCP page stayed broken after the UTF-8 fix below: every
+#    `claude` and every `git` in this package died rc=-11 with EMPTY stderr, in
+#    0.0s, so the module reported "failed to list MCP servers" and git_ops
+#    reported `git add -A failed: ` with nothing after the colon. The same
+#    commands ran fine from a shell, because a shell has no PROJ loaded.
+#
+# 2. text/encoding/errors — `text=True` alone decodes with
+#    locale.getpreferredencoding(False), and a GUI-launched server inherits no
+#    LANG/LC_ALL, so on macOS that resolves to ASCII. The moment a child prints
+#    a non-ASCII byte — `claude mcp list` draws ✔/✘/⏸, a commit message has an
+#    em dash, a statusline script emits a nerd-font glyph, a project path is
+#    accented — the decode raises UnicodeDecodeError and the whole action 500s.
+#    Pinning UTF-8 (what all of these actually emit) with errors="replace" makes
+#    the worst case a mojibake character rather than a dead page.
+#
+# One dict rather than two, and spread at every call site including the
+# detached Popen — the decode kwargs are inert against its DEVNULL streams, and
+# that is a cheaper price than a second constant nobody remembers to apply.
+SUBPROCESS_KWARGS = {
+    "close_fds": False,
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+}
 
 # One lock serializes all config mutation (read-modify-write of settings.json +
 # the git add/commit that follows), so two concurrent actions can't clobber each
@@ -207,12 +245,17 @@ projects/*/*
 
 
 def git(*args: str, check: bool = True) -> str:
-    """Run a git command inside CLAUDE_DIR, returning stripped stdout."""
+    """Run a git command against CLAUDE_DIR, returning stripped stdout.
+
+    `git -C <dir>` rather than `cwd=`, and SUBPROCESS_KWARGS rather than the
+    defaults: both halves of the discipline app_git.py's module docstring lays
+    out, for the same reasons — a `cwd=` that no longer exists fails inside the
+    spawn instead of inside git, and a forking spawn dies rc=-11 the moment
+    PROJ is resident in this process."""
     res = subprocess.run(
-        ["git", *args],
-        cwd=CLAUDE_DIR,
+        ["git", "-C", CLAUDE_DIR, *args],
         capture_output=True,
-        text=True,
+        **SUBPROCESS_KWARGS,
     )
     if check and res.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {res.stderr.strip()}")
@@ -372,7 +415,7 @@ def reveal(path: str) -> bool:
     import sys
     cmd = ["open"] if sys.platform == "darwin" else ["xdg-open"]
     try:
-        subprocess.run([*cmd, path], capture_output=True, text=True, timeout=10)
+        subprocess.run([*cmd, path], capture_output=True, timeout=10, **SUBPROCESS_KWARGS)
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -415,6 +458,24 @@ def _resolve_claude(path_env: str) -> Optional[str]:
     return None
 
 
+def option_shaped(value: str) -> bool:
+    """True if `value` would be read as a FLAG rather than as a value.
+
+    An argv array closes off shell injection — nothing here ever builds a
+    command string — but it does not close off OPTION injection: argv[n] is
+    still parsed by the program receiving it, and a leading "-" is what makes
+    it an option. So a plugin published as `--force` yields the id
+    "--force@marketplace", which `claude plugin install` reads as a flag with a
+    junk argument, not as a plugin to install.
+
+    That matters because the strings we hand the CLI are not all ours: a
+    marketplace catalog is third-party content cloned off a git remote, and
+    settings.json is hand-editable. Callers reject rather than escape — there is
+    no legitimate plugin or server whose name starts with a dash, so refusing is
+    both the safe answer and the correct one."""
+    return value.startswith("-")
+
+
 def claude_cli(*args: str, timeout: int = 25) -> dict:
     """Run the `claude` binary with an argv array (never a shell string, so
     args can't inject). Resolves the binary's absolute path (plugins.md §5) so
@@ -430,7 +491,7 @@ def claude_cli(*args: str, timeout: int = 25) -> dict:
     env = {**os.environ, "PATH": path_env}
     try:
         res = subprocess.run(
-            [binary, *args], capture_output=True, text=True, timeout=timeout, env=env
+            [binary, *args], capture_output=True, timeout=timeout, env=env, **SUBPROCESS_KWARGS
         )
         return {
             "ok": res.returncode == 0,
@@ -458,21 +519,73 @@ def claude_cli_detached(*args: str) -> dict:
     subprocess.Popen(
         [binary, *args],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True, env=env,
+        start_new_session=True, env=env, **SUBPROCESS_KWARGS,
     )
     return {"ok": True, "launched": True}
 
 
 # mcp.md §2: `claude mcp list` has no structured output, so parse its human-readable
 # lines. Names carry both spaces and colons (`claude.ai Slack`,
-# `plugin:context-mode:context-mode`), so split status on the LAST " - " and the
-# name/endpoint boundary on the FIRST ": " (colon-space, which bare-colon names lack).
-_MCP_STATUS = {
-    "✔ connected": "connected",
-    "! needs authentication": "needs-auth",
-    "✘ failed to connect": "failed",
-    "⏸ pending approval": "pending",
-}
+# `plugin:context-mode:context-mode`), so the name/endpoint boundary is the FIRST
+# ": " (colon-space, which bare-colon names lack).
+#
+# The status is a PREFIX, not the whole trailing segment. A status may carry a
+# reason after it, and the CLI joins that reason with an em dash:
+#
+#   plugin:github:github: https://… (HTTP) - ✘ Failed to connect — HTTP 400: …
+#
+# An exact-match lookup against the trailing segment therefore failed on exactly
+# the servers that are broken — the only status that ever HAS a reason — and the
+# one server that was genuinely down was the one the UI called "unknown". Match
+# on the leading marker plus its phrase; everything after that is detail, and
+# the detail is kept (statusDetail) rather than thrown away, because "failed"
+# alone is a dead end and "failed — Authorization header is badly formatted" is
+# something the user can act on.
+_MCP_STATUS = (
+    ("✔ connected", "connected"),
+    ("! needs authentication", "needs-auth"),
+    ("✘ failed to connect", "failed"),
+    ("⏸ pending approval", "pending"),
+)
+
+# What the CLI puts between a status and its reason. Stripped from the front of
+# the detail so it reads as a sentence rather than as a fragment.
+_DETAIL_JOINERS = "—–-: "
+
+
+def _split_status(line: str) -> tuple:
+    """(body, status_part), split at the status marker.
+
+    Deliberately NOT `rpartition(" - ")`: a reason is free-form CLI text and may
+    itself contain " - ", which would put the split inside the reason and take
+    the endpoint with it. The marker glyph is the reliable landmark, so find the
+    FIRST " - <marker>" and cut there; fall back to the last " - " only when no
+    marker is recognised, which is the `unknown` path.
+    """
+    best = -1
+    for prefix, _ in _MCP_STATUS:
+        found = line.find(" - " + prefix[0])
+        if found != -1 and (best == -1 or found < best):
+            best = found
+    if best == -1:
+        body, _, status_part = line.rpartition(" - ")
+        return body, status_part
+    return line[:best], line[best + len(" - "):]
+
+
+def _classify_status(status_part: str) -> tuple:
+    """(status, detail) from the trailing segment of a list line."""
+    tail = status_part.strip()
+    low = tail.lower()
+    for prefix, value in _MCP_STATUS:
+        if low.startswith(prefix):
+            # Slice the ORIGINAL by the prefix's length — the two differ only in
+            # case, so the offset holds and the detail keeps its own casing.
+            return value, tail[len(prefix):].strip().lstrip(_DETAIL_JOINERS).strip()
+    # An unrecognised marker: report it as unknown rather than guessing, and
+    # keep the whole segment as the detail so the UI can still show what the CLI
+    # actually said.
+    return "unknown", tail
 
 
 def parse_mcp_list(text: str) -> list:
@@ -482,12 +595,12 @@ def parse_mcp_list(text: str) -> list:
         line = raw.rstrip()
         if " - " not in line or ": " not in line:
             continue  # banner ("Checking MCP server health…"), blanks
-        body, _, status_part = line.rpartition(" - ")
+        body, status_part = _split_status(line)
         name, _, endpoint = body.partition(": ")
         name, endpoint = name.strip(), endpoint.strip()
         if not name:
             continue
-        status = _MCP_STATUS.get(status_part.strip().lower(), "unknown")
+        status, status_detail = _classify_status(status_part)
 
         transport = ""
         for marker, kind_ in (("(HTTP)", "http"), ("(SSE)", "sse")):
@@ -512,6 +625,9 @@ def parse_mcp_list(text: str) -> list:
             "endpoint": endpoint,
             "transport": transport,
             "status": status,
+            # The CLI's own words about WHY, where it gave any — "" for the
+            # statuses that need no explanation (connected, needs-auth).
+            "statusDetail": status_detail,
             "kind": kind,
             "connected": status == "connected",
             "needsAuth": status == "needs-auth",
@@ -580,14 +696,18 @@ def delete_branch(name: str) -> None:
 
 def archive_zip(name: str) -> bytes:
     """profiles.md §6: the branch's tree as a .zip, returned as raw bytes.
-    `git archive` emits binary, so this bypasses the text git() helper. The tree
-    is only the whitelisted, tracked files (version-control.md §2), so the archive
-    never carries plugins/, ~/.claude.json, or secrets."""
+    `git archive` emits binary, so this bypasses the text git() helper — and
+    therefore SUBPROCESS_KWARGS, whose text/encoding half would corrupt the zip.
+    The spawn half is NOT optional and is spelled out here instead: without
+    close_fds=False this dies rc=-11 like everything else in the package (see
+    SUBPROCESS_KWARGS). The tree is only the whitelisted, tracked files
+    (version-control.md §2), so the archive never carries plugins/,
+    ~/.claude.json, or secrets."""
     ensure_repo()
     res = subprocess.run(
-        ["git", "archive", "--format=zip", name],
-        cwd=CLAUDE_DIR,
+        ["git", "-C", CLAUDE_DIR, "archive", "--format=zip", name],
         capture_output=True,
+        close_fds=False,
     )
     if res.returncode != 0:
         raise RuntimeError(f"git archive {name} failed: {res.stderr.decode(errors='replace').strip()}")

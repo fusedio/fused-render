@@ -413,7 +413,23 @@ window.addEventListener('mouseup', () => {
   const hi = e0 + Math.max(...sel) / c.width * (e1 - e0);
   fused.params.set('vlo', String(lo)); fused.params.set('vhi', String(hi));
 });
-els.clipReset.onclick = () => { fused.params.set('vlo', ''); fused.params.set('vhi', ''); };
+// Clearing a param that is ALREADY clear is a semantic no-op — but not a
+// textual one: `set(k, '')` on an absent key appends `k=` to the URL, which
+// runtime.js reads as a change and spends the entry's once-per-visit history
+// push on (D8/PR-3). Both reset buttons are always live (they are not disabled
+// when there is nothing to reset), so pressing one on an untouched view used to
+// mint a history entry that changed nothing on screen — and Back out of it then
+// looked broken, because the press it was undoing had had no visible effect
+// either. Same shape as the `annmode` boot default in the claude template
+// (PT-15): write only when the URL does not already MEAN the new state. Absent
+// and empty are the same answer here, which is what the runtime's
+// `{default: ''}` says: an ABSENT param MEANS '', so writing '' over it is
+// dropped. (A clip bound is a number the reader typed, not a true default worth
+// stamping — there is no value to put in the URL when there is no clip.)
+els.clipReset.onclick = () => {
+  fused.params.set('vlo', '', { default: '' });
+  fused.params.set('vhi', '', { default: '' });
+};
 
 // stretch controls
 els.stretchBtn.onclick = () => {
@@ -421,15 +437,35 @@ els.stretchBtn.onclick = () => {
   if (!chans || !chans[0] || chans[0].p2 === undefined) return;
   fused.params.set('stretch', chans.map(ch => `${ch.p2},${ch.p98}`).join(','));
 };
-els.stretchReset.onclick = () => { fused.params.set('autostretch', '0'); fused.params.set('stretch', ''); };
+// `autostretch` is off unless it is exactly '1' (P.autoStretch), so absent and
+// '0' are the same answer — the `{default}` note above, applied to a param whose
+// default is a flag rather than a value.
+els.stretchReset.onclick = () => {
+  fused.params.set('autostretch', '0', { default: '0' });
+  fused.params.set('stretch', '', { default: '' });
+};
 
-// auto stretch: re-stretch colors to the current viewport after every pan/zoom
+// auto stretch: re-stretch colors to the current viewport after every pan/zoom.
+//
+// `stretch` here is a DERIVED value — computed from the map viewport, which this
+// template does not record — and derived values are normally kept out of the URL
+// entirely, with the MODE that produces them (`autostretch=1`) as the whole
+// bookmark. netcdf and h3 do exactly that. geotiff cannot: with no viewport in
+// its URL the number is NOT re-derivable on load, so dropping it would open a
+// shared link in different colours from the one that was shared.
+//
+// So it stays written — but as a REPLACE. Every genuine pan really does change
+// the number, so a value guard cannot help; without this each pan spent the
+// visit's one history entry (D8/PR-3) on a number nobody chose, and Back landed
+// on an old derivation over a new viewport — a state that was never on screen.
+// A replace keeps the colours in the link and costs no entry, and leaves the
+// entry pristine so the reader's first real choice still gets its push.
 function maybeAutoStretch(){
   if (!P.autoStretch()) return;
   const chans = lastHist && lastHist.channels;
   if (!chans || !chans[0] || chans[0].p2 === undefined) return;
   const s = chans.filter(ch => ch.p2 !== undefined).map(ch => `${ch.p2},${ch.p98}`).join(',');
-  if (s && s !== P.stretch()) fused.params.set('stretch', s);
+  if (s) fused.params.set('stretch', s, { history: 'replace' });
 }
 els.autoStretch.onchange = () => {
   fused.params.set('autostretch', els.autoStretch.checked ? '1' : '0');
@@ -571,7 +607,21 @@ function syncControls(){
   els.path.value = P.file();
   if (els.autoStretch) els.autoStretch.checked = P.autoStretch();
 }
-els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+// Load is always live, and the box starts EMPTY when no file is open (syncControls
+// copies P.file() into it). Pressing it there wrote `file=` over an absent param —
+// no file opened, the "no file — use Browse" status stayed put, and the URL still
+// changed, which is what buys the once-per-visit `pushState` (D8/PR-3, PT-15).
+// Two ways for the URL to already MEAN the typed path, and both have to be asked,
+// because P.file() falls back through `_file` and DEFAULT_FILE:
+//   · it equals the RAW param (absent and '' are the same answer) — pressing Load
+//     on the empty box of a "no file" page wrote `file=` and opened nothing; and
+//   · it equals the RESOLVED file — the box is seeded from P.file(), so on a file
+//     the SHELL supplied (`_file`, no `file` param) pressing Load merely copied
+//     that path into a second param. Same image, same everything, new URL.
+els.load.onclick = () => {
+  const p = els.path.value.trim();
+  if (p !== (fused.params.get('file') || '') && p !== P.file()) fused.params.set('file', p);
+};
 els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
 els.mode.onchange = () => fused.params.set('mode', els.mode.value);
 els.band.onchange = () => fused.params.set('band', els.band.value);

@@ -1,5 +1,5 @@
-// The file preview's right-hand SIDEBAR: the companion modes (`claude`, `git`,
-// `history` — lib/mode-visibility's SIDEBAR_MODES) rendered BESIDE the content
+// The file preview's right-hand SIDEBAR: the companion modes (`claude`, `git`
+// — lib/mode-visibility's SIDEBAR_MODES) rendered BESIDE the content
 // pane instead of in place of it.
 //
 // Why it exists: those are not other ways of looking at a file, they are things
@@ -41,6 +41,11 @@ import {
   publishPreviewSideSlot,
   retractPreviewSideSlot,
 } from "@apps/explorer/preview-side-slot";
+import {
+  defaultSideWidth,
+  MIN_W,
+  CONTENT_MIN_W,
+} from "@apps/explorer/lib/side-width";
 
 // The split container's class, and the drag's frame of reference. Looked up from
 // the divider with `closest` rather than handed down as a ref: the two live in
@@ -62,37 +67,10 @@ export function PreviewSideSlot() {
   return <div className="stat-side-slot" ref={ref} />;
 }
 
-// Sensible default and floors for the column, in PIXELS — unlike the listing's
-// preview pane (a fraction of its container, listing/pane-math.ts) this is a
-// sidebar: what it holds is a chat composer and a message column, whose
-// legibility is a width in pixels and not a share of the window. The content
-// pane keeps whatever is left, with its own floor so a drag can't swallow it.
-const DEFAULT_W = 400;
-const MIN_W = 280;
-const CONTENT_MIN_W = 320;
-
-const WIDTH_KEY = "fused-render:preview-side";
-
-// Best-effort persistence, the defensive localStorage pattern the rest of the
-// shell uses (lib/viewstate, lib/sidebarstate): a private-mode/quota failure
-// costs the remembered width and nothing else.
-function loadWidth(): number {
-  try {
-    const raw = localStorage.getItem(WIDTH_KEY);
-    const n = raw === null ? NaN : Number(raw);
-    return Number.isFinite(n) && n >= MIN_W ? n : DEFAULT_W;
-  } catch {
-    return DEFAULT_W;
-  }
-}
-
-function saveWidth(w: number): void {
-  try {
-    localStorage.setItem(WIDTH_KEY, String(Math.round(w)));
-  } catch {
-    /* ignore */
-  }
-}
+// The width the column OPENS at, and its floors, live in lib/side-width — a
+// share of the split container (30% normally, 50% on a small one) clamped into
+// the two floors. Nothing is stored: a drag lasts the life of the page and a
+// refresh gets the layout's answer again.
 
 export interface SidebarEntry {
   mode: string;
@@ -125,15 +103,31 @@ export default function PreviewSidebar({
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
 }) {
-  const [width, setWidth] = useState(loadWidth);
-  // The drag writes on release only: the width is a preference, and a
-  // read-modify-write per pointermove is a per-frame localStorage hit for a
-  // number that is only interesting once the user lets go.
-  const widthRef = useRef(width);
-  widthRef.current = width;
+  // Seeded from the VIEWPORT, because a state initialiser runs before there is
+  // any layout to measure. It is a stand-in only — the layout effect below
+  // replaces it with the container's own answer before the browser paints, so
+  // this value reaches the screen only if the container cannot be measured at
+  // all (detached, display:none), where the viewport is the honest guess.
+  const [width, setWidth] = useState(() =>
+    defaultSideWidth(typeof window === "undefined" ? 0 : window.innerWidth),
+  );
   // The divider, and through it the split container (see SPLIT_SEL).
   const dividerRef = useRef<HTMLDivElement>(null);
   const splitEl = () => dividerRef.current?.closest<HTMLElement>(SPLIT_SEL) ?? null;
+
+  // The real default, measured. useLayoutEffect and not useEffect: the refs are
+  // attached and the container laid out by now, and React flushes this before
+  // paint, so the seeded viewport width never reaches the screen and the column
+  // does not open at one width and jump to another.
+  //
+  // Mount-only, and deliberately not re-run on container resize: the ResizeObserver
+  // below only ever narrows the column, so a window the user widens keeps the
+  // width they are looking at instead of springing back to the share.
+  useLayoutEffect(() => {
+    const w = splitEl()?.getBoundingClientRect().width ?? 0;
+    if (w > 0) setWidth(defaultSideWidth(w));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // A window narrower than the two floors together must not leave the content
   // column at nothing: clamp on every container resize, not only on drag.
@@ -162,14 +156,12 @@ export default function PreviewSidebar({
     const divider = e.currentTarget;
     divider.setPointerCapture(e.pointerId);
     divider.classList.add("dragging");
-    let resized = false;
     const onMove = (ev: PointerEvent) => {
       const rect = splitEl()?.getBoundingClientRect();
       if (!rect) return;
       const max = rect.width - CONTENT_MIN_W;
       if (max < MIN_W) return; // container too narrow to express a split
       const next = Math.min(max, Math.max(MIN_W, rect.right - ev.clientX));
-      resized = true;
       setWidth((w) => (w === next ? w : next));
     };
     const onUp = () => {
@@ -177,7 +169,6 @@ export default function PreviewSidebar({
       divider.removeEventListener("pointermove", onMove);
       divider.removeEventListener("pointerup", onUp);
       divider.removeEventListener("pointercancel", onUp);
-      if (resized) saveWidth(widthRef.current);
     };
     divider.addEventListener("pointermove", onMove);
     divider.addEventListener("pointerup", onUp);

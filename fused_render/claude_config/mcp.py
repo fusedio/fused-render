@@ -21,9 +21,14 @@ from . import lib
 
 
 def _bad_name(name: str) -> bool:
-    # argv-array safety (mcp.md §3): no shell, so injection is impossible; still
-    # reject empty / control-char names that could only be a mistake.
-    return not name or any(ord(c) < 0x20 for c in name)
+    # argv-array safety (mcp.md §3): there is no shell, so COMMAND injection is
+    # impossible — but that is not the same as "anything is safe to pass". The
+    # name arrives from the client and is echoed back from `claude mcp list`
+    # output we parse, and argv[n] is still parsed as options by the program
+    # receiving it, so a leading dash makes it a flag rather than a server
+    # (lib.option_shaped). Reject that along with the empty and control-char
+    # names that could only be a mistake.
+    return not name or lib.option_shaped(name) or any(ord(c) < 0x20 for c in name)
 
 
 def main(action: str = "list", name: str = "", **kwargs) -> dict:

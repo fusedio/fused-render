@@ -51,22 +51,23 @@ def _invalidate_stat_cache(*paths: object) -> None:
 
 
 def _is_under_snapshot_root(path: str) -> bool:
-    """True when `path` sits under home_dir()/app-versions/ — the `history`
-    template's materialised git snapshots (`history.py::_snapshot`).
+    """True when `path` sits under home_dir()/app-versions/ — materialised git
+    snapshots.
 
     A snapshot tree is `git archive` output: the bytes of one commit, extracted so
-    a preview can be framed against them. Nothing a user types there can mean
-    anything — the real file is elsewhere and the commit is immutable — and
-    `_snapshot` REUSES an extracted tree whenever `.fused-snapshot-complete`
-    exists, so a write that lands here is served back as that revision's content
-    from then on. Machine-generated history that silently absorbs edits is worse
-    than no history at all.
+    a preview could be framed against them. Nothing a user types there can mean
+    anything — the real file is elsewhere and the commit is immutable — and the
+    extractor REUSED a tree whenever `.fused-snapshot-complete` existed, so a
+    write that lands here is served back as that revision's content from then on.
+    Machine-generated history that silently absorbs edits is worse than no history
+    at all.
 
-    This became reachable when `history` grew FILE targets: a file snapshot is
-    framed through the file's own default view, which for the extensions
-    `history` is bound to is `code` or `markdown` — both of which call
-    `fused.writeFile`. An app snapshot always framed the app's entry PAGE, so it
-    never offered a save.
+    NOTHING WRITES THIS DIRECTORY ANY MORE. The per-path timeline mode that
+    extracted these trees is gone, and the git view that replaced it resolves a
+    revision's bytes on read (`server/routers/git_show.py`) rather than
+    materialising anything. The guard stays because the trees an older version
+    already left on disk are still browsable, still immutable, and still framed
+    through views (`code`, `markdown`) that call `fused.writeFile`.
 
     Lives here rather than in fs_mutate so `_writable` can read it without a cycle
     (fs_mutate imports this module, not the other way round) — and _writable is
@@ -79,10 +80,10 @@ def _is_under_snapshot_root(path: str) -> bool:
     directory the server is not using. Segment-compared, so a sibling named
     `app-versions-notes` is not caught by a string prefix.
 
-    The directory is spelled `app-versions` and the mode is called `history`;
+    The directory is spelled `app-versions` though it held no apps by the end;
     that mismatch is deliberate. The path is a materialisation cache no user
     ever sees or types, and renaming it would orphan every snapshot already on
-    disk (see the comment at `templates/history/history.py::_snapshot`).
+    disk.
     """
     from fused_render.shell import storage as shell_storage
 

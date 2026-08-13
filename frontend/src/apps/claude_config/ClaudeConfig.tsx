@@ -1,24 +1,42 @@
 // The Claude config panel: a native React port of the bundled html+py app that
-// used to sit here in an iframe (D125). Same information architecture — a
-// 210px section nav, one content column, a git status badge pinned to the nav's
-// bottom edge — but built out of the shell's own primitives, so it follows the
-// Light/Dark setting and shares one toast/modal surface with the rest of the app
-// instead of shipping a second, Claude-branded one.
+// used to sit here in an iframe (D125), built out of the shell's own primitives
+// so it follows the Light/Dark setting and shares one toast/modal surface with
+// the rest of the app instead of shipping a second, Claude-branded one.
+//
+// The layout is NOT the original app's any more. That app owned the whole
+// window and could afford a 230px section nav down the left; inside this shell
+// that nav landed directly beside the global sidebar and the page read as two
+// sidebars glued together. So the sections are a horizontal TAB STRIP across
+// the top, and the horizontal budget the nav was eating goes to the content:
+//
+//   ┌ cc-tabbar ────────────────────────────────────────────────┐
+//   │ Preferences Plugins Marketplaces …          [🕘 History •] │
+//   ├ cc-body ───────────────────────────┬──────────────────────┤
+//   │ caption (the file this tab edits)  │  preview pane        │
+//   │ section content                    │  (MD Files only)     │
+//   └────────────────────────────────────┴──────────────────────┘
 //
 // Two pieces of state, each in the place that suits it:
 //
 //   * the active SECTION lives in the URL (`?cctab=plugins`) — bookmarkable, and
 //     the same navigateUrl pattern the shell's own tab strips use;
-//   * the git BADGE lives here, because every section can dirty the repo and
+//   * the git epoch lives here, because every section can dirty the repo and
 //     they all report back through one `onChanged`.
+//
+// History is deliberately NOT one of the tabs. It is a persistent button at the
+// strip's right edge, because it is the only page whose state matters while you
+// are looking at some other one: it carries the dirty dot that tells you the
+// config has uncommitted drift, and it is where you commit that drift. Profiles
+// lives on it too — a profile is a git branch over the same repo, so it belongs
+// with the history rather than beside Preferences.
 //
 // The CLAUDE.md explorer ("MD Files", `?cctab=claudemd`) is a section here.
 // It briefly had a page of its own; it is back because the sidebar's CLAUDE
 // group reads better with one Config entry than with two peers. It is the one
-// section that needs a split PREVIEW pane, which is why this panel lays out as
-// three columns (nav / content / preview) — the pane renders beside the content
-// column, so the preview path lives in this file and the section is handed
-// `preview`/`onPreview`. Every other section leaves the third column empty.
+// section that needs a split PREVIEW pane, which is why .cc-body lays out as
+// two columns (content / preview) — the pane renders beside the content column,
+// so the preview path lives in this file and the section is handed
+// `preview`/`onPreview`. Every other section leaves the second column empty.
 // A stale `/claude-md` URL redirects here (shell/App.tsx).
 //
 // A note on remounting: the shell renders this page keyed on the nav epoch, so
@@ -28,7 +46,7 @@
 // app re-rendered.
 import { useCallback, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { PreviewPane, StatusBadge } from "./bits";
+import { Icon, Pill, PreviewPane, useGitStatus } from "./bits";
 import ClaudeMdSection from "./sections/ClaudeMdSection";
 import HistorySection from "./sections/HistorySection";
 import MarketplacesSection from "./sections/MarketplacesSection";
@@ -36,14 +54,13 @@ import McpSection from "./sections/McpSection";
 import MemorySection from "./sections/MemorySection";
 import PluginsSection from "./sections/PluginsSection";
 import PreferencesSection from "./sections/PreferencesSection";
-import ProfilesSection from "./sections/ProfilesSection";
 import SkillsSection from "./sections/SkillsSection";
 import StatuslineSection from "./sections/StatuslineSection";
 
-// The nav, in order. `file` is the caption under each section's heading — it
-// names the file (or the git object) the section actually edits, which is the
-// one thing a settings UI over someone's dotfiles owes them.
-const SECTIONS = [
+// The tab strip, in order. `file` is the caption under the strip — it names the
+// file (or the git object) the section actually edits, which is the one thing a
+// settings UI over someone's dotfiles owes them.
+const TABS = [
   { id: "preferences", label: "Preferences", file: "settings.json" },
   { id: "plugins", label: "Plugins", file: "settings.json → enabledPlugins" },
   { id: "marketplaces", label: "Marketplaces", file: "settings.json → extraKnownMarketplaces" },
@@ -52,41 +69,56 @@ const SECTIONS = [
     label: "MD Files",
     file: "CLAUDE.md / CLAUDE.local.md across all projects",
   },
-  { id: "memory", label: "Memory", file: "projects/*/memory/ (read-only viewer)" },
-  { id: "skills", label: "Skills", file: "skills/*/SKILL.md (read-only viewer)" },
-  { id: "statusline", label: "Statusline", file: "settings.json → statusLine (read-only viewer)" },
-  { id: "profiles", label: "Profiles", file: "git branches over your Claude config" },
+  // `readOnly` puts one pill in the caption row. It replaces the
+  // "(read-only viewer)" that used to be baked into three of these strings —
+  // the same fact, said in the same way as the read-only marketplaces and
+  // plugin-provided MCP servers already say it, in one place instead of two.
+  { id: "memory", label: "Memory", file: "projects/*/memory/", readOnly: true },
+  { id: "skills", label: "Skills", file: "skills/*/SKILL.md", readOnly: true },
+  { id: "statusline", label: "Statusline", file: "settings.json → statusLine", readOnly: true },
   {
     id: "mcp",
     label: "MCP",
     file: "global MCP servers via the `claude mcp` CLI (not version-controlled)",
   },
-  { id: "history", label: "History", file: "git log over your Claude config" },
 ] as const;
 
-type SectionId = (typeof SECTIONS)[number]["id"];
+// The History page: reachable by the strip's right-edge button, never a tab.
+const HISTORY = {
+  id: "history",
+  label: "History",
+  file: "uncommitted drift, profiles (git branches) and the commit log over your Claude config",
+} as const;
+
+const PAGES = [...TABS, HISTORY];
+
+type SectionId = (typeof PAGES)[number]["id"];
 
 const SECTION_PARAM = "cctab";
 
+// What the nav used to say in its tagline. It is one sentence of standing
+// context, not a per-page fact, so it rides the caption row rather than
+// claiming a column of its own.
+const TAGLINE = "Edits write to your Claude config and commit to git. Applies on the next session.";
+
 function isSectionId(v: string | null): v is SectionId {
-  return SECTIONS.some((s) => s.id === v);
+  return PAGES.some((s) => s.id === v);
 }
 
 export default function ClaudeConfig() {
   // Two change signals, because they have two different audiences:
   //
-  //   badgeEpoch   — any section wrote to the config, so the git badge is stale.
-  //                  The section that wrote already knows what changed and
-  //                  reloads itself; remounting it from here would just double
-  //                  the fetch.
-  //   sectionEpoch — the badge itself committed, folding in drift the ACTIVE
-  //                  section can't have accounted for (History gains a commit,
-  //                  Memory loses its "uncommitted" markers). Only this remounts
-  //                  the section.
+  //   badgeEpoch   — any section wrote to the config, so the History button's
+  //                  dirty dot is stale. The section that wrote already knows
+  //                  what changed and reloads itself; remounting it from here
+  //                  would just double the fetch.
+  //   sectionEpoch — something committed, folding in drift the ACTIVE section
+  //                  can't have accounted for (History gains a commit, Memory
+  //                  loses its "uncommitted" markers). Only this remounts the
+  //                  section.
   const [badgeEpoch, setBadgeEpoch] = useState(0);
-  // The MD Files section's split preview pane — a third column beside the
+  // The MD Files section's split preview pane — a second column beside the
   // content column, so its path lives here rather than in the section.
-  // Cleared on a section change: nothing else renders a pane.
   const [preview, setPreview] = useState<string | null>(null);
   const [sectionEpoch, setSectionEpoch] = useState(0);
   const onChanged = useCallback(() => setBadgeEpoch((n) => n + 1), []);
@@ -94,10 +126,20 @@ export default function ClaudeConfig() {
     setBadgeEpoch((n) => n + 1);
     setSectionEpoch((n) => n + 1);
   }, []);
+  // One status read per epoch, for the dot alone — the History page fetches its
+  // own drift when you get there.
+  const { status } = useGitStatus(badgeEpoch);
 
   const raw = new URLSearchParams(location.search).get(SECTION_PARAM);
-  const active: SectionId = isSectionId(raw) ? raw : "preferences";
-  const meta = SECTIONS.find((s) => s.id === active) ?? SECTIONS[0];
+  // `?cctab=profiles` was a tab of its own until Profiles became a block of the
+  // History page. An old bookmark should land where its content went, not on
+  // the default tab.
+  const active: SectionId = raw === "profiles"
+    ? HISTORY.id
+    : isSectionId(raw)
+      ? raw
+      : "preferences";
+  const meta = PAGES.find((s) => s.id === active) ?? PAGES[0];
 
   const setActive = (next: SectionId) => {
     const params = new URLSearchParams(location.search);
@@ -127,47 +169,78 @@ export default function ClaudeConfig() {
         return <SkillsSection />;
       case "statusline":
         return <StatuslineSection />;
-      case "profiles":
-        return <ProfilesSection onChanged={onChanged} />;
       case "mcp":
         return <McpSection />;
       case "history":
-        return <HistorySection onChanged={onChanged} />;
+        return <HistorySection onChanged={onChanged} onCommitted={onCommitted} />;
     }
   };
 
   return (
     <div className="cc-root">
-      <nav className="cc-nav" aria-label="Claude config sections">
-        <h2 className="cc-nav-title">Claude config</h2>
-        <p className="cc-nav-tagline">
-          Edits write to your Claude config and commit to git. Applies on the next session.
-        </p>
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={"cc-nav-item" + (s.id === active ? " active" : "")}
-            aria-current={s.id === active ? "page" : undefined}
-            onClick={() => setActive(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
-        <StatusBadge epoch={badgeEpoch} onCommitted={onCommitted} />
-      </nav>
-      <main className="cc-main">
-        <h2 className="cc-heading">{meta.label}</h2>
-        <div className="cc-caption cc-mono">{meta.file}</div>
-        {/* Keyed on the commit epoch: a badge commit rewrites state the active
-            section can't have predicted, so it remounts and refetches. */}
-        <div key={`${active}:${sectionEpoch}`} className="cc-section">
-          {body()}
+      <div className="cc-tabbar">
+        {/* The tablist holds the TABS and nothing else — History is not one of
+            them, so it sits outside as a plain button with aria-current. A
+            tablist whose children aren't all tabs mis-announces the set's size
+            and position ("tab 9 of 9" for a thing that isn't a tab). Keeping it
+            out also means the strip can scroll sideways while History stays
+            pinned at the edge, which is the behaviour it wants anyway. */}
+        <div className="cc-tablist" role="tablist" aria-label="Claude config sections">
+          {TABS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              role="tab"
+              aria-selected={s.id === active}
+              className={"cc-tab" + (s.id === active ? " active" : "")}
+              onClick={() => setActive(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
         </div>
-      </main>
-      {active === "claudemd" && preview && (
-        <PreviewPane path={preview} onClose={() => setPreview(null)} />
-      )}
+        <button
+          type="button"
+          aria-current={active === HISTORY.id ? "page" : undefined}
+          className={"cc-tab cc-tab-history" + (active === HISTORY.id ? " active" : "")}
+          title={
+            status?.dirty
+              ? `${status.files.length} uncommitted change(s) — review and commit them here`
+              : "Commits, profiles and uncommitted changes"
+          }
+          onClick={() => setActive(HISTORY.id)}
+        >
+          <Icon name="clock" />
+          {HISTORY.label}
+          {/* The badge that used to sit at the nav's bottom edge, reduced to its
+              signal: on any tab you still learn the repo has drifted, and the
+              page that does something about it is one click away. */}
+          {status?.dirty && <span className="cc-tab-dot" aria-label="uncommitted changes" />}
+        </button>
+      </div>
+      <div className="cc-body">
+        <main className="cc-main">
+          {/* title= on the ROW, not on the note: the note itself is hidden on a
+              narrow window, and the sentence should still be reachable there. */}
+          <div className="cc-caption-row" title={TAGLINE}>
+            <div className="cc-caption cc-mono">
+              {meta.file}{" "}
+              {"readOnly" in meta && meta.readOnly && <Pill tone="ro">read-only</Pill>}
+            </div>
+            <div className="cc-caption cc-caption-note">
+              Edits commit to git · applies next session
+            </div>
+          </div>
+          {/* Keyed on the commit epoch: a commit rewrites state the active
+              section can't have predicted, so it remounts and refetches. */}
+          <div key={`${active}:${sectionEpoch}`} className="cc-section">
+            {body()}
+          </div>
+        </main>
+        {active === "claudemd" && preview && (
+          <PreviewPane path={preview} onClose={() => setPreview(null)} />
+        )}
+      </div>
     </div>
   );
 }

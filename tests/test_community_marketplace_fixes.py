@@ -15,6 +15,7 @@ import json
 import os
 import stat
 import sys
+import time
 
 import pytest
 
@@ -213,6 +214,49 @@ def test_refresh_refuses_foreign_showcase_folder(community_mod):
     assert res["status"] == "error"
     assert "not the showcase clone" in res["message"]
     assert os.path.isfile(marker)
+
+
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_refresh_sweeps_leftover_staging_dirs(tmp_path, community_mod, monkeypatch):
+    mod = community_mod
+    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
+    monkeypatch.setattr(mod, "REPO_URL", remote)
+    # An interrupted first clone (app quit mid-clone) leaves its staging dir
+    # behind; the next refresh must sweep it instead of accumulating copies.
+    leftover = os.path.join(mod.WORKSPACE, ".showcase-clone-dead")
+    os.makedirs(os.path.join(leftover, "showcase"))
+
+    res = mod.main(action="refresh")
+
+    assert res["status"] == "ok"
+    assert not os.path.exists(leftover)
+    assert not [n for n in os.listdir(mod.WORKSPACE) if n.startswith(".showcase-clone-")]
+
+
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_refresh_leaves_fresh_git_locks_alone(tmp_path, community_mod, monkeypatch):
+    mod = community_mod
+    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
+    monkeypatch.setattr(mod, "REPO_URL", remote)
+    assert mod.main(action="refresh")["status"] == "ok"
+
+    # The showcase clone is the user's tree: a FRESH index.lock may be their
+    # own git command in flight and must survive; an ancient one is debris
+    # from a killed process and gets cleaned.
+    git_dir = os.path.join(mod.SHOWCASE_DIR, ".git")
+    fresh = os.path.join(git_dir, "index.lock")
+    with open(fresh, "w", encoding="utf-8"):
+        pass
+    old = os.path.join(git_dir, "HEAD.lock")
+    with open(old, "w", encoding="utf-8"):
+        pass
+    ancient = time.time() - mod.STALE_LOCK_AGE - 60
+    os.utime(old, (ancient, ancient))
+
+    mod.main(action="refresh")
+
+    assert os.path.isfile(fresh)
+    assert not os.path.exists(old)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="posix flock path")

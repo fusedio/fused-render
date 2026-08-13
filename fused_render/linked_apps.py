@@ -13,11 +13,12 @@ have a registry file, neither of which is served by deleting it:
 - those folders still list on the /apps hub under the ``linked`` tag, and
   dropping them would be silent data loss from a feature removal that was about
   BUTTONS, not about the user's folders;
-- `export_linked_apps_env` still publishes them, and `templates/history` still
-  asks `is_linked_app_dir` before it will `revert` — a linked folder is the
-  USER's own repository, so that refusal must keep firing for exactly the
-  folders it was written for. An unexported env var would turn a safety rule
-  into a no-op quietly.
+- `export_linked_apps_env` still publishes them as the shared env contract every
+  template gate reads (`templates/shared/appenv.py`). Its one consumer that
+  asked `is_linked_app_dir` before writing — the per-path timeline mode's
+  `revert`, refusing to put a Fused-identity commit into the USER's own
+  repository — went with that template; the export outlives it because the
+  contract is the gates', not that one caller's.
 
 `write_entries` is kept as the one remaining way in, for tests and for a user
 editing the file by hand. The listing merges them in under

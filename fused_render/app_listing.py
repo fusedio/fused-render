@@ -1,7 +1,8 @@
 """The entry contract behind `GET /api/apps`, extracted from its router.
 
-An app is a folder with a single entry page: `<workspace>/<tag>/<name>/`, whose
-entry is its one non-hidden direct-child `.html`. The walk that finds them, and
+An app is a folder with an entry page: `<workspace>/<tag>/<name>/`, whose entry
+is its `index.html`, else its first non-hidden direct-child `.html` in name
+order (`app_entry`, the shared rule — D269). The walk that finds them, and
 the facts reported about each one — a title read out of the entry, an authored
 `preview.png` thumbnail if there is one, and when the folder was last touched —
 live here rather than inside the route handler, so they can be tested and reused
@@ -22,9 +23,36 @@ _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
 
 def app_entry(dir_path: str) -> str | None:
-    """An app folder's entry: the single non-hidden direct-child `.html`, or None
-    when the folder has zero or several (ambiguous — the UI opens the folder).
-    Raises OSError when the dir can't be listed; every caller skips those."""
+    """An app folder's entry page: `index.html` if the folder has one, else the
+    FIRST non-hidden direct-child `.html` in name order. None only when the
+    folder has no top-level `.html` at all.
+
+    Raises OSError when the dir can't be listed; every caller skips those.
+
+    THE SAME RULE AS `templates/shared/app_entry.py::entry_html`, deliberately
+    and to the letter — that module's docstring carries the reasoning, and
+    `tests/test_shared_app_entry.py` and `tests/test_app_listing.py` ask both the
+    same questions. A folder resolving to one page for the card that opens it and
+    another for the template that renders it is the failure this parity prevents.
+
+    It USED to be narrower on purpose: the single non-hidden `.html`, with zero
+    or several meaning None ("ambiguous — the UI opens the folder"). D269 removed
+    that divergence rather than preserving it, on the owner's rule that a folder
+    with a top-level html IS that page at every surface. The narrow rule made a
+    two-page folder a card that opened a file listing — the one outcome the rule
+    forbids — and "ambiguous" was never a better answer than the deterministic
+    first page, which is the same page the chat, the history and the preview pane
+    have all been picking since the shared rule widened.
+
+    The ONE divergence that remains is the OSError: this raises where the shared
+    copy swallows, so `two_level_apps` can tell "unreadable, skip this folder"
+    from "no entry, list it as a folder" (see `app_dict`). A template has no such
+    distinction to draw — it renders a notice either way.
+
+    Still a COPY rather than an import: a template must not import `fused_render`
+    (SPEC PY-15 / D166), and `templates/` is packaged data, not an importable
+    package, so neither side can reach the other. The parity is held by tests.
+    """
     children = os.listdir(dir_path)
     htmls = [
         c for c in sorted(children)
@@ -32,8 +60,14 @@ def app_entry(dir_path: str) -> str | None:
         and c.lower().endswith(".html")
         and os.path.isfile(os.path.join(dir_path, c))
     ]
-    if len(htmls) != 1:
+    if not htmls:
         return None
+    for c in htmls:
+        if c.lower() == "index.html":
+            return os.path.abspath(os.path.join(dir_path, c))
+    # `sorted` above is what makes "the first" a fact rather than whatever order
+    # the filesystem handed back — the shell and the templates read the same
+    # folder and must land on the same page.
     return os.path.abspath(os.path.join(dir_path, htmls[0]))
 
 

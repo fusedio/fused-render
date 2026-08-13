@@ -5897,8 +5897,22 @@ const nearBottom = () => logwrap.scrollHeight - logwrap.scrollTop - logwrap.clie
 // wipe the visible transcript, and rebuild the session list.
 document.getElementById("back").onclick = () => {
   if (sending) return;  // mid-turn reset would orphan the streaming run's UI
-  fused.params.set("session_id", "");
-  fused.params.set("run", "");  // a failed re-attach must not chase us home
+  // `{default: ""}`, because this button is live on a chat that has no session
+  // yet — "New chat" enters the chat view and `session_id` is not written until
+  // the first turn's poll answers. Clearing an already-absent param is a
+  // semantic no-op that is NOT a textual one (`set(k, "")` appends `k=`), so it
+  // changed the URL, and the first param write on a pristine entry is the one
+  // that buys a `pushState` (D8/PR-3): leaving an empty new chat minted a
+  // history entry for a landing the page had already navigated to imperatively,
+  // and the Back that undid it did nothing visible. Neither of these two is a
+  // true default worth stamping — a session id is an identifier and `run` is
+  // in-flight bookkeeping — so absent stays the spelling for "none".
+  fused.params.set("session_id", "", { default: "" });
+  // `run` additionally takes `{history: "replace"}` where `session_id` does not:
+  // a run id is in-flight bookkeeping, never a place anyone navigated to, so
+  // clearing a REAL one (this button is live on a resumed mid-run session) must
+  // not buy the entry — it would leave a Back that restores a dead run id.
+  fused.params.set("run", "", { history: "replace", default: "" });
   showSession();
   log.innerHTML = "";
   permCards.clear();  // the cards went with the log; don't keep handles to them
@@ -6694,8 +6708,26 @@ function buildPlanCard(p, run_id) {
       // authoritative READ of what landed (`res.decision`), not the click,
       // decides whether this ran — the losing half of a double-click must not
       // reset the picker for an approval that never actually took.
+      //
+      // The write is skipped when the URL ALREADY MEANS the landing mode, which
+      // for the CLI default means ABSENT as well as the literal "prompt": the
+      // only reader of this param is `permission_mode: get("permission") ||
+      // DEFAULT_PERMISSION` on the next spawn, and syncSelects paints the same
+      // default into the picker either way — but `permission` is a TRUE DEFAULT,
+      // a mode the user could have picked and of which the URL is the record, so
+      // the landing mode is written even when it is "prompt": the URL then says
+      // which mode the next turn will spawn in, and a copied link carries it.
+      //
+      // `{history:"replace"}` is what makes that free. The write is a
+      // CONSEQUENCE of approving a plan, not a place anyone navigated to, and it
+      // lands behind `await runPython` — so the first-change-push rule (D8/PR-3)
+      // would otherwise mint a history entry whose whole content is the mode the
+      // session already switched into, and the Back that undid it would do
+      // nothing visible. The picker's own dropdown still pushes: choosing a mode
+      // by hand IS a step. (A landing mode equal to what the URL literally says
+      // needs no guard — runtime.js drops byte-identical writes.)
       if ((res && res.decision) === "allow") {
-        fused.params.set("permission", res.mode || "prompt");
+        fused.params.set("permission", res.mode || "prompt", { history: "replace" });
         syncSelects();
       }
       // agent.py answers with what landed on disk (first writer wins), so a
@@ -8107,7 +8139,7 @@ async function pollLoop(run_id) {
         } else if (!data.done) typer.update(data.text);
       }
       if (data.done) {
-        fused.params.set("run", "");
+        fused.params.set("run", "", { history: "replace", default: "" });
         w.stop(); w.el.remove();
         // The run this frame sent (or re-attached to) is over: annotations it
         // carried are handled — auto-resolve them. Kept even on error? No: an
@@ -8301,7 +8333,12 @@ async function sendMessage(message) {
     }, { key: null });
     if (error) throw new Error(error);
     started = true;
-    fused.params.set("run", run_id);
+    // A run id is in-flight bookkeeping — what the page re-attaches to after a
+    // reload — and never a place the reader navigated to, so no `run` write of
+    // any kind buys the visit's one entry (PR-3): the push belongs to the first
+    // thing the user actually does, and a Back onto a finished run's id is a
+    // history entry that restores nothing.
+    fused.params.set("run", run_id, { history: "replace" });
     await pollLoop(run_id);
   } catch (err) {
     // The run never launched, so the agent never saw the annotations: give
@@ -8343,7 +8380,7 @@ async function resumeRun(run_id) {
     if (probe.error === "unknown run_id") {
       // stale param (bookmarked mid-run URL, pruned tmp) — nothing to attach
       // to, and nothing to hand annotations back to: resolve any stragglers
-      fused.params.set("run", "");
+      fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();
       return;
     }
@@ -8361,7 +8398,7 @@ async function resumeRun(run_id) {
     if (probe.done) {
       // Run finished with no frame attached: only repair what the restored
       // transcript can provably be missing (see the claude template).
-      fused.params.set("run", "");
+      fused.params.set("run", "", { history: "replace", default: "" });
       annResolveSent();  // the run this frame missed still handled its notes
       snapInvalidate();  // ...and may have edited the file while we were away
       if (probe.error) {

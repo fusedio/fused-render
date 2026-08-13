@@ -342,7 +342,14 @@ async function loadFile(){
 }
 
 // ---------------- controls ----------------
-els.load.onclick = () => fused.params.set('file', els.path.value.trim());
+// Writes ONLY WHEN THE URL DOES NOT ALREADY MEAN THE NEW VALUE (SPEC PT-15) —
+// pressing Load on the archive already loaded is not a navigation step, and under
+// the runtime's first-change-push rule (PR-3) an unguarded no-op still costs a
+// Back press. It sits behind a click, so the runtime's own no-gesture guard cannot
+// absorb it. `{default: ''}` states the part the runtime cannot know: an ABSENT
+// `file` MEANS '' (no archive loaded), so writing '' over an absence is dropped
+// rather than appending `file=`. A path is not a true default worth stamping.
+els.load.onclick = () => fused.params.set('file', els.path.value.trim(), { default: '' });
 els.path.onkeydown = e => { if (e.key === 'Enter') els.load.onclick(); };
 els.opacity.oninput = applyOpacity;
 els.basemap.onchange = () => {
@@ -381,7 +388,14 @@ async function refreshExplorer(dir){
        <span class="sz">${e.size ? human(e.size) : ''}</span></div>`).join('') || '<div class="row" style="color:#6b7178">empty</div>';
   els.explorerList.querySelectorAll('.row[data-p]').forEach(row => row.onclick = () => {
     if (row.dataset.d === '1') refreshExplorer(row.dataset.p);
-    else { fused.params.set('dir', row.dataset.p.replace(/\/[^/]*$/, '')); fused.params.set('file', row.dataset.p); els.explorer.style.display = 'none'; }
+    // `file` is the real navigation step and keeps its one history entry. `dir`
+    // is only a memo of where the browser was left, and picking a file out of
+    // the folder you are ALREADY browsing does not move it — so it is written
+    // only when it actually changes (PT-15). Unguarded, that no-op fired first
+    // and took the pushState under first-change-push (PR-3), leaving the `file`
+    // write to coalesce behind it and the entry to record a folder change
+    // nobody made.
+    else { setParam('dir', row.dataset.p.replace(/\/[^/]*$/, '')); setParam('file', row.dataset.p); els.explorer.style.display = 'none'; }
   });
 }
 

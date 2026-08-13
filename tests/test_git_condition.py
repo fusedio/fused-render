@@ -6,9 +6,10 @@ tested directly:
 
 * **A file is False, always.** `git` is FOLDER-ONLY: staging, discarding,
   stashing, committing, branches, push/pull are repository-level acts, and the
-  working tree a file sits in belongs to its folder. Per-file history is
-  `history`'s question, not this one. The registry says the same thing (`git`
-  rides the "/" directory key alone), and the gate says it again so a
+  working tree a file sits in belongs to its folder. The per-file question —
+  which commits touched this path — is answered by the same view, whose commit
+  list is scoped to whatever target it was opened on. The registry says the same
+  thing (`git` rides the "/" directory key alone), and the gate says it again so a
   hand-written `?_mode=git` on a file gets a no.
 
 * **It never enumerates.** `os.listdir`/`os.scandir`/`os.walk`/`glob` are made
@@ -117,7 +118,7 @@ def test_a_tracked_file_is_NOT_offered(gate, repo):
     # resolving to its parent directory; the working tree it is inside is that
     # PARENT's, not the file's, and the acts this view offers (stage, discard,
     # stash, commit, branch, push) are repository-level. What happened to this
-    # one file is `history`'s question, and `history` still answers it.
+    # one file is answered by the folder's own view, scoped to the open path.
     assert gate(os.path.join(repo, "pkg", "core.py")) is False
 
 

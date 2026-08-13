@@ -80,38 +80,54 @@ test("entryOf prefers entry and falls back to entry_html", () => {
 
 // ------------------------------------------------------- where a click lands
 
-test("an app with a page entry opens its folder as a plain explorer listing", () => {
-  // No `_mode`: the folder arrives as its file listing and the app view is one
-  // A card once pinned `?_mode=app` to open the folder in an app view; that
-  // mode is gone entirely (D264), so the listing is not one option among two.
+test("an app with a page entry opens THAT PAGE, not its folder", () => {
+  // D269, the owner's rule: a folder with a top-level html IS that page, and a
+  // card opens the page. It is an ordinary explorer FILE view — no `_mode`, and
+  // none of the machinery D262/D264 removed (there is no app route and no app
+  // template to open it in). The isDir hint is carried and false: the card knows
+  // its entry is a file, so the destination paints the file scaffold at once.
+  //
+  // This REVERSES the previous contract, which opened the folder as a plain
+  // listing; that test is this one.
   expect(openTargetFor(app())).toEqual({
-    path: "/w/local/demo",
-    opts: { isDir: true },
+    path: "/w/local/demo/index.html",
+    opts: { isDir: false },
   });
 });
 
 test("an entry that is not a page opens the file itself", () => {
   // No workspace app is shaped this way today, but `entry` exists for exactly
-  // this case and the fallback below must keep meaning "nothing to open".
+  // this case and the fallback below must keep meaning "nothing to open". Same
+  // branch as the page above now — both are files.
   expect(openTargetFor(app({ entry: "/w/local/demo/table.csv", entry_html: null })))
-    .toEqual({ path: "/w/local/demo/table.csv" });
+    .toEqual({ path: "/w/local/demo/table.csv", opts: { isDir: false } });
 });
 
 test("an app with no entry at all opens its folder", () => {
+  // The one surviving folder destination: nothing to open but the listing.
   expect(openTargetFor(app({ entry: null, entry_html: null }))).toEqual({
     path: "/w/local/demo",
     opts: { isDir: true },
   });
 });
 
-test("a linked app opens its folder like any other app", () => {
+test("an older server that reports only entry_html still opens the page", () => {
+  // `entry` is the newer key; entryOf falls back, and the fallback must not
+  // quietly degrade a card to its folder.
+  expect(openTargetFor(app({ entry: undefined }))).toEqual({
+    path: "/w/local/demo/index.html",
+    opts: { isDir: false },
+  });
+});
+
+test("a linked app opens its page like any other app", () => {
   // A linked app's folder lives OUTSIDE the workspace, which used to mean the
   // card needed the registry-resolved /apps/linked/<name> route. An explorer
-  // URL is an fs path, so the folder is addressable directly and the tag stops
+  // URL is an fs path, so the entry is addressable directly and the tag stops
   // mattering to the open path at all.
   const linked = app({ tag: "linked", name: "notes", path: "/elsewhere/notes",
     entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
-  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes");
+  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes/index.html");
 });
 
 // -------------------------------------------------------------- the new tab
@@ -119,11 +135,18 @@ test("a linked app opens its folder like any other app", () => {
 test("href points at the same target a left click opens", () => {
   // The whole point of building both from openTargetFor: a new tab and an
   // in-app click cannot land in different places. Every branch is an explorer
-  // URL now — the folder, or the single non-page file.
-  expect(hrefFor(app())).toBe("/explorer/view/w/local/demo");
+  // URL — the entry page, the single non-page file, or the entry-less folder.
+  expect(hrefFor(app())).toBe("/explorer/view/w/local/demo/index.html");
   expect(hrefFor(app({ entry: "/w/local/demo/t.csv", entry_html: null }))).toBe(
     "/explorer/view/w/local/demo/t.csv",
   );
+  expect(hrefFor(app({ entry: null, entry_html: null }))).toBe("/explorer/view/w/local/demo");
+  // Lockstep stated as the invariant, not just as three matching literals: a
+  // future branch added to openTargetFor is covered by this line.
+  for (const a of [app(), app({ entry: "/w/local/demo/t.csv", entry_html: null }),
+                   app({ entry: null, entry_html: null })]) {
+    expect(hrefFor(a).endsWith(encodeURI(openTargetFor(a).path))).toBe(true);
+  }
 });
 
 test("href encodes a path the URL codec would otherwise break on", () => {
@@ -137,9 +160,12 @@ test("href encodes a path the URL codec would otherwise break on", () => {
   );
   // The tag/name identity never reaches the URL any more — only the path does,
   // so an app whose tag and name are hostile is encoded by the same one codec.
-  expect(hrefFor(app({ tag: "my tag", name: "app#2", path: "/w/my tag/app#2" }))).toBe(
-    "/explorer/view/w/my%20tag/app%232",
-  );
+  // The ENTRY is the path now (D269), and it is a hostile name of its own: the
+  // codec has to survive both halves, not just the folder.
+  expect(hrefFor(app({
+    tag: "my tag", name: "app#2", path: "/w/my tag/app#2",
+    entry: "/w/my tag/app#2/my page.html", entry_html: "/w/my tag/app#2/my page.html",
+  }))).toBe("/explorer/view/w/my%20tag/app%232/my%20page.html");
 });
 
 test("the browser keeps every gesture that means 'not this tab'", () => {

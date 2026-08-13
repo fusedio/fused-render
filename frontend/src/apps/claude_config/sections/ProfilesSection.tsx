@@ -1,6 +1,8 @@
 // Profiles section: a profile is a git branch over the Claude config dir, so
 // creating one forks, switching one checks out, and exporting one archives the
-// branch's tracked files.
+// branch's tracked files. Which is also why it has no tab of its own — it is a
+// block of the History page (sections/HistorySection.tsx), composed rather than
+// copied, so this file stays the single owner of the switch/import flow.
 //
 // Two invariants shape the whole section:
 //
@@ -11,7 +13,7 @@
 //   * A successful switch/import reloads the page. Every other section has
 //     already read the config that just got swapped underneath it, and a
 //     targeted refresh of ten sections is a worse contract than one reload.
-import { useCallback, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -22,7 +24,11 @@ import {
   CardActions,
   CardSub,
   CardTitle,
+  DisclosureButton,
+  ListRow,
   Pill,
+  SKELETON_ROWS,
+  SectionToolbar,
   fileToB64,
   guard,
   toastErr,
@@ -198,6 +204,11 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
   const { node: modal, ask } = useChangePreview();
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
+  // Which add form is open, if any — one at a time, because they are two ways
+  // to do the same thing and having both open says neither is the way.
+  const [form, setForm] = useState<"new" | "import" | null>(null);
+  const newId = useId();
+  const importId = useId();
   // The staged .zip: held between "inspect" and the picker's decision, so the
   // bytes are read from disk once.
   const [staged, setStaged] = useState<{ b64: string; entries: ZipEntry[] } | null>(null);
@@ -238,6 +249,11 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       const message = await askCommitFirst(res, "switch", `Save before switching to ${target}`);
       if (!message) return false;
       res = await guard(cc.profiles.switch(target, message));
+      // Report the change BEFORE branching on success: the retry's whole job is
+      // to commit first, so the drift may well be gone even when the switch
+      // that followed it failed. Reporting only on success left the History
+      // card above still offering to commit changes that no longer exist.
+      onChanged();
       if (!res) return false;
     }
     if (!res.ok) {
@@ -267,6 +283,7 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       const switched = await switchInto(name);
       if (!switched) {
         setNewName("");
+        setForm(null);
         onChanged();
         reload();
       }
@@ -298,6 +315,9 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
       const message = await askCommitFirst(res, "import", `Save before importing into ${branch}`);
       if (!message) return;
       res = await guard(cc.profiles.import(b64, branch, paths, message));
+      // As in switchInto: the retry commits first, so drift may be gone
+      // regardless of what the import itself did.
+      onChanged();
       if (!res) return;
     }
     if (!res.ok) {
@@ -358,71 +378,110 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
           onImport={runImport}
         />
       )}
-      <Card>
-        <CardTitle>New profile</CardTitle>
-        <CardSub>
-          Forks the current profile (<span className="cc-mono">{data?.current ?? "…"}</span>) and
-          switches into it.
-        </CardSub>
-        <CardActions>
-          <input
-            className="field-control"
-            aria-label="New profile name"
-            placeholder="e.g. work, experiment"
-            value={newName}
-            disabled={busy}
-            onChange={(e) => setNewName(e.target.value)}
-          />
-          <button type="button" className="btn btn-primary" disabled={busy} onClick={create}>
-            Create &amp; switch
-          </button>
-        </CardActions>
-      </Card>
-      <Card>
-        <CardTitle>Import profile</CardTitle>
-        <CardSub>
-          Pick files/folders from an exported <span className="cc-mono">.zip</span> to overlay onto a
-          new profile. Your current profile is untouched.
-        </CardSub>
-        <CardActions>
-          <input
-            className="field-control"
-            type="file"
-            accept=".zip"
-            aria-label="Profile archive"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              // Cleared so re-picking the same file fires change again.
-              e.target.value = "";
-              if (file) void pickZip(file);
-            }}
-          />
-        </CardActions>
-      </Card>
+      <SectionToolbar
+        summary={
+          data ? `${data.profiles.length} profile(s) · on ${data.current}` : "…"
+        }
+        onRefresh={reload}
+      >
+        {/* Two disclosures behind two buttons, one open at a time — these were
+            two permanently-expanded cards, which put ~200px of forms above the
+            profile list on a page that already opens with a drift card. */}
+        <DisclosureButton
+          open={form === "new"}
+          controls={newId}
+          label="New"
+          onToggle={() => setForm((f) => (f === "new" ? null : "new"))}
+        />
+        <DisclosureButton
+          open={form === "import"}
+          controls={importId}
+          label="Import"
+          onToggle={() => setForm((f) => (f === "import" ? null : "import"))}
+        />
+      </SectionToolbar>
+      {form === "new" && (
+        <div id={newId}>
+          <Card>
+            <CardTitle>New profile</CardTitle>
+            <CardSub>
+              Forks the current profile (<span className="cc-mono">{data?.current ?? "…"}</span>)
+              and switches into it.
+            </CardSub>
+            <CardActions>
+              <input
+                className="field-control"
+                aria-label="New profile name"
+                placeholder="e.g. work, experiment"
+                value={newName}
+                disabled={busy}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={create}>
+                Create &amp; switch
+              </button>
+            </CardActions>
+          </Card>
+        </div>
+      )}
+      {form === "import" && (
+        <div id={importId}>
+          <Card>
+            <CardTitle>Import profile</CardTitle>
+            <CardSub>
+              Pick files/folders from an exported <span className="cc-mono">.zip</span> to overlay
+              onto a new profile. Your current profile is untouched.
+            </CardSub>
+            <CardActions>
+              <input
+                className="field-control"
+                type="file"
+                accept=".zip"
+                aria-label="Profile archive"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  // Cleared so re-picking the same file fires change again.
+                  e.target.value = "";
+                  if (file) void pickZip(file);
+                }}
+              />
+            </CardActions>
+          </Card>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!data && !error && <SkeletonLines rows={3} label="Loading profiles" />}
+      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading profiles" />}
+      {/* No chevron: a profile is a branch name and two flags, all of which fit
+          on the line — the interesting detail about a profile is the diff, and
+          that already has a home in the switch preview. */}
       {data?.profiles.map((p) => (
-        <Card key={p.name}>
-          <CardTitle>
-            {p.name} {p.current && <Pill tone="on">current</Pill>}{" "}
-            {p.isDefault && <Pill>default</Pill>}
-          </CardTitle>
-          <CardActions>
-            {!p.current && (
-              <button type="button" className="btn" onClick={() => switchInto(p.name)}>
-                Switch
+        <ListRow
+          key={p.name}
+          name={p.name}
+          pills={
+            <>
+              {p.current && <Pill tone="on">current</Pill>}
+              {p.isDefault && <Pill>default</Pill>}
+            </>
+          }
+          actions={
+            <>
+              {!p.current && (
+                <button type="button" className="btn" onClick={() => switchInto(p.name)}>
+                  Switch
+                </button>
+              )}
+              <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
+                Export .zip
               </button>
-            )}
-            <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
-              Export .zip
-            </button>
-            {!p.current && !p.isDefault && (
-              <button type="button" className="btn btn-danger" onClick={() => remove(p.name)}>
-                Delete
-              </button>
-            )}
-          </CardActions>
-        </Card>
+              {!p.current && !p.isDefault && (
+                <button type="button" className="btn btn-danger" onClick={() => remove(p.name)}>
+                  Delete
+                </button>
+              )}
+            </>
+          }
+        />
       ))}
     </>
   );
