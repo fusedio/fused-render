@@ -59,11 +59,29 @@
    pointer. The scroll lives on .cc-tablist, not on the bar, so the History
    button at the far edge stays put while the tabs slide under it. */
 
+/* The height is not a look, it is an ALIGNMENT: this bar's bottom border and
+   the global sidebar's brand-row border are two halves of one line across the
+   window, and at 44px against 49px they read as two rules a few pixels apart.
+ *
+ * 49px is .sidebar-brand's box (styles/sidebar.css): 14px padding top and
+ * bottom around a 20px logo, plus its 1px bottom border — content-box, so the
+ * border is on top of the 48. This file tracks that number; if the brand row's
+ * padding or logo size changes, this has to follow.
+ *
+ * Deliberately NOT var(--topbar-h) (48px, styles/explorer.css). That token is
+ * the line #breadcrumb stands on, and the shell's two top bars do not agree
+ * with each other today — measured live, .sidebar-brand is 49px and #breadcrumb
+ * is 48px, so on the Explorer page they are already a pixel apart. The bar this
+ * one has to meet is the sidebar's, so it matches the sidebar's, and raising
+ * the shared token to paper over it is a shell decision this page doesn't get
+ * to make. box-sizing so the border is inside the 49 rather than a 50th pixel. */
 .cc-tabbar {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
   gap: 8px;
+  height: 49px;
+  box-sizing: border-box;
   padding: 8px 12px;
   background: var(--bg-alt);
   border-bottom: 1px solid var(--border);
