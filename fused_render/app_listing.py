@@ -173,6 +173,18 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
     }
 
 
+# Deepest level below the workspace root the walk looks at. Level 3 is where the
+# `index.html` requirement applies and where descent stops outright.
+MAX_APP_DEPTH = 3
+
+# Vendor/build directory names that are never an app and never walked into.
+# Taken from the index's shared floor (`index/ignore.SHARED_IGNORE_DIRS`, which
+# `server/walk.WALK_IGNORE_DIRS` and `junk_path` are also built from) rather than
+# spelled out again here: "which directories are machine-managed noise" already
+# has one answer in this codebase and a second copy would drift from it.
+PRUNE_DIR_NAMES = frozenset(SHARED_IGNORE_DIRS)
+
+
 def workspace_apps(root: str) -> list[dict]:
     """Every app in the workspace: a BOUNDED recursive walk, depths 1-3.
 
@@ -220,18 +232,6 @@ def workspace_apps(root: str) -> list[dict]:
     apps: list[dict] = []
     _walk_apps(root, root, 1, apps)
     return apps
-
-
-# Deepest level below the workspace root the walk looks at. Level 3 is where the
-# `index.html` requirement applies and where descent stops outright.
-MAX_APP_DEPTH = 3
-
-# Vendor/build directory names that are never an app and never walked into.
-# Taken from the index's shared floor (`index/ignore.SHARED_IGNORE_DIRS`, which
-# `server/walk.WALK_IGNORE_DIRS` and `junk_path` are also built from) rather than
-# spelled out again here: "which directories are machine-managed noise" already
-# has one answer in this codebase and a second copy would drift from it.
-PRUNE_DIR_NAMES = frozenset(SHARED_IGNORE_DIRS)
 
 
 def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict]) -> None:
