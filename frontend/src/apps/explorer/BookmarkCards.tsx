@@ -12,7 +12,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
 import { listDir, prefetchListDir, rawUrl, statPath } from "@platform/lib/api";
-import type { FsEntry } from "@platform/lib/api";
+import type { FsEntry, ListResult } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { folderOpenTarget } from "@apps/explorer/lib/app-entry";
 import type { FolderOpenTarget } from "@apps/explorer/lib/app-entry";
@@ -428,10 +428,45 @@ export function RecentPreviewCard({
 }
 
 // Where a folder card GOES: the folder's entry page once its listing lands, the
-// folder itself until then and whenever there is no page. The whole rule —
-// including why the unresolved and the unreadable cases answer the folder, and
-// why an href that lags is honest where an href that guesses is not — lives on
-// `folderOpenTarget`; this hook is only the fetch it deliberately does not own.
+// folder itself until then and whenever there is no page. Which page a folder IS
+// belongs to `folderOpenTarget` — including why the unresolved and the
+// unreadable cases answer the folder, and why an href that lags is honest where
+// an href that guesses is not. What is HERE is the card's own question, asked
+// before that one: may this card act on the answer at all?
+//
+// Both guards are deliberately on THIS side of the line. `lib/app-entry.ts` is
+// the byte-for-byte twin of `templates/shared/app_entry.py::entry_html` and is
+// pinned as one from both languages; teaching it about gitignore or about
+// pagination would break that parity to fix a problem neither the chat pane nor
+// the preview pane has.
+//
+//   * A GITIGNORED page is not a destination. `ignored` is a fact about the
+//     folder's repo, not about which page it is, and the server populates it on
+//     exactly the listings the Repos tab shows. The card never DRAWS an ignored
+//     entry (teaserEntries, above), so a repo whose only top-level page is a
+//     generated `coverage.html` would open into a build artifact the card gave
+//     no sign of — and its own listing would stop being reachable from the
+//     homepage at all. Filtered out BEFORE the rule runs rather than vetoing its
+//     answer after: `coverage.html` sorts ahead of `page.html`, and a veto would
+//     drop that folder to its listing though the card drew a perfectly good page.
+//   * A TRUNCATED listing resolves nothing. We hold one page of the directory
+//     where `entry_html` reads all of it, so a folder that truncates before
+//     `index.html` in name order would have this card pick a different page from
+//     every other surface — the one-folder-two-answers divergence the shared
+//     module exists to prevent, deciding a navigation rather than a preview.
+//     The folder is the safe answer and is what the card did before.
+//
+// Both flags are OPTIONAL on the wire (a folder outside a repo, an older
+// server), and absent must mean "real" and "complete" respectively — which is
+// what a plain truthiness test gives.
+export function folderCardTarget(dir: string, listing: ListResult | null): FolderOpenTarget {
+  if (listing === null || listing.truncated) return { path: dir, isDir: true };
+  return folderOpenTarget(
+    dir,
+    listing.entries.filter((e) => !e.ignored),
+  );
+}
+
 //
 // The listing is the SAME one FolderStack fetches for the card's picture,
 // shared through the prefetch cache (api.prefetchListDir), so knowing where the
@@ -442,14 +477,15 @@ export function RecentPreviewCard({
 // an rclone/NFS target a second listing each is the difference between a page
 // and a stalled mount.
 function useFolderTarget(path: string): FolderOpenTarget {
-  const [entries, setEntries] = useState<FsEntry[] | null>(null);
+  // The whole ListResult, not just its entries: `truncated` is half the answer.
+  const [listing, setListing] = useState<ListResult | null>(null);
   useEffect(() => {
     // Reset first: a card re-pointed at another folder must not offer the
     // previous folder's page while the new listing is in flight.
-    setEntries(null);
+    setListing(null);
     let alive = true;
     prefetchListDir(path).then(
-      (res) => alive && setEntries(res.entries),
+      (res) => alive && setListing(res),
       // An unreadable folder is "no entry page", never an error of its own —
       // the card stays on the folder, which is exactly where it went before,
       // and FolderStack renders the visible half of that failure (its own
@@ -461,7 +497,7 @@ function useFolderTarget(path: string): FolderOpenTarget {
       alive = false;
     };
   }, [path]);
-  return folderOpenTarget(path, entries);
+  return folderCardTarget(path, listing);
 }
 
 // A plain folder, in the same card shell as a bookmark — header (icon + name
