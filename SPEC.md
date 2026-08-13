@@ -6133,3 +6133,43 @@ world from one the user typed.
   the child before exec — plus the same poll that gets a run into its sidecar.
   Extracted rather than duplicated, because that reasoning is the kind that gets
   paraphrased into something false on the second telling.
+- **SCH-10** **Two surfaces, because nobody is looking when it happens.** This is
+  the one kind of work in the app with no audience at the moment it runs, so
+  "what did it do" cannot be left to a page the user has to think to visit.
+  - **SCH-10a** **A job row per send** (§36's registry, id `sys:schedule:<entry>`,
+    kind `task`). Opened `running` when the send succeeds and held for the whole
+    **turn**, not just the spawn — the spawn takes a moment, the turn can take
+    minutes, and the minutes are what is worth seeing. Its `detail` carries the
+    turn's phase and token count, and — the one worth having — reports **waiting
+    for permission** when `_poll` shows a parked card, because from the outside a
+    turn nobody has approved looks exactly like a slow one, and for an unattended
+    session that is the likeliest way to be stuck. `cancellable` is honest here in
+    a way it is not for most reporters: this process owns the run, so the
+    manager's ✕ calls `agent._cancel` and is an ACTION (`jobs.OWNER_SERVER`).
+  - **SCH-10b** **An event log the shell toasts** (`schedule.event_log()`,
+    `GET /api/schedule/events`) — append-only, monotonically ided, bounded. A
+    separate endpoint from the listing for the reason the mount-health log is
+    separate: this poll runs app-wide in every shell forever and must not carry
+    the page's payload. `useScheduleEvents` mirrors `useMountHealth` exactly,
+    including the silent first-successful-poll baseline (opening the app must not
+    replay last week's outcomes). Kinds: `done` → info, auto-dismissing; `failed`
+    and `missed` → persistent errors with an action onto `/scheduled`. `missed` is
+    worded differently from `failed` on purpose — nothing went wrong, the app was
+    not running — but it still needs a person, because the user asked for
+    something that did not happen. The rules are a pure module
+    (`schedule-toast.ts`, bun-tested) with the polling left in the hook, the same
+    split `server-status.ts` uses.
+  - **SCH-10c** **`state` and `turn` are two facts, not one.** `state` says
+    whether the message was SENT; `turn` says how the session it started then went
+    (`""` until it ends, else `ok`/`failed`/`cancelled`). They fail
+    independently — a message can send perfectly and its turn still die on the
+    first tool call — and reporting a dead turn as a send failure would send the
+    user looking in the wrong place. The page labels a sent row by its turn
+    ("Running…", "Ran", "Turn failed") and counts a still-running turn as live.
+  - **SCH-10d** **The watcher wraps the recorder, it does not replace it.**
+    `record_session_when_ready` gained an optional `on_tick` observer (called
+    before its `done` check, since that final tick is where the outcome is), whose
+    exceptions are swallowed: the sidecar write and the commit must happen whether
+    or not anything is watching, so an observer is never allowed to abandon a run.
+    Every report is best-effort — a registry that refuses a field must not cost a
+    message its send.

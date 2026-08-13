@@ -52,6 +52,13 @@ this one is by definition unattended. The mode is therefore per-entry and
 recorded with the entry, so "auto" is a choice made per message rather than a
 property of scheduling.
 
+**Nobody is looking when any of this happens**, which is the premise of the
+feature and therefore the premise of its reporting: a row on a page the user has
+to think to visit is not how they should learn that last night's message failed.
+Two surfaces close that, and the block above `_JOB_PREFIX` is where they are
+explained — a live job row (what is it doing, including "parked on a permission
+card") and an event log the shell toasts (what happened while I was away).
+
 No import of anything under `fused_render.server` — the router imports this
 module; keep it acyclic.
 """
@@ -118,6 +125,42 @@ _SCHEDULED_PERMISSION_MODE = "auto"
 # scheduled turn more auto-approval than the template offers.
 PERMISSION_MODES = ("prompt", "auto", "plan")
 
+# ------------------------------------------------------------------ reporting
+#
+# A scheduled message is the one kind of work in this app that NOBODY is looking
+# at when it happens — that is its whole premise — so the two surfaces below are
+# not decoration, they are the only way a user finds out what it did.
+#
+#   the JOB REGISTRY (jobs.py, D244) answers "what is it doing right now": one
+#     `task` row per send, live in the shell's download manager from anywhere in
+#     the app, carrying the turn's phase and — the one worth having — whether it
+#     is parked on a permission card nobody has answered.
+#   the EVENT LOG below answers "what happened while I was away": an
+#     append-only, monotonically-ided log the shell polls and turns into toasts,
+#     exactly the shape the mount-health monitor established.
+#
+# Both are best-effort and neither is authoritative: the store is the record.
+
+# `sys:` marks a job this process owns, which is what lets the manager's ✕ be a
+# real cancel rather than a request (jobs.OWNER_SERVER). One id per entry, so a
+# re-report after a server restart re-attaches to the same row.
+_JOB_PREFIX = "sys:schedule:"
+
+# Bounded like the mount-health log: this is a running narration for the UI to
+# toast, not history. The store holds every entry's outcome durably.
+_EVENTS_MAX = 100
+
+# What the shell narrates. `done` is an info toast (your message ran), the other
+# two are errors that need a person — which is the gap this log exists to close.
+EVENT_DONE = "done"
+EVENT_FAILED = "failed"
+EVENT_MISSED = "missed"
+EVENT_KINDS = (EVENT_DONE, EVENT_FAILED, EVENT_MISSED)
+
+_events: list[dict] = []
+_event_seq = 0
+_events_lock = threading.Lock()
+
 # Serialises the read-modify-write of the store. `storage.write_json` is atomic
 # per write (temp + os.replace) but the store is read-modify-written from the
 # loop thread, the request thread, and the recording threads, and last-write-wins
@@ -146,6 +189,65 @@ def max_late_seconds() -> int:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _emit(kind: str, entry: dict, detail: str = "") -> None:
+    """Append one event for the shell to narrate.
+
+    Ordering is by the monotonic `id`, not by `ts` — a poller tracks a
+    high-water mark against it, and wall-clock is only there to be shown.
+    Called OUTSIDE `_lock` by every caller: it takes its own (short, in-memory)
+    lock, and keeping the two un-nested means neither can ever wait on the
+    other."""
+    global _event_seq
+    with _events_lock:
+        _event_seq += 1
+        _events.append({
+            "id": _event_seq,
+            "kind": kind,
+            "entry_id": str(entry.get("id") or ""),
+            "target": str(entry.get("target") or ""),
+            # The prompt, not a summary: a toast saying "a scheduled message
+            # failed" sends the user hunting, and the first words of what they
+            # asked for are what identifies it to them.
+            "message": str(entry.get("message") or "")[:200],
+            "detail": detail,
+            "ts": time.time(),
+        })
+        del _events[:-_EVENTS_MAX]
+
+
+def event_log() -> list[dict]:
+    """Every event still in the ring, oldest first."""
+    with _events_lock:
+        return list(_events)
+
+
+def _job_id(entry_id: str) -> str:
+    return _JOB_PREFIX + entry_id
+
+
+def _report(entry_id: str, **fields) -> dict | None:
+    """One progress tick against this entry's job row; returns the record.
+
+    Best-effort, like every reporter in this app: a registry that refuses a
+    field must not cost a scheduled message its send. The RETURN is load-bearing
+    though — it is how the watcher learns the manager's ✕ was pressed, so a
+    plain `_report(id)` with no fields is a legitimate "read it back" call."""
+    try:
+        from fused_render import jobs
+
+        return jobs.upsert({"id": _job_id(entry_id), **fields}, server=True)
+    except Exception:  # noqa: BLE001 — reporting is never authoritative
+        logger.debug("could not report scheduled-message job state", exc_info=True)
+        return None
+
+
+def _job_title(entry: dict) -> str:
+    """The row's label: the prompt's first line, which is what the user typed
+    and therefore what they will recognise in a column of unrelated work."""
+    first = str(entry.get("message") or "").strip().splitlines()
+    return (first[0] if first else "Scheduled message")[:100]
 
 
 def parse_due(value) -> datetime:
@@ -268,6 +370,13 @@ def create(target: str, message: str, due, session_id: str = "",
         "fired": "",
         "run_id": "",
         "error": "",
+        # `state` says whether the message was SENT; `turn` says how the session
+        # it started then went — "" until the turn ends, else ok/failed/cancelled.
+        # Two fields because they fail independently and the difference matters:
+        # a message can send perfectly and its turn still die on the first tool
+        # call, and reporting that as a send failure would send the user looking
+        # in the wrong place.
+        "turn": "",
     }
     with _lock:
         entries = _read()
@@ -328,9 +437,13 @@ def _claim_due(now: datetime) -> list[dict]:
     `missed` verdicts.
 
     Returned entries are copies already written as `sending`; the caller spawns
-    for each and reports back through `_update`."""
+    for each and reports back through `_update`.
+
+    The events this pass decides on are collected and emitted AFTER the lock
+    (`_emit` takes its own), so the two locks are never nested."""
     cutoff = now - timedelta(seconds=max_late_seconds())
     claimed: list[dict] = []
+    announce: list[tuple[str, dict, str]] = []
     with _lock:
         entries = _read()
         changed = False
@@ -348,6 +461,7 @@ def _claim_due(now: datetime) -> list[dict]:
                     entry["state"] = ERROR
                     entry["error"] = ("interrupted: the app stopped between "
                                       "claiming this message and sending it")
+                    announce.append((EVENT_FAILED, dict(entry), entry["error"]))
                     changed = True
                 continue
             if state != PENDING:
@@ -357,6 +471,7 @@ def _claim_due(now: datetime) -> list[dict]:
             except ValueError:
                 entry["state"] = ERROR
                 entry["error"] = f"unreadable due time: {entry.get('due')!r}"
+                announce.append((EVENT_FAILED, dict(entry), entry["error"]))
                 changed = True
                 continue
             if when > now:
@@ -366,6 +481,7 @@ def _claim_due(now: datetime) -> list[dict]:
                 entry["state"] = MISSED
                 entry["error"] = ("not sent: the app was not running between "
                                  "this time and the catch-up bound")
+                announce.append((EVENT_MISSED, dict(entry), entry["error"]))
                 continue
             entry["state"] = SENDING
             entry["fired"] = now.isoformat()
@@ -373,9 +489,19 @@ def _claim_due(now: datetime) -> list[dict]:
         due_times = _pending_due(entries) if changed else None
         if changed:
             _write(entries)
+    for kind, entry, detail in announce:
+        _emit(kind, entry, detail)
     if due_times is not None:
         _sync_wake(due_times)
     return claimed
+
+
+def _fail(entry: dict, reason: str) -> None:
+    """One send that did not happen: on the entry, on its job row, in the log."""
+    _update(entry["id"], state=ERROR, error=reason)
+    _report(entry["id"], title=_job_title(entry), kind="task", detail=entry["target"],
+            state="error", message=reason)
+    _emit(EVENT_FAILED, entry, reason)
 
 
 def _send(entry: dict) -> None:
@@ -390,24 +516,85 @@ def _send(entry: dict) -> None:
             entry["target"], entry["message"], entry.get("permission_mode")
             or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "")
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
-        _update(entry["id"], state=ERROR, error=f"failed to start session: {exc}")
+        _fail(entry, f"failed to start session: {exc}")
         return
     run_id = res.get("run_id")
     if res.get("error") or not run_id:
-        _update(entry["id"], state=ERROR,
-                error=str(res.get("error") or "failed to start session"))
+        _fail(entry, str(res.get("error") or "failed to start session"))
         return
     _update(entry["id"], state=SENT, run_id=str(run_id), error="")
-    # Same reason the apps API does this: nothing else will poll the run, so
-    # without this thread the session never reaches its sidecar and the finished
-    # turn is never committed. Bookkeeping — it cannot fail the send.
+    # The row opens `running` and stays that way for the whole TURN, not just the
+    # spawn — the spawn takes a moment and the turn can take minutes, and the
+    # minutes are the part worth being able to see. `cancellable` is honest here
+    # in a way it is not for most reporters: this process can actually stop the
+    # run (agent._cancel), so the manager's ✕ is an action.
+    _report(entry["id"], title=_job_title(entry), kind="task",
+            detail=entry["target"], state="running", cancellable=True)
+    # Nothing else will poll the run, so without this thread the session never
+    # reaches its sidecar and the finished turn is never committed — and, since
+    # this feature added an observer, nobody would ever learn how the turn went.
     try:
         threading.Thread(
-            target=claude_spawn.record_session_when_ready,
-            args=(claude_spawn.load_agent(), str(run_id)),
+            target=_watch_turn, args=(dict(entry), str(run_id)),
             daemon=True, name="fused-schedule-session-record").start()
     except Exception:  # noqa: BLE001
         logger.debug("could not start the sidecar-recording thread", exc_info=True)
+
+
+def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
+    """One observation of a live turn. False stops the watch.
+
+    Does three things, in the order they matter: honour a cancel the user asked
+    for, record the outcome once the turn ends, and otherwise say what the run is
+    DOING. The last one is why `permissions` is checked first — a turn parked on
+    a card nobody has answered looks identical to a slow one from the outside,
+    and for an unattended session that is the single most likely way to be
+    stuck."""
+    entry_id = entry["id"]
+    if data.get("done"):
+        reason = str(data.get("error") or "")
+        if reason:
+            _update(entry_id, turn="failed", error=reason)
+            _report(entry_id, state="error", message=reason)
+            _emit(EVENT_FAILED, entry, reason)
+        else:
+            _update(entry_id, turn="ok")
+            _report(entry_id, state="done", detail="finished")
+            _emit(EVENT_DONE, entry)
+        return False
+
+    parked = data.get("permissions") or []
+    detail = "waiting for permission" if parked else str(data.get("phase") or "working")
+    tokens = data.get("tokens") or 0
+    if tokens and not parked:
+        detail = f"{detail} · {int(tokens)} tokens"
+    # One call: reporting the tick is also how the cancel flag is read back.
+    record = _report(entry_id, detail=detail)
+    if record and record.get("cancel_requested"):
+        try:
+            agent._cancel(run_id)
+        except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
+            logger.debug("could not cancel scheduled run %s", run_id, exc_info=True)
+        _update(entry_id, turn="cancelled")
+        _report(entry_id, state="cancelled")
+        return False
+    return True
+
+
+def _watch_turn(entry: dict, run_id: str) -> None:
+    """Thread body: follow one sent message's turn to its end.
+
+    Wraps `record_session_when_ready` rather than replacing it — that function
+    owns the sidecar write and the commit, which must happen whether or not
+    anything is watching. This only adds the observer."""
+    try:
+        agent = claude_spawn.load_agent()
+    except Exception:  # noqa: BLE001
+        logger.debug("could not load the agent backend to watch a run", exc_info=True)
+        return
+    claude_spawn.record_session_when_ready(
+        agent, run_id,
+        on_tick=lambda data: _turn_tick(entry, run_id, agent, data))
 
 
 def tick(now: datetime | None = None) -> list[dict]:

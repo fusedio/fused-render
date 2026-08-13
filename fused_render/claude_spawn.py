@@ -56,7 +56,7 @@ def load_agent():
     return mod
 
 
-def record_session_when_ready(agent, run_id: str) -> None:
+def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
     """Poll the detached run until it finishes.
 
     `agent._poll` is what writes the sidecar (the first poll that sees the
@@ -69,12 +69,26 @@ def record_session_when_ready(agent, run_id: str) -> None:
 
     Bookkeeping only. Every failure here is swallowed: a run whose sidecar entry
     never lands still did its work, and this thread must never be the reason a
-    request or a scheduler tick fails."""
+    request or a scheduler tick fails.
+
+    `on_tick(data)` is an OPTIONAL observer, called with each poll's result —
+    including the final one, which is why it runs BEFORE the `done` check
+    (scheduled messages learn the turn's outcome from exactly that tick). Return
+    False from it to stop polling early; a caller with nothing to observe passes
+    nothing and gets the loop this always was. Its exceptions are swallowed for
+    the same reason the poll's are: an observer is not allowed to abandon a run
+    whose sidecar has not been written yet."""
     for _ in range(_RECORD_POLL_TICKS):
         try:
             data = agent._poll(run_id)
         except Exception:
             return  # bookkeeping only; never let it matter
+        if on_tick is not None:
+            try:
+                if on_tick(data) is False:
+                    return
+            except Exception:
+                pass
         if data.get("done"):
             return
         time.sleep(_RECORD_POLL_INTERVAL)

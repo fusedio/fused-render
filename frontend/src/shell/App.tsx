@@ -21,6 +21,7 @@ import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
 import { useNavEpoch, useDocumentTitle, useRefreshOnReturn, useLearnMountReady, useSessionsMountReady } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
+import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
 import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
@@ -443,6 +444,11 @@ export default function App({ config }: { config: Config }) {
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
   useMountHealth();
+
+  // The same shape, for scheduled messages: nobody is looking at /scheduled when
+  // one fires, so "it ran" / "it failed" / "it was missed" has to arrive on its
+  // own rather than wait to be discovered.
+  useScheduleEvents();
 
   // Keep <html data-theme> in step with the appearance preference for the
   // page's lifetime (SPEC §30): another window's override, and — while the

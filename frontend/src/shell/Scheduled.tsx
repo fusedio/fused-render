@@ -84,8 +84,11 @@ function relativeDue(iso: string): string {
   return say(Math.round(s / 86400), "d");
 }
 
-// Still waiting on the loop, so still cancellable and still worth a countdown.
-const isLive = (e: ScheduledMessage) => e.state === "pending" || e.state === "sending";
+// Not finished with: waiting for its time, being sent, or sent with a turn still
+// running. The third case is why this is not just a `state` check — a sent
+// message whose session is still working is very much live.
+const isLive = (e: ScheduledMessage) =>
+  e.state === "pending" || e.state === "sending" || (e.state === "sent" && !e.turn);
 
 const STATE_LABELS: Record<ScheduledState, string> = {
   pending: "Scheduled",
@@ -95,6 +98,27 @@ const STATE_LABELS: Record<ScheduledState, string> = {
   error: "Failed",
   cancelled: "Cancelled",
 };
+
+// `sent` only means the SESSION STARTED. How the turn then went is a second fact,
+// and conflating them would report a dead turn as a clean send — so a sent row is
+// labelled by its turn once the turn has one.
+function stateLabel(entry: ScheduledMessage): string {
+  if (entry.state === "sent") {
+    if (entry.turn === "ok") return "Ran";
+    if (entry.turn === "failed") return "Turn failed";
+    if (entry.turn === "cancelled") return "Stopped";
+    return "Running…";
+  }
+  return STATE_LABELS[entry.state] ?? entry.state;
+}
+
+// Which CSS state class a row paints with. A failed turn reads as a failure even
+// though `state` is the cheerful half of the pair.
+function stateTone(entry: ScheduledMessage): string {
+  if (entry.state === "sent" && entry.turn === "failed") return "error";
+  if (entry.state === "sent" && !entry.turn) return "sending";
+  return entry.state;
+}
 
 function hoursText(seconds: number): string {
   const hours = Math.round(seconds / 3600);
@@ -133,8 +157,8 @@ function EntryRow({
   return (
     <div className="prefs-section">
       <div className="schedule-row-head">
-        <span className={`schedule-state schedule-state--${entry.state}`}>
-          {STATE_LABELS[entry.state] ?? entry.state}
+        <span className={`schedule-state schedule-state--${stateTone(entry)}`}>
+          {stateLabel(entry)}
         </span>
         {/* A waiting message is described by when it is DUE; one that has already
             acted, by when it actually went out — which is not the same instant
@@ -293,7 +317,7 @@ export default function Scheduled() {
 
       {state && (
         <section className="prefs-section">
-          <h2>Waiting to send</h2>
+          <h2>Scheduled &amp; running</h2>
           <p className="deploy-muted">
             {/* The limitation, stated where it is relevant rather than buried. The
                 bound is a server setting, so the number comes from the server. */}
@@ -301,6 +325,13 @@ export default function Scheduled() {
             closed at that moment, the message goes out the next time it starts, up to{" "}
             {hoursText(state.max_late_seconds)} late; after that it is marked missed rather
             than sent at a time you did not intend.
+          </p>
+          <p className="deploy-muted">
+            {/* Where the ✕ lives, said once. A running turn is a job row, not a
+                pending promise, so Cancel below is not the thing that stops it. */}
+            A message that has already gone out shows up as a running job at the foot of the
+            screen while its turn works — including when it is waiting on a permission
+            prompt — and can be stopped from there.
           </p>
           {live.length === 0 ? (
             <p className="deploy-muted">Nothing scheduled.</p>

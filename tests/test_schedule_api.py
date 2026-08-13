@@ -27,6 +27,15 @@ def no_real_wake(monkeypatch):
     monkeypatch.setattr(schedule_wake, "sync", lambda due: None)
 
 
+@pytest.fixture(autouse=True)
+def clean_event_log():
+    """The event log is process-global and in memory, so it would otherwise
+    carry one test's events into the next one's assertions."""
+    schedule._events.clear()
+    yield
+    schedule._events.clear()
+
+
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
@@ -133,6 +142,21 @@ def test_a_mount_backed_target_is_refused(client, target, monkeypatch):
 
 
 # ----------------------------------------------------------------- cancelling
+
+def test_the_event_log_is_its_own_light_endpoint(client, target):
+    """Separate from the listing for the reason mount-health's log is: the shell
+    polls this one app-wide, forever, and it must not carry the page's payload."""
+    schedule._emit(schedule.EVENT_MISSED,
+                   {"id": "e1", "target": str(target), "message": "stale"},
+                   "not sent")
+
+    res = client.get("/api/schedule/events")
+    assert res.status_code == 200
+    body = res.json()
+    assert list(body) == ["events"]  # the entries are NOT in here
+    assert body["events"][0]["kind"] == schedule.EVENT_MISSED
+    assert body["events"][0]["message"] == "stale"
+
 
 def test_cancelling_an_unknown_id_is_a_404(client):
     res = client.post("/api/schedule/cancel", headers=WRITE, json={"id": "nope"})

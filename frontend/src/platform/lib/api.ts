@@ -2257,6 +2257,11 @@ export interface ScheduledMessage {
   fired: string;
   run_id: string;
   error: string;
+  // `state` says whether the message was SENT; `turn` says how the session it
+  // started then went. Two fields because they fail independently: a message can
+  // send perfectly and its turn still die on the first tool call. "" until the
+  // turn ends (and on entries stored before this field existed).
+  turn?: "" | "ok" | "failed" | "cancelled";
 }
 
 export interface ScheduleResult {
@@ -2288,4 +2293,30 @@ export function scheduleMessage(body: {
 // a message that sent while the user was reaching for Cancel cannot be withdrawn.
 export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule/cancel", { id });
+}
+
+// The running narration of what scheduled messages DID — polled app-wide by
+// useScheduleEvents and turned into toasts. A separate endpoint from the listing
+// for the reason the mount-health log is separate: this poll runs forever in
+// every shell and must not carry the page's payload.
+//
+// Append-only with monotonically increasing ids, so a poller both dedups and
+// orders by tracking a high-water mark. Bounded server-side: it is a narration,
+// not history — the schedule store holds every outcome durably.
+export type ScheduleEventKind = "done" | "failed" | "missed";
+
+export interface ScheduleEvent {
+  id: number;
+  kind: ScheduleEventKind;
+  entry_id: string;
+  target: string;
+  // The prompt, not a summary: a toast saying "a scheduled message failed" sends
+  // the user hunting, and the first words of what they asked for identify it.
+  message: string;
+  detail: string;
+  ts: number;
+}
+
+export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
+  return getJson<{ events: ScheduleEvent[] }>("/api/schedule/events");
 }

@@ -40,6 +40,19 @@ def api_schedule():
             "permission_modes": list(schedule.PERMISSION_MODES)}
 
 
+@router.get("/api/schedule/events")
+def api_schedule_events():
+    """The running narration of what scheduled messages did — what the shell
+    polls to raise a toast for a message that ran, failed, or was missed while
+    the user was elsewhere.
+
+    A SEPARATE endpoint from the listing above, for the reason the mount-health
+    log is separate: this one is polled app-wide, by every shell, forever, and
+    making that poll carry the full entry list would be paying for the page's
+    payload on a request that only ever reads a handful of ids."""
+    return {"events": schedule.event_log()}
+
+
 @router.post("/api/schedule")
 def api_schedule_create(body: dict = Body(...),
                         x_fused: str | None = Header(default=None)):
