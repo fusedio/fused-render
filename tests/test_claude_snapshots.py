@@ -469,6 +469,15 @@ def test_a_run_is_named_by_the_chat_it_came_from_when_that_is_known(source):
     assert recent.index("snapNames.set") < recent.index("if (!sessions.length)")
     assert 'row.querySelector(".row-title").textContent = s.preview || s.id;' in source
 
+    # The two reads RACE, so naming cannot depend on which lands first. "Back to
+    # chats" fires loadRecent and mountSnapshots together, and on a page opened
+    # straight into a resumed chat (?session_id=) that path is the panel's FIRST
+    # read — so if the snapshots round trip wins, the headings paint unnamed and
+    # nothing else would ever come back to fix them.
+    assert "if (named && snapTimeline) renderSnapshots(snapTimeline);" in recent
+    # Guarded on a real change, so the repaint is not spent on every landing.
+    assert "snapNames.get(s.id) !== s.preview" in recent
+
     head = source[source.index("function snapRunHead(run)"):]
     head = head[: head.index("\n}")]
     # A miss is ordinary, not a bug: the store records every Claude Code session

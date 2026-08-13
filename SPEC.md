@@ -5101,7 +5101,13 @@ wanting "what has this file been through" wants §33.
     - **The heading is named from the SIDECAR**, using the same `preview` string
       the "Recent chats" rows above it are labelled with, so the two sections of
       the landing page agree about what a chat is called. `loadRecent()` fills that
-      map and always runs before `mountSnapshots()`. A MISS is ordinary, not a
+      map and **repaints the headings when it finishes**, because the two reads
+      RACE rather than being ordered: "Back to chats" fires both at once, and on a
+      page opened straight into a resumed chat (`?session_id=`) that is the panel's
+      first read, so whichever round trip lands first would otherwise decide
+      whether the headings have names — with nothing coming back to fix them.
+      Ordering the call sites would have worked today and broken on the next path
+      added onto the landing page. A MISS is ordinary, not a
       degraded state: this store records every Claude Code session that touched the
       file, terminal ones included, and those were never in this file's sidecar —
       so the fallback claims only "chat" and puts the session's short id beside the

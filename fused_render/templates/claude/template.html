@@ -5931,12 +5931,18 @@ document.getElementById("back").onclick = () => {
   chatEl.classList.add("home");
   document.getElementById("recentlist").innerHTML = "";
   document.getElementById("recent").style.display = "";
+  // Deliberately NOT awaited in sequence with the mount below: these are two
+  // independent reads and neither should hold the other's section blank. What
+  // makes that safe is that `loadRecent` repaints the run headings itself once it
+  // has names — see the tail of that function — rather than this call site being
+  // ordered so it happens to win.
   loadRecent();
   // The snapshots panel belongs to the LANDING page, so it is offered on every
   // path onto it — not just the boot with no session. A page opened straight
   // into a resumed chat (`?session_id=`) never ran the boot's landing branch, so
-  // without this the panel could never appear for the rest of that page's life.
-  // This only reveals the collapsed heading; nothing is read until it is opened.
+  // without this the panel could never appear for the rest of that page's life —
+  // and that is also the one path on which this mount is the FIRST snapshots read
+  // of the page's life rather than a cached repaint.
   mountSnapshots();
   focusBox(homebox);
 };
@@ -8605,7 +8611,22 @@ async function loadRecent() {
     // before the early return: a file can have chains in the store and no chats in
     // its sidecar, and the reverse — an empty session list is still an answer the
     // snapshots panel wants (it means "name nothing"), not a reason to skip.
-    for (const s of sessions) if (s.preview) snapNames.set(s.id, s.preview);
+    let named = false;
+    for (const s of sessions) {
+      if (s.preview && snapNames.get(s.id) !== s.preview) {
+        snapNames.set(s.id, s.preview);
+        named = true;
+      }
+    }
+    // REPAINT the headings, because this read RACES the snapshots read rather than
+    // preceding it. Boot awaits us first, but the "Back to chats" path fires both
+    // at once, and on a page opened straight into a resumed chat (`?session_id=`)
+    // that path is the panel's FIRST read — so whichever of the two round trips
+    // lands first decides whether the headings have names, and nothing else would
+    // ever come back to fix them. Guarded on `named` so the ordinary case (no new
+    // names, or no panel yet) costs nothing, and it repaints from the cached
+    // timeline rather than re-reading anything.
+    if (named && snapTimeline) renderSnapshots(snapTimeline);
     if (!sessions.length) {
       document.getElementById("recent").style.display = "none";
       return;
@@ -8816,8 +8837,12 @@ function snapRuns(versions) {
 // The name comes from the sidecar's session list — the very same `preview` string
 // the "Recent chats" rows above are labelled with (`addChatRow`), so a chain the
 // user had in this app is named by what they asked for in it, and the two sections
-// agree. `loadRecent()` fills that map and always runs before `mountSnapshots()`
-// on every path onto the landing page, but a MISS is ordinary rather than a bug:
+// agree. `loadRecent()` fills that map, and because it RACES this panel's read
+// rather than reliably preceding it, it repaints the headings when it finishes
+// (see there). This function therefore never waits for anything: it names what is
+// known at paint time and gets called again if that changes.
+//
+// A MISS is ordinary rather than a bug:
 // this store records every Claude Code session that touched the file, including
 // ones started from a terminal or from another file's page, and those were never
 // in this file's sidecar. So the fallback says only what is certain — that it was
