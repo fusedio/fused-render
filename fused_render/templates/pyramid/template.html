@@ -370,8 +370,17 @@ async function analyze(file) {
   R = res; sel = 0;
   cmp.inited = false;
   // as a template mode the shell owns the file (_file param) — writing our own
-  // file param there would fight it and pin the demo path into the URL
-  if (!fused.params.get("_file")) fused.params.set("file", file);
+  // file param there would fight it and pin the demo path into the URL.
+  //
+  // And when we DO own it, only when the URL does not already name this file
+  // (SPEC PT-15). analyze() is the boot path — the bottom of this file ends in
+  // `analyze(initial)` where `initial` is read straight back out of `file` — so
+  // the standalone case re-wrote the param it had just read, and under the
+  // runtime's first-change-push rule (PR-3) that costs a Back press for a state
+  // nobody navigated to. The Analyze button re-runs the same function against
+  // an unchanged path, which is the same write with a real user gesture in
+  // front of it, where the runtime's no-gesture guard cannot absorb it.
+  if (!fused.params.get("_file") && fused.params.get("file") !== file) fused.params.set("file", file);
   $("file-in").value = file;
   setStatus("");
   buildScene();

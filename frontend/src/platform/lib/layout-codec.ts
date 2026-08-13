@@ -268,6 +268,15 @@ export function attachEmbedUrlChange(
     return null;
   }
   win.addEventListener("fused:urlchange", handler);
+  // `popstate` too, and it is not redundant: `fused:urlchange` reports URL
+  // WRITES (the shell's wrapped push/replaceState, the runtime's set()), while
+  // Back/Forward inside a pane writes nothing at all — it traverses, which
+  // fires only `popstate`. Without this the pane's URL correctly drops the
+  // param the traversal undid, but onUrlChange never runs, so `_layout` is
+  // never re-encoded and the TOP-LEVEL url still carries the old segment
+  // query: reload or bookmark from there silently undoes the Back. (Forward
+  // happens to re-sync, which is what made this look intermittent.)
+  win.addEventListener("popstate", handler);
   return { win, handler };
 }
 
@@ -276,6 +285,7 @@ export function detachEmbedUrlChange(hook: UrlChangeHook | null): void {
   if (!hook) return;
   try {
     hook.win.removeEventListener("fused:urlchange", hook.handler);
+    hook.win.removeEventListener("popstate", hook.handler);
   } catch {
     /* window gone */
   }

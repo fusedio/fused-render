@@ -1022,12 +1022,31 @@ const param = (key) => fused.params.get(key) || "";
  * it leaves `key=` behind in the URL. So a no-op write is SKIPPED: clearing `ask`
  * after acting on it is the common case, and writing it when it is already clear
  * would stamp a bare `&ask=` onto every URL the view produces. It also keeps
- * `onChange` (hence `draw`) from firing for a write that changed nothing. */
-function setParams(patch) {
+ * `onChange` (hence `draw`) from firing for a write that changed nothing.
+ *
+ * `opts` is passed straight through to `fused.params.set` for the writes that
+ * must not spend the visit's one history push (PR-3/D268) — see `run`. */
+
+/* `msg` is the one key here that is NOT a step the user took. It is the commit
+ * DRAFT, written on every keystroke and on every AI chunk purely so the text
+ * survives a repaint or a refresh — so it always REPLACES (D271), never pushes.
+ * Two things go wrong if it does not. A keystroke IS a gesture, so the first
+ * character typed would spend the visit's push on an entry whose only content is
+ * half a word; and because `msg` is deliberately outside `structural()`, Back
+ * across that entry clears the param while `draw` short-circuits and leaves the
+ * typed text on screen — the URL and the textarea then disagree until something
+ * else forces a repaint. `panel`, `pages` and `ask` are real navigation and keep
+ * the push. */
+const DRAFT_KEYS = new Set(["msg"]);
+
+function setParams(patch, opts) {
   for (const [key, value] of Object.entries(patch)) {
     const next = value === null ? "" : String(value);
     if ((fused.params.get(key) || "") === next) continue;
-    fused.params.set(key, next);
+    /* Spread rather than substitute: a caller's `opts` and the draft rule must
+       compose, or a future `{default: …}` would be dropped in silence for
+       exactly the keys that most need it. */
+    fused.params.set(key, next, DRAFT_KEYS.has(key) ? { ...opts, history: "replace" } : opts);
   }
 }
 
@@ -2448,8 +2467,17 @@ async function run(key, args, then, context) {
   branchCache = null;
   /* The question has been answered — by acting on it. Leaving `ask` set would
      re-render the confirmation over the fresh lists, and (for a stash) leave a
-     stale index/sha pair sitting in the URL for the next click to act on. */
-  setParams({ ask: null });
+     stale index/sha pair sitting in the URL for the next click to act on.
+     REPLACE, because this write lands behind an `await` and the gesture gate is
+     read when it LANDS (PT-17): by then the click that started the op has opened
+     it, so an unqualified write here can take the visit's push. Usually this is
+     a no-op — the confirmation clears `ask` before calling `run` — but a page
+     REFRESHED with `?ask=…` still in the URL (which is the point of putting it
+     there) arrives with the question pending and the entry pristine, and any
+     other action clicked from that state clears it here for real. Pushing would
+     put the answered question one Back press away, sitting over a repository
+     that has since changed. */
+  setParams({ ask: null }, { history: "replace" });
   // A continuation that returns `true` owns the repaint (the staged-discard
   // chain, which repaints at the end of its SECOND call). Anything else falls
   // through to the repaint here — which the commit path needs, because clearing

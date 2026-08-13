@@ -163,9 +163,23 @@ def test_missing_linked_folder_drops_out_but_stays_registered(client, tmp_path):
     assert len(linked_apps.read_entries()) == 1
 
 
-def test_zero_or_many_htmls_lists_as_entryless_card(client, tmp_path):
-    d = _folder(tmp_path, "multi", htmls=("a.html", "b.html"))
-    _register(d)
+def test_a_linked_folder_resolves_its_entry_on_the_shared_rule(client, tmp_path):
+    """A linked app goes through the SAME `app_entry` as a workspace app, so
+    D269's rule reaches it too: several pages resolve to the first in name order,
+    and only a folder with none is an entry-less card.
+
+    This asserted `entry_html is None` for the many-pages case until D269 — the
+    registry never had a rule of its own, so widening the server's rule widened
+    this with it, which is the point of `app_dict` being shared.
+    """
+    many = _folder(tmp_path, "multi", htmls=("b.html", "a.html"))
+    _register(many)
+    (app,) = client.get("/api/apps").json()["apps"]
+    assert app["entry_html"] == str(many / "a.html")
+
+    linked_apps.write_entries([])
+    bare = _folder(tmp_path, "bare", htmls=())
+    _register(bare)
     (app,) = client.get("/api/apps").json()["apps"]
     assert app["entry_html"] is None
 

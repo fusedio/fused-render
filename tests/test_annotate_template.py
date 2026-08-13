@@ -150,7 +150,7 @@ def test_the_send_handler_stamps_and_saves_before_it_navigates(source):
     # be in that string yet. Writing it back verbatim would undo them and
     # re-send the same comments next time; the persisted list is re-asserted.
     assert 'params.set("comments", JSON.stringify(persisted));' in body
-    assert "return arr;" in _block(source, "function save(arr, deletedIds, keep) {",
+    assert "return arr;" in _block(source, "function save(arr, deletedIds, keep, opts) {",
                                    "return arr;")
 
 
@@ -299,7 +299,7 @@ def test_the_send_protects_its_own_payload_from_eviction(source):
 
 
 def test_the_budget_loop_uses_that_order_and_still_stops(source):
-    body = _block(source, "function save(arr, deletedIds, keep) {", "URL size limit")
+    body = _block(source, "function save(arr, deletedIds, keep, opts) {", "URL size limit")
     assert "const oldest = evictTarget(arr, keep);" in body
     assert "if (!oldest) break;" in body  # an all-open list must not spin forever
     assert "resolved/sent" in body  # the bar note names both tiers now

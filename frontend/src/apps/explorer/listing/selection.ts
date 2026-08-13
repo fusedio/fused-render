@@ -63,16 +63,21 @@ export function firstEntryPath(
 // What counts as a PAGE for the auto-selection below: a file whose extension
 // renders as itself in the preview (`_render`, PT-12).
 //
-// `.htm` counts, and that is the OPPOSITE call from `lib/folder-app.ts`, which
+// `.htm` counts, and that is the OPPOSITE call from `lib/app-entry.ts`, which
 // accepts `.html` only. The two questions are different and the divergence is
-// the answer to each rather than an inconsistency: folder-app decides whether a
-// folder IS AN APP, a claim the server also makes (`app_listing.app_entry`) and
-// which two surfaces must agree on to the letter — there, a stray `.htm` was a
-// bug. This decides which row a pane opens on, where being wrong costs one
+// the answer to each rather than an inconsistency: app-entry decides WHICH PAGE
+// A FOLDER IS (D269), a claim the server (`app_listing.app_entry`) and the
+// templates (`templates/shared/app_entry.py`) also make about the same folder,
+// so all of them must agree to the letter — a stray `.htm` there was a real bug.
+// This decides which row a pane opens on, where being wrong costs one
 // keystroke, and the registry binds `.html` and `.htm` to the same mode list, so
 // a `.htm` previews exactly like an `.html`. Refusing it would land a folder
 // whose only page is `page.htm` on some adjacent text file instead — a worse
 // answer for no gain in correctness.
+//
+// (The module cited here was `lib/folder-app.ts` until D269: same divergence,
+// but that one asked whether a folder had EXACTLY ONE page. It was deleted with
+// the app concept by D264; `lib/app-entry.ts` is its successor, not its return.)
 function isPageRow(name: string, isDir: boolean): boolean {
   return !isDir && /\.html?$/i.test(name);
 }

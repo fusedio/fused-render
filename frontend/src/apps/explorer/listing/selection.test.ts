@@ -115,8 +115,9 @@ describe("autoSelectPath", () => {
   });
 
   test(".htm counts as a page", () => {
-    // The permissive reading, and the opposite call from lib/folder-app's app
-    // gate — see the comment on autoSelectPath for why the two differ.
+    // The permissive reading, and the opposite call from lib/app-entry's entry
+    // rule — see the comment on autoSelectPath for why the two differ. (It was
+    // lib/folder-app's app gate that made that call until D269 replaced it.)
     const { paths, byPath } = rows([
       ["a.txt", false],
       ["page.htm", false],

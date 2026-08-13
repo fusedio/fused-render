@@ -5,10 +5,11 @@ Apps live two levels under the workspace (``fused_dir()``, ~/Documents/Fused):
 ``<workspace>/<tag>/<name>/``. A "tag" is simply any non-hidden top-level
 directory in the workspace — there is no registry or whitelist, so a new tag
 is just a new folder, discovered on the next listing. An "app" is any
-non-hidden directory directly inside a tag dir. Its entry is the single
-direct-child ``.html`` file when there is exactly one — zero or several means
-the folder still lists, but opens as a directory instead of a view
-(``entry_html: null``).
+non-hidden directory directly inside a tag dir. Its entry is its
+``index.html``, else the first non-hidden direct-child ``.html`` in name order
+— the shared entry rule (D269), so the card, the preview pane and the templates
+all resolve one folder to one page. A folder with no top-level ``.html`` still
+lists, but opens as a directory instead of a view (``entry_html: null``).
 
 Alongside the workspace walk, the listing merges in *linked apps*: folders
 anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced

@@ -627,13 +627,46 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     }
   }
 
+  // ==================================================== URL writes (PT-15/PR-3)
+  // Every param write in this file goes through here. It ALWAYS WRITES — a true
+  // default belongs in the URL, so `mode=edit` is stamped even though absent
+  // already means `edit`, and the address bar shows the whole state — but a
+  // write that merely RESTATES what the URL already means takes the runtime's
+  // replace path and costs no history entry. `dflt` is what an ABSENT param
+  // means, which is how "restating" is recognised.
+  //
+  // The reason the distinction is needed is the runtime's first-change-push rule
+  // (SPEC PR-3 / D8): the first param write on a pristine history entry does a
+  // `pushState`, so a write that changes nothing would still cost a Back press.
+  // This template has four ways to produce exactly that write, and only the
+  // first is a load-time seed the runtime's own no-gesture guard would absorb:
+  //   * boot: `setMode(qMode)` re-states the mode the URL already carries;
+  //   * `startWorkspace()` is RE-ENTRANT — Home ▸ open another project runs the
+  //     same boot block again, now downstream of a click, so the runtime sees a
+  //     user gesture and would push for a mode that did not change;
+  //   * a clean compile calls `setDrawerCollapsed(true)` on an already-collapsed
+  //     drawer, from an async callback that a Recompile click started;
+  //   * `setZoom` clamps, so pressing zoom-in at 300 % rewrites 300 %.
+  // Deciding at the funnel rather than at each of those was deliberate: a check
+  // per call site is a check the fifth call site will forget.
+  //
+  // A real change — the user pressing View — still pushes, so Back undoes it.
+  function setParam(key, value, dflt) {
+    const cur = fused.params.get(key);
+    const restating =
+      (cur === undefined || cur === null || cur === "" ? (dflt ?? "") : cur) === value;
+    fused.params.set(key, value, restating ? { history: "replace" } : undefined);
+  }
+
   // =========================================================== compile
   function setStatus(kind, txt) {
     const el = $("status"); el.className = kind; el.querySelector(".txt").textContent = txt;
   }
   function setDrawerCollapsed(collapsed) {
     $("drawer").classList.toggle("collapsed", collapsed);
-    fused.params.set("drawer", collapsed ? "collapsed" : "open");
+    // No default: the drawer's absent state is "follow the compile result", not
+    // one of the two words, so absent must not be equated with either.
+    setParam("drawer", collapsed ? "collapsed" : "open");
   }
   async function compile(force) {
     if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
@@ -806,7 +839,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   function setZoom(scale) {
     S.scale = Math.max(0.4, Math.min(3, scale));
     $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";
-    fused.params.set("zoom", String(Math.round(S.scale * 100)));
+    setParam("zoom", String(Math.round(S.scale * 100)), "100");   // clamped: zoom-in at 300 % must not push an entry
     if (S.lastPdf) renderPdf(S.lastPdf);
   }
 
@@ -985,7 +1018,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       makeEditor(text); updateCursor();
       addOpenFile(abs); renderTree();
       const rel = abs === S.mainAbs ? "" : relOf(abs);
-      fused.params.set("open", rel);
+      setParam("open", rel, "");   // main.tex is `open=""` AND absent; re-opening the buffer already shown changes nothing
       saveSidecarOpen(rel);
     } catch (err) { toast("Open failed: " + err.message); }
   }
@@ -1192,7 +1225,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.classList.toggle("mode-view", mode === "view");
     document.body.classList.toggle("mode-edit", mode === "edit");
     $("modeSeg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
-    fused.params.set("mode", mode);
+    setParam("mode", mode, "edit");   // stamped at boot (and on every re-entry of startWorkspace) as a replace; a real switch pushes
     if (mode === "edit" && S.view) setTimeout(() => S.view.requestMeasure(), 50);
     if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
   }
@@ -1233,7 +1266,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       if (!dragging) return;
       dragging = false; sp.classList.remove("drag");
       const frac = parseFloat(ep.style.flex.split(" ")[2]) || 50;
-      fused.params.set("split", String(Math.round(frac)));
+      setParam("split", String(Math.round(frac)), "50");   // a drag that lands back on the boot ratio settles nothing new
       if (S.lastPdf) renderPdf(S.lastPdf);
     });
   })();
@@ -1271,7 +1304,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.classList.add("has-home");
     $("topbar").classList.add("hidden"); $("main").classList.add("hidden");
     $("home").classList.remove("hidden");
-    fused.params.set("project", ""); fused.params.set("open", "");
+    // Boot with no `project` routes straight here (see the route block at the
+    // bottom), and clearing an already-absent pair is the PT-15 no-op exactly.
+    setParam("project", "", ""); setParam("open", "", "");
     document.title = "LaTeX";
     renderTemplates();
     refreshLibrary();

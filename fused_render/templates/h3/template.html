@@ -170,6 +170,14 @@ let data = null;      // reader payload
 let gj = null;        // built geojson
 let bounds = null;
 let clip = null;      // [lo, hi] active color stretch
+// The auto-stretch's own answer, held HERE and not in the URL (see
+// maybeAutoStretch). '' = nothing computed yet, so the URL's `stretch` stands.
+let autoStretchVal = '';
+// What the hexes should actually be colored with. `autostretch` (a MODE, and in
+// the URL where it belongs) means "recompute from the viewport", so when it is
+// on its answer wins over whatever `stretch` a bookmark carried; off, the URL's
+// value is the only value.
+const activeStretch = () => (P.autoStretch() && autoStretchVal) ? autoStretchVal : P.stretch();
 let centers = null;   // [lng, lat] per cell (for viewport stats)
 let hoverId = null;
 
@@ -225,7 +233,7 @@ function percentiles(vals){
 function fillColorExpr(){
   const col = activeColorCol();
   if (!col) { clip = null; return '#5c9dff'; }
-  const s = P.stretch().split(',').map(Number);
+  const s = activeStretch().split(',').map(Number);
   clip = (s.length === 2 && s.every(isFinite) && s[1] > s[0])
     ? s : percentiles(data.attrs[col]);
   const [lo, hi] = clip;
@@ -336,10 +344,37 @@ function refreshHist(){
   maybeAutoStretch();
 }
 
+// This DELIBERATELY does not write the `stretch` param, and that is a change
+// from how it used to work. The value is derived from the map viewport, and the
+// map viewport is not in the URL at all — so putting the derivation there was
+// wrong twice over:
+//
+//  * It cost the visit's ONE history entry (runtime.js first-change-push, D8)
+//    on a number the user never chose. Back then landed on the pre-pan stretch
+//    over the post-pan viewport: a state that had never been on screen.
+//  * Worse, it was a Back TRAP. Back restores the pristine entry, the restored
+//    `stretch` differs from what this viewport computes, the moveend-driven
+//    refreshHist writes it again — and since a gesture HAS been seen by then,
+//    runtime's no-gesture gate (D268) does not apply and the write pushes a
+//    fresh entry over the branch we just came back to. Back could never leave.
+//
+// Keeping the number in a variable removes the trap at the root instead of
+// papering over it: `autostretch=1` is already in the URL, and it is the whole
+// bookmark — reopening that URL recomputes the same stretch from the same
+// cells. Rejected: writing it and hoping the value guard was enough. That guard
+// stopped the LOOP (it did, before), but every genuine pan still changes the
+// number, so it never stopped the trap.
+//
+// The repaint is ours to do, since no param write means no onChange.
 function maybeAutoStretch(){
   if (!P.autoStretch() || !lastStats) return;
   const s = `${lastStats.p2},${lastStats.p98}`;
-  if (lastStats.p98 > lastStats.p2 && s !== P.stretch()) fused.params.set('stretch', s);
+  if (lastStats.p98 <= lastStats.p2 || s === autoStretchVal) return;
+  autoStretchVal = s;
+  if (!map.getLayer('hex-fill')) return;
+  map.setPaintProperty('hex-fill', 'fill-color', fillColorExpr());
+  renderLegend();
+  drawHist();  // the clip band fillColorExpr() just recomputed
 }
 
 // drag on the histogram = set the color stretch to that value range
@@ -368,12 +403,25 @@ window.addEventListener('mouseup', () => {
 });
 els.stretchBtn.onclick = () => {
   if (!lastStats || lastStats.p98 <= lastStats.p2) return;
+  // An explicit press outranks the auto value it would otherwise be shadowed by
+  // (activeStretch prefers autoStretchVal while `autostretch` is on).
+  autoStretchVal = '';
   fused.params.set('stretch', `${lastStats.p2},${lastStats.p98}`);
 };
 els.stretchReset.onclick = () => { fused.params.set('autostretch', '0'); fused.params.set('stretch', ''); };
 els.autoStretch.onchange = () => {
-  fused.params.set('autostretch', els.autoStretch.checked ? '1' : '0');
-  if (els.autoStretch.checked) maybeAutoStretch();
+  // Read the box ONCE, up front. The `stretch` write below fires onChange
+  // synchronously, and refreshHist re-asserts `checked = P.autoStretch()` off a
+  // URL that does not carry the new `autostretch` yet — so a second read here
+  // could report the value the user just turned OFF and write it back on.
+  const on = els.autoStretch.checked;
+  // Turning auto-stretch OFF freezes the colors where they are, so the number it
+  // had been computing becomes a user-chosen one and belongs in the URL from
+  // here on. Written first so both land in the same coalescing window (D99) and
+  // the pair costs one entry, not two.
+  if (!on && autoStretchVal) fused.params.set('stretch', autoStretchVal);
+  fused.params.set('autostretch', on ? '1' : '0');
+  if (on) maybeAutoStretch();
 };
 let histT = null;
 map.on('moveend', () => { clearTimeout(histT); histT = setTimeout(refreshHist, 120); });
