@@ -11,9 +11,11 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { navigate, navigateUrl, urlForFsPath, EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
-import { listDir, rawUrl, statPath } from "@platform/lib/api";
+import { listDir, prefetchListDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
+import { folderOpenTarget } from "@apps/explorer/lib/app-entry";
+import type { FolderOpenTarget } from "@apps/explorer/lib/app-entry";
 import { bestPeekFile, foldProbePick, isPreviewImage, peekRank } from "@apps/explorer/lib/folder-peek";
 import type { ProbePick } from "@apps/explorer/lib/folder-peek";
 import { iconForEntry } from "@platform/ui/FileIcons";
@@ -145,7 +147,13 @@ function FolderStack({ path }: { path: string }) {
     (async () => {
       let list: FsEntry[] = [];
       try {
-        list = (await listDir(path)).entries;
+        // Through the prefetch cache, not listDir directly: FolderPreviewCard
+        // needs this very listing to resolve where the card CLICKS (D269), and
+        // sharing the promise is what keeps a card at one /api/fs/list — the
+        // same trick ListingPreviewPane's retarget plays with the listing its
+        // embedded Listing was going to fetch anyway. The probes below stay on
+        // listDir: nothing else asks for a subfolder's listing.
+        list = (await prefetchListDir(path)).entries;
       } catch {
         /* unreadable folder — the note body says what the card knows */
       }
@@ -259,6 +267,19 @@ function FolderStack({ path }: { path: string }) {
 
 // Card shell: header row (icon tile + name over path) above the body. An
 // anchor so middle-click / Cmd-click open a new tab (same as LaunchCard).
+//
+// A directory BOOKMARK is not retargeted to its entry page, and that is a
+// decision rather than an oversight (D269's "every surface" is about surfaces
+// that SHOW a folder). A bookmark is a URL the user saved while standing on it,
+// so it is a recorded NAVIGATION — the case D269 explicitly leaves alone, the
+// same one as opening a folder from a listing. Three concrete costs on top of
+// the principle: `b.url` carries the view params saved with it, which mean
+// nothing on a different path and would be silently dropped; `armBookmark`
+// arms the breadcrumb's Update-bookmark tracking against `b.url`, which a
+// landing somewhere else immediately contradicts; and a bookmark url is not
+// always an fs path at all (the `/_tab` and `/_panel` layout sentinels).
+// FolderPreviewCard, below, is the surface that DOES retarget: it is a picture
+// OF a folder, minted by the homepage, and nobody saved it.
 function CardShell({
   b,
   icon,
@@ -406,9 +427,47 @@ export function RecentPreviewCard({
   );
 }
 
+// Where a folder card GOES: the folder's entry page once its listing lands, the
+// folder itself until then and whenever there is no page. The whole rule —
+// including why the unresolved and the unreadable cases answer the folder, and
+// why an href that lags is honest where an href that guesses is not — lives on
+// `folderOpenTarget`; this hook is only the fetch it deliberately does not own.
+//
+// The listing is the SAME one FolderStack fetches for the card's picture,
+// shared through the prefetch cache (api.prefetchListDir), so knowing where the
+// card goes costs no extra request: the two mount in one commit, and whichever
+// asks second reads the first's in-flight promise. That is the mechanism
+// D269's preview-pane retarget already uses for the same reason, and it is what
+// keeps a card at ONE /api/fs/list — a homepage grid is dozens of cards, and on
+// an rclone/NFS target a second listing each is the difference between a page
+// and a stalled mount.
+function useFolderTarget(path: string): FolderOpenTarget {
+  const [entries, setEntries] = useState<FsEntry[] | null>(null);
+  useEffect(() => {
+    // Reset first: a card re-pointed at another folder must not offer the
+    // previous folder's page while the new listing is in flight.
+    setEntries(null);
+    let alive = true;
+    prefetchListDir(path).then(
+      (res) => alive && setEntries(res.entries),
+      // An unreadable folder is "no entry page", never an error of its own —
+      // the card stays on the folder, which is exactly where it went before,
+      // and FolderStack renders the visible half of that failure (its own
+      // catch, one promise back). Reporting it twice would put an error on a
+      // homepage tile whose only job is to be a link.
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [path]);
+  return folderOpenTarget(path, entries);
+}
+
 // A plain folder, in the same card shell as a bookmark — header (icon + name
 // over path) over the same folder "stack" preview a directory bookmark gets
-// (FolderStack, above). Clicking opens the folder itself in the Explorer.
+// (FolderStack, above). Clicking opens the folder's ENTRY PAGE if it has one,
+// and the folder itself if it does not (D269 — useFolderTarget, just above).
 //
 // Deliberately knows nothing about WHY the folder is being listed: the homepage's
 // Artifacts tab points it at Claude Code project folders and its Repos tab at
@@ -416,16 +475,20 @@ export function RecentPreviewCard({
 // show". Any per-tab metadata (a branch, a session time) would belong in the
 // card's header, so it would have to arrive as a prop — none does, on purpose.
 export function FolderPreviewCard({ path }: { path: string }) {
+  const target = useFolderTarget(path);
   return (
     <a
       className="fhb-card"
-      href={urlForFsPath(path)}
+      // ONE target per render feeds both, so a middle-click, a Cmd-click and a
+      // plain click cannot land in different places — the invariant
+      // platform/lib/appEntry.ts's hrefFor/openTargetFor pair exists for.
+      href={urlForFsPath(target.path)}
       title={path}
       onClick={(e) => {
         if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
           return;
         e.preventDefault();
-        navigate(path, { isDir: true });
+        navigate(target.path, { isDir: target.isDir });
       }}
     >
       <span className="fhb-card-head">
