@@ -48,6 +48,8 @@ import json
 import os
 from datetime import datetime, timezone
 
+from fused_render._view_url_codec import canonical_fs_path
+
 # CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
 # duplication) as server/routers/claude_sessions.py, user_skills.py and the
 # claude template's CLAUDE_DIR.
@@ -133,10 +135,13 @@ def artifact_dict(
     per-transcript cache the rest of these fields do.
     """
     return {
-        # The local file that was published. Reported exactly as the transcript
-        # recorded it — that string is what the publish actually used, and it is
-        # already absolute — rather than re-resolved through the filesystem.
-        "file_path": file_path,
+        # The local file that was published, in the shell's canonical form
+        # (forward slashes — see canonical_fs_path, and the same call in the
+        # sessions router): a Windows transcript records the backslashed form,
+        # and frontend helpers like `basename` split on "/" only. Not otherwise
+        # re-resolved: that string is what the publish actually used, and it is
+        # already absolute.
+        "file_path": canonical_fs_path(file_path),
         "exists": os.path.isfile(file_path),
         "remote_url": remote_url,
         "title": title,
@@ -152,8 +157,12 @@ def artifact_dict(
     }
 
 
-def _artifact_tool_input(obj) -> dict | None:
-    """The Artifact tool call's `input` from an assistant record, or None.
+def _artifact_tool_inputs(obj) -> list[dict]:
+    """Every Artifact tool call `input` in an assistant record, in call order.
+
+    ALL of them, not the first: one assistant message can carry several
+    parallel tool calls, and taking only the first would strip the later
+    publishes of their description and favicon.
 
     Rejects the calls that published nothing: a missing/blank `file_path` (an
     incomplete streamed call, or one that errored before it had a target) and
@@ -162,10 +171,11 @@ def _artifact_tool_input(obj) -> dict | None:
     """
     message = obj.get("message")
     if not isinstance(message, dict):
-        return None
+        return []
     content = message.get("content")
     if not isinstance(content, list):
-        return None
+        return []
+    inputs = []
     for item in content:
         if not isinstance(item, dict) or item.get("type") != "tool_use":
             continue
@@ -176,8 +186,8 @@ def _artifact_tool_input(obj) -> dict | None:
             continue
         if not _text(data.get("file_path")):
             continue
-        return data
-    return None
+        inputs.append(data)
+    return inputs
 
 
 def _parse_transcript(jsonl_path: str) -> list[dict]:
@@ -240,8 +250,7 @@ def _parse_transcript(jsonl_path: str) -> list[dict]:
                     frame["session_id"] = _text(obj.get("sessionId"))
                     _widen(frame, stamp)
                 elif is_tool:
-                    data = _artifact_tool_input(obj)
-                    if data is not None:
+                    for data in _artifact_tool_inputs(obj):
                         path = _text(data.get("file_path"))
                         prior = tool_inputs.get(path)
                         if prior is None or order >= prior[0]:
@@ -341,8 +350,11 @@ def list_artifacts() -> list[dict]:
         seen.add(os.path.abspath(jsonl_path))
         for record in _transcript_artifacts(jsonl_path):
             _absorb(merged, record)
+    # pop(), not del: two overlapping listings can both see the same stale key,
+    # and the second del would KeyError. FastAPI serves sync routes from a
+    # threadpool, so overlapping is normal, not exotic.
     for stale in set(_CACHE) - seen:
-        del _CACHE[stale]
+        _CACHE.pop(stale, None)
     # Undated artifacts sort last rather than first: `reverse` would otherwise
     # promote the ones we know least about to the top of the page.
     artifacts = [artifact_dict(**record) for record in merged.values()]

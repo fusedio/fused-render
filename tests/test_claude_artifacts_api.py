@@ -223,3 +223,29 @@ def test_unchanged_transcript_is_not_reparsed_but_exists_stays_live(
     artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
     assert calls == []
     assert artifacts[0]["exists"] is False
+
+
+def test_parallel_publishes_in_one_message_all_keep_their_metadata(
+    client, projects_dir, tmp_path
+):
+    # One assistant message can carry several Artifact tool calls (parallel tool
+    # use). Each publish keeps its own description/favicon — taking only the
+    # message's first call would strip the later ones.
+    page_a, page_b = tmp_path / "a.html", tmp_path / "b.html"
+    both = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Artifact",
+         "input": {"file_path": str(page_a), "favicon": "🅰️", "description": "First."}},
+        {"type": "tool_use", "name": "Artifact",
+         "input": {"file_path": str(page_b), "favicon": "🅱️", "description": "Second."}},
+    ]}}
+    _session(projects_dir, "-tmp-proj", "s1", "/tmp/proj", [
+        both,
+        _frame_link("s1", page_a, URL_A, "A", "2026-07-16T09:00:00Z"),
+        _frame_link("s1", page_b, URL_B, "B", "2026-07-16T09:00:01Z"),
+    ])
+    artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
+    by_url = {a["remote_url"]: a for a in artifacts}
+    assert by_url[URL_A]["description"] == "First."
+    assert by_url[URL_A]["favicon"] == "🅰️"
+    assert by_url[URL_B]["description"] == "Second."
+    assert by_url[URL_B]["favicon"] == "🅱️"
