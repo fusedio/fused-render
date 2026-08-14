@@ -1,8 +1,6 @@
-# No `pyproject.toml`: compile/outline/bib/synctex are stdlib-only, so the folder
-# declares no environment and runs on the app's own interpreter (SPEC PY-17) —
-# the first compile costs no venv build. `export` is the one action that needs
-# pandoc; it fetches `pypandoc-binary` into a private on-demand venv the first
-# time it runs (see `_pandoc_venv_python`), mirroring pyramid/las/zarr_aoi.
+# Dependencies are declared once for the whole folder in `pyproject.toml`
+# (SPEC PY-16) — `pypandoc-binary`, and see that file for why NOT `pypandoc`.
+# Only the `export` action imports it; compile/outline/bib/synctex are stdlib.
 """Backend for the latex template — a local, live-preview LaTeX viewer/editor.
 
 One bare `main(action=...)` dispatcher (the fused-render contract; see the note
@@ -216,41 +214,6 @@ def _export_dir_for(main_path: str) -> str:
     return d
 
 
-PANDOC_DIR = os.path.join(CACHE_ROOT, "_pandoc")   # on-demand pypandoc venv (export only)
-
-
-def _pandoc_venv_python() -> str:
-    """Path to a private venv that has `pypandoc-binary` (the ~41 MB wheel that
-    ships the pandoc executable), building it once on first Export. Compile never
-    touches this — keeping pandoc off the compile critical path is the whole
-    point — so the venv only ever exists on a machine that actually exports.
-    Mirrors pyramid/las' on-demand uv venvs."""
-    vpy = os.path.join(PANDOC_DIR, "venv",
-                       "Scripts" if os.name == "nt" else "bin",
-                       "python.exe" if os.name == "nt" else "python")
-    marker = os.path.join(PANDOC_DIR, "deps_ok")
-    if os.path.exists(vpy) and os.path.exists(marker):
-        return vpy
-    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
-    if not (shutil.which("uv") or os.path.exists(uv)):
-        raise RuntimeError(
-            "Export needs the 'uv' tool to set up pandoc. Install it from "
-            "https://astral.sh/uv and try again.")
-    os.makedirs(PANDOC_DIR, exist_ok=True)
-    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    if not os.path.exists(vpy):
-        subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
-                       check=True, capture_output=True, env=env, creationflags=flags)
-    subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
-                   check=True, capture_output=True, env=env, creationflags=flags)
-    # Marker written only after a clean install (both runs use check=True), so a
-    # partial venv never short-circuits the top of this function.
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write("ok")
-    return vpy
-
-
 # -------------------------------------------------------------- compile + log
 _ERR_RE = re.compile(r"^(error|warning):\s*(?:([^:\n]+?):(\d+):\s*)?(.*)$")
 
@@ -416,8 +379,12 @@ def _run_tectonic(cmd, env, cwd, hard_timeout: int = 28):
     out_chunks, err_chunks = [], []
 
     def _drain(stream, sink):
+        # readline(), NOT `for line in stream`: the file-iterator does read-ahead
+        # buffering that holds lines back until its buffer fills or the child
+        # exits, so the download notes the early-defer watches for wouldn't be
+        # visible in time. readline returns each line as Tectonic flushes it.
         try:
-            for line in stream:
+            for line in iter(stream.readline, ""):
                 sink.append(line)
         except (OSError, ValueError):
             pass
@@ -1136,22 +1103,16 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
                       "--section-divs", "--embed-resources"]
         elif to in ("docx", "odt"):
             extra += ["--toc"]
-        # pandoc lives in a private venv built on first export (never on the
-        # compile path); run the conversion there instead of importing pypandoc
-        # into this app-interpreter process.
+        # pypandoc is a declared dependency (pyproject.toml), so it is importable
+        # in the folder's venv — the interpreter this action runs under, whether
+        # served by the daemon (which runs IN that venv) or via a direct runPython
+        # fallback. No subprocess, so no inherited-env / PATH surprises.
+        import pypandoc
         try:
-            vpy = _pandoc_venv_python()
-        except Exception as e:  # noqa: BLE001 — surface setup failure to the UI
-            return {"error": f"couldn't set up pandoc for export: {e}"}
-        args = json.dumps({"src": path, "to": to, "format": "latex+raw_tex",
-                           "out": out, "extra": extra})
-        conv = subprocess.run(
-            [vpy, os.path.join(HERE, "export_worker.py"), args],
-            capture_output=True, text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        if conv.returncode != 0 or not os.path.exists(out):
-            detail = (conv.stderr or conv.stdout or "").strip().splitlines()
-            return {"error": f"export to {fmt} failed: {detail[-1] if detail else 'unknown error'}"}
+            pypandoc.convert_file(path, to, format="latex+raw_tex",
+                                  outputfile=out, extra_args=extra)
+        except Exception as e:  # noqa: BLE001 — surface the failure to the UI
+            return {"error": f"export to {fmt} failed: {e}"}
         return {"path": out, "name": os.path.basename(out), "size": os.path.getsize(out)}
 
     return {"error": f"unknown action: {action}"}

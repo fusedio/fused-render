@@ -48,12 +48,13 @@ _hit_lock = threading.Lock()
 
 
 def _version() -> str:
-    """Hash the CODE (this file + engine.py), not the interpreter path, so two
-    identically-staged copies agree and an edit respawns a fresh daemon —
-    hashing the interpreter was the db_console "could not start the daemon"
-    churn bug."""
+    """Hash the CODE (these files), not the interpreter path, so two identically-
+    staged copies agree and an edit respawns a fresh daemon — hashing the
+    interpreter was the db_console "could not start the daemon" churn bug.
+    pyproject.toml is included so a dependency change respawns onto the rebuilt
+    venv rather than serving from the stale one."""
     h = hashlib.sha1()
-    for f in ("daemon.py", "engine.py"):
+    for f in ("daemon.py", "engine.py", "pyproject.toml"):
         try:
             with open(os.path.join(HERE, f), "rb") as fh:
                 h.update(fh.read())
