@@ -1,6 +1,6 @@
 """Detached background LaTeX compile, spawned by engine.py when a foreground
 compile can't fit the runPython budget — almost always a cold Tectonic fetch of
-the packages/fonts a document needs (~30 MB, ~2 min). It compiles the document
+the packages/fonts a document needs (~50 MB, several minutes). It compiles the document
 into its real build dir with no timeout, so any package set completes out of
 band; the page polls `warm_status` and, once this finishes, a plain recompile
 serves the resulting PDF (or shows the document's real compile errors). A

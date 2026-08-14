@@ -65,9 +65,9 @@ def test_compile_surfaces_unexplained_failure(eng, tmp_path, monkeypatch):
     # stderr, and no .pdf / .log written — the pre-fix "blank ? errors" case.
     monkeypatch.setattr(eng, "_cache_warm", lambda: True)
 
-    def fake_run(cmd, **kw):
-        return subprocess.CompletedProcess(cmd, 127, stdout="note: Running TeX ...\n", stderr="")
-    monkeypatch.setattr(eng.subprocess, "run", fake_run)
+    def fake_run(cmd, env, cwd, **kw):
+        return False, subprocess.CompletedProcess(cmd, 127, stdout="note: Running TeX ...\n", stderr="")
+    monkeypatch.setattr(eng, "_run_tectonic", fake_run)
 
     r = eng.main(action="compile", path=_tex(tmp_path), force=1)
     assert r["ok"] is False and not r.get("warming")
@@ -79,10 +79,60 @@ def test_compile_surfaces_unexplained_failure(eng, tmp_path, monkeypatch):
 def test_compile_ok_when_pdf_is_produced(eng, tmp_path, monkeypatch):
     monkeypatch.setattr(eng, "_cache_warm", lambda: True)
 
-    def fake_run(cmd, **kw):
+    def fake_run(cmd, env, cwd, **kw):
         open(os.path.join(eng._build, "main.pdf"), "wb").close()   # tectonic wrote the PDF
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(eng.subprocess, "run", fake_run)
+        return False, subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(eng, "_run_tectonic", fake_run)
 
     r = eng.main(action="compile", path=_tex(tmp_path), force=1)
     assert r["ok"] is True and r["pdf"] and not r.get("error")
+
+
+def test_compile_defers_when_run_tectonic_bails_on_cold_fetch(eng, tmp_path, monkeypatch):
+    # Warm cache marker present, but THIS document needs an uncached package, so
+    # _run_tectonic bails to the background warmer instead of blocking the budget.
+    monkeypatch.setattr(eng, "_cache_warm", lambda: True)
+    warmed = []
+    monkeypatch.setattr(eng, "_ensure_warming", lambda mp: warmed.append(mp))
+    monkeypatch.setattr(eng, "_warm_progress", lambda: {"stage": "warm"})
+    monkeypatch.setattr(eng, "_run_tectonic", lambda cmd, env, cwd, **kw: (True, None))
+
+    main = _tex(tmp_path)
+    r = eng.main(action="compile", path=main, force=1)
+    assert r["warming"] is True and r["ok"] is False
+    assert warmed == [main]
+
+
+def test_should_defer_download_only_on_a_sustained_cold_fetch(eng):
+    d = eng._should_defer_download
+    many = "note: downloading " * 8
+    # A pure typesetting run (a warm cache) downloads nothing — never defer.
+    assert d("", 30.0) is False
+    # A brief burst inside the grace window is not yet a verdict.
+    assert d(many, 0.5) is False
+    # A quick self-heal of a couple of packages runs inline to completion.
+    assert d("note: downloading a\nnote: downloading b\n", 5.0) is False
+    # Many files still arriving past the grace window: this is the big cold fetch.
+    assert d(many, 5.0) is True
+
+
+def test_export_reports_pandoc_setup_failure(eng, tmp_path, monkeypatch):
+    monkeypatch.setattr(eng, "_pandoc_venv_python",
+                        lambda: (_ for _ in ()).throw(RuntimeError("uv not found")))
+    r = eng.main(action="export", path=_tex(tmp_path), target="html")
+    assert "error" in r and "uv not found" in r["error"]
+
+
+def test_export_runs_conversion_in_the_pandoc_venv(eng, tmp_path, monkeypatch):
+    import json as _json
+    monkeypatch.setattr(eng, "_pandoc_venv_python", lambda: "pyexe")
+    monkeypatch.setattr(eng, "_export_dir_for", lambda p: str(tmp_path))
+
+    def fake_run(cmd, **kw):
+        args = _json.loads(cmd[-1])            # engine passes the job as the last argv
+        open(args["out"], "w", encoding="utf-8").write("converted")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(eng.subprocess, "run", fake_run)
+
+    r = eng.main(action="export", path=_tex(tmp_path), target="md")
+    assert r.get("name", "").endswith(".md") and r.get("size", 0) > 0 and "error" not in r

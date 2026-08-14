@@ -137,6 +137,15 @@
   body.mode-view #pdfPane { flex: 1 1 100%; }
   body.mode-view #pdfscroll { padding: 28px; }
 
+  /* File-preview open (no Home/library): collapse the Files + Outline sidebar so
+     the workspace is just the editor + PDF panes. The sidebar only earns its
+     column in the Home/project workflow (body.has-home), where multi-file
+     browsing and the outline are the point. */
+  body:not(.has-home) #side { display: none; }
+  /* ...and match it in the boot skeleton so a preview open doesn't flash a
+     sidebar column before the real workspace mounts. */
+  body.file-preview .boot-side { display: none; }
+
   /* tectonic-missing install prompt (shown in place of the PDF) */
   .install-box { margin: auto; max-width: 360px; text-align: center; color: var(--ink-2); padding: 24px; }
   .install-box .t { font-weight: 600; color: var(--ink); margin-bottom: 6px; }
@@ -400,6 +409,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 (async () => {
   fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
   const FILE = fused.params.get("_file") || "";
+  if (FILE) document.body.classList.add("file-preview");
   // No _file: this template was opened directly (not as a preview of a .tex).
   // Instead of dead-ending, we show the Home library and let the user create or
   // reopen a project — its main.tex then drives the exact same workspace below.
@@ -768,9 +778,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       <div class="install-box">
         <div class="t">Preparing LaTeX packages…</div>
         <div class="d">The first compile downloads the LaTeX packages and fonts this
-          document needs (up to ~30&nbsp;MB) and caches them. This is a one-time step and
-          can take a minute or two — your document compiles automatically when it's ready.
-          You can keep editing in the meantime.</div>
+          document needs (~50&nbsp;MB, fetched one file at a time) and caches them. This is a
+          one-time step and can take several minutes on a slow connection — your document
+          compiles automatically when it's ready. You can keep editing in the meantime.</div>
         <div class="bar indet"><div></div></div>
         <div class="d" id="warmDetail"></div>
         <div class="err hidden" id="warmErr"></div>
