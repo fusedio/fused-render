@@ -460,14 +460,20 @@ def test_the_rows_are_grouped_into_per_session_runs(source):
 
 def test_a_run_is_named_by_the_chat_it_came_from_when_that_is_known(source):
     # The name is the SAME string "Recent chats" labels its rows with, so the two
-    # sections of the landing page agree about what a chat is called.
+    # sections of the landing page agree about what a chat is called. That string
+    # is `sessionTitle(s)` and no longer the raw `s.preview`: a preview whose
+    # message carried a screenshot or notes STARTS with a machine-written wire
+    # block, so the unprocessed field named chats "<pane-shot> The user attached a
+    # pi…". The invariant this test exists for is untouched — both sections still
+    # read one writer — and that is exactly why it is the writer that moved.
     recent = source[source.index("async function loadRecent"):]
     recent = recent[: recent.index("\n}")]
-    assert "snapNames.set(s.id, s.preview)" in recent
+    assert "const title = sessionTitle(s);" in recent
+    assert "snapNames.set(s.id, title)" in recent
     # Populated BEFORE the no-sessions early return: a file can have chains in the
     # store and nothing in its sidecar, and vice versa.
     assert recent.index("snapNames.set") < recent.index("if (!sessions.length)")
-    assert 'row.querySelector(".row-title").textContent = s.preview || s.id;' in source
+    assert 'row.querySelector(".row-title").textContent = sessionTitle(s);' in source
 
     # The two reads RACE, so naming cannot depend on which lands first. "Back to
     # chats" fires loadRecent and mountSnapshots together, and on a page opened
@@ -476,7 +482,7 @@ def test_a_run_is_named_by_the_chat_it_came_from_when_that_is_known(source):
     # nothing else would ever come back to fix them.
     assert "if (named && snapTimeline) renderSnapshots(snapTimeline);" in recent
     # Guarded on a real change, so the repaint is not spent on every landing.
-    assert "snapNames.get(s.id) !== s.preview" in recent
+    assert "snapNames.get(s.id) !== title" in recent
 
     head = source[source.index("function snapRunHead(run)"):]
     head = head[: head.index("\n}")]
