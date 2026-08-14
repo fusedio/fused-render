@@ -71,3 +71,15 @@ def test_spelt_out_ranges_behave_like_star():
     # dom-OR-dow rule: with dom spelt out and dow restricted, dow wins alone.
     c = cron.parse("0 0 1-31 * 5")
     assert c.next_after(T(2026, 8, 12, 0, 0)) == T(2026, 8, 14, 0, 0)  # Friday, not the 13th
+
+
+@pytest.mark.parametrize("expr,after,expected", [
+    # `N/step` runs from N to the field's end — crontab's reading, not "just N"
+    # (Bugbot, PR #529: `0/15` fired hourly instead of every 15 minutes).
+    ("0/15 * * * *", T(2026, 8, 14, 12, 1),  T(2026, 8, 14, 12, 15)),
+    ("0/15 * * * *", T(2026, 8, 14, 12, 46), T(2026, 8, 14, 13, 0)),
+    ("5/20 * * * *", T(2026, 8, 14, 12, 6),  T(2026, 8, 14, 12, 25)),
+    ("0 9/6 * * *",  T(2026, 8, 14, 10, 0),  T(2026, 8, 14, 15, 0)),
+])
+def test_bare_value_with_step_runs_to_the_fields_end(expr, after, expected):
+    assert cron.parse(expr).next_after(after) == expected

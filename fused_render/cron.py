@@ -36,7 +36,8 @@ def _parse_field(text: str, lo: int, hi: int, name: str) -> frozenset[int]:
     for part in text.split(","):
         part = part.strip()
         step = 1
-        if "/" in part:
+        stepped = "/" in part
+        if stepped:
             part, _, step_text = part.partition("/")
             if not step_text.isdigit() or int(step_text) < 1:
                 raise ValueError(f"{name}: bad step in {text!r}")
@@ -49,7 +50,12 @@ def _parse_field(text: str, lo: int, hi: int, name: str) -> frozenset[int]:
                 raise ValueError(f"{name}: bad range in {text!r}")
             start, end = int(a), int(b)
         elif part.isdigit():
-            start = end = int(part)
+            start = int(part)
+            # A bare value under a step is a starting point, not a singleton:
+            # crontab reads `0/15` as "from 0 to the field's end, every 15" —
+            # the first cut kept only the 0, so `0/15 * * * *` fired hourly
+            # (Bugbot, PR #529).
+            end = hi if stepped else start
         else:
             raise ValueError(f"{name}: cannot read {text!r}")
         if not (lo <= start <= hi and lo <= end <= hi and start <= end):
