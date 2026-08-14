@@ -54,7 +54,7 @@ export function sortApps(apps: AppInfo[]): AppInfo[] {
 // sort above) is fed by. Fire-and-forget: recording must never delay or fail
 // the navigation itself.
 function recordAppOpen(app: AppInfo): void {
-  void postAppOpen(app.tag, app.name, app.title).catch(() => undefined);
+  void postAppOpen(app.path, app.title).catch(() => undefined);
 }
 
 // The file this card is about, tolerating a backend that predates `entry`.

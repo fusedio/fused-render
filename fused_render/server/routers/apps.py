@@ -76,22 +76,35 @@ def api_apps():
     apps = list(app_listing.workspace_apps(fused_dir()))
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     opened = _opened_at_by_app()
+    root = fused_dir()
     for a in apps:
-        a["opened_at"] = opened.get((a["tag"], a["name"]))
+        a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
     return {"apps": apps}
 
 
-def _opened_at_by_app() -> dict[tuple[str, str], float]:
-    """(tag, name) → last-open time as epoch seconds (updated_at's unit), from
-    the recents store. The file is user-writable, so a malformed openedAt just
-    drops that entry — a bad timestamp must never fail the listing."""
-    out: dict[tuple[str, str], float] = {}
+def _workspace_rel(root: str, path: str) -> str | None:
+    """`path` as a workspace-relative key, or None when it isn't inside the
+    workspace. The store's identity: unique at every depth the walk lists
+    (1-3), where (tag, name) is not — two depth-3 apps under different shelves
+    of one tag share both."""
+    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    if rel == "." or rel.startswith(".."):
+        return None
+    return rel
+
+
+def _opened_at_by_app() -> dict[str, float]:
+    """Workspace-relative app path → last-open time as epoch seconds
+    (updated_at's unit), from the recents store. The file is user-writable, so
+    a malformed openedAt just drops that entry — a bad timestamp must never
+    fail the listing."""
+    out: dict[str, float] = {}
     for e in _read_app_recents()["entries"]:
         ts = e.get("openedAt")
         if not isinstance(ts, str):
             continue
         try:
-            out[(e["tag"], e["name"])] = datetime.fromisoformat(ts).timestamp()
+            out[e["path"]] = datetime.fromisoformat(ts).timestamp()
         except ValueError:
             continue
     return out
@@ -101,9 +114,11 @@ def _opened_at_by_app() -> dict[tuple[str, str], float]:
 #
 # App-builder recents at ~/.fused-render/app_recents.json — its OWN store,
 # fully independent of the explorer's recents.json (shell/recents.py). Entries
-# identify an app by (tag, name), newest-first, deduped, capped. GET filters
-# entries whose app folder is gone (read-only — the folder may come back).
-# The workspace is always local, so plain isdir checks are safe here.
+# identify an app by its WORKSPACE-RELATIVE path (`path`, e.g. "local/demo" or
+# "tag/shelf/app") — unique at every depth the walk lists, where the previous
+# (tag, name) key was not — newest-first, deduped, capped. GET filters entries
+# whose app folder is gone (read-only — the folder may come back). The
+# workspace is always local, so plain isdir checks are safe here.
 
 # The store is the sort input for /home and /apps (opened_at in GET /api/apps),
 # not just a short recents row — so the cap must comfortably exceed the number
@@ -128,25 +143,24 @@ def _read_app_recents() -> dict:
         "entries": [
             e
             for e in (entries if isinstance(entries, list) else [])
-            if isinstance(e, dict)
-            and isinstance(e.get("tag"), str)
-            and isinstance(e.get("name"), str)
+            if isinstance(e, dict) and isinstance(e.get("path"), str)
         ]
     }
 
 
-def _app_folder_exists(tag: str, name: str) -> bool:
-    """Does the (tag, name) app currently resolve to a folder on disk?
-    Apps resolve under <workspace>/<tag>/<name>."""
-    return os.path.isdir(os.path.join(fused_dir(), tag, name))
+def _app_folder_exists(rel: str) -> bool:
+    """Does the workspace-relative app path currently resolve to a folder on
+    disk? Rejects a key that would escape the workspace — the store is
+    user-writable, so `rel` cannot be trusted to stay under it."""
+    if os.path.isabs(rel) or rel.startswith(".") or ".." in rel.split("/"):
+        return False
+    return os.path.isdir(os.path.join(fused_dir(), rel))
 
 
 @router.get("/api/apps/recents")
 def api_app_recents():
     entries = [
-        e
-        for e in _read_app_recents()["entries"]
-        if _app_folder_exists(e["tag"], e["name"])
+        e for e in _read_app_recents()["entries"] if _app_folder_exists(e["path"])
     ]
     return {"entries": entries}
 
@@ -160,31 +174,31 @@ def api_app_recent_open(
         return guard
     from fused_render.shell import storage
 
-    tag, name = body.get("tag"), body.get("name")
-    if not isinstance(tag, str) or not isinstance(name, str) or not tag or not name:
-        return _error("tag and name required", 400)
-    # Only real app folders are recorded — same benign no-op posture as the
-    # explorer's POST /api/recents/open for a non-file url.
-    if "/" in tag or "/" in name or tag.startswith(".") or name.startswith("."):
-        return {"recorded": False}
-    if not _app_folder_exists(tag, name):
+    path = body.get("path")
+    if not isinstance(path, str) or not path:
+        return _error("path required", 400)
+    # The client sends the app's absolute `path` from the listing; the store
+    # keys on the workspace-relative form. Only real app folders inside the
+    # workspace are recorded — same benign no-op posture as the explorer's
+    # POST /api/recents/open for a non-file url.
+    rel = _workspace_rel(fused_dir(), path)
+    if rel is None or not _app_folder_exists(rel):
         return {"recorded": False}
     title_raw = body.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
     data = _read_app_recents()
-    # Dedupe by (tag, name); a title-less re-record keeps the last known title.
+    # Dedupe by path; a title-less re-record keeps the last known title.
     existing_title = None
     kept = []
     for e in data["entries"]:
-        if e["tag"] == tag and e["name"] == name:
+        if e["path"] == rel:
             t = e.get("title")
             if existing_title is None and isinstance(t, str) and t:
                 existing_title = t
             continue
         kept.append(e)
     entry = {
-        "tag": tag,
-        "name": name,
+        "path": rel,
         "openedAt": datetime.now(timezone.utc).isoformat(),
     }
     if title is not None:

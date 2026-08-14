@@ -1891,16 +1891,18 @@ export function getApps(): Promise<{ apps: AppInfo[] }> {
 }
 
 // Record that an app was opened (feeds opened_at above, which is what /home
-// and /apps sort by). Server no-ops (recorded: false) for an app whose folder
-// is gone, so callers need not pre-check.
+// and /apps sort by). `path` is the app's absolute folder path from the
+// listing — the identity the store keys on (workspace-relative server-side),
+// unique at every depth where (tag, name) is not. Server no-ops
+// (recorded: false) for an app whose folder is gone, so callers need not
+// pre-check.
 export function postAppOpen(
-  tag: string,
-  name: string,
+  path: string,
   title?: string | null,
 ): Promise<{ recorded: boolean }> {
   return postJson<{ recorded: boolean }>(
     "/api/apps/recents/open",
-    title ? { tag, name, title } : { tag, name },
+    title ? { path, title } : { path },
   );
 }
 
