@@ -1272,6 +1272,45 @@ def test_start_transcribe_raises_rather_than_opening_a_row(monkeypatch, recordin
     assert not jobs.list_jobs()
 
 
+def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
+    """The socket timeout has to outlast the DECODE, because nothing is sent
+    until it finishes.
+
+    `_single` writes one JSON reply when `generate` returns, so `urlopen` blocks
+    for the whole run — and at `GENERATE_TIMEOUT_S` (900s) the 90-minute
+    recording this whole feature is designed around (~18 minutes at CPU int8)
+    times out, errors the row, and rejects `fused.ai.transcribe()` while the
+    worker carries on and writes a perfectly good transcript nobody is told
+    about. Worse, that worker still holds `GENERATE_LOCK`, so every queued
+    request repeats the failure in turn.
+    """
+    seen = {}
+
+    class _Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True, "result": {"duration": 5400.0}}).encode()
+
+    def fake_request(worker, path, body=None, timeout=None):
+        seen["timeout"] = timeout
+        return _Reply()
+
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request", fake_request)
+    supervisor.generate_transcript("org/whisper", {"path": "/x"},
+                                   supervisor.TRANSCRIBE_JOB_PREFIX + "t")
+
+    assert seen["timeout"] > supervisor.GENERATE_TIMEOUT_S
+    # Comfortably past any recording somebody would actually hand it: four
+    # hours of DECODING is ~20 hours of audio at the default model's CPU speed.
+    assert seen["timeout"] >= 4 * 3600
+
+
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
     """The page half, pinned as an INVARIANT rather than an instance.
 

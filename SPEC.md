@@ -6248,7 +6248,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   is therefore ticked from a thread (the poll IS the progress and the
   cancellation point, as it is for downloads); leaving it behind a single plain
   `report` left a window where the row sat at zero and a ✕ was not honoured
-  until the first segment landed. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  until the first segment landed. **And it gets its OWN socket timeout**
+  (`TRANSCRIBE_TIMEOUT_S`, four hours) rather than the 900s an image uses: the
+  worker sends nothing until the decode finishes, so that timeout covers the
+  entire run, and at 900s this feature's own motivating case — a 90-minute
+  recording, ~18 minutes of decoding — died on the socket while the worker went
+  on to write a transcript nobody was told about, still holding `GENERATE_LOCK`
+  so every queued request repeated it. It is a backstop, not the stop: the ✕
+  makes the worker reply and an unload closes the socket, both in seconds.
+  One row per RECORDING (`sys:ai-transcribe:<uid>`). The
   transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
   with timestamps, language, duration, model) and a `.txt` (plain words) —
   **segments, not a flat token stream**, because the timestamps are most of what

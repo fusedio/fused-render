@@ -78,6 +78,23 @@ HEALTH_TIMEOUT_S = 5.0
 # Generation can take minutes (an image at high step counts, a long completion).
 GENERATE_TIMEOUT_S = 900.0
 
+# A transcription can take HOURS, and 900s was a silent cap on the feature's own
+# motivating case. The worker sends nothing until the decode finishes — one JSON
+# reply when `generate` returns — so this socket timeout covers the whole run,
+# and a 90-minute recording is ~18 minutes of it at the default model's CPU int8
+# speed. At 900s that request died, the row went to error, and the worker
+# carried on to write a transcript nobody was told about; worse, it was still
+# holding the worker's `GENERATE_LOCK`, so every queued transcription repeated
+# the failure in turn.
+#
+# Four hours of DECODING is ~20 hours of audio, which is past anything somebody
+# hands a file explorer. It is a backstop rather than the stop: the ✕ makes the
+# worker reply (its per-segment tick carries the cancel back), and an unload
+# kills the process and closes the socket — both unblock this in seconds. What
+# is left for a timeout is a worker that is alive but wedged, and parking a
+# daemon thread on that forever is the thing worth refusing.
+TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
+
 # How long an image request will wait for its model to become resident. Long,
 # because the honest worst case is a multi-GB download on a slow connection
 # followed by a minutes-long load — and the alternative to waiting is failing a
@@ -1100,7 +1117,7 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
 
     try:
         response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                   timeout=GENERATE_TIMEOUT_S)
+                                   timeout=TRANSCRIBE_TIMEOUT_S)
     except (OSError, ValueError) as e:
         raise SupervisorError(f"the transcription process did not answer: {e}") from e
     with response:
