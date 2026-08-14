@@ -1267,12 +1267,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.appendChild(a); a.click(); a.remove();
   }
   async function doExport(fmt) {
-    toast("Exporting to " + fmt + "…", 5000);
-    const r = await py({ action: "export", path: S.mainAbs, target: fmt });
-    if (r.error) { toast("Export failed: " + r.error, 5000); return; }
-    const a = document.createElement("a"); a.href = fused.rawUrl(r.path); a.download = r.name;
-    document.body.appendChild(a); a.click(); a.remove();
-    toast("Downloaded " + r.name);
+    if (S.exporting) return;   // first export can fetch pandoc (minutes) — don't overlap builds
+    S.exporting = true;
+    toast("Exporting to " + fmt + "…", 8000);
+    try {
+      const r = await py({ action: "export", path: S.mainAbs, target: fmt });
+      if (r.error) { toast("Export failed: " + r.error, 5000); return; }
+      const a = document.createElement("a"); a.href = fused.rawUrl(r.path); a.download = r.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      toast("Downloaded " + r.name);
+    } finally {
+      S.exporting = false;
+    }
   }
 
   // =========================================================== wiring

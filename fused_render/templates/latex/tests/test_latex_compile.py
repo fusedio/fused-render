@@ -148,6 +148,36 @@ def test_export_surfaces_a_pypandoc_failure(eng, tmp_path, monkeypatch):
     assert "error" in r and "pandoc boom" in r["error"]
 
 
+def test_pandoc_venv_returns_cached_without_building(eng, tmp_path, monkeypatch):
+    pandoc = tmp_path / "_pandoc"
+    vdir = pandoc / "venv" / ("Scripts" if os.name == "nt" else "bin")
+    vdir.mkdir(parents=True)
+    vpy = vdir / ("python.exe" if os.name == "nt" else "python")
+    vpy.write_text("", encoding="utf-8")
+    (pandoc / "deps_ok").write_text("ok", encoding="utf-8")
+    monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
+    monkeypatch.setattr(eng.subprocess, "run",
+                        lambda *a, **k: pytest.fail("must not rebuild an existing venv"))
+    assert eng._pandoc_venv_python() == str(vpy)
+
+
+def test_pandoc_venv_builds_under_lock_and_releases_it(eng, tmp_path, monkeypatch):
+    pandoc = tmp_path / "_pandoc"
+    monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
+    monkeypatch.setattr(eng.shutil, "which", lambda n: "uv" if n == "uv" else None)
+    runs = []
+
+    def fake_run(cmd, **kw):
+        runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(eng.subprocess, "run", fake_run)
+
+    eng._pandoc_venv_python()
+    assert any("venv" in c for c in runs) and any("install" in c for c in runs)
+    assert os.path.exists(os.path.join(str(pandoc), "deps_ok"))
+    assert not os.path.exists(os.path.join(str(pandoc), "build.lock"))   # released in finally
+
+
 def test_export_falls_back_to_ondemand_venv_when_pypandoc_missing(eng, tmp_path, monkeypatch):
     # The built-in engine runs export on the app interpreter (no folder venv), so
     # `import pypandoc` fails and we must fetch pandoc on demand instead of crashing.

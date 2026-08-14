@@ -222,26 +222,60 @@ PANDOC_DIR = os.path.join(CACHE_ROOT, "_pandoc")   # export-only fallback venv (
 def _pandoc_venv_python() -> str:
     """A private venv holding `pypandoc-binary`, built once with uv. Only reached
     when `import pypandoc` fails — i.e. the built-in engine ran export on the app
-    interpreter (which has no folder venv, D174) rather than the fused engine's."""
+    interpreter (which has no folder venv, D174) rather than the fused engine's.
+    A build lock serializes concurrent first-exports (two clicks, or a daemon
+    thread and a fallback subprocess) so they never `uv venv` the same tree at
+    once; `deps_ok` is written only after a clean install so a half-built tree is
+    rebuilt, never reused."""
     vpy = os.path.join(PANDOC_DIR, "venv", "Scripts" if os.name == "nt" else "bin",
                        "python.exe" if os.name == "nt" else "python")
     marker = os.path.join(PANDOC_DIR, "deps_ok")
-    if os.path.exists(vpy) and os.path.exists(marker):
+    ready = lambda: os.path.exists(vpy) and os.path.exists(marker)
+    if ready():
         return vpy
     uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
     if not (shutil.which("uv") or os.path.exists(uv)):
         raise RuntimeError("Export needs the 'uv' tool to set up pandoc — install it "
                            "from https://astral.sh/uv and try again.")
     os.makedirs(PANDOC_DIR, exist_ok=True)
-    env = _clean_env()   # a bundle-pointing PYTHON* would shadow the venv's pypandoc
-    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    if not os.path.exists(vpy):
-        subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
-                       check=True, capture_output=True, env=env, creationflags=flags)
-    subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
-                   check=True, capture_output=True, env=env, creationflags=flags)
-    with open(marker, "w", encoding="utf-8") as f:   # only after a clean install
-        f.write("ok")
+    lock = os.path.join(PANDOC_DIR, "build.lock")
+    deadline = time.time() + 600
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError:
+            if ready():
+                return vpy
+            try:
+                stale = time.time() - os.path.getmtime(lock) > 600
+            except OSError:
+                continue   # lock vanished as the winner finished; retry the open
+            if stale:
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+                continue
+            if time.time() > deadline:
+                raise RuntimeError("pandoc setup is still running; try the export again shortly")
+            time.sleep(0.5)
+    try:
+        if not ready():
+            env = _clean_env()   # a bundle-pointing PYTHON* would shadow the venv's pypandoc
+            flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            if not os.path.exists(vpy):
+                subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
+                               check=True, capture_output=True, env=env, creationflags=flags)
+            subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
+                           check=True, capture_output=True, env=env, creationflags=flags)
+            with open(marker, "w", encoding="utf-8") as f:   # only after a clean install
+                f.write("ok")
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
     return vpy
 
 
