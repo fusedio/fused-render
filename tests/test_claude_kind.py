@@ -698,11 +698,72 @@ def test_the_hosted_switch_hides_itself_when_the_host_shows_nothing_marked():
     assert "#annbtn[hidden] { display: none; }" in _pane_source(), \
         "`display: flex` outranks the UA's [hidden] rule"
     start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
-    wiring = code[start:start + 400]
+    wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start) + 40]
     assert 'window.addEventListener("focus", annPollTarget);' in wiring
     assert "setInterval(annPollTarget, ANN_TARGET_POLL_MS);" in wiring
     assert "annWatchTarget(annOwnFrame);" in wiring, \
         "and the split layout still adopts its own frame instead"
+
+
+def test_a_sidebar_boot_starts_with_an_empty_annotation_list():
+    """The shell tears the sidebar frame down on every mode switch (it is keyed
+    on the mode) and on a close, so at boot "the page reloaded" and "the user
+    left for Git and came back" are the same event — the `annotations` param
+    cannot say which. Hydrating from it re-armed pins for a review the user had
+    walked away from, sent receipts included. So a CHAT_ONLY boot starts empty
+    and the stale param is ignored, not rewritten — while the standalone split
+    layout, whose URL is its own, keeps its reload-restores-the-review behavior.
+    """
+    code = _pane_code()
+    assert "let annotations = CHAT_ONLY ? [] : annLoad();" in code
+    # Ignored means ignored: nothing strips the stale param either (the same
+    # posture the folder URL's leftovers get, see the stale-split test below).
+    boot = code[code.index("let annotations = "):]
+    assert 'params.delete("annotations"' not in boot
+
+
+def test_the_sidebar_teardown_removes_the_layer_it_injected():
+    """The pin layer is OUR node in the TARGET's document, and the host detaches
+    this document without warning — the sidebar frame is keyed on the mode, so
+    Git, History and the close button all destroy it. Nothing survives us to
+    clean the layer up, which left the pins painted over the content pane for as
+    long as the user stayed in the other mode. `pagehide` fires synchronously on
+    detach; removing the host element takes the shadow tree — pins, highlight,
+    and a portaled composer — with it.
+
+    DOM removal only, no param write: a set() from pagehide lands in the
+    runtime's coalescing queue AFTER its own pagehide flush has run, so it may
+    never reach the URL at all.
+    """
+    code = _pane_code()
+    start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
+    wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start)]
+    hide = wiring[wiring.index('window.addEventListener("pagehide"'):]
+    assert "annTargetDoc()" in hide
+    assert 'doc.querySelector("[" + ANN_LAYER_MARK + "]")' in hide
+    assert "host.remove();" in hide
+    assert "params.set" not in hide, "no param writes from a dying document"
+
+
+def test_the_sidebar_teardown_releases_the_target_for_the_next_instance():
+    """The adoption guards — `__fusedAnnWatched` on the host's iframe element,
+    `__fusedAnnWired` on its document — exist to stop ONE instance stacking a
+    second set of listeners. But both objects are the HOST's and outlive the
+    sidebar, so to the next sidebar instance (Git and back, close and reopen)
+    they read as "already adopted": annWatchTarget and annWireTarget never ran,
+    and the switch sat armed over a pane with no hover ring and no click —
+    the only wiring the target ever had belonged to a torn-down document whose
+    handlers the browser no longer runs. The teardown must hand the target
+    back: clear both guards, and disarm `annOn` so any leftover handler of ours
+    that the browser does still run gates itself out.
+    """
+    code = _pane_code()
+    start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
+    wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start)]
+    hide = wiring[wiring.index('window.addEventListener("pagehide"'):]
+    assert "annOn = false;" in hide
+    assert "annFrame.__fusedAnnWatched = false;" in hide
+    assert "doc.__fusedAnnWired = false;" in hide
 
 
 def test_a_stale_split_param_on_a_folder_url_is_ignored_not_an_error():

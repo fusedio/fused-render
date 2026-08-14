@@ -3449,10 +3449,9 @@ function enterNoPane() {
   //    left alone (see above): this drops the list, it does not rewrite the URL.
   //
   //    Not in CHAT_ONLY: there the notes are anchored to the HOST's pane, which
-  //    is still on screen, and `annotations` is the shell URL's own param (this
-  //    page sets no boundary, D46/D72) — the very list the sidebar was reopened
-  //    to carry on with. Emptying it would silently discard a review because we
-  //    took OUR column away.
+  //    is still on screen — notes added THIS visit (the boot list is empty in a
+  //    sidebar; see annLoad's caller) are still sendable, and emptying them
+  //    because we took OUR column away would silently discard a live review.
   if (!CHAT_ONLY) annotations = [];
   renderAnn();
   noPane = true;
@@ -3612,8 +3611,15 @@ document.getElementById("divider").addEventListener("mousedown", (e) => {
 // cleanly). The list is persisted in the `annotations` param so a reload
 // mid-review keeps the pins — which, since this page sets no param boundary,
 // means the URL the runtime writes to: this frame's own when it is the page,
-// the SHELL's when it is framed (D46/D72). Framed is the case that matters:
-// the sidebar and the pane it annotates then share one URL and one review.
+// the SHELL's when it is framed (D46/D72).
+//
+// Framed (CHAT_ONLY) the param is WRITE-ONLY: the shell tears this document
+// down on every sidebar mode switch (the frame is keyed on the mode) and on a
+// close, so "the page reloaded" and "the user left for Git and came back" are
+// the same event here — indistinguishable at boot. Hydrating meant the second
+// one re-armed pins for a review the user had walked away from, sent receipts
+// included. So a sidebar boot starts empty and the stale param is ignored, not
+// rewritten — the posture every other stale param gets (see enterNoPane).
 const annBtn = document.getElementById("annbtn");
 const annPop = document.getElementById("annpop");
 const annTa = annPop.querySelector("textarea");
@@ -3946,7 +3952,9 @@ function annLoad() {
     return Array.isArray(arr) ? arr.filter((c) => c && typeof c === "object") : [];
   } catch (e) { return []; }
 }
-let annotations = annLoad();
+// Hosted boots empty — a sidebar teardown is a mode switch as often as it is a
+// reload, and the param cannot say which (see the section comment above).
+let annotations = CHAT_ONLY ? [] : annLoad();
 const annPending = () => annotations.filter((c) => !c.sent);
 
 function annSave() {
@@ -4653,6 +4661,35 @@ if (CHAT_ONLY) {
   annPollTarget();
   window.addEventListener("focus", annPollTarget);
   setInterval(annPollTarget, ANN_TARGET_POLL_MS);
+  // The layer is OUR node in THEIR document, and the host tears this document
+  // down without warning (the sidebar frame is keyed on the mode, so Git,
+  // History and the close button all detach it). Nothing survives us to clean
+  // it up, so the pins were left painted over the content pane for as long as
+  // the user stayed in the other mode. `pagehide` fires synchronously on
+  // detach, and removing the host element takes the shadow tree — pins,
+  // highlight, and a portaled composer — with it. DOM removal only: a param
+  // write here would land in the runtime's coalescing queue after its own
+  // pagehide flush has already run, i.e. sometimes never.
+  //
+  // The two adoption guards go with the layer, and this is a RELEASE, not
+  // tidiness: `__fusedAnnWatched` (on the host's iframe element) and
+  // `__fusedAnnWired` (on its document) exist to stop ONE instance stacking a
+  // second set of listeners — but both objects are the host's and outlive us,
+  // so to the NEXT sidebar instance they read as "already adopted" and its
+  // annWatchTarget/annWireTarget never run. That was the armed-but-dead
+  // switch: "Annotating" on, no hover ring, no click, because the only wiring
+  // the target ever had belonged to a torn-down document whose handlers the
+  // browser no longer runs. Cleared here, the next instance re-adopts and
+  // re-wires; the dead listeners it cannot remove stay inert for the same
+  // reason they stopped working.
+  window.addEventListener("pagehide", () => {
+    annOn = false;   // gates any handler of ours the browser does still run
+    const doc = annTargetDoc();
+    const host = doc && doc.querySelector("[" + ANN_LAYER_MARK + "]");
+    if (host) host.remove();
+    if (annFrame) annFrame.__fusedAnnWatched = false;
+    if (doc) doc.__fusedAnnWired = false;
+  });
 } else {
   annWatchTarget(annOwnFrame);
 }
