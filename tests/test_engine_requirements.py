@@ -32,6 +32,16 @@ claimed the two were in sync while being wrong in ten places.
      header. With that baseline gone, an incomplete declaration is a broken
      template — and a silent one (a guarded import degrades, an unguarded one
      500s a tile request), never a startup error anyone sees.
+  4. **A template that imports something the app does NOT ship must declare an
+     environment at all** — the converse of 2, and the half that was missing.
+     Parts 1-3 only ever constrain a folder that already has a
+     `pyproject.toml`, so shrinking `[bundled]` (D234) could have quietly left
+     `map`, `vector`, `slides` and friends importing distributions no packaged
+     app carries, with every test still green and the failure landing on a user
+     as `ModuleNotFoundError` — or, worse, as `pip install rasterio` advice a
+     DMG cannot follow, which is exactly the D176 defect. Nothing about
+     "necessary and complete" catches a template that declares *nothing*, so
+     this rule does.
 
 The scope of part 3 is what the folder rule changed: it used to be "each entry
 point that can execute this file", walked from the source through `_venv_roots`,
@@ -46,6 +56,7 @@ for an environment nothing will ever import from.
 """
 import ast
 import functools
+import importlib.util
 import os
 import re
 
@@ -71,16 +82,27 @@ _PEP723 = re.compile(
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 
-# import name -> distribution name, for every distribution the app's own
-# interpreter provides (`[bundled]` + core `dependencies`). Only these are
-# checked: this is a guard on what the app ships versus what a script venv
-# would contain, not a general dependency linter (on-demand binary fetches like
-# pxr/pypandoc/typst and genuinely optional readers like rawpy have their own
-# mechanisms and their own tests).
+# import name -> distribution name, for every distribution whose PRESENCE ON
+# THE APP INTERPRETER the rules below reason about. Two kinds live here:
 #
-# `test_the_import_map_covers_everything_the_app_ships` keeps this honest — a
-# distribution added to `[bundled]` with no entry here would be invisible to
-# the completeness half and silently exempt from it.
+#   * everything the app's own interpreter provides (`[bundled]` + core
+#     `dependencies`) — part 3 needs these, because a script venv gets only what
+#     its folder declares, so an undeclared import of something the app happens
+#     to have is simply absent there;
+#   * the distributions `[bundled]` USED to promise and no longer does (polars,
+#     matplotlib, scipy, the PDF stack, the geo stack — D234). Part 4 needs
+#     these: dropping them from the map at the same time as from the extra would
+#     have made every template that imports one silently exempt from BOTH halves,
+#     which is the failure the extra was shrunk under, not a consequence of it.
+#
+# Nothing else is checked: this is a guard on what the app ships versus what a
+# script venv would contain, not a general dependency linter (on-demand binary
+# fetches like pxr/pypandoc/typst and genuinely optional readers like rawpy have
+# their own mechanisms and their own tests).
+#
+# `test_the_import_map_covers_everything_the_app_ships` keeps the first half
+# honest — a distribution added to `[bundled]` with no entry here would be
+# invisible to the completeness rule and silently exempt from it.
 _IMPORT_TO_DIST = {
     "numpy": "numpy",
     "pandas": "pandas",
@@ -163,6 +185,31 @@ _IMPORT_TO_DIST = {
 # reasoned — the same shape as the on-demand binary fetches (pxr/pypandoc/typst)
 # and optional readers (rawpy) noted above.
 _COMPLETENESS_EXEMPT = {"fused"}
+
+# (template file, distribution) -> why importing it does NOT oblige the folder to
+# declare an environment (part 4 only).
+#
+# The rule part 4 enforces is "this template cannot work unless the app has it".
+# An import that only ever runs when SOMEONE ELSE has already imported the module
+# does not meet that bar: there is nothing for a venv of our own to supply.
+# Kept as a stated delta rather than an AST heuristic for guarded imports —
+# `try: import x / except ImportError` is ambiguous (it is just as often a
+# degraded path we do not want silently accepted), while this is one line per
+# case with a reason, checked for staleness by
+# `test_every_optional_import_exemption_is_real_and_reasoned` (D177: if a hand
+# list must exist, reduce it to the deltas and make each one justify itself).
+#
+# Paths are posix-separated, relative to fused_render/templates/.
+_OPTIONAL_IMPORTS = {
+    ("notebook/kernel_body.py", "matplotlib"): (
+        "the kernel harvests figures the USER's own cell created, behind "
+        '`if "matplotlib" not in sys.modules: return` — it never imports '
+        "matplotlib itself, and a notebook whose interpreter lacks it simply "
+        "produces no inline figures. Declaring it would be worse than useless: "
+        "the notebook kernel runs arbitrary user code, so putting the folder in "
+        "a venv would replace the app interpreter's whole stack with one package."
+    ),
+}
 
 # NOTE: there is deliberately no hand-maintained "this file inherits that
 # file's venv" table here. The first version of this test had one, listing a
@@ -388,6 +435,24 @@ def _app_dists() -> frozenset[str]:
     )
 
 
+@functools.lru_cache(maxsize=1)
+def _bundle_dists() -> frozenset[str]:
+    """What a PACKAGED app's interpreter really has: `_app_dists()` minus what
+    the build holds back (`BUNDLED_EXCLUDED`, DM-2).
+
+    Read from `scripts/setup_py2app.py` rather than restated, for the same
+    reason `_app_dists()` reads pyproject.toml: the exclusion mechanism is empty
+    today, and a second copy of an empty list is exactly the thing that is wrong
+    the day it stops being empty.
+    """
+    path = os.path.join(_REPO, "scripts", "setup_py2app.py")
+    spec = importlib.util.spec_from_file_location("_setup_py2app_for_reqs", path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return _app_dists() - {_norm(n) for n in module.BUNDLED_EXCLUDED}
+
+
 def test_the_import_map_covers_everything_the_app_ships():
     """Every app distribution must be reachable through `_IMPORT_TO_DIST`.
 
@@ -465,6 +530,70 @@ def test_a_declared_environment_is_complete(relpath):
         "in (D172). Add them there and re-lock — or, if that template needs "
         "nothing outside `[bundled]`, delete the pyproject.toml entirely so the "
         "folder runs on the app's own interpreter."
+    )
+
+
+def test_every_optional_import_exemption_is_real_and_reasoned():
+    """A stale exemption is as misleading as an undocumented one (D176's rule
+    for `BUNDLED_EXCLUDED`, applied to the one hand list in this file).
+
+    Both halves are checked: the file must exist and must still import the
+    distribution the entry excuses. An exemption that has outlived its import is
+    a standing hole in part 4 that nothing else would ever notice.
+    """
+    graph = _template_graph()
+    for (relpath, dist), reason in _OPTIONAL_IMPORTS.items():
+        native = relpath.replace("/", os.sep)
+        assert native in graph["imports"], (
+            f"_OPTIONAL_IMPORTS names {relpath}, which is not a template .py file"
+        )
+        assert dist in graph["imports"][native], (
+            f"_OPTIONAL_IMPORTS excuses {relpath} from declaring {dist!r}, but it "
+            "no longer imports it — delete the entry"
+        )
+        assert reason and len(reason) > 40, (
+            f"the exemption of {dist!r} in {relpath} must say why the import does "
+            f"not oblige the folder to declare an environment; got {reason!r}"
+        )
+
+
+@pytest.mark.parametrize("relpath", _template_files())
+def test_a_template_declares_whatever_the_app_does_not_ship(relpath):
+    """Part 4: importing what the app lacks obliges the FOLDER to declare it.
+
+    Parts 1-3 all start from "this folder has a pyproject.toml". None of them
+    can see the template that has none and needs one — and that is the state
+    every template importing `rasterio`/`geopandas`/`matplotlib`/… was left in
+    the moment those left `[bundled]` (D234). The user-visible failure is a
+    `ModuleNotFoundError` inside a tile request, or an install hint a packaged
+    app cannot act on (D176). So the obligation runs in both directions now:
+    declare nothing you already have (test_bundle_contents.py), and declare
+    everything you do not.
+
+    Judged against the BUNDLE (`_bundle_dists()`), not against `[bundled]`, for
+    the D176 reason: macOS ships the narrowest set and is the binding platform.
+
+    A file that manages its own venv (D174) is exempt — geotiff's and netcdf's
+    daemons install their heavy half themselves, and duplicating that in the
+    folder manifest would download the same packages twice.
+    """
+    graph = _template_graph()
+    if graph["self_managed"][relpath]:
+        return
+    optional = {
+        dist for (path, dist) in _OPTIONAL_IMPORTS
+        if path.replace("/", os.sep) == relpath
+    }
+    needed = graph["imports"][relpath] - _bundle_dists() - optional
+    folder = _declaring_folder(relpath)
+    missing = sorted(needed - _project_deps(folder))
+    assert not missing, (
+        f"{relpath} imports {missing}, which no packaged app ships — so on a DMG "
+        "or AppImage this template fails at import with nothing the user can do "
+        "about it. Declare them in "
+        f"`fused_render/templates/{folder}/pyproject.toml` (SPEC PY-16) and run "
+        f"`uv lock` there, or move the import behind a venv the file manages "
+        "itself (D174)."
     )
 
 
