@@ -99,9 +99,14 @@
 
    `margin-left` now, where it was `margin-right`: the star moved from the head
    of the path to its tail (Breadcrumb.tsx), so the pair being tightened is
-   last-crumb/★ rather than ★/first-crumb. Same 11px, other side. */
+   last-crumb/★ rather than ★/first-crumb.
+
+   -6px, not the head position's -11px: at the tail the star follows the
+   filename — the strip's one emphasized segment — and the full crumb rhythm
+   read as the star touching it (Akshil: "a little more padding"). 13px of
+   air: looser than the 8px crumb gap, still inside the path's zone. */
 #breadcrumb .bookmark-star-btn {
-  margin-left: -11px;
+  margin-left: -6px;
 }
 
 .bookmark-star-btn:hover {
