@@ -21,8 +21,12 @@ exactly what a user's page code can import — the list can't drift from the app
 # plumbing (fastapi, packaging, tomli, …) is not something a page should import.
 #
 # What is deliberately NOT here: polars, matplotlib, scipy, geopandas, shapely,
-# rasterio, zarr, pymupdf, pikepdf, fpdf2. They left the bundle in D276 —
-# 556 MB that every user carried for a minority of pages. They are still one
+# rasterio, rio-tiler, zarr, pymupdf, pikepdf. They left the bundle in D276 —
+# 541.9 MB that every user carried for a minority of pages. `fpdf2` is NOT one
+# of them: it was moved out and put back, because PY-16's unit is the folder and
+# declaring it would have gated every .xlsx/.csv/.pptx on a venv build. It stays
+# in `[bundled]`, so it stays importable — it is simply not advertised here,
+# which is a curation choice and not an absence. They are still one
 # line away: a `pyproject.toml` next to your .py naming them gets that folder
 # its own environment, built on first run (SPEC PY-16/PY-18). The Learn page
 # says so under the table; keep the two in step.

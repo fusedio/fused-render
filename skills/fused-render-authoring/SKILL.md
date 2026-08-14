@@ -66,7 +66,7 @@ Write `main()` against **stdlib plus the supported library set** below — a fol
 - **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
 - **Logs:** `drain3`
 
-Anything outside this set is missing by default — including several packages the app used to ship and no longer does: **polars, matplotlib, scipy, geopandas, shapely, rasterio, rio-tiler, zarr, pymupdf, pikepdf, fpdf2**. They were 556 MB every user carried for a minority of pages, so they moved to per-folder declarations. Reaching for any of them (or for torch, sklearn, xarray, plotly) is a deliberate choice with a cost — a one-time install the user waits through — so prefer rewriting with the always-there set; when it genuinely cannot do the job, declare the folder's dependencies (next section).
+Anything outside this set is missing by default — including several packages the app used to ship and no longer does: **polars, matplotlib, scipy, geopandas, shapely, rasterio, rio-tiler, zarr, pymupdf, pikepdf**. They were 541.9 MB every user carried for a minority of pages, so they moved to per-folder declarations. **`fpdf2` is still bundled and still importable** — it is not in the table above only because that table is curated, and PDF export via `from fpdf import FPDF` needs no declaration and no install. Reaching for any of them (or for torch, sklearn, xarray, plotly) is a deliberate choice with a cost — a one-time install the user waits through — so prefer rewriting with the always-there set; when it genuinely cannot do the job, declare the folder's dependencies (next section).
 
 ### Declaring extra dependencies: `pyproject.toml`
 
