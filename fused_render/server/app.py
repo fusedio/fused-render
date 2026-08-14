@@ -61,6 +61,7 @@ from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
 # (tests repoint it at a staged copy before calling create_app, and
 # core_templates staging is the reason it can move at all), and a by-value
@@ -333,6 +334,10 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Self-update triggers (routers/update.py) — POSTs that kick a manifest
+    # check / an install; both carry the D3 X-Fused guard and 404 unless the
+    # mac app started the update manager.
+    app.include_router(update_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)

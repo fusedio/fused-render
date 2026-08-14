@@ -193,6 +193,27 @@ jobs:
           echo "dmg_url=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_OUTPUT"
           echo "wheel_url=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_OUTPUT"
 
+      - name: Publish signed macOS update manifest
+        # The in-app updater (fused_render/update/mac.py) polls this fixed
+        # name — same signing scheme and script as the Windows manifest
+        # (docs/PYTHON_SUPERVISOR_SPEC.md "Software updates"). The manifest
+        # URL points at the already-uploaded DMG, so this runs strictly after
+        # the S3 upload above.
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          MACOS_PREFIX: fused-render-macos
+        run: |
+          set -euo pipefail
+          VERSION="$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')"
+          uv run --no-project --with cryptography \
+            scripts/windows/generate_update_manifest.py \
+            "$VERSION" "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs" \
+            dist/macos-latest.json
+          # no-cache: the updater polls this fixed name; a stale CDN copy
+          # would mask a release.
+          aws s3 cp dist/macos-latest.json "s3://${S3_BUCKET}/${MACOS_PREFIX}/latest.json" \
+            --cache-control no-cache
+
       - name: Invalidate CloudFront
         # The root download page (index.html/latest.json/og-image.png) is
         # published once, after every platform build, by the
@@ -203,7 +224,7 @@ jobs:
           set -euo pipefail
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
+            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*" "/fused-render-macos/*"
 
       - name: Upload DMG + wheel to GitHub Release
         env:

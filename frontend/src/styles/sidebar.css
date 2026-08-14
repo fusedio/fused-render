@@ -765,3 +765,90 @@ a.bookmark-name::after {
   padding: 10px 4px;
 }
 
+
+/* -- Self-update badge (platform/ui/UpdateBadge, packaged mac app only) ----- */
+
+.update-badge {
+  margin: 2px 8px;
+  font-size: 12px;
+}
+
+.update-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(var(--tint), 0.07);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.update-badge-row:hover {
+  background: rgba(var(--tint), 0.12);
+}
+
+.update-badge-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.update-badge-panel {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.update-badge-text {
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+
+.update-badge-error {
+  color: var(--fg);
+}
+
+.update-badge-action {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.update-badge-command {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.update-badge-command code {
+  flex: 1;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: rgba(var(--tint), 0.09);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.update-badge-copy {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}

@@ -6,12 +6,9 @@ clicks the tray item and approves the prompt. Runs on worker threads; never
 raises, so a failed check can't tear down the Job-owned server."""
 from __future__ import annotations
 
-import base64
 import ctypes
 import glob
-import hashlib
 import http.client
-import json
 import os
 import tempfile
 import threading
@@ -19,22 +16,18 @@ import time
 import urllib.error
 import urllib.request
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
 from fused_render import __version__
 from fused_render.supervisor.paths import DesktopPaths
+from fused_render.update import common as _common
 
 _MANIFEST_URL = "https://d2ic19jpchjovp.cloudfront.net/fused-render-windows/latest.json"
-_PUBLIC_KEY = base64.b64decode("u4eiDvccdWmsVCN0nifCEXqmU+xVGIDPe8LP5KRlDns=")
-_SIGNING_CONTEXT = "fused-render-update"
-_FETCH_TIMEOUT_S = 15.0
-_DOWNLOAD_TIMEOUT_S = 300.0
-_STARTUP_DELAY_S = 60.0
-_CHECK_INTERVAL_S = 6 * 60 * 60
-_MAX_MANIFEST_BYTES = 64 * 1024
-_MAX_INSTALLER_BYTES = 600 * 1024 * 1024
-_DOWNLOAD_CHUNK = 1024 * 1024
+# Re-exported from update/common so tests can patch them on THIS module (the
+# thin wrappers below read the module globals at call time).
+_PUBLIC_KEY = _common.PUBLIC_KEY
+_SIGNING_CONTEXT = _common.SIGNING_CONTEXT
+_STARTUP_DELAY_S = _common.STARTUP_DELAY_S
+_CHECK_INTERVAL_S = _common.CHECK_INTERVAL_S
+_MAX_INSTALLER_BYTES = _common.MAX_ARTIFACT_BYTES
 _STAGE_PREFIX = "FusedRenderPy-"
 _STAGE_SUFFIX = "-setup.exe"
 
@@ -55,23 +48,10 @@ _check_lock = threading.Lock()
 _install_launched = False
 
 
-class _HttpsOnlyRedirect(urllib.request.HTTPRedirectHandler):
-    """urlopen follows redirects by default; refuse any that leave HTTPS so a
-    compromised CDN can't 302 the download to http and bypass the https-only
-    control (integrity still rests on the signed sha256, but don't ship bytes
-    over cleartext)."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not newurl.startswith("https://"):
-            raise urllib.error.URLError("refusing non-https redirect during update")
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_opener = urllib.request.build_opener(_HttpsOnlyRedirect)
-
-
-def _urlopen(url: str, timeout: float):
-    return _opener.open(url, timeout=timeout)
+# Test seam: tests patch this to stub network I/O; the wrappers below pass it
+# through to update/common per call.
+_urlopen = _common.urlopen
+_HttpsOnlyRedirect = _common.HttpsOnlyRedirect
 
 
 def start_auto_checks(paths: DesktopPaths, notify) -> None:
@@ -222,70 +202,25 @@ def _wait_for_exit(handle) -> None:
 
 
 def _fetch_manifest() -> dict:
-    """Fetch, validate, and cryptographically verify the manifest. The
-    ed25519 signature is checked here — before any caller trusts `version` to
-    decide "up to date" or to prompt — so a CDN/bucket compromise can't forge
-    a version to suppress or fake an update."""
-    with _urlopen(_MANIFEST_URL, _FETCH_TIMEOUT_S) as resp:
-        raw = resp.read(_MAX_MANIFEST_BYTES + 1)
-    if len(raw) > _MAX_MANIFEST_BYTES:
-        raise ValueError("update manifest is too large")
-    manifest = json.loads(raw)
-    if not isinstance(manifest, dict) or manifest.get("schema") != 1 or not all(
-        isinstance(manifest.get(key), str)
-        for key in ("version", "url", "sha256", "signature")
-    ):
-        raise ValueError("malformed update manifest")
-    _verify_signature(manifest["version"], manifest["sha256"], manifest["signature"])
-    return manifest
-
-
-def _verify_signature(version: str, sha256: str, signature: str) -> None:
-    message = f"{_SIGNING_CONTEXT}\n{version}\n{sha256}\n".encode("utf-8")
-    try:
-        Ed25519PublicKey.from_public_bytes(_PUBLIC_KEY).verify(
-            base64.b64decode(signature), message
-        )
-    except InvalidSignature as error:
-        raise ValueError("update manifest signature is invalid") from error
+    """Fetch, validate, and cryptographically verify the manifest (see
+    update/common.fetch_manifest). Module globals are passed per call so tests
+    can patch `_urlopen`/`_PUBLIC_KEY` on this module."""
+    return _common.fetch_manifest(_MANIFEST_URL, urlopen_fn=_urlopen,
+                                  public_key=_PUBLIC_KEY)
 
 
 def _is_newer(candidate: str, current: str) -> bool:
-    def parts(version: str) -> tuple[int, ...]:
-        return tuple(int(part) for part in version.split("."))
-
-    return parts(candidate) > parts(current)
+    return _common.is_newer(candidate, current)
 
 
 def _download_verified(manifest: dict) -> str:
     """Stream the installer to %TEMP% (never the supervisor's temp dir, which
     the installer's [InstallDelete] wipes) while hashing it, and confirm its
-    SHA-256 matches the signed value. The manifest signature (over version +
-    sha256) is already verified in _fetch_manifest; the URL is not signed, so
-    require HTTPS."""
-    url = manifest["url"]
-    if not url.startswith("https://"):
-        raise ValueError("update manifest url is not https")
-    sha256 = manifest["sha256"]
-    digest = hashlib.sha256()
-    total = 0
-    fd, path = tempfile.mkstemp(prefix=_STAGE_PREFIX, suffix=_STAGE_SUFFIX)
-    ok = False
-    try:
-        with os.fdopen(fd, "wb") as out, _urlopen(url, _DOWNLOAD_TIMEOUT_S) as resp:
-            while chunk := resp.read(_DOWNLOAD_CHUNK):
-                total += len(chunk)
-                if total > _MAX_INSTALLER_BYTES:
-                    raise ValueError("update installer exceeds the size limit")
-                digest.update(chunk)
-                out.write(chunk)
-        if digest.hexdigest() != sha256:
-            raise ValueError("downloaded installer does not match the signed manifest")
-        ok = True
-        return path
-    finally:
-        if not ok:
-            _discard(path)
+    SHA-256 matches the signed value (see update/common.download_verified)."""
+    return _common.download_verified(
+        manifest, prefix=_STAGE_PREFIX, suffix=_STAGE_SUFFIX,
+        max_bytes=_MAX_INSTALLER_BYTES, urlopen_fn=_urlopen,
+    )
 
 
 def _sweep_stale_downloads() -> bool:
@@ -305,10 +240,7 @@ def _sweep_stale_downloads() -> bool:
 
 
 def _discard(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+    _common.discard(path)
 
 
 def _alert(text: str, icon: int) -> None:
