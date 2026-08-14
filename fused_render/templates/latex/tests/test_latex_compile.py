@@ -146,3 +146,21 @@ def test_export_surfaces_a_pypandoc_failure(eng, tmp_path, monkeypatch):
 
     r = eng.main(action="export", path=_tex(tmp_path), target="html")
     assert "error" in r and "pandoc boom" in r["error"]
+
+
+def test_export_falls_back_to_ondemand_venv_when_pypandoc_missing(eng, tmp_path, monkeypatch):
+    # The built-in engine runs export on the app interpreter (no folder venv), so
+    # `import pypandoc` fails and we must fetch pandoc on demand instead of crashing.
+    import json as _json
+    monkeypatch.setattr(eng, "_export_dir_for", lambda p: str(tmp_path))
+    monkeypatch.setitem(sys.modules, "pypandoc", None)          # import pypandoc -> ImportError
+    monkeypatch.setattr(eng, "_pandoc_venv_python", lambda: "pyexe")
+
+    def fake_run(cmd, **kw):
+        a = _json.loads(cmd[-1])                                 # the conversion job rides in argv
+        open(a["out"], "w", encoding="utf-8").write("converted")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(eng.subprocess, "run", fake_run)
+
+    r = eng.main(action="export", path=_tex(tmp_path), target="md")
+    assert r.get("name", "").endswith(".md") and r.get("size", 0) > 0 and "error" not in r

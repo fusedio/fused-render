@@ -48,6 +48,7 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from procutil import clean_env as _clean_env
 from procutil import pid_alive as _pid_alive
 from procutil import spawn_python as _spawn_python
 
@@ -213,6 +214,58 @@ def _export_dir_for(main_path: str) -> str:
     d = os.path.join(EXPORTS, h)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+PANDOC_DIR = os.path.join(CACHE_ROOT, "_pandoc")   # export-only fallback venv (see _pandoc_convert)
+
+
+def _pandoc_venv_python() -> str:
+    """A private venv holding `pypandoc-binary`, built once with uv. Only reached
+    when `import pypandoc` fails — i.e. the built-in engine ran export on the app
+    interpreter (which has no folder venv, D174) rather than the fused engine's."""
+    vpy = os.path.join(PANDOC_DIR, "venv", "Scripts" if os.name == "nt" else "bin",
+                       "python.exe" if os.name == "nt" else "python")
+    marker = os.path.join(PANDOC_DIR, "deps_ok")
+    if os.path.exists(vpy) and os.path.exists(marker):
+        return vpy
+    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+    if not (shutil.which("uv") or os.path.exists(uv)):
+        raise RuntimeError("Export needs the 'uv' tool to set up pandoc — install it "
+                           "from https://astral.sh/uv and try again.")
+    os.makedirs(PANDOC_DIR, exist_ok=True)
+    env = _clean_env()   # a bundle-pointing PYTHON* would shadow the venv's pypandoc
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    if not os.path.exists(vpy):
+        subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
+                       check=True, capture_output=True, env=env, creationflags=flags)
+    subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
+                   check=True, capture_output=True, env=env, creationflags=flags)
+    with open(marker, "w", encoding="utf-8") as f:   # only after a clean install
+        f.write("ok")
+    return vpy
+
+
+def _pandoc_convert(src, to, out, extra):
+    """Convert `src` -> `out` with pypandoc. Fast path: import it from the folder
+    venv (the fused engine's). Fallback: the built-in engine has no such venv, so
+    fetch pandoc into a private one and run the conversion there. Raises on
+    failure so the one caller reports it uniformly."""
+    try:
+        import pypandoc
+    except ImportError:
+        vpy = _pandoc_venv_python()
+        code = ("import json,sys,pypandoc;a=json.loads(sys.argv[1]);"
+                "pypandoc.convert_file(a['src'],a['to'],format='latex+raw_tex',"
+                "outputfile=a['out'],extra_args=a['extra'])")
+        args = json.dumps({"src": src, "to": to, "out": out, "extra": extra})
+        p = subprocess.run([vpy, "-c", code, args], capture_output=True, text=True,
+                           env=_clean_env(),
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        if p.returncode != 0 or not os.path.exists(out):
+            detail = (p.stderr or p.stdout or "").strip().splitlines()
+            raise RuntimeError(detail[-1] if detail else "pandoc conversion failed")
+        return
+    pypandoc.convert_file(src, to, format="latex+raw_tex", outputfile=out, extra_args=extra)
 
 
 # -------------------------------------------------------------- compile + log
@@ -1102,14 +1155,8 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
                       "--section-divs", "--embed-resources"]
         elif to in ("docx", "odt"):
             extra += ["--toc"]
-        # pypandoc is a declared dependency (pyproject.toml), so it is importable
-        # in the folder's venv — the interpreter this action runs under, whether
-        # served by the daemon (which runs IN that venv) or via a direct runPython
-        # fallback. No subprocess, so no inherited-env / PATH surprises.
-        import pypandoc
         try:
-            pypandoc.convert_file(path, to, format="latex+raw_tex",
-                                  outputfile=out, extra_args=extra)
+            _pandoc_convert(path, to, out, extra)
         except Exception as e:  # noqa: BLE001 — surface the failure to the UI
             return {"error": f"export to {fmt} failed: {e}"}
         return {"path": out, "name": os.path.basename(out), "size": os.path.getsize(out)}

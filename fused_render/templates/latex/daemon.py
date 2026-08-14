@@ -145,7 +145,6 @@ def _await_daemon(version):
 
 
 def _spawn():
-    os.makedirs(engine.CACHE_ROOT, exist_ok=True)
     log = os.path.join(engine.CACHE_ROOT, "daemon.log")
     # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP (NOT CREATE_NO_WINDOW — the two
     # combined fail to spawn on Windows); start_new_session is the POSIX equal.
@@ -159,6 +158,7 @@ def _spawn():
 
 def main():
     """runPython entrypoint: ensure the daemon is up, return {port, token}."""
+    os.makedirs(engine.CACHE_ROOT, exist_ok=True)   # LOCK/STATE/log all live under it
     version = _version()
     st = _read_state()
     if st and _alive(st.get("port"), version, st.get("token")):
@@ -196,6 +196,10 @@ def _make_server():
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            # Poll/compile GETs reuse the same URL (warm_status, force=0 autosave
+            # compiles); without no-store a memory cache (esp. WKWebView) would
+            # replay the first response and warming/compiles would look stuck.
+            self.send_header("Cache-Control", "no-store")
             self._cors()
             self.end_headers()
             self.wfile.write(body)

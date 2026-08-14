@@ -464,7 +464,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
         const qs = new URLSearchParams();
         for (const [k, v] of Object.entries(params || {})) qs.set(k, v == null ? "" : String(v));
         qs.set("_token", d.token || "");
-        res = await fetch(`http://127.0.0.1:${d.port}/run?${qs.toString()}`);
+        res = await fetch(`http://127.0.0.1:${d.port}/run?${qs.toString()}`, { cache: "no-store" });
       } catch (e) { /* transport failure — the daemon likely died */ }
       if (res && res.ok) {
         const out = await res.json();
