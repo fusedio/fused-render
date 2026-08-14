@@ -90,6 +90,8 @@ JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 #: pieces of work with two progress bars, and a shared id would have the second
 #: overwrite the first's row mid-flight.
 IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
+#: And one row per RECORDING, for the same reason.
+TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 
 
 class SupervisorError(RuntimeError):
@@ -857,6 +859,47 @@ def start_image(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-image", daemon=True).start()
 
 
+def transcribe_job_id(uid: str) -> str:
+    """The download-manager row for one transcription. See `image_job_id`."""
+    return TRANSCRIBE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_transcribe(model: str, request: dict, job: str) -> None:
+    """Open `job` and transcribe on a thread. Raises before starting if it cannot.
+
+    The runner check is synchronous here for the reason `start_image` explains:
+    a request a machine cannot serve should answer with the reason, not open a
+    row that immediately dies.
+    """
+    _runner_or_raise(registry.SPEECH_TO_TEXT)
+    _require_build_tools()
+
+    # The FILE is the title, not the model: the manager may be showing several
+    # of these at once and "meeting-2024.m4a" is what tells them apart.
+    title = os.path.basename(str(request.get("path") or "")) or model
+    # `unit="s"` from the first tick: the row is drawn before the worker knows
+    # the duration, and a bar that starts unitless and acquires seconds later
+    # relabels itself under the user.
+    _report(job, title=title[:80], state="running", kind="task", cancellable=True,
+            unit="s", detail="Preparing…", done=None, total=None)
+
+    def run() -> None:
+        try:
+            result = generate_transcript(model, request, job)
+        except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
+            message = _failure_text(e)
+            if message == "cancelled":
+                _report(job, state="cancelled")
+            else:
+                _report(job, state="error", message=message)
+            return
+        duration = result.get("duration")
+        _report(job, state="done", done=duration, total=duration,
+                detail=f"Saved {os.path.basename(result.get('output') or 'transcript')}")
+
+    threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
+
+
 def unload(model: str | None = None, capability: str | None = None) -> bool:
     """Stop a resident worker. True if there was one to stop."""
     with _lock:
@@ -1039,6 +1082,36 @@ def generate_image(model: str, request: dict, job: str) -> dict:
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
         raise SupervisorError(str(payload.get("error") or "the image failed to render"))
+    return payload.get("result") or {}
+
+
+def generate_transcript(model: str, request: dict, job: str) -> dict:
+    """Transcribe one recording. Blocking — call it on a thread, never on the loop.
+
+    The image path's shape exactly (`generate_image`), because the two have the
+    same properties: minutes of work, a model that may need loading first, a
+    file the worker writes itself, and progress that goes straight to `job`.
+    Nothing here polls; this function holds the request open and turns a dead
+    worker into an error somebody can read.
+    """
+    worker = ready_worker(registry.SPEECH_TO_TEXT, model)
+    if worker is None:
+        worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job)
+
+    try:
+        response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                   timeout=GENERATE_TIMEOUT_S)
+    except (OSError, ValueError) as e:
+        raise SupervisorError(f"the transcription process did not answer: {e}") from e
+    with response:
+        try:
+            payload = json.loads(response.read().decode() or "{}")
+        except ValueError as e:
+            raise SupervisorError("the transcription process sent a malformed reply") from e
+    if payload.get("cancelled"):
+        raise SupervisorError("cancelled")
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or "the transcription failed"))
     return payload.get("result") or {}
 
 

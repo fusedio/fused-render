@@ -176,6 +176,82 @@ FAKE_IMAGE_WORKER = textwrap.dedent('''
 ''')
 
 
+# A transcription worker: loads instantly, answers /health, and writes the two
+# transcript files where the request tells it to. Stands in for
+# faster_whisper/worker.py's CONTRACT — a single JSON reply and files on disk —
+# not for Whisper.
+FAKE_TRANSCRIBE_WORKER = textwrap.dedent('''
+    import argparse, http.server, json, os, socketserver, sys, threading, time
+
+    TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+    STATE = {"state": "loading", "model": "", "detail": "", "error": "",
+             "resident_bytes": None, "loaded_at": None}
+    SEGMENTS = [{"start": 0.0, "end": 1.5, "text": "hello"},
+                {"start": 1.5, "end": 3.0, "text": "world"}]
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def ok(self):
+            if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
+                return True
+            self.send_response(403); self.send_header("Content-Length","0"); self.end_headers()
+            return False
+        def _json(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if not self.ok(): return
+            self._json(STATE)
+        def do_POST(self):
+            if not self.ok(): return
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            body = json.loads(raw or b"{}")
+            if self.path.startswith("/quit"):
+                self._json({"ok": True})
+                threading.Thread(target=lambda: (time.sleep(0.05), os._exit(0)), daemon=True).start()
+                return
+            if self.path.startswith("/generate"):
+                if os.environ.get("FAKE_TRANSCRIBE_FAILS") == "1":
+                    self._json({"ok": False, "error": "the decoder exploded"}); return
+                out, out_text = body["out"], body["outText"]
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                text = " ".join(s["text"] for s in SEGMENTS)
+                result = {"path": body["path"], "output": out, "outputText": out_text,
+                          "task": body.get("task"), "language": "en", "duration": 3.0,
+                          "seconds": 0.1}
+                with open(out, "w") as f:
+                    json.dump({**result, "segments": SEGMENTS, "text": text}, f)
+                with open(out_text, "w") as f: f.write(text + "\\n")
+                self._json({"ok": True, "result": {**result, "segments": len(SEGMENTS)}})
+                return
+            self._json({"ok": True})
+
+    class S(socketserver.ThreadingTCPServer):
+        daemon_threads = True; allow_reuse_address = True
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--model"); p.add_argument("--status", default="")
+    p.add_argument("--job", default=""); p.add_argument("--download-only", action="store_true")
+    a = p.parse_args()
+    if a.download_only:
+        sys.exit(0)
+    STATE["model"] = a.model
+    srv = S(("127.0.0.1", 0), H)
+    with open(a.status, "w") as f:
+        json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
+    def ready():
+        time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
+        STATE.update(state="ready", resident_bytes=2222, loaded_at=time.time())
+    threading.Thread(target=ready, daemon=True).start()
+    srv.serve_forever()
+''')
+
+
 @pytest.fixture()
 def fake_runner(tmp_path, monkeypatch):
     """A registry with one runner whose worker is the fake, and whose venv is
@@ -220,6 +296,34 @@ def fake_image_runner(tmp_path, monkeypatch):
     yield runner
     supervisor.unload()
     supervisor.reset()
+
+
+@pytest.fixture()
+def fake_transcribe_runner(tmp_path, monkeypatch):
+    """A registry whose ONLY runner transcribes, with the fake worker and this
+    interpreter — so no CTranslate2, no weights, no audio."""
+    folder = tmp_path / "fake_transcribe_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_TRANSCRIBE_WORKER)
+    runner = registry.Runner(
+        code="fake-whisper", capability=registry.SPEECH_TO_TEXT,
+        folder=str(folder), label="Fake whisper",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def recording(tmp_path):
+    """A file to point the route at. Its BYTES are never read — the fake worker
+    stands in for the decoder — but its existence is what the route checks."""
+    path = tmp_path / "meeting.m4a"
+    path.write_bytes(b"not really audio")
+    return str(path)
 
 
 @pytest.fixture(autouse=True)
@@ -822,7 +926,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
-                 "/api/ai/runtime/download", "/api/ai/image"):
+                 "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -1056,6 +1160,124 @@ def test_a_model_taken_away_mid_wait_still_says_it_was_unloaded(fake_image_runne
         supervisor._wait_ready("org/paints", registry.IMAGE_GENERATION,
                                supervisor.IMAGE_JOB_PREFIX + "waiter")
     assert "unloaded before it could be used" in str(caught.value)
+
+
+# -- transcription (SPEC §40) ---------------------------------------------------
+# Job-backed like an image and for the same reason — a 90-minute recording is
+# not a chat turn — with one addition: the transcript is a FILE, so the work
+# outlives the tab that asked for it.
+
+
+def _post_transcribe(client, **body):
+    return client.post("/api/ai/transcribe", json=body, headers={"X-Fused": "1"})
+
+
+def test_a_transcript_is_written_to_disk_and_the_job_finishes(
+        client, fake_transcribe_runner, recording):
+    started = _post_transcribe(client, path=recording).json()
+
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    # The output path the POST promised is the path that exists — no second
+    # lookup, exactly as the image route works.
+    written = json.load(open(started["output"]))
+    assert written["text"] == "hello world"
+    assert written["segments"][0]["start"] == 0.0
+    # …and the plain-text sibling beside it, for anything that wants words
+    # without timestamps.
+    assert open(started["outputText"]).read().strip() == "hello world"
+
+
+def test_the_transcribe_reply_settles_the_request_before_anything_runs(
+        client, fake_transcribe_runner, recording):
+    """Everything the caller needs comes back from the POST: which model, which
+    file, and where the transcript will land. Nothing waits on the work."""
+    reply = _post_transcribe(client, path=recording, task="translate").json()
+    assert reply["path"] == os.path.abspath(recording)
+    assert reply["model"] == catalog.default_for(registry.SPEECH_TO_TEXT)
+    assert reply["task"] == "translate"
+    assert reply["output"].endswith(".json")
+    assert os.path.dirname(reply["output"]).endswith(os.path.join("ai", "transcripts"))
+    _wait_job(reply["jobId"])
+
+
+def test_transcribing_needs_a_file_that_actually_exists(
+        client, fake_transcribe_runner, recording, tmp_path):
+    """Refused with a 400 BEFORE a job row opens. A path typo should be an
+    error the caller can show, not a progress bar that dies."""
+    for body in ({}, {"path": ""}, {"path": 7},
+                 {"path": str(tmp_path / "nothing.wav")},
+                 {"path": str(tmp_path)}):
+        assert _post_transcribe(client, **body).status_code == 400, body
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_an_unknown_task_names_both_valid_ones(client, fake_transcribe_runner,
+                                               recording):
+    """Named rather than silently defaulted: "translation" instead of
+    "translate" would otherwise transcribe in the original language and look
+    like the model ignoring the request."""
+    response = _post_transcribe(client, path=recording, task="summarise")
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "transcribe" in message and "translate" in message
+
+
+def test_a_transcription_row_is_server_owned_and_reserved(
+        client, fake_transcribe_runner, recording):
+    started = _post_transcribe(client, path=recording).json()
+    assert started["jobId"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)
+    row = _wait_job(started["jobId"])
+    assert row["owner"] == jobs.OWNER_SERVER
+    refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+
+
+def test_a_failing_transcription_reports_the_reason_on_the_row(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    monkeypatch.setenv("FAKE_TRANSCRIBE_FAILS", "1")
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error"
+    assert "exploded" in row["message"]
+
+
+def test_a_transcription_with_no_runner_says_why_before_a_row_opens(
+        client, monkeypatch, recording):
+    """The image route's property, kept: the runner check is synchronous, so an
+    unservable request answers with the reason instead of opening a row."""
+    ghost = registry.Runner(
+        code="ghost", capability=registry.SPEECH_TO_TEXT,
+        folder="/nowhere", label="Ghost",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    response = _post_transcribe(client, path=recording)
+    assert response.status_code == 409
+    assert "not built yet" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_start_transcribe_raises_rather_than_opening_a_row(monkeypatch, recording):
+    """The same thing at the supervisor's own door, since that is where the
+    property lives — the route only passes the error on."""
+    monkeypatch.setattr(registry, "_RUNNERS", ())
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.start_transcribe(
+            "org/whisper", {"path": recording, "out": "/tmp/x.json",
+                            "outText": "/tmp/x.txt"},
+            supervisor.transcribe_job_id("abc"))
+    assert not jobs.list_jobs()
+
+
+def test_a_transcription_job_id_is_reserved_and_sanitised():
+    """`sys:` is what makes a row unwritable by a page (BG-4a), so the id is
+    minted in the supervisor rather than assembled by the router."""
+    job = supervisor.transcribe_job_id("ab/cd 12")
+    assert job.startswith(jobs.SERVER_ID_PREFIX)
+    assert job == supervisor.TRANSCRIBE_JOB_PREFIX + "abcd12"
 
 
 # -- history and cancel, the two things a chat client needs ---------------------
