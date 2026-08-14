@@ -708,7 +708,7 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // OPENING A FOLDER SELECTS NOTHING (FS-16, D275). There is no folder
+  // OPENING A FOLDER SELECTS NOTHING (FS-16, D276). There is no folder
   // auto-select here and there is deliberately no code for one: a freshly opened
   // folder has an empty selection, so its pane sits on its self target and its
   // `Select a file to preview.` hint (FS-11) until the user picks a row.
@@ -780,7 +780,7 @@ export default function Listing({
 
   // WHICH of the pane's three modes it is on. Resolved here, below the selection,
   // because a previewed FOLDER row has no `preview` side at all (pane-side's
-  // paneSideList, D278) and so lands on the chat about it — a folder is not a thing
+  // paneSideList, D279) and so lands on the chat about it — a folder is not a thing
   // this pane previews.
   //
   // "A folder the user SELECTED" is exactly one row, and a directory: the pane's

@@ -76,7 +76,7 @@ export function useListingSelection({
   // A `?sel=` naming a row this folder does not have — a bookmark or a link to a
   // file since deleted or renamed — seeds a lead that the reconcile effect then
   // finds among no rows, and it resolves that to NOTHING SELECTED rather than to
-  // a row (selectionAfterVanish, D276). A link that misses is a link that missed.
+  // a row (selectionAfterVanish, D277). A link that misses is a link that missed.
   const [sel, setSel] = useState<Selection>(() => {
     const recalled = recallSelection(fsPath);
     if (recalled.paths.length || !globalKeys) return recalled;
@@ -156,7 +156,7 @@ export function useListingSelection({
   // **-1 means the selection has never been seen in these rows at all** — a lead
   // that was seeded rather than chosen (a `?sel=` naming a file that is gone) —
   // and that is a different case with a different answer: nothing selected, not
-  // row one (selectionAfterVanish, D276). So the -1 must reach that decision
+  // row one (selectionAfterVanish, D277). So the -1 must reach that decision
   // intact; clamping it to 0 on the way is exactly the bug.
   const lastSelIndexRef = useRef<number>(-1);
 
@@ -421,7 +421,7 @@ export function useListingSelection({
       // abandoned (so selection never stays dead); otherwise leave it unset.
       //
       // This one KEEPS its `Math.max(…, 0)` where the vanished-lead path below
-      // dropped it (D276), and the difference is what got us here: a pending
+      // dropped it (D277), and the difference is what got us here: a pending
       // target exists only because the user renamed or duplicated something, so
       // an operation they asked for is what left the selection dead, and row one
       // beats nothing. A `?sel=` miss has no such gesture behind it.
@@ -458,7 +458,7 @@ export function useListingSelection({
     // held one, select nothing. The `lastSelIndexRef.current === -1` case is a
     // `?sel=` that MISSED (a bookmark naming a since-deleted file), and this used
     // to clamp it to row one; the rule and the reasons are on
-    // selectionAfterVanish (D276).
+    // selectionAfterVanish (D277).
     setSel(selectionAfterVanish(rows, lastSelIndexRef.current));
   }, [navRows, selectedPath, sel, listingLoaded]);
 

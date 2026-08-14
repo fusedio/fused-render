@@ -66,9 +66,9 @@ export function paneModeList(input: PaneModeInput): string[] {
 // **And for a FOLDER it is more than a layout question.** The chat template fills
 // its own pane by resolving the folder's ENTRY PAGE and rendering it
 // (templates/shared/app_entry.py). Since `claude` leads the universal directory
-// key (D277), a selected folder's pane defaults to this template — so without the
+// key (D278), a selected folder's pane defaults to this template — so without the
 // flag the folder's app page would be back on screen, nested one level deeper,
-// running the same Python for the same mere selection that D277 exists to stop.
+// running the same Python for the same mere selection that D278 exists to stop.
 // The template reads the flag BEFORE it looks an entry page up, so the flag is
 // the whole cure and not a cosmetic one.
 //

@@ -109,8 +109,8 @@ describe("paneSideList", () => {
   });
 });
 
-// A SELECTED FOLDER HAS NO `preview` (D278). A folder is not a thing the pane can
-// preview: rendering the page it holds is what the owner asked us to stop (D277),
+// A SELECTED FOLDER HAS NO `preview` (D279). A folder is not a thing the pane can
+// preview: rendering the page it holds is what the owner asked us to stop (D278),
 // and the alternative — the embedded listing peek — is the listing they are
 // already looking at on the left. So for a directory row the pill offers the
 // COMPANIONS, and `claude` (the chat about that folder) is what the pane lands on.
@@ -197,7 +197,7 @@ describe("paneSideMenu", () => {
     ]);
   });
 
-  test("a previewed FOLDER row draws no Preview row at all (D278)", () => {
+  test("a previewed FOLDER row draws no Preview row at all (D279)", () => {
     // The menu must not offer what the pane cannot be: `preview` is off the list
     // for a directory row, so the row goes with it. A disabled row would be worse
     // than useless here — it is the pane's identity, so it carries no reason, and

@@ -127,12 +127,12 @@ export interface PaneSideEntries {
 
 // `rowIsDir` — the previewed row is a FOLDER the user selected (not the pane's own
 // self target, which is a folder too and keeps its hint). **A selected folder has
-// no `preview`** (D278): a folder is not a thing this pane can preview. Rendering
-// the page it holds is what D277 stopped, and the other candidate — the embedded
+// no `preview`** (D279): a folder is not a thing this pane can preview. Rendering
+// the page it holds is what D278 stopped, and the other candidate — the embedded
 // listing peek — is the very listing on the other side of the divider. Leaving
 // `preview` on the list was the whole of the bug the owner reported: the pill read
 // "Preview" while a chat rendered in it, because the folder's default MODE had
-// become `claude` (registry, D277) while the pane's own default SIDE was still
+// become `claude` (registry, D278) while the pane's own default SIDE was still
 // `preview`. Two controls naming the same content differently.
 //
 // So a directory row offers the COMPANIONS, and since `_side` absent parses as
@@ -170,7 +170,7 @@ export interface PaneSideMenuEntry {
   disabledReason?: string;
 }
 
-// The `preview` ROW follows the LIST (D278): a directory row that offers the
+// The `preview` ROW follows the LIST (D279): a directory row that offers the
 // companions draws no Preview row, because the pane cannot be on it there. That
 // is not a hole in the "list every mode, disable the unavailable ones" rule — that
 // rule is about the two COMPANIONS, which are unavailable for a REASON the user is
@@ -222,7 +222,7 @@ export function paneSideIconEntry(
 // `_panelMode` had before it: the next folder that does offer the mode picks it up
 // again, so a hop out of a repo and back in does not silently reset the pane.
 //
-// "First on offer" rather than the pane's own `preview` default (D278), because
+// "First on offer" rather than the pane's own `preview` default (D279), because
 // `preview` is no longer always on offer: a selected FOLDER row hasn't got one, and
 // an absent `_side` parses as exactly that request — so falling back to the
 // constant would have resolved a folder row to a side the list refuses, which is
