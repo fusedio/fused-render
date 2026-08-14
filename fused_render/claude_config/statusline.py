@@ -190,14 +190,26 @@ def _preview():
         return {"ok": False, "output": "", "error": "no status line configured"}
     try:
         res = subprocess.run(
-            ["sh", "-c", command],
+            # The working directory moves INTO the shell, because `cwd=` is one
+            # of the keywords that forces CPython off posix_spawn and back onto
+            # fork()+exec — which defeats the `close_fds=False` in
+            # SUBPROCESS_KWARGS spread two lines down, and a forked child of
+            # this server dies in PROJ's atfork handler before exec (the crash
+            # `lib`'s module comment documents). `git -C` is app_git.py's
+            # version of this same move.
+            #
+            # The directory and the command travel as separate argv entries, so
+            # neither is interpolated into the script text, and the inner
+            # `sh -c` gives the user's command exactly the shell it had before:
+            # a fresh one, `$0` = "sh", no positional arguments.
+            ["sh", "-c", 'cd -- "$1" || exit 1; exec sh -c "$2" sh',
+             "sh", lib.CLAUDE_DIR, command],
             input=json.dumps(SAMPLE_PAYLOAD),
             capture_output=True,
             # lib.SUBPROCESS_KWARGS, not text=True: a statusline is exactly the kind of
             # script that prints powerline/nerd-font glyphs, and locale-default
             # decoding turns those into a 500 instead of a preview.
             **lib.SUBPROCESS_KWARGS,
-            cwd=lib.CLAUDE_DIR,
             timeout=5,
         )
     except subprocess.TimeoutExpired:

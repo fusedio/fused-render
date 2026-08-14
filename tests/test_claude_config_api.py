@@ -675,6 +675,25 @@ def _spreads_kwargs(keywords):
     return False
 
 
+#: Keywords that take `subprocess` off `posix_spawn` no matter what else the
+#: call passes — read straight off CPython's own condition in
+#: `Popen._execute_child`. `cwd` is in here for the same reason `app_git.py`
+#: bans it independently: `git -C <dir>` is the spelling that does not fork.
+_FORK_FORCING = ("start_new_session", "preexec_fn", "pass_fds", "process_group", "cwd")
+
+
+def _forces_fork(keywords):
+    """Which fork-forcing keywords this call passes, ignoring explicit no-ops."""
+    found = []
+    for kw in keywords:
+        if kw.arg not in _FORK_FORCING:
+            continue
+        if isinstance(kw.value, ast.Constant) and kw.value.value in (None, False):
+            continue  # `cwd=None` says "no cwd"; it does not force anything
+        found.append(kw.arg)
+    return found
+
+
 def _keyword_is(keywords, name, value):
     return any(
         kw.arg == name and isinstance(kw.value, ast.Constant) and kw.value.value is value
@@ -698,11 +717,22 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
 
     A call may spread SUBPROCESS_KWARGS or pass close_fds=False itself
     (archive_zip has to: it reads binary, so it cannot take the text half).
+
+    **And close_fds=False is necessary, not sufficient.** CPython's fast path
+    requires `not close_fds` AND `not start_new_session` AND no `preexec_fn`,
+    `pass_fds`, `process_group` or `cwd` — so a call that spread the safe
+    kwargs and then asked for a new session forked anyway, while reading as
+    guarded both here and to anyone maintaining it. `claude_cli_detached` did
+    exactly that, and this test passed over it: the spread was accepted as
+    proof of the property it no longer had. A fork-forcing keyword now
+    disqualifies a call however well-guarded the rest of it looks; the way to
+    have both is `os.posix_spawn(..., setsid=True)`, which is what that
+    function does now.
     """
     assert lib.SUBPROCESS_KWARGS == {
         "close_fds": False, "text": True, "encoding": "utf-8", "errors": "replace",
     }
-    no_spawn_guard, bare_text = [], []
+    no_spawn_guard, forced_fork, bare_text = [], [], []
     calls = 0
     for name, src in _package_sources():
         for lineno, keywords in _spawn_calls(src):
@@ -710,12 +740,64 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
             guarded = _spreads_kwargs(keywords) or _keyword_is(keywords, "close_fds", False)
             if not guarded:
                 no_spawn_guard.append(f"{name}:{lineno}")
+            forcing = _forces_fork(keywords)
+            if forcing:
+                forced_fork.append(f"{name}:{lineno} ({', '.join(forcing)})")
             if _keyword_is(keywords, "text", True):
                 bare_text.append(f"{name}:{lineno}")
     assert no_spawn_guard == []
+    assert forced_fork == [], (
+        "these keywords put CPython back on fork()+exec whatever close_fds says"
+    )
     assert bare_text == []
     # A guard that silently matched nothing would pass forever.
     assert calls >= 6
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the preview runs `sh -c`")
+def test_the_statusline_preview_still_runs_in_claude_dir_without_cwd(claude_dir):
+    """The `cwd=` that had to go was carrying real behaviour, so it moves rather
+    than disappears: a statusline command reads files beside `settings.json`
+    (`cat .claude-version`, `git -C . …`) and is documented to run there.
+
+    Written against a REAL `sh`, because the property is the shell's, not the
+    call's: the directory arrives as a separate argv entry, the user's command
+    is never interpolated into the script text, and the command still gets a
+    fresh shell with no positional arguments of its own.
+    """
+    from fused_render.claude_config import statusline
+
+    (claude_dir / "marker.txt").write_text("hello")
+    (claude_dir / "settings.json").write_text(json.dumps({
+        "statusLine": {"type": "command",
+                       "command": 'pwd; cat marker.txt; echo "args=$#"'}}))
+
+    out = statusline.main(action="preview")
+
+    assert out["ok"], out
+    assert os.path.realpath(lib.CLAUDE_DIR) in os.path.realpath(
+        out["output"].splitlines()[0]), out["output"]
+    assert "hello" in out["output"], "a relative read must resolve in CLAUDE_DIR"
+    assert "args=0" in out["output"], "the command must not inherit our own argv"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the preview runs `sh -c`")
+def test_a_statusline_command_with_quotes_and_spaces_is_not_reparsed(claude_dir):
+    """The command travels as ONE argv entry, so nothing in it can be read as
+    part of the `cd` prelude — the failure a string-concatenated `cd … && …`
+    would have introduced."""
+    from fused_render.claude_config import statusline
+
+    (claude_dir / "settings.json").write_text(json.dumps({
+        "statusLine": {"type": "command",
+                       "command": 'echo "a  b"; echo \'$1 && pwd\'; echo done'}}))
+
+    out = statusline.main(action="preview")
+
+    assert out["ok"], out
+    assert "a  b" in out["output"], "inner quoting must survive"
+    assert "$1 && pwd" in out["output"], "single-quoted text is data, not script"
+    assert "done" in out["output"]
 
 
 def test_git_runs_with_dash_c_rather_than_cwd():

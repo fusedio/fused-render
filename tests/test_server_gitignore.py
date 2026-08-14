@@ -2,13 +2,18 @@
 (fused_render/server.py) — files matched by .gitignore inside a git work tree
 are flagged so the shell can dim them. Non-repos, and installs without git,
 degrade to `ignored: False` everywhere (dimming is a hint, never required)."""
+import ast
+import os
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
+from fused_render.server import gitignore
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git binary not available"
@@ -76,3 +81,115 @@ def test_list_outside_git_repo_flags_nothing(tmp_path):
     (tmp_path / ".git").write_text("not a repo", encoding="utf-8")
     data = _client(tmp_path).get("/api/fs/list", params={"path": str(tmp_path)}).json()
     assert all(e["ignored"] is False for e in data["entries"])
+
+
+# -- the spawn discipline, and the cache that outlived one bad spawn -----------
+#
+# `_empty_git_dir` backs check-ignore for directories that carry a .gitignore
+# without being repos. Its result is memoised for the whole process with no
+# invalidation anywhere, so what it decides once, it decides forever.
+
+
+def _reset_empty_git_dir(monkeypatch):
+    monkeypatch.setattr(gitignore, "_EMPTY_GIT_DIR", None)
+
+
+def test_a_git_init_killed_by_a_signal_is_retried_not_remembered(tmp_path, monkeypatch):
+    """A crashed spawn is not evidence that git cannot make a repo.
+
+    This module runs in the SERVER process, where a forked child can die in
+    PROJ's atfork handler at ~1ms (`app_git.py` documents the crash and it was
+    verified in the field). Under `check=True` that `-11` became a permanent
+    `False`, and from then on EVERY un-inited directory silently stopped
+    honouring its `.gitignore` — for the life of the server, with nothing to
+    read and nothing to retry.
+    """
+    _reset_empty_git_dir(monkeypatch)
+    calls = []
+
+    def _killed(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, -11, b"", b"")
+
+    monkeypatch.setattr(gitignore.subprocess, "run", _killed)
+    assert gitignore._empty_git_dir() is None
+    assert gitignore._EMPTY_GIT_DIR is None, "a signal must not be cached as a verdict"
+    assert gitignore._empty_git_dir() is None
+    assert len(calls) == 2, "the next listing must try again"
+
+
+def test_a_timeout_is_also_no_verdict(tmp_path, monkeypatch):
+    _reset_empty_git_dir(monkeypatch)
+
+    def _slow(argv, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=5)
+
+    monkeypatch.setattr(gitignore.subprocess, "run", _slow)
+    assert gitignore._empty_git_dir() is None
+    assert gitignore._EMPTY_GIT_DIR is None
+
+
+def test_git_missing_or_refusing_IS_remembered(tmp_path, monkeypatch):
+    """The definite half must keep working, or the cache stops being a cache and
+    every listing of a non-repo pays a spawn that cannot succeed."""
+    _reset_empty_git_dir(monkeypatch)
+    monkeypatch.setattr(gitignore.subprocess, "run",
+                        lambda argv, **kw: (_ for _ in ()).throw(FileNotFoundError()))
+    assert gitignore._empty_git_dir() is None
+    assert gitignore._EMPTY_GIT_DIR is False
+
+    _reset_empty_git_dir(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        gitignore.subprocess, "run",
+        lambda argv, **kw: (calls.append(argv),
+                            subprocess.CompletedProcess(argv, 128, b"", b""))[1])
+    assert gitignore._empty_git_dir() is None
+    assert gitignore._EMPTY_GIT_DIR is False, "git ran and refused: that is an answer"
+    assert gitignore._empty_git_dir() is None
+    assert len(calls) == 1, "a definite failure is asked once, not once per listing"
+
+
+def test_a_retryable_failure_leaves_no_scratch_repos_behind(tmp_path, monkeypatch):
+    """Retryable means the mkdtemp happens again, so the failed attempt has to
+    take its directory with it or the tempdir fills up one empty repo at a time."""
+    _reset_empty_git_dir(monkeypatch)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(gitignore.subprocess, "run",
+                        lambda argv, **kw: subprocess.CompletedProcess(argv, -9, b"", b""))
+
+    for _ in range(3):
+        assert gitignore._empty_git_dir() is None
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_real_thing_still_produces_a_usable_git_dir(tmp_path, monkeypatch):
+    """The whole point, unmocked: with a real git the scratch dir is created,
+    cached, and reused."""
+    _reset_empty_git_dir(monkeypatch)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    first = gitignore._empty_git_dir()
+    assert first and os.path.isdir(first)
+    assert gitignore._empty_git_dir() == first, "created once per process"
+
+
+def test_every_git_spawn_here_stays_off_the_fork_path():
+    """Asserted at the source, like `tests/test_engine.py` and
+    `tests/test_claude_config_api.py`: the crash needs a resident libproj
+    holding a live handle, which a test cannot arrange, so what is checkable is
+    that no call in this module can take the fork path."""
+    source = Path(gitignore.__file__).read_text(encoding="utf-8")
+    spawns = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("run", "Popen")
+        and getattr(node.func.value, "id", "") == "subprocess"
+    ]
+    assert len(spawns) >= 4, "the guard must not pass by matching nothing"
+    for call in spawns:
+        kwargs = {k.arg: k.value for k in call.keywords if k.arg}
+        assert isinstance(kwargs.get("close_fds"), ast.Constant) and (
+            kwargs["close_fds"].value is False), f"line {call.lineno}: close_fds"
+        for forcing in ("start_new_session", "preexec_fn", "cwd", "pass_fds"):
+            assert forcing not in kwargs, f"line {call.lineno}: {forcing} forces fork()"

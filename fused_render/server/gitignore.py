@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,22 +16,58 @@ _EMPTY_GIT_DIR: str | None | bool = None  # None = not tried, False = failed
 
 
 def _empty_git_dir():
+    """The scratch `.git`, creating it once — or None while we cannot.
+
+    **A failure is only remembered when git ANSWERED.** This is a one-shot
+    process-wide cache with no invalidation anywhere, so a `False` written here
+    disables `.gitignore` awareness for the life of the server: every listing
+    of an un-inited directory silently stops honouring its `.gitignore`, and
+    nothing ever retries or says why. That is far too much weight for "one
+    spawn did not come back", and the spawn had a way of not coming back that
+    has nothing to do with git — see `close_fds` below.
+
+    So the classification is D212/D277's, third time in this codebase: git
+    missing (`FileNotFoundError`/`PermissionError`) or git RUN and refusing (a
+    positive exit) is a fact and is cached; a child killed by a SIGNAL, a
+    timeout, or a transient `OSError` (`EAGAIN` under load) is no verdict at
+    all and leaves the cache untouched, costing one retried spawn on the next
+    listing instead of a feature for the rest of the session.
+
+    The scratch directory is removed on those paths, because retryable means it
+    would otherwise leak one empty repo per attempt.
+    """
     global _EMPTY_GIT_DIR
-    if _EMPTY_GIT_DIR is None:
-        try:
-            root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
-            subprocess.run(
-                ["git", "init", "-q", root],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
+    if _EMPTY_GIT_DIR is not None:
+        return _EMPTY_GIT_DIR or None
+    root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
+    try:
+        proc = subprocess.run(
+            ["git", "init", "-q", root],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            # close_fds=False for posix_spawn instead of fork()+exec — the
+            # discipline `app_git.py`'s module docstring documents in full, and
+            # this is the same crash rather than a similar one. This module runs
+            # in the SERVER process, which reaches libproj through the engine's
+            # import tree wherever a geo stack is installed beside it, and a
+            # forked child dies in PROJ's atfork handler at ~1ms with an empty
+            # stderr — which `check=True` then turned into a permanent `False`.
+            close_fds=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+    except (FileNotFoundError, PermissionError, NotADirectoryError):
+        _EMPTY_GIT_DIR = False  # no git here; that will not change under us
+    except (OSError, subprocess.SubprocessError):
+        pass  # no verdict: leave the cache alone and try again next time
+    else:
+        if proc.returncode == 0:
             _EMPTY_GIT_DIR = os.path.join(root, ".git")
-        except (OSError, subprocess.SubprocessError):
-            _EMPTY_GIT_DIR = False
-    return _EMPTY_GIT_DIR or None
+            return _EMPTY_GIT_DIR
+        if proc.returncode > 0:
+            _EMPTY_GIT_DIR = False  # git ran and refused
+    shutil.rmtree(root, ignore_errors=True)
+    return None
 
 
 class _IgnoreOracle:
@@ -76,6 +113,7 @@ class _IgnoreOracle:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 env=env,
+                close_fds=False,  # posix_spawn, never fork() — see `_empty_git_dir`
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
         except OSError:
@@ -145,6 +183,7 @@ def _repo_toplevel(path):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            close_fds=False,  # posix_spawn, never fork() — see `_empty_git_dir`
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -212,6 +251,7 @@ def _git_ignored(cwd: str, rel_names: list[str]) -> set[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            close_fds=False,  # posix_spawn, never fork() — see `_empty_git_dir`
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except (OSError, subprocess.SubprocessError):
