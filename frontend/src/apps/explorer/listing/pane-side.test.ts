@@ -87,9 +87,11 @@ describe("paneSideParam", () => {
   });
 });
 
-// Which of the three a folder actually offers. `preview` always — it is the pane's
-// identity, and a row with no template at all still has the metadata card.
-describe("paneSideList", () => {
+// Which of the three are offered for a NON-folder subject — a file row, or a
+// multi-selection (the default `subjectIsDir = false`). `preview` always there: it is
+// the pane's identity, and a row with no template at all still has the metadata card.
+// The folder-subject block below is the one that can drop it.
+describe("paneSideList — a file row or a multi-selection", () => {
   test("a folder with neither companion offers Preview alone", () => {
     // A mount-backed folder: both gates refuse a mount, so the pane can only ever
     // BE Preview. The switcher still lists all three (paneSideMenu) — this list
@@ -109,16 +111,19 @@ describe("paneSideList", () => {
   });
 });
 
-// A SELECTED FOLDER HAS NO `preview` (D281). A folder is not a thing the pane can
-// preview: rendering the page it holds is what the owner asked us to stop (D280),
-// and the alternative — the embedded listing peek — is the listing they are
-// already looking at on the left. So for a directory row the pill offers the
-// COMPANIONS, and `claude` (the chat about that folder) is what the pane lands on.
+// A FOLDER SUBJECT HAS NO `preview` (D281, extended to the no-selection state by
+// D284). A folder is not a thing the pane can preview: rendering the page it holds is
+// what the owner asked us to stop (D280), and the alternative — the embedded listing
+// peek — is the listing they are already looking at on the left. So for a selected
+// directory AND for nothing-selected (where the subject is the open folder) the pill
+// offers the COMPANIONS, and `claude` (the chat about that folder) is what the pane
+// lands on. Every case below reads the same for both, which is the point: one rule,
+// and the caller decides which states are folder subjects.
 //
 // It is `paneSideList`'s job because it is the same question the list has always
 // answered — what may the pane BE — and because leaving `preview` in it was the
 // whole of the bug the owner saw: the pill said "Preview" while a chat rendered.
-describe("paneSideList — a previewed FOLDER row", () => {
+describe("paneSideList — a FOLDER subject (a selected directory, or nothing selected)", () => {
   test("the companions alone, and Claude is what the pane lands on", () => {
     expect(paneSideList(BOTH, true)).toEqual(["claude", "git"]);
     // `_side` absent reads as `preview` (parsePaneSide), which is no longer on
@@ -182,11 +187,28 @@ describe("paneSideList — a previewed FOLDER row", () => {
     expect(activePaneSide(paneSideList(NONE, true), "preview")).toBe("preview");
   });
 
-  test("the SELF target is not a previewed folder row", () => {
-    // Nothing selected: the pane's subject is the folder already open on the left
-    // and its Preview is the `Select a file to preview.` hint (FS-11), which must
-    // stay reachable. Callers pass `false` there — the flag is about a folder the
-    // user SELECTED, not about the pane's own subject.
+  test("the SELF target IS a folder subject — nothing selected takes the same rule", () => {
+    // D284. This case used to assert the opposite: that callers pass `false` for the
+    // self target because "the flag is about a folder the user SELECTED, not about
+    // the pane's own subject", so its Preview — the `Select a file to preview.` hint
+    // — stayed reachable. That exception was the bug. The no-selection state is the
+    // OPEN FOLDER, a folder is not previewable, and FS-16 makes this the state every
+    // folder opens into, so it meant the wrong pill and that hint on every open.
+    //
+    // Nothing about the pure function changed; what changed is what its callers
+    // answer for the self target, so the pin is on the argument's meaning.
+    expect(paneSideList(BOTH, true)).toEqual(["claude", "git"]);
+    expect(activePaneSide(paneSideList(BOTH, true), "preview")).toBe("claude");
+    // The hint survives exactly where the companions do not — the case above.
+    expect(paneSideList(NONE, true)).toEqual(["preview"]);
+  });
+
+  test("a MULTI-selection is not a folder subject and keeps its Preview", () => {
+    // Explicitly out of D284's scope: several rows are not a folder, so the count
+    // placeholder and the Preview side it renders under are untouched. Callers pass
+    // `false` for it — which is the `false` this file used to pin for the self target,
+    // the two now being told apart by the caller (`sel.paths.length === 0` versus
+    // `> 1`) rather than lumped together.
     expect(paneSideList(BOTH, false)).toEqual(["preview", "claude", "git"]);
   });
 });
@@ -241,9 +263,10 @@ describe("paneSideMenu", () => {
     ]);
   });
 
-  test("a previewed FOLDER row draws no Preview row at all (D281)", () => {
+  test("a FOLDER subject draws no Preview row at all (D281/D284)", () => {
     // The menu must not offer what the pane cannot be: `preview` is off the list
-    // for a directory row, so the row goes with it. A disabled row would be worse
+    // for a folder subject — a selected directory or the open folder — so the row
+    // goes with it. A disabled row would be worse
     // than useless here — it is the pane's identity, so it carries no reason, and
     // a reasonless disabled row is a dead control with nothing to say.
     expect(paneSideMenu(BOTH, true).map((r) => r.mode)).toEqual(["claude", "git"]);
@@ -366,6 +389,9 @@ describe("paneKey", () => {
   });
 
   test("Preview keeps its three selection states apart", () => {
+    // Still three, and the `self` one is still needed: since D284 it identifies the
+    // neither-companion fallback (a mount-backed folder) rather than the ordinary
+    // no-selection state, but it is the key the hint renders under either way.
     const row = paneKey("preview", folder, "/w/repo/a.md", 1);
     const self = paneKey("preview", folder, null, 0);
     const many = paneKey("preview", folder, null, 3);

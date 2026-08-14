@@ -130,11 +130,13 @@ export default function ListingPreviewPane({
   // The self target renders without asking the server anything (no modes — see
   // its branch below), so no fetch is started for it.
   const self = !!row?.self;
-  // A FOLDER the user selected — not the self target, which is a folder too. The
-  // pill drops its `preview` row for one (pane-side's paneSideMenu, D281), the
-  // same question Listing asked to resolve `side` in the first place, so the menu
-  // it draws cannot disagree with the side it is on.
-  const rowIsDir = !!row && !row.self && row.isDir;
+  // A FOLDER SUBJECT: a selected directory, OR the self target — which is this
+  // folder itself and, since D284, is one of these rather than the exception it used
+  // to be (`!row.self` stood here and was the code half of that exception). The pill
+  // drops its `preview` row for one (pane-side's paneSideMenu), and this is the same
+  // question Listing asked to resolve `side`, so the menu cannot disagree with the
+  // side it is on. A multi-selection passes `row: null` and is not a folder subject.
+  const subjectIsDir = !!row?.isDir;
   // Only `Preview` is about the row's own templates. Claude and Git are handed
   // their entry by the caller and aimed by `_file`, so in those two modes the
   // stat below would be work for an answer nothing reads — including on every
@@ -231,7 +233,7 @@ export default function ListingPreviewPane({
   // outside one does not make the Git row appear and disappear, it dims.
   const sideMenu = (
     <ModeMenu
-      entries={paneSideMenu(sideEntries, rowIsDir).map((e) => ({
+      entries={paneSideMenu(sideEntries, subjectIsDir).map((e) => ({
         ...e,
         icon: paneSideIcon(e.mode, sideEntries),
       }))}
@@ -349,20 +351,28 @@ export default function ListingPreviewPane({
     );
   }
 
-  // The SELF target — nothing selected, so the pane's subject is the folder
-  // already open on the left. It has no preview: just the hint that says what to
-  // do about it.
+  // The SELF target — nothing selected, so the pane's subject is the folder already
+  // open on the left. It has no preview: just the hint that says what to do about it.
+  //
+  // **THIS IS NOW A FALLBACK, not the no-selection state's answer** (D284). Nothing
+  // selected is a FOLDER subject, so the pane lands on the chat about that folder
+  // wherever a companion is offered, and those branches return above this one. What
+  // reaches here is the case where NEITHER companion is (a mount-backed folder, both
+  // gates refusing) — and there this hint is the pane's only possible content, which
+  // is why the branch stays. *Until D284 it was the answer for every folder open,
+  // which is what the owner reported: a "Select a file to preview." hint under a pill
+  // reading "Preview", over a folder that is not previewable.*
   //
   // NO PER-ROW MODE LIST, which is why this branch renders before all the mode
   // machinery below and why the stat above skips the self target entirely:
   // there is no row to resolve templates for. The pane's OWN three-way
-  // pill is in `strip` and so is present here like everywhere else — and it is
-  // exactly the control this state used to lack. The picker that was removed here
-  // was the per-row one: its only job in this state was to offer a chat on the
-  // folder from a header that otherwise said "select something", i.e. a "Choose
-  // view" chip pointing at a view nobody came for. Claude-on-the-folder is now a
-  // named mode of the pane rather than a mode of the absent row, so it is offered
-  // plainly instead of hidden behind a picker with nothing else in it.
+  // pill is in `strip` and so is present here like everywhere else — drawing its two
+  // companions disabled with their reasons, which in this state is the whole
+  // explanation of why the hint is what is left. The picker that was removed here
+  // was the per-row one: its only job was to offer a chat on the folder from a
+  // header that otherwise said "select something", i.e. a "Choose view" chip
+  // pointing at a view nobody came for. Claude-on-the-folder is a named mode of the
+  // pane now — and, since D284, the mode this state lands on whenever it can.
   if (row.self) {
     return (
       <div className="listing-pane">

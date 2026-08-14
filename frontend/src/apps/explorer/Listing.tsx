@@ -713,8 +713,9 @@ export default function Listing({
 
   // OPENING A FOLDER SELECTS NOTHING (FS-16, D278). There is no folder
   // auto-select here and there is deliberately no code for one: a freshly opened
-  // folder has an empty selection, so its pane sits on its self target and its
-  // `Select a file to preview.` hint (FS-11) until the user picks a row.
+  // folder has an empty selection, so its pane sits on its self target — showing the
+  // chat about the folder, since a folder is not a thing the pane previews (FS-11,
+  // D284) — until the user picks a row.
   //
   // What used to be here was a one-shot effect that walked the settled rows for
   // the first page, else the first row, and selected it — so the pane always had
@@ -808,18 +809,22 @@ export default function Listing({
     sel.paths.length === 1 && settledLead ? rowCtxByPath.get(settledLead) : undefined;
 
   // WHICH of the pane's three modes it is on. Resolved here, below the selection,
-  // because a previewed FOLDER row has no `preview` side at all (pane-side's
-  // paneSideList, D281) and so lands on the chat about it — a folder is not a thing
-  // this pane previews.
+  // because no FOLDER SUBJECT has a `preview` side at all (pane-side's
+  // paneSideList, D281/D284) and so lands on the chat about it — a folder is not a
+  // thing this pane previews.
   //
-  // "A folder the user SELECTED" is exactly one row, and a directory: the pane's
-  // own SELF target (nothing selected) is a folder too and keeps its Preview, which
-  // is the `Select a file to preview.` hint (FS-11).
-  // `paneRow` is set only for a single-row selection, so it carries the count with
-  // it — the pill must not drop its Preview row on account of a settled directory
-  // while the body is showing a multi-selection placeholder.
-  const previewedRowIsDir = !!paneRow?.isDir;
-  const paneSides = paneSideList(sideEntries, previewedRowIsDir);
+  // **A FOLDER SUBJECT IS TWO STATES**: a selected directory, and NOTHING SELECTED,
+  // where the subject is this folder itself. D281 did only the first, which left the
+  // state every folder OPENS into (FS-16) reading "Preview" over a "Select a file to
+  // preview." hint — the more visible half of the same bug, and what the owner
+  // reported next. The self target keeps that hint only as the neither-companion
+  // fallback now (ListingPreviewPane's self branch).
+  //
+  // A MULTI-selection is deliberately not a folder: `paneRow` is set only for a
+  // single-row selection, and the count test below is `=== 0`, so two or more rows
+  // keep their Preview side and their "N items selected" placeholder.
+  const paneSubjectIsDir = sel.paths.length === 0 || !!paneRow?.isDir;
+  const paneSides = paneSideList(sideEntries, paneSubjectIsDir);
   // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
   // skeleton: resolving a side here would put the pill on `preview` while the row's
@@ -1761,13 +1766,15 @@ export default function Listing({
                   Git on the folder instead is what stops arrow-keying down the
                   listing reloading a `git status` per keystroke.
                   Nothing selected → the SELF target: the pane's subject is THIS
-                  folder, and it has no preview at all — just the neutral "Select a
-                  file to preview." hint. No template is resolved and no stat is
-                  issued for it (ListingPreviewPane's self branch), and certainly
-                  no "lone app": that concept was deleted with D264 and this
-                  comment outlived it by describing a resolution the self branch
-                  has never performed. Its listing is not the answer either — that
-                  is already on the left. */}
+                  folder, and it has no PREVIEW at all, so since D284 it lands on the
+                  chat about the folder like any other folder subject. It falls back
+                  to the neutral "Select a file to preview." hint only where neither
+                  companion is offered (ListingPreviewPane's self branch, which
+                  resolves no template and issues no stat) — and certainly not to a
+                  "lone app": that concept was deleted with D264 and the comment here
+                  outlived it by describing a resolution the self branch has never
+                  performed. Its listing is not the answer either — that is already
+                  on the left. */}
               <ListingPreviewPane
                 key={paneKey(
                   paneSide,

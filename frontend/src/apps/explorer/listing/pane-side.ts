@@ -8,12 +8,17 @@
 //
 //   preview  the SELECTED ROW's own default view — pane-modes.ts decides what
 //            that resolves to (a file's first template; for a folder, only the
-//            `_listing` peek it falls back to). **Offered for a FILE row, and for
-//            a folder only when neither companion is** (D281 — a folder is not a
-//            thing this pane previews; see paneSideList). It used to resolve a
-//            folder to the PAGE it holds and render it, which is what D280
-//            deleted.
-//   claude   the chat, `chat_only=1`, about the selected row.
+//            `_listing` peek it falls back to). **Offered for a FILE row and for a
+//            multi-selection; for a FOLDER SUBJECT — a selected directory, or
+//            nothing selected at all — only when neither companion is**
+//            (D281/D284: a folder is not a thing this pane previews; see
+//            paneSideList). It used to resolve a folder to the PAGE it holds and
+//            render it, which is what D280 deleted; and with nothing selected it
+//            used to render the "Select a file to preview." hint, which D284
+//            demoted to that same neither-companion fallback.
+//   claude   the chat, `chat_only=1`, about the selected row — about the OPEN
+//            FOLDER when the selection names no single row (paneSideTarget), which
+//            is what the no-selection state now lands on.
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
 //            a working tree belongs to the folder, so `git` is bound to the
 //            universal "/" key alone and the pane borrows the folder's entry.
@@ -100,9 +105,9 @@ export function paneSideParam(state: PaneSideState): string | null {
 //
 // `preview` for a FILE row always: it is the pane's identity there, and even a row
 // with no template at all has a preview state (the metadata card). **For a FOLDER
-// row it is offered only when neither companion is** (D281, `rowIsDir` below) —
-// see the block on the function for why a folder has no preview and what the
-// exception is for. The companions exist only while the folder's own entry for them
+// SUBJECT — a selected directory, or nothing selected — it is offered only when
+// neither companion is** (D281/D284, `subjectIsDir` below) — see the block on the
+// function for why a folder has no preview and what the exception is for. The companions exist only while the folder's own entry for them
 // does (dir-mode.ts), so a folder outside a repository can be SHOWN no Git and a
 // mount-backed folder — where both gates refuse — can be shown neither.
 //
@@ -133,19 +138,31 @@ export interface PaneSideEntries {
   gitBound?: TemplateEntry | null;
 }
 
-// `rowIsDir` — the previewed row is a FOLDER the user selected (not the pane's own
-// self target, which is a folder too and keeps its hint). **A selected folder has
-// no `preview`** (D281): a folder is not a thing this pane can preview. Rendering
-// the page it holds is what D280 stopped, and the other candidate — the embedded
-// listing peek — is the very listing on the other side of the divider. Leaving
-// `preview` on the list was the whole of the bug the owner reported: the pill read
-// "Preview" while a chat rendered in it, because the folder's default MODE had
-// become `claude` (registry, D280) while the pane's own default SIDE was still
-// `preview`. Two controls naming the same content differently.
+// `subjectIsDir` — **the pane's SUBJECT is a folder**, which is two states and not
+// one: the previewed row is a directory, OR nothing is selected at all and the
+// subject is the OPEN FOLDER itself (the `self` target). **A folder has no
+// `preview`** (D281, extended to the no-selection state by D284): a folder is not a
+// thing this pane can preview. Rendering the page it holds is what D280 stopped, and
+// the other candidate — the embedded listing peek — is the very listing on the other
+// side of the divider.
 //
-// So a directory row offers the COMPANIONS, and since `_side` absent parses as
+// Leaving `preview` on the list was the whole of the bug the owner reported, twice.
+// First for a selected folder row: the pill read "Preview" while a chat rendered in
+// it, because the folder's default MODE had become `claude` (registry, D280) while
+// the pane's own default SIDE was still `preview`. Then for the NO-SELECTION state,
+// which D281 left behind and which FS-16/D278 had meanwhile made the state **every
+// folder opens into** — so the wrong pill and a "Select a file to preview." hint
+// over a folder were what a user saw on every single folder open. Same argument,
+// same fix, and the second one is the more visible of the two.
+//
+// A MULTI-selection is deliberately NOT a folder: several rows are not a subject
+// this rule is about, so `selCount > 1` keeps its `preview` side and its "N items
+// selected" placeholder untouched.
+//
+// So a folder subject offers the COMPANIONS, and since `_side` absent parses as
 // `preview`, `activePaneSide` lands it on the first of them — the chat about that
-// folder, which is what the owner asked a folder to default to. **First OFFERED,
+// folder (`paneSideTarget` already falls a null row back to the folder, so the
+// no-selection case needed no new plumbing). **First OFFERED,
 // so a denied `claude` lands on `git`** where the folder is in a work tree; the
 // built-in gates make that shape unreachable in practice (claude refuses only a
 // mount-backed or nonexistent path, and git refuses those too, on top of needing a
@@ -157,11 +174,13 @@ export interface PaneSideEntries {
 // something, and there the row's own default mode is the unconditional `_listing`
 // sentinel — a peek that renders no template and runs no Python.
 //
-// **A PROBE STILL OUT IS NOT A DENIAL, and for a folder row the answer is then
+// **A PROBE STILL OUT IS NOT A DENIAL, and for a folder subject the answer is then
 // NEITHER — an EMPTY LIST, meaning UNDECIDED.** `Listing` nulls both entries while
 // `lib/dir-mode` resolves them, so "no companion offered" and "not answered yet"
 // arrive in the same shape; taking the `preview` fallback there reproduced the bug
-// this whole rule exists to fix, for the window after a folder opens. The pill read
+// this whole rule exists to fix, for the window after a folder opens — and with
+// D284 that window is on the path EVERY folder-open takes, since the no-selection
+// state is now a folder subject too. The pill read
 // "Preview" while the row's own default mode — `claude` since D280 — rendered a chat
 // inside it, and when the probe landed the side flipped to `claude`, the key changed
 // and `agent.py` was spawned a SECOND time. So the caller holds a SKELETON on an
@@ -169,20 +188,22 @@ export interface PaneSideEntries {
 // (`paneSideMenu` below reads this same list, so it draws no `preview` row either —
 // the companions are already CT-12 spinners while pending.)
 //
-// A FILE row is untouched by a pending probe: its `preview` is its own template
-// list, which the folder's companion gates say nothing about, so waiting there
-// would be a skeleton over an answer already in hand.
-export function paneSideList(entries: PaneSideEntries, rowIsDir = false): PaneSide[] {
+// A FILE row, and a multi-selection, are untouched by a pending probe: their
+// `preview` is the row's own template list or a placeholder, neither of which the
+// folder's companion gates say anything about, so waiting there would be a skeleton
+// over an answer already in hand.
+export function paneSideList(entries: PaneSideEntries, subjectIsDir = false): PaneSide[] {
   const companions: PaneSide[] = [];
   if (entries.claude) companions.push("claude");
   if (entries.git) companions.push("git");
-  if (rowIsDir && companions.length > 0) return companions;
-  if (rowIsDir && (entries.claudePending || entries.gitPending)) return [];
+  if (subjectIsDir && companions.length > 0) return companions;
+  if (subjectIsDir && (entries.claudePending || entries.gitPending)) return [];
   return ["preview", ...companions];
 }
 
-// One row per mode the pane MAY BE ON — all three for a file row, and the two
-// companions for a folder row (D281: no Preview for a folder, `rowIsDir` below).
+// One row per mode the pane MAY BE ON — all three for a file row or a
+// multi-selection, and the two companions for a folder SUBJECT, selected row or open
+// folder alike (D281/D284: no Preview for a folder, `subjectIsDir` below).
 //
 // Within that list, an unofferable COMPANION is still drawn, which is the folder
 // half of the rule the file sidebar states at length (lib/preview-side,
@@ -205,7 +226,7 @@ export interface PaneSideMenuEntry {
   disabledReason?: string;
 }
 
-// The `preview` ROW follows the LIST (D281): a directory row that offers the
+// The `preview` ROW follows the LIST (D281/D284): a folder subject that offers the
 // companions draws no Preview row, because the pane cannot be on it there. That
 // is not a hole in the "list every mode, disable the unavailable ones" rule — that
 // rule is about the two COMPANIONS, which are unavailable for a REASON the user is
@@ -213,7 +234,7 @@ export interface PaneSideMenuEntry {
 // Preview row would be a dead control with nothing to say.
 export function paneSideMenu(
   entries: PaneSideEntries,
-  rowIsDir = false,
+  subjectIsDir = false,
 ): PaneSideMenuEntry[] {
   const companion = (mode: "claude" | "git"): PaneSideMenuEntry => {
     if (entries[mode]) return { mode };
@@ -223,7 +244,7 @@ export function paneSideMenu(
   const rows = [companion("claude"), companion("git")];
   // Exactly the list's own condition, asked of the same inputs, so the menu can
   // never draw a row the pane may not be on — or drop the one it is on.
-  const offersPreview = paneSideList(entries, rowIsDir).includes("preview");
+  const offersPreview = paneSideList(entries, subjectIsDir).includes("preview");
   return offersPreview ? [{ mode: "preview" }, ...rows] : rows;
 }
 
@@ -257,14 +278,17 @@ export function paneSideIconEntry(
 // `_panelMode` had before it: the next folder that does offer the mode picks it up
 // again, so a hop out of a repo and back in does not silently reset the pane.
 //
-// "First on offer" rather than the pane's own `preview` default (D281), because
-// `preview` is no longer always on offer: a selected FOLDER row hasn't got one, and
-// an absent `_side` parses as exactly that request — so falling back to the
-// constant would have resolved a folder row to a side the list refuses, which is
-// the pill naming one thing while the body renders another.
+// "First on offer" rather than the pane's own `preview` default (D281/D284), because
+// `preview` is no longer always on offer: no FOLDER SUBJECT has one — neither a
+// selected directory nor the no-selection state — and an absent `_side` parses as
+// exactly that request, so falling back to the constant would resolve a folder to a
+// side the list refuses, which is the pill naming one thing while the body renders
+// another. **The no-selection case makes that the default path**: every folder opens
+// with nothing selected (FS-16), so this fallback is what puts the pane on the chat
+// about the open folder rather than on a Preview of it.
 //
-// **AN EMPTY LIST IS "UNDECIDED", NOT "the default"** (paneSideList: a folder row
-// whose companion probes are still out). The constant this returns there is a
+// **AN EMPTY LIST IS "UNDECIDED", NOT "the default"** (paneSideList: a folder
+// subject whose companion probes are still out). The constant this returns there is a
 // placeholder for the pill's label and the pane's key, NOT permission to render:
 // the caller must hold its skeleton on an empty list. Answering `preview` and
 // rendering it is precisely the bug — a chat under a pill reading "Preview" — so
@@ -297,8 +321,12 @@ export function paneKey(
   if (side === "git") return "git:" + folder;
   if (side === "claude") return "claude:" + (rowPath ?? folder);
   if (rowPath) return "preview:" + rowPath;
-  // Nothing selected previews the folder itself (the self target); a
-  // multi-selection previews nothing and needs no per-path identity.
+  // `preview` with nothing selected is now REACHED ONLY as the neither-companion
+  // fallback (D284): the no-selection state is a folder subject, so it lands on a
+  // companion wherever one is offered, and the `self` key below identifies the state
+  // that renders the "Select a file to preview." hint — a mount-backed folder, where
+  // the hint is the pane's only content. A multi-selection previews nothing and needs
+  // no per-path identity.
   return selCount === 0 ? "preview:self:" + folder : "preview:none";
 }
 
