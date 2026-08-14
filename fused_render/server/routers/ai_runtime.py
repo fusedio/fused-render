@@ -317,7 +317,22 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     source = body.get("path")
     if not isinstance(source, str) or not source.strip():
         return _error("'path' must be the audio or video file to transcribe", status=400)
-    source = os.path.abspath(os.path.expanduser(source.strip()))
+    source = os.path.expanduser(source.strip())
+    # Page-relative, the same rule `/api/fs/raw` follows (RH-1): a relative
+    # `path` resolves against the directory of `base`, the calling page's own
+    # absolute path. `fused.readFile("clip.m4a")` already means "beside this
+    # page", so this call meaning "beside wherever the server was launched
+    # from" would be a trap — a 400 naming a path the author never wrote, or,
+    # if a same-named file happens to sit under that cwd, silently transcribing
+    # the wrong recording. An absolute `path` ignores `base`, as it does there.
+    base = body.get("base")
+    if not os.path.isabs(source):
+        if not isinstance(base, str) or not os.path.isabs(base):
+            return _error(
+                "'path' must be absolute, or relative to a page named by 'base'",
+                status=400)
+        source = os.path.join(os.path.dirname(base), source)
+    source = os.path.abspath(source)
     if not os.path.exists(source):
         return _error(f"no such file: {source}", status=400)
     if not os.path.isfile(source):

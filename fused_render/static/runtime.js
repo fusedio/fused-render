@@ -38,8 +38,9 @@
  *     this machine — the reason is in the message).
  *   fused.ai.transcribe({path, model, language, task, onProgress})
  *                  -> Promise<{output, url, text, segments, language, ...}>
- *     Speech to text, locally (SPEC §40). Takes an absolute path to an audio or
- *     video file on THIS machine — nothing is uploaded — and resolves with the
+ *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
+ *     file on THIS machine — nothing is uploaded — resolved beside this page
+ *     when relative, like readFile/rawUrl. Resolves with the
  *     words plus the segments that carry their timestamps, which are most of
  *     the value. task: "transcribe" (same language) | "translate" (into
  *     English); language omitted means auto-detect. Minutes long: onProgress
@@ -2607,6 +2608,14 @@
     for (const key of ["path", "model", "language", "task", "initialPrompt", "vad"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
+    // The page's own path, so a RELATIVE `path` resolves beside this page —
+    // the same `&base=` rawUrl sends and the same rule readFile/stat follow
+    // (RH-1). Without it "clip.m4a" would mean "beside wherever the server was
+    // launched from", which is a different file or no file at all, and a
+    // bridge call that resolves paths differently from its siblings is a trap
+    // whatever the error message says.
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/transcribe", body).then((started) => {
       const watcher = watchJob(started.jobId);
       // The transcript file is the result; the row only said when to read it.

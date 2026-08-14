@@ -1230,6 +1230,38 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
         _wait_job(started["jobId"])
 
 
+def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
+        client, fake_transcribe_runner, recording):
+    """The same page-relative rule every other path-taking call follows (RH-1).
+
+    `fused.readFile("clip.m4a")` resolves against the calling page's directory,
+    so `fused.ai.transcribe({path: "clip.m4a"})` reading it against the
+    SERVER's cwd is a trap — a 400 about a path the author never wrote, or,
+    if a same-named file happens to sit under the server's cwd, silently
+    transcribing the wrong recording. `base` is the page's own absolute path,
+    exactly as `/api/fs/raw` takes it.
+    """
+    reply = client.post("/api/ai/transcribe",
+                        json={"path": os.path.basename(recording),
+                              "base": os.path.join(os.path.dirname(recording),
+                                                   "page.html")},
+                        headers={"X-Fused": "1"})
+    assert reply.status_code == 200, reply.json()
+    assert reply.json()["path"] == recording
+    _wait_job(reply.json()["jobId"])
+
+
+def test_a_relative_path_with_no_page_is_refused_rather_than_guessed(
+        client, fake_transcribe_runner):
+    """A caller reaching the API directly has no page to resolve against, and
+    the server's cwd is never the right answer — it is wherever the app
+    happened to be launched from."""
+    response = client.post("/api/ai/transcribe", json={"path": "clip.m4a"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "absolute" in response.json()["error"]
+
+
 def test_an_unknown_task_names_both_valid_ones(client, fake_transcribe_runner,
                                                recording):
     """Named rather than silently defaulted: "translation" instead of
@@ -1643,6 +1675,10 @@ def test_both_artefact_bridges_survive_a_row_that_aged_out():
                                "fused_render", "static", "runtime.js"),
                   encoding="utf-8").read()
     assert "ai.transcribe = aiTranscribe" in source
+    # The page-relative half is the bridge's job (RH-1): the server can only
+    # resolve "clip.m4a" if the page says where it is standing.
+    transcribe = source[source.index("function aiTranscribe("):]
+    assert "body.base = ownPath" in transcribe[:transcribe.index("\n  }\n")]
     for call in ("function aiImage(", "function aiTranscribe("):
         start = source.index(call)
         end = source.index("\n  }\n", start)
