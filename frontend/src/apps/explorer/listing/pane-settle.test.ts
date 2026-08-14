@@ -76,7 +76,10 @@ describe("the listing feeds the pane a settled lead", () => {
     // mount nothing — so the derivation reads both, and reads the settled lead for
     // the only part that is expensive.
     expect(src).toMatch(/const paneRow =\s*\n?\s*sel\.paths\.length === 1 && settledLead/);
-    expect(src).toContain("paneRow?.isDir");
+    // The row handed to the pane comes from it too. (This also asserted
+    // `paneRow?.isDir`, the subject question behind the pill — deleted with D285,
+    // which stopped the offered sides depending on the subject at all.)
+    expect(src).toContain("paneRow ??");
   });
 
   test("the pane's key is built from the settled row", () => {

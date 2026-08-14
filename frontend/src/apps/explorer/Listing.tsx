@@ -74,7 +74,7 @@ import {
   paneSideList,
   paneSideParam,
   parsePaneSide,
-  type PaneSide,
+  type PaneSideChoice,
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
@@ -330,7 +330,6 @@ export default function Listing({
   // "shut".
   const openSide = () => setSide({ open: true, mode: sideState.mode });
   const closeSide = () => setSide({ open: false, mode: sideState.mode });
-  const selectSide = (mode: PaneSide) => setSide({ open: true, mode });
 
   const clipboard = useClipboard();
 
@@ -820,11 +819,10 @@ export default function Listing({
   // reported next. The self target keeps that hint only as the neither-companion
   // fallback now (ListingPreviewPane's self branch).
   //
-  // A MULTI-selection is deliberately not a folder: `paneRow` is set only for a
-  // single-row selection, and the count test below is `=== 0`, so two or more rows
-  // keep their Preview side and their "N items selected" placeholder.
-  const paneSubjectIsDir = sel.paths.length === 0 || !!paneRow?.isDir;
-  const paneSides = paneSideList(sideEntries, paneSubjectIsDir);
+  // **The subject no longer enters into it at all** (D285): `preview` is not on offer
+  // for any row type, so there is nothing left to ask about the subject and
+  // `paneSideList` takes no flag. What it answers is what the FOLDER offers.
+  const paneSides = paneSideList(sideEntries);
   // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
   // skeleton: resolving a side here would put the pill on `preview` while the row's
@@ -832,6 +830,17 @@ export default function Listing({
   // respawn `agent.py` — when the probe landed.
   const paneUndecided = paneSides.length === 0;
   const paneSide = activePaneSide(paneSides, sideState.mode);
+
+  // Picking the mode that is ALREADY first on offer records NO choice (`mode: null`),
+  // so the leading companion keeps the clean URL (PT-9, D285): a click on Claude
+  // where Claude is what the pane is already showing must not grow `_side=claude` on
+  // every shared listing link. Only a second, deliberate choice is written down.
+  //
+  // Defined HERE, below `paneSides`, and not up with the other `_side` writers: it
+  // reads that list, and a closure over a `const` declared later in the same body is
+  // a temporal-dead-zone trap waiting for the first caller that runs during render.
+  const selectSide = (mode: PaneSideChoice) =>
+    setSide({ open: true, mode: mode === paneSides[0] ? null : mode });
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.

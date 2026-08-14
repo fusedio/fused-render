@@ -54,6 +54,7 @@ import {
   paneSideMenu,
   paneSideTarget,
   type PaneSide,
+  type PaneSideChoice,
   type PaneSideEntries,
 } from "@apps/explorer/listing/pane-side";
 
@@ -120,7 +121,7 @@ export default function ListingPreviewPane({
   // not offer the mode (lib/dir-mode). Resolved by Listing, which does not remount
   // per selection — see the module comment.
   sideEntries: PaneSideEntries;
-  onSelectSide: (side: PaneSide) => void;
+  onSelectSide: (side: PaneSideChoice) => void;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
   // between the two down.
@@ -130,17 +131,16 @@ export default function ListingPreviewPane({
   // The self target renders without asking the server anything (no modes — see
   // its branch below), so no fetch is started for it.
   const self = !!row?.self;
-  // A FOLDER SUBJECT: a selected directory, OR the self target — which is this
-  // folder itself and, since D284, is one of these rather than the exception it used
-  // to be (`!row.self` stood here and was the code half of that exception). The pill
-  // drops its `preview` row for one (pane-side's paneSideMenu), and this is the same
-  // question Listing asked to resolve `side`, so the menu cannot disagree with the
-  // side it is on. A multi-selection passes `row: null` and is not a folder subject.
-  const subjectIsDir = !!row?.isDir;
   // Only `Preview` is about the row's own templates. Claude and Git are handed
   // their entry by the caller and aimed by `_file`, so in those two modes the
   // stat below would be work for an answer nothing reads — including on every
   // selection change, since Claude stays mounted across one.
+  //
+  // Since D285 `preview` is only ever the neither-companion FALLBACK, so this stat —
+  // and the row modes, metadata card and expand affordance it feeds — is reached only
+  // in a folder where both gates refuse (a mount). That is still a real, reachable
+  // state and the pane genuinely previews a file row's own template there, so none of
+  // it is dead; it is just rare. Whether it should stay is not this change's question.
   const previewing = side === "preview";
 
   // --- A SELECTED FOLDER IS PREVIEWED AS A FOLDER (D280, deleting D269's pane
@@ -233,12 +233,12 @@ export default function ListingPreviewPane({
   // outside one does not make the Git row appear and disappear, it dims.
   const sideMenu = (
     <ModeMenu
-      entries={paneSideMenu(sideEntries, subjectIsDir).map((e) => ({
+      entries={paneSideMenu(sideEntries).map((e) => ({
         ...e,
         icon: paneSideIcon(e.mode, sideEntries),
       }))}
       active={side}
-      onSelect={(m) => onSelectSide(m as PaneSide)}
+      onSelect={(m) => onSelectSide(m as PaneSideChoice)}
     />
   );
 
