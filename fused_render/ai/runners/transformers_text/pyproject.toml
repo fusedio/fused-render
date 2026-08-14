@@ -26,11 +26,13 @@
 # while a Windows machine gets a 122MB CPU build. CUDA on Windows means pulling
 # torch from `download.pytorch.org` through a `[[tool.uv.index]]`, which would
 # cost EVERY Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA
-# card. The trade was taken deliberately for v1: the runner reports the device it
-# actually got (`worker.py`'s `device()`), the AI Models page shows it, and the
-# suggested models are curated so the CPU case is a real option rather than a
-# consolation. The same constraint already applies to `diffusers_image` and is
-# simply not stated there.
+# card. The trade was taken deliberately for v1: the runner reports the device
+# it actually got, the AI Models page shows it, and the suggested models are
+# curated so the CPU case is a real option rather than a consolation. The same
+# constraint already applies to `diffusers_image` and is simply not stated there.
+#
+# That report is `worker.py`'s `load()` calling `worker_base.set_state(device=…)`
+# — the field `/health` carries and the page draws (see `worker_base.STATE`).
 #
 # What each earns:
 #   torch           the tensors and the device (CUDA / MPS / CPU)
