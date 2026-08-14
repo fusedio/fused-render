@@ -83,10 +83,8 @@ import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
   INITIAL_SEARCH_SELECT,
-  autoSelectPath,
   nextSearchSelection,
   rowPressAction,
-  selectionClaimed,
   type RowPressAction,
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
@@ -253,9 +251,9 @@ export default function Listing({
   // Switching it off HERE is the whole feature: `pane.on` is `paneEnabled &&`
   // the measurement, so one predicate takes the slot, the divider, the closing
   // chevron on the pane's header, the reopening SideToggleButton in the search
-  // row, the FS-16 auto-select (which waits on `pane.on` by design) and the two
-  // `useDirMode` companion probes with it. Nothing about the ROWS changes: a
-  // pane's listing still selects, arrow-keys, and opens on double-click/Enter —
+  // row and the two `useDirMode` companion probes with it. Nothing about the
+  // ROWS changes: a pane's listing still selects, arrow-keys, and opens on
+  // double-click/Enter —
   // opening a file in a pane replaces that pane's document, which is the point.
   const paneEnabled = !embedded && !IS_SNAPSHOT && !IS_PANEL_PANE;
   const { pane, splitRef, onDividerPointerDown } = usePreviewPane(paneEnabled);
@@ -711,80 +709,42 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // Opening a folder lands on its first PAGE, or on its first entry — file or
-  // directory — when it has none (rendered order both ways; the rule and its
-  // reasons are on autoSelectPath). Either way the pane shows something instead
-  // of the folder's own "Select a file to preview." hint. A pane that opens
-  // empty asks the user to do the obvious thing before it will do anything at
-  // all; a folder is overwhelmingly opened to look at what is in it.
+  // OPENING A FOLDER SELECTS NOTHING (FS-16, D275). There is no folder
+  // auto-select here and there is deliberately no code for one: a freshly opened
+  // folder has an empty selection, so its pane sits on its self target and its
+  // `Select a file to preview.` hint (FS-11) until the user picks a row.
   //
-  // ONE SHOT, and this effect owns only the TIMING of it — autoSelectPath owns
-  // the decision. The shot is taken at the first settled non-search listing WITH THE
-  // PANE ON. Listing remounts per fsPath, so that is once per folder
-  // navigation: a dir-watch refresh never re-fires it, and a selection the user
-  // cleared (Escape) stays cleared.
+  // What used to be here was a one-shot effect that walked the settled rows for
+  // the first page, else the first row, and selected it — so the pane always had
+  // something in it. It went because the guess is a real action taken on the
+  // user's behalf: it highlights a row they did not choose, mounts a /render
+  // iframe (and a template's Python) for a file they may never look at, and
+  // makes the keyboard's target and every row-scoped action — delete, rename,
+  // the pane's expand — point at whatever the sort put first. An empty pane asks
+  // for one click; a wrong selection has to be noticed and undone.
   //
-  // Three conditions hold the shot rather than spending it, because each can
-  // still turn into a folder the user is looking at:
-  //   • the pane is OFF — the container is too narrow to split, so there is
-  //     nothing to preview into yet; widening the window later should still
-  //     land on the first entry (`pane.on` is a dependency for exactly that);
-  //   • search mode — the rendered rows are a query's answer, not the folder's,
-  //     so clearing the query still lands on the folder's first entry;
-  //   • the listing is not OK — `status !== "ok"` and not merely "still
-  //     loading". A failed first fetch settles with zero rows, and the
-  //     dir-watch refetch that succeeds afterwards does NOT pass back through
-  //     "loading" — so spending the shot on the error state meant a folder
-  //     whose first request blipped never auto-selected at all, for the whole
-  //     mount. `listingLoaded` (which is true for a terminal error, by design —
-  //     the selection reconcile WANTS to clear a stale selection there) is the
-  //     wrong question for this effect.
-  // TWO Listings never fire at all:
-  //   • an EMBEDDED one (the pane's own `_listing` mode) — it has no pane of
-  //     its own to fill;
-  //   • a PROVISIONAL one (App's pre-stat loading scaffold, mounted off a nav
-  //     hint). Auto-selecting there mounts a real /render iframe that the swap
-  //     to the resolved Listing tears down and re-issues a beat later — a
-  //     doubled stat and a doubled frame load on every folder navigation, for a
-  //     preview nobody saw. The scaffold's job is to hold the SHAPE (the split,
-  //     the divider, the pane's chrome) so nothing jumps when the real listing
-  //     lands; it is not the place to start work that is about to be thrown
-  //     away. The pane itself stays — only the automatic selection waits. A
-  //     user's own click in the scaffold still previews, and still carries
-  //     across the swap (recallSelection), because that one was asked for.
-  //
-  // And it FILLS AN EMPTY SELECTION, never replaces one: the shot is spent
-  // silently when something already holds the selection at the moment the
-  // guards are first met (`selectionClaimed`). That is exactly the scaffold
-  // click above — the user clicked row five during a slow mount, the resolved
-  // listing settled, and the auto-selection used to land on top of it. The
-  // decision half (autoSelectPath) stays blind to the selection (D240); this is
-  // a condition on WHEN to ask, which is this effect's half.
-  const autoSelectedRef = useRef(false);
-  useEffect(() => {
-    if (embedded || provisional || autoSelectedRef.current) return;
-    if (searching || state.status !== "ok" || !pane.on) return;
-    autoSelectedRef.current = true;
-    if (selectionClaimed(sel)) return;
-    const first = autoSelectPath(navRows, rowCtxByPath);
-    if (first) selectOnly(first);
-    // Fires on the commit that first satisfies the guards above; the rows it
-    // reads are current as of that commit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [embedded, provisional, searching, state.status, pane.on]);
+  // Nothing else about the selection changed. A `?sel=` on the URL is still
+  // seeded at mount and a click in the pre-stat provisional scaffold still
+  // carries across the swap (both in useListingSelection: pathFromSelParam and
+  // recallSelection), because those are the user's own claims rather than the
+  // app's guess. And SEARCH still lands on its top hit, right below — a query is
+  // itself a request to look at something, which is exactly what opening a
+  // folder is not.
 
   // Search results land on their TOP HIT, so Enter and the pane act on the
   // best match without the user having to reach for it first.
   //
-  // Unlike the folder shot above this is NOT one-shot: a folder's rows settle
-  // once per navigation, results re-rank on every keystroke. The decision
-  // (searchAutoSelectPath) owns what to select; this owns only two things.
+  // This is the LAST auto-selection in the listing (the folder one is gone,
+  // above) and it is a repeated one, not a shot: results re-rank on every
+  // keystroke, every stream flush and every slice the scan publishes. The
+  // decision (searchAutoSelectPath) owns what to select; this owns only two
+  // things.
   //
   // WHEN to ask. Not while embedded (the pane's own `_listing` has no pane to
-  // fill) and not provisional, matching the folder shot. It does NOT wait for
-  // `pane.on`, which that one does: the folder case exists to fill the pane,
-  // whereas a selected top hit is worth having for Enter and the arrow keys
-  // whether or not the window is wide enough to preview it.
+  // fill) and not provisional — a scaffold's selection would be torn down and
+  // re-made by the swap to the resolved listing a beat later. It does NOT wait
+  // for `pane.on`: a selected top hit is worth having for Enter and the arrow
+  // keys whether or not the window is wide enough to preview it.
   //
   // Whose selection it is — and in particular that a user's choice OUTLIVES a
   // query change — is `nextSearchSelection`'s to track, not this effect's. It

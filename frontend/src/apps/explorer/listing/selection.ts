@@ -42,13 +42,13 @@ export function rememberSelection(fsPath: string, sel: Selection): void {
   lastSelection = { fsPath, sel };
 }
 
-// The row a freshly opened folder previews when nothing else claims the
-// selection (Listing's auto-select, FS-16): the FIRST row in the RENDERED
-// order — file or directory — so the choice follows the active sort and is the
-// row the eye is already on. Selecting a directory previews it as a PEEK (the
-// pane's directory case), not a navigation, so landing on one is as harmless
-// as landing on a file. null only when there is nothing to select at all (an
-// empty folder), which leaves the pane on its self target exactly as before.
+// The first row in the RENDERED order that is actually ON SCREEN, or null when
+// there is none. The order is the one the user is looking at, so the answer
+// follows the active sort, and a directory is an ordinary candidate.
+//
+// Its only caller now is the SEARCH auto-select below ("the top hit"). It was
+// written for the folder auto-select — the row a freshly opened folder previewed
+// — which D275 deleted: opening a folder now selects nothing at all (FS-16).
 export function firstEntryPath(
   rows: string[],
   byPath: ReadonlyMap<string, unknown>,
@@ -60,94 +60,23 @@ export function firstEntryPath(
   return null;
 }
 
-// What counts as a PAGE for the auto-selection below: a file whose extension
-// renders as itself in the preview (`_render`, PT-12).
-//
-// `.htm` counts, and that is the OPPOSITE call from `lib/app-entry.ts`, which
-// accepts `.html` only. The two questions are different and the divergence is
-// the answer to each rather than an inconsistency: app-entry decides WHICH PAGE
-// A FOLDER IS (D269), a claim the server (`app_listing.app_entry`) and the
-// templates (`templates/shared/app_entry.py`) also make about the same folder,
-// so all of them must agree to the letter — a stray `.htm` there was a real bug.
-// This decides which row a pane opens on, where being wrong costs one
-// keystroke, and the registry binds `.html` and `.htm` to the same mode list, so
-// a `.htm` previews exactly like an `.html`. Refusing it would land a folder
-// whose only page is `page.htm` on some adjacent text file instead — a worse
-// answer for no gain in correctness.
-//
-// (The module cited here was `lib/folder-app.ts` until D269: same divergence,
-// but that one asked whether a folder had EXACTLY ONE page. It was deleted with
-// the app concept by D264; `lib/app-entry.ts` is its successor, not its return.)
-function isPageRow(name: string, isDir: boolean): boolean {
-  return !isDir && /\.html?$/i.test(name);
-}
-
-// What a freshly opened folder should select for its preview pane, or null when
-// there is nothing to select (FS-16). The caller owns the TIMING — one shot per
-// mount, at the first settled non-search listing with the pane on, all of which
-// are conditions on WHEN to ask, not on the answer (see Listing). This owns the
-// decision.
-//
-// **The first PAGE in rendered order, else the first row** (D263, superseding
-// D240's answer). The pane exists to show something, and in an ordinary folder
-// the page is the one row that renders as itself rather than as a listing of a
-// directory or a dump of text — a folder holding an `index.html` is opened to
-// look at that page far more often than at whatever the sort put on row one.
-// The fallback is untouched: no page, first entry, directories included.
-//
-// In RENDERED order, and deliberately not "index.html if there is one". The
-// order is the one the user is looking at, so the row that wins is the one
-// nearest the top of their table and re-sorting re-answers the question; a
-// favoured name would instead pick a row that may be scrolled off screen, and
-// would need its own tie-break story the moment a folder had two of them.
-//
-// The KIND is checked, never just the name: `build.html` as a DIRECTORY is a
-// real shape (an exported site tree), and selecting it would peek a folder in
-// place of the page the user can see.
-//
-// The decision takes NO reading of the URL, and deliberately so. It used to
-// defer to the `?sel` param itself, resolving "what does this folder open on"
-// in two places at once. It does not need to: a `?sel=` on the URL is SEEDED
-// INTO THE SELECTION at mount (useListingSelection), so by the time this is
-// asked the param has already become an ordinary claim on the selection and
-// the yield below covers it (D240, the half that stands).
-//
-// That rationale was about the URL, never about the user: **auto-select fills
-// an EMPTY selection, it never replaces one.** A row the user clicked in the
-// pre-stat provisional listing rides across the swap (recallSelection), and
-// overwriting it would undo a click the user had already made and seen. That
-// yield is a condition on WHEN to ask, not on the answer, so it lives in
-// Listing's effect (`selectionClaimed`) and this stays pure.
-export function autoSelectPath(
-  rows: string[],
-  byPath: ReadonlyMap<string, { isDir: boolean }>,
-): string | null {
-  for (const path of rows) {
-    // `byPath.has` is the same "is it on screen" gate firstEntryPath applies —
-    // a page with no rendered row is not a candidate, and the fallback below
-    // re-walks from the top rather than settling for it.
-    const row = byPath.get(path);
-    if (row && isPageRow(path.slice(path.lastIndexOf("/") + 1), row.isDir)) return path;
-  }
-  return firstEntryPath(rows, byPath);
-}
-
 // The row a SEARCH should select, or null to leave the selection alone.
 //
-// Same intent as the folder auto-select above — land on something so the pane
-// has content and Enter has a target — but a different shape, because search
-// results are not a folder. A folder's rows settle once per navigation, so
-// that one is a single shot. Results re-rank on every keystroke, on every
-// stream flush and on every slice the scan publishes, so this is asked
-// repeatedly and has to answer three different situations:
+// A query is itself a request to look at something, so landing on the top hit
+// gives the pane content and Enter a target. THIS IS THE ONLY AUTO-SELECTION
+// LEFT: opening a folder selects nothing (FS-16/D275, see Listing). It is also a
+// different shape from that one was, because search results are not a folder. A
+// folder's rows settle once per navigation, so that was a single shot. Results
+// re-rank on every keystroke, on every stream flush and on every slice the scan
+// publishes, so this is asked repeatedly and has to answer three different
+// situations:
 //
 //   * nobody has claimed the selection -> the top hit, and it FOLLOWS the
 //     ranking as it refines. Pinning row one of a ranking the user has since
 //     typed past would leave the pane on a result that is no longer the best
 //     answer, which is worse than not selecting at all.
 //   * the user moved the selection -> leave it. Auto-select fills a selection
-//     nobody chose; it never overrules one somebody did (`selectionClaimed`
-//     makes the same call for folders).
+//     nobody chose; it never overrules one somebody did.
 //   * the user's row left the results -> the top hit again. There is nothing
 //     left to respect: the row is not on screen, so keeping the selection
 //     there previews a path the user cannot see.
@@ -166,7 +95,7 @@ export function searchAutoSelectPath(
   const first = firstEntryPath(rows, byPath);
   if (first === null) return null; // nothing matched; nothing to select
   if (userOwned) {
-    // Cleared on purpose (Escape) — the folder shot honours the same thing.
+    // Cleared on purpose (Escape) — that is a choice too, so it stands.
     if (sel.lead === null) return null;
     if (byPath.has(sel.lead) && rows.includes(sel.lead)) return null; // still here
   }
@@ -229,16 +158,6 @@ export function nextSearchSelection(
   // Writing a selection makes it ours again: a claim only ever ends because
   // the row it was on stopped being a result.
   return { state: { autoPlaced: select, userClaimed: false }, select };
-}
-
-// Does something already own the selection? The one question the auto-select
-// effect asks before it spends its shot (FS-16): a non-empty selection at that
-// moment was put there by the user — a click in the provisional scaffold,
-// carried over by recallSelection; a `?sel=` on the URL they reloaded or were
-// sent — or by the reconcile clamping onto a surviving row, and any of those
-// outranks "row one, because the folder just opened". Anchor/lead are not consulted: `paths` is what is highlighted.
-export function selectionClaimed(sel: Selection): boolean {
-  return sel.paths.length > 0;
 }
 
 // --- the `?sel=` URL param ---------------------------------------------------

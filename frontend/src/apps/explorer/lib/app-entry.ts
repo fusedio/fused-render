@@ -17,10 +17,10 @@
 // were asked" split:
 //
 //   * `.htm` does NOT count — `.html` only, exactly as the Python rule reads,
-//     because these two must agree on the same folder. `listing/selection.ts`'s
-//     `isPageRow` DOES accept `.htm`, and that is not drift: it picks which row
-//     the pane opens on inside a folder, where the registry renders `.htm` and
-//     `.html` identically and being wrong costs one keystroke (D263, SPEC FS-16).
+//     because these two must agree on the same folder. (`listing/selection.ts`
+//     used to hold a deliberately more permissive `isPageRow` that accepted
+//     `.htm`; it went with the folder auto-select it served, D275/FS-16, so this
+//     is now the only page rule on the frontend.)
 //   * `preview.png` is irrelevant here. `lib/folder-peek.ts` ranks it FIRST
 //     because it decides what a folder card shows a PICTURE of; this decides
 //     which page the folder opens, and a screenshot is not a page.
