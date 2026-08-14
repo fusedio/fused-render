@@ -6265,12 +6265,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   Holding a supervisor-side lock instead is what makes the wait describable —
   the row says it is queued, keeps saying so, and its ✕ is honoured, none of
   which is reachable from inside a blocked `urlopen` that has sent the worker
-  nothing to cancel. That wait carries the row's TITLE on every tick and ticks
-  at the decode's own cadence, because a queued row is otherwise the first
-  thing §36's cap evicts (it sorts running rows by `updated_at`) and an evicted
-  row can only be reopened by a report carrying a title — without one the ✕
-  silently stops working and the page is told a transcription that is about to
-  succeed has failed. **The turn is taken before the MODEL is resolved**, and
+  nothing to cancel. **Every reporter on a transcription's lifecycle restates
+  the ROW'S IDENTITY on every tick** — title, kind, unit, cancellable, and
+  `state: "running"` — because §36's cap evicts the least recently updated
+  running row and a queue of transcriptions is exactly what pushes the count
+  past it, so any tick can be the one that has to re-create its row rather
+  than update it. A tick without a title is refused outright and the row never
+  returns: the ✕ goes dead, `watchJob` resolves null, and the page is told a
+  run that succeeds minutes later has failed. Without `cancellable` the
+  rebuilt row is drawn with a dismiss cross instead of a cancel one — operable
+  looking and inert; without `unit` the seconds clock reverts to a bare pair of
+  numbers. The identity is defined ONCE and handed to the worker in the request
+  body rather than re-spelled in that process, so the supervisor's reports and
+  the worker's cannot disagree about what the row is. **The turn is taken
+  before the MODEL is resolved**, and
   that ordering is load-bearing: resolving first put the one destructive step —
   `_start_resident`, which EVICTS the resident model when the requested one
   differs — outside the very lock that serializes this path, so a page asking
