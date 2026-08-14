@@ -662,6 +662,9 @@ _CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotPaneNote(", "function shotTru
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
                         "async function annCaptureShots(", "function shotJoin(",
+                        # One stamp writer for both the crops and the whole-pane
+                        # shot, so two files out of one click cannot collide.
+                        "function shotStamp(",
                         "function annApplyShots(", "function annRevokeThumbs(",
                         "function annShots("]
 
@@ -1338,11 +1341,12 @@ const a = {id: "a"};
 # `targetNoun` is what formatAnnotations' preamble names the target kind
 # from — one writer for every piece of chrome that says "project"/"file"
 # (test_claude_kind.py), and the annotation block is one of them.
-_LEGACY_WIRE = """// The page no longer WRITES a pane-shot block — the composer control was
-// deleted — so the legacy wire shape is built by hand here. That is the point:
-// what is under test is the STRIPPER, which still has to peel one off a session
-// recorded before the removal.
-const paneBlock = (v) => "<" + PANE_SHOT_TAG + ">\\nlegacy caption\\n"
+# The wire shape a session recorded BEFORE the screenshot button existed carries.
+# Built by hand, and deliberately so: those blocks were written by a composer
+# control that has been deleted and rewritten since, with a different caption, and
+# the stripper has to peel one off regardless of which writer produced it. Reading
+# an old wire format is a permanent obligation.
+_LEGACY_WIRE = """const paneBlock = (v) => "<" + PANE_SHOT_TAG + ">\\nlegacy caption\\n"
   + JSON.stringify(v) + "\\n</" + PANE_SHOT_TAG + ">";
 const legacyWire = (msg, pend, st, v) => {
   const parts = [];
@@ -1359,41 +1363,63 @@ _WIRE_ALSO = ["let targetNoun", "let paneNoun", "function formatAnnotations(", "
               "function stripAnnBlock(", "function stripAppStateBlock(",
               "const APP_STATE_TAG", "function appStateBlock(",
               "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
-              "function isMarkerOnly(",
+              "function isMarkerOnly(", "function paneShotBlock(",
               "function stripBlocks(", "function composeOutgoing("]
 
 
-def test_a_failed_capture_says_nothing_about_a_pane_shot_nobody_asked_for(html):
-    """The other half: a send with the toggle OFF must be byte-identical to one
-    from before this feature, failure or not."""
+def test_the_crops_capture_says_nothing_about_a_screenshot_nobody_took(html):
+    """The crops' capture has NOTHING to do with the screenshot button — two
+    separate paths that share only `shotPane`. A send with no shot attached must be
+    byte-identical to one from before the button existed, failure or not:
+    `annShots` neither produces a `view` nor knows the word."""
     out = _node([n for n in _CAPTURE_FNS if n != "const SHOT_TIMEOUT_MS"] + _WIRE_ALSO,
                 "var SHOT_TIMEOUT_MS = 50;\n" + _CAPTURE_STUBS + """
 var console2 = console;
 console = {warn: () => {}};
 annCaptureShots = async () => { throw new Error("canvas exploded"); };
 (async () => {
-  const r = await annShots([], false);
+  const r = await annShots([]);
   console2.log(JSON.stringify({view: r.view === undefined,
-    outgoing: composeOutgoing("just words", [], null, r.view)}));
+    outgoing: composeOutgoing("just words", [], null, null)}));
 })();
 """, html)
-    assert out["view"] is True, "no view field at all when none was requested"
+    assert out["view"] is True, "the crops' result carries no view field, ever"
     assert out["outgoing"] == "just words"
 
 
-def test_a_marker_still_names_a_pane_shot_in_an_older_transcript(html):
-    """The marker logic reads what the message CARRIED. A session recorded before
-    the pane-shot control was deleted still holds those blocks, and a wordless one
-    has to say what it carried instead of rendering an empty bubble."""
+def test_a_screenshot_only_send_collapses_to_a_marker(html):
+    """The marker logic reads what the message CARRIED. A picture with no typed
+    words is a real send — most of the point of a screenshot button — so the bubble
+    has to name what went out instead of rendering empty."""
     out = _wire(html, """
-""" + _LEGACY_WIRE + """
 const failed = {view: null, viewNote: "no pane screenshot: it could not be saved"};
-const wire = legacyWire("", [], null, failed);
+const wire = composeOutgoing("", [], null, failed);
 console.log(JSON.stringify({stripped: stripBlocks(wire),
                             marker: isMarkerOnly(stripBlocks(wire))}));
 """)
     assert out["stripped"] == "\U0001f5bc pane screenshot"
     assert out["marker"] is True, "still non-identifying, so re-attach must refuse it"
+
+
+def test_a_block_written_before_this_button_existed_still_strips(html):
+    """The permanent obligation, and the reason `_LEGACY_WIRE` is still hand-built:
+    the writer of these blocks was deleted and later rewritten with a different
+    caption, so a session on disk holds a shape nothing in the page produces today.
+    The stripper keys on the TAG and not on the caption, which is what makes that
+    safe."""
+    out = _wire(html, """
+""" + _LEGACY_WIRE + """
+const view = {view: "/tmp/fr/shots/S-view.png", viewNote: "part is blank"};
+const old = legacyWire("fix this", [], null, view);
+const now = composeOutgoing("fix this", [], null, view);
+console.log(JSON.stringify({old: old, sameText: old === now,
+                            oldStripped: stripBlocks(old),
+                            nowStripped: stripBlocks(now)}));
+""")
+    assert "legacy caption" in out["old"], "the fixture really is the older shape"
+    assert out["sameText"] is False, "and the page does not write that caption now"
+    assert out["oldStripped"] == "fix this"
+    assert out["nowStripped"] == "fix this"
 
 
 def test_an_abandoned_capture_cannot_reject_unhandled(html):
@@ -1467,7 +1493,7 @@ _WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
              "function stripAnnBlock(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
-             "const PANE_SHOT_TAG",
+             "const PANE_SHOT_TAG", "function paneShotBlock(",
              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
              "function isMarkerOnly(",
              "function stripPaneBlock(", "function composeOutgoing("]
@@ -1561,23 +1587,24 @@ def test_every_marker_a_strip_can_produce_is_known_to_be_non_identifying(html):
     turn on a marker because every such send collapses to the SAME text, so it
     identifies no particular turn and a false match trims another turn's assistant
     rows. It excluded the annotations marker by literal — then the pane shot added
-    two more marker shapes and the check did not know about them, so a view-only
-    send could match the wrong turn and destroy real transcript content.
+    two more marker shapes and the check did not know about them, so a
+    screenshot-only send could match the wrong turn and destroy real transcript
+    content.
 
     The markers are DERIVED here from stripBlocks itself rather than listed, so a
     fourth marker added later without teaching `isMarkerOnly` about it fails this
     test instead of silently reintroducing the bug."""
     out = _wire(html, """
-""" + _LEGACY_WIRE + """
 const a = {id: "x", content: "here", anchorId: "hdr"};
 const view = {view: "/tmp/fr/shots/S-view.png"};
-// Every combination that can leave the user's own words empty — the pane-shot
-// ones only reachable from a transcript recorded before that control was cut.
+// Every combination that can leave the user's own words empty. All four are
+// reachable from the composer: notes alone, a screenshot alone, and either of
+// those two together, with or without an app-state block in front.
 const produced = [
   stripBlocks(composeOutgoing("", [a], null)),
-  stripBlocks(legacyWire("", [], null, view)),
-  stripBlocks(legacyWire("", [a], null, view)),
-  stripBlocks(legacyWire("", [a], {entry: "/p"}, view)),
+  stripBlocks(composeOutgoing("", [], null, view)),
+  stripBlocks(composeOutgoing("", [a], null, view)),
+  stripBlocks(composeOutgoing("", [a], {entry: "/p"}, view)),
 ];
 console.log(JSON.stringify({
   produced: produced,
@@ -1606,22 +1633,21 @@ def test_the_re_attach_check_asks_the_predicate_not_a_literal(html):
 
 
 def test_a_pane_shot_path_never_reaches_the_transcript_the_user_reads(html, agent):
-    """Same requirement as a crop path: the path is for the model. Nothing writes
-    one any more, and every combination is still checked, because a restored
-    session from before the control was deleted has to read back cleanly — and the
-    strip ORDER is what makes it work, since the annotation block is only
-    recognised at position zero."""
+    """Same requirement as a crop path: the path is for the model, and a user who
+    attached a picture must see their own sentence rather than a temp path. Every
+    combination is checked because the strip ORDER is what makes it work — the
+    annotation block is only recognised at position zero, so the pane block has to
+    come off first."""
     out = _wire(html, """
-""" + _LEGACY_WIRE + """
 const a = {id: "x", content: "here", anchorId: "hdr", shot: "/tmp/fr/shots/A.png"};
 const view = {view: "/tmp/fr/shots/S-view.png", viewNote: "part is blank"};
 const st = {entry: "/p/index.html"};
 const cases = {
-  all: legacyWire("fix this", [a], st, view),
-  viewAndState: legacyWire("fix this", [], st, view),
-  viewOnly: legacyWire("fix this", [], null, view),
-  viewNoWords: legacyWire("", [], null, view),
-  annAndViewNoWords: legacyWire("", [a], null, view),
+  all: composeOutgoing("fix this", [a], st, view),
+  viewAndState: composeOutgoing("fix this", [], st, view),
+  viewOnly: composeOutgoing("fix this", [], null, view),
+  viewNoWords: composeOutgoing("", [], null, view),
+  annAndViewNoWords: composeOutgoing("", [a], null, view),
 };
 const stripped = {};
 for (const k of Object.keys(cases)) stripped[k] = stripBlocks(cases[k]);
@@ -1649,9 +1675,9 @@ console.log(JSON.stringify({cases: cases, stripped: stripped}));
 def test_the_agent_cannot_ask_for_a_screenshot(html, agent):
     """Deliberately out of the app_state tool's reach. Letting the model request
     pixels every turn is the cost this design avoids: app_state already answers
-    "did my edit land" symbolically. The user-facing whole-pane control that used
-    to be the other half of this is gone; crops still ride annotations, which are
-    the user's own act."""
+    "did my edit land" symbolically. The whole-pane picture and the crops are BOTH
+    the user's own act — a button they pressed, a note they wrote — and neither is
+    something the model may reach for."""
     server = open(os.path.join(TEMPLATE_DIR, "permission_server.py"),
                   encoding="utf-8").read()
     for word in ("pane_shot", "paneShot", "screenshot", "view_shot"):
@@ -1697,17 +1723,18 @@ def test_turning_annotate_mode_off_stays_findable(html):
 
 
 def test_hover_never_eats_an_active_state_in_either_control(html):
-    """D146. Two controls carry an on/off accent — the composer's pane-shot pill and
-    the left pane's banner — and both were one class + one qualifier away from the
-    same cascade bug: `.pill:hover` is (0,2,0) and so is
-    `.viewshot[aria-pressed="true"]`, so the later rule (hover) won and an ARMED
-    toggle repainted itself neutral under the cursor, losing the only signal that
-    this send carries a picture.
+    """D146. Two controls carried an on/off accent — the composer's pane-shot pill
+    and the left pane's banner — and both were one class + one qualifier away from
+    the same cascade bug: `.pill:hover` is (0,2,0) and so is a pill's own
+    `[aria-pressed="true"]`, so the later rule (hover) won and an ARMED toggle
+    repainted itself neutral under the cursor, losing the only signal that the next
+    send carried a picture.
 
-    So both follow one rule, stated in the selectors rather than left to source
-    order: the neutral hover excludes the active state, and the active state hovers
-    within its accent. Asserted for both, because a comment saying they agree is not
-    a test that they do."""
+    The pill that motivated it is gone twice over — deleted, then replaced by a
+    button with no pressed state at all (it captures on click, and the chip above
+    the composer is the receipt, so there is nothing to keep painted). The RULE
+    stays, stated in the selectors rather than left to source order, so the next
+    pressable pill in that row inherits the fix rather than rediscovering it."""
     pairs = [('.pill:hover:not([aria-pressed="true"])',
               '.pill[aria-pressed="true"]:hover')]
     for neutral, active in pairs:
@@ -1890,3 +1917,299 @@ def test_both_ways_out_of_annotate_mode_are_named_while_armed(html):
     assert "annIdleTitle()" in title
     assert html.count('+ ", then send the notes to Claude"') == 1, \
         "the idle tooltip has one definition, annIdleTitle"
+
+
+# ------------------------------------------------- the composer's screenshot button
+#
+# The control that captures the WHOLE visible pane. It existed once as a
+# per-message TOGGLE, was deleted for being one ("it doesn't make sense": a picture
+# nobody had seen, of a moment nobody chose, behind a switch that had to be
+# re-armed every turn), and came back as a BUTTON that captures on click and hangs
+# the result above the composer as a chip. The wire format is the one that was
+# already there — `<pane-shot>`, whose reader never went away — so these tests pin
+# the new half: when the picture is taken, what the chip does, and what rides the
+# message.
+
+# `shotCapturePane` reaches for the same helpers a crop does, plus the pane-only
+# caps and the blank-region prose. `shotPane`/`shotEncode` are reassigned by
+# _CAPTURE_TAIL for the same reason as ever — rasterising is the part node cannot
+# do, and what is under test is the orchestration around it.
+_VIEW_FNS = _CAPTURE_FNS + ["const SHOT_VIEW_EDGE", "const SHOT_VIEW_BYTES",
+                            "function shotBlankRegions(",
+                            "async function shotCapturePane("]
+
+
+def _view(html, body):
+    return _node(_VIEW_FNS, _CAPTURE_STUBS + _CAPTURE_TAIL + body, html)
+
+
+def test_the_button_photographs_the_whole_pane_at_its_own_caps(html):
+    """The rect is the entire bitmap, not an element's — that is the one question a
+    crop cannot answer. And the caps are the pane's own: a whole pane squeezed into
+    the crops' 640px edge is unreadable, which defeats the only reason to send one.
+    """
+    out = _view(html, """
+(async () => {
+  const r = await shotCapturePane(Date.now() + 5000);
+  console.log(JSON.stringify({view: r.view, clean: r.viewNote === undefined,
+                              thumb: r.thumb,
+                              rect: LAST_ENCODE.rect, limits: LAST_ENCODE.limits}));
+})();
+""")
+    assert out["rect"] == {"left": 0, "top": 0, "width": 800, "height": 600}
+    assert out["limits"] == {"maxEdge": 1600, "maxBytes": 900 * 1024}
+    # into the crops' own directory, so the agent's one Read(//<shots>/**) rule and
+    # the same pruning cover it — no second grant for a second kind of picture
+    assert out["view"].startswith("/tmp/fr/shots/")
+    assert out["view"].endswith("-view.png")
+    assert out["thumb"], "and a thumbnail, because the user has to see it first"
+    assert out["clean"] is True, "a clean capture carries no caveat at all"
+
+
+def test_a_pane_that_cannot_be_read_says_so_instead_of_failing_silently(html):
+    """The user pressed a button. Handing back nothing at all would leave them
+    wondering whether it worked; the chip and the wire both get a reason."""
+    out = _view(html, """
+shotPane = async () => null;
+(async () => {
+  const r = await shotCapturePane(Date.now() + 5000);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote,
+                              thumb: r.thumb === undefined,
+                              uploaded: uploaded}));
+})();
+""")
+    assert out["view"] is None
+    assert out["note"].startswith("no pane screenshot: ")
+    assert out["thumb"] is True, "nothing to show, so no blob URL to leak"
+    assert out["uploaded"] == [], "and nothing written for a picture that is not one"
+
+
+def test_a_pane_over_budget_is_refused_rather_than_shrunk_past_reading(html):
+    """`shotEncode` has already spent every quality step and both halvings by the
+    time it answers null. A file past that is not worth the turn it would cost."""
+    out = _view(html, """
+shotEncode = async () => null;
+(async () => {
+  const r = await shotCapturePane(Date.now() + 5000);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote, uploaded: uploaded}));
+})();
+""")
+    assert out["view"] is None
+    assert str(900 * 1024) in out["note"], out["note"]
+    assert out["uploaded"] == []
+
+
+def test_a_blank_webgl_pane_is_annotated_and_never_suppressed(html):
+    """The divergence from a crop, and it is deliberate: suppressing a blank crop
+    leaves the other crops, while suppressing the pane leaves nothing at all. So
+    the picture goes out with prose naming which rectangles show the app's backdrop
+    instead of what was drawn — bounded doubt, which keeps its reassurance."""
+    out = _view(html, """
+const cv = {name: "cv"};
+RECTS.cv = {left: 0, top: 0, width: 400, height: 600};
+BLANKS.push(cv);
+(async () => {
+  const r = await shotCapturePane(Date.now() + 5000);
+  console.log(JSON.stringify({view: r.view, note: r.viewNote}));
+})();
+""")
+    assert out["view"], "a real picture, not a refusal"
+    assert "400x600 at (0,0)" in out["note"], out["note"]
+    assert "preserveDrawingBuffer" in out["note"]
+    assert "The rest of the image is what the user saw." in out["note"]
+
+
+def test_an_unfinished_capture_tells_the_reader_not_to_trust_the_picture(html):
+    """A style walk that ran out of budget, or that saw the page re-render under
+    it, produces a picture that can look perfectly plausible and be a blend of two
+    moments. That doubt is UNBOUNDED, so the closing line is corroboration rather
+    than reassurance — the same rule the crops follow, through the same two
+    functions, so one capture cannot ask for two levels of trust."""
+    out = _view(html, """
+PANE.incomplete = "mutated";
+PANE.styled = 40;
+(async () => {
+  const r = await shotCapturePane(Date.now() + 5000);
+  console.log(JSON.stringify({note: r.viewNote}));
+})();
+""")
+    assert "re-rendered while the capture was running" in out["note"]
+    assert "Do not act on this image alone" in out["note"]
+    assert "what the user saw." not in out["note"], \
+        "an unbounded doubt must not also call the picture trustworthy"
+
+
+def test_two_pictures_from_one_click_cannot_collide_on_a_filename(html):
+    """The crops and the pane shot both mint names in the same directory, so they
+    share ONE stamp writer. A second definition is how two files in one second
+    come to want the same name."""
+    assert html.count("function shotStamp(") == 1
+    assert "new Date().toISOString()" in _between(html, "function shotStamp(", "\n}")
+    # and neither caller builds its own
+    for fn in ("async function annCaptureShots(", "async function shotCapturePane("):
+        body = _between(html, fn, "\n}\n")
+        assert "toISOString" not in body, fn
+        assert "shotStamp()" in body, fn
+
+
+def test_the_capture_happens_on_the_click_and_not_during_the_send(html):
+    """THE design of this control, in one assertion. The send path must not contain
+    a capture for the pane: what it reads is a picture that already exists.
+
+    That is what makes the rest possible — the user sees the picture before it
+    goes, the moment photographed is the one they chose, a failure can be reported
+    while there is still someone to report it to, and nobody who never presses the
+    button pays a rasterise, an encode or a file."""
+    click = _between(html, "async function shotAttachPane()", "\n}\n")
+    assert "shotCapturePane(" in click
+    send = _between(html, "async function sendMessage(message)", "\n}\n")
+    assert "shotCapturePane" not in send, \
+        "the send reads a picture, it does not take one"
+    # the only capture the send still runs is the crops', which is annotation work
+    assert "await annShots(pending)" in send
+
+
+def test_the_shot_belongs_to_exactly_one_message(html):
+    """Cleared at the TOP of the send, before any await: a second send fired while
+    this one is still running must not inherit the picture. And the chip goes at
+    the same moment, which is what a user reads as "it went with that one"."""
+    send = _between(html, "async function sendMessage(message)", "\n}\n")
+    head = send[:send.index("const state = appStateSnapshot();")]
+    assert "const shot = paneShot;" in head
+    assert "paneShot = null;" in head
+    assert "renderAnn();" in head
+    before = head.split("const shot = paneShot;")[0]
+    code = "\n".join(ln.split("//")[0] for ln in before.split("\n"))
+    assert "await" not in code, \
+        "nothing may await before the shot is taken off the composer"
+    # a picture alone is a sendable message: there is no rule that a screenshot
+    # needs words to go with it
+    assert "if (!message && !pending.length && !shot) { sending = false; return; }" in send
+    assert html.count("if (!message && !annPending().length && !paneShot) return;") == 2, \
+        "and both composers' submit guards agree"
+
+
+def test_the_thumbnail_never_reaches_the_wire(html):
+    """`thumb` is a blob URL belonging to THIS page — a dead link everywhere else,
+    and unreadable to the agent. Only the path and the note go."""
+    send = _between(html, "async function sendMessage(message)", "\n}\n")
+    compose = _between(send, "const outgoing = composeOutgoing(", ");")
+    assert "shot.view" in compose and "shot.viewNote" in compose
+    assert "thumb" not in compose, compose
+
+
+def test_a_failed_send_hands_the_picture_back_instead_of_dropping_it(html):
+    """The crops and the pane shot part company here, and the reason is who took
+    them. A crop is remade by the retry, so its thumbnail is revoked with the
+    receipt. A pane shot is a moment the user chose — one they may not be able to
+    photograph again — so it goes back to the composer as a chip, with the very
+    thumbnail the receipt was showing, and must NOT be revoked on the way."""
+    rollback = _between(html, "    if (!started) {", "\n    }")
+    assert "annRevokeThumbs(shots);" in rollback, "the crops still are released"
+    assert "if (shot) { paneShot = shot; renderAnn(); }" in rollback
+    assert "shotRevoke(shot)" not in rollback, rollback
+
+
+def test_a_second_click_replaces_the_picture_and_releases_the_first(html):
+    """One shot at a time: "the pane, now" has one answer, and two pictures of the
+    same screen is a receipt nobody reads. The first one's blob URL is the only
+    handle to a full-pane PNG, so replacing it without revoking pins that Blob for
+    the life of the page."""
+    click = _between(html, "async function shotAttachPane()", "\n}\n")
+    assert "shotRevoke(paneShot);" in click
+    assert click.index("shotRevoke(paneShot);") < click.index("paneShot = shot;"), \
+        "release the old picture before the binding to it is overwritten"
+    # and a double-click cannot start a second capture at all
+    assert "if (shotBusy || !annCapable()) return;" in click
+    assert "shotBusy = true;" in click
+
+
+def test_an_abandoned_pane_capture_leaks_neither_a_rejection_nor_a_blob(html):
+    """Same two hazards the crops' race had, and they are hazards of the RACE
+    rather than of the capture: once the timeout wins, a late rejection has no
+    handler and a late thumbnail has no owner."""
+    click = _between(html, "async function shotAttachPane()", "\n}\n")
+    assert "SHOT_TIMEOUT_MS" in click, "the capture is bounded"
+    handlers = click[click.index("capture.then("):]
+    assert "if (abandoned) shotRevoke(late)" in handlers
+    assert "console.warn" in handlers
+    # and the button always comes back, whichever way the race went
+    assert click.count("b.disabled = false") == 1
+    assert click.index("b.disabled = false") > click.index("Promise.race")
+
+
+def test_a_failed_capture_still_becomes_a_chip_the_user_can_read(html):
+    """Degrading to "no image" is right; degrading to "no evidence anything was
+    asked for" is the silent-failure shape. The user pressed a button and is owed
+    an answer, and the agent is owed the news that a picture was meant to be here —
+    so a failure is a chip that says so, removable with the same ✕."""
+    click = _between(html, "async function shotAttachPane()", "\n}\n")
+    assert "paneShot = shot;" in click
+    assert "renderAnn();" in click
+    chip = _between(html, "function shotChip()", "\n}\n")
+    assert 'paneShot.view ? paneNoun + " screenshot" : "screenshot failed"' in chip
+    # the title carries the reason when there is no path to carry
+    assert "paneShot.viewNote || paneShot.view" in chip
+
+
+def test_the_chip_shows_the_picture_and_takes_it_off_again(html):
+    """A screenshot the user cannot look at before it goes out is one they cannot
+    check, and one they cannot remove is one they cannot decline. Both live in the
+    chip, which is the annotation chip's own pill — same row, same ✕ — because both
+    are things this message is about to carry."""
+    chip = _between(html, "function shotChip()", "\n}\n")
+    assert 'chip.className = "annchip"' in chip, "the same pill, not a second one"
+    assert 'img.className = "shotthumb"' in chip
+    assert "img.src = paneShot.thumb" in chip
+    assert 'x.setAttribute("aria-label", "Remove the screenshot")' in chip
+    assert "x.onclick = shotDrop" in chip
+    # dropping releases the blob and does NOT write the annotations param
+    drop = _between(html, "function shotDrop()", "\n}\n")
+    assert "shotRevoke(paneShot);" in drop
+    assert "paneShot = null;" in drop
+    assert "renderAnn();" in drop
+    assert "annSave" not in drop, "no annotation was touched"
+    # and it is drawn into BOTH composers' chip rows, from renderAnn's one loop
+    render = _between(html, "function renderAnn()", "\n}\n")
+    assert "if (paneShot) box.appendChild(shotChip());" in render
+
+
+def test_the_picture_is_not_persisted_anywhere(html):
+    """Notes survive a reload because they are the user's words. This is a temp
+    file and a blob URL — a restored page would hold dead handles to both, and a
+    bookmark that re-attaches yesterday's picture of a screen that has since
+    changed is worse than one that attaches nothing."""
+    for writer in ("function shotAttachPane", "function shotDrop", "function shotChip"):
+        body = _between(html, writer, "\n}\n")
+        assert "fused.params" not in body, writer
+    assert "let paneShot = null;" in html
+
+
+def test_the_button_is_absent_wherever_there_is_nothing_to_photograph(html):
+    """It asks the annotate switch's question, `annCapable()`, and not `noPane`:
+    hosted in the sidebar there is no pane of our own AND there is a target, and
+    the answer moves as the host switches what it shows. Both halves are here —
+    the poll hides it, and the no-pane target removes it outright."""
+    poll = _between(html, "function annPollTarget()", "\n}\n")
+    assert "for (const b of shotBtns()) b.hidden = !has;" in poll
+    click = _between(html, "async function shotAttachPane()", "\n}\n")
+    assert "annCapable()" in click, "and a keyboard click cannot outrun the poll"
+    nopane = _between(html, "function enterNoPane()", "\n}\n")
+    assert '"viewshot", "hviewshot"' in nopane
+    # hidden means hidden: the pill's own display would otherwise outrank [hidden]
+    assert ".viewshot[hidden] { display: none; }" in html
+
+
+def test_both_composers_carry_the_button_and_one_picture_behind_them(html):
+    """Two composers (home and chat) and one shot: the home card and the chat row
+    are the same message in two places, and a picture taken from one has to be the
+    picture the other shows."""
+    for ident in ('id="viewshot"', 'id="hviewshot"'):
+        assert ident in html, ident
+    assert html.count('class="pill viewshot"') == 2
+    btns = _between(html, "function shotBtns()", "\n}\n")
+    assert '"viewshot"' in btns and '"hviewshot"' in btns
+    # the spoken strings are the pane-noun writer's, not two hardcoded literals
+    noun = _between(html, "function applyPaneNoun()", "\n}\n")
+    assert "for (const b of shotBtns())" in noun
+    assert 'b.title = "Take a screenshot of the whole " + paneNoun' in noun

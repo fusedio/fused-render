@@ -1491,7 +1491,10 @@ def test_the_send_path_writes_the_outline_before_it_composes(html):
     """composeOutgoing is sync and pure — the exact inverse of stripBlocks — so
     the write cannot happen inside it."""
     assert "const sentState = await appStateFile(state);" in html
-    assert "composeOutgoing(message, pending, sentState)" in html
+    # The fourth argument is the pane screenshot, which is captured when its button
+    # is pressed and merely READ here — so this call is still the last thing before
+    # the wire text exists, and still sync.
+    assert "composeOutgoing(message, pending, sentState," in html
 
 
 def test_the_outline_path_comes_from_the_shots_directory_the_agent_grants(html):

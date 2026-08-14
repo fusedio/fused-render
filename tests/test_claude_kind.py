@@ -300,18 +300,20 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     taken away.
 
     What goes is exactly the chrome that acts on the pane: `#left` (the frame,
-    the pins, the highlight, the popover), `#divider` (no ratio to drag), and —
-    out of the `#anntools` strip — the annotate switch, the `leftmode` picker
-    and the view toggle. The strip itself STAYS, because the kebab stays: its
-    "New session in terminal" acts on the TARGET, not on the pane, and a folder
-    with no preview is still a thing to hand to a terminal. The `nopane` body
-    class is the styling half of that survival — it hands the kebab the row's
+    the pins, the highlight, the popover), `#divider` (no ratio to drag), both
+    copies of the composer's screenshot button (a whole-pane picture of no pane),
+    and — out of the `#anntools` strip — the annotate switch, the `leftmode`
+    picker and the view toggle. The strip itself STAYS, because the kebab stays:
+    its "New session in terminal" acts on the TARGET, not on the pane, and a
+    folder with no preview is still a thing to hand to a terminal. The `nopane`
+    body class is the styling half of that survival — it hands the kebab the row's
     auto margin, whose usual owner (#annbtn) just left the document.
     """
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert 'for (const id of ["annbtn", "leftmode", "viewbtn", "left", "divider"]) {' in body
+    assert ('for (const id of ["annbtn", "viewshot", "hviewshot", "leftmode", '
+            '"viewbtn",\n                    "left", "divider"]) {') in body
     assert "if (el) el.remove();" in body
     assert '"anntools"' not in body, "the strip survives — the kebab lives there"
     assert 'document.body.classList.add("nopane");' in body
@@ -1327,21 +1329,27 @@ def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
 
     A control acting on a hidden half is a dead control, and a disabled one is
     worse than absent: it still occupies the row and still advertises a feature
-    this view cannot perform. Both of these act on the left preview and nothing
+    this view cannot perform. Two of these act on the left preview and nothing
     else — the annotate toggle (nothing to point at, no frame to place a pin in)
     and the left-view picker (nothing to choose a view FOR) — so the chat-only
     view drops them, and Preview, where they both work, keeps them.
 
-    A third control used to be in the list, the composer's "attach a screenshot
-    of the app pane" pill, and it was the one that did NOT follow from "it cannot
-    work here" — the parked column keeps a real viewport, so the capture worked
-    fine from the chat view. It was hidden under the stronger reading of the rule
-    this test is named for: a view showing no preview offers no features OF the
-    preview. That control has since been deleted outright, which is the same
-    answer taken further.
+    The third, the composer's screenshot button, is the one that does NOT follow
+    from "it cannot work here": the parked column keeps a real viewport, so the
+    capture works fine from the chat view. It is hidden under the stronger reading
+    of the rule this test is named for — a view showing no preview offers no
+    features OF the preview — and the picture it produces is one the user is
+    supposed to look at before sending, which they cannot do from a view that is
+    not showing the pane.
+
+    Its CHIP is deliberately not in the list, and that is the line between the two:
+    the button is a feature of the preview, the chip is chat content — a picture
+    already taken, about to be sent. Hiding it would hide part of the message while
+    leaving the message carrying it.
     """
     block = _media_block()
     assert ("body.view-chat #annbtn,\n"
+            "    body.view-chat .viewshot,\n"
             "    body.view-chat #leftmode { display: none; }") in block
     # Absent, not disabled: nothing here reaches for `disabled` or aria-disabled
     # as a substitute.
@@ -1350,6 +1358,9 @@ def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
     # are the ones collapsing #chat to its strip.
     assert "body.view-preview #annbtn" not in block
     assert "body.view-preview #leftmode" not in block
+    assert "body.view-preview .viewshot" not in block
+    # The chips row stays in both views — it is the message, not the preview.
+    assert "annchips" not in block
 
 
 def test_no_armed_preview_control_survives_leaving_the_preview_view():
