@@ -50,6 +50,11 @@
     --diff-del-bg: rgba(242, 109, 109, .14);
     --diff-del-fg: #f08d8d;
     --shadow: rgba(0, 0, 0, .4);
+    /* The screenshot viewer's backdrop. Heavier than --shadow because it has a
+       different job: a shadow lifts a surface, a scrim removes everything behind
+       one. Darker in the light theme than in the dark for the same reason a
+       shadow is lighter there — the contrast it has to win against is the page. */
+    --scrim: rgba(0, 0, 0, .62);
     --scrollbar: #3a3d45;
     --handle-hover: #4a4d57;
     /* Caret for the composer's select pills. A data URI can't read
@@ -85,6 +90,7 @@
     --diff-del-bg: rgba(198, 40, 40, .10);
     --diff-del-fg: #a81f1f;
     --shadow: rgba(0, 0, 0, .10);
+    --scrim: rgba(0, 0, 0, .48);
     --scrollbar: #cdd0d6;
     --handle-hover: #a8adb6;
     --pill-caret: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 3l2.5 2.5L6.5 3" stroke="%2361656c" stroke-width="1.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>');
@@ -596,14 +602,163 @@
      rather than as two features that happen to be neighbours.
      Small, because it is a receipt and not a viewer: enough to recognise the
      screen you just photographed, and never enough to push the composer down. */
+  /* A real <button>, not decoration: it opens the full-size viewer. `cursor` and
+     the hover ring are the only things that can say so at 22px, and they have to,
+     because a thumbnail this small proves a picture EXISTS and cannot show what
+     is in it. The button is the frame (border, clip, hit area) and the <img>
+     inside it does the sizing — a button cannot `object-fit` its own content. */
   .annchip .shotthumb {
+    display: block;
+    flex-shrink: 0;
+    padding: 0;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    line-height: 0;
+    cursor: zoom-in;
+  }
+  .annchip .shotthumb img {
+    display: block;
     height: 22px;
     max-width: 64px;
     object-fit: cover;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    flex-shrink: 0;
   }
+  .annchip .shotthumb:hover, .annchip .shotthumb:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+  }
+  /* The chip arriving. HALF of the "did it even do anything?" answer — the other
+     half is the flash over the pane itself (shotFlash) — and it is deliberately
+     the loud half: the pane is where the user was looking, the composer is where
+     they will look next, so the chip has to still be moving when their eye gets
+     there. One 220ms scale+fade, no bounce: a receipt, not a celebration.
+     Opacity-only under reduced motion, which keeps the signal and drops the
+     movement. */
+  @keyframes shotchip-in {
+    from { opacity: 0; transform: scale(.82); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  .annchip.shotchip { animation: shotchip-in .22s cubic-bezier(.2, .9, .3, 1.1); }
+  @media (prefers-reduced-motion: reduce) {
+    .annchip.shotchip { animation: none; }
+  }
+
+  /* ── the screenshot viewer ───────────────────
+     Fixed over the whole template, above every other layer this page paints
+     (#annpop is 40, the permission card sits in the log). It is modal on
+     purpose: the one thing the user is doing here is looking at one picture, and
+     anything else on screen competing for the click is a way to dismiss it by
+     accident. */
+  #shotview {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    /* Tight, because of where this template usually lives. `fixed` is the
+       TEMPLATE's viewport, and in the sidebar layout that is a ~440px column —
+       the viewer cannot escape it (no postMessage, D3/D4), so every pixel of
+       padding is a pixel off a screenshot that was 1600px wide. 12px is enough
+       to read as an overlay and cheap enough not to matter. */
+    padding: 12px;
+  }
+  /* The half that makes `hidden` real. See the markup's note: `display: flex`
+     above outranks the UA rule, so without this the closed viewer is an
+     invisible sheet over the entire template eating every click. */
+  #shotview[hidden] { display: none; }
+  #shotview-scrim { position: absolute; inset: 0; background: var(--scrim); }
+  #shotview-box {
+    position: relative;
+    margin: 0;
+    max-width: 100%;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 10px;
+    box-shadow: 0 18px 50px var(--shadow);
+  }
+  /* `min-height: 0` so the flex column may actually shrink the image — without
+     it a tall screenshot pushes the caption bar off the bottom of the viewport,
+     which is where the Discard button lives.
+
+     TWO SIZES, and the second one is not a nicety. Fitted, a 1600px-wide capture
+     lands at ~310px in the sidebar — four times the chip, still not enough to
+     read the UI it is a picture OF, which is the whole reason the user opened it.
+     So the fitted view is the overview and one click swaps to natural size with
+     the box scrolling, which is the only way a narrow column can show a wide
+     screenshot at a legible scale. The cursor names which click you are about to
+     make. */
+  #shotview-img {
+    min-height: 0;
+    max-width: 100%;
+    object-fit: contain;
+    border-radius: 4px;
+    background: var(--surface-2);
+    cursor: zoom-in;
+  }
+  #shotview-box.zoom { overflow: auto; }
+  #shotview-box.zoom #shotview-img {
+    max-width: none;
+    max-height: none;
+    /* `align-self` is the load-bearing one, and it is why the first attempt at
+       this toggled a class and changed nothing measurable: the box is a COLUMN
+       flex container, so its default `align-items: stretch` sizes the image to
+       the container's width on the cross axis. Lifting max-width alone left the
+       picture pinned at the box's own width — visibly identical to the fitted
+       view, with a zoom-out cursor promising something that had not happened.
+       Only `flex-start` lets it take its intrinsic width and overflow, which is
+       what gives the box something to scroll. */
+    align-self: flex-start;
+    width: auto;
+    cursor: zoom-out;
+  }
+  /* The scrolled state needs the caption to stay put — it holds Discard and
+     Close, and a bar that scrolls away with a 1600px image takes the way out
+     with it. */
+  #shotview-box.zoom #shotview-bar {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    padding-top: 6px;
+  }
+  #shotview-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  #shotview-bar .spacer { flex: 1; }
+  /* The path the AGENT was given, which is the one fact a picture cannot show
+     about itself. Truncated from the LEFT (see .chip-path): the filename is the
+     half that identifies it. */
+  #shotview-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--faint);
+  }
+  #shotview-drop { color: var(--error); }
+  /* Whatever the picture does NOT show, in the one place the user is actually
+     looking at the picture. It rode the wire from the first version of this
+     feature (`viewNote`) and had nowhere on screen to be said until now. */
+  #shotview-note {
+    max-width: 60ch;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--dim);
+  }
+  #shotview-note:empty { display: none; }
   #divider:hover, body.dragging #divider { background: var(--handle-hover); }
   body.dragging #leftview iframe { pointer-events: none; }
   #msg { margin: auto; color: var(--dim); text-align: center; padding: 24px; }
@@ -720,6 +875,41 @@
     white-space: nowrap;
     min-width: 0;
   }
+  /* The whole-pane picture a SENT turn carried. Bigger than a crop's receipt and
+     on its own line, because it is a different claim: a crop says "this element",
+     which the note beside it already names, while this says "the screen, as it
+     was when I asked" — and that is the row a user scrolls back to find. Still a
+     receipt, so it is capped well under the bubble's width; the viewer is where
+     it gets read. */
+  .annsum .annsum-pane {
+    display: block;
+    align-self: flex-end;
+    margin-top: 2px;
+    padding: 0;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    line-height: 0;
+    cursor: zoom-in;
+  }
+  /* Cropped from the TOP, not centred: a screenshot of a page is read from its
+     top edge, so that is the part worth showing in 140px. */
+  .annsum .annsum-pane img {
+    display: block;
+    max-width: min(220px, 100%);
+    max-height: 140px;
+    object-fit: cover;
+    object-position: top;
+  }
+  .annsum .annsum-pane:hover, .annsum .annsum-pane:focus-visible {
+    border-color: var(--accent);
+    outline: none;
+  }
+  /* A restored turn whose file the shots directory has since pruned (12h/200).
+     Said plainly rather than left as a broken-image glyph, which reads as a bug
+     in the chat rather than as a temp file that expired. */
+  .annsum .annsum-gone { font-size: 11px; color: var(--faint); }
   /* The push channel's receipt: this message carried a description of the app
      the user is looking at, and they should be able to see that it did. */
   .user .attach { margin-top: 4px; font-size: 11px; color: var(--faint); }
@@ -2327,14 +2517,23 @@
             <select id="model" class="pill model-sel" aria-label="Model"></select>
             <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
+            <span class="spacer"></span>
             <!-- Takes the picture NOW and hangs it above the composer as a chip;
                  see the shotAttachPane section. The spoken strings are rewritten
                  by applyPaneNoun once the target's kind is known, so the markup
-                 ships the neutral noun rather than a wrong one. -->
+                 ships the neutral noun rather than a wrong one.
+
+                 AFTER the spacer, beside Send, and that position is the fix for
+                 "not intuitive": grouped with the pills it read as a fourth
+                 SETTING, sitting among three dropdowns that all describe how the
+                 run behaves. Next to Send it reads as what it is — something you
+                 do TO this message, in the seat every chat app puts an attach
+                 control in. A camera, not a landscape photo: the glyph names the
+                 verb ("take a picture of what I am looking at") rather than a
+                 file type ("insert an image"), which is what the old one said. -->
             <button id="viewshot" class="pill viewshot" type="button"
-                    aria-label="Attach a screenshot of the preview pane to this message"
-                    title="Take a screenshot of the whole preview pane and attach it to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
-            <span class="spacer"></span>
+                    aria-label="Screenshot the preview and attach it to this message"
+                    title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2372,13 +2571,14 @@
             <select id="hmodel" class="pill model-sel" aria-label="Model"></select>
             <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
-            <!-- The home card's copy. Both composers carry one because the chips
-                 row above them is the same row (#annchips-home / #annchips-chat),
-                 and one shot is shared state behind both (paneShot). -->
-            <button id="hviewshot" class="pill viewshot" type="button"
-                    aria-label="Attach a screenshot of the preview pane to this message"
-                    title="Take a screenshot of the whole preview pane and attach it to this message (for layout problems that are not about one element)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2.2" y="3.2" width="11.6" height="9.6" rx="2.2" stroke="currentColor" stroke-width="1.4"/><path d="M2.9 11.4 6 8.3a1.2 1.2 0 0 1 1.7 0l3 3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10.6" cy="6.3" r="1.1" fill="currentColor"/></svg></button>
             <span class="spacer"></span>
+            <!-- The home card's copy, in the same seat beside Send. Both composers
+                 carry one because the chips row above them is the same row
+                 (#annchips-home / #annchips-chat), and one shot is shared state
+                 behind both (paneShot). -->
+            <button id="hviewshot" class="pill viewshot" type="button"
+                    aria-label="Screenshot the preview and attach it to this message"
+                    title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2415,6 +2615,41 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- The screenshot viewer: the answer to "I cannot tell what I am about to
+       send". A 22px chip thumbnail proves a picture EXISTS; it cannot show what
+       is IN it, and a screenshot the user cannot read before sending is one they
+       cannot check. Click any thumbnail — the pending chip's, or a sent turn's —
+       and the picture opens here at full size.
+
+       A sibling of the whole layout rather than a child of #chat, because #chat
+       sets `overflow: hidden`: a viewer living inside it would be clipped by the
+       column it is meant to cover. Out here it fills the template's viewport in
+       every layout, split or sidebar.
+
+       `hidden` is the ONE answer to "is the viewer open" — no second flag to
+       disagree with it — but the hiding itself has to be spelled out in the
+       stylesheet, which is the same trap #annbtn and .viewshot each fell into and
+       this one fell into as well: the rule below sets `display: flex` to centre
+       the picture, that beats the UA's `[hidden] { display: none }` on
+       specificity, and the "hidden" viewer sat over the whole pane swallowing
+       every click. Caught in the browser, never in the source — a full-bleed
+       scrim looks like the app when the app is what is behind it. -->
+  <div id="shotview" hidden>
+    <div id="shotview-scrim"></div>
+    <figure id="shotview-box">
+      <img id="shotview-img" alt="">
+      <div id="shotview-note"></div>
+      <figcaption id="shotview-bar">
+        <span id="shotview-path" class="mono"></span>
+        <span class="spacer"></span>
+        <!-- Shown only for a PENDING shot: a sent picture is already in the
+             agent's hands, and a Discard that cannot un-send it would be a lie. -->
+        <button id="shotview-drop" type="button" class="pill">Discard</button>
+        <button id="shotview-close" type="button" class="pill">Close</button>
+      </figcaption>
+    </figure>
   </div>
 
 <script>
@@ -3183,11 +3418,16 @@ function applyPaneNoun() {
   // idle wording has to have exactly one definition or the noun comes back wrong
   // the first time the user toggles the switch off. That is how it broke here.
   if (!annOn) annBtn.title = annIdleTitle();
+  // ONE sentence, and it leads with the VERB. The first version's tooltip opened
+  // with "Take a screenshot of the whole … pane" and then spent a parenthesis
+  // explaining when to use it, which is the shape of a manual rather than of a
+  // label — and it was attached to a button whose picture-frame glyph read as
+  // "insert an image". The complaint was that the control was not intuitive; the
+  // fix is that its name is now what it does, in the order it does it.
   for (const b of shotBtns()) {
-    b.setAttribute("aria-label", "Attach a screenshot of the " + paneNoun
-                   + " pane to this message");
-    b.title = "Take a screenshot of the whole " + paneNoun + " pane and attach it "
-      + "to this message (for layout problems that are not about one element)";
+    const say = "Screenshot the " + paneNoun + " and attach it to this message";
+    b.setAttribute("aria-label", say);
+    b.title = say;
   }
 }
 
@@ -4286,19 +4526,25 @@ function renderAnn() {
 
 // The pending screenshot's chip: an annotation chip's pill with the picture where
 // the note's words would be.
+//
+// The thumbnail is a <button>, not an <img>, and that is the smallest edit that
+// answers "I could not tell what I was about to send". 22 pixels can prove a
+// picture EXISTS; nothing that size can show what is in it. So the chip's job is
+// to be a door — it says a shot is attached, and one click opens it at full size
+// where the user can actually read it and, if it is the wrong moment, throw it
+// away from there.
 function shotChip() {
   const chip = document.createElement("div");
-  chip.className = "annchip";
+  // `shotchip` is only the animation hook (the entrance that says a capture just
+  // happened); every other rule it wears is `.annchip`'s, because it IS one.
+  chip.className = "annchip shotchip";
   const lbl = document.createElement("span");
   lbl.className = "pinlbl";
   lbl.textContent = "🖼";
   chip.appendChild(lbl);
   if (paneShot.thumb) {
-    const img = document.createElement("img");
-    img.className = "shotthumb";
-    img.src = paneShot.thumb;
-    img.alt = "screenshot of the whole " + paneNoun + " pane";
-    chip.appendChild(img);
+    chip.appendChild(shotThumbBtn("shotthumb", paneShot,
+      "screenshot of the whole " + paneNoun + " pane"));
   }
   const txt = document.createElement("span");
   txt.className = "txt";
@@ -4317,6 +4563,31 @@ function shotChip() {
   x.onclick = shotDrop;
   chip.append(txt, x);
   return chip;
+}
+
+// A thumbnail that opens the viewer: one <button><img> for every place a
+// screenshot is shown small — the pending chip and every sent turn's receipt.
+// ONE builder because they are one affordance, and a picture the user can open
+// while drafting but not after sending (or the other way round) is exactly the
+// inconsistency that makes a control feel arbitrary.
+//
+// A real <button>, so it is tabbable, Enter/Space activates it and it is
+// announced as something to press — none of which an <img> with an onclick is.
+// `shot` is `{view, viewNote, thumb, src}`: `src` is what to DISPLAY (a blob URL
+// this session, or /api/fs/raw for a restored turn) and `view` is the path the
+// agent was given, which is a different string and the one worth showing.
+function shotThumbBtn(cls, shot, alt) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = cls;
+  btn.title = "Click to see this screenshot full size";
+  const img = document.createElement("img");
+  img.src = shot.src || shot.thumb || "";
+  img.alt = alt;
+  btn.setAttribute("aria-label", alt + " — open full size");
+  btn.appendChild(img);
+  btn.onclick = () => shotViewOpen(shot);
+  return btn;
 }
 
 const annDelBtn = document.getElementById("anndel");
@@ -5888,6 +6159,34 @@ function stripPaneBlock(text) {
   return (text || "").replace(re, "").trim();
 }
 
+// The other direction: READ the pane shot back out of a wire message, as
+// `{view, viewNote}` or null. stripPaneBlock throws the block away because the
+// user must not read a temp path; this keeps it, because a RESTORED turn has to
+// be able to show the picture it carried.
+//
+// Without this, reopening a session turned every screenshot into the four words
+// "🖼 pane screenshot" — the third complaint, and the one with the least excuse,
+// because the path was sitting in the transcript the whole time and the server
+// will serve the file (`/api/fs/raw`, which is what fused.rawUrl builds).
+//
+// Deliberately forgiving: the payload is the LAST line inside the block (the
+// caption above it is prose for the model, and its wording has already changed
+// once), and anything that does not parse is answered with null rather than a
+// throw. A transcript that renders without one picture is a small loss; one that
+// throws mid-restore takes the whole conversation with it.
+function paneShotIn(text) {
+  const re = new RegExp("<" + PANE_SHOT_TAG + ">([\\s\\S]*?)</" + PANE_SHOT_TAG + ">");
+  const m = re.exec(text || "");
+  if (!m) return null;
+  const line = m[1].trim().split("\n").pop();
+  try {
+    const v = JSON.parse(line);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 // The substitute texts stripBlocks uses when a send carried no typed words — and
 // the predicate that recognises them. ONE definition, read by both the strip that
 // produces them and `resumeRun`, which must never match a prior turn on one:
@@ -6001,10 +6300,182 @@ function shotDrop() {
   renderAnn();
 }
 
+// ── the viewer ─────────────────────────────────────────────────
+// One picture, full size, over everything. It is the other half of the report
+// that produced this pass: a chip proved a screenshot existed and there was "no
+// way to preview it before sending", so what the user was asked to do was trust a
+// 22px smudge and press send. Every thumbnail this template draws now opens this,
+// pending or sent, through the one builder (shotThumbBtn).
+//
+// `shotViewing` is the shot currently on screen, and it is an IDENTITY rather
+// than a copy: Discard only appears when it is the same object `paneShot` holds,
+// because a sent picture is already in the agent's hands and a control offering
+// to take it back would be a lie.
+const shotView = document.getElementById("shotview");
+const shotViewImg = document.getElementById("shotview-img");
+const shotViewPath = document.getElementById("shotview-path");
+const shotViewNote = document.getElementById("shotview-note");
+const shotViewDrop = document.getElementById("shotview-drop");
+const shotViewBox = document.getElementById("shotview-box");
+let shotViewing = null;
+
+function shotViewOpen(shot) {
+  if (!shot || !(shot.src || shot.thumb)) return;
+  shotViewing = shot;
+  shotViewImg.src = shot.src || shot.thumb;
+  shotViewImg.alt = "screenshot of the whole " + paneNoun + " pane, full size";
+  // Every open starts FITTED. A zoom is a thing you do to one picture while
+  // looking at it, not a preference that should follow you to the next one — and
+  // a viewer that opened already scrolled into the middle of an image would look
+  // broken rather than zoomed.
+  shotViewBox.classList.remove("zoom");
+  shotViewBox.scrollTop = 0;
+  shotViewBox.scrollLeft = 0;
+  shotViewPath.textContent = shot.view || "";
+  // The caveat the wire has always carried and the screen never said: which parts
+  // of this picture are not what was on the pane. Here is where it belongs — the
+  // one moment the user is looking at the pixels it is about.
+  shotViewNote.textContent = shot.viewNote || "";
+  shotViewDrop.hidden = shot !== paneShot;
+  shotView.hidden = false;
+  // Focus moves into the dialog so Escape and Tab belong to it. The close button
+  // rather than the image: the first thing a keyboard reaches for in a viewer is
+  // the way out of it.
+  document.getElementById("shotview-close").focus();
+}
+
+function shotViewClose() {
+  shotViewing = null;
+  shotView.hidden = true;
+  // The <img> keeps its src deliberately: it is a blob URL or a /raw URL that is
+  // still valid, and clearing it would make every reopen re-decode. Nothing about
+  // a hidden element is holding anything the page did not already hold.
+}
+
+// The receipt a SENT turn wears: one line saying what went, and the picture
+// itself under it. Appended to an `.annsum` box, so it stacks with the annotation
+// rows exactly as it always did.
+//
+// ONE builder for the live send and for a restored transcript, which is the
+// point: a screenshot that is visible while the session lasts and gone the moment
+// it is reopened is a screenshot the user cannot rely on having sent. The two
+// callers differ in one field — `src`, a blob URL this session and a `/api/fs/raw`
+// URL for a turn read back off disk — and everything else about the row is shared.
+function shotReceipt(sum, shot) {
+  const row = document.createElement("div");
+  row.className = "annsum-row";
+  const lbl = document.createElement("span");
+  lbl.className = "annsum-lbl";
+  lbl.textContent = "🖼";
+  const txt = document.createElement("span");
+  txt.className = "annsum-txt";
+  // Says which it was, because "no picture, and here is why" is a different
+  // fact from "here is your picture" and the user is owed both.
+  txt.textContent = shot.view ? "screenshot attached" : "no pane screenshot";
+  txt.title = shot.viewNote || shot.view || "";
+  row.append(lbl, txt);
+  sum.appendChild(row);
+  const src = shot.src || shot.thumb;
+  if (!src) return;
+  const btn = shotThumbBtn("annsum-pane", shot,
+                           "screenshot of the whole " + paneNoun + " pane");
+  btn.title = shot.view || "";
+  // A restored turn whose file the shots directory has pruned (12h/200 files)
+  // 404s here. Said in words rather than left as a broken-image glyph, which a
+  // reader takes for a bug in the chat rather than for a temp file that expired.
+  btn.querySelector("img").onerror = () => {
+    const gone = document.createElement("div");
+    gone.className = "annsum-gone";
+    gone.textContent = "screenshot no longer on disk";
+    gone.title = shot.view || "";
+    btn.replaceWith(gone);
+  };
+  sum.appendChild(btn);
+}
+
+// The receipt for a turn read back out of a session file. `paneShotIn` recovers
+// `{view, viewNote}` from the wire block; `src` is added here because only the
+// live page knows how to fetch a path — fused.rawUrl builds the server's raw-bytes
+// URL, which is how every other template shows a local image, and the shots
+// directory is an ordinary absolute path to it.
+function shotRestoreReceipt(turn, text) {
+  const shot = paneShotIn(text);
+  if (!shot || !turn) return;
+  const sum = document.createElement("div");
+  sum.className = "annsum";
+  shotReceipt(sum, shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot);
+  turn.appendChild(sum);
+}
+
+// Fitted ⇄ actual size. The click target is the picture itself, which is where
+// the hand already is and what the two cursors have been advertising; a button in
+// the bar would be a second place to look for something the image is already
+// offering.
+shotViewImg.onclick = () => {
+  const zoomed = shotViewBox.classList.toggle("zoom");
+  if (!zoomed) { shotViewBox.scrollTop = 0; shotViewBox.scrollLeft = 0; }
+};
+
+document.getElementById("shotview-close").onclick = shotViewClose;
+document.getElementById("shotview-scrim").onclick = shotViewClose;
+// Discard from inside the viewer, which is the one place the user can actually
+// judge that this is the wrong picture. It closes too — the thing it was showing
+// is gone.
+shotViewDrop.onclick = () => { shotDrop(); shotViewClose(); };
+
 // Whether a capture is running. One at a time: the second half of a double-click
 // would otherwise upload a second file and leak the first one's thumbnail, and the
 // pane it photographed would be the same pane.
 let shotBusy = false;
+
+// THE SHUTTER. A white sheet over the photographed pane, one 260ms fade, and it
+// is not decoration: the first version of this control did its whole job in
+// silence — the picture was taken, uploaded and chipped with nothing on screen
+// moving — and the report was "not obvious that it took a screenshot". A camera
+// that gives no feedback reads as a button that did nothing.
+//
+// It flashes THE PANE, not the button, because the pane is the subject: the
+// gesture has to say "I photographed THAT", and a control lighting up says only
+// "I was clicked". The chip's own entrance animation is the second half, for the
+// eye that has already moved to the composer.
+//
+// Where it goes is the one interesting part, and it is the SAME box the highlight
+// ring lives in — `annHl.parentNode` — which is exactly the framed viewport in
+// both layouts and needs no new plumbing to find: our own #leftview in the split,
+// the injected shadow root over the host's pane in the sidebar. Two documents,
+// one line.
+//
+// Styled INLINE and animated with the Web Animations API rather than from either
+// stylesheet, for the reason the layer's own comment already gives: a rule of
+// ours in a document of theirs is one selector away from being overruled, and
+// this element exists for 260ms. It also cannot reach the capture — a shadow tree
+// is not cloned by cloneNode, so shotPane could not photograph it even if the
+// timing overlapped.
+//
+// Opacity only, no transform: that is the reduced-motion-safe form of a flash, so
+// the signal survives `prefers-reduced-motion` instead of being switched off with
+// the movement.
+function shotFlash() {
+  const host = annHl && annHl.parentNode;
+  if (!host || !host.ownerDocument) return null;
+  const el = host.ownerDocument.createElement("div");
+  el.setAttribute("style", "position: absolute; inset: 0; background: #ffffff;"
+    + " opacity: 0; pointer-events: none; z-index: 2147483647;");
+  host.appendChild(el);
+  const done = () => { try { el.remove(); } catch (err) { /* gone with the doc */ } };
+  // No animate() (an old engine, a detached document) is a missed flash, never a
+  // failed capture: the element is removed and the click carries on.
+  if (!el.animate) { done(); return null; }
+  // Up fast, HELD briefly, then out. The hold is the part that matters: a
+  // symmetric 260ms triangle peaked for one frame and measured as a flicker
+  // people miss — and being missed is the entire failure this exists to fix.
+  const anim = el.animate([{ opacity: 0, offset: 0 }, { opacity: .45, offset: .18 },
+                           { opacity: .45, offset: .45 }, { opacity: 0, offset: 1 }],
+                          { duration: 340, easing: "ease-out" });
+  anim.onfinish = done;
+  anim.oncancel = done;
+  return el;
+}
 
 async function shotAttachPane() {
   // `annCapable()` and not `noPane`, the same question the annotate switch asks:
@@ -6013,6 +6484,10 @@ async function shotAttachPane() {
   // a keyboard user can still reach a control the poll has not caught up with.
   if (shotBusy || !annCapable()) return;
   shotBusy = true;
+  // BEFORE the capture, not after: the whole point is that the click is answered
+  // immediately, and the capture can take a second on a large page. It is also
+  // honest about the moment — the flash marks when the shutter opened.
+  shotFlash();
   for (const b of shotBtns()) b.disabled = true;
   // Bounded exactly as the crops' capture is (annShots), for a DIFFERENT reason:
   // there a slow capture would cost the user their message, here it would leave a
@@ -8257,14 +8732,21 @@ async function stopRun() {
   }
 }
 
-// Escape has three claimants in this pane: the annotation composer, annotate
-// mode, and a live run. Ordered least-destructive first — dismissing a popover is
-// small and repeatable, leaving annotate mode costs one click to undo, killing a
-// turn costs the turn. So a user reaching for Escape with a text box in front of
-// them means the text box, and one reaching for it while annotating means
-// annotate mode, not the run they may also have going. Split out as a pure
-// decision so the precedence is a tested rule and not an ordering accident.
-function escapeAction(composerOpen, annotating, runId) {
+// Escape has four claimants in this pane: the screenshot viewer, the annotation
+// composer, annotate mode, and a live run. Ordered least-destructive first —
+// closing a picture undoes nothing at all, dismissing a popover is small and
+// repeatable, leaving annotate mode costs one click to undo, killing a turn costs
+// the turn. So a user reaching for Escape with a text box in front of them means
+// the text box, and one reaching for it while annotating means annotate mode, not
+// the run they may also have going. Split out as a pure decision so the
+// precedence is a tested rule and not an ordering accident.
+//
+// The viewer goes FIRST for a stronger reason than cheapness: it is MODAL. It
+// covers the composer and the pane, so every other claimant is behind it, and an
+// Escape that stopped a run the user could not even see would be the worst
+// outcome this key can produce.
+function escapeAction(viewerOpen, composerOpen, annotating, runId) {
+  if (viewerOpen) return "close-viewer";
   if (composerOpen) return "close-composer";
   if (annotating) return "exit-annotate";
   return runId ? "stop-run" : "";
@@ -8277,10 +8759,12 @@ function onEscape(e) {
   if (e.key !== "Escape") return;
   // The textarea's own Escape handler stops propagation, so what reaches here
   // with the popover open is an Escape pressed with focus somewhere else.
-  const act = escapeAction(annPop.style.display === "block", annOn, activeRun);
+  const act = escapeAction(!shotView.hidden, annPop.style.display === "block",
+                           annOn, activeRun);
   if (!act) return;
   e.preventDefault();
-  if (act === "close-composer") annCloseComposer();
+  if (act === "close-viewer") shotViewClose();
+  else if (act === "close-composer") annCloseComposer();
   else if (act === "exit-annotate") annSetMode(false);
   else stopRun();
 }
@@ -8719,30 +9203,8 @@ async function sendMessage(message) {
     const sum = document.createElement("div");
     receipt = sum;
     sum.className = "annsum";
-    // The pane shot's own row, first — it is the widest claim the message makes.
-    if (shot) {
-      const row = document.createElement("div");
-      row.className = "annsum-row";
-      const lbl = document.createElement("span");
-      lbl.className = "annsum-lbl";
-      lbl.textContent = "🖼";
-      const txt = document.createElement("span");
-      txt.className = "annsum-txt";
-      // Says which it was, because "no picture, and here is why" is a different
-      // fact from "here is your picture" and the user is owed both.
-      txt.textContent = shot.view ? "whole pane attached" : "no pane screenshot";
-      txt.title = shot.viewNote || shot.view || "";
-      row.append(lbl, txt);
-      if (shot.thumb) {
-        const img = document.createElement("img");
-        img.className = "annsum-shot";
-        img.src = shot.thumb;
-        img.alt = "screenshot of the whole " + paneNoun + " pane";
-        img.title = shot.view || "";
-        row.appendChild(img);
-      }
-      sum.appendChild(row);
-    }
+    // The pane shot's own rows, first — it is the widest claim the message makes.
+    if (shot) shotReceipt(sum, shot);
     pending.forEach((c) => {
       const row = document.createElement("div");
       row.className = "annsum-row";
@@ -9032,8 +9494,14 @@ async function loadHistory(session_id) {
       // a missing key would too, but this says out loud that the key is
       // optional). A restored turn renders through the same renderSegments the
       // live stream uses — no typer, because nothing is arriving.
-      if (t.role === "user") addUser(stripBlocks(t.text));
-      else addAssistantTurn(t.text, t.segments);
+      if (t.role === "user") {
+        addUser(stripBlocks(t.text));
+        // ...and the picture it carried, if it carried one. addUser appends the
+        // turn, so the last `.turn.user` in the log is the one just made — the
+        // same way sendMessage finds the turn to hang its own receipt on.
+        const turns = log.querySelectorAll(".turn.user");
+        shotRestoreReceipt(turns[turns.length - 1], t.text);
+      } else addAssistantTurn(t.text, t.segments);
     }
     attachCodeCopy(log);  // one pass over the whole restored transcript
     scrollBottom();
@@ -9045,13 +9513,47 @@ async function loadHistory(session_id) {
   }
 }
 
+// What a session row (and a snapshot heading) is LABELLED with. The stored
+// preview is the head of the first user message, and a message that carried a
+// screenshot, an app-state snapshot or annotations begins with a machine-written
+// block — so the chat list read "<pane-shot> The user attached a pi…" and "The
+// user annotated 1 element in the l…": the page's own wire, addressed to the
+// model, quoted back at the human as the name of their conversation.
+//
+// `stripBlocks` is the real inverse and it cannot do this job alone, for a reason
+// worth stating: the preview is TRUNCATED, so the closing tag every strip matches
+// on is usually not in the string at all. Hence the second pass — cut from any
+// surviving opener, and from the annotation block's tag-less preamble — and then
+// the marker as the last resort, which is the same word the bubble would show for
+// a send with no typed words. Never blank: a row with no title is a row nobody
+// can pick out of a list.
+const BLOCK_OPENERS = [
+  ["<" + APP_STATE_TAG + ">", ""],
+  ["<" + PANE_SHOT_TAG + ">", MARKER_VIEW],
+  // Tag-less by construction (see stripAnnBlock) — matched on the one sentence
+  // formatAnnotations always opens with.
+  ["The user annotated ", MARKER_ANN],
+];
+function sessionTitle(s) {
+  const raw = (s && s.preview) || "";
+  let text = stripBlocks(raw);
+  const carried = [];
+  for (const [open, marker] of BLOCK_OPENERS) {
+    const i = text.indexOf(open);
+    if (i === -1) continue;
+    text = text.slice(0, i).trim();
+    if (marker) carried.push(marker);
+  }
+  return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
+}
+
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
   row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span><span class="row-sub"></span>';
-  row.querySelector(".row-title").textContent = s.preview || s.id;
+  row.querySelector(".row-title").textContent = sessionTitle(s);
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const open = async () => {
     fused.params.set("session_id", s.id);
@@ -9091,8 +9593,13 @@ async function loadRecent() {
     // snapshots panel wants (it means "name nothing"), not a reason to skip.
     let named = false;
     for (const s of sessions) {
-      if (s.preview && snapNames.get(s.id) !== s.preview) {
-        snapNames.set(s.id, s.preview);
+      // The SAME string the row is labelled with (sessionTitle, not the raw
+      // preview): the comment above says these two must match, and a heading
+      // reading "<pane-shot> The user attached a pi…" while its row reads the
+      // user's own words would break that in the most visible way there is.
+      const title = sessionTitle(s);
+      if (title && snapNames.get(s.id) !== title) {
+        snapNames.set(s.id, title);
         named = true;
       }
     }

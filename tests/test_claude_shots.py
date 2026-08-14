@@ -1496,7 +1496,8 @@ _WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
              "const PANE_SHOT_TAG", "function paneShotBlock(",
              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
              "function isMarkerOnly(",
-             "function stripPaneBlock(", "function composeOutgoing("]
+             "function stripPaneBlock(", "function paneShotIn(",
+             "function composeOutgoing("]
 
 
 def _wire(html, body):
@@ -2158,9 +2159,9 @@ def test_the_chip_shows_the_picture_and_takes_it_off_again(html):
     chip, which is the annotation chip's own pill — same row, same ✕ — because both
     are things this message is about to carry."""
     chip = _between(html, "function shotChip()", "\n}\n")
-    assert 'chip.className = "annchip"' in chip, "the same pill, not a second one"
-    assert 'img.className = "shotthumb"' in chip
-    assert "img.src = paneShot.thumb" in chip
+    assert 'chip.className = "annchip shotchip"' in chip, \
+        "the same pill, plus the entrance animation's hook"
+    assert 'shotThumbBtn("shotthumb", paneShot' in chip
     assert 'x.setAttribute("aria-label", "Remove the screenshot")' in chip
     assert "x.onclick = shotDrop" in chip
     # dropping releases the blob and does NOT write the annotations param
@@ -2212,4 +2213,304 @@ def test_both_composers_carry_the_button_and_one_picture_behind_them(html):
     # the spoken strings are the pane-noun writer's, not two hardcoded literals
     noun = _between(html, "function applyPaneNoun()", "\n}\n")
     assert "for (const b of shotBtns())" in noun
-    assert 'b.title = "Take a screenshot of the whole " + paneNoun' in noun
+    assert 'const say = "Screenshot the " + paneNoun + " and attach it to this message"' \
+        in noun
+    # ONE sentence for both, so the tooltip and the screen reader cannot drift
+    assert "b.title = say" in noun and 'b.setAttribute("aria-label", say)' in noun
+
+
+# --------------------------------------------- the second pass: seeing the picture
+#
+# The button shipped and the report was three sentences long: it was not obvious
+# that a screenshot had been taken, there was no way to look at one before sending
+# it, and a sent one vanished into a four-word marker. All three are the same
+# failure — a picture the user could never actually SEE — and these pin the three
+# answers: a flash over the photographed pane, a viewer behind every thumbnail,
+# and a receipt that survives a reload.
+
+
+def test_the_click_flashes_the_pane_it_photographed(html):
+    """The capture ran in total silence: no motion anywhere on screen between the
+    click and a 22px chip appearing in another corner, which reads as a button
+    that did nothing. The flash goes over the PANE, because the pane is the
+    subject — a control that lights up says only "I was clicked"."""
+    flash = _between(html, "function shotFlash()", "\n}\n")
+    # the framed viewport in BOTH layouts, found through the binding that already
+    # tracks it rather than through a second layout test
+    assert "annHl && annHl.parentNode" in flash
+    assert "host.ownerDocument.createElement" in flash, \
+        "minted in the TARGET's document, which in the sidebar is not ours"
+    # inline style + WAAPI: a stylesheet of ours in a document of theirs is the
+    # hazard the annotation layer's own comment already names
+    assert "el.setAttribute(\"style\"" in flash
+    assert "el.animate(" in flash
+    assert "opacity" in flash
+    # opacity only — the reduced-motion-safe form, so the signal survives the
+    # preference instead of being switched off with the movement
+    assert "translate" not in flash and "scale" not in flash
+    # and it always cleans up, whichever way the animation ends
+    assert "anim.onfinish = done" in flash and "anim.oncancel = done" in flash
+    assert "if (!el.animate) { done(); return null; }" in flash, \
+        "no animation support is a missed flash, never a failed capture"
+
+
+def test_the_flash_fires_before_the_capture_not_after(html):
+    """Immediately, because a capture can take a second on a large page and the
+    click has to be answered now. It is safe there: the layer lives behind a
+    shadow root, and cloneNode does not clone one, so shotPane cannot photograph
+    the flash even when the timing overlaps."""
+    click = _between(html, "async function shotAttachPane()", "\n}\n")
+    assert "shotFlash();" in click
+    assert click.index("shotFlash();") < click.index("shotCapturePane(")
+
+
+def test_the_chip_animates_in_and_the_animation_is_only_a_hook(html):
+    """The second half of the same answer, for the eye that has already left the
+    pane: the chip has to still be moving when the user looks at the composer.
+    `shotchip` carries the entrance and nothing else — every other rule it wears
+    is `.annchip`'s, because it IS one."""
+    assert "@keyframes shotchip-in" in html
+    assert ".annchip.shotchip { animation: shotchip-in" in html
+    # honoured, and reduced to nothing rather than left to jump
+    reduced = _between(html, "@media (prefers-reduced-motion: reduce) {\n    .annchip.shotchip",
+                       "}")
+    assert "animation: none" in reduced
+
+
+def test_every_thumbnail_is_a_button_that_opens_the_viewer(html):
+    """"No way to preview it before sending" — the user was asked to trust a 22px
+    smudge and press send. One builder for every place a shot is shown small, so a
+    picture that opens while drafting also opens after sending; a control that
+    works in one of those and not the other is what makes it feel arbitrary."""
+    btn = _between(html, "function shotThumbBtn(", "\n}\n")
+    assert 'btn.type = "button"' in btn, \
+        "a real button: tabbable, Enter/Space, announced as pressable"
+    assert "btn.onclick = () => shotViewOpen(shot);" in btn
+    assert "shot.src || shot.thumb" in btn, \
+        "src for a restored turn, thumb for this session — one builder, two sources"
+    # both callers go through it
+    assert 'shotThumbBtn("shotthumb"' in html      # the pending chip
+    assert 'shotThumbBtn("annsum-pane"' in html    # a sent turn's receipt
+    # and the small ones say they can be opened
+    assert "cursor: zoom-in" in html
+
+
+def test_the_viewer_shows_the_path_and_the_caveat_the_wire_carried(html):
+    """`viewNote` — what the picture does NOT show — has ridden the wire since the
+    first version of this feature and had nowhere on screen to be said. The viewer
+    is where it belongs: the one moment the user is looking at the pixels it is
+    about."""
+    open_ = _between(html, "function shotViewOpen(shot)", "\n}\n")
+    assert "shotViewImg.src = shot.src || shot.thumb;" in open_
+    assert "shotViewPath.textContent = shot.view" in open_
+    assert "shotViewNote.textContent = shot.viewNote" in open_
+    assert "shotView.hidden = false;" in open_
+    # focus moves to the way OUT, which is the first thing a keyboard reaches for
+    assert 'document.getElementById("shotview-close").focus()' in open_
+
+
+def test_discard_is_offered_only_while_the_picture_is_still_the_users(html):
+    """Identity, not a copy: Discard appears only when the shot on screen is the
+    very object `paneShot` holds. A sent picture is already in the agent's hands,
+    and a control offering to take it back would be a lie."""
+    open_ = _between(html, "function shotViewOpen(shot)", "\n}\n")
+    assert "shotViewDrop.hidden = shot !== paneShot;" in open_
+    # and discarding from in there closes the viewer, since what it showed is gone
+    assert "shotViewDrop.onclick = () => { shotDrop(); shotViewClose(); };" in html
+
+
+def test_the_viewer_closes_every_way_a_modal_should(html):
+    """Scrim, button, Escape. A modal with one exit is a trap, and the scrim is
+    the one people try first."""
+    assert 'document.getElementById("shotview-close").onclick = shotViewClose;' in html
+    assert 'document.getElementById("shotview-scrim").onclick = shotViewClose;' in html
+    esc = _between(html, "function onEscape(e)", "\n}\n")
+    assert "escapeAction(!shotView.hidden," in esc
+    assert 'if (act === "close-viewer") shotViewClose();' in esc
+
+
+def test_a_closed_viewer_is_really_closed(html):
+    """FOUND IN THE BROWSER, and it is the third time this template has hit the
+    same trap: an element with its own `display` rule beats the UA's
+    `[hidden] { display: none }` on specificity. #annbtn and .viewshot both spell
+    their hiding out; this one shipped without it, so the "hidden" viewer was a
+    full-bleed transparent-scrim sheet over the entire pane, swallowing every
+    click — invisible in review, because a scrim over the app looks like the app.
+
+    `hidden` stays the ONE answer to "is the viewer open" (escapeAction and
+    shotViewOpen/Close all read it, and there is no second flag to disagree); this
+    is only the rule that makes the attribute mean what it says."""
+    assert '<div id="shotview" hidden>' in html
+    style = _between(html, "  #shotview {", "\n  }")
+    assert "display: flex" in style, "it centres the picture, hence the collision"
+    assert "#shotview[hidden] { display: none; }" in html, \
+        "the rule above outranks the UA's, so the hiding has to be spelled out"
+    # one source of truth for open/closed: the attribute, never a class
+    assert "shotView.hidden" in html
+    assert "#shotview.open" not in html
+
+
+def test_a_sent_turn_keeps_its_picture(html):
+    """"It vanished into the wire marker." A shot-only send collapsed to four
+    words and the picture was gone from the transcript. The receipt now carries
+    the image itself, at a size worth scrolling back to, and it opens the same
+    viewer."""
+    receipt = _between(html, "function shotReceipt(sum, shot)", "\n}\n")
+    assert 'txt.textContent = shot.view ? "screenshot attached" : "no pane screenshot"' \
+        in receipt
+    assert 'shotThumbBtn("annsum-pane", shot' in receipt
+    # the live send goes through the one builder rather than inlining a second row
+    send = _between(html, "async function sendMessage(message)", "\n}\n")
+    assert "if (shot) shotReceipt(sum, shot);" in send
+
+
+def test_a_restored_turn_renders_its_picture_from_the_path_in_the_wire(html):
+    """The path was in the transcript the whole time and the server serves local
+    files, so a reopened session showing no picture was a choice nobody made
+    deliberately. `paneShotIn` reads the block back, `fused.rawUrl` turns the path
+    into a URL — the same way every other template shows a local image."""
+    restore = _between(html, "function shotRestoreReceipt(turn, text)", "\n}\n")
+    assert "paneShotIn(text)" in restore
+    assert "fused.rawUrl(shot.view)" in restore
+    assert "shotReceipt(sum, " in restore, "the same row as a live send, not a copy"
+    # wired into the restore loop, on the turn addUser just appended
+    load = _between(html, "      if (t.role === \"user\") {", "      } else addAssistantTurn")
+    assert "addUser(stripBlocks(t.text));" in load
+    assert "shotRestoreReceipt(turns[turns.length - 1], t.text);" in load
+    # a pruned temp file says so instead of showing a broken-image glyph
+    receipt = _between(html, "function shotReceipt(sum, shot)", "\n}\n")
+    assert "onerror" in receipt and "no longer on disk" in receipt
+
+
+def test_the_wire_reader_is_the_exact_counterpart_of_the_writer(html):
+    """Round trip, through the real writer and the real reader: what
+    `paneShotBlock` puts in is what `paneShotIn` gets out, and `stripBlocks` still
+    sees none of it."""
+    out = _wire(html, """
+const view = {view: "/tmp/fr/shots/S-view.png", viewNote: "part is blank"};
+const wire = composeOutgoing("fix this", [], {entry: "/p"}, view);
+const back = paneShotIn(wire);
+console.log(JSON.stringify({back: back, stripped: stripBlocks(wire),
+                            none: paneShotIn("just words"),
+                            broken: paneShotIn("<pane-shot>\\nnot json\\n</pane-shot>"),
+                            array: paneShotIn("<pane-shot>\\n[1,2]\\n</pane-shot>")}));
+""")
+    assert out["back"] == {"view": "/tmp/fr/shots/S-view.png",
+                           "viewNote": "part is blank"}
+    assert out["stripped"] == "fix this", "the path still never reaches the reader"
+    assert out["none"] is None
+    # forgiving, both ways: a transcript that renders without one picture is a
+    # small loss, one that throws mid-restore takes the conversation with it
+    assert out["broken"] is None
+    assert out["array"] is None
+
+
+def test_the_button_sits_beside_send_and_names_its_verb(html):
+    """"Not intuitive." Grouped with the three dropdowns it read as a fourth
+    SETTING; next to Send it reads as something you do to this message, in the
+    seat every chat app puts an attach control in. And the glyph is a camera —
+    the verb — rather than a framed landscape, which says "insert an image"."""
+    for row in _iter_composer_rows(html):
+        i, j = row.index("viewshot"), row.index('class="send"')
+        assert row.index('class="spacer"') < i < j, \
+            "the button belongs after the spacer and before Send"
+    # a camera: a body with a lens, not a rectangle with a mountain in it
+    assert html.count('<circle cx="8" cy="9" r="2.4"') == 2
+    assert '<path d="M2.9 11.4 6 8.3' not in html, "the old photo-frame glyph is gone"
+    # one sentence, leading with the verb, in both spoken slots
+    assert html.count(
+        'aria-label="Screenshot the preview and attach it to this message"') == 2
+    assert "(for layout problems that are not about one element)" not in html, \
+        "the explanatory parenthesis is a manual, not a label"
+
+
+def _iter_composer_rows(html):
+    rows = []
+    start = 0
+    while True:
+        i = html.find('<div class="composer-row">', start)
+        if i == -1:
+            break
+        j = html.index("</div>", html.index('class="send"', i))
+        rows.append(html[i:j])
+        start = j
+    assert len(rows) == 2, "one composer row per composer, home and chat"
+    return rows
+
+
+def test_the_viewer_can_show_a_wide_screenshot_at_a_legible_scale(html):
+    """FOUND IN THE BROWSER, and it is a constraint of where this template lives:
+    `position: fixed` is the TEMPLATE's viewport, which in the sidebar layout is a
+    ~440px column the viewer cannot escape (no postMessage — D3/D4). Measured, a
+    1600px capture fitted to that lands at 310px: four times the chip, and still
+    not enough to read the UI it is a picture OF.
+
+    So the fitted view is the overview and one click on the picture swaps to
+    natural size with the box scrolling, which is the only way a narrow column
+    shows a wide screenshot at a scale worth opening it for."""
+    assert "#shotview-box.zoom { overflow: auto; }" in html
+    zoom = _between(html, "  #shotview-box.zoom #shotview-img {", "\n  }")
+    assert "max-width: none" in zoom and "max-height: none" in zoom
+    # Measured in a browser: lifting the caps alone changed NOTHING. The box is a
+    # column flex container, so `align-items: stretch` sized the image to the
+    # box's width on the cross axis and the "zoomed" picture rendered identically
+    # to the fitted one, under a zoom-out cursor promising otherwise.
+    assert "align-self: flex-start" in zoom, \
+        "without this the flex cross-axis stretch pins the width and nothing zooms"
+    # the cursor is what advertises which click you are about to make
+    assert "cursor: zoom-in" in _between(html, "  #shotview-img {", "\n  }")
+    assert "cursor: zoom-out" in zoom
+    # the way out must not scroll away with a 1600px image
+    sticky = _between(html, "  #shotview-box.zoom #shotview-bar {", "\n  }")
+    assert "position: sticky" in sticky
+    # the picture is the toggle, not a fourth button in the bar
+    assert "shotViewImg.onclick = () => {" in html
+    assert 'shotViewBox.classList.toggle("zoom")' in html
+    # ...and every open starts fitted, because a zoom belongs to one picture
+    open_ = _between(html, "function shotViewOpen(shot)", "\n}\n")
+    assert 'shotViewBox.classList.remove("zoom")' in open_
+    assert "shotViewBox.scrollTop = 0" in open_
+
+
+def test_a_session_row_is_named_with_what_the_user_typed(html):
+    """SEEN IN THE RUNNING APP, in Akshil's own sidebar: the chat list read
+    "<pane-shot> The user attached a pi…" and "The user annotated 1 element in the
+    l…". The stored preview is the head of the first user message, and a message
+    carrying a screenshot, a snapshot or notes BEGINS with a machine-written block
+    — so the page's own wire, addressed to the model, was quoted back at the human
+    as the name of their conversation. A screenshot that is "visible after send"
+    and turns the chat's title into XML is not fixed.
+
+    stripBlocks cannot do this alone and the reason is worth pinning: the preview
+    is TRUNCATED, so the closing tag every strip matches on is usually not in the
+    string at all."""
+    # sessionTitle leans on the whole strip stack plus the two markers, so it runs
+    # with the same wire bindings every other strip test uses, plus its own two.
+    out = _node(_WIRE_FNS + ["const BLOCK_OPENERS", "function sessionTitle("], """
+const cases = {
+  plain:     sessionTitle({preview: "fix the header", id: "s1"}),
+  // truncated mid-block: no closing tag anywhere, which is the real shape
+  cutPane:   sessionTitle({preview: "<pane-shot>\\nThe user attached a pi", id: "s2"}),
+  cutAnn:    sessionTitle({preview: "The user annotated 1 element in the l", id: "s3"}),
+  cutState:  sessionTitle({preview: "<live-app-state>\\n{\\"entry\\": \\"/p/ind", id: "s4"}),
+  // a WHOLE block plus the words after it: stripBlocks handles this half
+  whole:     sessionTitle({preview: "<pane-shot>\\ncap\\n{}\\n</pane-shot>\\n\\nwhy is this wrong",
+                           id: "s5"}),
+  // nothing but a block: name it what the bubble would say, never blank
+  empty:     sessionTitle({preview: "", id: "s6"}),
+  both:      sessionTitle({preview: "<pane-shot>\\nThe user attached a pi", id: "s7"}),
+};
+console.log(JSON.stringify(cases));
+""", html)
+    assert out["plain"] == "fix the header", "an ordinary message is untouched"
+    assert out["cutPane"] == "\U0001f5bc pane screenshot"
+    assert out["cutAnn"] == "\U0001f4cc annotations"
+    assert out["cutState"] == "s4", "a snapshot alone names no turn — fall to the id"
+    assert out["whole"] == "why is this wrong"
+    assert out["empty"] == "s6", "never blank: a row with no title cannot be picked"
+    assert out["both"] == "\U0001f5bc pane screenshot"
+    # both consumers read the SAME string, or a heading and its row disagree
+    assert 'row.querySelector(".row-title").textContent = sessionTitle(s);' in html
+    assert "const title = sessionTitle(s);" in html
+    assert "snapNames.set(s.id, title);" in html
+    assert "snapNames.set(s.id, s.preview)" not in html, "the raw preview is gone"
