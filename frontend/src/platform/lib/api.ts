@@ -1880,10 +1880,28 @@ export interface AppInfo {
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
   updated_at?: number | null;
+  // Last-opened time, epoch seconds, from the app recents store
+  // (~/.fused-render/app_recents.json). Null for an app never opened, and
+  // undefined on older backends — both fall back to updated_at in sortApps.
+  opened_at?: number | null;
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
+}
+
+// Record that an app was opened (feeds opened_at above, which is what /home
+// and /apps sort by). Server no-ops (recorded: false) for an app whose folder
+// is gone, so callers need not pre-check.
+export function postAppOpen(
+  tag: string,
+  name: string,
+  title?: string | null,
+): Promise<{ recorded: boolean }> {
+  return postJson<{ recorded: boolean }>(
+    "/api/apps/recents/open",
+    title ? { tag, name, title } : { tag, name },
+  );
 }
 
 // Scaffold a new app folder and (optionally) kick off a Claude session seeded

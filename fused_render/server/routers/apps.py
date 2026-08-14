@@ -75,7 +75,26 @@ _APP_STARTER_DIR = os.path.join(
 def api_apps():
     apps = list(app_listing.workspace_apps(fused_dir()))
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
+    opened = _opened_at_by_app()
+    for a in apps:
+        a["opened_at"] = opened.get((a["tag"], a["name"]))
     return {"apps": apps}
+
+
+def _opened_at_by_app() -> dict[tuple[str, str], float]:
+    """(tag, name) → last-open time as epoch seconds (updated_at's unit), from
+    the recents store. The file is user-writable, so a malformed openedAt just
+    drops that entry — a bad timestamp must never fail the listing."""
+    out: dict[tuple[str, str], float] = {}
+    for e in _read_app_recents()["entries"]:
+        ts = e.get("openedAt")
+        if not isinstance(ts, str):
+            continue
+        try:
+            out[(e["tag"], e["name"])] = datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            continue
+    return out
 
 
 # ------------------------------------------------------------------- recents
@@ -86,7 +105,10 @@ def api_apps():
 # entries whose app folder is gone (read-only — the folder may come back).
 # The workspace is always local, so plain isdir checks are safe here.
 
-APP_RECENTS_CAP = 20
+# The store is the sort input for /home and /apps (opened_at in GET /api/apps),
+# not just a short recents row — so the cap must comfortably exceed the number
+# of apps a user actively cycles through, or open #N+1 silently loses its rank.
+APP_RECENTS_CAP = 200
 
 
 def _app_recents_path() -> str:
