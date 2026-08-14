@@ -1446,6 +1446,68 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
         first.join(10)
 
 
+def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(monkeypatch):
+    """Resolving the worker outside the lock lets a queued request kill a
+    running one.
+
+    `_wait_ready` -> `_start_resident` evicts whatever holds the capability when
+    the model differs: it sets `stopping` and terminates the worker. Done before
+    taking `_TRANSCRIBE_LOCK`, that is the ONE destructive step in this path
+    happening outside the lock that exists to serialize it — so a page asking
+    for `faster-whisper-small` while a 90-minute run is mid-decode on the
+    catalog default kills that worker, loses the transcript, fails the first row
+    with "the transcription process did not answer", and then queues behind a
+    lock nobody is holding.
+
+    The same ordering breaks the identical-model case more quietly: a `worker`
+    captured before a wait that can last hours is a handle to a process an
+    unload may since have killed, so the request goes to a dead port instead of
+    re-resolving.
+    """
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    resolved = []
+
+    def spy_ready_worker(capability, model=None):
+        resolved.append(model)
+        return object()
+
+    monkeypatch.setattr(supervisor, "ready_worker", spy_ready_worker)
+    monkeypatch.setattr(
+        supervisor, "_wait_ready",
+        lambda *a, **k: pytest.fail("a queued request evicted the running model"))
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/default", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5)
+
+    second = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/other", {"path": "/b"}, supervisor.TRANSCRIBE_JOB_PREFIX + "two"),
+        daemon=True)
+    second.start()
+    try:
+        _wait_for_queued(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+        # The whole point: while the first is still decoding, the second has
+        # touched NOTHING about which model is resident.
+        assert resolved == ["org/default"], resolved
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+    # …and once it had its turn, it resolved for itself rather than reusing a
+    # handle taken before the wait.
+    assert resolved == ["org/default", "org/other"], resolved
+
+
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
     """The page half, pinned as an INVARIANT rather than an instance.
 

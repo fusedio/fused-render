@@ -1162,13 +1162,24 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     file the worker writes itself, and progress that goes straight to `job`.
     Nothing here polls; this function holds the request open and turns a dead
     worker into an error somebody can read.
-    """
-    worker = ready_worker(registry.SPEECH_TO_TEXT, model)
-    if worker is None:
-        worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job)
 
+    **The turn is taken BEFORE the model is resolved, and that ordering is the
+    whole of it.** Resolving first put the one destructive step in this path —
+    `_wait_ready` -> `_start_resident`, which EVICTS whatever holds the
+    capability when the model differs — outside the lock that exists to
+    serialize transcriptions. A page asking for a different Whisper model while
+    a 90-minute run was mid-decode terminated that worker, lost its transcript,
+    failed its row with "the transcription process did not answer", and then
+    queued behind a lock nobody was holding. The identical-model case failed
+    more quietly: a worker handle captured before a wait that can last hours is
+    a handle to a process an unload may since have killed, so the request went
+    to a dead port instead of re-resolving.
+    """
     _await_turn(job)
     try:
+        worker = ready_worker(registry.SPEECH_TO_TEXT, model)
+        if worker is None:
+            worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job)
         try:
             response = _worker_request(worker, "/generate", body={**request, "job": job},
                                        timeout=TRANSCRIBE_TIMEOUT_S)
