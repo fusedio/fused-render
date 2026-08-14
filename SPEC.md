@@ -5289,6 +5289,18 @@ stop it short of quitting the app.
   until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
+  **Live SERVER work is never evicted by the cap at all** (D276), so the list
+  can exceed `MAX_JOBS`. For work the app itself runs, the row is not a view of
+  the work but its only channel — the ✕'s route to the process, and the
+  completion signal `fused.watchJob` polls, which reads a missing row as work
+  that stopped and settles a promise that cannot then be un-settled. The cap
+  was written for a pathological reporter; a queue of transcriptions (AI-10a)
+  made "more than 64 rows of live work" ordinary, and evicting there rejected
+  transcriptions that went on to succeed. Page-owned rows stay capped, which is
+  where the unbounded risk is (`fused.trackJob()` can mint rows a page never
+  finishes); finished server rows stay evictable; and the age sweep still drops
+  a running row whose reporter has gone silent, so a crashed worker cannot pin
+  one for the session.
 - **BG-7** **Dismiss is for rows nobody is reporting on** — finished, or
   `stalled`. A live row is refused (409): the only honest way to make it go away
   is to stop the work, and a dismiss that hid a live download would restore
@@ -6267,43 +6279,33 @@ an AI Models page that could say what was on disk but not what was *running*.
   which is reachable from inside a blocked `urlopen` that has sent the worker
   nothing to cancel. **Every reporter on a transcription's lifecycle restates
   the ROW'S IDENTITY on every tick** — title, kind, unit, cancellable, and
-  `state: "running"` — because §36's cap evicts the least recently updated
-  running row and a queue of transcriptions is exactly what pushes the count
-  past it, so any tick can be the one that has to re-create its row rather
-  than update it. A tick without a title is refused outright and the row never
-  returns: the ✕ goes dead, `watchJob` resolves null, and the page is told a
-  run that succeeds minutes later has failed. Without `cancellable` the
-  rebuilt row is drawn with a dismiss cross instead of a cancel one — operable
-  looking and inert; without `unit` the seconds clock reverts to a bare pair of
-  numbers. The identity is defined ONCE and handed to the worker in the request
-  body rather than re-spelled in that process, so the supervisor's reports and
-  the worker's cannot disagree about what the row is — including the wait for a
-  COLD model, which is the longest reporter of the lot and therefore the
-  likeliest to meet an evicted row. And because the cap sheds the least
-  recently updated running row, a QUEUED row deliberately reports SLOWER than
-  the worker's heartbeat: the active decode is the row whose absence would be
-  noticed, and a queued one blinking out costs nothing now that its next tick
-  rebuilds it. Its ✕ is polled on a separate, faster cadence, so that ordering
-  is not paid for in cancel latency — and the rebuild happens on DETECTION
-  rather than on that slow schedule, because the poll has already read the list
-  that says the row is gone. **The governing property is `maximum row-absence <
-  the watcher's give-up window`** (`fused.watchJob` resolves null after five
-  consecutive misses, ~3.5s, at which point the page is told a live
-  transcription stopped reporting), and it is derived from both sides' real
-  constants rather than chosen. **It does not yet hold for the ACTIVE decode**:
-  that row is refreshed by the worker, whose worst case is `worker_base`'s 5s
-  heartbeat when a single long segment produces no ticks — so an evicted
-  running row can be absent for longer than the page tolerates. Closing that
-  needs the row to stop being evictable rather than another cadence (see D276).
-  **So the PAGE must not treat absence as completion**, which is the half no
-  amount of supervisor work can fix: a promise that has resolved cannot be
-  un-resolved by a row that comes back. `fused.ai.transcribe` therefore treats
-  the TRANSCRIPT as the authority on an absent row — it keeps looking for the
-  file, resumes watching if the row returns, and rejects only after a bounded
-  grace period, so it still always settles. `fused.ai.image` has the same
-  exposure and is deliberately unchanged here: `watchJob` is shared with it and
-  with the download manager, so raising its give-up threshold belongs in a
-  change that can be reviewed against all three callers.
+  `state: "running"` — title, kind, unit, cancellable, `state` — so that a row
+  which had to be re-created comes back as the SAME row rather than one with
+  the same id. A report without a title is refused outright and the row never
+  returns at all; without `cancellable` it is drawn with a dismiss cross
+  instead of a cancel one, operable-looking and inert; without `unit` the
+  seconds clock reverts to a bare pair of numbers. The identity is defined ONCE
+  and handed to the worker in the request body rather than re-spelled in that
+  process, so the supervisor's reports and the worker's cannot disagree about
+  what the row is — the cold-model wait included, since it is the longest
+  reporter of the lot.
+  **Why the row can no longer vanish under a live transcription is BG-6's rule,
+  not a cadence here** (D276): the cap does not evict live server work. That is
+  the fix nine rounds of this feature had been compensating for from the
+  reporting side — restate the row harder, tick faster, rebuild on detection —
+  and none of it could reach the actual consequence, because `fused.watchJob`
+  resolves null after five consecutive misses and a promise that has settled
+  cannot be un-settled by a row that comes back. Maximum absence for a live
+  transcription is therefore ZERO, and the write cadence went back to being
+  what it sounds like: a display heartbeat, sized only so a row waiting its
+  turn is not shown as "no longer reporting", with the ✕ polled on its own
+  faster cadence because a cancel must not wait on a display. The restatement
+  above and the rebuild-on-detection stay as backstops for the one absence a
+  user can still cause — dismissing the row — and `fused.ai.transcribe`'s
+  absent-row branch is the same two lines `fused.ai.image` has: read the
+  artefact, and if it is not there, reject. It briefly grew a retry loop
+  instead, which could hang forever; that machinery is gone, because the fix
+  belonged in the manager.
   **The turn is taken before the MODEL is resolved**, and
   that ordering is load-bearing: resolving first put the one destructive step —
   `_start_resident`, which EVICTS the resident model when the requested one
