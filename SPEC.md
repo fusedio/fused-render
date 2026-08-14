@@ -5856,10 +5856,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   bytes is how a 4.6GB pull came to read **"10 / 11 B"**, and during a single
   large shard it does not move at all — so the row also went stale mid-download
   and the manager declared nobody was reporting. The runner instead walks its own
-  repo folder (counting the `.incomplete` files, skipping the snapshot symlinks)
-  on a **one-second poll that doubles as the heartbeat**, and the repo's total
-  comes from one Hub metadata call. No total means an indeterminate bar, which is
-  honest; a wrong total is not.
+  repo folder (counting the partial files, skipping the snapshot symlinks) on a
+  **one-second poll that doubles as the heartbeat**, and the repo's total comes
+  from one Hub metadata call. No total means an indeterminate bar, which is
+  honest; a wrong total is not. Since AI-5i the partial file being counted is
+  usually **ours**, and it is measured by allocated BLOCKS rather than by length:
+  segments write out of order, so the file is created at its final size and
+  filled sparsely, and `st_size` would report a 4.6GB download as complete before
+  a byte had arrived.
 - **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
   Two workers for one capability really do overlap — an eviction's replacement
   starts while the old one is still being killed, a Download runs beside a Load —
@@ -5951,6 +5955,39 @@ an AI Models page that could say what was on disk but not what was *running*.
   it, because `stop` cannot reach a beat already inside its POST and that tick
   would land after the work finished, flipping a row the supervisor had just
   marked done back to running.
+- **AI-5i** **The weights are fetched on several connections, and an interrupted
+  fetch resumes.** `snapshot_download` opens one connection per file and one file
+  at a time, so a model whose bytes are a single 4.6GB shard downloaded at
+  exactly one connection's speed — and a cancel, a crash or a quit threw all of
+  it away, which is not a corner case: the supervisor KILLS the fetch on quit
+  (AI-5e). `worker_base` therefore fetches the repo itself, stdlib only:
+  `get_hf_file_metadata` per file for the CDN location, the etag and the commit,
+  then up to **4 `Range` segments per file** with **segments across all files** as
+  the units of work in one pool capped at **8 connections** — the single number
+  that bounds how many sockets a download opens, which a pool per file would
+  multiply out. Segments share one fd and write with `os.pwrite`, and per-segment
+  offsets go to a sidecar in the order that makes them true: snapshot the
+  cursors, **fsync the data, then write the sidecar** — a recorded byte is always
+  a durable byte, so a resume never skips one that was still in flight. The
+  partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
+  resumes one of those by seeking to its length, ours are written out of order,
+  and handing it one would produce a silently corrupt blob. Resume demands that
+  etag, size and segment layout all still agree, and starts clean otherwise —
+  never a guess. A segment reconnects on an exception AND on a body that simply
+  ends early (a server closing mid-stream raises nothing), resets its retry
+  budget whenever bytes arrive, re-resolves the presigned URL once on a 401/403
+  (a multi-hour download outlives it), and refuses a 200 answering a range
+  request at a non-zero offset — that body would be written at four different
+  offsets, giving a file of exactly the right length and entirely wrong content,
+  the one failure no size check would catch. Verification is SIZE only, like
+  huggingface_hub itself, which relies on TLS and `Content-Length`. **Every
+  failure and every incapability falls back to `snapshot_download` /
+  `hf_hub_download`** — no range support, a Hub API that moved, a platform with
+  no `os.pwrite`, an argument ours does not understand — logging the reason to
+  stderr and clearing our part files first, because a download that got faster
+  and sometimes broken would be a bad trade. Explicitly out of scope: no
+  bandwidth limit, no detached daemon (quitting still stops it; the on-disk state
+  is what makes that cheap rather than destructive), no per-segment UI.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
