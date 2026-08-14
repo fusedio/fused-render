@@ -1746,10 +1746,12 @@ export default function Listing({
               // A PERCENTAGE, not a pixel width: the split is a fraction of
               // this container (listing/pane.ts), so a window resize keeps the
               // proportion instead of leaving the pane at one window's
-              // arithmetic. Until it is dragged that fraction is a flat 30% —
-              // the same share a file's sidebar takes, with no breakpoints
-              // between them (D281). The pixel floors are the slot's / the
-              // list's CSS min-widths.
+              // arithmetic. Until it is dragged that fraction is the companion
+              // share — 30%, or 50% in a container of 720px or less (D282), the
+              // same rule a file's sidebar reads. The pixel floors are the slot's
+              // / the list's CSS min-widths, and under ~440px they are what the
+              // pane actually gets: half of anything narrower is below the 220px
+              // floor, so the two shares paint identically down there.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey), which is

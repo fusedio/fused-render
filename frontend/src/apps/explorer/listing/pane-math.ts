@@ -24,9 +24,15 @@
 const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
 
-// **THE PANE'S WIDTH: 30% of its container, full stop** (D281). Not a function of
-// anything — the same share the file view's sidebar takes, imported from there so
-// the two cannot drift apart again.
+// **THE PANE'S WIDTH: the companion share of its container** — 30%, or 50% at
+// 720px and under (D282 amending D281). The same function the file view's sidebar
+// uses, imported from there so the two cannot drift apart again; the reasoning,
+// including why D281's argument for deleting the small step was wrong, is on
+// `companionFrac`.
+//
+// It is a function of the CONTAINER's width and of nothing else — never the
+// viewport, so an embedded pane in a small frame gets the same 50% a small window
+// does.
 //
 // Three pieces of responsive machinery are DELETED here, on the owner's
 // instruction ("remove any complicated breakpoint logic"):
@@ -35,18 +41,26 @@ const LIST_MIN_W = 60;
 //     container breakpoints, with a `220/containerW` floor folded in;
 //   * `PANE_SPLIT_MIN_W` / `shouldShowPane` — the **700px gate** that decided
 //     whether there was a pane AT ALL;
-//   * the `ResizeObserver` measurement both of those needed (`useSplitWidth` in
-//     pane.ts), and with it the second consumer of the verdict (Preview's
-//     `useSplitIsWide`).
+//   * `useSplitIsWide` in pane.ts, the gate's second consumer (Preview's browse
+//     chip), which asked the measurement for a verdict nothing needs now.
 //
-// What replaces them is nothing, which is the point. The width is a constant and
-// the pane's presence is a property of WHICH Listing this is (`paneEnabled` in
+// **The container MEASUREMENT is back, and only it** (D282): `useSplitWidth` returns
+// so the small step above can be asked of the container rather than of the window.
+// One boolean's worth of responsiveness — small or not — where there used to be a
+// visibility gate and three tiers reading the same number. The pane's PRESENCE is
+// still a property of WHICH Listing this is (`paneEnabled` in
 // Listing.tsx: not embedded, not a snapshot, not a panel pane) — a question about
 // the surface, not about how many pixels it happens to have. The pixel FLOORS
 // below stay: they are clamps a drag and the CSS must agree on, not conditions on
 // the layout, and they are the only reason a 30% pane on a very narrow window is
 // still a usable column.
-export { COMPANION_FRAC as PANE_DEFAULT_FRAC } from "@apps/explorer/lib/side-width";
+// Re-exported under its OWN name, deliberately not as `defaultPaneFrac`: that name
+// belonged to the tier ladder, a test pins its absence, and reviving the identifier
+// for a two-value step would make the ladder look like it came back.
+export {
+  COMPANION_FRAC as PANE_DEFAULT_FRAC,
+  companionFrac,
+} from "@apps/explorer/lib/side-width";
 
 // The one place the pixel clamps live, so the drag cannot disagree with the
 // CSS floors: the pane keeps at least PANE_MIN_W, and the list keeps at least

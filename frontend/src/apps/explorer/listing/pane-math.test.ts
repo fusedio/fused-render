@@ -22,20 +22,22 @@ import {
 // The whole module, to assert what it no longer offers.
 import * as paneMath from "./pane-math";
 
-// ONE WIDTH FOR BOTH COMPANION COLUMNS (D281, the owner's "they are the same
+// ONE RULE FOR BOTH COMPANION COLUMNS (D281, the owner's "they are the same
 // concept now"). The two surfaces are a folder's preview pane and a file's
-// sidebar; the number is shared rather than spelled twice, because two literals
+// sidebar; the rule is shared rather than spelled twice, because two literals
 // are how they drifted to 50% and 30% in the first place.
 describe("the pane's width", () => {
-  test("is a flat 30%, and IS the file sidebar's share", () => {
+  test("its general share is 30%, and IS the file sidebar's", () => {
     expect(PANE_DEFAULT_FRAC).toBe(0.3);
     expect(PANE_DEFAULT_FRAC).toBe(COMPANION_FRAC);
   });
 
-  test("takes no width input at all", () => {
-    // The pin for "no breakpoint logic": a width-dependent default is exactly
-    // what was removed, so the module must export no function of the container's
-    // width. Anything reintroducing tiers would have to add one back.
+  test("the TIER ladder stays deleted", () => {
+    // D282 restored ONE small-container step (`companionFrac`, 50% at 720px and
+    // under), so the module does take a width again — what must not come back is
+    // the 30/50/70 ladder on 1000px/1440px, its constants, and the 700px
+    // visibility gate. Those are named individually for that reason; a two-value
+    // step reusing any of these identifiers would read as the ladder returning.
     const exported = Object.keys(paneMath);
     expect(exported).not.toContain("defaultPaneFrac");
     expect(exported).not.toContain("shouldShowPane");

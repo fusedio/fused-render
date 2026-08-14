@@ -34,10 +34,10 @@
 // The pixel floors survive as CSS min-widths (.listing-pane-slot /
 // .listing-main) and as the drag's clamp; those are clamps, not breakpoints. The
 // arithmetic itself is pure and lives in listing/pane-math.ts.
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { purgeViewStateParams } from "@platform/lib/viewstate";
 import { getPaneFrac, setPaneFrac } from "@apps/explorer/listing/pane-store";
-import { PANE_DEFAULT_FRAC, dragPaneFrac } from "@apps/explorer/listing/pane-math";
+import { companionFrac, dragPaneFrac } from "@apps/explorer/listing/pane-math";
 
 // THE ONE-TIME PURGE of the per-folder width, run at module init — which is the
 // first time anything in the app cares about a pane at all, and the only place
@@ -60,11 +60,37 @@ import { PANE_DEFAULT_FRAC, dragPaneFrac } from "@apps/explorer/listing/pane-mat
 // its params instead of clearing the map.
 purgeViewStateParams("panew", "pane");
 
-// (deleted with D281) `useSplitWidth` measured the split container with a
-// ResizeObserver in a useLayoutEffect, and `useSplitIsWide` turned that number
-// into the 700px verdict for its two readers — this hook's own `on`, and Preview's
-// browse chip. Nothing asks how wide anything is any more, so the observer is gone
-// rather than left feeding a constant.
+// The split container's measured width — back with D282, for ONE question: is this
+// container small (`companionFrac`, 720px and under → the companion takes half
+// instead of a third). Measured on the CONTAINER and never read off
+// `window.innerWidth`, because the same Listing renders full-window, inside a
+// chrome-free embed and inside another view's split, and only the container knows
+// which — an embedded pane in a small frame is small.
+//
+// `useLayoutEffect`, so the first measurement lands before paint and a wide
+// container never shows one frame at half width and then jumps. The observed
+// element is the container that is always rendered — never the pane itself — so the
+// pane's own width cannot feed back into the measurement and oscillate.
+//
+// *D281 deleted this, and it deleted `useSplitIsWide` with it — the 700px verdict
+// that decided whether there was a pane at all, plus the 30/50/70 tiers. Neither
+// comes back: what returns is the number, read for one boolean.*
+export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
+  const [w, setW] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const read = () => {
+      const next = el.getBoundingClientRect().width;
+      setW((prev) => (prev === next ? prev : next));
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return w;
+}
 
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
@@ -86,12 +112,12 @@ export function usePreviewPane(enabled = true) {
   // (below) to turn a cursor position into a fraction. What went is the standing
   // measurement of it.
   const splitRef = useRef<HTMLDivElement>(null);
-  // `on` is now exactly the caller's own question — is this a Listing that has a
-  // pane at all — with no width in it. Kept as part of the returned shape because
-  // "is there a pane" still has consumers (the divider, the reopen affordance);
-  // what it no longer is, is a measurement.
+  // `on` is exactly the caller's own question — is this a Listing that has a pane at
+  // all — and no width enters into it. That is the half D281 settled and D282 does
+  // not reopen: the measurement below decides the pane's SHARE, never its existence.
   const on = enabled;
-  const frac = chosen ?? PANE_DEFAULT_FRAC;
+  const width = useSplitWidth(splitRef);
+  const frac = chosen ?? companionFrac(width);
 
   // The divider drag: pointer capture keeps the drag alive when the cursor
   // crosses into the pane's iframe (which would otherwise swallow mousemove).
