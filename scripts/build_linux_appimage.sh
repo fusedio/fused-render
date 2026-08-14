@@ -206,7 +206,7 @@ rm -f "$OUTPUT_APPIMAGE"
 # precisely to avoid that startup regression. The level bump costs nothing at
 # decompress time (zstd decode speed is ~independent of level), so it's a free
 # ~33 MB with no runtime penalty for anyone who downloads the artifact.
-# Compressing this (numpy/pandas/scipy/geopandas/rasterio/...-sized) payload at
+# Compressing this (numpy/pandas/pyarrow/duckdb/...-sized) payload at
 # level 22 takes minutes of CPU time, which only pays for itself when the
 # result is actually shipped — the CI smoke build (test.yml) throws its
 # AppImage away immediately, so it overrides this to a fast level via the env

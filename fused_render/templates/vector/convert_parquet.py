@@ -1,8 +1,9 @@
 """Convert a vector file (.shp/.kml/.kmz/...) to GeoParquet, next to the
 source file.
 
-Runs in the app's bundled runner (geopandas 1.1 + pyarrow write proper
-GeoParquet 1.1 with CRS + bbox metadata). Reads the FULL file — no feature
+Runs in this folder's environment (`pyproject.toml`, SPEC PY-16): geopandas 1.1
++ pyarrow write proper GeoParquet 1.1 with CRS + bbox metadata. Reads the FULL
+file — no feature
 cap — so the output is a faithful conversion even when the preview was
 truncated. Never overwrites silently: an existing target gets a numbered
 suffix unless `overwrite=1`.

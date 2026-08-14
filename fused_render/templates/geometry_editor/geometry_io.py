@@ -11,7 +11,9 @@ export out=<abs>        -> edited FeatureCollection (EPSG:4326, passed as the
        overwrite=0|1       Never overwrites silently: an existing target gets
                            a numbered suffix unless overwrite=1.
 
-Uses only bundled libs (geopandas / pyogrio / pyarrow / shapely).
+Runs in this folder's environment (`pyproject.toml`, SPEC PY-16): geopandas /
+pyogrio / pyarrow / shapely, installed on first render rather than carried by
+every app install (D276).
 """
 
 import json

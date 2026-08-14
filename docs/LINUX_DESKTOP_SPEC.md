@@ -114,7 +114,8 @@ Decision section below.
   with the app, matching Windows Job semantics but differing from dev/macOS.
   Same accepted trade-off as Windows.
 - **glibc floor.** python-build-standalone needs glibc ≥ 2.17; `[bundled]`
-  manylinux wheels (duckdb, rasterio…) have their own floors. Ubuntu 22.04 /
+  manylinux wheels (duckdb, pyarrow…) have their own floors, as do the wheels a
+  template's own `pyproject.toml` resolves at runtime (rasterio, geopandas…). Ubuntu 22.04 /
   Debian 12 clear all of them. musl/Alpine is out of scope.
 - **x86_64 only** first. aarch64 is a follow-up once the pipeline exists.
 - **fusermount3 host-side.** rclone ships in the payload; `fusermount3` is

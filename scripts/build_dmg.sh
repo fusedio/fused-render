@@ -374,7 +374,7 @@ fi
 # ---------------------------------------------------------------------------
 # 4a. Prune dead weight from the bundle (D116). py2app's `packages` option
 #     (setup_py2app.py) whole-copies each package, which drags along package
-#     test suites (~100 MB: numpy/pandas/scipy/pyarrow/... ship `tests`
+#     test suites (~100 MB: numpy/pandas/pyarrow/... ship `tests`
 #     directories full of fixtures), stale `__pycache__` trees (~160 MB —
 #     the .pyc files double every .py, and the bundle recompiles on first
 #     run anyway), and the copied Python.framework's developer-only stdlib
