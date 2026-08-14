@@ -1273,6 +1273,43 @@ def test_an_unknown_task_names_both_valid_ones(client, fake_transcribe_runner,
     assert "transcribe" in message and "translate" in message
 
 
+def test_the_worker_is_given_the_row_identity_to_restate(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The worker reports to this row for the whole decode, from another
+    PROCESS — so it has to be told what the row is, or its ticks cannot rebuild
+    one the manager evicted mid-run."""
+    seen = {}
+    real = supervisor.generate_transcript
+    monkeypatch.setattr(supervisor, "generate_transcript",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job))[1])
+    started = _post_transcribe(client, path=recording).json()
+    _wait_job(started["jobId"])
+
+    assert seen["row"] == {"title": os.path.basename(recording), "kind": "task",
+                           "cancellable": True, "unit": "s"}
+
+
+def test_the_terminal_report_can_rebuild_an_evicted_row(
+        client, fake_transcribe_runner, recording):
+    """A decode can run for hours, so the row may well be gone by the time it
+    finishes — and a bare `state="done"` is refused, leaving the page watching
+    a row that never completes for a transcript already on disk."""
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done"
+
+    # Evict it exactly as the cap does, then replay the terminal report.
+    with jobs._lock:
+        jobs._jobs.pop(started["jobId"], None)
+    supervisor._report(started["jobId"],
+                       **supervisor.transcribe_row_fields(os.path.basename(recording)),
+                       state="done", detail="Saved")
+    rebuilt = _row_now(started["jobId"])
+    assert rebuilt is not None and rebuilt["state"] == "done"
+    assert rebuilt["title"] == os.path.basename(recording)
+
+
 def test_a_transcription_row_is_server_owned_and_reserved(
         client, fake_transcribe_runner, recording):
     started = _post_transcribe(client, path=recording).json()
@@ -1506,6 +1543,15 @@ def test_a_queued_row_EVICTED_by_the_cap_reopens_on_the_next_tick(monkeypatch):
             time.sleep(0.02)
         reopened = _row_now(job)
         assert reopened is not None, "an evicted queue row never came back"
+        # THE SAME row, not merely a row with the same id. A rebuild that
+        # restated only the title came back with `cancellable` defaulted to
+        # False, so the manager hid the ✕ and the user still could not stop a
+        # queued transcription — the exact failure reopening exists to prevent.
+        # `unit` matters for the same reason at one remove: without it the
+        # seconds clock reverts to a bare pair of numbers.
+        assert reopened["cancellable"] is True, reopened
+        assert reopened["state"] == "running" and reopened["kind"] == "task"
+        assert reopened["unit"] == "s"
         assert reopened["title"] == "recording.m4a"
         # …and the ✕ works again, which is the whole reason the row matters.
         assert jobs.request_cancel(job) is not None

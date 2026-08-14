@@ -189,7 +189,7 @@ _TICK_S = 1.0
 _orphan: "dict[str, threading.Thread | None]" = {"thread": None}
 
 
-def _await_orphan(job):
+def _await_orphan(job, row):
     """Let a decode abandoned by an earlier cancel finish before starting another.
 
     Ticks while it waits, for the same reason the decode itself does: this is
@@ -204,14 +204,14 @@ def _await_orphan(job):
         thread.join(timeout=_TICK_S)
         if thread.is_alive():
             worker_base.report_or_cancel(
-                job=job, kind="task", unit="s", done=None, total=None,
+                job=job, **row, state="running", done=None, total=None,
                 detail="Finishing a cancelled decode…")
             if worker_base.CANCEL.is_set():
                 raise worker_base.Cancelled()
     _orphan["thread"] = None
 
 
-def _call_with_ticks(call, job, detail):
+def _call_with_ticks(call, job, row, detail):
     """Run `call()` on a thread, ticking once a second until it returns.
 
     **`model.transcribe()` is not the lazy call it looks like.** It hands back a
@@ -248,7 +248,7 @@ def _call_with_ticks(call, job, detail):
         # arrives, and an invented percentage is what makes live work read as
         # frozen. The tick is here to be answered, not to move a bar.
         try:
-            worker_base.report_or_cancel(job=job, kind="task", unit="s",
+            worker_base.report_or_cancel(job=job, **row, state="running",
                                          done=None, total=None, detail=detail)
             if not worker_base.CANCEL.is_set():
                 continue
@@ -289,11 +289,19 @@ def generate(body):
     # an options object carrying an unset one.
     vad = True if body.get("vad") is None else bool(body.get("vad"))
     job = body.get("job") or None
+    # The row's IDENTITY, decided by the server and carried on every tick this
+    # process sends. Not decoration: the job manager can evict any row under
+    # capacity pressure and rebuild it from the next report, so a tick missing
+    # `title` is refused outright (`upsert` will not create a row without one)
+    # and one missing `cancellable`/`unit` rebuilds a row that looks operable
+    # and is not. A transcription queue is exactly what pushes the row count
+    # past the cap, so this is the designed usage, not an edge.
+    row = body.get("row") or {}
 
     started = time.time()
-    worker_base.report(job=job, state="running", kind="task", unit="s",
+    worker_base.report(job=job, **row, state="running",
                        done=0, total=None, detail="Decoding audio…")
-    _await_orphan(job)
+    _await_orphan(job, row)
     # TWO phases, and only the second one is lazy. `transcribe` returns a
     # generator that decodes segment by segment as it is consumed — but it
     # decodes the whole file and runs the VAD before handing that generator
@@ -303,7 +311,7 @@ def generate(body):
         lambda: model.transcribe(
             source, task=task, language=language, initial_prompt=initial_prompt,
             vad_filter=vad),
-        job, "Decoding audio…")
+        job, row, "Decoding audio…")
     total = round(float(getattr(info, "duration", 0) or 0), 2) or None
     # The ETA's clock starts HERE, not at `started`. The eager phase above
     # produced no segments, so charging its seconds to the first one makes the
@@ -327,7 +335,7 @@ def generate(body):
             # stop can be honoured, and the reply to this tick is how the ✕
             # gets here.
             worker_base.report_or_cancel(
-                job=job, kind="task", unit="s", done=done, total=total,
+                job=job, **row, state="running", done=done, total=total,
                 detail="Transcribing — %s of %s%s" % (
                     _clock(done), _clock(total) if total else "?",
                     _eta(total - done if total else None, elapsed, done)))

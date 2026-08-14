@@ -133,6 +133,10 @@ class FakeModel:
                 self._live -= 1
 
 
+#: What the supervisor sends as the row's identity (`transcribe_row_fields`).
+ROW = {"title": "meeting.m4a", "kind": "task", "cancellable": True, "unit": "s"}
+
+
 def _request(tmp_path, **over):
     base_path = str(tmp_path / "out")
     return {
@@ -140,6 +144,7 @@ def _request(tmp_path, **over):
         "out": base_path + ".json",
         "outText": base_path + ".txt",
         "job": "sys:ai-transcribe:abc",
+        "row": dict(ROW),
         **over,
     }
 
@@ -234,6 +239,61 @@ def test_progress_is_SECONDS_OF_AUDIO_against_the_duration(worker, base, tmp_pat
     segment_ticks = [t for t in base.ticks if t.get("unit") == "s" and t.get("done")]
     assert [t["done"] for t in segment_ticks] == [12.0, 30.0]
     assert {t["total"] for t in segment_ticks} == {90.0}
+
+
+def test_EVERY_tick_can_rebuild_the_row_it_reports_to(worker, base, tmp_path):
+    """The invariant, pinned over all of this process's reporters at once.
+
+    The job manager evicts the least recently updated running row once
+    `MAX_JOBS` bites, and a transcription QUEUE is what pushes the count past
+    it — so any tick can be the one that has to re-create the row rather than
+    update it. A tick without `title` is refused outright (`upsert` will not
+    open a row without one), which kills the row permanently: the ✕ goes dead,
+    `watch()` resolves null, and the page is told a run that succeeds minutes
+    later has failed. `cancellable` and `unit` are the quieter half — they
+    rebuild a row the manager draws with a dismiss cross instead of a cancel
+    one, and a seconds clock reverted to a bare pair of numbers.
+
+    Asserted over EVERY tick rather than over the ones a test happened to
+    think of, because the failure is one reporter forgetting, and this file
+    drives all four (the opening report, the eager-decode ticks, the
+    orphan wait, and the per-segment loop).
+    """
+    model = FakeModel([FakeSegment(0.0, 1.5, "a"), FakeSegment(1.5, 3.0, "b")],
+                      decode_seconds=0.2)
+    worker._loaded["model"] = model
+    worker._TICK_S = 0.05
+
+    worker.generate(_request(tmp_path))
+
+    assert len(base.ticks) >= 4, base.ticks
+    for tick in base.ticks:
+        missing = [k for k, v in ROW.items() if tick.get(k) != v]
+        assert not missing, f"tick cannot rebuild its row, missing {missing}: {tick}"
+        # `state` too: a row the manager has FORGOTTEN (aged out or dismissed)
+        # only reopens for a report that says `running` outright — anything
+        # else is answered as a late tick from work already closed.
+        assert tick.get("state") == "running", tick
+
+
+def test_the_orphan_wait_also_carries_the_row(worker, base, tmp_path):
+    """The reporter that is easiest to forget, since it only runs after a
+    cancel — exactly when nobody is looking."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 3.0, "hi")],
+                                        decode_seconds=0.4)
+    worker._TICK_S = 0.05
+    base.cancel_on_tick = 2
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+
+    base.cancel_on_tick = None
+    base.ticks.clear()
+    worker.generate(_request(tmp_path, out=str(tmp_path / "b.json"),
+                             outText=str(tmp_path / "b.txt")))
+    waits = [t for t in base.ticks if "cancelled decode" in str(t.get("detail"))]
+    assert waits, base.ticks
+    for tick in waits:
+        assert tick["title"] == ROW["title"] and tick["cancellable"] is True
 
 
 def test_every_tick_carries_the_job_the_route_opened(worker, base, tmp_path):

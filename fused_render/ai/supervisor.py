@@ -909,6 +909,58 @@ def start_image(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-image", daemon=True).start()
 
 
+#: What a queued transcription's row says while it waits.
+_QUEUED_DETAIL = "Queued behind another transcription…"
+
+
+def transcribe_row_fields(title: str) -> dict:
+    """Everything a report must carry for a transcription row to survive being
+    RE-CREATED — the row's identity, as opposed to its progress.
+
+    **Any row can be rebuilt from scratch at any tick.** `jobs._sweep` drops the
+    least recently updated running row once `MAX_JOBS` (64) bites, and a queue
+    of transcriptions is precisely what produces more than 64 rows — so a
+    reporter whose tick omits a field does not update a row missing it, it
+    creates one where that field is `Job`'s DEFAULT. `title` is the extreme
+    case (without it `upsert` raises and the row never comes back at all), but
+    it is only the loudest: `cancellable` defaults to False, which hides the ✕
+    on a row the manager then draws with a DISMISS cross instead — operable
+    looking and inert; `unit` defaults to "" and reverts the seconds clock to a
+    bare pair of numbers; and `state` is what lets a `_forget`-ten row reopen
+    at all, since a tick that does not say `running` is answered as a late tick
+    from work the user already closed.
+
+    So this is a PAYLOAD rather than a list of fields to remember, and it is
+    passed to the worker in the request body rather than re-spelled there —
+    every reporter on a transcription's lifecycle (this module's opening
+    report, its queue ticks, its terminal report, and all four of the worker's)
+    restates the same thing, and none of them can drift from it.
+
+    `state` is deliberately NOT here: the terminal report needs `done`/`error`/
+    `cancelled` and would have to override it. Callers say their own.
+    """
+    return {"title": title, "kind": "task", "cancellable": True, "unit": "s"}
+
+
+def _transcribe_row(title: str, detail: str) -> dict:
+    """`transcribe_row_fields` plus the progress of a row that has none yet."""
+    return {**transcribe_row_fields(title), "state": "running",
+            "done": None, "total": None, "detail": detail}
+
+
+def _row_identity(job: str) -> float | None:
+    """`started_at` for `job`, or None if there is no such row.
+
+    The row's identity for the purpose of "is this still the row I opened".
+    `started_at` is stamped at creation and never rewritten, so a change in it
+    means the record was rebuilt rather than updated.
+    """
+    for record in jobs.list_jobs():
+        if record["id"] == job:
+            return record.get("started_at")
+    return None
+
+
 def _transcribe_title(request: dict, model: str) -> str:
     """The row's title: the FILE, not the model.
 
@@ -935,25 +987,37 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     _runner_or_raise(registry.SPEECH_TO_TEXT)
     _require_build_tools()
 
-    title = _transcribe_title(request, model)
     # `unit="s"` from the first tick: the row is drawn before the worker knows
     # the duration, and a bar that starts unitless and acquires seconds later
-    # relabels itself under the user.
-    _report(job, title=title, state="running", kind="task", cancellable=True,
-            unit="s", detail="Preparing…", done=None, total=None)
+    # relabels itself under the user. The payload is shared with the queue
+    # ticks so an evicted row is rebuilt as the same row, not a partial one.
+    title = _transcribe_title(request, model)
+    _report(job, **_transcribe_row(title, "Preparing…"))
+    # The worker reports to this same row for the whole decode, so it needs the
+    # row's identity to restate — it is a different PROCESS, and a tick of its
+    # that arrives after an eviction would otherwise be dropped outright
+    # (`upsert` refuses a first report with no title) and take the ✕, the
+    # progress and the terminal state with it. Sent rather than re-spelled
+    # there, so the two cannot disagree about what this row is.
+    request = {**request, "row": transcribe_row_fields(title)}
 
     def run() -> None:
+        # Every terminal report carries the identity too: the row may have been
+        # evicted at any point during a decode that ran for hours, and a bare
+        # `state="done"` would be refused, leaving the page watching a row that
+        # never finishes for a transcript that is already on disk.
+        fields = transcribe_row_fields(title)
         try:
             result = generate_transcript(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
-                _report(job, state="cancelled")
+                _report(job, **fields, state="cancelled")
             else:
-                _report(job, state="error", message=message)
+                _report(job, **fields, state="error", message=message)
             return
         duration = result.get("duration")
-        _report(job, state="done", done=duration, total=duration,
+        _report(job, **fields, state="done", done=duration, total=duration,
                 detail=f"Saved {os.path.basename(result.get('output') or 'transcript')}")
 
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
@@ -1165,26 +1229,37 @@ def _await_turn(job: str, title: str) -> None:
     request. A guard an optimisation can skip is a guard in the wrong place.
     """
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
-        _report(job, title=title, state="running", kind="task", unit="s",
-                done=None, total=None,
-                detail="Queued behind another transcription…")
+        _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+        identity = _row_identity(job)
         while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_TICK_S):
             if _cancel_requested(job):
                 raise SupervisorError("cancelled")
+            current = _row_identity(job)
+            if current != identity:
+                # The row we opened is GONE and what we are polling is whatever
+                # our own last tick rebuilt. `cancel_requested` is server state
+                # a report may not set, so it cannot survive that — and reading
+                # False off a record that is seconds old is not "the ✕ was not
+                # pressed", it is us having no idea. Said out loud rather than
+                # silently believed, because the alternative reading of this
+                # line is a lost cancel and nothing anywhere would show it.
+                #
+                # NOT treated as a cancel: eviction under capacity pressure is
+                # the ANTICIPATED case for a queue (a folder of recordings is
+                # what produces more than `MAX_JOBS` rows), so aborting on it
+                # would fail the feature's main scenario to guard a sub-second
+                # window. The ✕ works again the moment the row is back, which
+                # the full restatement above is what guarantees.
+                logger.warning(
+                    "transcription row %s was evicted while queued and rebuilt; "
+                    "a cancel requested just before that is not recoverable", job)
+                identity = current
             # Re-stated rather than left to go stale. The bar does not move —
             # there is nothing to say but "still waiting" — and that is exactly
-            # what a heartbeat is (AI-5h).
-            #
-            # `title` rides along on EVERY tick, which is not redundancy. A
-            # queued row is the first thing `jobs._sweep` evicts when the cap
-            # bites (it sorts running rows by `updated_at`, and a queued row
-            # ticks less often than the decode it is waiting for), and a row
-            # that has been evicted can only be REOPENED by a report carrying a
-            # title — without one `upsert` raises and `_report` swallows it, so
-            # the ✕ silently stops working and the page is told a transcription
-            # that is about to succeed has failed.
-            _report(job, title=title,
-                    detail="Queued behind another transcription…")
+            # what a heartbeat is (AI-5h). The FULL payload every time; see
+            # `_transcribe_row` for why a partial one is not a row.
+            _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+            identity = _row_identity(job)
     if _cancel_requested(job):
         _TRANSCRIBE_LOCK.release()
         raise SupervisorError("cancelled")
