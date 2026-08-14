@@ -6277,8 +6277,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   looking and inert; without `unit` the seconds clock reverts to a bare pair of
   numbers. The identity is defined ONCE and handed to the worker in the request
   body rather than re-spelled in that process, so the supervisor's reports and
-  the worker's cannot disagree about what the row is. **The turn is taken
-  before the MODEL is resolved**, and
+  the worker's cannot disagree about what the row is — including the wait for a
+  COLD model, which is the longest reporter of the lot and therefore the
+  likeliest to meet an evicted row. And because the cap sheds the least
+  recently updated running row, a QUEUED row deliberately reports SLOWER than
+  the worker's heartbeat: the active decode is the row whose absence would be
+  noticed, and a queued one blinking out costs nothing now that its next tick
+  rebuilds it. Its ✕ is polled on a separate, faster cadence, so that ordering
+  is not paid for in cancel latency. **The turn is taken before the MODEL is
+  resolved**, and
   that ordering is load-bearing: resolving first put the one destructive step —
   `_start_resident`, which EVICTS the resident model when the requested one
   differs — outside the very lock that serializes this path, so a page asking
