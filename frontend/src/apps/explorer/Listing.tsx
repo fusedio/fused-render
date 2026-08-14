@@ -822,6 +822,19 @@ export default function Listing({
   // **The subject no longer enters into it at all** (D285): `preview` is not on offer
   // for any row type, so there is nothing left to ask about the subject and
   // `paneSideList` takes no flag. What it answers is what the FOLDER offers.
+  // The open folder's entry page, or null when it has none — a lookup over the rows
+  // this listing already fetched, so it costs no request and re-answers itself on a
+  // dir-watch refresh like any other derived row value. Literally `index.html`
+  // (case-insensitive, and a FILE — a directory of that name is a real shape), which
+  // is the narrow reading of the owner's "the open button simply opens the
+  // index.html" and the first clause of the server's own entry rule.
+  const appEntryPath = useMemo(() => {
+    const hit = sortedEntries.find(
+      (e) => !e.is_dir && e.name.toLowerCase() === "index.html",
+    );
+    return hit ? base + "/" + hit.name : null;
+  }, [sortedEntries, base]);
+
   const paneSides = paneSideList(sideEntries);
   // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
@@ -1637,6 +1650,36 @@ export default function Listing({
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
+              {/* OPEN APP — this folder's own `index.html`, opened as the file it is.
+                  Shown only when the folder HAS one, hidden otherwise: a button that
+                  cannot act is noise, and unlike the pane's companions this is not a
+                  mode the user is owed a reason for.
+
+                  The entries are already in hand (`sortedEntries`, the listing this
+                  bar sits on), so the question is a lookup and costs no request. The
+                  SELECTED-ROW case — a folder row that itself contains an index.html
+                  — is deliberately NOT here: a row's children are not in hand, so it
+                  needs a per-selection `/api/fs/list`, and nothing already on the
+                  wire answers it (the stat's `templates` is the registry's mode list,
+                  and lib/dir-mode resolves the FOLDER's own companion entries;
+                  neither says anything about a child's children). D280 deleted the
+                  resolution that used to do it. If it comes back it hangs off the
+                  SETTLED lead (useSettledLead) and off nothing else, or an arrow-key
+                  walk down a listing of folders is one request per row.
+
+                  `navigate(path, { isDir: false })` is the row's own double-click
+                  path (onRowDoubleClick), reused rather than reinvented: no new view
+                  and no `_mode`, just the file. */}
+              {appEntryPath && (
+                <button
+                  type="button"
+                  className="bar-ctl"
+                  title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
+                  onClick={() => navigate(appEntryPath, { isDir: false })}
+                >
+                  Open app
+                </button>
+              )}
               {pane.on && !sideState.open && (
                 <SideToggleButton
                   what={modeTitle(paneSide)}
