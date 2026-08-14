@@ -1620,8 +1620,12 @@ def test_concurrent_probes_resolve_once_and_never_cache_the_loser(monkeypatch):
             seen.append(exe)
         time.sleep(0.2)  # wide enough that every thread is inside at once
         if first:
-            return {"prefix": sys.prefix, "executable": exe}, ""
-        return None, "a second probe of the same candidate deliberately fails"
+            return {"prefix": sys.prefix, "executable": exe}, "", True
+        # Conclusive on purpose: this test is about a losing thread's cached None
+        # landing on the winner's path, so the failure must be one that IS eligible
+        # for caching. An inconclusive one would never be cached and would prove
+        # nothing here.
+        return None, "a second probe of the same candidate deliberately fails", True
 
     monkeypatch.setattr(engine, "_probe", probe_once)
     # No rung-2 rescue: a failed direct probe is a cached None, which is the
