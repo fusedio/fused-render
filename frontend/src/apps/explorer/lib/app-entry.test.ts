@@ -38,10 +38,11 @@ test("a folder with no top-level page has no entry", () => {
 
 test("hidden pages, directories and .htm do not count", () => {
   // `.draft.html` is a work in progress, not the folder's face; a DIRECTORY
-  // named `build.html` is an exported site tree (the shape D263 names), and
-  // handing /render a directory renders nothing; `.htm` is excluded because the
-  // Python twin excludes it and these two must agree to the letter — the
-  // divergence with selection.ts's isPageRow is documented in both modules.
+  // named `build.html` is an exported site tree, and handing /render a directory
+  // renders nothing; `.htm` is excluded because the Python twin excludes it and
+  // these two must agree to the letter. (`selection.ts` used to hold a
+  // deliberately more permissive page test that accepted `.htm`; it went with the
+  // folder auto-select it served, D275, so this rule now stands alone.)
   expect(entryHtmlName(entries(".draft.html", "real.html"))).toBe("real.html");
   expect(entryHtmlName(entries(["build.html", "dir"], "real.html"))).toBe("real.html");
   expect(entryHtmlName(entries(".hidden.html"))).toBe(null);
