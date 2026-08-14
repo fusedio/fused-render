@@ -285,6 +285,29 @@ def test_a_cancel_with_segments_still_to_come_is_honoured_and_writes_nothing(
     assert not os.path.exists(request["outText"])
 
 
+def test_a_recording_with_NO_speech_writes_an_empty_transcript(worker, base, tmp_path):
+    """Found auditing the cancel guards for a second route around them, and
+    kept rather than closed — the behaviour is right, it was just untested.
+
+    A recording the VAD finds no speech in yields zero segments, so the loop
+    that carries the per-segment cancel check never runs. A ✕ pressed over such
+    a run is therefore never honoured, and that is CONSISTENT with the rule the
+    last-segment guard states: a cancel is only worth honouring while there is
+    work left to stop, and here the decode is already over. The empty
+    transcript is the honest answer to "what did this recording say", and an
+    error would send the user hunting for a fault that is not there.
+    """
+    worker._loaded["model"] = FakeModel([], duration=42.0)
+    request = _request(tmp_path)
+    base.cancel_on_tick = 1
+
+    result = worker.generate(request)
+
+    assert result["segments"] == 0 and result["duration"] == 42.0
+    assert json.load(open(request["out"], encoding="utf-8"))["text"] == ""
+    assert open(request["outText"], encoding="utf-8").read() == "\n"
+
+
 def test_the_clock_rolls_over_to_HOURS(worker):
     """`90:00` for ninety minutes is the same ambiguity as `720 / 5400`, and
     worse for sitting one line under `jobAmount` rendering it as `1:30:00`."""

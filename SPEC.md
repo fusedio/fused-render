@@ -6265,7 +6265,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   Holding a supervisor-side lock instead is what makes the wait describable —
   the row says it is queued, keeps saying so, and its ✕ is honoured, none of
   which is reachable from inside a blocked `urlopen` that has sent the worker
-  nothing to cancel. **The turn is taken before the MODEL is resolved**, and
+  nothing to cancel. That wait carries the row's TITLE on every tick and ticks
+  at the decode's own cadence, because a queued row is otherwise the first
+  thing §36's cap evicts (it sorts running rows by `updated_at`) and an evicted
+  row can only be reopened by a report carrying a title — without one the ✕
+  silently stops working and the page is told a transcription that is about to
+  succeed has failed. **The turn is taken before the MODEL is resolved**, and
   that ordering is load-bearing: resolving first put the one destructive step —
   `_start_resident`, which EVICTS the resident model when the requested one
   differs — outside the very lock that serializes this path, so a page asking
@@ -6284,7 +6289,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   D3/D36's `X-Fused` guard plus the worker's own token. The route normalizes the
   path and refuses one that is missing or is not a regular file with a 400
   before a job row opens — a typo deserves an error the caller can show, not a
-  progress bar that dies. `fused.ai.transcribe({path, …})` resolves with the
+  progress bar that dies. A RELATIVE path resolves against the calling page's
+  directory via `base`, the same page-relative rule `/api/fs/raw` follows
+  (RH-1): `fused.readFile("clip.m4a")` already means "beside this page", so
+  resolving here against the server's cwd would 400 on a path the author never
+  wrote — or, if a same-named file happened to sit under whatever directory the
+  app was launched from, silently transcribe the wrong recording. Relative with
+  no `base` is refused rather than guessed. `fused.ai.transcribe({path, …})`
+  resolves with the
   text, the segments and a ready-made `/api/fs/raw` url, and falls back to the
   file when the row has aged out from under a backgrounded tab.
 - **AI-10b** **No audio has ever been transcribed by this code, and the two
