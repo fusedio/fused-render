@@ -46,8 +46,14 @@ import { navigate, urlForFsPath } from "./router";
 export function sortApps(apps: AppInfo[]): AppInfo[] {
   const byName = (a: AppInfo, b: AppInfo) =>
     (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
-  const recency = (a: AppInfo) => a.opened_at ?? a.updated_at ?? 0;
-  return apps.slice().sort((a, b) => recency(b) - recency(a) || byName(a, b));
+  return apps.slice().sort((a, b) => appRecency(b) - appRecency(a) || byName(a, b));
+}
+
+// The timestamp the sort above ranks by — exported so the card's "…ago" label
+// (AppPreviewCard) shows the SAME time the ordering used; a card sorted first
+// for being opened just now must not say "1d ago" off its modified time.
+export function appRecency(app: AppInfo): number {
+  return app.opened_at ?? app.updated_at ?? 0;
 }
 
 // Record the open in the app recents store — what `opened_at` (and so the
