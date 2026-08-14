@@ -231,6 +231,20 @@ def test_brew_exit_zero_with_stale_tap_is_an_error(monkeypatch):
     assert status["manual_command"] == "brew upgrade --cask fused-render"
 
 
+def test_failed_check_keeps_installed_when_disk_is_current(monkeypatch):
+    """A network blip after a completed install must not resurface the install
+    button — the error path re-derives state from the bundle on disk."""
+    manager = _manager(monkeypatch, available="9.9.9")
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
+    assert manager.check()["state"] == "installed"
+
+    def boom(url, **kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(common, "fetch_manifest", boom)
+    assert manager.check()["state"] == "installed"
+
+
 def test_check_reports_installed_once_disk_has_the_update(monkeypatch):
     """After a swap (ours or a manual brew upgrade) the running __version__ is
     still old; a later auto-check must land on "installed", not flip back to

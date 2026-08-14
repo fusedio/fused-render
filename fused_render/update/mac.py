@@ -177,11 +177,20 @@ class UpdateManager:
             newer = common.is_newer(manifest["version"], __version__)
         except Exception as error:  # noqa: BLE001 - network/manifest failures are routine
             logger.info("update check failed: %s", error)
+            # Keep a previously-found update visible over a transient failure —
+            # but re-derive WHICH state from the bundle on disk, exactly like
+            # the success path below: a network blip after a completed install
+            # must not resurface the install button.
+            disk = self._disk_version()
             with self._lock:
                 if self._state == "checking":
-                    # Keep a previously-found update visible over a later
-                    # transient failure.
-                    self._state = "available" if self._latest else "idle"
+                    if self._latest and disk is not None and not common.is_newer(
+                            self._latest["version"], disk):
+                        self._state = "installed"
+                    elif self._latest:
+                        self._state = "available"
+                    else:
+                        self._state = "idle"
             return self.status()
         # The bundle on disk, not the running __version__, decides "already
         # installed": after a successful swap (ours, brew's, or a manual one
