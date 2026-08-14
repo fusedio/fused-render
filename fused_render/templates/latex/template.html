@@ -137,13 +137,10 @@
   body.mode-view #pdfPane { flex: 1 1 100%; }
   body.mode-view #pdfscroll { padding: 28px; }
 
-  /* File-preview open (no Home/library): collapse the Files + Outline sidebar so
-     the workspace is just the editor + PDF panes. The sidebar only earns its
-     column in the Home/project workflow (body.has-home), where multi-file
-     browsing and the outline are the point. */
-  body:not(.has-home) #side { display: none; }
-  /* ...and match it in the boot skeleton so a preview open doesn't flash a
-     sidebar column before the real workspace mounts. */
+  /* Files + Outline sidebar is collapsible via the topbar toggle; a file preview
+     opens with it collapsed so the workspace is just the editor + PDF panes, and
+     the boot skeleton drops its column too so nothing flashes first. */
+  body.side-collapsed #side { display: none; }
   body.file-preview .boot-side { display: none; }
 
   /* tectonic-missing install prompt (shown in place of the PDF) */
@@ -212,6 +209,10 @@
   .brand .home-btn:hover { background: var(--hair-2); color: var(--blue); }
   .brand .home-btn svg { width: 16px; height: 16px; display: block; }
   body.has-home .brand .home-btn { display: inline-flex; }
+  .brand .side-btn { border: none; background: none; padding: 4px; border-radius: 5px; color: var(--ink-3); cursor: pointer; display: inline-flex; }
+  .brand .side-btn:hover { background: var(--hair-2); color: var(--blue); }
+  .brand .side-btn svg { width: 16px; height: 16px; display: block; }
+  body:not(.side-collapsed) .brand .side-btn { color: var(--blue); }
 
   /* ---- file browser ---- */
   .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
@@ -313,6 +314,7 @@
   <div class="brand">
     <span class="mark">TeX</span>
     <button class="home-btn" id="homeBtn" title="All documents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10h14V10"/></svg></button>
+    <button class="side-btn" id="sideToggle" title="Files & outline" aria-label="Toggle files and outline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></button>
   </div>
   <span class="docname" id="docName"></span>
   <div class="spacer"></div>
@@ -722,6 +724,13 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     // No default: the drawer's absent state is "follow the compile result", not
     // one of the two words, so absent must not be equated with either.
     setParam("drawer", collapsed ? "collapsed" : "open");
+  }
+  function setSideCollapsed(collapsed) {
+    document.body.classList.toggle("side-collapsed", collapsed);
+    setParam("side", collapsed ? "collapsed" : "open",
+             document.body.classList.contains("file-preview") ? "collapsed" : "open");
+    if (S.view) setTimeout(() => S.view.requestMeasure(), 50);   // the panes just changed width
+    if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);
   }
   async function compile(force) {
     if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
@@ -1300,6 +1309,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   $("zoomOut").addEventListener("click", () => setZoom(S.scale - 0.15));
   $("addFileBtn").addEventListener("click", openFileBrowser);
   $("drawerHead").addEventListener("click", () => setDrawerCollapsed(!$("drawer").classList.contains("collapsed")));
+  $("sideToggle").addEventListener("click", () => setSideCollapsed(!document.body.classList.contains("side-collapsed")));
 
   // download / export menu
   $("menuBtn").addEventListener("click", (e) => { e.stopPropagation(); $("menu").classList.toggle("hidden"); });
@@ -1429,6 +1439,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     const qZoom = parseInt(fused.params.get("zoom") || "100", 10);
     const qSplit = parseFloat(fused.params.get("split") || "50");
     const qDrawer = fused.params.get("drawer");
+    const qSide = fused.params.get("side");
+    setSideCollapsed(qSide ? qSide === "collapsed" : !opts.home);   // a preview opens collapsed; Home/project expanded
     setMode(qMode);
     S.scale = Math.max(0.4, Math.min(3, qZoom / 100));
     $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";
