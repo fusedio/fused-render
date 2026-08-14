@@ -3,9 +3,14 @@ the workspace's app folders (entry = the single direct-child .html), and
 POST /api/apps/new scaffolds a folder from the app starter kit and optionally
 starts a detached Claude session on its index.html.
 
-Apps live two levels under the workspace: <workspace>/<tag>/<name>/. A tag is
-any non-hidden top-level folder — there is no registry, so these tests cover
+Apps live one to three levels under the workspace (app_listing.workspace_apps),
+and a tag is the first path segment — there is no registry, so these tests cover
 arbitrary tag names alongside "local" (where POST /api/apps/new always lands).
+Every workspace staged here puts its apps at depth 2, where the rule is the
+original one: any non-hidden folder, page or no page. The tag folder itself does
+not list — a page-less folder at depth 1 is a shelf of apps, not an app — so
+these assertions are unchanged by the walk becoming recursive. The depth rules
+are exercised directly in tests/test_app_listing.py.
 
 The spawn is stubbed at the module seam (_start_app_session) — no test here
 launches a real claude.
@@ -64,9 +69,10 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     (workspace / "loose.html").write_text("<html></html>")     # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
-    assert set(apps) == {"one", "none", "many", "indexed"}
+    # `none` is absent: a page is what makes a folder an app, so a folder with no
+    # html is a shelf, not an entry-less card (app_listing.workspace_apps).
+    assert set(apps) == {"one", "many", "indexed"}
     assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
-    assert apps["none"]["entry_html"] is None
     assert apps["many"]["entry_html"] == str(workspace / "local" / "many" / "a.html")
     assert apps["indexed"]["entry_html"] == str(
         workspace / "local" / "indexed" / "index.html"
@@ -127,11 +133,15 @@ def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
 
 
 def test_entry_match_is_non_recursive(client, workspace):
+    """`app_entry` looks at DIRECT children only, so a page one level down does
+    not become the parent's entry. The parent has no page and so is not a card at
+    all; the nested page surfaces as its own app instead (the depth-3 rule)."""
     d = _app_dir(workspace, "app", htmls=())
     (d / "sub").mkdir()
     (d / "sub" / "index.html").write_text("<html></html>")
     apps = client.get("/api/apps").json()["apps"]
-    assert apps[0]["entry_html"] is None
+    assert [a["name"] for a in apps] == ["sub"]
+    assert apps[0]["entry_html"] == str(d / "sub" / "index.html")
 
 
 def test_sorted_case_insensitively(client, workspace):
@@ -224,8 +234,12 @@ def test_entry_is_reported_alongside_entry_html(client, workspace):
     """Both keys, same file — the shell reads `entry` and needs it to be there.
 
     `entry` is "the file a card opens"; `entry_html` is the narrower "this entry
-    is a renderable page". They coincide for a workspace app, and an entry-less
-    folder reports null under both rather than omitting either key.
+    is a renderable page". They coincide for a workspace app.
+
+    A page-less folder is no longer listed at all, so the walk has no null-entry
+    card to assert here; the null-under-both-keys shape is `app_dict`'s and is
+    still reachable through the linked-app registry, which is where it is now
+    covered (tests/test_linked_apps.py).
     """
     _app_dir(workspace, "withentry")
     (workspace / "local" / "bare").mkdir()
@@ -234,7 +248,7 @@ def test_entry_is_reported_alongside_entry_html(client, workspace):
 
     assert apps["withentry"]["entry"] == apps["withentry"]["entry_html"]
     assert apps["withentry"]["entry"].endswith("index.html")
-    assert apps["bare"]["entry"] is None and apps["bare"]["entry_html"] is None
+    assert "bare" not in apps
 
 
 # ------------------------------------------------------------------- creation
@@ -364,8 +378,16 @@ def test_updated_at_tracks_direct_children_not_just_the_dir(client, workspace):
     assert apps[0]["updated_at"] == pytest.approx(future, abs=0.01)
 
 
-def test_updated_at_is_a_float_and_present_for_entryless_apps(client, workspace):
-    _app_dir(workspace, "empty", htmls=())
+def test_updated_at_is_a_float(client, workspace):
+    """A float in the JSON, not a string or an int — the shell sorts on it.
+
+    This used to stage a page-less folder, to pin that `updated_at` is filled in
+    even with no entry. That folder is no longer an app (a page is what makes one,
+    at any depth), so the entry-less half of the claim moved to where an
+    entry-less app still exists: the linked-app registry, in
+    tests/test_linked_apps.py::test_a_linked_folder_resolves_its_entry_on_the_shared_rule.
+    """
+    _app_dir(workspace, "stamped")
     apps = client.get("/api/apps").json()["apps"]
     assert isinstance(apps[0]["updated_at"], float)
 

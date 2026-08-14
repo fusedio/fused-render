@@ -1,15 +1,20 @@
 """The Home view's apps backend: list the app folders in the Fused workspace
 and scaffold new ones.
 
-Apps live two levels under the workspace (``fused_dir()``, ~/Documents/Fused):
-``<workspace>/<tag>/<name>/``. A "tag" is simply any non-hidden top-level
-directory in the workspace — there is no registry or whitelist, so a new tag
-is just a new folder, discovered on the next listing. An "app" is any
-non-hidden directory directly inside a tag dir. Its entry is its
+Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
+~/Documents/Fused), found by a bounded recursive walk whose per-level rules are
+written down in ``app_listing.workspace_apps``: A PAGE IS WHAT MAKES A FOLDER AN
+APP — any ``*.html`` at depth 1 or 2, an ``index.html`` at depth 3, nothing
+deeper. A page-less folder is a SHELF: it is never a card, but it IS walked, which
+is how the apps inside it are found. A "tag" is the FIRST path segment — there is
+no registry or whitelist, so a new tag is just a new folder, discovered on the
+next listing, and a third-level app files under the same tag as its second-level
+neighbours. An app's entry is its
 ``index.html``, else the first non-hidden direct-child ``.html`` in name order
 — the shared entry rule (D269), so the card, the preview pane and the templates
-all resolve one folder to one page. A folder with no top-level ``.html`` still
-lists, but opens as a directory instead of a view (``entry_html: null``).
+all resolve one folder to one page. ``entry_html: null`` still occurs in this
+payload, but only for a LINKED app now (linked_apps.py): the registry lists a
+registered folder whether or not it has a page.
 
 Alongside the workspace walk, the listing merges in *linked apps*: folders
 anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
@@ -86,7 +91,7 @@ def api_apps():
     registry = linked_apps.linked_apps()
     taken = {a["name"] for a in registry}
     workspace = [
-        a for a in app_listing.two_level_apps(fused_dir())
+        a for a in app_listing.workspace_apps(fused_dir())
         if not (a["tag"] == linked_apps.LINKED_TAG and a["name"] in taken)
     ]
     apps = workspace + registry
