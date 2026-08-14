@@ -658,6 +658,10 @@ BLANKS.push(cv);
 # a mutable binding) because rasterising is exactly the part node cannot do —
 # what is under test is which annotations get a crop and what the others are told.
 _CAPTURE_FNS = _CAPS + _BLANK_FNS + ["function shotPaneNote(", "function shotTrustLine(",
+                        # The image caveat rides every crop cut out of a capture
+                        # that could not inline a picture, so the orchestration
+                        # needs it for the same reason it needs shotPaneNote.
+                        "function shotImageNote(",
                         "function shotExt(", "function shotCropRect(",
                         "function shotFit(", "function annLabelFor(",
                         "const APP_STATE_UNREADABLE",
@@ -1362,8 +1366,11 @@ _WIRE_ALSO = ["let targetNoun", "let paneNoun", "function formatAnnotations(", "
               "function stripPaneBlock(",
               "function stripAnnBlock(", "function stripAppStateBlock(",
               "const APP_STATE_TAG", "function appStateBlock(",
-              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
+              "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_IMG",
+              "const MARKERS", "const MARKER_JOIN",
               "function isMarkerOnly(", "function paneShotBlock(",
+              # stripBlocks reads the block back to choose WHICH picture marker
+              "function paneShotIn(",
               "function stripBlocks(", "function composeOutgoing("]
 
 
@@ -1392,8 +1399,9 @@ def test_a_screenshot_only_send_collapses_to_a_marker(html):
     words is a real send — most of the point of a screenshot button — so the bubble
     has to name what went out instead of rendering empty."""
     out = _wire(html, """
-const failed = {view: null, viewNote: "no pane screenshot: it could not be saved"};
-const wire = composeOutgoing("", [], null, failed);
+const failed = {kind: "pane", view: null,
+                viewNote: "no pane screenshot: it could not be saved"};
+const wire = composeOutgoing("", [], null, [failed]);
 console.log(JSON.stringify({stripped: stripBlocks(wire),
                             marker: isMarkerOnly(stripBlocks(wire))}));
 """)
@@ -1494,7 +1502,8 @@ _WIRE_FNS = ["let targetNoun", "let paneNoun", "function formatAnnotations(",
              "function stripAppStateBlock(", "function stripBlocks(",
              "const APP_STATE_TAG", "function appStateBlock(",
              "const PANE_SHOT_TAG", "function paneShotBlock(",
-             "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_JOIN",
+             "const MARKER_ANN", "const MARKER_VIEW", "const MARKER_IMG",
+             "const MARKERS", "const MARKER_JOIN",
              "function isMarkerOnly(",
              "function stripPaneBlock(", "function paneShotIn(",
              "function composeOutgoing("]
@@ -1597,15 +1606,18 @@ def test_every_marker_a_strip_can_produce_is_known_to_be_non_identifying(html):
     test instead of silently reintroducing the bug."""
     out = _wire(html, """
 const a = {id: "x", content: "here", anchorId: "hdr"};
-const view = {view: "/tmp/fr/shots/S-view.png"};
-// Every combination that can leave the user's own words empty. All four are
-// reachable from the composer: notes alone, a screenshot alone, and either of
-// those two together, with or without an app-state block in front.
+const view = {kind: "pane", view: "/tmp/fr/shots/S-view.png"};
+const pasted = {kind: "image", view: "/tmp/fr/shots/S.png", name: "bug.png"};
+// Every combination that can leave the user's own words empty. All of them are
+// reachable from the composer: notes alone, a picture alone, a PASTED picture
+// alone, and those together, with or without an app-state block in front.
 const produced = [
   stripBlocks(composeOutgoing("", [a], null)),
-  stripBlocks(composeOutgoing("", [], null, view)),
-  stripBlocks(composeOutgoing("", [a], null, view)),
-  stripBlocks(composeOutgoing("", [a], {entry: "/p"}, view)),
+  stripBlocks(composeOutgoing("", [], null, [view])),
+  stripBlocks(composeOutgoing("", [a], null, [view])),
+  stripBlocks(composeOutgoing("", [a], {entry: "/p"}, [view])),
+  stripBlocks(composeOutgoing("", [], null, [pasted])),
+  stripBlocks(composeOutgoing("", [], null, [view, pasted])),
 ];
 console.log(JSON.stringify({
   produced: produced,
@@ -1615,9 +1627,15 @@ console.log(JSON.stringify({
 """)
     # every marker-only send really does collapse to a non-identifying text...
     assert all(out["produced"]), out["produced"]
-    assert len(set(out["produced"])) == 3, out["produced"]
+    assert len(set(out["produced"])) == 4, out["produced"]
+    # a send of nothing but pasted images says IMAGES, not "pane screenshot": the
+    # bubble is the only record of a wordless turn, and naming a photo the user
+    # brought in as a picture of this app is the one thing it must not do
+    assert out["produced"][4] == "🖼 images"
+    # ...while a mixed send is still led by the pane, which is the wider claim
+    assert out["produced"][5] == "🖼 pane screenshot"
     # ...and the predicate recognises every one of them
-    assert out["verdicts"] == [True, True, True, True], out["produced"]
+    assert out["verdicts"] == [True] * 6, out["produced"]
     # a real message — including one that merely mentions a marker — is identifying
     assert out["real"] == [False, False, False, False]
 
@@ -1641,14 +1659,15 @@ def test_a_pane_shot_path_never_reaches_the_transcript_the_user_reads(html, agen
     come off first."""
     out = _wire(html, """
 const a = {id: "x", content: "here", anchorId: "hdr", shot: "/tmp/fr/shots/A.png"};
-const view = {view: "/tmp/fr/shots/S-view.png", viewNote: "part is blank"};
+const view = {kind: "pane", view: "/tmp/fr/shots/S-view.png",
+              viewNote: "part is blank"};
 const st = {entry: "/p/index.html"};
 const cases = {
-  all: composeOutgoing("fix this", [a], st, view),
-  viewAndState: composeOutgoing("fix this", [], st, view),
-  viewOnly: composeOutgoing("fix this", [], null, view),
-  viewNoWords: composeOutgoing("", [], null, view),
-  annAndViewNoWords: composeOutgoing("", [a], null, view),
+  all: composeOutgoing("fix this", [a], st, [view]),
+  viewAndState: composeOutgoing("fix this", [], st, [view]),
+  viewOnly: composeOutgoing("fix this", [], null, [view]),
+  viewNoWords: composeOutgoing("", [], null, [view]),
+  annAndViewNoWords: composeOutgoing("", [a], null, [view]),
 };
 const stripped = {};
 for (const k of Object.keys(cases)) stripped[k] = stripBlocks(cases[k]);
@@ -2076,17 +2095,19 @@ def test_the_shot_belongs_to_exactly_one_message(html):
     the same moment, which is what a user reads as "it went with that one"."""
     send = _between(html, "async function sendMessage(message)", "\n}\n")
     head = send[:send.index("const state = appStateSnapshot();")]
-    assert "const shot = paneShot;" in head
-    assert "paneShot = null;" in head
+    assert "const pics = shotAttached;" in head
+    assert "shotAttached = [];" in head
     assert "renderAnn();" in head
-    before = head.split("const shot = paneShot;")[0]
+    before = head.split("const pics = shotAttached;")[0]
     code = "\n".join(ln.split("//")[0] for ln in before.split("\n"))
     assert "await" not in code, \
-        "nothing may await before the shot is taken off the composer"
+        "nothing may await before the pictures are taken off the composer"
     # a picture alone is a sendable message: there is no rule that a screenshot
     # needs words to go with it
-    assert "if (!message && !pending.length && !shot) { sending = false; return; }" in send
-    assert html.count("if (!message && !annPending().length && !paneShot) return;") == 2, \
+    assert "if (!message && !pending.length && !pics.length) { sending = false; return; }" \
+        in send
+    assert html.count(
+        "if (!message && !annPending().length && !shotAttached.length) return;") == 2, \
         "and both composers' submit guards agree"
 
 
@@ -2094,9 +2115,13 @@ def test_the_thumbnail_never_reaches_the_wire(html):
     """`thumb` is a blob URL belonging to THIS page — a dead link everywhere else,
     and unreadable to the agent. Only the path and the note go."""
     send = _between(html, "async function sendMessage(message)", "\n}\n")
-    compose = _between(send, "const outgoing = composeOutgoing(", ");")
-    assert "shot.view" in compose and "shot.viewNote" in compose
+    compose = _between(send, "const outgoing = composeOutgoing(", "\n  if (pending")
+    assert "s.view" in compose and "s.viewNote" in compose
     assert "thumb" not in compose, compose
+    # and `kind` DOES go, because the array made it necessary: two paths with no
+    # way to tell them apart would have the agent read a photo the user pasted as
+    # a picture of the pane it is being asked about
+    assert "s.kind" in compose, compose
 
 
 def test_a_failed_send_hands_the_picture_back_instead_of_dropping_it(html):
@@ -2107,8 +2132,8 @@ def test_a_failed_send_hands_the_picture_back_instead_of_dropping_it(html):
     thumbnail the receipt was showing, and must NOT be revoked on the way."""
     rollback = _between(html, "    if (!started) {", "\n    }")
     assert "annRevokeThumbs(shots);" in rollback, "the crops still are released"
-    assert "if (shot) { paneShot = shot; renderAnn(); }" in rollback
-    assert "shotRevoke(shot)" not in rollback, rollback
+    assert "shotAttached = pics.concat(shotAttached);" in rollback
+    assert "shotRevoke(pic" not in rollback, rollback
 
 
 def test_a_second_click_replaces_the_picture_and_releases_the_first(html):
@@ -2117,9 +2142,12 @@ def test_a_second_click_replaces_the_picture_and_releases_the_first(html):
     handle to a full-pane PNG, so replacing it without revoking pins that Blob for
     the life of the page."""
     click = _between(html, "async function shotAttachPane()", "\n}\n")
-    assert "shotRevoke(paneShot);" in click
-    assert click.index("shotRevoke(paneShot);") < click.index("paneShot = shot;"), \
+    assert "shotRevoke(shotAttached[seat]);" in click
+    assert click.index("shotRevoke(shotAttached[seat]);") \
+        < click.index("shotAttached[seat] = shot;"), \
         "release the old picture before the binding to it is overwritten"
+    # ONE pane seat, found by kind — a pasted picture is the other kind and stacks
+    assert 'const seat = shotAttached.findIndex((s) => s.kind === "pane");' in click
     # and a double-click cannot start a second capture at all
     assert "if (shotBusy || !annCapable()) return;" in click
     assert "shotBusy = true;" in click
@@ -2145,12 +2173,19 @@ def test_a_failed_capture_still_becomes_a_chip_the_user_can_read(html):
     an answer, and the agent is owed the news that a picture was meant to be here —
     so a failure is a chip that says so, removable with the same ✕."""
     click = _between(html, "async function shotAttachPane()", "\n}\n")
-    assert "paneShot = shot;" in click
+    assert "shotAttached.push(shot);" in click
     assert "renderAnn();" in click
-    chip = _between(html, "function shotChip()", "\n}\n")
-    assert 'paneShot.view ? paneNoun + " screenshot" : "screenshot failed"' in chip
+    chip = _between(html, "function shotChip(shot)", "\n}\n")
+    assert 'shot.view ? shotNoun(shot)' in chip
+    assert '"screenshot failed"' in chip and '"image failed"' in chip
     # the title carries the reason when there is no path to carry
-    assert "paneShot.viewNote || paneShot.view" in chip
+    assert "shot.viewNote || shot.view" in chip
+    # and a pasted picture that could not be saved is the SAME shape: a chip with
+    # its own reason, never a file that vanished without an answer
+    attach = _between(html, "async function shotAttachFile(file)", "\n}\n")
+    assert 'shotAttached.push({ kind: "image", view: null, name, viewNote: why });' \
+        in attach
+    assert "renderAnn()" in attach
 
 
 def test_the_chip_shows_the_picture_and_takes_it_off_again(html):
@@ -2158,21 +2193,22 @@ def test_the_chip_shows_the_picture_and_takes_it_off_again(html):
     check, and one they cannot remove is one they cannot decline. Both live in the
     chip, which is the annotation chip's own pill — same row, same ✕ — because both
     are things this message is about to carry."""
-    chip = _between(html, "function shotChip()", "\n}\n")
+    chip = _between(html, "function shotChip(shot)", "\n}\n")
     assert 'chip.className = "annchip shotchip"' in chip, \
         "the same pill, plus the entrance animation's hook"
-    assert 'shotThumbBtn("shotthumb", paneShot' in chip
-    assert 'x.setAttribute("aria-label", "Remove the screenshot")' in chip
-    assert "x.onclick = shotDrop" in chip
-    # dropping releases the blob and does NOT write the annotations param
-    drop = _between(html, "function shotDrop()", "\n}\n")
-    assert "shotRevoke(paneShot);" in drop
-    assert "paneShot = null;" in drop
+    assert 'shotThumbBtn("shotthumb", shot, shotAlt(shot))' in chip
+    assert 'x.setAttribute("aria-label", "Remove " + shotNoun(shot))' in chip
+    assert "x.onclick = () => shotDrop(shot)" in chip
+    # dropping releases THAT blob, leaves the other pictures alone, and does NOT
+    # write the annotations param
+    drop = _between(html, "function shotDrop(shot)", "\n}\n")
+    assert "shotRevoke(shot);" in drop
+    assert "shotAttached = shotAttached.filter((s) => s !== shot);" in drop
     assert "renderAnn();" in drop
     assert "annSave" not in drop, "no annotation was touched"
-    # and it is drawn into BOTH composers' chip rows, from renderAnn's one loop
+    # and they are drawn into BOTH composers' chip rows, from renderAnn's one loop
     render = _between(html, "function renderAnn()", "\n}\n")
-    assert "if (paneShot) box.appendChild(shotChip());" in render
+    assert "for (const shot of shotAttached) box.appendChild(shotChip(shot));" in render
 
 
 def test_the_picture_is_not_persisted_anywhere(html):
@@ -2180,10 +2216,11 @@ def test_the_picture_is_not_persisted_anywhere(html):
     file and a blob URL — a restored page would hold dead handles to both, and a
     bookmark that re-attaches yesterday's picture of a screen that has since
     changed is worse than one that attaches nothing."""
-    for writer in ("function shotAttachPane", "function shotDrop", "function shotChip"):
+    for writer in ("function shotAttachPane", "function shotDrop", "function shotChip",
+                   "async function shotAttachFile"):
         body = _between(html, writer, "\n}\n")
         assert "fused.params" not in body, writer
-    assert "let paneShot = null;" in html
+    assert "let shotAttached = [];" in html
 
 
 def test_the_button_is_absent_wherever_there_is_nothing_to_photograph(html):
@@ -2314,9 +2351,10 @@ def test_discard_is_offered_only_while_the_picture_is_still_the_users(html):
     very object `paneShot` holds. A sent picture is already in the agent's hands,
     and a control offering to take it back would be a lie."""
     open_ = _between(html, "function shotViewOpen(shot)", "\n}\n")
-    assert "shotViewDrop.hidden = shot !== paneShot;" in open_
+    assert "shotViewDrop.hidden = shotAttached.indexOf(shot) === -1;" in open_
     # and discarding from in there closes the viewer, since what it showed is gone
-    assert "shotViewDrop.onclick = () => { shotDrop(); shotViewClose(); };" in html
+    assert "shotViewDrop.onclick = () => { shotDrop(shotViewing); shotViewClose(); };" \
+        in html
 
 
 def test_the_viewer_closes_every_way_a_modal_should(html):
@@ -2356,12 +2394,15 @@ def test_a_sent_turn_keeps_its_picture(html):
     the image itself, at a size worth scrolling back to, and it opens the same
     viewer."""
     receipt = _between(html, "function shotReceipt(sum, shot)", "\n}\n")
-    assert 'txt.textContent = shot.view ? "screenshot attached" : "no pane screenshot"' \
-        in receipt
+    assert '"screenshot attached"' in receipt and '"no pane screenshot"' in receipt
+    # a pasted picture names itself instead — the receipt has to describe what
+    # actually went, and "screenshot attached" for a file the user brought in is a
+    # receipt for the wrong thing
+    assert '"image attached"' in receipt and "shot.name" in receipt
     assert 'shotThumbBtn("annsum-pane", shot' in receipt
     # the live send goes through the one builder rather than inlining a second row
     send = _between(html, "async function sendMessage(message)", "\n}\n")
-    assert "if (shot) shotReceipt(sum, shot);" in send
+    assert "for (const pic of pics) shotReceipt(sum, pic);" in send
 
 
 def test_a_restored_turn_renders_its_picture_from_the_path_in_the_wire(html):
@@ -2373,6 +2414,8 @@ def test_a_restored_turn_renders_its_picture_from_the_path_in_the_wire(html):
     assert "paneShotIn(text)" in restore
     assert "fused.rawUrl(shot.view)" in restore
     assert "shotReceipt(sum, " in restore, "the same row as a live send, not a copy"
+    assert "for (const shot of shots)" in restore, \
+        "every picture the turn carried, not just the first"
     # wired into the restore loop, on the turn addUser just appended
     load = _between(html, "      if (t.role === \"user\") {", "      } else addAssistantTurn")
     assert "addUser(stripBlocks(t.text));" in load
@@ -2387,22 +2430,31 @@ def test_the_wire_reader_is_the_exact_counterpart_of_the_writer(html):
     `paneShotBlock` puts in is what `paneShotIn` gets out, and `stripBlocks` still
     sees none of it."""
     out = _wire(html, """
-const view = {view: "/tmp/fr/shots/S-view.png", viewNote: "part is blank"};
-const wire = composeOutgoing("fix this", [], {entry: "/p"}, view);
-const back = paneShotIn(wire);
-console.log(JSON.stringify({back: back, stripped: stripBlocks(wire),
+const view = {kind: "pane", view: "/tmp/fr/shots/S-view.png",
+              viewNote: "part is blank"};
+const pasted = {kind: "image", view: "/tmp/fr/shots/S.png", name: "bug.png"};
+const wire = composeOutgoing("fix this", [], {entry: "/p"}, [view, pasted]);
+console.log(JSON.stringify({back: paneShotIn(wire), stripped: stripBlocks(wire),
                             none: paneShotIn("just words"),
                             broken: paneShotIn("<pane-shot>\\nnot json\\n</pane-shot>"),
-                            array: paneShotIn("<pane-shot>\\n[1,2]\\n</pane-shot>")}));
+                            legacy: paneShotIn("<pane-shot>\\ncap\\n"
+                              + JSON.stringify({view: "/tmp/old.png"}) + "\\n</pane-shot>"),
+                            junk: paneShotIn("<pane-shot>\\n[1,2]\\n</pane-shot>")}));
 """)
-    assert out["back"] == {"view": "/tmp/fr/shots/S-view.png",
-                           "viewNote": "part is blank"}
+    assert out["back"] == [{"kind": "pane", "view": "/tmp/fr/shots/S-view.png",
+                            "viewNote": "part is blank"},
+                           {"kind": "image", "view": "/tmp/fr/shots/S.png",
+                            "name": "bug.png"}]
     assert out["stripped"] == "fix this", "the path still never reaches the reader"
-    assert out["none"] is None
+    assert out["none"] == []
+    # THE PERMANENT OBLIGATION: a session written before the list existed carries a
+    # bare object, and it comes back as a one-element list so no consumer has to
+    # branch on the age of the transcript it is drawing
+    assert out["legacy"] == [{"view": "/tmp/old.png"}]
     # forgiving, both ways: a transcript that renders without one picture is a
     # small loss, one that throws mid-restore takes the conversation with it
-    assert out["broken"] is None
-    assert out["array"] is None
+    assert out["broken"] == []
+    assert out["junk"] == [], "entries that are not objects are dropped, not drawn"
 
 
 def test_the_button_sits_beside_send_and_names_its_verb(html):
@@ -2514,3 +2566,653 @@ console.log(JSON.stringify(cases));
     assert "const title = sessionTitle(s);" in html
     assert "snapNames.set(s.id, title);" in html
     assert "snapNames.set(s.id, s.preview)" not in html, "the raw preview is gone"
+
+
+# ============================================================================
+# FIDELITY: the two ways a capture lied about the screen it photographed
+#
+# Both were found the same way — a user took a picture and looked at it — and
+# both are properties of the SVG/foreignObject technique rather than of any one
+# app, so the tests are about the technique.
+#
+#   SCROLL. `cloneNode` copies attributes, and `scrollTop`/`scrollLeft` are
+#     properties. There is no markup for "scrolled 3160px down", so a clone of a
+#     scrolled page is a clone of that page at the top. shotPane compensated for
+#     the WINDOW's scroll only, which is right for a document that scrolls itself
+#     and wrong for every app whose content lives in an inner `overflow: auto`
+#     box. Reproduced against the markdown preview (one `.cm-scroller`): scrolled
+#     to an API list halfway down, the capture came out as the document's title on
+#     an empty page — because CodeMirror only renders the rows near the viewport,
+#     so the top of an unscrolled clone of a scrolled editor is spacer.
+#   IMAGES. An `<svg>` loaded through an `<img>` renders with external resource
+#     loading disabled, at every origin. Reproduced against the README's hero
+#     screenshot (served by our own `/api/fs/raw`, same-origin, and it made no
+#     difference): a broken-image glyph and its alt text where the picture was.
+# ============================================================================
+
+_SCROLL_STUBS = """
+function el(style) {
+  return { attrs: {style: style || ""}, children: [],
+           getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+           setAttribute(k, v) { this.attrs[k] = String(v); } };
+}
+function styleOf(e) { return e.getAttribute("style"); }
+"""
+
+
+def test_a_scrolled_box_is_put_back_by_shifting_its_children(html):
+    """The fix has to be expressible in MARKUP, because markup is all the
+    serialized SVG carries — so the scroll becomes a transform on the children
+    rather than an offset on the parent. The parent keeps the `overflow` its
+    computed style already gave it, which is what does the clipping."""
+    out = _node(["function shotApplyScroll("], _SCROLL_STUBS + """
+const a = el("display:block;"), b = el("display:block;");
+const box = el("overflow:auto;");
+box.children = [a, b];
+const shifted = shotApplyScroll([{clone: box, x: 40, y: 3160}]);
+console.log(JSON.stringify({shifted: shifted, a: styleOf(a), b: styleOf(b),
+                            box: styleOf(box)}));
+""", html)
+    assert out["shifted"] == 2
+    assert out["a"].endswith("transform:translate(-40px,-3160px);")
+    assert out["b"].endswith("transform:translate(-40px,-3160px);")
+    assert "transform" not in out["box"], \
+        "the scroll box itself must not move — it is the window onto the content"
+
+
+def test_a_child_that_does_not_scroll_with_the_page_is_left_where_it_is(html):
+    """A sticky header does not move with the scroll — that is the whole point of
+    it — and a fixed element is not in the scroll box's coordinate space at all.
+    Shifting either would put it somewhere it has never been on screen."""
+    out = _node(["function shotApplyScroll("], _SCROLL_STUBS + """
+const stuck = el("position:sticky;top:0px;");
+const fixed = el("position: fixed; inset: 0;");
+const flow = el("position:static;");
+const box = el("overflow:scroll;");
+box.children = [stuck, fixed, flow];
+const shifted = shotApplyScroll([{clone: box, x: 0, y: 500}]);
+console.log(JSON.stringify({shifted: shifted, stuck: styleOf(stuck),
+                            fixed: styleOf(fixed), flow: styleOf(flow)}));
+""", html)
+    assert out["shifted"] == 1
+    assert "translate" not in out["stuck"] and "translate" not in out["fixed"]
+    assert out["flow"].endswith("transform:translate(0px,-500px);")
+
+
+def test_the_scroll_shift_composes_with_the_elements_own_transform(html):
+    """The style walk has already written the computed `transform` — a matrix, for
+    anything the app transformed itself — and replacing it would flatten a rotated
+    or scaled element while fixing its scroll. Ours goes FIRST, because leftmost is
+    outermost: the shift is applied in the scroll box's space, after the element's
+    own transform, which is what scrolling does."""
+    out = _node(["function shotApplyScroll("], _SCROLL_STUBS + """
+const spun = el("transform:matrix(0, 1, -1, 0, 0, 0);");
+const none = el("transform:none;");
+const box = el("overflow:auto;");
+box.children = [spun, none];
+shotApplyScroll([{clone: box, x: 0, y: 100}]);
+console.log(JSON.stringify({spun: styleOf(spun), none: styleOf(none)}));
+""", html)
+    assert out["spun"].endswith(
+        "transform:translate(0px,-100px) matrix(0, 1, -1, 0, 0, 0);")
+    # "none" is not a transform to preserve — appending it would be a no-op that
+    # cancels the shift
+    assert out["none"].endswith("transform:translate(0px,-100px);")
+
+
+def test_the_scroll_offsets_are_collected_by_the_walk_that_already_pairs_safely(html):
+    """Every scrolled element has to be matched to its clone, which is exactly the
+    problem the style walk's observer/reshaped machinery already solves. A second
+    walk would either repeat all of it or pair by index and land one element's
+    scroll offset on another."""
+    walk = _between(html, "async function shotInlineStyles(src, dst, deadline)", "\n}\n")
+    assert "scrolled.push({ clone: d, x: s.scrollLeft || 0, y: s.scrollTop || 0 });" in walk
+    # read on the same node, right after its style, inside the guarded descent
+    assert walk.index("d.setAttribute(\"style\", css);") < walk.index("scrolled.push(")
+    assert walk.index("scrolled.push(") < walk.index("const a = s.children")
+    # and NOT for the root: `src` is the app's <body>, whose scroll offset IS the
+    # window's, and shotPane already shifts the whole clone by that
+    assert "if (s !== src && (s.scrollTop || s.scrollLeft))" in walk
+    assert "return { styled, incomplete, scrolled };" in walk
+
+
+def test_the_capture_puts_the_scroll_back_after_everything_that_moves_nodes(html):
+    """Order is load-bearing three times over, and each pair had a way to go
+    wrong: the style walk must finish before its `scrolled` clones are shifted (the
+    children it shifts are still being styled); images must be inlined BEFORE
+    shotRasterise puts data:-URL <img>s of its own into the clone, or the two
+    would pair by index and put a chart's pixels where a logo was; and the scroll
+    must be applied LAST, so a canvas swapped for an <img> is shifted with the rest
+    of its box rather than left at the top of it."""
+    pane = _between(html, "async function shotPane(deadline)", "\n}\n")
+    walk = pane.index("await shotInlineStyles(")
+    imgs = pane.index("await shotInlineImages(")
+    raster = pane.index("shotRasterise(body, clone)")
+    scroll = pane.index("shotApplyScroll(styles.scrolled)")
+    assert walk < imgs < raster < scroll, pane
+    # the walk stops SHORT of the deadline so the fetches have a tail to run in
+    assert "Math.max(Date.now(), deadline - SHOT_IMG_MS)" in pane
+    assert "shotInlineImages(body, clone, deadline)" in pane
+    # the window's own scroll is still the other half
+    assert "win.scrollX" in pane and "win.scrollY" in pane
+
+
+# ------------------------------------------------------- inlining the images
+
+_IMG_FNS = ["const SHOT_IMG_MAX", "const SHOT_IMG_MAX_BYTES",
+            "function shotDataUrl(", "async function shotUrlAsData(",
+            "function shotStyleUrls(", "function shotImagePlaceholder(",
+            "async function shotInlineImages("]
+
+_IMG_STUBS = """
+var FETCHED = [];
+var FAIL = {};
+function mkEl(tag) {
+  const el = {
+    tagName: String(tag).toUpperCase(), attrs: {}, children: [], parent: null,
+    naturalWidth: 0, alt: "", textContent: "",
+    get currentSrc() { return this.attrs.src || ""; },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    setAttribute(k, v) { this.attrs[k] = String(v); },
+    removeAttribute(k) { delete this.attrs[k]; },
+    append(c) { c.parent = el; el.children.push(c); return c; },
+    remove() {
+      if (this.parent) this.parent.children =
+        this.parent.children.filter((n) => n !== this);
+    },
+    replaceWith(n) {
+      const p = this.parent; if (!p) return;
+      p.children = p.children.map((c) => (c === this ? n : c));
+      n.parent = p;
+    },
+    querySelectorAll(sel) { return all(el, sel); },
+  };
+  el.ownerDocument = { createElement: mkEl };
+  return el;
+}
+function walkAll(root, out) { for (const c of root.children) { out.push(c); walkAll(c, out); } }
+function all(root, sel) {
+  const out = []; walkAll(root, out);
+  if (sel === "*") return out;
+  if (sel === "img") return out.filter((e) => e.tagName === "IMG");
+  if (sel === "picture source")
+    return out.filter((e) => e.tagName === "SOURCE" && e.parent
+                             && e.parent.tagName === "PICTURE");
+  return [];
+}
+var document = { createElement: mkEl };
+var fetch = async (url) => {
+  FETCHED.push(url);
+  if (FAIL[url]) throw new Error("no route to host");
+  return { ok: true, blob: async () => ({ size: 10, url: url }) };
+};
+function FileReader() {
+  this.readAsDataURL = (blob) => {
+    this.result = "data:image/png;base64," + blob.url;
+    this.onload();
+  };
+}
+// One <img> in a clone, and its live twin, built as a pair.
+function pair(src) {
+  const s = mkEl("img"), d = mkEl("img");
+  s.attrs.src = src; d.attrs.src = src;
+  return [s, d];
+}
+"""
+
+
+def _imgs(html, body):
+    return _node(_IMG_FNS, _IMG_STUBS + body, html)
+
+
+def test_every_image_is_fetched_and_written_into_the_markup_as_data(html):
+    """THE FIX. An SVG rasterised through an <img> cannot load a URL — no network,
+    at any origin — so the one src an image in the capture can follow is a `data:`
+    one. Everything else in the clone was already inline; the pictures were the
+    hole."""
+    out = _imgs(html, """
+const src = mkEl("body"), dst = mkEl("body");
+const [s1, d1] = pair("http://127.0.0.1:8877/api/fs/raw?path=/a/hero.gif");
+const [s2, d2] = pair("https://example.com/logo.png");
+src.append(s1); src.append(s2); dst.append(d1); dst.append(d2);
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() + 5000);
+  console.log(JSON.stringify({missing: r.missing, fetched: FETCHED,
+                              d1: d1.getAttribute("src"), d2: d2.getAttribute("src")}));
+})();
+""")
+    assert out["missing"] == 0
+    assert out["fetched"] == ["http://127.0.0.1:8877/api/fs/raw?path=/a/hero.gif",
+                              "https://example.com/logo.png"]
+    assert out["d1"].startswith("data:image/png;base64,")
+    assert out["d2"].startswith("data:image/png;base64,")
+
+
+def test_an_image_that_genuinely_cannot_be_fetched_says_so_in_the_picture(html):
+    """A placeholder ONLY when the fetch really failed, and a placeholder rather
+    than nothing: a broken-image glyph reads as a bug in the page being
+    photographed, and removing the element would silently redraw the layout around
+    a hole the user's screen did not have. The alt text goes in because it is the
+    page's own description of what is missing."""
+    out = _imgs(html, """
+FAIL["https://offline.example/x.png"] = true;
+const src = mkEl("body"), dst = mkEl("body");
+const [s, d] = pair("https://offline.example/x.png");
+s.alt = "the deploy graph";
+d.attrs.style = "width:400px;height:200px;";
+src.append(s); dst.append(d);
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() + 5000);
+  const box = dst.children[0];
+  console.log(JSON.stringify({missing: r.missing, tag: box.tagName,
+                              text: box.textContent, style: box.getAttribute("style")}));
+})();
+""")
+    assert out["missing"] == 1
+    assert out["tag"] == "DIV", "the <img> is gone: it could only draw a broken glyph"
+    assert out["text"] == "image not captured — the deploy graph"
+    # it keeps the box the picture had, so nothing around it moves
+    assert out["style"].startswith("width:400px;height:200px;")
+    assert "dashed" in out["style"]
+
+
+def test_a_data_url_image_is_left_alone_and_costs_no_fetch(html):
+    """It is already local — that is the whole property being aimed for."""
+    out = _imgs(html, """
+const src = mkEl("body"), dst = mkEl("body");
+const [s, d] = pair("data:image/png;base64,AAAA");
+src.append(s); dst.append(d);
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() + 5000);
+  console.log(JSON.stringify({missing: r.missing, fetched: FETCHED,
+                              d: d.getAttribute("src")}));
+})();
+""")
+    assert out == {"missing": 0, "fetched": [], "d": "data:image/png;base64,AAAA"}
+
+
+def test_the_same_url_ten_times_is_one_fetch(html):
+    """The cap is on DISTINCT urls, because that is what the cost is: an icon
+    repeated down a list is one request and one base64 string."""
+    out = _imgs(html, """
+const src = mkEl("body"), dst = mkEl("body");
+for (let i = 0; i < 10; i++) {
+  const [s, d] = pair("http://h/icon.svg");
+  src.append(s); dst.append(d);
+}
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() + 5000);
+  console.log(JSON.stringify({missing: r.missing, fetches: FETCHED.length,
+                              last: dst.children[9].getAttribute("src")}));
+})();
+""")
+    assert out["fetches"] == 1
+    assert out["missing"] == 0
+    assert out["last"].startswith("data:")
+
+
+def test_past_the_budget_the_rest_become_placeholders_rather_than_a_slow_capture(html):
+    """The capture is racing a timer the user is watching. Over the URL cap, or
+    past the deadline, the remaining pictures are marked missing — which the note
+    then reports — rather than held onto while the whole shot times out."""
+    over = _imgs(html, """
+const src = mkEl("body"), dst = mkEl("body");
+for (let i = 0; i < SHOT_IMG_MAX + 3; i++) {
+  const [s, d] = pair("http://h/" + i + ".png");
+  src.append(s); dst.append(d);
+}
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() + 5000);
+  console.log(JSON.stringify({missing: r.missing, fetches: FETCHED.length}));
+})();
+""")
+    assert over["fetches"] == 30, "the cap, exactly"
+    assert over["missing"] == 3
+    late = _imgs(html, """
+const src = mkEl("body"), dst = mkEl("body");
+const [s, d] = pair("http://h/late.png");
+src.append(s); dst.append(d);
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() - 1);
+  console.log(JSON.stringify({missing: r.missing, fetches: FETCHED.length}));
+})();
+""")
+    assert late == {"missing": 1, "fetches": 0}, "a passed deadline fetches nothing"
+
+
+def test_a_picture_elements_sources_are_removed_before_its_src_is_rewritten(html):
+    """A `<source>` still pointing at an http URL would have the browser re-resolve
+    the child over the `src` just written, and lose the image again inside the very
+    element that was fixed."""
+    out = _imgs(html, """
+const src = mkEl("body"), dst = mkEl("body");
+const sPic = mkEl("picture"), dPic = mkEl("picture");
+const sSrc = mkEl("source"), dSrc = mkEl("source");
+sSrc.attrs.srcset = "http://h/big.png"; dSrc.attrs.srcset = "http://h/big.png";
+const [s, d] = pair("http://h/small.png");
+d.attrs.srcset = "http://h/small.png 1x"; d.attrs.sizes = "50vw";
+sPic.append(sSrc); sPic.append(s); dPic.append(dSrc); dPic.append(d);
+src.append(sPic); dst.append(dPic);
+(async () => {
+  await shotInlineImages(src, dst, Date.now() + 5000);
+  console.log(JSON.stringify({kids: dPic.children.map((c) => c.tagName),
+                              src: d.getAttribute("src"),
+                              srcset: d.getAttribute("srcset"),
+                              sizes: d.getAttribute("sizes")}));
+})();
+""")
+    assert out["kids"] == ["IMG"], "the <source> is gone"
+    assert out["src"].startswith("data:")
+    # both of these would re-select a URL over the src just written
+    assert out["srcset"] is None and out["sizes"] is None
+
+
+def test_background_images_are_inlined_out_of_the_styles_the_walk_wrote(html):
+    """Same rule, same reason, and the style walk has already put the computed
+    value on the clone — so this reads it back off the clone rather than making a
+    second pass over the live tree. A background that cannot be fetched keeps its
+    colour and its size and is counted: a dashed box in place of a texture would be
+    a bigger lie than leaving it plain."""
+    out = _imgs(html, """
+FAIL["http://h/tile.png"] = true;
+const src = mkEl("body"), dst = mkEl("body");
+const ok = mkEl("div"), bad = mkEl("div"), plain = mkEl("div");
+ok.attrs.style = "background-image:url(\\"http://h/hero.jpg\\");color:red;";
+bad.attrs.style = "background-image:url(http://h/tile.png);";
+plain.attrs.style = "background-image:none;color:blue;";
+dst.append(ok); dst.append(bad); dst.append(plain);
+(async () => {
+  const r = await shotInlineImages(src, dst, Date.now() + 5000);
+  console.log(JSON.stringify({missing: r.missing, ok: ok.getAttribute("style"),
+                              bad: bad.getAttribute("style"),
+                              plain: plain.getAttribute("style")}));
+})();
+""")
+    assert out["missing"] == 1
+    assert 'url("data:image/png;base64,http://h/hero.jpg")' in out["ok"]
+    assert out["ok"].endswith("color:red;"), "the rest of the declaration is untouched"
+    assert out["bad"] == "background-image:url(http://h/tile.png);"
+    assert out["plain"] == "background-image:none;color:blue;"
+
+
+def test_the_two_local_url_shapes_are_never_fetched(html):
+    """`data:` is already inline, and `url(#id)` is an SVG fragment reference — a
+    filter or a clip path in the same document, which travels with the clone. A
+    fetch of either would spend the budget on nothing."""
+    out = _node(["function shotStyleUrls("], """
+console.log(JSON.stringify({
+  found: shotStyleUrls("background-image:url('http://h/a.png');" +
+                       "mask-image:url(#clip);border-image-source:url(data:image/png,x);" +
+                       "cursor:url(\\"http://h/c.cur\\"), auto;"),
+  none: shotStyleUrls("color:red;background-image:none;"),
+}));
+""", html)
+    assert out["found"] == ["http://h/a.png", "http://h/c.cur"]
+    assert out["none"] == []
+
+
+def test_a_capture_missing_a_picture_says_so_without_condemning_the_rest(html):
+    """The caveat is BOUNDED and visible — every missing picture is a dashed box
+    saying so in the image itself — which is why it is deliberately not one of
+    `shotPaneNote`'s causes: those are "some of this may not be what you think it
+    is", spread over an unknown set of elements. Folding one missing logo into
+    `incomplete` would tell the agent to distrust the whole crop."""
+    out = _node(["function shotImageNote(", "function shotPaneNote(",
+                 "function shotTrustLine("], """
+console.log(JSON.stringify({
+  none: shotImageNote({imagesMissing: 0}),
+  one: shotImageNote({imagesMissing: 1}),
+  many: shotImageNote({imagesMissing: 4}),
+  // an otherwise clean capture is still trusted
+  paneNote: shotPaneNote({imagesMissing: 3, incomplete: ""}),
+  trust: shotTrustLine(""),
+}));
+""", html)
+    assert out["none"] == ""
+    assert out["one"].startswith("1 image could not be embedded")
+    assert out["many"].startswith("4 images could not be embedded")
+    for note in (out["one"], out["many"]):
+        assert "image not captured" in note
+        assert "The app is very likely showing the image fine" in note
+    assert out["paneNote"] == "", "a missing picture is not a styling failure"
+    assert out["trust"] == "The rest of the image is what the user saw."
+
+
+def test_the_image_caveat_rides_the_pane_shot_and_every_crop_from_it(html):
+    """A crop is a window onto that one bitmap, so a picture the capture could not
+    embed is as true of a crop as it is of the pane shot."""
+    out = _view(html, """
+PANE.imagesMissing = 2;
+(async () => {
+  const r = await shotCapturePane(Date.now() + 5000);
+  console.log(JSON.stringify({viewNote: r.viewNote}));
+})();
+""")
+    assert "2 images could not be embedded" in out["viewNote"]
+    assert out["viewNote"].endswith("The rest of the image is what the user saw.")
+    crop = _capture(html, """
+PANE.imagesMissing = 1;
+const a = {id: "a"};
+annotations = [a];
+(async () => {
+  annApplyShots([a], await annCaptureShots([a]));
+  console.log(JSON.stringify({note: a.shotNote}));
+})();
+""")
+    assert "1 image could not be embedded" in crop["note"]
+
+
+# ============================================================================
+# THE OTHER WAY A PICTURE GETS INTO A MESSAGE: paste and drag-and-drop
+#
+# "If I have a screenshot I should be able to paste it from clipboard or drag and
+# drop." The camera cannot serve this — a crop from the OS shortcut, a photo of a
+# phone, a mock a designer sent — because none of it is on the pane. It rides the
+# SAME pipeline: the shots directory (already the one path `--allowed-tools`
+# pre-approves a Read of, already pruned, already served back through
+# /api/fs/raw), one chip, one viewer, one wire block, one receipt.
+# ============================================================================
+
+def test_a_pasted_blob_is_named_for_what_it_HOLDS_not_for_what_it_was_called(html):
+    """The same rule `shotExt` applies to an encoded crop, and for the same reason:
+    the agent Reads that path, and a name its bytes do not match is a file it
+    cannot open. A clipboard image arrives with no filename at all, so the MIME
+    type is the only evidence there is."""
+    out = _node(["function shotFileExt(", "function shotIsImage("], """
+console.log(JSON.stringify({
+  clip: shotFileExt("image/png", ""),
+  jpeg: shotFileExt("image/jpeg", "photo.jpeg"),
+  webp: shotFileExt("image/webp", "x"),
+  // an unknown type falls back to the name, then to png
+  odd: shotFileExt("application/octet-stream", "screen.HEIC"),
+  nothing: shotFileExt("", ""),
+  images: [{type: "image/png"}, {type: "", name: "a.JPG"}].map(shotIsImage),
+  not: [{type: "text/plain", name: "notes.txt"}, {type: "", name: "x.pdf"}, null]
+        .map(shotIsImage),
+}));
+""", html)
+    assert out["clip"] == ".png"
+    assert out["jpeg"] == ".jpg"
+    assert out["webp"] == ".webp"
+    assert out["odd"] == ".heic"
+    assert out["nothing"] == ".png"
+    assert out["images"] == [True, True]
+    assert out["not"] == [False, False, False]
+
+
+_ATTACH_FNS = ["const SHOT_ATTACH_MAX", "const SHOT_ATTACH_MAX_BYTES",
+               "let shotAttached", "function shotFileExt(", "function shotIsImage(",
+               "function shotJoin(", "function shotStamp(",
+               "async function shotAttachFile(", "async function shotAttachFiles("]
+
+_ATTACH_STUBS = """
+var uploaded = [];
+var renders = 0;
+var fused = {uploadFile: async (path, blob) => { uploaded.push(path); return {}; }};
+var crypto = {randomUUID: () => "abcdef01-2345-6789"};
+var URL = {createObjectURL: (b) => "blob:" + uploaded.length};
+function renderAnn() { renders++; }
+function shotDirPath() { return Promise.resolve("/tmp/fr/shots"); }
+function file(name, type, size) { return {name: name, type: type, size: size || 10}; }
+"""
+
+
+def _attach(html, body):
+    return _node(_ATTACH_FNS, _ATTACH_STUBS + body, html)
+
+
+def test_a_pasted_picture_lands_in_the_shots_directory_and_becomes_a_chip(html):
+    """The shots directory and nowhere else: it is the one path the spawn line
+    pre-approves a `Read` of, it is pruned on the same schedule, and /api/fs/raw
+    already serves it back for a restored turn. A second directory would have meant
+    a second grant, a second pruner and a second reader."""
+    out = _attach(html, """
+(async () => {
+  await shotAttachFiles([file("bug.png", "image/png"),
+                         file("notes.txt", "text/plain"),
+                         file("shot.jpg", "image/jpeg")]);
+  console.log(JSON.stringify({uploaded: uploaded, attached: shotAttached,
+                              renders: renders}));
+})();
+""")
+    assert len(out["uploaded"]) == 2, "the .txt was never an image"
+    assert out["uploaded"][0].startswith("/tmp/fr/shots/")
+    assert out["uploaded"][0].endswith(".png")
+    assert out["uploaded"][1].endswith(".jpg")
+    assert [s["kind"] for s in out["attached"]] == ["image", "image"]
+    assert [s["name"] for s in out["attached"]] == ["bug.png", "shot.jpg"]
+    assert out["attached"][0]["view"] == out["uploaded"][0]
+    assert out["attached"][0]["thumb"].startswith("blob:")
+    # a chip per picture, as it lands — that IS the feedback
+    assert out["renders"] == 2
+
+
+def test_a_picture_that_cannot_be_attached_becomes_a_chip_that_says_why(html):
+    """Nothing the user gestured at may disappear without an answer: a file they
+    dropped and cannot see anywhere is indistinguishable from a bug. The refusal
+    wears the same shape a failed capture does — `view: null` plus the reason —
+    so the chip, the viewer and the wire all already know how to carry it."""
+    out = _attach(html, """
+(async () => {
+  await shotAttachFiles([file("huge.png", "image/png", SHOT_ATTACH_MAX_BYTES + 1)]);
+  const big = shotAttached[0];
+  shotAttached = [];
+  // a folder's worth, dropped in one gesture
+  const many = [];
+  for (let i = 0; i < SHOT_ATTACH_MAX + 26; i++) many.push(file("a" + i + ".png", "image/png"));
+  await shotAttachFiles(many);
+  console.log(JSON.stringify({big: big, overflow: shotAttached[SHOT_ATTACH_MAX],
+                              count: shotAttached.length,
+                              uploads: uploaded.length}));
+})();
+""")
+    assert out["big"]["view"] is None
+    assert "the limit is" in out["big"]["viewNote"]
+    assert out["big"]["name"] == "huge.png"
+    # ONE chip for everything that did not fit, naming the number: refusing
+    # file-by-file filled the composer with 26 identical sentences
+    assert out["count"] == 5, out["count"]
+    assert out["overflow"]["view"] is None
+    assert "26 pictures would have taken this message past 4" in out["overflow"]["viewNote"]
+    assert out["uploads"] == 4, "nothing over the cap or the size limit is written"
+
+
+def test_a_paste_of_words_still_reaches_the_textarea(html):
+    """The listener sits on a box the user types in all day. Stealing an ordinary
+    paste would be a far worse bug than never having had the feature — so the
+    default is only prevented once a picture has actually been found."""
+    paste = _between(html, "function shotPasteHandler(e)", "\n}\n")
+    assert "const imgs = [...(data.files || [])].filter(shotIsImage);" in paste
+    assert paste.index("if (!imgs.length) return;") < paste.index("e.preventDefault();")
+    # both composers, one handler
+    assert 'box.addEventListener("paste", shotPasteHandler);' in html
+    assert 'homebox.addEventListener("paste", shotPasteHandler);' in html
+
+
+def test_a_drag_of_text_keeps_the_browsers_own_behaviour(html):
+    """Dragging text out of the log and into the composer is the browser's job and
+    was working before this existed. Every one of the four listeners asks the same
+    question first, so a text drag is never touched."""
+    drag = _between(html, "function shotDragHasFiles(e)", "shotAttachFiles([...(e.dataTransfer.files || [])]);")
+    assert 'return [...(dt.types || [])].indexOf("Files") !== -1;' in drag
+    assert drag.count("if (!shotDragHasFiles(e)) return;") == 4, \
+        "dragenter, dragover, dragleave and drop"
+    # dragover MUST preventDefault or the drop never fires, and dropEffect is what
+    # makes the cursor promise a copy rather than show the forbidden sign
+    over = drag[drag.index('addEventListener("dragover"'):drag.index('addEventListener("dragleave"')]
+    assert "e.preventDefault();" in over
+    assert 'e.dataTransfer.dropEffect = "copy";' in over
+
+
+def test_the_drop_target_is_the_whole_column_and_its_highlight_is_counted(html):
+    """A target the size of a one-line input is a target people miss, and
+    everything in the column is part of the same message. dragenter/dragleave fire
+    for every child element the pointer crosses, so a plain toggle flickers the
+    highlight off the moment the cursor moves over a chip — hence a counter, reset
+    (not decremented) on drop, which delivers no leave for the enters before it."""
+    assert 'const chatCol = document.getElementById("chat");' in html
+    assert "let shotDragDepth = 0;" in html
+    assert "shotDragDepth = Math.max(0, shotDragDepth - 1);" in html
+    assert "if (!shotDragDepth) chatCol.classList.remove(\"dropping\");" in html
+    drop = html[html.index('chatCol.addEventListener("drop"'):]
+    assert "shotDragDepth = 0;" in drop[:400]
+    # an inset ring, because a border would resize the column under a pointer that
+    # is holding something
+    assert "#chat.dropping {" in html
+    assert "box-shadow: inset 0 0 0 2px var(--accent);" in html
+
+
+def test_a_pasted_picture_and_a_capture_ride_the_same_message_together(html):
+    """One list, not two: everything downstream treats them identically, and the
+    only thing `kind` decides is the words. The pane keeps its ONE seat inside that
+    list — "the pane, now" still has exactly one answer — while pictures the user
+    brought in have no such uniqueness and stack."""
+    out = _attach(html, """
+(async () => {
+  await shotAttachFile(file("a.png", "image/png"));
+  shotAttached.push({kind: "pane", view: "/tmp/fr/shots/1-view.webp"});
+  await shotAttachFile(file("b.png", "image/png"));
+  console.log(JSON.stringify({kinds: shotAttached.map((s) => s.kind)}));
+})();
+""")
+    assert out["kinds"] == ["image", "pane", "image"]
+    # and the composer's own guard counts the list rather than one binding
+    assert html.count(
+        "if (!message && !annPending().length && !shotAttached.length) return;") == 2
+
+
+def test_the_block_tells_the_model_which_picture_is_of_this_app(html):
+    """The one thing the array made necessary. Two paths with no way to tell them
+    apart would have the agent read a photo the user pasted in as a picture of the
+    pane it is being asked about — and act on it."""
+    out = _wire(html, """
+const pane = {kind: "pane", view: "/tmp/fr/shots/S-view.png"};
+const img = {kind: "image", view: "/tmp/fr/shots/S.png", name: "from-slack.png"};
+console.log(JSON.stringify({block: composeOutgoing("", [], null, [pane, img]),
+                            one: composeOutgoing("", [], null, [pane]),
+                            none: composeOutgoing("hi", [], null, [])}));
+""")
+    block = out["block"]
+    assert "The user attached 2 pictures" in block
+    assert '"kind": "pane"' in block.replace('"kind":"pane"', '"kind": "pane"')
+    assert "from-slack.png" in block
+    # what each kind MEANS, said once, where the model reads it
+    assert 'a picture of the WHOLE visible' in block
+    assert 'so it is NOT a picture of this pane' in block
+    assert "The user attached a picture" in out["one"], "singular, for one"
+    assert out["none"] == "hi", "no pictures, no block"
+
+
+def test_a_pasted_picture_still_gets_a_chip_where_there_is_no_pane(html):
+    """A folder with no app entry (D239) has no preview, no annotate layer and no
+    camera — and is exactly where a user is most likely to paste a screenshot in,
+    because there is nothing on screen for the agent to look at. `renderAnn`'s
+    no-pane guard used to be a bare return, which would have swallowed the chip and
+    left the picture attached invisibly: the silent-failure shape this whole
+    feature is built to avoid."""
+    assert "if (noPane && !CHAT_ONLY) { renderShotChips(); return; }" in html
+    solo = _between(html, "function renderShotChips()", "\n}\n")
+    assert "annChipsEls.forEach" in solo, "both composers, as ever"
+    assert 'box.innerHTML = "";' in solo, \
+        "clearing is what makes it an answer rather than an append"
+    assert "for (const shot of shotAttached) box.appendChild(shotChip(shot));" in solo

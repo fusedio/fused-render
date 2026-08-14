@@ -385,12 +385,15 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     for fn in ("function applySplit() {", "function applyNarrowView() {"):
         body = code[code.index(fn):code.index(fn) + 300]
         assert "if (noPane) return;" in body, fn
-    # renderAnn draws two things and they answer differently now: the pins need a
+    # renderAnn draws THREE things and they answer differently now: the pins need a
     # layer (null bindings when the host shows nothing marked, and the loop is
-    # skipped), the chips are the payload of a message this chat can still send.
+    # skipped), the annotation chips are the payload of a message this chat can
+    # still send, and the ATTACHED PICTURES (D277) belong to no pane at all — a
+    # screenshot pasted or dropped into a folder chat with no preview is still an
+    # attachment, so the no-pane exit draws those and only those.
     render = code[code.index("function renderAnn() {"):]
     render = render[:render.index("\n}\n")]
-    assert "if (noPane && !CHAT_ONLY) return;" in render
+    assert "if (noPane && !CHAT_ONLY) { renderShotChips(); return; }" in render
     assert "if (annPins) {" in render
 
 

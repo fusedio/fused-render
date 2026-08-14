@@ -772,6 +772,16 @@
     background: var(--panel);
     overflow: hidden;
   }
+  /* A picture is being dragged over the column. An INSET ring rather than a
+     border or an overlay: a border would resize the column mid-drag (the layout
+     jumping under a pointer that is holding something is the worst possible
+     moment for it), and a full-bleed overlay would sit between the pointer and
+     the drop target it is describing. `dragenter`/`dragleave` fire per child
+     element, so the class is driven by a COUNTER — see shotDragHasFiles. */
+  #chat.dropping {
+    box-shadow: inset 0 0 0 2px var(--accent);
+    background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  }
   #chat.home #topbar, #chat.home #logwrap, #chat.home #composer-chat { display: none; }
   /* #back rides the #anntools strip (which BOTH views keep), so its home-view
      hiding is its own rule — the landing page IS the chat list, and a "back to
@@ -2574,8 +2584,8 @@
             <span class="spacer"></span>
             <!-- The home card's copy, in the same seat beside Send. Both composers
                  carry one because the chips row above them is the same row
-                 (#annchips-home / #annchips-chat), and one shot is shared state
-                 behind both (paneShot). -->
+                 (#annchips-home / #annchips-chat), and one list of attached
+                 pictures is shared state behind both (shotAttached). -->
             <button id="hviewshot" class="pill viewshot" type="button"
                     aria-label="Screenshot the preview and attach it to this message"
                     title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
@@ -2855,6 +2865,24 @@ const SHOT_MAX_ELEMENTS = 3000;
 // for the whole capture. Small enough that a frame is never missed by much, large
 // enough that the yields themselves are not the cost.
 const SHOT_STYLE_CHUNK = 200;
+// ── pictures inside the picture ──
+// An `<svg>` loaded through an `<img>` renders in a mode with NO external resource
+// loading — no network, at all, whatever the origin — so every `<img src="http…">`
+// and every `background-image: url(http…)` inside the foreignObject draws as a
+// broken glyph. The only src such an image can follow is a `data:` one, so the
+// capture fetches each URL and rewrites it before serializing (shotInlineImages).
+// Distinct URLs resolved per capture. Each one is a fetch and a base64 string in
+// the serialized SVG, so this is the cap that keeps a gallery from turning one
+// screenshot into a megabyte of markup and a second of network.
+const SHOT_IMG_MAX = 30;
+// Bytes past which a fetched image is re-encoded down to the size it is DRAWN at
+// rather than embedded whole. base64 costs a third on top, and a 4 MB hero photo
+// displayed at 600px wide is 5.5 MB of markup for 600px of picture.
+const SHOT_IMG_MAX_BYTES = 256 * 1024;
+// The tail of the capture's budget reserved for those fetches. Without a reserve
+// the style walk — which stops exactly AT the deadline — could spend all of it and
+// leave every image a placeholder in a capture that had time to spare.
+const SHOT_IMG_MS = 1500;
 // ── the whole-pane shot ──
 // A crop answers "what does THIS element look like". It cannot answer "the whole
 // layout is wrong", "these two panels overlap", "everything shifted down" — none
@@ -3992,22 +4020,33 @@ const annChipsEls = [
   document.getElementById("annchips-chat"),
 ];
 
-// The screenshot waiting to ride the NEXT message: `{view, viewNote, thumb}` once
-// a capture has finished, null the rest of the time. At most ONE — a second click
-// replaces it, because "the pane, now" has exactly one answer and two pictures of
-// the same screen is a receipt nobody reads.
+// The pictures waiting to ride the NEXT message. Each entry is
+// `{kind, view, viewNote, thumb, name?}` — `kind` being `"pane"` for a capture of
+// the preview and `"image"` for a file the user pasted or dropped in — and each is
+// drawn as one chip above both composers.
+//
+// A LIST, where D275 kept a single shot, and the rule that made it one is intact
+// inside the list rather than abandoned: "the pane, now" still has exactly one
+// answer, so a second camera click REPLACES the `pane` entry (shotAttachPane) and
+// never stacks two pictures of the same screen. What the list adds is the other
+// kind — a screenshot the user already had, from another app, from a phone, from a
+// bug report — which has no such uniqueness and for which "the last one wins"
+// would be an arbitrary limit rather than a fact about the subject. One list and
+// not two because everything downstream treats them identically: same chip, same
+// viewer, same ✕, same receipt, same wire block. The only thing `kind` decides is
+// the words.
 //
 // Deliberately NOT persisted to a param the way `annotations` is. A note is the
-// user's words and survives a reload worth keeping; this is a temp file and a blob
-// URL, both of which a restored page would hold a dead handle to — and a bookmark
+// user's words and survives a reload worth keeping; these are temp files and blob
+// URLs, both of which a restored page would hold a dead handle to — and a bookmark
 // that re-attaches yesterday's picture of a screen that has since changed is worse
 // than one that attaches nothing.
 //
 // Declared UP HERE with the annotation state rather than beside the button that
-// fills it, for the same reason `annObserver` is: renderAnn draws its chip, and
+// fills it, for the same reason `annObserver` is: renderAnn draws its chips, and
 // the boot renderAnn runs several hundred lines above that wiring — a `let` read
 // before its declaration is a temporal-dead-zone ReferenceError, not an undefined.
-let paneShot = null;
+let shotAttached = [];
 
 // ── the annotate target: WHICH document a note points at ──────────────────
 // Bindings rather than constants, and that is the entire retargeting
@@ -4427,7 +4466,14 @@ function renderAnn() {
   // send. So the flag stops being the whole answer here and the two halves are
   // asked separately — the pins need a layer (annSyncTarget hands back nulls
   // when the host is showing nothing marked), the chips need only the list.
-  if (noPane && !CHAT_ONLY) return;
+  //
+  // The ATTACHED PICTURES are a third case and they are why this is not a bare
+  // return any more: a pasted or dropped screenshot has nothing to do with a pane
+  // — it is a file the user brought in, and a folder with no app entry is exactly
+  // where they are most likely to bring one — so its chip has to be drawn even
+  // where there is no document to annotate. (The camera stays hidden there:
+  // `annCapable()` is false, and there is genuinely nothing to photograph.)
+  if (noPane && !CHAT_ONLY) { renderShotChips(); return; }
   annSyncTarget();
   // pins over the frame
   if (annPins) {
@@ -4516,15 +4562,45 @@ function renderAnn() {
       chip.append(lbl, txt, x);
       box.appendChild(chip);
     });
-    // The screenshot rides in the SAME row, last, because it is the same kind of
-    // thing: something this message is about to carry, shown before it goes. It is
-    // built fresh per box rather than moved between them — there are two composers
-    // and one node cannot be in both.
-    if (paneShot) box.appendChild(shotChip());
+    // The pictures ride in the SAME row, last and in attachment order, because
+    // they are the same kind of thing: something this message is about to carry,
+    // shown before it goes.
+    for (const shot of shotAttached) box.appendChild(shotChip(shot));
   });
 }
 
-// The pending screenshot's chip: an annotation chip's pill with the picture where
+// The attached pictures' chips, on their own, for the no-pane target where the
+// rest of renderAnn has nothing to draw. Built fresh per box rather than moved
+// between them — there are two composers and one node cannot be in both.
+//
+// It CLEARS the rows, which is what makes it a complete answer rather than an
+// append: dropping the last picture has to leave the row empty, and in this
+// target there are no annotation chips it could wipe (enterNoPane empties
+// `annotations`).
+function renderShotChips() {
+  annChipsEls.forEach((box) => {
+    if (!box) return;
+    box.innerHTML = "";
+    for (const shot of shotAttached) box.appendChild(shotChip(shot));
+  });
+}
+
+// What one attached picture IS, in the words the chip, the viewer and the alt
+// text all use. ONE place, because the same three strings were about to be spelled
+// in three — and a pasted image called "preview screenshot" in the receipt is a
+// receipt that describes the wrong thing.
+function shotNoun(shot) {
+  if (!shot) return "picture";
+  if (shot.kind === "image") return shot.name || "pasted image";
+  return paneNoun + " screenshot";
+}
+function shotAlt(shot) {
+  return shot && shot.kind === "image"
+    ? "image attached to this message" + (shot.name ? ": " + shot.name : "")
+    : "screenshot of the whole " + paneNoun + " pane";
+}
+
+// One attached picture's chip: an annotation chip's pill with the picture where
 // the note's words would be.
 //
 // The thumbnail is a <button>, not an <img>, and that is the smallest edit that
@@ -4533,7 +4609,7 @@ function renderAnn() {
 // to be a door — it says a shot is attached, and one click opens it at full size
 // where the user can actually read it and, if it is the wrong moment, throw it
 // away from there.
-function shotChip() {
+function shotChip(shot) {
   const chip = document.createElement("div");
   // `shotchip` is only the animation hook (the entrance that says a capture just
   // happened); every other rule it wears is `.annchip`'s, because it IS one.
@@ -4542,25 +4618,25 @@ function shotChip() {
   lbl.className = "pinlbl";
   lbl.textContent = "🖼";
   chip.appendChild(lbl);
-  if (paneShot.thumb) {
-    chip.appendChild(shotThumbBtn("shotthumb", paneShot,
-      "screenshot of the whole " + paneNoun + " pane"));
+  if (shot.thumb) {
+    chip.appendChild(shotThumbBtn("shotthumb", shot, shotAlt(shot)));
   }
   const txt = document.createElement("span");
   txt.className = "txt";
   // Says WHICH it is. "here is your picture" and "no picture, and here is why" are
   // different facts, and the second is the one a user has to be told BEFORE they
-  // press send — that is the whole advantage of capturing on click rather than
-  // during the send, where a failure could only be reported afterwards.
-  txt.textContent = paneShot.view ? paneNoun + " screenshot" : "screenshot failed";
+  // press send — that is the whole advantage of attaching on the gesture rather
+  // than during the send, where a failure could only be reported afterwards.
+  txt.textContent = shot.view ? shotNoun(shot)
+    : (shot.kind === "image" ? "image failed" : "screenshot failed");
   // The path, or the reason there is none. Hovering a crop's receipt shows the
   // same thing, for the same reason: what the agent was handed is checkable.
-  txt.title = paneShot.viewNote || paneShot.view || "";
+  txt.title = shot.viewNote || shot.view || "";
   const x = document.createElement("button");
   x.type = "button";
-  x.setAttribute("aria-label", "Remove the screenshot");
+  x.setAttribute("aria-label", "Remove " + shotNoun(shot));
   x.textContent = "✕";
-  x.onclick = shotDrop;
+  x.onclick = () => shotDrop(shot);
   chip.append(txt, x);
   return chip;
 }
@@ -5423,13 +5499,26 @@ function shotJoin(dir, name) {
 // budget that is already tight, and an app re-rendering on an interval will just
 // mutate again — so the honest note is worth more than another attempt.
 //
-// Returns `{styled, incomplete}`: one cause, never a set of booleans that can
-// disagree, because the caller turns it into one sentence. Precedence when
-// several apply — a re-render may have made styles WRONG anywhere in the capture,
-// while a cap only leaves them MISSING past a point, and the reader is an agent
-// deciding whether to trust the picture. So correctness news outranks budget news.
+// Returns `{styled, incomplete, scrolled}`: one cause, never a set of booleans
+// that can disagree, because the caller turns it into one sentence. Precedence
+// when several apply — a re-render may have made styles WRONG anywhere in the
+// capture, while a cap only leaves them MISSING past a point, and the reader is an
+// agent deciding whether to trust the picture. So correctness news outranks budget
+// news.
+//
+// `scrolled` is the SECOND thing this walk is now for, and it rides along here
+// rather than in a pass of its own for one reason: pairing. Every scrolled element
+// has to be matched to its clone, which is the exact problem the reshaped/observer
+// machinery above already solves — a second walk would either repeat all of it or
+// pair by index and quietly land one element's scroll offset on another. Reading
+// `scrollTop`/`scrollLeft` beside `getComputedStyle` costs nothing measurable
+// (both are on the same node we already touched) and inherits the guarantee.
 async function shotInlineStyles(src, dst, deadline) {
   let styled = 0, stopped = "", detached = false, mutated = false;
+  // {clone, x, y} per element the user has scrolled. Applied by shotApplyScroll
+  // AFTER the walk, because the children that get shifted are still being styled
+  // while it runs.
+  const scrolled = [];
   // Elements whose child list has changed since the clone was taken, so descending
   // into them would pair the wrong nodes.
   const reshaped = new Set();
@@ -5483,6 +5572,13 @@ async function shotInlineStyles(src, dst, deadline) {
       let css = "";
       for (const prop of cs) css += prop + ":" + cs.getPropertyValue(prop) + ";";
       d.setAttribute("style", css);
+      // How far the user has scrolled THIS box. Not for the root: `src` is the
+      // app's <body>, whose scroll offset is the WINDOW's (`win.scrollY`), and
+      // shotPane already shifts the whole clone by that — recording it here too
+      // would scroll the capture twice and land it below what was on screen.
+      if (s !== src && (s.scrollTop || s.scrollLeft)) {
+        scrolled.push({ clone: d, x: s.scrollLeft || 0, y: s.scrollTop || 0 });
+      }
       const a = s.children, b = d.children;
       if (reshaped.has(s) || a.length !== b.length) {
         // This parent's children have moved since the clone was taken, so `a[i]`
@@ -5505,7 +5601,61 @@ async function shotInlineStyles(src, dst, deadline) {
     if (observer) { try { observer.disconnect(); } catch (err) { /* gone */ } }
   }
   const incomplete = mutated ? "mutated" : (detached ? "detached" : stopped);
-  return { styled, incomplete };
+  return { styled, incomplete, scrolled };
+}
+
+// Put every scrolled box back where the user had it.
+//
+// THE BUG THIS EXISTS FOR, because it is not obvious from the code that was here:
+// `cloneNode` copies attributes, and `scrollTop`/`scrollLeft` are PROPERTIES, not
+// attributes. There is no markup for "scrolled 3160px down" — so a clone of a
+// scrolled page is a clone of that page at the top, and there is nothing in the
+// serialized SVG that could say otherwise. shotPane compensated for the WINDOW's
+// scroll and for nothing else, which is correct for a document that scrolls itself
+// and wrong for every app whose content lives in an inner `overflow: auto` box —
+// which is most of them, and is every template in this repo. Measured against the
+// markdown preview (a CodeMirror editor, one `.cm-scroller`): the user scrolled to
+// an API list halfway down, pressed the camera, and the picture was the top of the
+// document — worse than merely misplaced, because CodeMirror only renders the rows
+// near the viewport, so the top of an unscrolled clone of a scrolled editor is
+// SPACER. The file was a title on an empty page.
+//
+// The fix has to be expressible in markup, so it is a transform on the children
+// rather than a scroll offset on the parent: the scroll box keeps the `overflow`
+// its computed style already carries (which is what clips), and each child is
+// shifted up/left by the offset — exactly the paint the browser does when it
+// scrolls, and it changes no layout, so a flex or grid scroller (`.cm-scroller` is
+// display:flex) is not rearranged by being photographed.
+//
+// Two kinds of child are skipped, and both would be WRONG to shift:
+//   `position: fixed` and `position: sticky` — a sticky header does not move with
+//     the scroll, which is the whole point of it, and an unshifted clone already
+//     draws it where a stuck one sits.
+// The child's own transform is preserved and COMPOSED with, never replaced: the
+// style walk writes the computed `transform` (a matrix, for anything the app has
+// transformed itself), and dropping it would flatten a rotated or scaled element
+// while fixing its scroll. Ours goes first — leftmost is outermost — so the shift
+// is applied in the scroller's space, after the element's own transform, which is
+// what scrolling does.
+//
+// The last declaration in a style attribute wins, so this appends rather than
+// rewrites the property in place: same result, and no regex has to find and splice
+// a value that may contain semicolons inside a `matrix(...)`.
+function shotApplyScroll(scrolled) {
+  let shifted = 0;
+  for (const box of scrolled || []) {
+    for (const child of box.clone.children) {
+      const style = child.getAttribute("style") || "";
+      const pos = /(?:^|;)\s*position\s*:\s*([a-z-]+)/.exec(style);
+      if (pos && (pos[1] === "fixed" || pos[1] === "sticky")) continue;
+      const own = /(?:^|;)\s*transform\s*:\s*([^;]+)/.exec(style);
+      const keep = own && own[1].trim() !== "none" ? " " + own[1].trim() : "";
+      child.setAttribute("style", style + ";transform:translate(" + (-box.x)
+                         + "px," + (-box.y) + "px)" + keep + ";");
+      shifted++;
+    }
+  }
+  return shifted;
 }
 
 // The one sentence a crop carries about what its capture could NOT do, or "" when
@@ -5535,6 +5685,23 @@ function shotPaneNote(pane) {
     default:
       return "";
   }
+}
+
+// The other caveat a capture can carry, and it is deliberately NOT one of
+// shotPaneNote's causes: those are all "some of this may not be what you think it
+// is", spread over an unknown set of elements, while this one is BOUNDED and
+// visible — every picture that could not be inlined is a dashed box that says so
+// in the image itself. Folding it into `incomplete` would have one missing logo
+// tell the agent to distrust the whole crop (see shotTrustLine).
+function shotImageNote(pane) {
+  const n = (pane && pane.imagesMissing) || 0;
+  if (!n) return "";
+  return n + (n === 1 ? " image" : " images") + " could not be embedded in this "
+    + "picture and " + (n === 1 ? "shows" : "show") + " as a dashed "
+    + "\"image not captured\" box (or, for a background, as plain colour): a page "
+    + "rasterised through SVG cannot load a URL, so every image has to be fetched "
+    + "and inlined first, and " + (n === 1 ? "that one" : "those") + " could not "
+    + "be. The app is very likely showing the image fine";
 }
 
 // The closing instruction a caveated shot carries: what to DO about the doubt, as
@@ -5579,6 +5746,197 @@ function shotTrustLine(incomplete) {
 // pixels are what is on screen.
 function shotReadbackIsBlank(url, blankUrl) {
   return !url || !blankUrl || url === blankUrl;
+}
+
+// ── inlining the images ───────────────────────────────────────────────────────
+// WHY ANY OF THIS EXISTS. The capture serializes the clone into an `<svg>` and
+// loads it through an `<img>`, and an SVG loaded that way is rendered with
+// external resource loading DISABLED — no network requests, of any kind, to any
+// origin, same-origin included. It is a deliberate browser rule (an `<img>` must
+// not become a fetch engine), not a CORS problem and not a bug to work around with
+// headers. So every `<img src="http…">` in the clone drew as a broken-image glyph
+// with its alt text beside it, which is exactly what the README's hero screenshot
+// came out as: a 684px hole in the middle of the picture, in a capture the user
+// took to show what the page looked like.
+//
+// The one src such an image CAN follow is a `data:` one, so each URL is fetched
+// here — while we are still an ordinary page with an ordinary network — and the
+// bytes are written into the markup before it is serialized.
+
+// A blob as a `data:` URL. FileReader rather than manual base64: it is the only
+// path that does not push the whole file through a JS string byte by byte.
+function shotDataUrl(blob) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result || ""));
+    fr.onerror = () => rej(new Error("the image bytes could not be read"));
+    fr.readAsDataURL(blob);
+  });
+}
+
+function shotLoadImage(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("the image could not be decoded"));
+    img.src = src;
+  });
+}
+
+// Re-encode an oversized image down to something worth embedding. base64 adds a
+// third on top of the bytes and the result is inlined in markup that then has to
+// be parsed, rasterised and encoded again — so a 4 MB photo would cost more than
+// the whole screenshot it appears in. Capped at SHOT_VIEW_EDGE, which is the
+// resolution the finished picture is encoded at anyway; anything finer is thrown
+// away by the next step regardless.
+//
+// Drawn from an object URL rather than from the page's own <img>: a blob URL is
+// same-origin, so the canvas is never tainted and `toDataURL` cannot throw for a
+// cross-origin image the way reading the live element would.
+async function shotShrinkImage(blob) {
+  const objUrl = URL.createObjectURL(blob);
+  try {
+    const img = await shotLoadImage(objUrl);
+    const fit = shotFit(img.naturalWidth || 1, img.naturalHeight || 1,
+                        SHOT_VIEW_EDGE);
+    const c = document.createElement("canvas");
+    c.width = fit.width;
+    c.height = fit.height;
+    c.getContext("2d").drawImage(img, 0, 0, fit.width, fit.height);
+    // WebP where it is real, PNG where it silently is not — the same one-line
+    // check shotExt spells out, for the same WKWebView reason.
+    const webp = await shotBlob(c, "image/webp", 0.8);
+    if (webp && webp.type === "image/webp") return webp;
+    return (await shotBlob(c, "image/png")) || blob;
+  } finally {
+    URL.revokeObjectURL(objUrl);
+  }
+}
+
+// One URL's bytes as a data: URL. `el` is the element that referenced it, and it
+// is only ever used as the SECOND chance: a cross-origin image served without CORS
+// headers cannot be fetched, but the browser has already loaded it into the
+// element, and drawing that element into a canvas gets the pixels back — unless it
+// taints the canvas, which is precisely the case `toDataURL` throws for. So the
+// order is fetch (works for our own /api/fs/raw, and for any host that sends
+// `access-control-allow-origin`), then the element, then nothing.
+async function shotUrlAsData(url, el) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const blob = await res.blob();
+    const small = blob.size > SHOT_IMG_MAX_BYTES ? await shotShrinkImage(blob)
+                                                 : blob;
+    return await shotDataUrl(small);
+  } catch (err) {
+    if (!el || !el.naturalWidth) throw err;
+    const c = document.createElement("canvas");
+    c.width = el.naturalWidth;
+    c.height = el.naturalHeight;
+    c.getContext("2d").drawImage(el, 0, 0);
+    return c.toDataURL("image/png");   // throws when the canvas is tainted
+  }
+}
+
+// Every `url(…)` a style attribute points at, minus the two that are already
+// local: `data:` (nothing to do) and `url(#id)` (an SVG fragment reference — a
+// filter or a clip path in the same document, which travels with the clone).
+function shotStyleUrls(style) {
+  const out = [];
+  const re = /url\((['"]?)([^'")]+)\1\)/g;
+  let m;
+  while ((m = re.exec(style))) {
+    const u = m[2].trim();
+    if (u && u.slice(0, 5) !== "data:" && u[0] !== "#") out.push(u);
+  }
+  return out;
+}
+
+// What a picture that could not be fetched leaves behind: a dashed box the size of
+// the image, saying so. NOT a broken-image glyph (which reads as a bug in the page
+// being photographed rather than in the photograph) and NOT nothing at all (which
+// would silently redraw the layout around a hole the user's screen did not have).
+// The alt text goes in because it is the one description of the missing picture
+// that the page itself wrote.
+function shotImagePlaceholder(d, alt) {
+  const box = d.ownerDocument.createElement("div");
+  box.setAttribute("style", (d.getAttribute("style") || "")
+    + ";display:flex;align-items:center;justify-content:center;text-align:center;"
+    + "box-sizing:border-box;overflow:hidden;border:1px dashed #b4b4b4;"
+    + "color:#8a8a8a;font:11px system-ui,sans-serif;");
+  box.textContent = alt ? "image not captured — " + alt : "image not captured";
+  d.replaceWith(box);
+}
+
+// Rewrite every image reference in the clone to `data:`, and return
+// `{missing}` — how many could not be, which the caveat line reports.
+//
+// Pairing is by INDEX here, not by the styles walk's guarded descent, and that is
+// a deliberate difference in kind: shotRasterise (right below) has always paired
+// canvases the same way, a mispaired image swaps one picture for another rather
+// than dressing an element in a stranger's layout, and the walk has already
+// reported `mutated` for any capture where the pairing could have slipped.
+//
+// `<source>` elements go first. A `<picture>` whose `<source>` still points at an
+// http URL would have the browser re-resolve the child over the `src` we just
+// rewrote, and lose the image again inside the very element we fixed.
+async function shotInlineImages(src, dst, deadline) {
+  let missing = 0, fetched = 0;
+  const cache = new Map();
+  const resolve = (url, el) => {
+    if (!cache.has(url)) {
+      fetched++;
+      cache.set(url, shotUrlAsData(url, el));
+    }
+    return cache.get(url);
+  };
+  // Room for one more DISTINCT url: an image repeated ten times costs one fetch.
+  const room = (url) => cache.has(url)
+    || (fetched < SHOT_IMG_MAX && Date.now() < deadline);
+  try {
+    for (const s of dst.querySelectorAll("picture source")) s.remove();
+  } catch (err) { /* a clone with no <picture> in it */ }
+  const ss = src.querySelectorAll("img"), ds = dst.querySelectorAll("img");
+  for (let i = 0; i < ss.length && i < ds.length; i++) {
+    // currentSrc, not src: it is what the browser actually PICKED out of a
+    // srcset, which is the picture on screen and the one being photographed.
+    const url = ss[i].currentSrc || ss[i].getAttribute("src") || "";
+    if (!url || url.slice(0, 5) === "data:") continue;
+    if (!room(url)) { missing++; shotImagePlaceholder(ds[i], ss[i].alt); continue; }
+    try {
+      ds[i].setAttribute("src", await resolve(url, ss[i]));
+      // Both would re-select a URL over the src we just wrote.
+      ds[i].removeAttribute("srcset");
+      ds[i].removeAttribute("sizes");
+    } catch (err) {
+      missing++;
+      shotImagePlaceholder(ds[i], ss[i].alt);
+    }
+  }
+  // Backgrounds, masks, borders and list markers: the style walk has already
+  // written the computed value onto every clone element, so this reads them back
+  // off the clone and needs no second pass over the live tree. Scanned by
+  // substring first — `url(` appears in a handful of the thousands of style
+  // attributes here, and the regex is not worth running on the rest.
+  for (const el of dst.querySelectorAll("*")) {
+    const style = el.getAttribute("style") || "";
+    if (style.indexOf("url(") === -1) continue;
+    let out = style;
+    for (const url of shotStyleUrls(style)) {
+      if (!room(url)) { missing++; continue; }
+      try {
+        const data = await resolve(url, null);
+        out = out.split(url).join(data);
+      } catch (err) {
+        // No placeholder for a background: the element keeps its size and its
+        // colour, and the missing layer is counted in the note. Substituting a
+        // dashed box for a texture would be a bigger lie than leaving it plain.
+        missing++;
+      }
+    }
+    if (out !== style) el.setAttribute("style", out);
+  }
+  return { missing };
 }
 
 // Replace each <canvas> in the clone with an <img> of its own pixels: a <canvas>
@@ -5778,11 +6136,26 @@ async function shotPane(deadline) {
   const w = Math.max(1, Math.round(root.clientWidth || body.offsetWidth));
   const h = Math.max(1, Math.round(root.clientHeight || body.offsetHeight));
   const clone = body.cloneNode(true);
-  const styles = await shotInlineStyles(body, clone, deadline);
+  // The style walk stops SHORT of the deadline so the image fetches have a tail to
+  // run in: it stops exactly at whatever stamp it is given, so sharing one stamp
+  // between the two would let a big page spend the entire budget and leave every
+  // picture inside it a placeholder — in a capture that had time in hand.
+  const styles = await shotInlineStyles(
+    body, clone, Math.max(Date.now(), deadline - SHOT_IMG_MS));
+  // BEFORE shotRasterise, which puts data:-URL <img>s of its own into the clone:
+  // running after it would pair those against the source's real images by index
+  // and put a chart's pixels where a logo was.
+  const images = await shotInlineImages(body, clone, deadline);
   const blanks = shotRasterise(body, clone);
+  // LAST, so a canvas that shotRasterise swapped for an <img> is shifted with the
+  // rest of its scroll box rather than left at the top of it.
+  shotApplyScroll(styles.scrolled);
   // Shift the clone by the app's scroll offset so the bitmap matches the VIEWPORT
   // — which is the coordinate space annStageRect (and the pins) already work in.
   // Without this a scrolled app would be cropped against the top of its document.
+  // This is the WINDOW's scroll only; every inner `overflow: auto` box is put back
+  // by shotApplyScroll above, which is where the interesting half of the problem
+  // is (see that function).
   const sx = Math.round(win.scrollX || 0), sy = Math.round(win.scrollY || 0);
   const xml = new XMLSerializer().serializeToString(clone);
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
@@ -5809,7 +6182,8 @@ async function shotPane(deadline) {
   ctx.fillRect(0, 0, w, h);
   ctx.drawImage(img, 0, 0);
   return { canvas, width: w, height: h, blanks,
-           styled: styles.styled, incomplete: styles.incomplete };
+           styled: styles.styled, incomplete: styles.incomplete,
+           imagesMissing: images.missing };
 }
 
 // The app's own page background, from <html> then <body>. Returns "" when both
@@ -5899,6 +6273,8 @@ async function shotCapturePane(deadline) {
   const caveats = [];
   const blanks = shotBlankRegions(pane);
   if (blanks) caveats.push(blanks);
+  const imgs = shotImageNote(pane);
+  if (imgs) caveats.push(imgs);
   const paneNote = shotPaneNote(pane);
   if (paneNote) caveats.push(paneNote);
   if (caveats.length) {
@@ -5936,6 +6312,7 @@ async function annCaptureShots(pending, deadline) {
   // and says WHICH: silence would present a half-CSS render as "the element as
   // the user saw it", the same class of misread as shipping a blank canvas.
   const paneNote = shotPaneNote(pane);
+  const imageNote = shotImageNote(pane);
   let made = 0;
   for (const c of pending || []) {
     const note = (why) => { out.shots[c.id] = { shot: null, shotNote: why }; };
@@ -5986,6 +6363,10 @@ async function annCaptureShots(pending, deadline) {
           + "read back, so that area shows the app's background instead of what "
           + "was drawn there");
       }
+      // Whole-capture news, said on every crop cut out of it — a crop is a window
+      // onto that one bitmap, so a picture it could not embed is as true here as
+      // it is of the pane shot.
+      if (imageNote) caveats.push(imageNote);
       if (paneNote) caveats.push(paneNote);
       if (caveats.length) {
         out.shots[c.id].shotNote = caveats.join("; ") + ". "
@@ -6102,36 +6483,54 @@ function formatAnnotations(arr) {
     "instructions:\n\n```json\n" + JSON.stringify(wire, null, 2) + "\n```"
   );
 }
-// The pane shot's block: what the picture is, and when to reach for it INSTEAD of
-// an annotation's own crop. Delimited and labelled for the same reason the
+// The attached pictures' block: what they are, and when to reach for one INSTEAD
+// of an annotation's own crop. Delimited and labelled for the same reason the
 // app-state block is — the model must be able to tell the user's words from a
 // machine-written description of their screen.
-function paneShotBlock(view) {
-  if (!view) return "";
+//
+// The payload is an ARRAY now, and it is always an array even for one picture: a
+// shape that changes with its length is a shape every reader has to branch on, and
+// the reader here has to stay forgiving anyway (see paneShotIn) because sessions
+// on disk carry the single OBJECT this block used to write. Reading an old format
+// is a permanent obligation; writing two of them is a choice, and this one writes
+// exactly one.
+//
+// `kind` is what the array made necessary: a capture of the preview and a
+// screenshot the user pasted in from somewhere else are answers to different
+// questions, and an agent handed two paths with no way to tell them apart would
+// read a photo of a phone as a picture of the pane it is being asked about.
+function paneShotBlock(views) {
+  const list = (views || []).filter(Boolean);
+  if (!list.length) return "";
   return "<" + PANE_SHOT_TAG + ">\n"
-    + "The user attached a picture of the WHOLE visible " + paneNoun + " pane, "
-    + "deliberately, "
-    + "for this message only. `view` is its path: read it when the question is "
-    + "about the layout as a whole — panels overlapping, everything shifted, the "
-    + "page just looking wrong — which no single-element crop can show. `viewNote` "
-    + "is what the picture does NOT show; read it before trusting the pixels. For "
-    + "a question about one element, that element's own `shot` is the better "
-    + "picture.\n"
-    + JSON.stringify(view) + "\n</" + PANE_SHOT_TAG + ">";
+    + "The user attached " + (list.length === 1 ? "a picture" : list.length
+      + " pictures") + " to this message, deliberately, for this message only. "
+    + "Each entry's `view` is a path to read; `viewNote` is what that picture does "
+    + "NOT show, and it is worth reading before trusting the pixels — it arrives "
+    + "with a null `view` when the attachment failed outright, and ALONGSIDE a "
+    + "real one when part of it is unreadable. `kind` says what you are looking "
+    + "at: \"pane\" is a picture of the WHOLE visible " + paneNoun + " pane, taken "
+    + "here — read it when the question is about the layout as a whole (panels "
+    + "overlapping, everything shifted, the page just looking wrong), which no "
+    + "single-element crop can show; \"image\" is a file the user pasted or dragged "
+    + "in from somewhere else, so it is NOT a picture of this pane and `name` is "
+    + "what they called it. For a question about one element, that element's own "
+    + "`shot` is the better picture.\n"
+    + JSON.stringify(list) + "\n</" + PANE_SHOT_TAG + ">";
 }
 
 // Everything the page prepends to the typed message, composed in ONE place so
 // stripBlocks below can be its exact inverse. Three blocks can ride along — the
-// app-state snapshot, the pane shot and the annotation notes — in any combination,
+// app-state snapshot, the pictures and the annotation notes — in any combination,
 // and the ORDER is fixed here rather than at the call site: stripAnnBlock
 // recognises its preamble only at the START of the text, so anything wedged in
 // front of it (or between it and the message) turns that strip into a silent no-op
-// and leaks raw JSON into the transcript. State first, then the whole-pane picture,
-// then the notes closest to the words they annotate, message last.
-function composeOutgoing(message, pending, state, view) {
+// and leaks raw JSON into the transcript. State first, then the pictures, then the
+// notes closest to the words they annotate, message last.
+function composeOutgoing(message, pending, state, views) {
   const parts = [];
   if (state) parts.push(appStateBlock(state));
-  if (view) parts.push(paneShotBlock(view));
+  if (views && views.length) parts.push(paneShotBlock(views));
   if (pending && pending.length) parts.push(formatAnnotations(pending));
   if (message) parts.push(message);
   return parts.join("\n\n");
@@ -6159,31 +6558,38 @@ function stripPaneBlock(text) {
   return (text || "").replace(re, "").trim();
 }
 
-// The other direction: READ the pane shot back out of a wire message, as
-// `{view, viewNote}` or null. stripPaneBlock throws the block away because the
-// user must not read a temp path; this keeps it, because a RESTORED turn has to
-// be able to show the picture it carried.
+// The other direction: READ the attached pictures back out of a wire message, as
+// an ARRAY (possibly empty). stripPaneBlock throws the block away because the user
+// must not read a temp path; this keeps it, because a RESTORED turn has to be able
+// to show the pictures it carried.
 //
 // Without this, reopening a session turned every screenshot into the four words
 // "🖼 pane screenshot" — the third complaint, and the one with the least excuse,
 // because the path was sitting in the transcript the whole time and the server
 // will serve the file (`/api/fs/raw`, which is what fused.rawUrl builds).
 //
-// Deliberately forgiving: the payload is the LAST line inside the block (the
-// caption above it is prose for the model, and its wording has already changed
-// once), and anything that does not parse is answered with null rather than a
-// throw. A transcript that renders without one picture is a small loss; one that
-// throws mid-restore takes the whole conversation with it.
+// BOTH payload shapes, forever: today's array and the bare `{view, viewNote}`
+// object every session written before the paste/drop attachments existed carries.
+// A lone object is answered as a one-element list so the callers have exactly one
+// shape to draw — the alternative is every consumer branching on the age of the
+// session it happens to be rendering.
+//
+// Deliberately forgiving beyond that: the payload is the LAST line inside the
+// block (the caption above it is prose for the model, and its wording has now
+// changed twice), and anything that does not parse is answered with an empty list
+// rather than a throw. A transcript that renders without one picture is a small
+// loss; one that throws mid-restore takes the whole conversation with it.
 function paneShotIn(text) {
   const re = new RegExp("<" + PANE_SHOT_TAG + ">([\\s\\S]*?)</" + PANE_SHOT_TAG + ">");
   const m = re.exec(text || "");
-  if (!m) return null;
+  if (!m) return [];
   const line = m[1].trim().split("\n").pop();
   try {
     const v = JSON.parse(line);
-    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+    if (Array.isArray(v)) return v.filter((s) => s && typeof s === "object");
+    return v && typeof v === "object" ? [v] : [];
   } catch (err) {
-    return null;
+    return [];
   }
 }
 
@@ -6198,14 +6604,18 @@ function paneShotIn(text) {
 // re-attach check knew about the annotations marker, then the pane shot added two
 // more marker shapes and the check did not learn them, so a view-only send could
 // match the wrong turn. A predicate over a named set cannot drift that way, and
-// adding a fourth marker means adding it here — where both ends see it.
+// adding a marker means adding it to MARKERS — where both ends see it.
 const MARKER_ANN = "📌 annotations";
 const MARKER_VIEW = "🖼 pane screenshot";
+// Pasted/dropped pictures get their own word, because the bubble is the only
+// record of a wordless send and "pane screenshot" would name a picture of this
+// app for a photo the user brought in from somewhere else.
+const MARKER_IMG = "🖼 images";
+const MARKERS = [MARKER_ANN, MARKER_VIEW, MARKER_IMG];
 const MARKER_JOIN = " + ";
 function isMarkerOnly(text) {
   const t = (text || "").trim();
-  return !!t && t.split(MARKER_JOIN)
-    .every((part) => part === MARKER_ANN || part === MARKER_VIEW);
+  return !!t && t.split(MARKER_JOIN).every((part) => MARKERS.indexOf(part) !== -1);
 }
 
 // The inverse of composeOutgoing: hand back exactly what the user typed. Used by
@@ -6228,7 +6638,15 @@ function stripBlocks(text) {
   if (bare) return bare;
   const carried = [];
   if (bare !== noPaneShot) carried.push(MARKER_ANN);
-  if (noPaneShot !== noState) carried.push(MARKER_VIEW);
+  if (noPaneShot !== noState) {
+    // WHICH picture marker, read off the block that was just removed. A send that
+    // carried only pasted images must not be described as a screenshot of the
+    // pane; a session written before `kind` existed has no `kind` at all, and that
+    // is exactly the pane case, so the default falls the right way on its own.
+    const views = paneShotIn(noState);
+    carried.push(views.length && views.every((v) => v.kind === "image")
+                 ? MARKER_IMG : MARKER_VIEW);
+  }
   return carried.join(MARKER_JOIN);
 }
 
@@ -6292,11 +6710,13 @@ function shotRevoke(shot) {
   shot.thumb = "";
 }
 
-// The chip's ✕. renderAnn directly rather than annSave: annSave writes the
-// `annotations` param, and this touched no annotation.
-function shotDrop() {
-  shotRevoke(paneShot);
-  paneShot = null;
+// The chip's ✕: take THIS picture off, leave the others. renderAnn directly rather
+// than annSave: annSave writes the `annotations` param, and this touched no
+// annotation.
+function shotDrop(shot) {
+  if (!shot) return;
+  shotRevoke(shot);
+  shotAttached = shotAttached.filter((s) => s !== shot);
   renderAnn();
 }
 
@@ -6308,9 +6728,9 @@ function shotDrop() {
 // pending or sent, through the one builder (shotThumbBtn).
 //
 // `shotViewing` is the shot currently on screen, and it is an IDENTITY rather
-// than a copy: Discard only appears when it is the same object `paneShot` holds,
-// because a sent picture is already in the agent's hands and a control offering
-// to take it back would be a lie.
+// than a copy: Discard only appears when it is one of the objects `shotAttached`
+// still holds, because a sent picture is already in the agent's hands and a
+// control offering to take it back would be a lie.
 const shotView = document.getElementById("shotview");
 const shotViewImg = document.getElementById("shotview-img");
 const shotViewPath = document.getElementById("shotview-path");
@@ -6323,7 +6743,7 @@ function shotViewOpen(shot) {
   if (!shot || !(shot.src || shot.thumb)) return;
   shotViewing = shot;
   shotViewImg.src = shot.src || shot.thumb;
-  shotViewImg.alt = "screenshot of the whole " + paneNoun + " pane, full size";
+  shotViewImg.alt = shotAlt(shot) + ", full size";
   // Every open starts FITTED. A zoom is a thing you do to one picture while
   // looking at it, not a preference that should follow you to the next one — and
   // a viewer that opened already scrolled into the middle of an image would look
@@ -6336,7 +6756,7 @@ function shotViewOpen(shot) {
   // of this picture are not what was on the pane. Here is where it belongs — the
   // one moment the user is looking at the pixels it is about.
   shotViewNote.textContent = shot.viewNote || "";
-  shotViewDrop.hidden = shot !== paneShot;
+  shotViewDrop.hidden = shotAttached.indexOf(shot) === -1;
   shotView.hidden = false;
   // Focus moves into the dialog so Escape and Tab belong to it. The close button
   // rather than the image: the first thing a keyboard reaches for in a viewer is
@@ -6371,14 +6791,17 @@ function shotReceipt(sum, shot) {
   txt.className = "annsum-txt";
   // Says which it was, because "no picture, and here is why" is a different
   // fact from "here is your picture" and the user is owed both.
-  txt.textContent = shot.view ? "screenshot attached" : "no pane screenshot";
+  txt.textContent = shot.view
+    ? (shot.kind === "image"
+        ? "image attached" + (shot.name ? ": " + shot.name : "")
+        : "screenshot attached")
+    : (shot.kind === "image" ? "no image" : "no pane screenshot");
   txt.title = shot.viewNote || shot.view || "";
   row.append(lbl, txt);
   sum.appendChild(row);
   const src = shot.src || shot.thumb;
   if (!src) return;
-  const btn = shotThumbBtn("annsum-pane", shot,
-                           "screenshot of the whole " + paneNoun + " pane");
+  const btn = shotThumbBtn("annsum-pane", shot, shotAlt(shot));
   btn.title = shot.view || "";
   // A restored turn whose file the shots directory has pruned (12h/200 files)
   // 404s here. Said in words rather than left as a broken-image glyph, which a
@@ -6393,17 +6816,19 @@ function shotReceipt(sum, shot) {
   sum.appendChild(btn);
 }
 
-// The receipt for a turn read back out of a session file. `paneShotIn` recovers
-// `{view, viewNote}` from the wire block; `src` is added here because only the
-// live page knows how to fetch a path — fused.rawUrl builds the server's raw-bytes
-// URL, which is how every other template shows a local image, and the shots
-// directory is an ordinary absolute path to it.
+// The receipts for a turn read back out of a session file. `paneShotIn` recovers
+// the list from the wire block; `src` is added here because only the live page
+// knows how to fetch a path — fused.rawUrl builds the server's raw-bytes URL,
+// which is how every other template shows a local image, and the shots directory
+// is an ordinary absolute path to it.
 function shotRestoreReceipt(turn, text) {
-  const shot = paneShotIn(text);
-  if (!shot || !turn) return;
+  const shots = paneShotIn(text);
+  if (!shots.length || !turn) return;
   const sum = document.createElement("div");
   sum.className = "annsum";
-  shotReceipt(sum, shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot);
+  for (const shot of shots) {
+    shotReceipt(sum, shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot);
+  }
   turn.appendChild(sum);
 }
 
@@ -6421,7 +6846,7 @@ document.getElementById("shotview-scrim").onclick = shotViewClose;
 // Discard from inside the viewer, which is the one place the user can actually
 // judge that this is the wrong picture. It closes too — the thing it was showing
 // is gone.
-shotViewDrop.onclick = () => { shotDrop(); shotViewClose(); };
+shotViewDrop.onclick = () => { shotDrop(shotViewing); shotViewClose(); };
 
 // Whether a capture is running. One at a time: the second half of a double-click
 // would otherwise upload a second file and leak the first one's thumbnail, and the
@@ -6526,11 +6951,194 @@ async function shotAttachPane() {
   // the silent-failure shape — the user pressed a button and is owed an answer,
   // and the agent is owed the news that a picture was meant to be here. The chip
   // says which it is, and the same ✕ removes it either way.
-  shotRevoke(paneShot);           // a second click replaces the first picture
-  paneShot = shot;
+  shot.kind = "pane";
+  // A SECOND CLICK REPLACES THE FIRST PICTURE — the one uniqueness rule the list
+  // keeps from D275, and it is a fact about the subject rather than a cap: "the
+  // pane, now" has exactly one answer, and two photographs of the same screen in
+  // one message is a receipt nobody reads. Pasted images are the other kind and
+  // stack freely; only this one seat is single.
+  const seat = shotAttached.findIndex((s) => s.kind === "pane");
+  if (seat === -1) {
+    shotAttached.push(shot);
+  } else {
+    shotRevoke(shotAttached[seat]);
+    shotAttached[seat] = shot;
+  }
   renderAnn();
 }
 for (const b of shotBtns()) b.addEventListener("click", shotAttachPane);
+
+// ── pasted and dropped pictures ────────────────────────────────
+// The other half of "attach a picture to this message", and the half the camera
+// cannot serve: a screenshot the user ALREADY HAS. A crop from their OS shortcut,
+// a photo of a phone screen, a mock a designer sent them, a picture out of a bug
+// report. None of it is on this pane, so no button here can photograph it — and
+// every chat app they use takes it with ⌘V or a drag, which is exactly why the
+// absence read as a missing feature rather than as a boundary.
+//
+// It rides the SAME pipeline the camera's picture does — upload into the shots
+// directory, a chip above the composer, the viewer behind the thumbnail, the
+// `<pane-shot>` block on the wire, the receipt under the bubble — and that is the
+// whole design: the shots directory is already the one path `--allowed-tools`
+// pre-approves a `Read` of, already pruned (12h/200 files), already served back
+// through `/api/fs/raw` for a restored turn. A second directory or a second wire
+// block would have meant a second grant, a second pruner and a second reader for
+// something the agent sees as the same thing — a path to a picture.
+//
+// How many can ride at once. A paste is one picture, a drag can be a folder's
+// worth, and the cap is what stops a slip of the mouse turning into 40 uploads and
+// a turn nobody can read. Over it, the extra files do NOT vanish: each becomes a
+// chip that says why, the same shape a failed capture wears, because a file the
+// user dropped and cannot see anywhere is indistinguishable from a bug.
+const SHOT_ATTACH_MAX = 4;
+// Bytes one pasted/dropped picture may be. The point of the limit is the AGENT's
+// read, not the disk: an 8 MB screenshot is not a more useful attachment than the
+// same picture at 4 MB, and this is where a phone photo would otherwise land.
+const SHOT_ATTACH_MAX_BYTES = 4 * 1024 * 1024;
+
+// The extension a pasted blob has EARNED, from its MIME type — the same rule
+// shotExt applies to an encoded crop, for the same reason: the name has to follow
+// the content or the agent's Read gets bytes its extension lied about. Clipboard
+// images arrive as `image/png` with NO filename at all, so the type is the only
+// evidence there is.
+function shotFileExt(type, name) {
+  const known = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+                  "image/gif": ".gif", "image/bmp": ".bmp", "image/avif": ".avif" };
+  if (known[type]) return known[type];
+  const dot = (name || "").lastIndexOf(".");
+  return dot > 0 ? (name || "").slice(dot).toLowerCase() : ".png";
+}
+
+// Whether this file is a picture at all. `type` first because it is what the
+// clipboard supplies and what the browser sniffed; the extension is the fallback
+// for a drag whose source gave no type.
+function shotIsImage(file) {
+  if (!file) return false;
+  if ((file.type || "").slice(0, 6) === "image/") return true;
+  return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name || "");
+}
+
+// Take one picture the user brought in. Never throws: every refusal becomes a chip
+// carrying its own reason, exactly as a failed capture does, so nothing the user
+// gestured at disappears without an answer.
+async function shotAttachFile(file) {
+  const name = file.name || "pasted image";
+  const fail = (why) => {
+    shotAttached.push({ kind: "image", view: null, name, viewNote: why });
+    renderAnn();
+  };
+  if (file.size > SHOT_ATTACH_MAX_BYTES) {
+    return fail("not attached: " + name + " is " + Math.round(file.size / 1024)
+                + " KB and the limit is "
+                + Math.round(SHOT_ATTACH_MAX_BYTES / 1024) + " KB");
+  }
+  try {
+    const dir = await shotDirPath();
+    const path = shotJoin(dir, shotStamp() + shotFileExt(file.type, file.name));
+    await fused.uploadFile(path, file);
+    shotAttached.push({ kind: "image", view: path, name,
+                        thumb: URL.createObjectURL(file) });
+    renderAnn();
+  } catch (err) {
+    fail("not attached: it could not be saved (" + err.message + ")");
+  }
+}
+
+// Every image in a paste or a drop, in order, up to the cap. Sequential rather
+// than Promise.all: they share one shots directory and one upload channel, the
+// chips appear one after another as they land (which is the feedback), and four
+// small files are not a race worth running.
+//
+// THE CAP IS DECIDED HERE and not per file, because only this end knows how many
+// there are. Refusing file-by-file said the same sentence once per file — drop a
+// folder of 30 and the composer fills with 26 identical "which is the cap" chips,
+// which is a worse answer than silence. One chip, naming the number left out.
+async function shotAttachFiles(files) {
+  const imgs = [...(files || [])].filter(shotIsImage);
+  if (!imgs.length) return;
+  const room = Math.max(0, SHOT_ATTACH_MAX - shotAttached.length);
+  for (const f of imgs.slice(0, room)) await shotAttachFile(f);
+  const over = imgs.length - room;
+  if (over > 0) {
+    shotAttached.push({ kind: "image", view: null,
+      name: over === 1 ? "1 more picture" : over + " more pictures",
+      viewNote: "not attached: " + over + (over === 1 ? " picture" : " pictures")
+        + " would have taken this message past " + SHOT_ATTACH_MAX
+        + ", which is the cap" });
+    renderAnn();
+  }
+}
+
+// PASTE. `clipboardData.files` is the modern spelling and it is empty for a
+// clipboard that holds only text, so a paste of words falls through untouched to
+// the textarea — which is the important half: this listener sits on the composer a
+// user types in all day, and stealing an ordinary paste would be a far worse bug
+// than never having had the feature.
+//
+// `preventDefault` ONLY when a picture was actually found, and for the same
+// reason: a paste carrying both an image and its alt text (some apps send both)
+// should attach the picture and not also paste the words, but a paste carrying
+// only words must reach the box.
+function shotPasteHandler(e) {
+  const data = e.clipboardData;
+  if (!data) return;
+  const imgs = [...(data.files || [])].filter(shotIsImage);
+  if (!imgs.length) return;
+  e.preventDefault();
+  shotAttachFiles(imgs);
+}
+box.addEventListener("paste", shotPasteHandler);
+homebox.addEventListener("paste", shotPasteHandler);
+
+// DRAG AND DROP, on the whole chat column rather than on the textarea: a target
+// the size of a one-line input is a target people miss, and everything in this
+// column is part of the same message. `#chat` is the common ancestor of both
+// composers, the log and the home card, so one pair of listeners covers every
+// place a user would think to drop a picture.
+//
+// dragover MUST preventDefault or the drop event never fires — the default action
+// is "refuse the drag" — and `dropEffect` is what makes the cursor say "copy"
+// rather than the forbidden sign. Both are only set for a drag that actually
+// carries files, so dragging TEXT (out of the log, into the box) keeps the
+// browser's own move/insert behaviour.
+//
+// A `dragging` class on the column draws the drop target. Counted, not toggled:
+// dragenter/dragleave fire for every child element the pointer crosses, so a plain
+// toggle flickers the highlight off the moment the cursor moves over a chip. The
+// counter is reset (not decremented) on drop, because a drop delivers no leave for
+// the enters that preceded it.
+function shotDragHasFiles(e) {
+  const dt = e.dataTransfer;
+  if (!dt) return false;
+  return [...(dt.types || [])].indexOf("Files") !== -1;
+}
+const chatCol = document.getElementById("chat");
+let shotDragDepth = 0;
+if (chatCol) {
+  chatCol.addEventListener("dragenter", (e) => {
+    if (!shotDragHasFiles(e)) return;
+    e.preventDefault();
+    shotDragDepth++;
+    chatCol.classList.add("dropping");
+  });
+  chatCol.addEventListener("dragover", (e) => {
+    if (!shotDragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  chatCol.addEventListener("dragleave", (e) => {
+    if (!shotDragHasFiles(e)) return;
+    shotDragDepth = Math.max(0, shotDragDepth - 1);
+    if (!shotDragDepth) chatCol.classList.remove("dropping");
+  });
+  chatCol.addEventListener("drop", (e) => {
+    if (!shotDragHasFiles(e)) return;
+    e.preventDefault();
+    shotDragDepth = 0;
+    chatCol.classList.remove("dropping");
+    shotAttachFiles([...(e.dataTransfer.files || [])]);
+  });
+}
 
 // ── auto-growing textareas ─────────────────────────────────────
 function autoGrow(el) {
@@ -9148,13 +9756,16 @@ async function sendMessage(message) {
   // If the start below never launches a run, the stamp (and the receipt) are
   // rolled back so the notes stay editable and re-sendable.
   const pending = annPending();
-  // Taken and CLEARED here, at the top and before anything is waited on: the shot
-  // belongs to ONE message, so a second send fired while this one is still running
-  // must not inherit it. The chip goes at the same moment, which is what a user
-  // reads as "it went with that one".
-  const shot = paneShot;
-  if (shot) { paneShot = null; renderAnn(); }
-  if (!message && !pending.length && !shot) { sending = false; return; }
+  // Taken and CLEARED here, at the top and before anything is waited on: the
+  // pictures belong to ONE message, so a second send fired while this one is still
+  // running must not inherit them. The chips go at the same moment, which is what
+  // a user reads as "they went with that one".
+  // `pics`, not `shots`: `shots` is taken further down by the annotation CROPS,
+  // and two collections of pictures under one name in one function is exactly the
+  // shadowing the receipt loop below already had to be warned about once.
+  const pics = shotAttached;
+  if (pics.length) { shotAttached = []; renderAnn(); }
+  if (!message && !pending.length && !pics.length) { sending = false; return; }
   // Both composer entry points come through here, so the snapshot is taken in
   // exactly one place — at SEND time, which is the moment whose state the user is
   // describing when they type.
@@ -9181,30 +9792,35 @@ async function sendMessage(message) {
   // rather than inside composeOutgoing because that function is sync and pure —
   // it is the exact inverse of stripBlocks, and both halves have to stay that way.
   const sentState = await appStateFile(state);
-  // The shot goes on the wire as its path and its note and nothing else: `thumb`
-  // is a blob URL belonging to THIS page, which is a dead link everywhere else and
-  // unreadable to the agent. The shot is not folded into the annotations either —
-  // it is not an anchor's property, it is never persisted, and so it has no
-  // stale-path case to clear.
+  // Each picture goes on the wire as its path, its note, its kind and its name and
+  // nothing else: `thumb` is a blob URL belonging to THIS page, which is a dead
+  // link everywhere else and unreadable to the agent. They are not folded into the
+  // annotations either — a picture is not an anchor's property, it is never
+  // persisted, and so it has no stale-path case to clear.
   const outgoing = composeOutgoing(message, pending, sentState,
-                                   shot ? { view: shot.view,
-                                            viewNote: shot.viewNote } : null);
+    pics.map((s) => {
+      const wire = { kind: s.kind || "pane", view: s.view || null };
+      if (s.viewNote) wire.viewNote = s.viewNote;
+      if (s.name && s.kind === "image") wire.name = s.name;
+      return wire;
+    }));
   if (pending.length) {
     for (const c of pending) c.sent = 1;
     annSave();
   }
   // Subtle receipt under the bubble: which annotations rode this message, and
-  // whether a picture of the whole pane did. Built whenever there is EITHER, since
-  // a screenshot-only send attaches a file too and nothing is attached invisibly.
+  // which pictures did. Built whenever there is EITHER, since a picture-only send
+  // attaches a file too and nothing is attached invisibly.
   let receipt = null;
-  if (pending.length || shot) {
+  if (pending.length || pics.length) {
     const turns = log.querySelectorAll(".turn.user");
     const turn = turns[turns.length - 1];
     const sum = document.createElement("div");
     receipt = sum;
     sum.className = "annsum";
-    // The pane shot's own rows, first — it is the widest claim the message makes.
-    if (shot) shotReceipt(sum, shot);
+    // The pictures' own rows, first — a whole-pane shot is the widest claim the
+    // message makes, and a pasted one is not about any single anchor either.
+    for (const pic of pics) shotReceipt(sum, pic);
     pending.forEach((c) => {
       const row = document.createElement("div");
       row.className = "annsum-row";
@@ -9308,12 +9924,14 @@ async function sendMessage(message) {
       // blob URL, and an unrevoked one pins its Blob for the life of the page.
       // A retried send captures fresh crops anyway, so nothing here is reusable.
       annRevokeThumbs(shots);
-      // The pane shot is the opposite case and must NOT be revoked: it is handed
-      // back to the composer as a pending chip, which shows that very thumbnail.
-      // The user took this picture deliberately, of a moment that has passed, and
-      // a failed send is not a reason to make them take it again — nor could they,
-      // if what they photographed is gone.
-      if (shot) { paneShot = shot; renderAnn(); }
+      // The attached pictures are the opposite case and must NOT be revoked: they
+      // are handed back to the composer as pending chips, which show those very
+      // thumbnails. The user attached them deliberately — a capture of a moment
+      // that has passed, or a file they went and found — and a failed send is not
+      // a reason to make them do it again, nor could they, if what they
+      // photographed is gone. Prepended, so a picture attached WHILE the send was
+      // in flight keeps its place after the ones that were already waiting.
+      if (pics.length) { shotAttached = pics.concat(shotAttached); renderAnn(); }
     }
     addError(err.message);
   } finally {
@@ -9411,8 +10029,9 @@ function submitChat() {
   }
   if (sending) return;
   const message = box.value.trim();
-  // notes alone are sendable, and so is a bare screenshot of the pane
-  if (!message && !annPending().length && !paneShot) return;
+  // notes alone are sendable, and so is a bare picture (captured, pasted or
+  // dropped) with no words at all
+  if (!message && !annPending().length && !shotAttached.length) return;
   box.value = "";
   growBox();
   sendMessage(message);
@@ -9437,8 +10056,9 @@ document.getElementById("card").onsubmit = (e) => {
   if (activeRun) { stopRun(); return; }
   if (sending) return;
   const message = homebox.value.trim();
-  // notes alone are sendable, and so is a bare screenshot of the pane
-  if (!message && !annPending().length && !paneShot) return;
+  // notes alone are sendable, and so is a bare picture (captured, pasted or
+  // dropped) with no words at all
+  if (!message && !annPending().length && !shotAttached.length) return;
   homebox.value = "";
   growHome();
   enterChat();
