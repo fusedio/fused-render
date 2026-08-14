@@ -434,6 +434,20 @@ def distribution_for_module(module: str) -> str:
 def missing_from_this_interpreter(project_dir: str) -> list[str]:
     """Declared distributions THIS interpreter cannot provide, in declared order.
 
+    **What this is for, and the one thing it must never be used for.** It exists
+    so that a run which has ALREADY FAILED on an import can be explained — see
+    `executor.explain_missing_module`, its only caller. It answers "was the thing
+    that just broke something this folder asked for", after the fact.
+
+    **Its output must NOT be turned into a pre-flight refusal.** That was tried
+    and it broke five templates that had been working for months: `docs`,
+    `geotiff`, `latex`, `model_card` and `pano` each declare a heavy optional
+    dependency while their entry points stay stdlib-only on purpose —
+    `geotiff`'s `ensure()`, and `model_card`'s manifest promising the card
+    "renders identically under either engine". A non-empty list here means the
+    folder declares something absent; it does NOT mean this run needs it, and
+    almost every run does not (D275). The distinction is the entire lesson.
+
     "This interpreter" is `sys.executable` itself, asked in-process through
     `importlib.metadata` — deliberately NOT `engine.app_satisfies`, which probes
     a *candidate* interpreter in a subprocess because the fused backend may run
@@ -441,15 +455,15 @@ def missing_from_this_interpreter(project_dir: str) -> list[str]:
     `sys.executable`, so the question here has a local answer and paying a
     subprocess probe for it would be absurd.
 
-    Only the name is checked, never the version specifier: this decides whether
-    a run is IMPOSSIBLE here, and an unsatisfied `>=` is a much weaker claim than
-    an absent distribution — refusing on it would take working templates down
-    over a floor the app is one release away from meeting. `uv` still enforces
-    the specifier wherever a real environment gets built.
+    Only the name is checked, never the version specifier: an unsatisfied `>=` is
+    a much weaker claim than an absent distribution, and attributing a failure to
+    a floor the app is one release away from meeting would point the reader at
+    the wrong thing. `uv` still enforces the specifier wherever a real
+    environment gets built.
 
     Every uncertain answer is "present", the same three-valued discipline
-    `app_satisfies` follows in the other direction: this function's caller turns
-    its output into a REFUSAL, so a name it cannot resolve must not become one.
+    `app_satisfies` follows in the other direction: a name here becomes part of
+    an explanation blaming the environment, so one this cannot resolve must not.
     """
     import importlib.metadata as md
 

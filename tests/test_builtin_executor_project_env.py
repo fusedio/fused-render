@@ -166,25 +166,47 @@ def test_an_import_error_with_no_module_name_is_left_alone(tmp_path):
     ) is None
 
 
-def test_a_templates_own_richer_message_is_not_overwritten(tmp_path, monkeypatch):
-    """map/worker.py already explains ITS case better than this can.
+def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
+    """`map/worker.py` writes its own richer message; both cases are pinned.
 
-    It raises `ModuleNotFoundError("No module named 'x'. A Python map target
-    runs inside …")` for a target the Map Viewer exec'd in-process, and that
-    message starts with the phrase this enrichment matches on. It survives
-    because the gate is the DECLARATION, not the phrase: a module map's manifest
-    never named is not this function's business. Pinned because the two messages
-    overlapping is not obvious from either side.
+    `worker.py` raises `ModuleNotFoundError("No module named 'x'. A Python map
+    target runs inside …")` when the user's own map target fails to import, and
+    that message opens with the exact phrase this enrichment matches on. Which
+    one the user sees depends on whether `x` is something map DECLARES:
+
+      * **not declared** (`xarray`, `torch`, anything of the user's own) —
+        worker's message survives, because the gate is the declaration and a
+        module map never asked for is not this function's business;
+      * **declared and absent here** (`duckdb` on a packaged app running the
+        built-in engine, the real post-D275 state) — the enrichment REPLACES
+        worker's message.
+
+    The second is the interesting one and it was described wrongly before: the
+    survival rule was stated as "it names an undeclared module", which is only
+    what happens to be true on a dev venv where everything is installed. The
+    replacement is deliberate and better — worker's message tells the user to
+    rewrite their target, while in that state the actionable fact is that the
+    engine setting is why the environment was never built. Losing worker's extra
+    sentence about which process the target ran in is the accepted cost.
     """
-    _absent(monkeypatch, "geopandas")
-    original = (
-        "No module named 'xarray'. A Python map target runs inside the Map "
+    worker = os.path.join(_TEMPLATES, "map", "worker.py")
+    worker_message = (
+        "No module named '{}'. A Python map target runs inside the Map "
         "Viewer's own environment (…)"
     )
+
+    _absent(monkeypatch, "duckdb")
+    # Not declared by map -> worker keeps the floor.
     assert executor.explain_missing_module(
-        os.path.join(_TEMPLATES, "map", "worker.py"),
-        {"type": "ModuleNotFoundError", "message": original},
+        worker, {"type": "ModuleNotFoundError",
+                 "message": worker_message.format("xarray")},
     ) is None
+    # Declared by map and absent here -> the engine explanation takes over.
+    taken_over = executor.explain_missing_module(
+        worker, {"type": "ModuleNotFoundError",
+                 "message": worker_message.format("duckdb")},
+    )
+    assert taken_over and "Preferences" in taken_over
 
 
 # ------------------------------------------------------- the real declarations
@@ -234,39 +256,68 @@ def test_every_declaring_core_template_can_explain_its_own_dependency(
     assert explanation and folder in explanation and dist in explanation
 
 
-@pytest.mark.parametrize(
-    "folder,entrypoint",
-    [
-        # The five that a folder-scoped refusal broke, each with the entry point
-        # its own manifest or docstring documents as stdlib-only.
-        ("geotiff", "tiff_reader.py"),
-        ("model_card", "inspect_model.py"),
-        ("pano", "pano.py"),
-        ("docs", "docs.py"),
-        ("latex", "engine.py"),
-    ],
-)
-def test_a_stdlib_only_path_is_never_pre_refused(folder, entrypoint, monkeypatch):
-    """These five predate D275 and must keep working under this engine.
+def _equirect_image(tmp_path):
+    """A 2:1 image pano.py will accept, so its happy path is reachable."""
+    pytest.importorskip("PIL")
+    from PIL import Image
 
-    Every one declares something heavy and optional. A run that does not fail is
-    a run this executor must not interfere with, however much the folder
-    declares — asserted with the declaration's contents SIMULATED ABSENT, so the
-    guarantee holds on the machines where it matters rather than only on a fat
-    dev venv.
+    path = tmp_path / "pano.jpg"
+    Image.new("RGB", (64, 32), (10, 20, 30)).save(path)
+    return {"action": "open", "file": str(path)}
+
+
+# (folder, entry point, params). The five templates a folder-scoped refusal
+# broke, each driven through the entry point and action its own manifest or
+# docstring documents as the stdlib-only one. `params` is a callable so a case
+# can build a fixture file; every action here is side-effect-free — a status
+# probe or a read — and none of them downloads anything.
+_STDLIB_ONLY_RUNS = [
+    ("geotiff", "tiff_reader.py", lambda tmp: {}),
+    ("model_card", "inspect_model.py", lambda tmp: {"path": str(tmp)}),
+    ("pano", "pano.py", _equirect_image),
+    ("docs", "docs.py", lambda tmp: {"action": "typst_status"}),
+    ("latex", "engine.py", lambda tmp: {"action": "tectonic_status"}),
+]
+
+
+@pytest.mark.parametrize(
+    "folder,entrypoint,params", _STDLIB_ONLY_RUNS,
+    ids=[row[0] for row in _STDLIB_ONLY_RUNS],
+)
+def test_a_stdlib_only_template_really_runs_under_this_engine(
+    folder, entrypoint, params, tmp_path, monkeypatch
+):
+    """The headline claim of this whole change, actually executed.
+
+    These five predate D275 and each declares something heavy and optional —
+    `imagecodecs`, `tokenizers`, `py360convert`, `pypandoc-binary` — while the
+    entry point below stays stdlib-only on purpose. A folder-scoped pre-flight
+    refusal took all five down, and the version of this test that replaced it
+    only ever called `explain_missing_module`, so a refusal reinstated ANYWHERE
+    ELSE in `run_python` left it green. It goes through the front door now.
+
+    The condition is FORCED rather than borrowed from the machine: the parent is
+    made to believe every one of the folder's declared distributions is absent —
+    exactly the state that triggered the round-2 refusal — while the child
+    subprocess runs for real against the actual interpreter. That makes the
+    guarantee deterministic instead of a property of whatever this venv happens
+    to have installed, which is what let the earlier version prove nothing.
     """
     root = os.path.join(_TEMPLATES, folder)
-    _absent(monkeypatch, *(
-        projectenv._normalize_dist(d.split(";")[0].split(">")[0].split("=")[0].strip())
+    declared = [
+        projectenv._normalize_dist(
+            d.split(";")[0].split(">")[0].split("=")[0].split("[")[0].strip())
         for d in projectenv.applicable_dependencies_of(root)
-    ))
-    assert projectenv.missing_from_this_interpreter(root), (
-        "the simulation did not take; this test would prove nothing"
+    ]
+    _absent(monkeypatch, *declared)
+    assert set(projectenv.missing_from_this_interpreter(root)) == set(declared), (
+        "the simulated absence did not take, so this run would not reproduce the "
+        "condition a pre-flight refusal fired on and would prove nothing"
     )
-    # A successful run has no error dict at all, which is the only signal this
-    # executor gets — and it must produce no explanation and no refusal.
-    assert executor.explain_missing_module(
-        os.path.join(root, entrypoint), {}) is None
-    assert os.path.isfile(os.path.join(root, entrypoint)), (
-        f"{folder}/{entrypoint} no longer exists; re-anchor this test"
+
+    out = executor.run_python(os.path.join(root, entrypoint), params(tmp_path))
+    assert out["ok"] is True, (
+        f"{folder}/{entrypoint} is a stdlib-only entry point that ran fine "
+        f"before D275 and must keep running under the built-in executor however "
+        f"much its folder declares — got {out.get('error')}"
     )

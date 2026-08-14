@@ -33,7 +33,8 @@
 # own folder's `pyproject.toml` is not consulted for this call.
 #
 # These two, and only these two, buy back the overwhelmingly common case at a
-# measured +47.7 MB (425.1 -> 472.8 MB for this whole environment). This is NOT
+# measured +47.7 MB on this whole environment (D275 records how that is counted;
+# the delta is what to trust — absolutes vary by method). This is NOT
 # an attempt to mirror `[bundled]` — that would be a hand-kept second copy of it
 # living inside a template (D177) which could never be complete, since a map
 # target may import anything. **The real fix is

@@ -194,6 +194,38 @@ def test_a_map_target_importing_what_this_venv_lacks_is_told_where_it_ran(tmp_pa
     assert "will not change that" in message
 
 
+def test_the_map_target_message_names_every_package_the_venv_actually_has():
+    """The message tells the user to "rewrite the target using the packages
+    above", so the list had better be the real one (D177).
+
+    Hand-written, it listed six of thirteen and omitted `duckdb` and `requests`
+    — the two put in the manifest specifically so user targets could import
+    them, i.e. the two most likely to save the reader. It is derived from the
+    manifest now, and this is the check that keeps it derived: a future entry
+    added to `map/pyproject.toml` must appear here without anyone remembering.
+    """
+    declared = tomllib.loads(
+        (MAP / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    names = [d.split(";")[0].split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
+             for d in declared]
+    assert "duckdb" in names and "requests" in names, (
+        "map/pyproject.toml no longer declares the two packages added for "
+        "user-supplied targets (D275); if that was deliberate, update this test "
+        "and worker.py's docstring together"
+    )
+
+    worker = _load("worker")
+    message = worker._missing_module_help(
+        ModuleNotFoundError("No module named 'x'", name="x"))
+    missing = [n for n in names if n not in message]
+    assert not missing, (
+        f"{missing} are in map/pyproject.toml but absent from the help text a "
+        "user gets when their map target fails to import — the message points at "
+        "'the packages above' and would be hiding exactly the ones that could "
+        "fix their script"
+    )
+
+
 def test_browsable_vector_formats_are_supported_by_every_loading_path():
     discover = _load("discover")
     classify = _load("geo_classify")

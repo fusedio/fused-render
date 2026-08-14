@@ -52,6 +52,40 @@ def _run_entrypoint(module: Any, preferred: str = "") -> tuple[Any, str]:
     )
 
 
+def _declared_packages() -> list[str]:
+    """This folder's declaration, READ rather than restated (D177).
+
+    The first version of the message below listed six of the thirteen by hand,
+    and the two it omitted were `duckdb` and `requests` — the two added to the
+    manifest specifically so that user targets could import them. It told the
+    reader to "rewrite the target using the packages above" while hiding the two
+    most likely to save them. A hand-copied list of another list drifts; this one
+    drifted before it was a day old.
+
+    `tomllib` is stdlib from 3.11 and this manifest requires 3.12, so reading it
+    costs no dependency and keeps the template standalone-copyable — it imports
+    nothing from `fused_render` (SPEC PY-15). An unreadable manifest degrades to
+    an empty list and a message that simply omits the enumeration, because a
+    diagnostic must never be the thing that raises.
+    """
+    try:
+        import tomllib
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "pyproject.toml"), "rb") as handle:
+            declared = tomllib.load(handle)["project"]["dependencies"]
+    except Exception:  # noqa: BLE001 — a help string must not be able to fail
+        return []
+    names = []
+    for requirement in declared:
+        name = requirement.split(";")[0].split("[")[0]
+        for separator in ("<", ">", "=", "!", "~", " ", "("):
+            name = name.split(separator)[0]
+        if name.strip():
+            names.append(name.strip())
+    return names
+
+
 def _missing_module_help(error: ModuleNotFoundError) -> str:
     """Explain the one thing about this process a user cannot guess.
 
@@ -60,31 +94,34 @@ def _missing_module_help(error: ModuleNotFoundError) -> str:
     not from JSON, so there is no process boundary to put between them. That
     process used to be the app's own interpreter, carrying everything `[bundled]`
     promised user code. Since D275 it is this template's environment
-    (`map/pyproject.toml`, SPEC PY-16), which contains exactly the geo stack the
-    Map Viewer itself needs and nothing else — so a target that imports duckdb,
-    requests or anything else from the app's set now fails here.
+    (`map/pyproject.toml`, SPEC PY-16), which contains exactly what that file
+    declares and nothing else — so a target importing anything outside it fails
+    here, and only here.
 
-    The bare error says `No module named 'duckdb'`, which is true and sends the
+    The bare error says `No module named 'x'`, which is true and sends the
     reader looking in the wrong place: their own folder's `pyproject.toml` is not
     consulted for this call, so nothing they can write near their script fixes
-    it. Naming the environment is the difference between a puzzle and a decision.
+    it. Naming the environment, and what is IN it, is the difference between a
+    puzzle and a decision.
 
-    A message, not a repair: adding the app's set to `map/pyproject.toml` would
-    be a hand-kept second copy of `[bundled]` living inside a template (D177), and
-    it could never be complete — a map target may import anything. The real fix
-    is for the target to run under the environment PY-16 gives the USER's folder,
-    which needs the live object to cross a process boundary. Recorded in D275.
+    A message, not a repair. `duckdb` and `requests` were added to the manifest
+    to buy back the common case (D275), but mirroring the app's whole set there
+    would be a hand-kept second copy of `[bundled]` inside a template (D177) that
+    could never be complete — a map target may import anything. The real fix is
+    for the target to run under the environment PY-16 gives the USER's folder,
+    which needs the live object to cross a process boundary.
     """
     name = error.name or "a package"
+    available = _declared_packages()
+    listing = (" — " + ", ".join(available)) if available else ""
     return (
         f"{error}. A Python map target runs inside the Map Viewer's own "
-        f"environment (fused_render/templates/map/pyproject.toml — geopandas, "
-        f"rasterio, matplotlib, numpy, pandas and pillow), NOT the app's "
-        f"interpreter and not your script's folder, so {name!r} is not available "
-        f"to it and a pyproject.toml beside your script will not change that. "
-        f"Either rewrite the target using the packages above, or precompute with "
-        f"{name!r} in a separate script and point the Map Viewer at the file it "
-        f"writes."
+        f"environment (fused_render/templates/map/pyproject.toml{listing}), "
+        f"NOT the app's interpreter and not your script's folder, so {name!r} is "
+        f"not available to it and a pyproject.toml beside your script will not "
+        f"change that. Either rewrite the target using the packages above, or "
+        f"precompute with {name!r} in a separate script and point the Map Viewer "
+        f"at the file it writes."
     )
 
 
