@@ -192,6 +192,17 @@ def test_brew_install_is_a_noop(monkeypatch):
     assert manager._install_thread is None
 
 
+def test_status_notices_external_upgrade_without_a_check(monkeypatch):
+    """The badge polls status() every minute; a terminal `brew upgrade` must
+    flip it to "installed" then, not after the next multi-hour check tick."""
+    manager = _manager(monkeypatch, method="brew", available="9.9.9")
+    assert manager.check()["state"] == "available"
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
+    status = manager.status()
+    assert status["state"] == "installed"
+    assert status["manual_command"] is None
+
+
 def test_brew_external_upgrade_flips_check_to_installed(monkeypatch):
     """The user runs brew in a terminal; the next check() sees the new bundle
     on disk, lands on "installed", and drops the manual command."""

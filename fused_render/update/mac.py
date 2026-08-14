@@ -135,6 +135,16 @@ class UpdateManager:
 
     def status(self) -> dict:
         with self._lock:
+            # A brew-managed update happens in the user's terminal, outside any
+            # state transition here — so "available" re-checks the bundle on
+            # disk on every read (the UI polls this every minute) rather than
+            # waiting out the next CHECK_INTERVAL_S tick to notice the upgrade.
+            if self._state == "available" and self._latest:
+                disk = self._disk_version()
+                if disk is not None and not common.is_newer(
+                        self._latest["version"], disk):
+                    self._state = "installed"
+                    self._sync_manual_command()
             return {
                 "state": self._state,
                 "method": self.method(),
