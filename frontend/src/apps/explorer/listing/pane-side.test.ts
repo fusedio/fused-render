@@ -139,6 +139,39 @@ describe("paneSideList — a previewed FOLDER row", () => {
     expect(activePaneSide(paneSideList(outside, true), "git")).toBe("claude");
   });
 
+  // A PROBE STILL OUT IS NOT A DENIAL, and conflating the two put the reported bug
+  // straight back for the window after a folder opens. `Listing` nulls both entries
+  // while `lib/dir-mode` is still resolving them (a stat plus a per-gate
+  // condition.py fork), so "no companion offered" is the same shape as
+  // mount-backed — and answering `preview` there made the pill read "Preview" while
+  // the row's own default mode, `claude` since D278, rendered a chat inside it.
+  // Then the probe landed, the side flipped to `claude`, the key changed and
+  // `agent.py` was spawned a SECOND time — the very cost pane-settle.ts exists to
+  // stop. So an undecided folder row offers NOTHING and the pane holds a skeleton.
+  const PENDING = { claude: null, git: null, claudePending: true, gitPending: true };
+
+  test("a folder row whose probes are still out offers nothing yet", () => {
+    expect(paneSideList(PENDING, true)).toEqual([]);
+    // The contract the caller reads: an EMPTY list means undecided, and the pane
+    // must not render a mode. `preview` in particular is not the answer.
+    expect(paneSideList(PENDING, true)).not.toContain("preview");
+  });
+
+  test("one probe landing is enough to decide", () => {
+    // Git still out, Claude answered: the chat is offered and the pane can mount.
+    expect(paneSideList({ ...PENDING, claude: entry("claude"), claudePending: false }, true))
+      .toEqual(["claude"]);
+    // Claude denied, Git answered: the first side ON OFFER, which is Git.
+    expect(paneSideList({ ...PENDING, git: entry("git"), gitPending: false, claudePending: false }, true))
+      .toEqual(["git"]);
+  });
+
+  test("a FILE row is unaffected by a probe that is still out", () => {
+    // Its `preview` is its own template list, which this probe says nothing about,
+    // so waiting would be a skeleton over an answer already available.
+    expect(paneSideList(PENDING, false)).toEqual(["preview"]);
+  });
+
   test("with NEITHER companion, `preview` comes back as the fallback", () => {
     // A mount-backed folder: both gates refuse. The pane must show something, and
     // the row's own default mode is then the `_listing` sentinel — a peek that
@@ -194,6 +227,17 @@ describe("paneSideMenu", () => {
       ["preview", null],
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
+    ]);
+  });
+
+  test("an undecided folder row draws two spinners and no Preview row", () => {
+    // The menu asks the list, so it cannot offer a row the pane may not be on:
+    // undecided means no `preview` row, and the companions are already drawn as
+    // CT-12 spinners rather than as denials.
+    const pending = { claude: null, git: null, claudePending: true, gitPending: true };
+    expect(paneSideMenu(pending, true)).toEqual([
+      { mode: "claude", pending: true },
+      { mode: "git", pending: true },
     ]);
   });
 

@@ -91,6 +91,7 @@ type InfoState =
 export default function ListingPreviewPane({
   row,
   selCount,
+  undecided = false,
   folder,
   side,
   sideEntries,
@@ -101,6 +102,13 @@ export default function ListingPreviewPane({
   row: PaneTarget | null;
   // Total selected rows, for the multi-selection placeholder.
   selCount: number;
+  // The pane has NO MODE YET — a selected folder row whose companion probes are
+  // still out (pane-side's paneSideList answers an empty list, and `side` is then
+  // only a placeholder for the pill's label). Renders the skeleton: resolving
+  // anything here would put the pill on "Preview" while the row's own `claude`
+  // default rendered a chat under it, and would respawn `agent.py` on the remount
+  // when the probe landed.
+  undecided?: boolean;
   // The OPEN folder — the listing on the other side of the divider. `Git`'s
   // subject, and `Claude`'s when the selection names no single row.
   folder: string;
@@ -203,14 +211,24 @@ export default function ListingPreviewPane({
   // returns; the branches it guards are the ones that render a frame.
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
 
-  // --- the pane's three modes (listing/pane-side.ts) --------------------------
-  // ALL THREE, ALWAYS. Which are SELECTABLE follows entirely from what the FOLDER
-  // gave us — `preview` always, the companions only where the folder has an entry
-  // — and the rest are drawn disabled with the reason (paneSideMenu). Nothing
-  // about the selected row enters into it, which is what lets the pill hold still
-  // as the user arrows down the list; and because the row count no longer moves
-  // either, the menu itself stops appearing and disappearing as the user walks
-  // from a repository into a folder outside one.
+  // --- the pane's modes (listing/pane-side.ts) --------------------------------
+  // EVERY MODE THE PANE MAY BE ON, and never fewer: an unofferable COMPANION is
+  // drawn disabled with its reason, or spinning while its probe is out
+  // (paneSideMenu), rather than dropped — a menu that shrinks to one row hides
+  // itself, which once left a mount-backed folder's pane header a lone chevron.
+  //
+  // **The list is no longer row-independent, and that is a real cost** (D279): a
+  // selected FOLDER row has no `preview`, so the pill is three rows over a file and
+  // two over a folder, and it changes shape as the user arrows from one onto the
+  // other. It used to hold perfectly still — "nothing about the selected row enters
+  // into it" was the claim here — and the reason it no longer can is that `preview`
+  // for a folder meant either running that folder's app (D278) or a listing of a
+  // folder beside the listing it was selected in. A control that is on offer,
+  // selected, and wrong is worse than one that changes width.
+  //
+  // What still holds still is the COMPANIONS' own availability, which comes from
+  // the FOLDER and not from the row — so walking from a repository into a folder
+  // outside one does not make the Git row appear and disappear, it dims.
   const sideMenu = (
     <ModeMenu
       entries={paneSideMenu(sideEntries, rowIsDir).map((e) => ({
@@ -263,6 +281,23 @@ export default function ListingPreviewPane({
       </div>
     </div>
   );
+
+  // --- no mode yet -----------------------------------------------------------
+  // BEFORE every branch that could render something, including the companions:
+  // while this is true there is no answer to render, and each of the paths below
+  // would invent one (the companions from a null entry, and failing that the row's
+  // own default mode — a chat under a pill reading "Preview", which is the reported
+  // bug). The pill itself is in `strip` here as everywhere, drawing its two
+  // companions as spinners (paneSideMenu), so the header says "resolving" while the
+  // body does.
+  if (undecided) {
+    return (
+      <div className="listing-pane">
+        {strip()}
+        <div className="pane-skel" />
+      </div>
+    );
+  }
 
   // --- Claude and Git: the companions ----------------------------------------
   // Both render straight from the FOLDER's entry, with no question asked about

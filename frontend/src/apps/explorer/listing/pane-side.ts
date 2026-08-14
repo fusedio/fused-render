@@ -156,11 +156,28 @@ export interface PaneSideEntries {
 // refuse), when `preview` comes back as the fallback. The pane must show
 // something, and there the row's own default mode is the unconditional `_listing`
 // sentinel — a peek that renders no template and runs no Python.
+//
+// **A PROBE STILL OUT IS NOT A DENIAL, and for a folder row the answer is then
+// NEITHER — an EMPTY LIST, meaning UNDECIDED.** `Listing` nulls both entries while
+// `lib/dir-mode` resolves them, so "no companion offered" and "not answered yet"
+// arrive in the same shape; taking the `preview` fallback there reproduced the bug
+// this whole rule exists to fix, for the window after a folder opens. The pill read
+// "Preview" while the row's own default mode — `claude` since D278 — rendered a chat
+// inside it, and when the probe landed the side flipped to `claude`, the key changed
+// and `agent.py` was spawned a SECOND time. So the caller holds a SKELETON on an
+// empty list: no mode resolved, nothing mounted, one spawn when the answer arrives.
+// (`paneSideMenu` below reads this same list, so it draws no `preview` row either —
+// the companions are already CT-12 spinners while pending.)
+//
+// A FILE row is untouched by a pending probe: its `preview` is its own template
+// list, which the folder's companion gates say nothing about, so waiting there
+// would be a skeleton over an answer already in hand.
 export function paneSideList(entries: PaneSideEntries, rowIsDir = false): PaneSide[] {
   const companions: PaneSide[] = [];
   if (entries.claude) companions.push("claude");
   if (entries.git) companions.push("git");
   if (rowIsDir && companions.length > 0) return companions;
+  if (rowIsDir && (entries.claudePending || entries.gitPending)) return [];
   return ["preview", ...companions];
 }
 
@@ -244,8 +261,15 @@ export function paneSideIconEntry(
 // `preview` is no longer always on offer: a selected FOLDER row hasn't got one, and
 // an absent `_side` parses as exactly that request — so falling back to the
 // constant would have resolved a folder row to a side the list refuses, which is
-// the pill naming one thing while the body renders another. The constant remains
-// the last resort for the empty list, which no caller can currently produce.
+// the pill naming one thing while the body renders another.
+//
+// **AN EMPTY LIST IS "UNDECIDED", NOT "the default"** (paneSideList: a folder row
+// whose companion probes are still out). The constant this returns there is a
+// placeholder for the pill's label and the pane's key, NOT permission to render:
+// the caller must hold its skeleton on an empty list. Answering `preview` and
+// rendering it is precisely the bug — a chat under a pill reading "Preview" — so
+// this function cannot be the only guard, and the caller's check is what makes it
+// safe (see Listing's `paneUndecided`).
 export function activePaneSide(offered: PaneSide[], want: PaneSide): PaneSide {
   if (offered.includes(want)) return want;
   return offered[0] ?? DEFAULT_PANE_SIDE;

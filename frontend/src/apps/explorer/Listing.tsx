@@ -791,8 +791,21 @@ export default function Listing({
   // The whole pane reads this and not `sel.lead`: the row it renders, the mode key
   // that remounts it, and the folder/file question behind the pill. Reading the
   // live lead for any of them would put the per-keystroke mount straight back.
-  const settledLead = useSettledLead(sel.paths.length === 1 ? sel.lead : null);
-  const paneRow = settledLead ? rowCtxByPath.get(settledLead) : undefined;
+  // The LEAD is settled unconditionally — not `paths.length === 1 ? lead : null`,
+  // which mixed a live count into a settled value and made the pane flash its
+  // "Select a file to preview." hint with a row plainly selected: collapsing a
+  // 2-row selection onto a third row moved the count to 1 while the settled lead
+  // was still catching up from the multi-selection's `null`, so for one settle
+  // window there was a count of one and no row to show for it. Settling the lead
+  // alone means the pane TRAILS onto the previous row instead, which is what a
+  // debounce means and what arrowing already looks like.
+  const settledLead = useSettledLead(sel.lead);
+  // …and the pane's STATE stays live, because none of its other states mount
+  // anything: nothing selected is the self target, two or more is the count
+  // placeholder, and both must land the instant the selection does. Only the
+  // single-row case is expensive, and only it is settled.
+  const paneRow =
+    sel.paths.length === 1 && settledLead ? rowCtxByPath.get(settledLead) : undefined;
 
   // WHICH of the pane's three modes it is on. Resolved here, below the selection,
   // because a previewed FOLDER row has no `preview` side at all (pane-side's
@@ -802,11 +815,18 @@ export default function Listing({
   // "A folder the user SELECTED" is exactly one row, and a directory: the pane's
   // own SELF target (nothing selected) is a folder too and keeps its Preview, which
   // is the `Select a file to preview.` hint (FS-11).
-  const previewedRowIsDir = sel.paths.length === 1 && !!paneRow?.isDir;
-  const paneSide = activePaneSide(
-    paneSideList(sideEntries, previewedRowIsDir),
-    sideState.mode
-  );
+  // `paneRow` is set only for a single-row selection, so it carries the count with
+  // it — the pill must not drop its Preview row on account of a settled directory
+  // while the body is showing a multi-selection placeholder.
+  const previewedRowIsDir = !!paneRow?.isDir;
+  const paneSides = paneSideList(sideEntries, previewedRowIsDir);
+  // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
+  // paneSideList returns an empty list, and only for that). The pane holds a
+  // skeleton: resolving a side here would put the pill on `preview` while the row's
+  // own `claude` default rendered a chat under it, and would then remount — and
+  // respawn `agent.py` — when the probe landed.
+  const paneUndecided = paneSides.length === 0;
+  const paneSide = activePaneSide(paneSides, sideState.mode);
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.
@@ -1745,24 +1765,26 @@ export default function Listing({
                 key={paneKey(
                   paneSide,
                   fsPath,
-                  sel.paths.length === 1 && paneRow ? paneRow.path : null,
+                  paneRow ? paneRow.path : null,
                   sel.paths.length
                 )}
                 row={
-                  sel.paths.length === 1 && paneRow
-                    ? paneRow
-                    : sel.paths.length === 0
-                      ? {
-                          path: fsPath,
-                          name:
-                            fsPath.replace(/\/+$/, "").split("/").pop() ||
-                            fsPath,
-                          isDir: true,
-                          self: true,
-                        }
-                      : null
+                  /* `paneRow` is already "the settled row of a single-row
+                     selection" (above), so it carries the count with it and needs
+                     no second check here. */
+                  paneRow ??
+                  (sel.paths.length === 0
+                    ? {
+                        path: fsPath,
+                        name:
+                          fsPath.replace(/\/+$/, "").split("/").pop() || fsPath,
+                        isDir: true,
+                        self: true,
+                      }
+                    : null)
                 }
                 selCount={sel.paths.length}
+                undecided={paneUndecided}
                 folder={fsPath}
                 side={paneSide}
                 sideEntries={sideEntries}

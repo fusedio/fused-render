@@ -37,6 +37,28 @@ describe("settleAction", () => {
   });
 });
 
+// The hook's own trap, and why the timestamp is guarded rather than stamped by the
+// effect: a MOUNT is not a lead change. The effect runs on mount (and again on any
+// `settleMs` change, and twice over under StrictMode), and stamping there made the
+// clock think a burst was already in progress — so the first genuine selection made
+// within the window was treated as mid-burst and delayed the full 250 ms, which is
+// exactly the "from rest" case that must land at once. Reachable in the ordinary
+// way: click a row in the pre-stat provisional listing right after a navigation.
+describe("useSettledLead's clock", () => {
+  test("only a real lead CHANGE may stamp it", () => {
+    const src = readFileSync(join(import.meta.dir, "./useSettledLead.ts"), "utf8");
+    // The previous lead is held so the effect can tell a change from a re-run…
+    expect(src).toContain("prevLeadRef");
+    // …and the stamp sits INSIDE that verdict, not at the top of the effect.
+    const effect = src.slice(src.indexOf("useEffect(("), src.indexOf("return settled"));
+    const verdict = effect.indexOf("const changed = prevLeadRef.current !== lead");
+    const stamp = effect.indexOf("lastChangeRef.current = now");
+    expect(verdict).toBeGreaterThan(-1);
+    expect(stamp).toBeGreaterThan(verdict);
+    expect(effect.slice(verdict, stamp)).toContain("if (changed)");
+  });
+});
+
 // The listing wires it, and the wiring is what makes the saving real: the pane's
 // row, its mode key and the pill's folder/file question must all read the SETTLED
 // lead. Reading the live one anywhere would put the mount back — the key alone is
@@ -50,8 +72,10 @@ describe("the listing feeds the pane a settled lead", () => {
   test("the pane's row comes from the settled path, not from the live lead", () => {
     expect(src).toContain("useSettledLead(");
     // The row handed to the pane, the kind question behind the pill and the mode
-    // key are all derived from it.
-    expect(src).toContain("const paneRow = settledLead");
+    // key are all derived from it. The count stays live — the placeholder states
+    // mount nothing — so the derivation reads both, and reads the settled lead for
+    // the only part that is expensive.
+    expect(src).toMatch(/const paneRow =\s*\n?\s*sel\.paths\.length === 1 && settledLead/);
     expect(src).toContain("paneRow?.isDir");
   });
 
