@@ -61,3 +61,44 @@ def test_convert_accepts_string_params(sample, mode):
 def test_convert_respects_typed_face_size(sample):
     r = pano.main(action="convert", file=sample, mode="cube_faces", face_w=32)
     assert r["w"] == 32 and r["h"] == 32
+
+
+def _open_asset(tmp_path, monkeypatch, name, w=256, h=128, fmt="JPEG", exif=None):
+    """Write a synthetic image to `name` (isolated cache) and return its asset."""
+    import numpy as np
+
+    monkeypatch.setattr(pano, "CACHE_ROOT", str(tmp_path / "cache"))
+    arr = np.zeros((h, w, 3), "uint8")
+    arr[..., 0] = np.linspace(0, 255, w, dtype="uint8")[None, :]
+    path = str(tmp_path / name)
+    kwargs = {"exif": exif} if exif is not None else {}
+    Image.fromarray(arr).save(path, format=fmt, **kwargs)
+    return path, pano.main(action="open", file=path)["asset"]
+
+
+def test_passthrough_serves_original(tmp_path, monkeypatch):
+    path, a = _open_asset(tmp_path, monkeypatch, "pano.jpg")
+    assert a["display"] is None                   # no re-encoded copy
+    assert a["display_path"] == a["source"]       # serves the original, not a copy
+    assert os.path.samefile(a["source"], path)
+
+
+def test_oversized_image_is_downscaled(tmp_path, monkeypatch):
+    monkeypatch.setattr(pano, "DISPLAY_MAX_W", 64)
+    _, a = _open_asset(tmp_path, monkeypatch, "wide.jpg", w=256, h=128)
+    assert a["display"] is not None               # re-encoded, downscaled copy
+    assert a["display_w"] <= 64
+
+
+def test_rotated_image_is_not_passthrough(tmp_path, monkeypatch):
+    exif = Image.Exif()
+    exif[0x0112] = 6                              # EXIF orientation = 90° rotate
+    _, a = _open_asset(tmp_path, monkeypatch, "rot.jpg", exif=exif)
+    assert a["display"] is not None               # must re-encode upright, no passthrough
+
+
+def test_non_image_extension_is_not_passthrough(tmp_path, monkeypatch):
+    # JPEG bytes at a path mimetypes doesn't type as image/*: /api/fs/raw would
+    # serve octet-stream + nosniff, so a properly typed copy must be written.
+    _, a = _open_asset(tmp_path, monkeypatch, "pano.bin", fmt="JPEG")
+    assert a["display"] is not None

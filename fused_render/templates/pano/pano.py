@@ -14,6 +14,7 @@ to the user's file.
 import hashlib
 import json
 import math
+import mimetypes
 import os
 import time
 
@@ -139,6 +140,12 @@ def _prepare(file):
         with open(meta_path, encoding="utf-8") as f:
             meta = json.load(f)
         meta["dir"] = cdir
+        # Cache is keyed by content hash, so `file` is a valid path to these
+        # exact bytes: bind name/source to the requested path, not the first one
+        # cached — right filename on a duplicate open, and no dependency on the
+        # first path still existing.
+        meta["name"] = os.path.basename(file)
+        meta["source"] = file
         if os.path.isfile(_display_file(meta)):
             return meta
 
@@ -151,11 +158,15 @@ def _prepare(file):
         head = f.read(256 * 1024)
     os.makedirs(cdir, exist_ok=True)
 
-    if fmt in BROWSER_FMTS and img.width <= DISPLAY_MAX_W and orient in (0, 1):
-        # Upright, browser-displayable, within the texture cap: serve the
-        # original as-is — skip exif_transpose (its copy() forces a full decode)
-        # and the re-encode. _classify only touches pixels for the 4:3 cube-cross
-        # check; a 2:1 pano is classified from its dimensions and never decoded.
+    mime, _ = mimetypes.guess_type(file)
+    if (fmt in BROWSER_FMTS and (mime or "").startswith("image/")
+            and img.width <= DISPLAY_MAX_W and orient in (0, 1)):
+        # Upright, browser-displayable, within the texture cap, and its path maps
+        # to an image/* content-type (/api/fs/raw types the served bytes from the
+        # path and sends nosniff, so a non-image extension would fail to render):
+        # serve the original as-is — skip exif_transpose (its copy() forces a full
+        # decode) and the re-encode. _classify only touches pixels for the 4:3
+        # cube-cross check; a 2:1 pano is classified from dimensions, never decoded.
         w, h = img.size
         kind, valid, reasons = _classify(w, h, head, img)
         display, disp_w, disp_h = None, w, h

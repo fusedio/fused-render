@@ -76,8 +76,6 @@
     box-shadow: 0 6px 28px rgba(0,0,0,.14); border-radius: 6px;
     border: 1px solid var(--edge);
     user-select: none; -webkit-user-drag: none; }
-  #imgview.grabbable { cursor: grab; }
-  #imgview.grabbing { cursor: grabbing; }
   #facegrid { display: none; position: absolute; inset: 0; overflow: auto;
     padding: 18px; }
   #facegrid .grid { display: grid; grid-template-columns: repeat(3, 1fr);
@@ -309,7 +307,6 @@
     // passes no option and relies on the runtime's byte-identical drop alone.)
     set: (k, v) =>
       fused.params.set(k, String(v), k in DEFAULTS ? { default: DEFAULTS[k] } : undefined),
-    num: (k) => parseFloat(fused.params.get(k) ?? DEFAULTS[k]),
   };
   const mode = () => {
     const m = fused.params.get("mode");
