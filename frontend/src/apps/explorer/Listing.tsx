@@ -1758,9 +1758,14 @@ export default function Listing({
                   lingering a frame while the new row's stat/list resolves; keying
                   Git on the folder instead is what stops arrow-keying down the
                   listing reloading a `git status` per keystroke.
-                  Nothing selected → the pane previews THIS folder itself (self:
-                  its template or lone app — never its listing, which is already on
-                  the left). */}
+                  Nothing selected → the SELF target: the pane's subject is THIS
+                  folder, and it has no preview at all — just the neutral "Select a
+                  file to preview." hint. No template is resolved and no stat is
+                  issued for it (ListingPreviewPane's self branch), and certainly
+                  no "lone app": that concept was deleted with D264 and this
+                  comment outlived it by describing a resolution the self branch
+                  has never performed. Its listing is not the answer either — that
+                  is already on the left. */}
               <ListingPreviewPane
                 key={paneKey(
                   paneSide,

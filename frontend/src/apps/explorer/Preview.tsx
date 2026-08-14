@@ -866,7 +866,6 @@ function TemplatePreview({
   // only while showing the MAP (the `isListing` half), not while showing the
   // listing. The top-bar mode control is not displaced but removed — for an
   // explorer folder it is gone whether the pane is open or not; see headerActions.
-  const bodyRef = useRef<HTMLDivElement>(null);
   const listingPaneOpen = isListing;
   // Tab title (App's StatView owns the actual document.title write, and it
   // also feeds the default bookmark name and the Recents row — see
@@ -1294,7 +1293,7 @@ function TemplatePreview({
           </Header>
         )
       )}
-      <div className="preview-body" ref={bodyRef}>
+      <div className="preview-body">
         {isPending(entry) ? (
           /* URL-requested a gated mode whose verdict is still in flight: hold
              the body until it lands (the iframe must not render a template on
@@ -1401,19 +1400,30 @@ function TemplatePreview({
             INSIDE the pane — the chip lands in the pane's header row, where it
             reads as pane chrome. It is not (it switches the FOLDER's mode, not
             the previewed file's), so a bare mode name like "Claude" sitting
-            there is a mystery button. The guard only ever bites in `_listing`
-            mode, since the pane exists only there. */}
+            there is a mystery button.
+
+            **That guard now bites in `_listing` mode ALWAYS**, because since D280
+            a listing always has a pane — `listingPaneOpen` is exactly `isListing`.
+            So the chip only ever renders over a NON-listing mode, and its label is
+            unconditionally "Browse contents"; the `isListing` label branches
+            ("Back", the counterpart's own name) were unreachable and are deleted
+            rather than left as a suggestion that they can happen.
+
+            **The direction that is now unreachable is listing → the other mode.**
+            In an embed the whole `.preview-header` and its switcher are hidden, so
+            this chip was the only control there: a `.zarr` folder embedded at any
+            width can go map → listing and then has nothing to click back with. It
+            is a dead end, not a degradation, and it is left standing on purpose —
+            the fix is either a chip that does not sit under the pane's corner or a
+            pane the embed does not get, and re-gating either on a WIDTH is what
+            D280 removed. Recorded in D280 for the owner to rule on. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
             className="preview-browse-chip"
             onClick={toggleListing}
           >
-            {!isListing
-              ? "Browse contents"
-              : counterpart === defaultEntry.mode
-                ? "Back"
-                : modeTitle(counterpart as string)}
+            Browse contents
           </button>
         )}
       </div>

@@ -1,6 +1,5 @@
-// The preview SIDEBAR's width arithmetic, as pure functions: the floors, the
-// the one share both companion columns take, and the width an unsized column
-// opens at.
+// The preview SIDEBAR's width arithmetic, as pure functions: the floors, the one
+// share both companion columns take, and the width an unsized column opens at.
 //
 // Split out of PreviewSidebar.tsx for the same reason listing/pane-math.ts is
 // split out of pane.ts — the arithmetic is the part worth testing, and a
