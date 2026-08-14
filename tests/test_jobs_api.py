@@ -307,6 +307,69 @@ def test_eviction_under_the_cap_does_not_silence_a_live_reporter():
     assert "j0" in {r["id"] for r in jobs.list_jobs(now=at)}
 
 
+def test_live_SERVER_work_is_never_evicted_by_the_cap():
+    """A row describing work the APP is running is a channel, not a cache.
+
+    The cap was sized for a handful of downloads. A queue of transcriptions is
+    the case that breaks that assumption — sixty recordings is sixty live
+    server rows — and every one of them is simultaneously the queue's state,
+    the ✕'s only channel, the progress display and the completion signal the
+    page's `watchJob` polls. Evicting one is not "showing less"; it takes the
+    ✕ away, and the page reads the absence as the work having stopped.
+
+    So capacity pressure may drop what is FINISHED and what belongs to a page,
+    but never live work the server itself is doing. The reporter that would
+    have to heal the row cannot heal what the page has already concluded.
+    """
+    for i in range(jobs.MAX_JOBS * 2):
+        jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:{i}",
+                     "title": f"rec{i}.m4a", "state": "running"},
+                    server=True, now=1000.0 + i * 0.01)
+    at = 1000.0 + jobs.MAX_JOBS * 2 * 0.01
+    rows = jobs.list_jobs(now=at)
+    assert len(rows) == jobs.MAX_JOBS * 2, "live server rows were evicted"
+    assert all(r["owner"] == jobs.OWNER_SERVER for r in rows)
+
+
+def test_the_cap_still_bites_on_page_owned_rows():
+    """Page-owned rows stay evictable, and that is the asymmetry that makes the
+    exemption safe: a server row is minted only by this app's own code and is
+    bounded by work actually in flight, while `fused.trackJob()` lets any page
+    open as many as it likes and never finish them. An exemption for those
+    would be an unbounded dict behind an HTTP call."""
+    for i in range(jobs.MAX_JOBS + 10):
+        jobs.upsert({"id": f"page{i}", "title": "x", "state": "running"},
+                    now=1000.0 + i * 0.01)
+    at = 1000.0 + (jobs.MAX_JOBS + 10) * 0.01
+    assert len(jobs.list_jobs(now=at)) == jobs.MAX_JOBS
+
+
+def test_live_server_rows_do_not_shield_finished_ones_from_the_cap():
+    """The exemption is for LIVE work only — a server row that has finished is
+    as evictable as any other, or a day of completed transcriptions would push
+    the cap up forever."""
+    for i in range(jobs.MAX_JOBS):
+        jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old{i}",
+                     "title": "x", "state": "done"},
+                    server=True, now=1000.0 + i * 0.01)
+    at = 1000.0 + jobs.MAX_JOBS * 0.01
+    jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live",
+                 "title": "rec.m4a", "state": "running"}, server=True, now=at)
+    ids = [r["id"] for r in jobs.list_jobs(now=at)]
+    assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live" in ids
+    assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old0" not in ids
+    assert len(ids) == jobs.MAX_JOBS
+
+
+def test_a_stale_server_row_is_still_dropped_by_the_AGE_sweep():
+    """The exemption is from CAPACITY pressure, not from death. A reporter that
+    stopped reporting for `STALE_DROP_S` is gone whatever it claimed to be, or
+    a crashed worker's row would sit on the screen for the session."""
+    jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:zombie",
+                 "title": "x", "state": "running"}, server=True, now=1000.0)
+    assert jobs.list_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
+
+
 def test_a_dead_reporter_cannot_wedge_the_list_for_the_session():
     jobs.upsert({"id": "a", "title": "t"}, now=1000.0)
     assert jobs.list_jobs(now=1000.0 + jobs.STALE_DROP_S + 1) == []
