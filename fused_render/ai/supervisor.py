@@ -127,9 +127,21 @@ TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: is reachable from inside a blocked `urlopen`.
 _TRANSCRIBE_LOCK = threading.Lock()
 
-#: How often a queued transcription re-states itself. Well under
-#: `jobs.STALE_AFTER_S` (30s), which is the whole point of it.
-_QUEUE_TICK_S = 5.0
+#: How often a queued transcription re-states itself.
+#:
+#: 1s, not the 5s this started at, and the number is set by EVICTION rather than
+#: by staleness. `jobs._sweep` drops rows over `MAX_JOBS` (64) sorted by
+#: `(state == RUNNING, updated_at)`, so among running rows the least recently
+#: updated goes first — and a queue is exactly the situation that produces more
+#: than 64 rows, since queueing is what a user pointing at a folder of
+#: recordings is doing. Ticking slower than the decode being waited for made the
+#: waiting rows the FIRST candidates for eviction, which is precisely backwards:
+#: the active one is the one whose absence anybody would notice.
+#:
+#: Matching the worker's own per-segment cadence keeps every transcription row,
+#: running or queued, equally recent. Staleness (`STALE_AFTER_S`, 30s) was never
+#: the binding constraint; it is simply also satisfied.
+_QUEUE_TICK_S = 1.0
 
 
 class SupervisorError(RuntimeError):
@@ -897,6 +909,17 @@ def start_image(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-image", daemon=True).start()
 
 
+def _transcribe_title(request: dict, model: str) -> str:
+    """The row's title: the FILE, not the model.
+
+    The manager may be showing several of these at once and "meeting-2024.m4a"
+    is what tells them apart. Shared by the row's opening report and by every
+    queue tick, which must agree — a tick carrying a different title would
+    rename the row under the user each time it reopened.
+    """
+    return (os.path.basename(str(request.get("path") or "")) or model)[:80]
+
+
 def transcribe_job_id(uid: str) -> str:
     """The download-manager row for one transcription. See `image_job_id`."""
     return TRANSCRIBE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
@@ -912,13 +935,11 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     _runner_or_raise(registry.SPEECH_TO_TEXT)
     _require_build_tools()
 
-    # The FILE is the title, not the model: the manager may be showing several
-    # of these at once and "meeting-2024.m4a" is what tells them apart.
-    title = os.path.basename(str(request.get("path") or "")) or model
+    title = _transcribe_title(request, model)
     # `unit="s"` from the first tick: the row is drawn before the worker knows
     # the duration, and a bar that starts unitless and acquires seconds later
     # relabels itself under the user.
-    _report(job, title=title[:80], state="running", kind="task", cancellable=True,
+    _report(job, title=title, state="running", kind="task", cancellable=True,
             unit="s", detail="Preparing…", done=None, total=None)
 
     def run() -> None:
@@ -1123,7 +1144,7 @@ def generate_image(model: str, request: dict, job: str) -> dict:
     return payload.get("result") or {}
 
 
-def _await_turn(job: str) -> None:
+def _await_turn(job: str, title: str) -> None:
     """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
 
     Returns holding the lock — the caller releases it. Raises
@@ -1132,23 +1153,38 @@ def _await_turn(job: str) -> None:
     to the worker, so there is nothing there to cancel and no tick coming back
     to carry the request.
 
-    The fast path costs one uncontended `acquire` and reports nothing, so a
-    lone transcription's row is unchanged.
+    The uncontended case costs one non-blocking `acquire` and reports nothing,
+    so a lone transcription's row is unchanged.
+
+    **There is exactly ONE cancel check between acquiring and returning, and it
+    is placed so that every route to "we hold the lock" passes through it.** The
+    first cut checked only inside the polling loop, which is the contended
+    route — so the fast path returned holding the lock having never read the
+    flag, and a ✕ pressed on "Preparing…" with a model already resident still
+    started a full-file decode that then had to be waited out by the next
+    request. A guard an optimisation can skip is a guard in the wrong place.
     """
-    if _TRANSCRIBE_LOCK.acquire(blocking=False):
-        return
-    _report(job, state="running", kind="task", unit="s", done=None, total=None,
-            detail="Queued behind another transcription…")
-    while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_TICK_S):
-        if _cancel_requested(job):
-            raise SupervisorError("cancelled")
-        # Re-stated rather than left to go stale. The bar does not move — there
-        # is nothing to say but "still waiting" — and that is exactly what a
-        # heartbeat is (AI-5h).
-        _report(job, detail="Queued behind another transcription…")
-    # Checked once more now that it is ours: a ✕ pressed in the moment between
-    # the last poll and the acquire would otherwise start a transcription the
-    # user had already stopped.
+    if not _TRANSCRIBE_LOCK.acquire(blocking=False):
+        _report(job, title=title, state="running", kind="task", unit="s",
+                done=None, total=None,
+                detail="Queued behind another transcription…")
+        while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_TICK_S):
+            if _cancel_requested(job):
+                raise SupervisorError("cancelled")
+            # Re-stated rather than left to go stale. The bar does not move —
+            # there is nothing to say but "still waiting" — and that is exactly
+            # what a heartbeat is (AI-5h).
+            #
+            # `title` rides along on EVERY tick, which is not redundancy. A
+            # queued row is the first thing `jobs._sweep` evicts when the cap
+            # bites (it sorts running rows by `updated_at`, and a queued row
+            # ticks less often than the decode it is waiting for), and a row
+            # that has been evicted can only be REOPENED by a report carrying a
+            # title — without one `upsert` raises and `_report` swallows it, so
+            # the ✕ silently stops working and the page is told a transcription
+            # that is about to succeed has failed.
+            _report(job, title=title,
+                    detail="Queued behind another transcription…")
     if _cancel_requested(job):
         _TRANSCRIBE_LOCK.release()
         raise SupervisorError("cancelled")
@@ -1175,7 +1211,7 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     a handle to a process an unload may since have killed, so the request went
     to a dead port instead of re-resolving.
     """
-    _await_turn(job)
+    _await_turn(job, _transcribe_title(request, model))
     try:
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:

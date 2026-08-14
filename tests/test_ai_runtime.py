@@ -1421,6 +1421,68 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
         second.join(10)
 
 
+def test_a_queued_row_EVICTED_by_the_cap_reopens_on_the_next_tick(monkeypatch):
+    """A queued row is the first thing the job manager throws away, and a row
+    that cannot come back takes the ✕ with it.
+
+    `jobs._sweep` drops rows over `MAX_JOBS` sorted by `(running, updated_at)`,
+    so the least recently updated running row goes first — and queueing is
+    exactly what produces more than 64 rows, since it is what a user pointing
+    at a folder of recordings is doing. Once evicted, a row can only be
+    REOPENED by a report carrying a `title`; without one `upsert` raises and
+    `_report` swallows it, so the row stays gone, `_cancel_requested` reads
+    False forever, and `watch()` resolves null — the page is told a
+    transcription that finishes fine minutes later has failed.
+    """
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "two"
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    _open_transcribe_row(job, title="recording.m4a")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5)
+
+    def run_second():
+        # Swallowed because the assertion below CANCELS this one on purpose,
+        # and a SupervisorError raised at the top of a thread is raised at
+        # nobody but pytest's unhandled-exception warning.
+        try:
+            supervisor.generate_transcript("org/w", {"path": "/recording.m4a"}, job)
+        except supervisor.SupervisorError:
+            pass
+
+    second = threading.Thread(target=run_second, daemon=True)
+    second.start()
+    try:
+        _wait_for_queued(job)
+        # Exactly what the sweep does to it when the cap bites.
+        with jobs._lock:
+            jobs._jobs.pop(job, None)
+        assert _row_now(job) is None
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and _row_now(job) is None:
+            time.sleep(0.02)
+        reopened = _row_now(job)
+        assert reopened is not None, "an evicted queue row never came back"
+        assert reopened["title"] == "recording.m4a"
+        # …and the ✕ works again, which is the whole reason the row matters.
+        assert jobs.request_cancel(job) is not None
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+
+
 def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     """Its ✕ used to do nothing: cancellation reaches a worker through the
     reply to a tick, and a queued request is not ticking — nor has anything of
@@ -1460,6 +1522,40 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     finally:
         release.set()
         first.join(10)
+
+
+def test_the_cross_is_honoured_on_the_UNCONTENDED_path_too(monkeypatch):
+    """The cancel check has to sit on every route into "we hold the lock", not
+    only on the slow one.
+
+    `_await_turn`'s fast path — one non-blocking acquire, added so a lone
+    transcription's row is untouched — returned holding the lock without ever
+    reading `cancel_requested`. So with a model already resident, a ✕ pressed
+    on "Preparing…" still POSTed `/generate` and started faster-whisper's eager
+    full-file decode; the cancel was noticed a tick later, by which point the
+    abandoned decode thread was running and the NEXT transcription had to wait
+    it out (`_await_orphan`). An optimisation that skips a guard is the guard
+    being wrong, not the optimisation.
+    """
+    posted = []
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        lambda *a, **k: posted.append(a) or pytest.fail(
+                            "a cancelled transcription reached the worker"))
+
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "solo"
+    _open_transcribe_row(job)
+    jobs.request_cancel(job)
+
+    # Nothing else holds the lock: this is the uncontended path, start to finish.
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor.generate_transcript("org/w", {"path": "/a"}, job)
+    assert str(caught.value) == "cancelled"
+    assert not posted
+    # And the lock is not left held behind the raise, or the next transcription
+    # queues forever behind a request that never ran.
+    assert supervisor._TRANSCRIBE_LOCK.acquire(blocking=False)
+    supervisor._TRANSCRIBE_LOCK.release()
 
 
 def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(monkeypatch):
