@@ -6265,7 +6265,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   Holding a supervisor-side lock instead is what makes the wait describable —
   the row says it is queued, keeps saying so, and its ✕ is honoured, none of
   which is reachable from inside a blocked `urlopen` that has sent the worker
-  nothing to cancel. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  nothing to cancel. **The turn is taken before the MODEL is resolved**, and
+  that ordering is load-bearing: resolving first put the one destructive step —
+  `_start_resident`, which EVICTS the resident model when the requested one
+  differs — outside the very lock that serializes this path, so a page asking
+  for a different Whisper model killed a 90-minute run mid-decode and lost its
+  transcript. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
   transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
   with timestamps, language, duration, model) and a `.txt` (plain words) —
   **segments, not a flat token stream**, because the timestamps are most of what
