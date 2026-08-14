@@ -48,7 +48,6 @@ import {
   activePaneMode,
   paneChatOnly,
   paneModeList,
-  paneOpenAction,
 } from "@apps/explorer/listing/pane-modes";
 import {
   paneSideMenu,
@@ -487,71 +486,11 @@ export default function ListingPreviewPane({
   const activeMode = activePaneMode(modeNames, null);
   const activeEntry = embeddable.find((e) => e.mode === activeMode) ?? null;
 
-  // What the strip's far end offers for this row — decided in
-  // listing/pane-modes (paneOpenAction), which documents why a plain folder
-  // gets nothing: expanding one means opening its listing, and its listing is
-  // what the left half of this very split already is.
-  const open = paneOpenAction(view, activeMode);
-  const openTarget = open.kind === "none" ? null : open.target;
-  const goToTarget = () => {
-    if (!openTarget) return;
-    navigate(openTarget.path, { isDir: openTarget.isDir, mode: openTarget.mode });
-  };
-
-  // The settled Preview's header: the shared strip (chevron, folder action, the
-  // pane's three-way pill) plus, at its very end, the controls that only mean
-  // something once a row's own view has resolved. Every OTHER state renders the
-  // bare strip — same chrome, nothing to expand yet.
-  const header = strip(
-    <>
-      {/* Expand the previewed FILE full-screen — as a quiet icon, not the
-          bordered "Open" primary it used to be. Nothing in this strip is a
-          primary: the row's double-click and Enter already open it, so a
-          bordered word was the loudest thing in the pane's header for the one
-          action the user least needs pointed out. Two arrows to opposite
-          corners is the expand/full-screen glyph, which is also the truer
-          description — the preview is already open, this makes it the whole
-          view. Plain .bar-ctl-icon metrics, like every other glyph-only control
-          in these bars — it had a rule of its own for one release that only
-          restated them.
-
-          It opens in the mode the pane is SHOWING (paneOpenTarget) — "make this
-          the whole view" cannot be the one action that discards what is on
-          screen. The row's own double-click and Enter stay a plain open: those
-          are "open this thing", not "open what I am looking at".
-          Only in `Preview`, since only there is the pane showing the row's own
-          content. Claude and Git return well above this (and Git is not about
-          the row at all), so neither reaches here — "make this the whole view"
-          for a companion is a question about the FILE view's `_side`, and the way
-          to ask it is to open the row and use the sidebar there. */}
-      {open.kind === "expand" && (
-        <button
-          type="button"
-          className="bar-ctl bar-ctl-icon"
-          title="Open"
-          aria-label="Open"
-          onClick={goToTarget}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M15 3h6v6" />
-            <path d="M21 3l-7 7" />
-            <path d="M9 21H3v-6" />
-            <path d="M3 21l7-7" />
-          </svg>
-        </button>
-      )}
-    </>
-  );
+  // The settled Preview's header is the bare shared strip (chevron, folder
+  // action, the pane's three-way pill). The full-screen expand glyph that used
+  // to sit at its far end is gone: the row's double-click and Enter already
+  // open the file, so the strip offers nothing for it.
+  const header = strip();
 
   // The /render embed URL for a chosen template entry. "_render" renders the
   // file itself (PT-12); a template mode renders the template against _file.
