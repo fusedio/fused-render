@@ -464,7 +464,14 @@ def _find_estimators(obj, path="", depth=0, max_depth=_FIND_ESTIMATORS_MAX_DEPTH
         # as plain attributes. Skipped for a tree ensemble itself (RandomForest,
         # Bagging, ...): its members are already covered by the tree viewer, not
         # independent top-level models.
-        for key, value in list(vars(obj).items())[:50]:
+        attrs = vars(obj)
+        for key, value in itertools.islice(attrs.items(), 50):
+            # `estimators` next to `estimators_` is the pre-fit copy of the same
+            # models (sklearn's trailing-underscore convention); listing both would
+            # show every sub-model twice, once untrained. Pipeline has no `steps_`,
+            # so its `steps` is still walked.
+            if f"{key}_" in attrs:
+                continue
             child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
             found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
     return found
@@ -526,16 +533,29 @@ def _feature_importance(path: str, est):
     return {"path": path, "features": ranked}
 
 
+def _has_tree(obj) -> bool:
+    tree = getattr(obj, "tree_", None)
+    return tree is not None and hasattr(tree, "children_left")
+
+
 def _tree_kind(est):
     if hasattr(est, "get_booster"):
         return "xgboost"
     if hasattr(est, "booster_") and hasattr(est.booster_, "dump_model"):
         return "lightgbm"
-    if hasattr(est, "estimators_"):
-        if getattr(est.estimators_, "ndim", 1) > 1:
-            return "sklearn_gradient_boosting"  # 2-D: one row of trees per round
-        return "sklearn_forest"
-    if hasattr(est, "tree_") and hasattr(est.tree_, "children_left"):
+    # `estimators_` alone is not enough: composite meta-estimators (VotingClassifier,
+    # StackingClassifier, ...) have one too, holding arbitrary models rather than
+    # trees. Only claim the ensemble if its members really are trees, otherwise
+    # _tree_ensemble's `estimators_[i].tree_` has nothing to read and
+    # _find_estimators would skip walking into a composite it should descend.
+    members = getattr(est, "estimators_", None)
+    if members is not None and len(members):
+        if getattr(members, "ndim", 1) > 1:
+            if _has_tree(members[0][0]):
+                return "sklearn_gradient_boosting"  # 2-D: one row of trees per round
+        elif _has_tree(members[0]):
+            return "sklearn_forest"
+    if _has_tree(est):
         return "sklearn_tree"
     return None
 
@@ -602,6 +622,15 @@ def _lightgbm_tree_node(node, depth=0):
     }
 
 
+def _tree_meta(count, n_classes):
+    """Per-tree labels. A boosting round holds one tree per class, so the flat
+    index splits into round/class -- meaningless (and noise in the picker) when
+    a round holds a single tree, so it's omitted there."""
+    if n_classes <= 1:
+        return [{"index": i} for i in range(count)]
+    return [{"index": i, "round": i // n_classes, "class": i % n_classes} for i in range(count)]
+
+
 def _tree_ensemble(path: str, est, tree_index):
     kind = _tree_kind(est)
     if kind is None:
@@ -620,7 +649,7 @@ def _tree_ensemble(path: str, est, tree_index):
     elif kind == "sklearn_gradient_boosting":
         n_rounds, n_classes = est.estimators_.shape
         count = n_rounds * n_classes
-        meta = [{"index": i, "round": i // n_classes, "class": i % n_classes} for i in range(count)]
+        meta = _tree_meta(count, n_classes)
         idx = tree_index if tree_index is not None else 0
 
         def node_builder():
@@ -634,7 +663,7 @@ def _tree_ensemble(path: str, est, tree_index):
         booster = est.get_booster()
         n_classes = len(est.classes_) if hasattr(est, "classes_") and len(est.classes_) > 2 else 1
         count = booster.num_boosted_rounds() * n_classes
-        meta = [{"index": i, "round": i // n_classes, "class": i % n_classes} for i in range(count)]
+        meta = _tree_meta(count, n_classes)
         idx = tree_index if tree_index is not None else 0
 
         def node_builder():
@@ -642,13 +671,20 @@ def _tree_ensemble(path: str, est, tree_index):
             round_dump = booster[round_idx:round_idx + 1].get_dump(dump_format="json")
             return _xgboost_tree_node(json.loads(round_dump[class_idx]))
     elif kind == "lightgbm":
-        count = est.booster_.num_trees()
-        meta = [{"index": i} for i in range(count)]
+        # num_trees() counts trees FLAT, but dump_model's num_iteration/
+        # start_iteration select boosting ROUNDS -- and a multiclass round holds
+        # one tree per class, so the flat index has to be split the same way the
+        # xgboost branch splits it.
+        booster = est.booster_
+        n_classes = len(est.classes_) if hasattr(est, "classes_") and len(est.classes_) > 2 else 1
+        count = booster.num_trees()
+        meta = _tree_meta(count, n_classes)
         idx = tree_index if tree_index is not None else 0
 
         def node_builder():
-            tree_info = est.booster_.dump_model(num_iteration=1, start_iteration=idx)["tree_info"]
-            return _lightgbm_tree_node(tree_info[0]["tree_structure"])
+            round_idx, class_idx = divmod(idx, n_classes)
+            round_dump = booster.dump_model(num_iteration=1, start_iteration=round_idx)["tree_info"]
+            return _lightgbm_tree_node(round_dump[class_idx]["tree_structure"])
     else:
         return None
 

@@ -565,6 +565,54 @@ def test_lightgbm_model(tmp_path):
     assert "tree" in trees
 
 
+def test_lightgbm_multiclass_tree_index_is_flat_not_a_round(tmp_path):
+    # num_trees() counts trees flat, but dump_model's start_iteration selects a
+    # boosting ROUND. Fetching by the flat index without splitting it by class
+    # returns the wrong tree (idx=1) or nothing at all (idx >= n_rounds).
+    lgb = pytest.importorskip("lightgbm")
+    rng = np.random.RandomState(11)
+    x = rng.rand(300, 5)
+    y = rng.randint(0, 3, size=300)  # 3 classes -> 3 trees per round
+    clf = lgb.LGBMClassifier(n_estimators=4, max_depth=2, min_child_samples=5, verbose=-1).fit(x, y)
+    path = _dump(clf, tmp_path)
+
+    expected = clf.booster_.dump_model()["tree_info"]
+    overview = next(t for t in reader.main(file=path)["trees"] if t["path"] == "")
+    assert overview["count"] == 12
+    assert overview["trees"][5] == {"index": 5, "round": 1, "class": 2}
+
+    for idx in (1, 5, 11):  # every one of these was wrong or missing before
+        trees = next(t for t in reader.main(file=path, tree_index=idx)["trees"] if t["path"] == "")
+        assert "tree_error" not in trees
+        assert trees["tree"] == reader._lightgbm_tree_node(expected[idx]["tree_structure"])
+
+
+def test_voting_classifier_is_not_mistaken_for_a_tree_ensemble(tmp_path):
+    # _tree_kind used to call anything with `estimators_` a forest, so a composite
+    # was skipped by the walk that exists to descend into it -- hiding its models.
+    from sklearn.ensemble import VotingClassifier
+
+    rng = np.random.RandomState(12)
+    x = rng.rand(120, 4)
+    y = rng.randint(0, 2, size=120)
+    vc = VotingClassifier([
+        ("lr", LogisticRegression()),
+        ("rf", RandomForestClassifier(n_estimators=3, max_depth=2, random_state=0)),
+    ]).fit(x, y)
+    assert reader._tree_kind(vc) is None
+    path = _dump(vc, tmp_path)
+
+    out = reader.main(file=path)
+    types = [e["type"] for e in out["estimators"]]
+    assert "VotingClassifier" in types
+    assert "LogisticRegression" in types
+    assert "RandomForestClassifier" in types
+    # The pre-fit copies in the `estimators` param must not double every sub-model.
+    assert types.count("RandomForestClassifier") == 1
+    assert types.count("LogisticRegression") == 1
+    assert [t["library"] for t in out["trees"]] == ["sklearn_forest"]
+
+
 def test_file_stats_and_sibling_npy_chunks(tmp_path):
     path = _dump(_make_bundle(), tmp_path, name="chunked.joblib")
     # Simulate joblib's own memmap-split sibling files.
