@@ -410,16 +410,31 @@ def test_opening_the_tab_fires_a_freshness_check_on_the_scan_roots(
 def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
         home, tmp_path, client, monkeypatch):
     """Housekeeping, hung off a read endpoint. The repo list is the answer; the
-    nudge is a side effect and must never become the response."""
+    nudge is a side effect and must never become the response.
+
+    Two roots, the first one raising, because one bad root must not swallow the
+    rest either: the roots are independent questions, and a config where one of
+    them wedges the check for every other one is the failure that hides itself."""
     from fused_render.server.routers import index as index_mod
 
-    def boom(_path):
-        raise RuntimeError("freshness exploded")
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _set_roots([a, b])
+    repo = a / "repo"
+    _write_dirs_index([str(a), str(repo), _git(repo)])
+    checked = []
 
-    repo = tmp_path / "repo"
-    _write_dirs_index([str(tmp_path), str(repo), _git(repo)])
+    def boom(path):
+        checked.append(path)
+        if path == str(a):
+            raise RuntimeError("freshness exploded")
+        return True
+
     monkeypatch.setattr(index_mod, "note_folder_opened", boom)
 
     resp = client.get("/api/git-repos")
     assert resp.status_code == 200
     assert [r["path"] for r in resp.json()["repos"]] == [str(repo)]
+    assert checked == [str(a), str(b)]

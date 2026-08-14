@@ -179,19 +179,26 @@ def _note_tab_opened(cfg) -> None:
     prevent.
 
     note_folder_opened itself never raises and never blocks (it spawns a
-    thread), so this costs the request a lock acquire; the try/except is for the
-    config read and for the import, not for the check."""
+    thread), so this costs the request a lock acquire — but the guard is
+    per-root, not around the loop: the roots are independent questions, and one
+    that somehow throws must not silently swallow the checks for the others."""
     try:
         # Function-local, like `_fresh`'s: routers/index.py is the module that
         # owns both the scan roots and the freshness hook, and importing it at
         # module scope would close the cycle between the two routers.
         from fused_render.server.routers.index import note_folder_opened, scan_roots
 
-        for root in scan_roots(cfg):
-            note_folder_opened(root)
+        roots = scan_roots(cfg)
     except Exception:  # noqa: BLE001 - housekeeping must never become the answer
-        logger.debug("could not check index freshness for the repos tab",
+        logger.debug("could not read the scan roots for the repos tab",
                      exc_info=True)
+        return
+    for root in roots:
+        try:
+            note_folder_opened(root)
+        except Exception:  # noqa: BLE001 - as above, and one root is not the rest
+            logger.debug("could not check index freshness for %s", root,
+                         exc_info=True)
 
 
 def _repos() -> dict:
