@@ -111,7 +111,9 @@ class UpdateManager:
 
     def __init__(self, *, manifest_url: str = MANIFEST_URL, bundle: str | None = None,
                  method: str | None = None):
-        self._lock = threading.Lock()
+        # RLock: the early-return paths in check()/install() read status()
+        # while already holding the lock.
+        self._lock = threading.RLock()
         self._manifest_url = manifest_url
         self._bundle = bundle if bundle is not None else bundle_path()
         self._method = method  # resolved lazily: brew probing costs a subprocess
