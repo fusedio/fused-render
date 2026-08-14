@@ -755,6 +755,40 @@ def test_a_resume_whose_server_stopped_honouring_ranges_restarts_that_file(
     assert _ranges(state["log"]) == [], "it kept range-fetching a server that said no"
 
 
+def test_a_segment_cancelled_before_it_reads_winds_down_quietly(base, monkeypatch,
+                                                                tmp_path, payload):
+    """The wind-down path, which is the ORDINARY way a segment ends badly.
+
+    `stop` is set exactly when a sibling has failed, so every other segment
+    arrives at the drain to leave without reading — and two more paths reach the
+    same exit, an empty first read and a segment with no room left. A vestigial
+    `return moved` survived the rewrite that stopped anyone reading the value,
+    so all three raised `UnboundLocalError`. That is a `NameError`, which is not
+    in `_TRANSIENT`, so it escaped the retry loop, propagated out of the pool
+    and took the download into the fallback — where `_clear_parts` deletes every
+    recorded byte. A tidy shutdown became a total loss of resumable state.
+
+    Nothing failed loudly when the return went stale because the caller had
+    stopped reading it, which is the general lesson: a value nobody reads is not
+    a value nobody evaluates.
+    """
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    fetch = _planned(base, folder, url, len(payload))
+    segment = fetch.segments[0]
+
+    fetch.stop.set()
+    with base._open(url, None) as response:
+        assert fetch._drain(response, segment, 0) is None
+    assert segment["done"] == 0, "a cancelled segment wrote anyway"
+
+    # …and the loop that starts but breaks on its first pass.
+    fetch.stop.clear()
+    segment["done"] = segment["end"] - segment["start"] + 1
+    with base._open(url, None) as response:
+        assert fetch._drain(response, segment, segment["start"]) is None
+
+
 def test_a_failure_while_publishing_stops_the_other_segments(base, monkeypatch,
                                                              tmp_path, payload):
     """`finish()` is the last thing a segment does, and it can fail for reasons

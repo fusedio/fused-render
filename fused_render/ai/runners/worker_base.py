@@ -576,6 +576,11 @@ def _sparse_ok(folder):
     first real part file means the zero-fill has already happened.
     """
     probe = os.path.join(folder, ".fusedpart-probe")
+    # Bound before the try, not inside it. Today the only escape from that block
+    # is an OSError that returns early, so this cannot be read unbound — but that
+    # is an argument about which exceptions three syscalls raise, and `_drain`
+    # just showed what happens when such an argument stops holding.
+    blocks = None
     try:
         os.makedirs(folder, exist_ok=True)
         fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -931,6 +936,15 @@ class _FileFetch:
         movement, which the caller can still read after this raises — and a
         `read()` raising mid-body, on top of bytes already written, is the case
         a returned flag got wrong.
+
+        Three paths leave without the loop body ever running — an empty first
+        read, no room left in the segment, and `stop` already set on entry —
+        and the last of those is the ORDINARY one: `stop` is set exactly when a
+        sibling segment has failed, so every other segment arrives here to wind
+        down. A vestigial `return moved` survived the rewrite of this function
+        and raised `UnboundLocalError` on all three, which is a `NameError` and
+        therefore not in `_TRANSIENT`: it escaped the retry loop entirely and
+        turned a tidy wind-down into the fallback deleting every recorded byte.
         """
         offset = start
         while not self.stop.is_set():
@@ -949,9 +963,7 @@ class _FileFetch:
             offset += len(chunk)
             with self.lock:
                 seg["done"] += len(chunk)
-            moved = True
             self.flush()
-        return moved
 
     # -- publishing -------------------------------------------------------
 
