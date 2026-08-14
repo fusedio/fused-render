@@ -548,6 +548,51 @@ def test_the_documented_library_list_matches_check_libs(relpath, start, end, pat
     )
 
 
+def test_no_doc_claims_a_shipped_package_was_removed():
+    """The other half of the promise: what a doc says is GONE must be gone.
+
+    `test_the_documented_library_list_matches_check_libs` pins the positive
+    list — what the app has. Nothing pinned the negative one, and that is
+    exactly where this rotted: two docs went on saying `fpdf2` had left
+    `[bundled]` after the removal was reversed, including
+    `fused-render-authoring`, which is what an agent reads to decide what it may
+    import. The consequence is not a broken build but a worse one — an agent
+    steered away from a package that is right there, or into declaring a folder
+    manifest it does not need, which is the precise outcome the reversal existed
+    to prevent.
+
+    Scanned as a set of names rather than by parsing prose: any distribution
+    `[bundled]` or the core dependencies actually ship must not appear in a
+    sentence claiming things were removed. Cheap, and it would have caught this.
+    """
+    import re
+
+    shipped = _declared_dists()
+    offenders = {}
+    for relpath, marker in [
+        (os.path.join("skills", "fused-render-authoring", "SKILL.md"),
+         "no longer does:"),
+        (os.path.join("core_apps", "learn", "check_libs.py"),
+         "What is deliberately NOT here:"),
+    ]:
+        with open(os.path.join(_REPO, relpath), encoding="utf-8") as f:
+            text = f.read()
+        start = text.find(marker)
+        assert start >= 0, f"{relpath} no longer contains {marker!r}; re-anchor"
+        # The claim runs to the end of its sentence.
+        sentence = text[start:start + 400].split(".")[0]
+        named = {_norm(n) for n in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", sentence)}
+        wrong = sorted(named & shipped)
+        if wrong:
+            offenders[relpath] = wrong
+    assert not offenders, (
+        f"{offenders} are named as REMOVED but `[bundled]`/the core dependencies "
+        "still ship them, so the doc tells a reader (or an authoring agent) a "
+        "package is unavailable when it is importable with no declaration and no "
+        "install. Fix the doc, or remove the package for real."
+    )
+
+
 # ------------------------------------------------- templates vs the real bundle
 
 
