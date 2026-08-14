@@ -2630,36 +2630,30 @@
             language: written.language,
             duration: written.duration,
           }));
-      // An absent row does NOT mean the work is over, and treating it that way
-      // is what made a long transcription reject while it was still running.
-      // watch() gives up after five consecutive misses (~3.5s), and a row
-      // describing live work can be gone for longer than that: the manager
-      // evicts under its cap, and the active decode's own worst-case refresh
-      // is the worker's 5s heartbeat when one long segment produces no ticks.
-      // So absence is a routine event on a recording of any length.
-      //
-      // The TRANSCRIPT is the authority. Keep looking for it, resume watching
-      // if the row comes back, and only give up once neither has happened for
-      // long enough that the work really is gone (a killed worker, a restarted
-      // server) — a bounded wait, so the promise still always settles.
-      const GRACE_TRIES = 40; // ~28s at the poll below
-      let grace = GRACE_TRIES;
-      const pause = () => new Promise((r) => setTimeout(r, 700));
-      const regrace = () =>
-        done().catch(() =>
-          watcher.get().then((back) => {
-            if (back) return watcher.watch(onProgress).then(settle);
-            if (--grace <= 0) {
-              const err = new Error("the transcription job is no longer being reported");
-              err.type = "ai_error";
-              err.jobId = started.jobId;
-              throw err;
-            }
-            return pause().then(regrace);
-          }),
-        );
-      function settle(record) {
-        if (!record) return regrace();
+      return watcher.watch(onProgress).then((record) => {
+        if (!record) {
+          // The row is gone — and since the manager stopped evicting live
+          // SERVER work under its cap, that no longer happens MID-RUN. It means
+          // the row finished and aged out while this tab was asleep, which a
+          // transcription long enough to background does easily.
+          //
+          // The TRANSCRIPT is the other witness and the one that matters, so
+          // reading it is both the answer and the check: if it is there, the
+          // work landed. An earlier cut tried to out-wait a mid-run absence
+          // here instead, resuming the watcher and polling for the file — and
+          // that machinery could hang forever (a re-entered `watch` that never
+          // SEES the row never gives up) while also turning one flaky
+          // `/api/jobs` fetch into a hard failure. Both were compensation for
+          // an eviction that should not have been happening; the fix belonged
+          // in the manager, and this is a backstop again rather than a state
+          // machine.
+          return done().catch(() => {
+            const err = new Error("the transcription job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
         if (record.state === "done") return done();
         const err = new Error(
           record.state === "cancelled"
@@ -2669,8 +2663,7 @@
         err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
         err.jobId = started.jobId;
         throw err;
-      }
-      return watcher.watch(onProgress).then(settle);
+      });
     });
   }
 

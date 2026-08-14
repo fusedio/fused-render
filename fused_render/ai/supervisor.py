@@ -128,34 +128,20 @@ TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: is reachable from inside a blocked `urlopen`.
 _TRANSCRIBE_LOCK = threading.Lock()
 
-#: How often a queued transcription looks at its ✕, and how often it re-states
-#: its row. **Two numbers, because they answer opposite questions.**
+#: How often a queued transcription re-states its row — a DISPLAY heartbeat and
+#: nothing more.
 #:
-#: `jobs._sweep` drops rows over `MAX_JOBS` (64) sorted by
-#: `(state == RUNNING, updated_at)`, so among running rows the least recently
-#: updated goes first — and a queue is exactly what produces more than 64 rows,
-#: since queueing is what a user pointing at a folder of recordings is doing.
-#: The row that should survive that is the ACTIVE decode's: a queued row
-#: blinking out and coming back on its next tick costs nothing now that every
-#: tick can rebuild it, while the running one is the one whose absence anybody
-#: would notice.
-#:
-#: So the reporting cadence must be SLOWER than the running row's worst case,
-#: and that worst case is not the per-segment tick — it is `worker_base`'s
-#: HEARTBEAT_S (5s), which is what re-states a decode sitting on one long
-#: segment. An earlier cut set this to 1s reasoning that it "matched the
-#: worker's cadence"; it did not, it beat it, so every queued row was FRESHER
-#: than the active decode and the sweep ate the active row first — the exact
-#: inversion the comment claimed to avoid. 2x the heartbeat leaves no ambiguity,
-#: and is still far inside `STALE_AFTER_S` (30s) so a queued row is never
-#: reported as stalled. `test_the_queue_cadence_stays_below_the_worker_heartbeat`
-#: is what keeps this true if the heartbeat ever moves.
+#: It was briefly sized against `worker_base.HEARTBEAT_S`, to decide which live
+#: row `jobs._sweep` would shed first under the cap. That whole question is
+#: gone: the sweep does not evict live server rows any more (see the cap branch
+#: in `jobs.py`), which is what finally stopped this feature compensating for a
+#: row it could lose. The one constraint left is the plain one — report often
+#: enough that a row merely waiting its turn is not displayed as "no longer
+#: reporting" (`jobs.STALE_AFTER_S`, 30s).
 _QUEUE_TICK_S = 10.0
 
-#: …but the ✕ must not wait 10 seconds to be noticed, so the lock is polled far
-#: more often than the row is written. Separating the two is what lets the
-#: eviction ordering be right without making cancelling a queued transcription
-#: feel broken.
+#: …and how often it looks at its ✕, which is a different question and so a
+#: different number. A cancel must not wait on a display heartbeat.
 _QUEUE_POLL_S = 1.0
 
 

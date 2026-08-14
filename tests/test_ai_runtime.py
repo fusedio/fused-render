@@ -1638,85 +1638,63 @@ def _watcher_giveup_window_s():
     return misses * interval_ms / 1000.0
 
 
-def test_a_queued_row_is_never_absent_for_longer_than_the_WATCHER_TOLERATES():
-    """The guarantee this queue has to meet, derived rather than chosen.
+def test_a_LIVE_transcription_row_is_never_absent_at_all():
+    """The guarantee, and it is now structural rather than arithmetic.
 
-    Any `list_jobs()` call runs `_sweep` and can drop the row, and the page's
-    `watchJob` resolves with null after five consecutive misses (~3.5s) — at
-    which point `fused.ai.transcribe()` rejects "no longer being reported" for
-    a transcription that is merely queued and will succeed. So the property is
-    **maximum row-absence < the watcher's give-up window**.
+    Nine rounds of this feature tried to make the row come BACK fast enough:
+    restate it on every tick, split the cadences, rebuild on detection. All of
+    it was compensation for the row being evictable in the first place, and
+    none of it could reach the real consequence — `watchJob` resolves null
+    after five consecutive misses (~3.5s) and a settled promise cannot be
+    un-settled by a row that returns.
 
-    Absence is bounded by the POLL, not by the write cadence, because the poll
-    rebuilds the row the moment it finds it missing. That is what lets the
-    write cadence be slow (so the cap sheds queued rows before the active
-    decode's) without the row ever being gone long enough to matter. An earlier
-    cut tied survival to the write cadence and bought a 10s absence against a
-    3.5s window.
+    Live server rows are exempt from the cap now
+    (`test_live_SERVER_work_is_never_evicted_by_the_cap`), so for a live
+    transcription the maximum absence is ZERO and the watcher's window does not
+    constrain any cadence this module picks. What is asserted here is that the
+    exemption actually covers the rows this feature opens — a `sys:` id and a
+    running state — because that is the link between the two modules and the
+    thing that would break silently if either end changed.
     """
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "exempt"
+    supervisor._report(job, **supervisor._transcribe_row("rec.m4a", "Preparing…"))
+    row = _row_now(job)
+    assert row is not None
+    assert row["owner"] == jobs.OWNER_SERVER and row["state"] == "running"
+
+    # Enough page-owned rows to blow the cap several times over: the
+    # transcription row must still be there afterwards.
+    for i in range(jobs.MAX_JOBS * 2):
+        jobs.upsert({"id": f"noise{i}", "title": "x", "state": "running"})
+    assert _row_now(job) is not None, "a live transcription row was evicted"
+
+    # The residual absence is USER-caused only — dismissing the row — and the
+    # queue heals that within one poll, which still has to beat the watcher.
     window = _watcher_giveup_window_s()
-    assert window > 0
-    # Halved for margin: a rebuild costs a report, the page's poll is not phase
-    # aligned with ours, and both are wall-clock on a loaded machine.
     assert supervisor._QUEUE_POLL_S < window / 2, (
-        f"a queued row can be absent for {supervisor._QUEUE_POLL_S}s against a "
-        f"{window}s give-up window")
-
-    # …but the HONEST worst case is not ours. The ACTIVE decode's row is
-    # refreshed by the worker, whose floor is `worker_base.HEARTBEAT_S` when a
-    # single long segment produces no per-segment ticks — and that is ALREADY
-    # wider than the window, without any cadence this module chooses. It is
-    # asserted here as a known gap rather than left unstated, so that closing
-    # it (by making live rows un-evictable, D276) makes this test change
-    # deliberately instead of passing by accident.
-    heartbeat = _worker_base_module().HEARTBEAT_S
-    assert heartbeat > window, (
-        "the active decode's worst-case row gap is now inside the watcher's "
-        "window — the D276 gap may be closed; update this and SPEC AI-10a")
-    # Which is exactly why `fused.ai.transcribe` must not SETTLE on an absent
-    # row. That is pinned in `test_both_artefact_bridges_survive_a_row_that_aged_out`.
+        f"a dismissed queued row takes {supervisor._QUEUE_POLL_S}s to come back "
+        f"against a {window}s give-up window")
 
 
-def _worker_base_module():
-    """`worker_base`, loaded by path — the runner loads it off `sys.path` in
-    its own interpreter, so importing it the packaged way would be reading a
-    module that never ships."""
-    import importlib.util
+def test_a_waiting_row_never_reads_as_no_longer_reporting():
+    """What the write cadence is FOR, now that it is not about eviction.
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "fused_render", "ai", "runners", "worker_base.py")
-    spec = importlib.util.spec_from_file_location("worker_base_probe", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    It used to be sized against `worker_base.HEARTBEAT_S`, to decide which live
+    row the cap would shed first. The cap does not shed live server rows any
+    more, so that relationship is gone and the only remaining constraint is the
+    honest one it always also had: a queued row must report often enough not to
+    be displayed as "no longer reporting" while it is merely waiting its turn.
 
-
-def test_the_queue_cadence_stays_below_the_worker_heartbeat():
-    """The eviction ordering is a RELATIONSHIP between two modules, so it is
-    pinned rather than left to a comment.
-
-    `jobs._sweep` sheds the least recently updated running row first, and the
-    row that must survive is the active decode's. That decode's `updated_at`
-    is refreshed by `worker_base.HEARTBEAT_S` in the worst case — one long
-    segment produces no per-segment ticks at all — so a queue that reports
-    FASTER than the heartbeat makes every waiting row fresher than the running
-    one and inverts the ordering. An earlier cut did exactly that, reasoning
-    that 1s "matched the worker's cadence".
-
-    Read out of `worker_base` rather than restated here, so changing the
-    heartbeat fails this instead of silently re-inverting the sweep.
+    Deliberately re-derived rather than left pointing at the heartbeat — a
+    rationale that no longer describes the code is worse than none, because the
+    next person trusts it (D276).
     """
-    worker_base = _worker_base_module()
-    assert supervisor._QUEUE_TICK_S > worker_base.HEARTBEAT_S, (
-        "a queued row reporting faster than the worker's heartbeat makes the "
-        "ACTIVE decode the first thing the cap evicts")
-    # …and still comfortably inside the stale window, or a queued row is
-    # reported as "no longer reporting" while it waits.
-    assert supervisor._QUEUE_TICK_S < jobs.STALE_AFTER_S
-    # The ✕ is read on its own, faster cadence — the eviction fix must not be
-    # paid for in cancel latency.
+    assert supervisor._QUEUE_TICK_S < jobs.STALE_AFTER_S, (
+        "a queued transcription would be reported as stalled while waiting")
+    # And the ✕ is read on its own, much faster cadence, so cancelling a queued
+    # transcription does not wait on the display heartbeat.
     assert supervisor._QUEUE_POLL_S <= 1.0
+    assert supervisor._QUEUE_POLL_S < supervisor._QUEUE_TICK_S
 
 
 def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monkeypatch):
@@ -1938,14 +1916,14 @@ def test_both_artefact_bridges_survive_a_row_that_aged_out():
     # The page-relative half is the bridge's job (RH-1): the server can only
     # resolve "clip.m4a" if the page says where it is standing.
     assert "body.base = ownPath" in transcribe
-    # And transcribe goes FURTHER than image on the absent-row branch, because
-    # it has to: a row describing live work can be gone for longer than
-    # watch()'s ~3.5s give-up window (the manager evicts under its cap, and the
-    # active decode's own worst case is the worker's 5s heartbeat). So it must
-    # not SETTLE on absence — it retries against the transcript file and
-    # resumes watching if the row returns.
-    assert "watcher.get()" in transcribe and "regrace" in transcribe
-    assert "return watcher.watch(onProgress).then(settle)" in transcribe
+    # Both bridges answer an absent row the SAME way, which is the point:
+    # read the artefact. Transcribe briefly grew a retry loop here to out-wait
+    # mid-run evictions, and that loop could hang forever; live server rows are
+    # cap-exempt now (`test_live_SERVER_work_is_never_evicted_by_the_cap`), so
+    # the branch is a backstop for a row that finished and aged out under a
+    # sleeping tab, not a state machine. Kept assertion-shaped so the loop
+    # cannot creep back in.
+    assert "regrace" not in transcribe and "GRACE_TRIES" not in transcribe
     for call in ("function aiImage(", "function aiTranscribe("):
         start = source.index(call)
         end = source.index("\n  }\n", start)
