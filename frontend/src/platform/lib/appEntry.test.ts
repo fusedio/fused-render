@@ -120,16 +120,6 @@ test("an older server that reports only entry_html still opens the page", () => 
   });
 });
 
-test("a linked app opens its page like any other app", () => {
-  // A linked app's folder lives OUTSIDE the workspace, which used to mean the
-  // card needed the registry-resolved /apps/linked/<name> route. An explorer
-  // URL is an fs path, so the entry is addressable directly and the tag stops
-  // mattering to the open path at all.
-  const linked = app({ tag: "linked", name: "notes", path: "/elsewhere/notes",
-    entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
-  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes/index.html");
-});
-
 // -------------------------------------------------------------- the new tab
 
 test("href points at the same target a left click opens", () => {

@@ -79,7 +79,6 @@ def work_tree(tmp_path, monkeypatch):
          "commit", "-qm", "init"], check=True, env=env)
     # A workspace elsewhere, so the app-dir rules are not accidentally in play.
     monkeypatch.setenv("FUSED_RENDER_WORKSPACE", str(tmp_path / "workspace"))
-    monkeypatch.delenv("FUSED_RENDER_LINKED_APPS", raising=False)
     return root
 
 
@@ -171,14 +170,12 @@ def test_the_gate_does_not_step_aside_on_an_app_folder(tmp_path, monkeypatch):
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     subprocess.run(["git", "init", "-q", str(app)], check=True, env=env)
     monkeypatch.setenv("FUSED_RENDER_WORKSPACE", str(workspace))
-    monkeypatch.delenv("FUSED_RENDER_LINKED_APPS", raising=False)
 
     assert _load("git").main(str(app)) is True
 
 
 def test_a_path_outside_any_repository_is_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_WORKSPACE", str(tmp_path / "workspace"))
-    monkeypatch.delenv("FUSED_RENDER_LINKED_APPS", raising=False)
     plain = tmp_path / "plain"
     plain.mkdir()
     (plain / "a.txt").write_text("hi")

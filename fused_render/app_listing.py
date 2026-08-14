@@ -146,8 +146,7 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None) -> dict:
 
     `preview_image` is resolved HERE, and the asymmetry is the point: it has no
     such ambiguity to hand back (see `app_preview_image`), so resolving it once
-    in the shared shape is what keeps the workspace walk and the linked-app
-    registry from having to remember it separately.
+    in the shared shape keeps callers from having to remember it separately.
     """
     return {
         "name": name,
@@ -239,9 +238,9 @@ def workspace_apps(root: str) -> list[dict]:
     showed why it had to go: `sandbox/` held ten PEOPLE's folders with the 14 real
     apps one level inside them, so the page drew a blank, title-less card for
     every person beside the apps it now also found. The shelf and its contents
-    both appearing is the tell. `app_dict` still accepts `entry=None` — the
-    linked-app registry (`linked_apps.linked_apps`) passes one for a registered
-    folder that has no page — so this changed what the WALK emits, never the dict
+    both appearing is the tell. `app_dict` still accepts `entry=None` (the dict
+    contract predates the walk's page requirement, and a future caller may hold
+    an entry-less folder), so this changed what the WALK emits, never the dict
     contract.
 
     DESCENT IS A SEPARATE DECISION and did not change with that one: an
