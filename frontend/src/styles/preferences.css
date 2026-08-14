@@ -717,7 +717,7 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 11px 11px 14px;
+  padding: 11px 11px 13px;
 }
 
 /* Depth cascade: the front sheet (d0) is full width and holds the body; each
@@ -734,12 +734,12 @@
 }
 
 .fhb-sheet-d1 {
-  margin: 0 10px -36px;
+  margin: 0 10px -35px;
   z-index: 2;
 }
 
 .fhb-sheet-d2 {
-  margin: 0 20px -36px;
+  margin: 0 20px -35px;
   z-index: 1;
 }
 
@@ -753,7 +753,7 @@
 }
 
 /* The back sheet's page body: a blank strip a step off the sheet's own fill,
-   fully tucked away at rest (the -36px overlap swallows the 20px peek plus
+   fully tucked away at rest (the -35px overlap swallows the 20px peek plus
    the title row's bottom padding, so the next sheet's top edge sits right
    under the name — the ref design's hugging cut). */
 .fhb-sheet-peek {
