@@ -718,6 +718,13 @@
   gap: 8px;
   min-width: 0;
   padding: 11px;
+  transition: padding 0.18s ease;
+}
+
+/* Hover breathes the title rows open a hair along with the fan. */
+.fhb-card:hover .fhb-sheet-row {
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
 /* Depth cascade: the front sheet (d0) is full width and holds the body; each
