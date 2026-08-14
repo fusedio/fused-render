@@ -120,12 +120,6 @@ def export_app_env() -> None:
     # into the containing app's repo, and scopes that to this workspace.
     os.environ["FUSED_RENDER_WORKSPACE_DIR"] = shell_seed.fused_dir()
     shell_mounts.export_ro_mounts_env()
-    # Registered linked-app folders (fused_render/linked_apps.py) — the app
-    # and claude gates accept these alongside <workspace>/<tag>/<name>.
-    # Re-exported on every registry write; this is the startup baseline.
-    from fused_render import linked_apps
-
-    linked_apps.export_linked_apps_env()
     # The skill plugin the chats we spawn are handed (D216). Here rather than in
     # a startup event because this is the export path: it assembles the root and
     # publishes it as one more FUSED_RENDER_* var for every child to inherit.
