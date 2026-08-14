@@ -378,3 +378,48 @@ def test_an_unreadable_index_is_a_502_not_not_indexed(home, tmp_path, client):
     resp = client.get("/api/git-repos")
     assert resp.status_code == 502
     assert "index could not be read" in resp.json()["error"]
+
+
+# -- the freshness nudge -------------------------------------------------------
+
+def test_opening_the_tab_fires_a_freshness_check_on_the_scan_roots(
+        home, tmp_path, client, monkeypatch):
+    """The tab is served entirely from the index, so without this it is the one
+    surface in the app that can never notice the index is behind — /api/fs/list
+    fires the same check for every folder the explorer opens."""
+    from fused_render.server.routers import index as index_mod
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _set_roots([a, b])
+    repo = a / "repo"
+    _write_dirs_index([str(a), str(repo), _git(repo)])
+    checked = []
+    monkeypatch.setattr(index_mod, "note_folder_opened",
+                        lambda p: (checked.append(p), True)[1])
+
+    body = client.get("/api/git-repos").json()
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    # The configured roots, in order, and nothing else: the tab is machine-wide,
+    # so a root is the only path it can name.
+    assert checked == [str(a), str(b)]
+
+
+def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
+        home, tmp_path, client, monkeypatch):
+    """Housekeeping, hung off a read endpoint. The repo list is the answer; the
+    nudge is a side effect and must never become the response."""
+    from fused_render.server.routers import index as index_mod
+
+    def boom(_path):
+        raise RuntimeError("freshness exploded")
+
+    repo = tmp_path / "repo"
+    _write_dirs_index([str(tmp_path), str(repo), _git(repo)])
+    monkeypatch.setattr(index_mod, "note_folder_opened", boom)
+
+    resp = client.get("/api/git-repos")
+    assert resp.status_code == 200
+    assert [r["path"] for r in resp.json()["repos"]] == [str(repo)]

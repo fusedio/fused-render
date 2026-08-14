@@ -142,6 +142,13 @@ A live run of the root is refused rather than joined, the check runs on a backgr
 thread throttled to one at a time, and nothing about the listing waits on it or fails
 with it.
 
+**Who fires it:** `/api/fs/list`, naming the folder just opened, and `/api/git-repos`,
+naming the configured roots — that tab is served entirely from the index and has no
+folder to name, so without it the homepage's Repos list could never notice a stale
+index. The root form catches little (a root's mtime moves only when its own direct
+entries change), and the single slot means a second root is skipped whenever the first
+took it; both are accepted, since the check is cheap and the tab has no better signal.
+
 **Bound, by design:** a directory's mtime moves only when entries are added, removed or
 renamed *in that directory*. An edit five levels down does not flip the mtime of the
 folder being viewed. This makes the index fresher; it does not make it correct, and the
