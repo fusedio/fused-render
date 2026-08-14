@@ -175,6 +175,7 @@ function bytes(n) {
 }
 
 function dateStr(epochSeconds) {
+  if (typeof epochSeconds !== "number") return "—";
   return new Date(epochSeconds * 1000).toLocaleString();
 }
 
@@ -211,9 +212,11 @@ function scanNote(scan) {
 function structPrimitive(item) {
   if (item.kind === "scalar") {
     const v = item.value;
-    if (v === null || v === undefined) return `<span class="null">None</span>`;
-    if (typeof v === "string") return `<span class="str">"${esc(v)}"</span>`;
-    if (typeof v === "boolean") return `<span class="bool">${v}</span>`;
+    // Dispatch on the ORIGINAL Python type, not typeof v -- a NaN/Infinity float
+    // arrives as the JS string "NaN", indistinguishable by typeof from a real string.
+    if (item.type === "none") return `<span class="null">None</span>`;
+    if (item.type === "str") return `<span class="str">"${esc(v)}"</span>`;
+    if (item.type === "bool") return `<span class="bool">${v}</span>`;
     return `<span class="num">${esc(v)}</span>`;
   }
   if (item.kind === "ndarray") {
@@ -223,6 +226,7 @@ function structPrimitive(item) {
     return `<span class="type">${esc(item.type)}</span> <span class="muted mono">${esc(item.module)}</span>`;
   }
   if (item.kind === "truncated") return `<span class="muted">… (nesting limit reached)</span>`;
+  if (item.kind === "shared") return `<span class="muted">↩ (shared reference, shown elsewhere)</span>`;
   return `<span class="type">${esc(item.type || "")}</span> <span class="muted mono">${esc(item.repr || "")}</span>`;
 }
 
@@ -400,7 +404,9 @@ function renderFeatureImportance(list) {
   return list.map((fi) => {
     const top = fi.features.slice(0, 40);
     const numOr0 = (v) => (typeof v === "number" ? v : 0);
-    const biggest = top.length ? numOr0(top[0].importance) : 0;
+    // Max across the whole page, not just top[0] -- a NaN/non-numeric entry
+    // ranked first (e.g. every importance is NaN) must not collapse every bar.
+    const biggest = top.length ? Math.max(...top.map((f) => numOr0(f.importance))) : 0;
     return `<section><h2>Feature importance — ${esc(fi.path || "(root)")}</h2>
       <div class="scroll"><table>
         <tr><th>Feature</th><th class="num">Importance</th><th></th></tr>
@@ -428,6 +434,7 @@ function renderTreeSections(treesList) {
 }
 
 function wireTreeSections(treesList) {
+  const redraws = [];
   treesList.forEach((t, ti) => {
     // Section-qualified key: each estimator's tree section has its own selection.
     const paramKey = `tree_${ti}`;
@@ -460,6 +467,7 @@ function wireTreeSections(treesList) {
       const btn = document.getElementById(`treeexpand-${ti}`);
       if (btn) btn.addEventListener("click", () => { extraDepth += 4; draw(); });
     }
+    redraws.push(draw);
 
     async function loadTree(index) {
       const box = document.getElementById(`treebox-${ti}`);
@@ -493,6 +501,10 @@ function wireTreeSections(treesList) {
       });
     }
   });
+  // Colours are baked into the SVG via getComputedStyle at draw time (SPEC §30),
+  // so a theme change alone doesn't repaint an already-drawn tree.
+  new MutationObserver(() => redraws.forEach((fn) => fn()))
+    .observe(document.documentElement, { attributeFilter: ["data-theme"] });
 }
 
 function render(d) {

@@ -15,6 +15,7 @@ import os
 import pickle
 import random
 import sys
+import time
 
 import joblib
 import joblib.numpy_pickle
@@ -92,6 +93,50 @@ def test_object_dtype_array_bypass_is_blocked_and_never_executed(tmp_path, monke
     assert out["scan"]["verdict"] != "safe"
     assert calls == []  # the real os.system (nt.system/posix.system) was never reached
     assert "structure" not in out
+
+
+def test_object_dtype_array_gates_the_call_not_just_the_reference(tmp_path, monkeypatch):
+    # _DelegatingUnpickler (used for object-dtype array content) used to be built on
+    # pickle.Unpickler, the C-accelerated one with no overridable dispatch table --
+    # so load_reduce's unsafe-to-call gate silently never applied inside it, and a
+    # prefix-trusted function reached only through an object-dtype array (unlike a
+    # top-level REDUCE) was called for real.
+    class _Reducer:
+        def __reduce__(self):
+            return (joblib.load, ("/etc/passwd",))
+
+    path = os.path.join(str(tmp_path), "evil_array2.joblib")
+    joblib.dump({"arr": np.array([_Reducer()], dtype=object)}, path)
+
+    calls = []
+    monkeypatch.setattr(joblib.numpy_pickle, "load", lambda *a, **k: calls.append(a))
+
+    out = reader.main(file=path)
+    assert out["scan"]["verdict"] == "blocked"
+    offending = [r for r in out["scan"]["refs"] if not r["allowed"]]
+    assert any(r["name"] == "load" for r in offending)
+    assert calls == []
+
+
+def test_legacy_inst_opcode_gates_the_call_too(tmp_path, monkeypatch):
+    # The legacy INST/OBJ opcodes (pickle._Unpickler._instantiate) call a resolved
+    # reference directly, the same as REDUCE, but through a completely different
+    # code path load_reduce alone does not cover.
+    path = os.path.join(str(tmp_path), "inst_gadget.pkl")
+    with open(path, "wb") as handle:
+        handle.write(pickle.MARK)
+        handle.write(pickle.SHORT_BINSTRING + bytes([1]) + b"x")
+        handle.write(pickle.INST + b"joblib.numpy_pickle\nload\n")
+        handle.write(pickle.STOP)
+
+    calls = []
+    monkeypatch.setattr(joblib.numpy_pickle, "load", lambda *a, **k: calls.append(a))
+
+    out = reader.main(file=path)
+    assert out["scan"]["verdict"] == "blocked"
+    offending = [r for r in out["scan"]["refs"] if not r["allowed"]]
+    assert any(r["name"] == "load" for r in offending)
+    assert calls == []
 
 
 def test_prefix_trusted_function_gadget_is_blocked_and_never_executed(tmp_path, monkeypatch):
@@ -213,6 +258,22 @@ def test_array_with_huge_declared_shape_is_blocked_before_allocating(tmp_path):
     assert out["scan"]["verdict"] != "safe"
 
 
+def test_shared_references_do_not_blow_up_the_walk(tmp_path):
+    # Pickle's memo lets a tiny file declare the SAME (large) list many times over.
+    # Without identity-based dedup, a walk that recurses per-occurrence rather than
+    # per-object does branch**depth work from a file of a few hundred bytes.
+    level = 0
+    for _ in range(24):
+        level = [level] * 20
+    path = _dump(level, tmp_path, name="shared_refs.joblib")
+    assert os.path.getsize(path) < 2000
+
+    start = time.time()
+    out = reader.main(file=path)
+    assert time.time() - start < 10
+    assert out["scan"]["verdict"] == "safe"
+
+
 def test_unrecognised_but_allowlist_prefixed_library_is_unavailable(tmp_path):
     # catboost isn't a bundled dependency; a real reference to it must resolve
     # to "unavailable" (trusted, just absent), not "blocked".
@@ -295,6 +356,35 @@ def test_multiclass_linear_model_feature_importance_uses_all_classes(tmp_path):
     assert got != {i: class0_only[i] for i in range(len(class0_only))}
     for i, v in enumerate(expected):
         assert got[i] == pytest.approx(float(v))
+
+
+def test_feature_importance_sorts_nan_last_not_arbitrarily(tmp_path):
+    # NaN compares False against everything, so sorting by a raw NaN key can leave
+    # it anywhere -- including rank 0, displayed as the MOST important feature.
+    class _FakeEstimator:
+        feature_importances_ = [0.2, float("nan"), 0.5, 0.1]
+
+        def get_params(self, deep=True):
+            return {}
+
+    result = reader._feature_importance("", _FakeEstimator())
+    order = [row["feature"] for row in result["features"]]
+    assert order == [2, 0, 3, 1]  # descending by value, NaN (feature 1) last
+    assert result["features"][-1]["importance"] == "NaN"
+
+
+def test_classes_containing_nan_stay_json_safe(tmp_path):
+    # classes_ used to bypass _json_float entirely -- a NaN there broke the whole
+    # response's allow_nan=False serialization instead of degrading gracefully.
+    class _FakeEstimator:
+        classes_ = np.array([0.0, float("nan"), 2.0])
+
+        def get_params(self, deep=False):
+            return {}
+
+    summary = reader._estimator_summary("", _FakeEstimator())
+    assert summary["classes"] == [0.0, "NaN", 2.0]
+    json.dumps(summary, allow_nan=False)
 
 
 def test_one_bad_estimator_does_not_crash_the_others(tmp_path, monkeypatch):
@@ -502,3 +592,6 @@ def test_dict_traversal_is_capped_like_list_traversal(tmp_path):
 def test_missing_file_reports_blocked_without_raising(tmp_path):
     out = reader.main(file=os.path.join(str(tmp_path), "does_not_exist.joblib"))
     assert out["scan"]["verdict"] == "blocked"
+    # Same file_info shape as every other return path -- template.html always
+    # reads file.size/file.mtime/file.sibling_files unconditionally.
+    assert set(out["file"]) == {"size", "mtime", "sibling_files"}

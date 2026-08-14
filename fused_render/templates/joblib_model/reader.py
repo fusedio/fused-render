@@ -5,6 +5,7 @@ class/callable is confirmed trusted. Self-contained — templates are scripts
 run by the engine, not part of the package (SPEC PY-15/D166).
 """
 import io
+import itertools
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import pickle
 import zlib
 
 import joblib.numpy_pickle
+import numpy as np
 
 _RAW_SIZE_CAP = 2 * 1024 * 1024 * 1024
 _DECOMPRESSED_CAP = 512 * 1024 * 1024
@@ -106,20 +108,80 @@ def _classify(module: str, name: str) -> bool:
     return any(module == prefix.rstrip(".") or module.startswith(prefix) for prefix in _PREFIX_ALLOW)
 
 
-class _DelegatingUnpickler(pickle.Unpickler):
-    """Plain Unpickler with externally supplied find_class/persistent_load
-    (the C-accelerated Unpickler won't allow find_class as an instance attribute)."""
+def _refuse_unsafe_call(target, unsafe_to_call, refs_by_key, blocked):
+    """None if `target` is safe to call. Otherwise records the block against the
+    (module, name) find_class resolved it from and returns a substitute _Stub().
+    refs_by_key is an O(1) lookup (not a scan) so an attacker can't turn repeated,
+    memo-reused REDUCE/INST calls to the same blocked target into O(n*m) work."""
+    origin = unsafe_to_call.get(id(target))
+    if origin is None:
+        return None
+    ref = refs_by_key.get(origin)
+    if ref is not None:
+        ref["allowed"] = False
+    blocked.append({"module": origin[0], "name": origin[1]})
+    return _Stub()
 
-    def __init__(self, file_handle, find_class, persistent_load):
+
+def _guarded_reduce(unpickler, unsafe_to_call, refs_by_key, blocked):
+    """Gates the REDUCE opcode: mirrors pickle._Unpickler.load_reduce exactly,
+    except a call target find_class flagged unsafe-to-call is never invoked.
+    Used by both _RestrictedUnpickler and _DelegatingUnpickler (the object-dtype
+    array delegate) so neither stream can call an unvetted function."""
+    args = unpickler.stack.pop()
+    func = unpickler.stack[-1]
+    stub = _refuse_unsafe_call(func, unsafe_to_call, refs_by_key, blocked)
+    unpickler.stack[-1] = stub if stub is not None else func(*args)
+
+
+def _guarded_instantiate(unpickler, klass, args, unsafe_to_call, refs_by_key, blocked):
+    """Gates the legacy INST/OBJ opcodes: mirrors pickle._Unpickler._instantiate
+    exactly. Like REDUCE, this can call an arbitrary resolved callable with
+    attacker-chosen args -- through an opcode pair load_reduce alone doesn't cover,
+    since load_inst/load_obj call self._instantiate(...) directly, not REDUCE."""
+    stub = _refuse_unsafe_call(klass, unsafe_to_call, refs_by_key, blocked)
+    if stub is not None:
+        unpickler.append(stub)
+        return
+    if args or not isinstance(klass, type) or hasattr(klass, "__getinitargs__"):
+        try:
+            value = klass(*args)
+        except TypeError as err:
+            raise TypeError("in constructor for %s: %s" % (klass.__name__, str(err)), err.__traceback__)
+    else:
+        value = klass.__new__(klass)
+    unpickler.append(value)
+
+
+class _DelegatingUnpickler(pickle._Unpickler):
+    """Delegates find_class/persistent_load to the enclosing _RestrictedUnpickler
+    and shares its _unsafe_to_call/refs/blocked bookkeeping, so a function call
+    reached through an object-dtype array's embedded stream is gated exactly
+    like one reached through the top-level stream. Explicitly the pure-Python
+    Unpickler (not the C-accelerated one `pickle.Unpickler` aliases to) because
+    only the pure-Python one exposes an overridable `dispatch` table for
+    load_reduce -- the same reason NumpyUnpickler itself is built on it."""
+
+    def __init__(self, file_handle, restricted):
         super().__init__(file_handle)
-        self._find_class = find_class
-        self._persistent_load = persistent_load
+        self._restricted = restricted
 
     def find_class(self, module, name):
-        return self._find_class(module, name)
+        return self._restricted.find_class(module, name)
 
     def persistent_load(self, pid):
-        return self._persistent_load(pid)
+        return self._restricted.persistent_load(pid)
+
+    def load_reduce(self):
+        r = self._restricted
+        _guarded_reduce(self, r._unsafe_to_call, r.refs_by_key, r.blocked)
+
+    def _instantiate(self, klass, args):
+        r = self._restricted
+        _guarded_instantiate(self, klass, args, r._unsafe_to_call, r.refs_by_key, r.blocked)
+
+    dispatch = dict(pickle._Unpickler.dispatch)
+    dispatch[pickle.REDUCE[0]] = load_reduce
 
 
 class _SafeNumpyArrayWrapper(joblib.numpy_pickle.NumpyArrayWrapper):
@@ -131,7 +193,7 @@ class _SafeNumpyArrayWrapper(joblib.numpy_pickle.NumpyArrayWrapper):
 
     def read_array(self, unpickler, ensure_native_byte_order):
         if self.dtype.hasobject:
-            embedded = _DelegatingUnpickler(unpickler.file_handle, unpickler.find_class, unpickler.persistent_load)
+            embedded = _DelegatingUnpickler(unpickler.file_handle, unpickler)
             return embedded.load()
         count = 1
         for dim in self.shape:
@@ -145,6 +207,13 @@ class _SafeNumpyArrayWrapper(joblib.numpy_pickle.NumpyArrayWrapper):
             )
         return super().read_array(unpickler, ensure_native_byte_order)
 
+    def read_mmap(self, unpickler):
+        # Unreachable today (this reader never sets mmap_mode), but read_mmap
+        # memory-maps unpickler.filename at an attacker-controlled offset/shape/
+        # dtype/order with none of read_array's checks -- refuse outright rather
+        # than rely on that staying true.
+        raise pickle.UnpicklingError("refusing to memory-map an array")
+
 
 class _SafeNDArrayWrapper(joblib.numpy_pickle.NDArrayWrapper):
     """Legacy joblib<=0.9 wrapper: loads an attacker-named sibling file via
@@ -157,72 +226,54 @@ class _SafeNDArrayWrapper(joblib.numpy_pickle.NDArrayWrapper):
 
 
 class _RestrictedUnpickler(joblib.numpy_pickle.NumpyUnpickler):
-    """find_class is the sole gate: allowed references resolve for real,
-    everything else becomes an inert _Stub and is recorded as blocked."""
+    """find_class is the reference gate (disallowed names never resolve); REDUCE
+    and the legacy INST/OBJ opcodes -- the only ways a resolved reference is ever
+    actually CALLED, each with attacker-chosen args -- are gated separately below,
+    since find_class alone can't tell which resolved names will go on to be called."""
 
     def __init__(self, filename, file_obj):
         super().__init__(filename, file_obj, ensure_native_byte_order=True)
-        self.refs = []  # [{"module", "name", "allowed"}], first-seen order, deduped
-        self._seen = set()
+        self.refs_by_key = {}  # (module, name) -> {"module", "name", "allowed"}, first-seen order
         self.blocked = []
         self.missing = set()
         # A prefix-trusted name may resolve to a real, uncalled reference (e.g. a
         # FunctionTransformer merely storing numpy.log1p as an attribute) -- that's
-        # harmless, so find_class doesn't block it. What IS dangerous is REDUCE
-        # actually CALLING an unvetted function with attacker-chosen args (e.g.
-        # joblib.load). load_reduce below is the real gate for that; this maps
-        # id(resolved) -> (module, name) for anything it must refuse to call.
+        # harmless, so find_class doesn't block it. This maps id(resolved) -> the
+        # (module, name) it must refuse to actually CALL, for load_reduce/_instantiate.
         self._unsafe_to_call = {}
 
     def find_class(self, module, name):
         key = (module, name)
-        first_seen = key not in self._seen
-        self._seen.add(key)
-
-        def record(final_allowed):
-            if first_seen:
-                self.refs.append({"module": module, "name": name, "allowed": final_allowed})
+        ref = self.refs_by_key.get(key)
+        if ref is None:
+            ref = {"module": module, "name": name, "allowed": True}
+            self.refs_by_key[key] = ref
 
         if not _classify(module, name):
-            record(False)
+            ref["allowed"] = False
             self.blocked.append({"module": module, "name": name})
             return _Stub
         try:
             resolved = super().find_class(module, name)
         except (ImportError, AttributeError):
-            record(True)
             self.missing.add(module.split(".", 1)[0])
             return _Stub
         if resolved is joblib.numpy_pickle.NumpyArrayWrapper:
-            record(True)
             return _SafeNumpyArrayWrapper
         if resolved is joblib.numpy_pickle.NDArrayWrapper:
-            record(True)
             return _SafeNDArrayWrapper
         exact = _EXACT_ALLOW.get(module)
         prefix_trusted = exact is None or name not in exact
         is_safe_function = key in _PREFIX_FUNCTION_ALLOW or _is_pyx_unpickle_helper(name)
         if prefix_trusted and not isinstance(resolved, type) and not is_safe_function:
             self._unsafe_to_call[id(resolved)] = key
-        record(True)
         return resolved
 
     def load_reduce(self):
-        # Mirrors pickle._Unpickler.load_reduce exactly, except a call target
-        # find_class flagged unsafe-to-call is never actually invoked.
-        args = self.stack.pop()
-        func = self.stack[-1]
-        origin = self._unsafe_to_call.get(id(func))
-        if origin is not None:
-            module, name = origin
-            for ref in self.refs:
-                if ref["module"] == module and ref["name"] == name:
-                    ref["allowed"] = False
-                    break
-            self.blocked.append({"module": module, "name": name})
-            self.stack[-1] = _Stub()
-        else:
-            self.stack[-1] = func(*args)
+        _guarded_reduce(self, self._unsafe_to_call, self.refs_by_key, self.blocked)
+
+    def _instantiate(self, klass, args):
+        _guarded_instantiate(self, klass, args, self._unsafe_to_call, self.refs_by_key, self.blocked)
 
     dispatch = dict(joblib.numpy_pickle.NumpyUnpickler.dispatch)
     dispatch[pickle.REDUCE[0]] = load_reduce
@@ -286,11 +337,12 @@ def _restricted_load(path: str, data: bytes):
     except Exception as exc:  # noqa: BLE001 - any failure here means "not proven safe"
         return "blocked", [], f"could not parse as a pickle stream: {exc}", None
 
+    refs = list(unpickler.refs_by_key.values())
     if unpickler.blocked:
-        return "blocked", unpickler.refs, None, None
+        return "blocked", refs, None, None
     if unpickler.missing:
-        return "unavailable", unpickler.refs, ", ".join(sorted(unpickler.missing)), None
-    return "safe", unpickler.refs, None, obj
+        return "unavailable", refs, ", ".join(sorted(unpickler.missing)), None
+    return "safe", refs, None, obj
 
 
 def _sibling_chunks(path: str):
@@ -330,23 +382,33 @@ def _escape_path_key(key) -> str:
     return str(key).replace("\\", "\\\\").replace(".", "\\.").replace("[", "\\[").replace("]", "\\]")
 
 
-def _describe(obj, path="", depth=0, max_depth=4):
+def _describe(obj, path="", depth=0, max_depth=4, seen=None):
+    if seen is None:
+        seen = set()
     if depth >= max_depth:
         return {"path": path, "kind": "truncated"}
+    if isinstance(obj, (dict, list, tuple)):
+        # Pickle's memo lets a tiny file declare the SAME object many times over
+        # (shared references) -- without this, a handful of nested lists sharing
+        # one inner list produces branch^depth walk work from a few hundred bytes.
+        obj_id = id(obj)
+        if obj_id in seen:
+            return {"path": path, "kind": "shared"}
+        seen.add(obj_id)
     if isinstance(obj, dict):
         return {
             "path": path, "kind": "dict",
             "length": len(obj),
             "items": [
-                {"key": str(k), **_describe(v, f"{path}.{_escape_path_key(k)}" if path else _escape_path_key(k), depth + 1, max_depth)}
-                for k, v in list(obj.items())[:50]
+                {"key": str(k), **_describe(v, f"{path}.{_escape_path_key(k)}" if path else _escape_path_key(k), depth + 1, max_depth, seen)}
+                for k, v in itertools.islice(obj.items(), 50)
             ],
         }
     if isinstance(obj, (list, tuple)):
         return {
             "path": path, "kind": "list",
             "length": len(obj),
-            "items": [_describe(v, f"{path}[{i}]", depth + 1, max_depth) for i, v in enumerate(obj[:50])],
+            "items": [_describe(v, f"{path}[{i}]", depth + 1, max_depth, seen) for i, v in enumerate(obj[:50])],
         }
     if _is_ndarray(obj):
         return {"path": path, "kind": "ndarray", "shape": list(obj.shape), "dtype": str(obj.dtype)}
@@ -354,12 +416,19 @@ def _describe(obj, path="", depth=0, max_depth=4):
         return {"path": path, "kind": "estimator", "type": type(obj).__name__, "module": type(obj).__module__}
     if isinstance(obj, (str, int, float, bool)) or obj is None:
         value = _json_float(obj) if isinstance(obj, float) else obj
-        return {"path": path, "kind": "scalar", "value": value if not isinstance(value, str) or len(value) <= 200 else value[:200] + "…"}
+        # "type" carries the ORIGINAL Python type, since a NaN/Infinity float is
+        # sent as the JSON string "NaN" -- indistinguishable from a real string
+        # that happens to say "NaN" unless the view knows it started as a float.
+        py_type = "none" if obj is None else type(obj).__name__
+        return {
+            "path": path, "kind": "scalar", "type": py_type,
+            "value": value if not isinstance(value, str) or len(value) <= 200 else value[:200] + "…",
+        }
     return {"path": path, "kind": "object", "type": type(obj).__name__, "repr": _short_repr(obj)}
 
 
 def _is_ndarray(obj) -> bool:
-    return type(obj).__module__.startswith("numpy") and type(obj).__name__ == "ndarray"
+    return isinstance(obj, np.ndarray)
 
 
 _FIND_ESTIMATORS_MAX_DEPTH = 12  # a dict-wrapped Pipeline alone needs dict->Pipeline->steps->tuple->estimator
@@ -374,23 +443,27 @@ def _find_estimators(obj, path="", depth=0, max_depth=_FIND_ESTIMATORS_MAX_DEPTH
     obj_id = id(obj)
     if obj_id in seen:
         return []
+    # Marked as seen for EVERY object, not just estimators: pickle's memo lets a
+    # tiny file declare the same (large) container many times over via shared
+    # references, which would otherwise blow up recursive work exponentially
+    # with depth (see _describe's identical guard).
+    seen.add(obj_id)
     found = []
     is_estimator = hasattr(obj, "get_params") and callable(obj.get_params)
     if is_estimator:
-        seen.add(obj_id)
         found.append((path, obj))
     if isinstance(obj, dict):
-        for key, value in list(obj.items())[:50]:
+        for key, value in itertools.islice(obj.items(), 50):
             child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
             found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
     elif isinstance(obj, (list, tuple)):
         for index, value in enumerate(obj[:50]):
             found.extend(_find_estimators(value, f"{path}[{index}]", depth + 1, max_depth, seen))
-    elif is_estimator and _tree_kind(obj) is None and hasattr(obj, "__dict__"):
-        # Composite estimators (Pipeline, VotingClassifier, ...) hold sub-estimators as
-        # plain attributes. Skipped once _tree_kind recognises obj as an ensemble itself
-        # (RandomForest, Bagging, ...): its members are already covered by the tree
-        # viewer, not independent top-level models.
+    elif is_estimator and not _is_tree_ensemble(obj) and hasattr(obj, "__dict__"):
+        # Composite estimators (Pipeline, VotingClassifier, ...) hold sub-estimators
+        # as plain attributes. Skipped for a tree ensemble itself (RandomForest,
+        # Bagging, ...): its members are already covered by the tree viewer, not
+        # independent top-level models.
         for key, value in list(vars(obj).items())[:50]:
             child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
             found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
@@ -420,7 +493,10 @@ def _estimator_summary(path: str, est) -> dict:
         summary["n_features_in"] = int(est.n_features_in_)
     if hasattr(est, "classes_"):
         try:
-            summary["classes"] = [c.item() if hasattr(c, "item") else c for c in list(est.classes_)]
+            summary["classes"] = [
+                _json_float(v) if isinstance(v, float) else v
+                for v in (c.item() if hasattr(c, "item") else c for c in list(est.classes_))
+            ]
         except Exception:  # noqa: BLE001 - best-effort, never fatal to the view
             pass
     return summary
@@ -438,9 +514,12 @@ def _feature_importance(path: str, est):
             values = [abs(float(v)) for v in coef]
     if values is None:
         return None
+    # NaN compares False against everything, so sorting by a raw NaN key leaves it
+    # in an arbitrary position (even rank 0) instead of last, where "can't rank
+    # this" belongs.
     ranked = sorted(
         ({"feature": i, "importance": float(v)} for i, v in enumerate(values)),
-        key=lambda row: -row["importance"],
+        key=lambda row: math.inf if math.isnan(row["importance"]) else -row["importance"],
     )
     for row in ranked:
         row["importance"] = _json_float(row["importance"])
@@ -459,6 +538,13 @@ def _tree_kind(est):
     if hasattr(est, "tree_") and hasattr(est.tree_, "children_left"):
         return "sklearn_tree"
     return None
+
+
+def _is_tree_ensemble(est) -> bool:
+    """True if _tree_kind can render est's own trees -- so _find_estimators must
+    not also treat its individual members (e.g. a RandomForest's per-tree
+    estimators_) as separate, independently-listed top-level models."""
+    return _tree_kind(est) is not None
 
 
 def _sklearn_tree_node(tree, node_id, depth=0):
@@ -541,8 +627,10 @@ def _tree_ensemble(path: str, est, tree_index):
             round_idx, class_idx = divmod(idx, n_classes)
             return _sklearn_tree_node(est.estimators_[round_idx, class_idx].tree_, 0)
     elif kind == "xgboost":
-        # num_boosted_rounds() is cheap; get_dump() (needed only for the one
-        # requested tree) costs seconds on a large model.
+        # num_boosted_rounds() is cheap; a full get_dump() costs seconds on a large
+        # model. booster[i:i+1] slices by ROUND (all classes' trees for that round),
+        # not by flat tree index, so the round is sliced out and the class picked
+        # from it -- dumping one round instead of dumping every tree in the model.
         booster = est.get_booster()
         n_classes = len(est.classes_) if hasattr(est, "classes_") and len(est.classes_) > 2 else 1
         count = booster.num_boosted_rounds() * n_classes
@@ -550,14 +638,17 @@ def _tree_ensemble(path: str, est, tree_index):
         idx = tree_index if tree_index is not None else 0
 
         def node_builder():
-            return _xgboost_tree_node(json.loads(booster.get_dump(dump_format="json")[idx]))
+            round_idx, class_idx = divmod(idx, n_classes)
+            round_dump = booster[round_idx:round_idx + 1].get_dump(dump_format="json")
+            return _xgboost_tree_node(json.loads(round_dump[class_idx]))
     elif kind == "lightgbm":
         count = est.booster_.num_trees()
         meta = [{"index": i} for i in range(count)]
         idx = tree_index if tree_index is not None else 0
 
         def node_builder():
-            return _lightgbm_tree_node(est.booster_.dump_model()["tree_info"][idx]["tree_structure"])
+            tree_info = est.booster_.dump_model(num_iteration=1, start_iteration=idx)["tree_info"]
+            return _lightgbm_tree_node(tree_info[0]["tree_structure"])
     else:
         return None
 
@@ -588,7 +679,8 @@ def main(file: str, tree_index=None) -> dict:
         size = os.path.getsize(file)
         mtime = os.path.getmtime(file)
     except OSError as exc:
-        return {"file": {"error": str(exc)}, "scan": {"verdict": "blocked", "refs": [], "message": str(exc)}}
+        file_info = {"size": None, "mtime": None, "sibling_files": []}
+        return {"file": file_info, "scan": {"verdict": "blocked", "refs": [], "message": str(exc)}}
 
     data, error = _bounded_bytes(file)
     file_info = {"size": size, "mtime": mtime, "sibling_files": _sibling_chunks(file)}
