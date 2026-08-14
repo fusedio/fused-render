@@ -168,6 +168,38 @@ def test_a_root_scanned_within_the_floor_is_not_rescanned(tmp_path, spawned):
     assert spawned == []
 
 
+def test_a_root_scanned_two_minutes_ago_is_rescanned(tmp_path, spawned):
+    """The floor is a minute, not ten. Browsing must not queue scan after scan,
+    but a folder that changed out of band should not stay stale for the length
+    of a coffee break either — and a scan started sooner is a CHEAPER scan: both
+    dominant costs (the journal replay and the set of dirs it names) scale with
+    the window since the last one."""
+    root = _tree(tmp_path, "root")
+    sub = _tree(tmp_path, "root/sub")
+    cfg = _index(tmp_path, root, {root: 1 * NS, sub: 1 * NS})
+    runner._record_scan(cfg, root)
+    at = runner.last_scan(cfg, root) + 120
+    assert note_folder_opened(cfg, sub, [root], now=at) == root
+    assert spawned == [{"root": root, "full": False}]
+
+
+def test_the_scan_floor_matches_the_routers_check_debounce(tmp_path):
+    """Two floors, one cadence. freshness.MIN_INTERVAL_S paces the SCANS (read
+    off scans.json, so it also sees the startup scheduler and the manual
+    buttons); routers.index.FRESHNESS_CHECK_S paces the CHECKS, per root, in
+    memory.
+
+    An ordering, not an equality. Longer would leave scans the floor allows
+    unstarted, since a check is the only thing that starts one. Exactly equal is
+    the subtler failure: the check clock is stamped when a check BEGINS and the
+    scan clock when the scan is spawned (runner._record_scan, a duckdb lookup and
+    a Popen later), so the next due check lands just inside the scan floor, is
+    refused, and re-stamps — halving the real rate. Hence strictly shorter."""
+    from fused_render.server.routers.index import FRESHNESS_CHECK_S
+
+    assert FRESHNESS_CHECK_S < MIN_INTERVAL_S
+
+
 def test_a_folder_outside_every_configured_root_triggers_nothing(
         tmp_path, spawned):
     root = _tree(tmp_path, "root")

@@ -142,13 +142,23 @@ _freshness_slot = threading.Lock()
 # client has fetched (platform/lib/index-status). So a root is checked at most
 # this often, whatever the explorer is doing.
 #
-# Deliberately coarse. The client's posture is now to keep serving the corpus
-# it has and label it a generation behind rather than to refetch on every
-# index event (listing/revalidate), which makes an eager freshness check worth
-# much less than it used to be and its side effect — a scan completing mid-read
-# — worth avoiding. freshness.MIN_INTERVAL_S is the second, longer floor on the
-# SCANS themselves; this one is about the checks.
-FRESHNESS_CHECK_S = 60.0
+# freshness.MIN_INTERVAL_S is the other floor — on the SCANS themselves, read
+# off scans.json so it also sees the ones the scheduler and the manual buttons
+# start; this one is about the checks, and only about the ones this process
+# makes. One cadence, so this must not be LONGER: a check is the only thing that
+# can act on the scan floor, and checking less often than scans are allowed just
+# leaves the difference on the table.
+#
+# Slightly SHORTER, and the epsilon is load-bearing. The two clocks start at
+# different moments: this one is stamped when a check begins, while
+# `runner._record_scan` stamps when the scan it starts is spawned — a duckdb
+# lookup and a Popen later. So last_scan is always a little after last_check, and
+# at exactly equal intervals the next due check lands inside that offset, finds
+# the scan floor not yet clear, refuses — and re-stamps, pushing the next check
+# out a further full interval. Every second cycle would be a no-op and the real
+# cadence would be ~2x the number both comments name. Five seconds of slack
+# covers the spawn comfortably.
+FRESHNESS_CHECK_S = 55.0
 
 # root -> when it was last checked. Bounded by the number of configured scan
 # roots (a handful), so it needs no eviction.

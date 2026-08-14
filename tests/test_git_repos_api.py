@@ -378,3 +378,109 @@ def test_an_unreadable_index_is_a_502_not_not_indexed(home, tmp_path, client):
     resp = client.get("/api/git-repos")
     assert resp.status_code == 502
     assert "index could not be read" in resp.json()["error"]
+
+
+# -- the freshness nudge -------------------------------------------------------
+
+def _reset_rotation(monkeypatch):
+    """Start the round-robin over the scan roots at its first root.
+
+    The counter is module state and deliberately never resets in production, so a
+    test that did not pin it would assert on whichever turn earlier tests in the
+    same process happened to leave behind."""
+    import itertools
+
+    from fused_render.server.routers import git_repos as mod
+
+    monkeypatch.setattr(mod, "_root_turn", itertools.count())
+
+
+def test_opening_the_tab_fires_a_freshness_check_on_the_scan_roots(
+        home, tmp_path, client, monkeypatch):
+    """The tab is served entirely from the index, so without this it is the one
+    surface in the app that can never notice the index is behind — /api/fs/list
+    fires the same check for every folder the explorer opens."""
+    from fused_render.server.routers import index as index_mod
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _set_roots([a, b])
+    repo = a / "repo"
+    _write_dirs_index([str(a), str(repo), _git(repo)])
+    checked = []
+    monkeypatch.setattr(index_mod, "note_folder_opened",
+                        lambda p: (checked.append(p), True)[1])
+    _reset_rotation(monkeypatch)
+
+    body = client.get("/api/git-repos").json()
+    assert [r["path"] for r in body["repos"]] == [str(repo)]
+    # A configured root, and nothing else: the tab is machine-wide, so a root is
+    # the only path it can name.
+    assert checked == [str(a)]
+
+
+def test_successive_tab_opens_check_each_root_in_turn(home, tmp_path, client,
+                                                      monkeypatch):
+    """ONE root per request, round-robin — and the point is that the later roots
+    are genuinely reached.
+
+    Offering every root in a loop looked equivalent and was not: the checker's
+    slot is taken by the first call and released by its own background thread a
+    config read later, so every subsequent root in the same request fails its
+    non-blocking acquire. The first root would win every request forever and the
+    second would never be checked at all."""
+    from fused_render.server.routers import index as index_mod
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _set_roots([a, b])
+    _write_dirs_index([str(a)])
+    checked = []
+    monkeypatch.setattr(index_mod, "note_folder_opened",
+                        lambda p: (checked.append(p), True)[1])
+    _reset_rotation(monkeypatch)
+
+    for _ in range(4):
+        assert client.get("/api/git-repos").status_code == 200
+    assert checked == [str(a), str(b), str(a), str(b)]
+
+
+def test_a_freshness_check_that_explodes_does_not_fail_the_tab(
+        home, tmp_path, client, monkeypatch):
+    """Housekeeping, hung off a read endpoint. The repo list is the answer; the
+    nudge is a side effect and must never become the response.
+
+    Two roots, the first one raising, because a bad root must not take the
+    rotation down with it: the roots are independent questions, and a config
+    where one of them wedges the check for every other one is the failure that
+    hides itself."""
+    from fused_render.server.routers import index as index_mod
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    _set_roots([a, b])
+    repo = a / "repo"
+    _write_dirs_index([str(a), str(repo), _git(repo)])
+    checked = []
+
+    def boom(path):
+        checked.append(path)
+        if path == str(a):
+            raise RuntimeError("freshness exploded")
+        return True
+
+    monkeypatch.setattr(index_mod, "note_folder_opened", boom)
+    _reset_rotation(monkeypatch)
+
+    for _ in range(2):
+        resp = client.get("/api/git-repos")
+        assert resp.status_code == 200
+        assert [r["path"] for r in resp.json()["repos"]] == [str(repo)]
+    # the throwing root took its turn and the next request moved on regardless
+    assert checked == [str(a), str(b)]
