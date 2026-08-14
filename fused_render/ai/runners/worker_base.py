@@ -673,8 +673,8 @@ class _FileFetch:
             if not self._restore(saved):
                 saved = None
         if saved is None:
-            # …and once the sidecar is rejected its layout goes with it. Kept,
-            # it would split a download that starts from zero by a number that
+            # …and once the sidecar is out, its layout goes with it. Kept, it
+            # would split a download that starts from zero by a number that
             # described a file we just deleted: one connection for a 4.6GB
             # shard, or dozens for a small one.
             count = _segment_count(self.size)
@@ -784,10 +784,20 @@ class _FileFetch:
         """Fill one segment, reconnecting until it is done or the budget is out.
 
         Reconnects on both kinds of interruption: an exception, and a body that
-        simply ends early — a server closing mid-stream raises nothing. The
-        retry budget resets whenever bytes actually arrive, so a multi-hour
-        download survives many transient faults while a genuinely dead URL still
-        gives up rather than retrying forever.
+        simply ends early — a server closing mid-stream raises nothing.
+
+        The budget resets on the CURSOR MOVING across a whole attempt, which is
+        not the same as bytes arriving, and the difference is both a hang and an
+        abort. Bytes arriving is too generous: a server that ignores `Range` and
+        truncates hands back the same prefix every time, `_whole_body` rewinds
+        the cursor to zero to take it safely, and a budget keyed on bytes never
+        expires — the job hangs with the bar oscillating between 0% and 50%
+        until someone kills the process. And it is too mean, because it was read
+        from a drain that a raising `read()` never returns from: half a gigabyte
+        on disk followed by a connection reset counted as a failed attempt, so a
+        link that resets reliably exhausted the budget and took the whole
+        multi-file download into a fallback that then deleted every recorded
+        byte. The cursor before and after answers both.
         """
         ranged = len(self.segments) > 1
         refreshed = False
@@ -798,7 +808,7 @@ class _FileFetch:
                 return
             start = seg["start"] + seg["done"]
             want_range = ranged or seg["done"] > 0
-            moved = False
+            before = seg["done"]
             try:
                 with _open(self.meta["location"], self._cdn_token(),
                            start if want_range else None,
@@ -808,7 +818,7 @@ class _FileFetch:
                             start = self._whole_body(seg)
                         else:
                             self._check_range(response, start)
-                    moved = self._drain(response, seg, start)
+                    self._drain(response, seg, start)
                 if _seg_complete(seg):
                     return
                 reason = f"the stream ended at byte {seg['start'] + seg['done']}"
@@ -832,10 +842,10 @@ class _FileFetch:
                     reason = f"HTTP {error.code}"
             except _TRANSIENT as error:
                 reason = f"{error.__class__.__name__}: {error}"
-            if moved:
-                # Bytes arriving is what says the connection worked, so it
-                # restores BOTH allowances. The re-resolve is one per stall and
-                # not one per segment: a presigned URL is good for minutes and a
+            if seg["done"] > before:
+                # The cursor moved, so the connection worked, so BOTH allowances
+                # come back. The re-resolve is one per stall and not one per
+                # segment: a presigned URL is good for minutes and a
                 # multi-gigabyte download is not, so a second expiry is ordinary
                 # — and unhandled it spends the whole retry budget on 401s and
                 # aborts into a fallback that then deletes the resumable state.
@@ -901,8 +911,13 @@ class _FileFetch:
         return 0
 
     def _drain(self, response, seg, start):
-        """Copy this response into the part file. True if anything landed."""
-        moved = False
+        """Copy this response into the part file, advancing the cursor as it goes.
+
+        Deliberately reports nothing: what an attempt achieved is the cursor's
+        movement, which the caller can still read after this raises — and a
+        `read()` raising mid-body, on top of bytes already written, is the case
+        a returned flag got wrong.
+        """
         offset = start
         while not self.stop.is_set():
             chunk = response.read(READ_BYTES)

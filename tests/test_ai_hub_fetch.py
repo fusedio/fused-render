@@ -86,6 +86,8 @@ def _start_server(payload, **flags):
                           be made to outlive TWO presigned URLs
       break_first=N       the first N real responses are a truncated chunked
                           body, which raises `http.client.IncompleteRead`
+      break_bytes=N       …after delivering N bytes that the client keeps, so
+                          the exception arrives on top of real progress
       chunk_cap=N         at most N bytes per response, then hang up — a slow
                           link that keeps needing another connection
       probe_fail_first=N  the first N one-byte probes get a 503
@@ -98,7 +100,8 @@ def _start_server(payload, **flags):
              "probes": 0, "lock": threading.Lock(),
              "ranges": True, "lie_after_probe": False, "clamp": False,
              "budget": None, "unauthorized": 0, "unauthorized_on": (),
-             "break_first": 0, "chunk_cap": None, "probe_fail_first": 0}
+             "break_first": 0, "break_bytes": 0, "chunk_cap": None,
+             "probe_fail_first": 0}
     state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -144,15 +147,24 @@ def _start_server(payload, **flags):
                     # response has to be one the writer would accept, or this
                     # tests the header checks instead of the retry loop.
                     self.send_response(206 if header else 200)
+                    at = 0
                     if header:
                         spec = header.split("=", 1)[1]
                         first, _, last = spec.partition("-")
+                        at = int(first)
                         self.send_header(
                             "Content-Range",
-                            f"bytes {int(first)}-{last or len(payload) - 1}"
+                            f"bytes {at}-{last or len(payload) - 1}"
                             f"/{len(payload)}")
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
+                    keep = payload[at:at + state["break_bytes"]]
+                    if keep:
+                        # One valid chunk the client keeps, and only THEN the
+                        # garbage — bytes on disk under an exception, which is
+                        # a different thing from a response that never worked.
+                        self.wfile.write(f"{len(keep):X}\r\n".encode()
+                                         + keep + b"\r\n")
                     self.wfile.write(b"not-a-chunk-length\r\n")
                     self.close_connection = True
                     return
@@ -479,6 +491,67 @@ def test_a_second_expiry_in_one_download_is_re_resolved_too(base, monkeypatch,
     assert state["real"] == 4, state["log"]
 
 
+def test_a_server_that_ignores_range_and_truncates_cannot_loop_forever(
+        base, monkeypatch, tmp_path, payload):
+    """The retry budget has to count PROGRESS, not bytes.
+
+    One segment, a server that ignores `Range` and hangs up mid-body. Attempt 1
+    takes a partial body from zero. Attempt 2 asks to resume, is handed a whole
+    body again, rewinds the cursor to zero (the only safe reading of a 200) and
+    copies the same prefix — bytes arrived, so a budget keyed on "bytes arrived"
+    resets, and attempt 3 is identical. Forever: nothing raises, nothing sets
+    stop, and the job hangs with the bar oscillating between 0% and 50% until
+    the process is killed. A budget keyed on the cursor MOVING gives up and lets
+    the fallback have it.
+    """
+    url, state = _start_server(payload, ranges=False, chunk_cap=len(payload) // 2)
+    _wire(base, monkeypatch, tmp_path, url, len(payload), segment_min=10_000_000)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    finished, outcome = threading.Event(), {}
+
+    def go():
+        try:
+            base._segmented_fetch("org/m", ["model.safetensors"])
+        except BaseException as error:  # noqa: BLE001 - carried out to the assertion
+            outcome["error"] = error
+        finally:
+            finished.set()
+
+    threading.Thread(target=go, daemon=True).start()
+    ended = finished.wait(timeout=20)
+    # Let a leaked thread finish rather than hammer the server for the rest of
+    # the session; the assertion below is what reports the failure.
+    state["ranges"], state["chunk_cap"] = True, None
+
+    assert ended, "the retry loop never terminated"
+    assert isinstance(outcome.get("error"), RuntimeError), outcome
+
+
+def test_bytes_that_landed_before_an_exception_still_count_as_progress(
+        base, monkeypatch, tmp_path, payload):
+    """A connection that delivers half a gigabyte and then resets is making
+    progress, and the retry budget is documented to reset when bytes arrive.
+
+    It did not: `moved` was the return value of the drain, which a raising
+    `read()` never reaches — so hundreds of megabytes on disk counted as a
+    failed attempt, five of those aborted the whole multi-file download into the
+    fallback, and `_clear_parts` deleted every recorded byte on the way out.
+    """
+    url, state = _start_server(payload, break_first=3, break_bytes=50_000)
+    _wire(base, monkeypatch, tmp_path, url, len(payload), segment_min=10_000_000)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 2)
+    # Smaller than one broken chunk, so several reads succeed before the one
+    # that raises — which is what puts bytes on disk under an exception.
+    monkeypatch.setattr(base, "READ_BYTES", 10_000)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert state["broken"] == 3, "the test never produced a mid-body failure"
+
+
 def test_a_protocol_error_mid_stream_is_retried_rather_than_fatal(base, monkeypatch,
                                                                   tmp_path, payload):
     """`IncompleteRead` and friends are `http.client.HTTPException`, not
@@ -568,7 +641,7 @@ def test_a_probe_that_fails_does_not_throw_away_recorded_progress(base, monkeypa
 
     state["budget"] = None
     state["log"].clear()
-    monkeypatch.setattr(base, "_supports_ranges", lambda location, token: False)
+    monkeypatch.setattr(base, "_supports_ranges", lambda location, token: None)
 
     snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
 
