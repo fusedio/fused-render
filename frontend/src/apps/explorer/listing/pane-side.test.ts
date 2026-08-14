@@ -109,6 +109,55 @@ describe("paneSideList", () => {
   });
 });
 
+// A SELECTED FOLDER HAS NO `preview` (D278). A folder is not a thing the pane can
+// preview: rendering the page it holds is what the owner asked us to stop (D277),
+// and the alternative — the embedded listing peek — is the listing they are
+// already looking at on the left. So for a directory row the pill offers the
+// COMPANIONS, and `claude` (the chat about that folder) is what the pane lands on.
+//
+// It is `paneSideList`'s job because it is the same question the list has always
+// answered — what may the pane BE — and because leaving `preview` in it was the
+// whole of the bug the owner saw: the pill said "Preview" while a chat rendered.
+describe("paneSideList — a previewed FOLDER row", () => {
+  test("the companions alone, and Claude is what the pane lands on", () => {
+    expect(paneSideList(BOTH, true)).toEqual(["claude", "git"]);
+    // `_side` absent reads as `preview` (parsePaneSide), which is no longer on
+    // offer here — so the resolve lands on the first offered side rather than on
+    // the closed pane's own default.
+    expect(activePaneSide(paneSideList(BOTH, true), "preview")).toBe("claude");
+  });
+
+  test("an explicit Git choice still wins", () => {
+    // The user's own `?_side=git` is a choice, not a default, and a folder row is
+    // not a reason to overrule it.
+    expect(activePaneSide(paneSideList(BOTH, true), "git")).toBe("git");
+  });
+
+  test("a folder outside a repository lands on Claude with Git gone", () => {
+    const outside = { claude: entry("claude"), git: null };
+    expect(paneSideList(outside, true)).toEqual(["claude"]);
+    expect(activePaneSide(paneSideList(outside, true), "git")).toBe("claude");
+  });
+
+  test("with NEITHER companion, `preview` comes back as the fallback", () => {
+    // A mount-backed folder: both gates refuse. The pane must show something, and
+    // the row's own default mode is then the `_listing` sentinel — a peek that
+    // renders no template and runs no Python. This is the deliberate answer to "a
+    // folder whose claude is denied", and it is why `_listing` must stay in the
+    // registry's directory key.
+    expect(paneSideList(NONE, true)).toEqual(["preview"]);
+    expect(activePaneSide(paneSideList(NONE, true), "preview")).toBe("preview");
+  });
+
+  test("the SELF target is not a previewed folder row", () => {
+    // Nothing selected: the pane's subject is the folder already open on the left
+    // and its Preview is the `Select a file to preview.` hint (FS-11), which must
+    // stay reachable. Callers pass `false` there — the flag is about a folder the
+    // user SELECTED, not about the pane's own subject.
+    expect(paneSideList(BOTH, false)).toEqual(["preview", "claude", "git"]);
+  });
+});
+
 // WHAT THE SWITCHER DRAWS, which is all three whatever the folder offers — the
 // folder half of the file sidebar's rule. An unofferable mode is a disabled row
 // carrying its reason, so the header holds still as the user walks from a
@@ -145,6 +194,27 @@ describe("paneSideMenu", () => {
       ["preview", null],
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
+    ]);
+  });
+
+  test("a previewed FOLDER row draws no Preview row at all (D278)", () => {
+    // The menu must not offer what the pane cannot be: `preview` is off the list
+    // for a directory row, so the row goes with it. A disabled row would be worse
+    // than useless here — it is the pane's identity, so it carries no reason, and
+    // a reasonless disabled row is a dead control with nothing to say.
+    expect(paneSideMenu(BOTH, true).map((r) => r.mode)).toEqual(["claude", "git"]);
+    // Unavailable COMPANIONS are still drawn and still explained — that rule is
+    // untouched, and it is why the pill never shrinks to one row and hides.
+    expect(paneSideMenu({ claude: entry("claude"), git: null }, true)).toEqual([
+      { mode: "claude" },
+      { mode: "git", disabledReason: NO_REPO },
+    ]);
+    // …and where neither companion is offered, `preview` is the fallback the pane
+    // actually lands on, so the row comes back with it.
+    expect(paneSideMenu(NONE, true).map((r) => r.mode)).toEqual([
+      "preview",
+      "claude",
+      "git",
     ]);
   });
 

@@ -308,7 +308,6 @@ export default function Listing({
     claudeBound: folderClaude.bound,
     gitBound: folderGit.bound,
   };
-  const paneSide = activePaneSide(paneSideList(sideEntries), sideState.mode);
   const paneOpen = pane.on && sideState.open;
   // One writer for both halves of the state, and it writes the URL only where the
   // listing owns one: an embedded pane (the preview pane's own `_listing` mode) is
@@ -778,6 +777,20 @@ export default function Listing({
   }, [sel.paths, navRows, rowCtxByPath]);
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
+
+  // WHICH of the pane's three modes it is on. Resolved here, below the selection,
+  // because a previewed FOLDER row has no `preview` side at all (pane-side's
+  // paneSideList, D278) and so lands on the chat about it — a folder is not a thing
+  // this pane previews.
+  //
+  // "A folder the user SELECTED" is exactly one row, and a directory: the pane's
+  // own SELF target (nothing selected) is a folder too and keeps its Preview, which
+  // is the `Select a file to preview.` hint (FS-11).
+  const previewedRowIsDir = sel.paths.length === 1 && !!leadRow?.isDir;
+  const paneSide = activePaneSide(
+    paneSideList(sideEntries, previewedRowIsDir),
+    sideState.mode
+  );
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.

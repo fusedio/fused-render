@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { TemplateEntry } from "@platform/lib/api";
 import {
   activePaneMode,
+  paneChatOnly,
   paneModeList,
   paneOpenAction,
   paneOpenTarget,
 } from "./pane-modes";
 
 // The universal `/` directory key as the built-in registry ships it (SPEC
-// PT-13): `_listing` first and unconditional, every peer condition.py-gated.
-function dirTemplates(modes: string[] = ["_listing", "app", "claude", "git", "graph"]): TemplateEntry[] {
+// PT-13): **`claude` first** (D277) with `_listing` behind it, and every peer
+// except the `_listing` sentinel condition.py-gated.
+function dirTemplates(modes: string[] = ["claude", "_listing", "git", "graph"]): TemplateEntry[] {
   return modes.map((mode) => ({
     mode,
     path: mode === "_listing" ? null : `/t/${mode}/template.html`,
@@ -35,26 +39,45 @@ const verdicts = (allowed: string[], denied: string[] = []): Record<string, bool
 // `_listing`, land on no mode unless the folder had an app of its own — are
 // gone with the picker.
 describe("paneModeList — the selected target", () => {
-  test("a selected subfolder still defaults to the embedded listing", () => {
+  test("a selected subfolder defaults to CLAUDE, the registry's lead", () => {
+    // D277: the pane reads the list for its lead (`activePaneMode` with no
+    // override), so the registry's order IS the pane's default, and a folder now
+    // opens the chat about itself rather than running anything of the folder's.
     const modes = paneModeList({
       templates: dirTemplates(),
-      conditions: verdicts(["claude", "git"], ["app", "graph"]),
+      conditions: verdicts(["claude", "git"], ["graph"]),
       isDir: true,
     });
-    expect(modes[0]).toBe("_listing");
+    expect(modes).toEqual(["claude", "_listing", "git"]);
+    expect(activePaneMode(modes, null)).toBe("claude");
+  });
+
+  test("a folder whose claude gate says NO falls back to the listing", () => {
+    // The deliberate answer to "what if the default is denied" (D277): the next
+    // mode in the registry's order, which is the unconditional `_listing`
+    // sentinel — the embedded peek. It renders no template and runs no Python,
+    // so the denial can never fall through to something heavier than the default.
+    const modes = paneModeList({
+      templates: dirTemplates(),
+      conditions: verdicts(["git"], ["claude", "graph"]),
+      isDir: true,
+    });
+    expect(modes).toEqual(["_listing", "git"]);
     expect(activePaneMode(modes, null)).toBe("_listing");
   });
 
   test("a folder holding a lone page is still just a folder", () => {
     // It used to lead with a pane-only `_app` sentinel rendering that page in
-    // place. The app concept is gone (D264): every folder previews as its
-    // listing, and the page is one row of it.
+    // place (D264 deleted that), and then with the page itself through a retarget
+    // (D269, deleted by D277). A folder's modes are the FOLDER's, and the page it
+    // holds is one row of the listing behind them.
     const modes = paneModeList({
-      templates: dirTemplates(["_listing", "claude"]),
+      templates: dirTemplates(["claude", "_listing"]),
       conditions: verdicts(["claude"]),
       isDir: true,
     });
-    expect(modes).toEqual(["_listing", "claude"]);
+    expect(modes).toEqual(["claude", "_listing"]);
+    expect(activePaneMode(modes, null)).toBe("claude");
   });
 
   test("a file drops `_listing` and takes its own first mode", () => {
@@ -96,6 +119,73 @@ describe("paneModeList — gate visibility is the shared policy", () => {
       isDir: true,
     });
     expect(modes).toEqual(["_listing"]);
+  });
+});
+
+// A SELECTED FOLDER IS PREVIEWED AS A FOLDER — never as the page it holds
+// (D277, deleting D269's pane half). The pane used to resolve a folder with a
+// top-level `.html` to that page and preview it as a FILE, which meant selecting
+// a row in the listing RAN the folder's app: its template's Python, its buttons,
+// its network calls, for a folder the user had merely highlighted.
+//
+// The component needs a React renderer this setup does not have, so the absence
+// is pinned at its source. Both halves matter: the entry rule must not be
+// consulted, and the retarget state it fed must be gone — a live `entryRow`
+// would put the page back through the same `view` even if the helper were
+// reached some other way.
+// The second door onto the same page, and the reason `paneChatOnly` exists.
+//
+// The `claude` template has a preview pane OF ITS OWN, and for a FOLDER it fills
+// that pane by resolving the folder's entry page and rendering it
+// (templates/shared/app_entry.py). So making `claude` a folder's pane default
+// without taking that pane away would put the app page back on screen — nested
+// one level deeper, running the same Python, for the same mere selection.
+// `chat_only=1` is what removes it, and the claude template checks the flag
+// BEFORE it looks an entry page up at all.
+describe("paneChatOnly", () => {
+  test("the claude template never gets a pane of its own in here", () => {
+    expect(paneChatOnly("claude")).toBe(true);
+  });
+
+  test("nothing else is affected", () => {
+    // `git`'s subject is the folder and it has no preview pane to take away;
+    // `_listing` builds no /render URL at all, and a file's own modes are
+    // ordinary templates.
+    expect(paneChatOnly("git")).toBe(false);
+    expect(paneChatOnly("_listing")).toBe(false);
+    expect(paneChatOnly("_render")).toBe(false);
+    expect(paneChatOnly("duckdb")).toBe(false);
+  });
+});
+
+describe("the pane never previews a folder as its app page", () => {
+  const src = readFileSync(
+    join(import.meta.dir, "../ListingPreviewPane.tsx"),
+    "utf8",
+  );
+
+  test("the pane's one chat-only rule serves both its claude surfaces", () => {
+    // The pane's `claude` SIDE has always passed the flag; the row-mode embed
+    // must pass it too, and both from this decision — one query literal, spelled
+    // once as a constant, and two callers asking whether to send it.
+    expect(src.match(/&chat_only=1/g)?.length).toBe(1);
+    expect(src.match(/paneChatOnly\(/g)?.length).toBe(2);
+  });
+
+  test("the folder-entry rule is not consulted for a selected row", () => {
+    // `lib/app-entry.ts` is deleted outright — the pane was its only caller —
+    // so this holds today by there being nothing to import. It is pinned anyway,
+    // because the rule still LIVES on the server (`app_listing.app_entry`) and in
+    // the claude template (`templates/shared/app_entry.py`): re-deriving it here
+    // is a two-line change, and the pin is what makes that change fail loudly.
+    // The comments may still name it; the import and the call are what count.
+    expect(src).not.toMatch(/^import .*app-entry/m);
+    expect(src).not.toContain("entryHtmlPath(");
+  });
+
+  test("no retarget state stands between the selected row and the preview", () => {
+    expect(src).not.toContain("entryRow");
+    expect(src).not.toContain("resolvingEntry");
   });
 });
 

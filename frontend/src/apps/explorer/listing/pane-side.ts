@@ -125,11 +125,30 @@ export interface PaneSideEntries {
   gitBound?: TemplateEntry | null;
 }
 
-export function paneSideList(entries: PaneSideEntries): PaneSide[] {
-  const list: PaneSide[] = ["preview"];
-  if (entries.claude) list.push("claude");
-  if (entries.git) list.push("git");
-  return list;
+// `rowIsDir` — the previewed row is a FOLDER the user selected (not the pane's own
+// self target, which is a folder too and keeps its hint). **A selected folder has
+// no `preview`** (D278): a folder is not a thing this pane can preview. Rendering
+// the page it holds is what D277 stopped, and the other candidate — the embedded
+// listing peek — is the very listing on the other side of the divider. Leaving
+// `preview` on the list was the whole of the bug the owner reported: the pill read
+// "Preview" while a chat rendered in it, because the folder's default MODE had
+// become `claude` (registry, D277) while the pane's own default SIDE was still
+// `preview`. Two controls naming the same content differently.
+//
+// So a directory row offers the COMPANIONS, and since `_side` absent parses as
+// `preview`, `activePaneSide` lands it on the first of them — the chat about that
+// folder, which is what the owner asked a folder to default to.
+//
+// **Unless neither companion is offered** (a mount-backed folder: both gates
+// refuse), when `preview` comes back as the fallback. The pane must show
+// something, and there the row's own default mode is the unconditional `_listing`
+// sentinel — a peek that renders no template and runs no Python.
+export function paneSideList(entries: PaneSideEntries, rowIsDir = false): PaneSide[] {
+  const companions: PaneSide[] = [];
+  if (entries.claude) companions.push("claude");
+  if (entries.git) companions.push("git");
+  if (rowIsDir && companions.length > 0) return companions;
+  return ["preview", ...companions];
 }
 
 // One row per mode, ALWAYS all three, which is the folder half of the rule the
@@ -151,13 +170,26 @@ export interface PaneSideMenuEntry {
   disabledReason?: string;
 }
 
-export function paneSideMenu(entries: PaneSideEntries): PaneSideMenuEntry[] {
+// The `preview` ROW follows the LIST (D278): a directory row that offers the
+// companions draws no Preview row, because the pane cannot be on it there. That
+// is not a hole in the "list every mode, disable the unavailable ones" rule — that
+// rule is about the two COMPANIONS, which are unavailable for a REASON the user is
+// owed. `preview` carries no reason (it is the pane's identity), so a disabled
+// Preview row would be a dead control with nothing to say.
+export function paneSideMenu(
+  entries: PaneSideEntries,
+  rowIsDir = false,
+): PaneSideMenuEntry[] {
   const companion = (mode: "claude" | "git"): PaneSideMenuEntry => {
     if (entries[mode]) return { mode };
     const pending = mode === "claude" ? entries.claudePending : entries.gitPending;
     return pending ? { mode, pending: true } : { mode, disabledReason: unavailableReason(mode) };
   };
-  return [{ mode: "preview" }, companion("claude"), companion("git")];
+  const rows = [companion("claude"), companion("git")];
+  // Exactly the list's own condition, asked of the same inputs, so the menu can
+  // never draw a row the pane may not be on — or drop the one it is on.
+  const offersPreview = paneSideList(entries, rowIsDir).includes("preview");
+  return offersPreview ? [{ mode: "preview" }, ...rows] : rows;
 }
 
 // WHICH TEMPLATE A ROW TAKES ITS ICON FROM — the offered entry, and failing that
@@ -184,13 +216,21 @@ export function paneSideIconEntry(
 }
 
 // The mode the pane SHOWS for a requested one: the request while it is still on
-// offer, else the default. A `_side` naming a mode this folder hasn't got — a
-// `git` carried in from a repository to a folder outside one — falls back here
-// and the param is deliberately LEFT ALONE, which is the posture `_panelMode` had
-// before it: the next folder that does offer the mode picks it up again, so a hop
-// out of a repo and back in does not silently reset the pane.
+// offer, else THE FIRST MODE ON OFFER. A `_side` naming a mode this target hasn't
+// got — a `git` carried in from a repository to a folder outside one — falls back
+// here and the param is deliberately LEFT ALONE, which is the posture
+// `_panelMode` had before it: the next folder that does offer the mode picks it up
+// again, so a hop out of a repo and back in does not silently reset the pane.
+//
+// "First on offer" rather than the pane's own `preview` default (D278), because
+// `preview` is no longer always on offer: a selected FOLDER row hasn't got one, and
+// an absent `_side` parses as exactly that request — so falling back to the
+// constant would have resolved a folder row to a side the list refuses, which is
+// the pill naming one thing while the body renders another. The constant remains
+// the last resort for the empty list, which no caller can currently produce.
 export function activePaneSide(offered: PaneSide[], want: PaneSide): PaneSide {
-  return offered.includes(want) ? want : DEFAULT_PANE_SIDE;
+  if (offered.includes(want)) return want;
+  return offered[0] ?? DEFAULT_PANE_SIDE;
 }
 
 // WHAT THE PANE IS ABOUT, as a React key — and it is not always the selected row,

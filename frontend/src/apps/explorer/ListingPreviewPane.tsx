@@ -8,11 +8,15 @@
 //            otherwise. Reuses the app's own template pipeline for FILES AND
 //            FOLDERS alike — the selection is stat'ed to discover its template
 //            modes and its DEFAULT embeds as the normal /render iframe (which
-//            mode that is, is listing/pane-modes.ts's call). A folder that is an
-//            APP previews as its entry PAGE (D269 — see the retarget below); any
-//            other folder's `_listing` mode mounts the real shell Listing
-//            component (embedded — no URL writes, no nested pane, no global
-//            keyboard).
+//            mode that is, is listing/pane-modes.ts's call). **A SELECTED FOLDER
+//            IS PREVIEWED AS A FOLDER** (D277): its own modes, led by `claude`
+//            (the chat about it) with the `_listing` sentinel behind — the latter
+//            mounting the real shell Listing component (embedded — no URL writes,
+//            no nested pane, no global keyboard). It used to resolve a folder
+//            holding a top-level `.html` to that PAGE and preview it as a file
+//            (D269's retarget), which meant merely SELECTING a row ran the
+//            folder's app; that is gone, and nothing here previews a folder as
+//            anything but the folder.
 //   Claude   the chat, chat-only, about the selected row (about the FOLDER when
 //            the selection names no single row).
 //   Git      the OPEN FOLDER's working tree. The one mode whose subject is not
@@ -27,9 +31,8 @@
 // — whether there is a pane at all, its width, the divider drag, and `_side`
 // itself — stays in Listing; this component owns only what the pane shows.
 import { useEffect, useState } from "react";
-import { prefetchListDir, resolveConditions, statPath } from "@platform/lib/api";
+import { resolveConditions, statPath } from "@platform/lib/api";
 import type { TemplateEntry } from "@platform/lib/api";
-import { entryHtmlPath } from "@apps/explorer/lib/app-entry";
 import { navigate } from "@platform/lib/router";
 import { formatSize } from "@platform/lib/format";
 import { modeTitle } from "@platform/lib/mode-name";
@@ -43,6 +46,7 @@ import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import Listing from "@apps/explorer/Listing";
 import {
   activePaneMode,
+  paneChatOnly,
   paneModeList,
   paneOpenAction,
 } from "@apps/explorer/listing/pane-modes";
@@ -52,6 +56,11 @@ import {
   type PaneSide,
   type PaneSideEntries,
 } from "@apps/explorer/listing/pane-side";
+
+// The query the chat template reads to give up its own preview pane (see
+// paneChatOnly, which decides WHEN it is sent). Spelled once: both places that
+// send it build a different URL around it.
+const CHAT_ONLY_PARAM = "&chat_only=1";
 
 // The selected row, as the pane needs it. Structurally a subset of Listing's
 // RowCtx, so the lead row can be passed straight through.
@@ -113,76 +122,45 @@ export default function ListingPreviewPane({
   // The self target renders without asking the server anything (no modes — see
   // its branch below), so no fetch is started for it.
   const self = !!row?.self;
+  // A FOLDER the user selected — not the self target, which is a folder too. The
+  // pill drops its `preview` row for one (pane-side's paneSideMenu, D278), the
+  // same question Listing asked to resolve `side` in the first place, so the menu
+  // it draws cannot disagree with the side it is on.
+  const rowIsDir = !!row && !row.self && row.isDir;
   // Only `Preview` is about the row's own templates. Claude and Git are handed
   // their entry by the caller and aimed by `_file`, so in those two modes the
   // stat below would be work for an answer nothing reads — including on every
   // selection change, since Claude stays mounted across one.
   const previewing = side === "preview";
 
-  // --- a selected FOLDER that is an app previews as its PAGE (D269) ----------
+  // --- A SELECTED FOLDER IS PREVIEWED AS A FOLDER (D277, deleting D269's pane
+  // half) ---------------------------------------------------------------------
   //
-  // The owner's rule: a folder holding a top-level `.html` IS that page, and
-  // every surface that shows the folder shows the page. Selecting `task-forge`
-  // used to fill this pane with a nested listing of task-forge — a listing of a
-  // folder, rendered beside the listing it was selected in — where the thing
-  // the folder is FOR was one row inside it.
+  // There is no retarget here, and there must not be one. D269 resolved a folder
+  // holding a top-level `.html` to that PAGE and previewed it as an ordinary
+  // file, on the rule that such a folder IS its page. In this pane that turned a
+  // SELECTION into an execution: arrowing onto a row mounted `/render` for the
+  // folder's app, ran its template's Python, and put a live UI with working
+  // buttons in the sidebar for a folder the user had done nothing but highlight.
+  // The owner's words were "we don't want rendering".
   //
-  // It is resolved by RETARGETING the row, not by a mode of its own: everything
-  // below already knows how to preview an html FILE (stat → templates →
-  // `_render` iframe), so the app page arrives through the same pipeline as any
-  // other page, the expand button opens the page, and no template, sentinel or
-  // pane branch had to be reintroduced for it. (D264 deleted the `app` template
-  // and the pane-only `_app` sentinel; D269 does NOT bring either back — see
-  // lib/app-entry.ts.)
+  // So the pane stats the SELECTED ROW itself, folder or file, and a folder
+  // resolves to the FOLDER's mode list — `claude` first, then the `_listing`
+  // sentinel (registry.json's universal `/` key, D277). Nothing about the page it
+  // may contain enters into it; the page is one row of the embedded listing, one
+  // click away, exactly as it is in the listing on the left.
   //
-  // The cost is one `/api/fs/list` per selected folder, and it is the same page
-  // the embedded `Listing` would have fetched anyway: both go through
-  // `prefetchListDir`, so a folder that falls through to the listing branch
-  // below reuses this very promise rather than fetching twice.
-  //
-  // A folder with no top-level html resolves to null and everything below is
-  // exactly as it was: the embedded listing.
-  const dirPath = row && !row.self && row.isDir && previewing ? row.path : null;
-  const [entryRow, setEntryRow] = useState<PaneTarget | null>(null);
-  // Separate from `info`'s own loading state on purpose: the listing branch must
-  // not paint a nested listing for one frame and then swap it for the page. The
-  // skeleton holds until the folder's entry question is answered.
-  const [resolvingEntry, setResolvingEntry] = useState(dirPath !== null);
-  useEffect(() => {
-    setEntryRow(null);
-    setResolvingEntry(dirPath !== null);
-    if (!dirPath) return;
-    let alive = true;
-    prefetchListDir(dirPath).then(
-      (res) => {
-        if (!alive) return;
-        const entry = entryHtmlPath(dirPath, res.entries);
-        setEntryRow(
-          entry === null
-            ? null
-            : { path: entry, name: entry.slice(entry.lastIndexOf("/") + 1), isDir: false }
-        );
-        setResolvingEntry(false);
-      },
-      // An unreadable folder is "no entry page", never an error of its own: the
-      // listing branch below renders the same folder through the real Listing,
-      // which has its own error reporting for exactly this.
-      () => alive && setResolvingEntry(false)
-    );
-    return () => {
-      alive = false;
-    };
-  }, [dirPath]);
+  // (D269's OTHER half is untouched: an app CARD on the hub still opens the entry
+  // page, and the server keeps its own entry rule — `app_listing.app_entry`,
+  // `templates/shared/app_entry.py` — for the surfaces that ask "which page is
+  // this folder". This pane simply stops asking. The frontend copy of the rule,
+  // `lib/app-entry.ts`, now has no caller in the explorer.)
 
-  // Stat what the pane will actually show — the app's page for an app folder,
-  // the selected row itself otherwise (`view`, below the early returns). Files
-  // and folders alike carry a template mode list (folders at minimum the
-  // `_listing` sentinel). The cleanup flag is the superseded-click guard: a
-  // stale async result for a row that's no longer selected must not render.
-  //
-  // `row` stays the truth about WHAT IS SELECTED — the Claude companion below is
-  // still aimed at the folder the user clicked, not at a page it never named.
-  const path = resolvingEntry ? undefined : (entryRow ?? row)?.path;
+  // Stat the selected row to discover its modes. Files and folders alike carry a
+  // template mode list (folders at minimum the `_listing` sentinel). The cleanup
+  // flag is the superseded-click guard: a stale async result for a row that's no
+  // longer selected must not render.
+  const path = row?.path;
   useEffect(() => {
     if (!path || self || !previewing) return;
     let alive = true;
@@ -234,7 +212,7 @@ export default function ListingPreviewPane({
   // from a repository into a folder outside one.
   const sideMenu = (
     <ModeMenu
-      entries={paneSideMenu(sideEntries).map((e) => ({
+      entries={paneSideMenu(sideEntries, rowIsDir).map((e) => ({
         ...e,
         icon: paneSideIcon(e.mode, sideEntries),
       }))}
@@ -299,13 +277,11 @@ export default function ListingPreviewPane({
   const sideEntry = side === "claude" ? sideEntries.claude : side === "git" ? sideEntries.git : null;
   if (sideEntry && sideEntry.path !== null) {
     const target = paneSideTarget(side, folder, row && !row.self ? row.path : null);
-    // `chat_only=1` takes away the chat template's OWN left preview pane: in a
-    // column this narrow its copy of the target would be a second, differently
-    // run preview of the same thing (see Preview's sideSrcFor, and CHAT_ONLY in
-    // templates/claude/template.html). `_remote` is deliberately absent from
-    // both: Claude reads through the server either way, and the git gate refuses
-    // a mount-backed directory outright.
-    const chatOnly = side === "claude" ? "&chat_only=1" : "";
+    // `chat_only=1` takes away the chat template's OWN left preview pane — the
+    // rule and its two reasons are on paneChatOnly. `_remote` is deliberately
+    // absent from both: Claude reads through the server either way, and the git
+    // gate refuses a mount-backed directory outright.
+    const chatOnly = paneChatOnly(side) ? CHAT_ONLY_PARAM : "";
     return (
       <div className="listing-pane" ref={rootRef} {...guardProps}>
         {strip()}
@@ -362,10 +338,9 @@ export default function ListingPreviewPane({
     );
   }
 
-  // The folder's entry question is still open, or the target is still stat'ing.
-  // Both are the same skeleton: the pane must show one answer, never a listing
-  // that turns into a page.
-  if (resolvingEntry || info.status === "loading") {
+  // The row is still stat'ing: one skeleton, so the pane never paints an interim
+  // answer and then swaps it.
+  if (info.status === "loading") {
     return (
       <div className="listing-pane">
         {strip()}
@@ -386,12 +361,14 @@ export default function ListingPreviewPane({
 
   // --- what `Preview` resolves to for this row --------------------------------
   //
-  // From here down the subject is `view`, not `row`: for an app folder they
-  // differ by exactly the retarget above — `view` is the entry PAGE, so the mode
-  // list, the embed URL, the expand target and the header title are all the
-  // page's, which is the whole of what D269 changes in this component. They are
-  // the same object for every other selection.
-  const view: PaneTarget = entryRow ?? row;
+  // The subject is the SELECTED ROW, always. `view` used to be able to differ
+  // from `row` — an app folder was retargeted to its entry page, so the mode
+  // list, the embed URL, the expand target and the header title were all the
+  // page's — and that indirection is gone with the retarget (D277). The name
+  // stays because everything below reads it, and keeping it makes the one thing
+  // it means explicit: what the pane is showing, which is now always what the
+  // user selected.
+  const view: PaneTarget = row;
 
   // Mode order = pane priority, decided in listing/pane-modes.ts. This
   // component only turns that ranking into a rendered frame.
@@ -509,11 +486,18 @@ export default function ListingPreviewPane({
   // the keyboard off the listing (listing/frame-focus.ts). It rides on the URL
   // rather than being passed some other way for the same reason `_file` does —
   // the page is a document, and its URL is the only thing it is handed.
+  //
+  // A row mode can be `claude` — it is a FOLDER's default (D277) — and that one
+  // needs its own pane taken away exactly as the companion above does, or the
+  // chat template resolves the folder's entry page and renders the app inside
+  // this column. paneChatOnly is the single rule both ask.
   const srcFor = (t: TemplateEntry): string => {
     if (t.mode === "_render") return withNoFocus(`/render?path=${encodeURIComponent(view.path)}`);
     const remote = info.remote ? "&_remote=1" : "";
+    const chatOnly = paneChatOnly(t.mode) ? CHAT_ONLY_PARAM : "";
     return withNoFocus(
-      `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(view.path)}${remote}`
+      `/render?path=${encodeURIComponent(t.path as string)}` +
+        `&_file=${encodeURIComponent(view.path)}${remote}${chatOnly}`
     );
   };
 

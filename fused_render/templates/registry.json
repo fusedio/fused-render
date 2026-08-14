@@ -398,8 +398,8 @@
     "netcdf"
   ],
   "/": [
-    "_listing",
     "claude",
+    "_listing",
     "git",
     "graph",
     "zarr_aoi",

@@ -55,6 +55,31 @@ export function paneModeList(input: PaneModeInput): string[] {
   return modes;
 }
 
+// Does this mode's template need `chat_only=1` — i.e. must the pane take away
+// the template's OWN preview pane?
+//
+// One mode does: `claude`. In a column this narrow the chat template's copy of
+// the target would be a second, differently run preview of the same thing beside
+// the host's (see Preview's sideSrcFor, and CHAT_ONLY in
+// templates/claude/template.html).
+//
+// **And for a FOLDER it is more than a layout question.** The chat template fills
+// its own pane by resolving the folder's ENTRY PAGE and rendering it
+// (templates/shared/app_entry.py). Since `claude` leads the universal directory
+// key (D277), a selected folder's pane defaults to this template — so without the
+// flag the folder's app page would be back on screen, nested one level deeper,
+// running the same Python for the same mere selection that D277 exists to stop.
+// The template reads the flag BEFORE it looks an entry page up, so the flag is
+// the whole cure and not a cosmetic one.
+//
+// It lives here, as the one rule with two callers, because the pane has TWO
+// claude surfaces — its `claude` SIDE (the companion, about the selected row) and
+// now a row MODE (a folder's default view) — and a second literal in the second
+// place is how the first one would have been forgotten.
+export function paneChatOnly(mode: string): boolean {
+  return mode === "claude";
+}
+
 // The mode the pane shows: the user's override (from the switcher, seeded from
 // the `_panelMode` URL param) while that mode is still offered, else the first
 // mode in pane priority order. `null` means the target offers nothing at all
