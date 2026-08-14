@@ -523,7 +523,8 @@ def _supports_ranges(location, token):
     segment, never an optimistic four.
 
     Skipped entirely for a file too small to split, so a repo of small configs
-    costs no extra request at all.
+    costs no extra request at all. None means the question could not be ASKED,
+    which is a different thing from a no — see `_probe_host`.
     """
     try:
         with _open(location, token, 0, 0) as response:
@@ -531,7 +532,7 @@ def _supports_ranges(location, token):
                 return False
             return bool(_CONTENT_RANGE.search(response.headers.get("Content-Range") or ""))
     except _TRANSIENT:
-        return False
+        return None
 
 
 def _probe_host(location, token, probes):
@@ -542,10 +543,19 @@ def _probe_host(location, token, probes):
     file it is a serial TLS handshake per file before a single byte moves — the
     same startup cost `_resolve` was parallelised to remove, reintroduced on a
     thirty-shard repo.
+
+    Only an ANSWER is remembered. Caching a probe that FAILED lets one transient
+    503 put every remaining shard of the repo on a single connection for the
+    rest of the download, with nothing on screen to say the fast path switched
+    itself off — the same mistake as treating a failed probe as a reason to
+    discard resume state, one scope wider.
     """
     host = urllib.parse.urlsplit(location).netloc
-    if host not in probes:
-        probes[host] = _supports_ranges(location, token)
+    if probes.get(host) is None:
+        answer = _supports_ranges(location, token)
+        if answer is None:
+            return False  # this file goes on one connection; the next re-asks
+        probes[host] = answer
     return probes[host]
 
 
@@ -611,6 +621,10 @@ class _FileFetch:
         self.folder = folder
         self.repo_id = repo_id
         self.filename = filename
+        #: Every name in the repo that resolves to this blob. A repo really does
+        #: publish the same bytes twice, and one etag is one blob — so the extra
+        #: names are LINKS to make, never a second download to run.
+        self.filenames = [filename]
         self.revision = revision
         self.meta = meta
         self.token = token
@@ -621,7 +635,6 @@ class _FileFetch:
         self.part = self.blob + PART_SUFFIX
         self.sidecar = self.part + ".json"
         self.snapshot = os.path.join(folder, "snapshots", meta["commit"])
-        self.target = os.path.join(self.snapshot, filename)
         self.lock = threading.Lock()      # guards the segment cursors
         self.flush_lock = threading.Lock()  # one writer of the sidecar at a time
         self.fd = None
@@ -656,14 +669,19 @@ class _FileFetch:
             # a segment-count mismatch, and the deletion of gigabytes of
             # durable, correctly recorded progress — for a network condition
             # that says nothing about the bytes on disk.
-            count = len(saved)
-        else:
+            self.segments = _segments(self.size, len(saved))
+            if not self._restore(saved):
+                saved = None
+        if saved is None:
+            # …and once the sidecar is rejected its layout goes with it. Kept,
+            # it would split a download that starts from zero by a number that
+            # described a file we just deleted: one connection for a 4.6GB
+            # shard, or dozens for a small one.
             count = _segment_count(self.size)
             if count > 1 and not _probe_host(self.meta["location"],
                                              self._cdn_token(), self.probes):
                 count = 1
-        self.segments = _segments(self.size, count)
-        if saved is None or not self._restore(saved):
+            self.segments = _segments(self.size, count)
             _remove(self.part)
             _remove(self.sidecar)
         self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
@@ -814,8 +832,16 @@ class _FileFetch:
                     reason = f"HTTP {error.code}"
             except _TRANSIENT as error:
                 reason = f"{error.__class__.__name__}: {error}"
-            tries = 0 if moved else tries + 1
-            if tries:
+            if moved:
+                # Bytes arriving is what says the connection worked, so it
+                # restores BOTH allowances. The re-resolve is one per stall and
+                # not one per segment: a presigned URL is good for minutes and a
+                # multi-gigabyte download is not, so a second expiry is ordinary
+                # — and unhandled it spends the whole retry budget on 401s and
+                # aborts into a fallback that then deletes the resumable state.
+                tries, refreshed = 0, False
+            else:
+                tries += 1
                 time.sleep(min(5.0, RETRY_BACKOFF_S * tries))
         if self.stop.is_set():
             return
@@ -937,14 +963,16 @@ class _FileFetch:
         another mount. Windows without developer mode cannot make one at all,
         and hf's own answer there is a copy, so ours is too.
         """
-        os.makedirs(os.path.dirname(self.target), exist_ok=True)
-        relative = os.path.relpath(self.blob, os.path.dirname(self.target))
-        _remove(self.target)
-        try:
-            os.symlink(relative, self.target)
-        except OSError:
-            shutil.copyfile(self.blob, self.target)
-        return self.target
+        targets = [os.path.join(self.snapshot, name) for name in self.filenames]
+        for target in targets:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            relative = os.path.relpath(self.blob, os.path.dirname(target))
+            _remove(target)
+            try:
+                os.symlink(relative, target)
+            except OSError:
+                shutil.copyfile(self.blob, target)
+        return targets[0]
 
     def close(self):
         if self.fd is not None:
@@ -1023,13 +1051,24 @@ def _segmented_fetch(model_id, filenames, revision="main"):
     token = _hf_token()
     stop = threading.Event()
     probes = {}  # host -> range support, so a repo of shards probes once
-    fetches = []
+    fetches, by_etag = [], {}
     for name, meta in zip(filenames, _resolve(model_id, filenames, revision)):
         if not (isinstance(meta.get("size"), int) and meta.get("etag")
                 and meta.get("commit")):
             raise _Unsegmentable(f"{name}: the Hub reported no size, etag or commit")
-        fetches.append(_FileFetch(folder, model_id, name, revision, meta, token,
-                                  stop, probes))
+        already = by_etag.get(meta["etag"])
+        if already is not None:
+            # One etag is one blob, and a repo really does publish the same
+            # bytes under two names. A second fetch of it would share the part
+            # file, the sidecar and the blob path with the first: the bytes
+            # pulled twice, and whichever `os.replace` lost the race finding
+            # nothing there and taking the whole download into the fallback.
+            already.filenames.append(name)
+            continue
+        fetch = _FileFetch(folder, model_id, name, revision, meta, token, stop,
+                           probes)
+        by_etag[meta["etag"]] = fetch
+        fetches.append(fetch)
 
     commits = {fetch.meta["commit"] for fetch in fetches}
     if len(commits) != 1:

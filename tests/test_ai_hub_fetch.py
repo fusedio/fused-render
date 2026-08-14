@@ -457,6 +457,28 @@ def test_a_re_resolve_that_fails_is_a_retry_not_the_end_of_the_download(
         base._segmented_fetch("org/m", ["model.safetensors"])
 
 
+def test_a_second_expiry_in_one_download_is_re_resolved_too(base, monkeypatch,
+                                                            tmp_path, payload):
+    """A presigned URL is good for minutes; a multi-gigabyte download is not.
+
+    Allowing one re-resolve per SEGMENT rather than one per stall means the
+    second expiry spends the retry budget on 401s and aborts into the fallback,
+    which then deletes hours of resumable state. Bytes arriving is what says the
+    new URL worked, so bytes arriving is what restores the allowance — the same
+    rule the retry budget itself follows.
+    """
+    url, state = _start_server(payload, unauthorized_on={1, 3},
+                               chunk_cap=len(payload) // 2)
+    _wire(base, monkeypatch, tmp_path, url, len(payload), segment_min=10_000_000)
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert state["real"] == 4, state["log"]
+
+
 def test_a_protocol_error_mid_stream_is_retried_rather_than_fatal(base, monkeypatch,
                                                                   tmp_path, payload):
     """`IncompleteRead` and friends are `http.client.HTTPException`, not
@@ -554,6 +576,71 @@ def test_a_probe_that_fails_does_not_throw_away_recorded_progress(base, monkeypa
     assert _offsets(state["log"]) == sorted(
         seg["start"] + seg["done"] for seg in recorded["segments"]
         if seg["start"] + seg["done"] <= seg["end"])
+
+
+def test_a_probe_that_fails_once_does_not_demote_the_whole_repo(base, monkeypatch,
+                                                                tmp_path, payload):
+    """A cached NEGATIVE turns one 503 into a fact about the server.
+
+    The probe is memoised per host so a thirty-shard repo asks once — but
+    remembering a failure means one transient timeout quietly puts every
+    remaining shard on a single connection for the rest of the download, with
+    nothing on screen to say the fast path switched itself off. Only an ANSWER
+    is worth remembering; a failure to ask is not one.
+    """
+    url, state = _start_server(payload, probe_fail_first=1)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: {
+        "url": url, "location": url, "etag": "e-" + name, "commit": "c0m",
+        "size": len(payload)})
+
+    base._segmented_fetch("org/m", ["a.safetensors", "b.safetensors"])
+
+    assert state["probes"] == 2, "the failure was cached as an answer"
+    # The first file is on one connection, as it must be — nobody knows better
+    # yet. The second is not.
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+
+
+def test_two_identical_files_are_fetched_once(base, monkeypatch, tmp_path, payload):
+    """One etag is one blob, and a repo really does publish the same bytes under
+    two names. Two fetches of one etag share a part file, a sidecar and a blob
+    path: the bytes are pulled twice, and the loser's `os.replace` finds the
+    part file already renamed and takes the whole download into the fallback."""
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors", "copy.safetensors"])
+
+    for name in ("model.safetensors", "copy.safetensors"):
+        assert open(os.path.join(snapshot, name), "rb").read() == payload
+    assert os.listdir(os.path.join(folder, "blobs")) == ["e7ag"]
+    assert len(_ranges(state["log"])) == 4, "the same bytes were fetched twice"
+
+
+def test_a_rejected_sidecar_does_not_keep_its_layout(base, monkeypatch, tmp_path,
+                                                     payload):
+    """Resuming with the layout the bytes were fetched into is right; keeping
+    that layout after deciding the sidecar is unusable is not. It leaves a fresh
+    download split by a number that came from a file we just deleted — one
+    connection for a 4.6GB shard, or dozens for a small one."""
+    url, state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    blobs = os.path.join(folder, "blobs")
+    os.makedirs(blobs)
+    with open(os.path.join(blobs, "e7ag.fusedpart"), "wb") as handle:
+        handle.write(b"\0" * len(payload))
+    with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
+        # Two segments, but not the two this size would produce: identity holds,
+        # so it survives as far as the layout check, which rejects it.
+        json.dump({"etag": "e7ag", "size": len(payload), "segments": [
+            {"start": 0, "end": 10, "done": 0},
+            {"start": 11, "end": len(payload) - 1, "done": 0}]}, handle)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
 
 
 @pytest.mark.parametrize("wrong", ["etag", "size", "segments"])

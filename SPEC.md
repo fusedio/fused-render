@@ -5962,7 +5962,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   it away, which is not a corner case: the supervisor KILLS the fetch on quit
   (AI-5e). `worker_base` therefore fetches the repo itself, stdlib only:
   `get_hf_file_metadata` per file for the CDN location, the etag and the commit,
-  then up to **4 `Range` segments per file** with **segments across all files** as
+  then — **carrying the Hub token only when the blob is served by the Hub
+  itself**, since a presigned URL already holds its credentials in the query
+  string and S3 refuses a request bearing two of them, which made every download
+  by a token-holding user fail over to the slow path — up to
+  **4 `Range` segments per file** with **segments across all files** as
   the units of work in one pool capped at **8 connections** — the single number
   that bounds how many sockets a download opens, which a pool per file would
   multiply out. Segments share one fd and write with `os.pwrite`, and per-segment
