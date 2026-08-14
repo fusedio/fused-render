@@ -32,7 +32,10 @@
     border-radius: 6px; padding: 5px 11px; cursor: pointer; font: inherit;
     white-space: nowrap; box-shadow: var(--shadow-sm); font-weight: 500;
   }
-  .btn:hover { background: var(--panel2); border-color: #d4d4d8; }
+  .btn:hover:not(:disabled) { background: var(--panel2); border-color: #d4d4d8; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fafafa; }
+  .btn.primary:hover:not(:disabled) { background: var(--accent2); border-color: var(--accent2); }
+  .btn:disabled { opacity: .5; cursor: default; box-shadow: none; }
   #topbar .spacer { flex: 1; }
   #topbar .fname { font-size: 12px; color: var(--dim); overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap; max-width: 34vw; }
