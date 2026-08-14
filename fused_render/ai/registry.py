@@ -43,6 +43,10 @@ from typing import Callable
 # the supervisor's one-resident-model-per-capability rule all key off these.
 TEXT_GENERATION = "text-generation"
 IMAGE_GENERATION = "text-to-image"
+#: The Hub's own tag for it, like `IMAGE_GENERATION` is — so the constant, the
+#: `pipeline_tag` on a Whisper repo and the capability a card asks to load are
+#: one string rather than three that have to be kept in step.
+SPEECH_TO_TEXT = "automatic-speech-recognition"
 
 RUNNERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runners")
 
@@ -113,8 +117,9 @@ def _apple_silicon() -> Availability:
 
 
 def _always() -> Availability:
-    """torch + diffusers build wheels for macOS, Linux and Windows. Whether the
-    machine is FAST enough is a different question, and not one to refuse on."""
+    """torch + diffusers, and CTranslate2, build wheels for macOS (both
+    architectures), Linux and Windows. Whether the machine is FAST enough is a
+    different question, and not one to refuse on."""
     return Availability(True)
 
 
@@ -136,6 +141,19 @@ _RUNNERS: tuple[Runner, ...] = (
         label="Diffusers (PyTorch)",
         _available=_always,
     ),
+    Runner(
+        code="faster-whisper",
+        capability=SPEECH_TO_TEXT,
+        folder=os.path.join(RUNNERS_DIR, "faster_whisper"),
+        label="faster-whisper (CTranslate2)",
+        # `_always`, and that is the reason this runner is CTranslate2 and not
+        # MLX: text generation is already Apple-Silicon-only, and a second
+        # capability that only exists on a Mac would make "local AI" a thing
+        # Windows and Linux users read about rather than use. An `mlx_whisper`
+        # runner can be added later ABOVE this row — first-match-wins ordering
+        # is what would let it take the Macs and leave everything else here.
+        _available=_always,
+    ),
 )
 
 
@@ -155,6 +173,7 @@ _TASK_CAPABILITIES = {
     "image + text to text": TEXT_GENERATION,
     "text to image": IMAGE_GENERATION,
     "image generation": IMAGE_GENERATION,
+    "speech recognition": SPEECH_TO_TEXT,
 }
 
 #: The other half of the same decision: labels nothing here serves, listed
@@ -166,14 +185,19 @@ _TASK_CAPABILITIES = {
 #: every label the listing can produce to appear in one of these two, which turns
 #: "we forgot" into a failing test instead of a missing button.
 NO_RUNNER_YET = frozenset({
-    # Nothing here generates embeddings, classifies, transcribes, or segments —
-    # these are real jobs with no local runner in this cut.
+    # Nothing here generates embeddings, classifies, or segments — these are
+    # real jobs with no local runner in this cut.
     "embeddings", "sentence embeddings", "fill mask", "text classification",
     "token classification", "question answering", "summarization", "translation",
     "image classification", "zero-shot image classification",
     "zero-shot text classification", "image segmentation", "object detection",
     "depth estimation", "image to image", "image to text", "audio classification",
-    "speech recognition", "text to speech", "audio generation", "video generation",
+    "video generation",
+    # Speech OUT, as opposed to speech in. Deliberately not folded into the
+    # transcription capability as a direction flag: one capability holds one
+    # resident model, so a shared "audio" capability would have a synthesis
+    # model evict a Whisper model and back again on every alternation.
+    "text to speech", "audio generation",
     # An encoder-decoder (T5-shaped). Not the causal-LM path mlx-lm serves, so
     # it is not text generation however much the name suggests it.
     "text-to-text generation",

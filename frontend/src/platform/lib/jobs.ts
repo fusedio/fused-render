@@ -27,7 +27,7 @@ export interface Job {
   // null means "no number to show": an indeterminate bar, not zero progress.
   done: number | null;
   total: number | null;
-  unit: string; // "bytes" | "" — decides how done/total are formatted
+  unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
   message: string; // the error text, when state is "error"
   page: string; // the .html that raised it (attribution)
   owner: JobOwner;
@@ -110,12 +110,35 @@ function num(value: number, div: number): string {
   return scaled >= 100 ? scaled.toFixed(0) : scaled >= 10 ? scaled.toFixed(1) : scaled.toFixed(2);
 }
 
-// "1.2 / 8.1 GB", "412 MB", "3 / 12" — or "" when there is no number at all.
-// Both sides are scaled by the LARGER of the two so the pair reads as one
-// measurement instead of "1200 MB / 8.1 GB".
+// Seconds as a clock: "0:09", "12:00", "1:30:00". The hours field appears only
+// when there are hours, so a short clip is not dressed up as a long one.
+function clock(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  const s = whole % 60;
+  const m = Math.floor(whole / 60) % 60;
+  const h = Math.floor(whole / 3600);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+// "1.2 / 8.1 GB", "412 MB", "12:00 / 1:30:00", "3 / 12" — or "" when there is
+// no number at all. Bytes scale both sides by the LARGER of the two so the pair
+// reads as one measurement instead of "1200 MB / 8.1 GB".
+//
+// SECONDS get the clock, and that is not decoration. A transcription reports
+// seconds of audio (SPEC AI-10a) and every non-byte unit used to fall through
+// to a bare pair, so a 90-minute recording read "720 / 5400" — a number a user
+// takes for segments or steps. A unit that is only ever right by accident is
+// worse than one that is absent, since the bare pair looks deliberate.
 export function jobAmount(job: Job): string {
   const { done, total, unit } = job;
   if (done === null && total === null) return "";
+  if (unit === "s") {
+    if (done === null) return "";
+    return total === null || total <= 0
+      ? clock(done)
+      : `${clock(done)} / ${clock(total)}`;
+  }
   if (unit !== "bytes") {
     if (done === null) return "";
     return total === null || total <= 0

@@ -5314,6 +5314,25 @@ stop it short of quitting the app.
   until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
+  **Live SERVER work is never evicted by the cap at all** (D288), so the list
+  can exceed `MAX_JOBS`. For work the app itself runs, the row is not a view of
+  the work but its only channel — the ✕'s route to the process, and the
+  completion signal `fused.watchJob` polls, which reads a missing row as work
+  that stopped and settles a promise that cannot then be un-settled. The cap
+  was written for a pathological reporter; a queue of transcriptions (AI-10a)
+  made "more than 64 rows of live work" ordinary, and evicting there rejected
+  transcriptions that went on to succeed. Page-owned rows stay capped, which is
+  where the unbounded risk is (`fused.trackJob()` can mint rows a page never
+  finishes); finished server rows stay evictable; and the age sweep still drops
+  a running row whose reporter has gone silent, so a crashed worker cannot pin
+  one for the session. **The cap is measured against the rows it can actually
+  shed**, not against the whole list: counting exempt rows while refusing to
+  evict them bounds nothing and merely moves which row pays — over the cap the
+  only candidate left was whatever had JUST finished, so it was deleted on the
+  next read and a watcher never saw the outcome. A success survives that through
+  its artefact; a failure or a cancel has none, so the page reported "no longer
+  being reported" instead of the reason. It also silently shortened this
+  bullet's own retention promise to zero under pressure.
 - **BG-7** **Dismiss is for rows nobody is reporting on** — finished, or
   `stalled`. A live row is refused (409): the only honest way to make it go away
   is to stop the work, and a dismiss that hid a live download would restore
@@ -6227,3 +6246,142 @@ an AI Models page that could say what was on disk but not what was *running*.
   interpreter and framework; the allocator carries buffers RSS has not seen yet),
   so the honest claim is "at least this much". A runner's probe that raises is
   worth no memory figure, never a broken `/health`.
+- **AI-10** **Speech to text is the third capability, and it is the first one
+  that works EVERYWHERE** (D288). `automatic-speech-recognition` — the Hub's own
+  tag — served by a `faster_whisper` runner folder built on CTranslate2, which
+  publishes wheels for macOS on both architectures, Linux and Windows. That
+  choice is the point of the bullet: mlx-whisper would be quicker on Apple
+  Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
+  app whose local AI is something most users read about is not the app this is
+  meant to be. An `mlx_whisper` runner may be added later ABOVE this one — the
+  registry's first-match-wins ordering (AI-2) exists for exactly that, and this
+  would be the first capability to use it. Both Whisper directions ship:
+  `task: "transcribe"` (same language) and `task: "translate"` (into English)
+  are one flag to the model, so omitting either would only buy a second change
+  later — but the value is **named, never silently defaulted**, since
+  "translation" instead of "translate" would transcribe in the original language
+  and read as the model ignoring the request. `language` omitted means Whisper's
+  own auto-detect. **The whole audio dependency stays inside the runner folder**:
+  faster-whisper decodes through PyAV, whose wheels carry the ffmpeg libraries,
+  so nothing shells out to an `ffmpeg` binary this app does not ship — the rule
+  AI-2 states about mlx and torch, applied to a system tool. **The format
+  constraint is surfaced rather than hidden**: the runner loads CTranslate2
+  conversions, so a transformers-format repo like `openai/whisper-large-v3` will
+  not load however happily the AI Models page offers it a Load button (the same
+  situation text generation has with GGUF and AWQ). The load error names the
+  cause and a repo that works, because a user who picked the wrong one should
+  learn it from the error rather than from a web search. Text-to-speech and
+  audio generation stay in `NO_RUNNER_YET` as SEPARATE future capabilities, not
+  as a direction flag on one "audio" capability: AI-4 keeps one resident model
+  per capability, so sharing one would have a synthesis model and a Whisper
+  model evict each other on every alternation.
+- **AI-10a** **A transcription is job-backed like an image, and its result is a
+  FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
+  the output paths already settled, exactly as AI-9 does — a 90-minute recording
+  is minutes of decoding, so nothing waits on it, and the wait for a cold model
+  belongs inside the job for the same reason it does for a render. Progress is
+  **seconds of audio** (`unit: "s"`, `done` = the last segment's end timestamp,
+  `total` = the decoder's reported duration), which is the unit the person
+  watching is thinking in, and the download manager renders that unit as a
+  CLOCK (`12:00 / 1:30:00`) rather than a bare pair, since `720 / 5400` is a
+  number a reader takes for segments or steps. **The ✕ has to reach two
+  phases, not one.** The per-segment loop is a real interruption point because
+  `transcribe()` hands back a generator that decodes as it is consumed — but
+  before it returns that generator it has already decoded the entire file and
+  run the VAD over it, which on a long recording is minutes. That eager phase
+  is therefore ticked from a thread (the poll IS the progress and the
+  cancellation point, as it is for downloads); leaving it behind a single plain
+  `report` left a window where the row sat at zero and a ✕ was not honoured
+  until the first segment landed. **And it gets its OWN socket timeout**
+  (`TRANSCRIBE_TIMEOUT_S`, four hours) rather than the 900s an image uses: the
+  worker sends nothing until the decode finishes, so that timeout covers the
+  entire run, and at 900s this feature's own motivating case — a 90-minute
+  recording, ~18 minutes of decoding — died on the socket while the worker went
+  on to write a transcript nobody was told about, still holding `GENERATE_LOCK`
+  so every queued request repeated it. It is a backstop, not the stop: the ✕
+  makes the worker reply and an unload closes the socket, both in seconds.
+  **A second transcription waits on the SUPERVISOR's side, not inside the
+  worker.** The worker serializes generations anyway, but by parking the second
+  request before its handler reaches `heartbeat()` — so with a four-hour
+  timeout that row got no ticks for hours and hit every timer in §36: stalled
+  at 30s ("no longer reporting" about work that is merely queued), swept at
+  600s, after which the bridge is told a still-running transcription failed.
+  Holding a supervisor-side lock instead is what makes the wait describable —
+  the row says it is queued, keeps saying so, and its ✕ is honoured, none of
+  which is reachable from inside a blocked `urlopen` that has sent the worker
+  nothing to cancel. **Every reporter on a transcription's lifecycle restates
+  the ROW'S IDENTITY on every tick** — title, kind, unit, cancellable, and
+  `state: "running"` — title, kind, unit, cancellable, `state` — so that a row
+  which had to be re-created comes back as the SAME row rather than one with
+  the same id. A report without a title is refused outright and the row never
+  returns at all; without `cancellable` it is drawn with a dismiss cross
+  instead of a cancel one, operable-looking and inert; without `unit` the
+  seconds clock reverts to a bare pair of numbers. The identity is defined ONCE
+  and handed to the worker in the request body rather than re-spelled in that
+  process, so the supervisor's reports and the worker's cannot disagree about
+  what the row is — the cold-model wait included, since it is the longest
+  reporter of the lot.
+  **Why the row can no longer vanish under a live transcription is BG-6's rule,
+  not a cadence here** (D288): the cap does not evict live server work. That is
+  the fix nine rounds of this feature had been compensating for from the
+  reporting side — restate the row harder, tick faster, rebuild on detection —
+  and none of it could reach the actual consequence, because `fused.watchJob`
+  resolves null after five consecutive misses and a promise that has settled
+  cannot be un-settled by a row that comes back. Maximum absence for a live
+  transcription is therefore ZERO, and the write cadence went back to being
+  what it sounds like: a display heartbeat, sized only so a row waiting its
+  turn is not shown as "no longer reporting", with the ✕ polled on its own
+  faster cadence because a cancel must not wait on a display. The restatement
+  above and the rebuild-on-detection stay as backstops for the one absence a
+  user can still cause — dismissing the row — and `fused.ai.transcribe`'s
+  absent-row branch is the same two lines `fused.ai.image` has: read the
+  artefact, and if it is not there, reject. It briefly grew a retry loop
+  instead, which could hang forever; that machinery is gone, because the fix
+  belonged in the manager.
+  **The turn is taken before the MODEL is resolved**, and
+  that ordering is load-bearing: resolving first put the one destructive step —
+  `_start_resident`, which EVICTS the resident model when the requested one
+  differs — outside the very lock that serializes this path, so a page asking
+  for a different Whisper model killed a 90-minute run mid-decode and lost its
+  transcript. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
+  with timestamps, language, duration, model) and a `.txt` (plain words) —
+  **segments, not a flat token stream**, because the timestamps are most of what
+  Whisper produced and a transcript beside a player needs them. Writing a file
+  rather than streaming is the same argument the PNG makes: work that took four
+  minutes should outlive the tab that asked, and a page that navigated away
+  mid-run should still find it. **The input is an absolute path and there is no
+  allowlist**, deliberately: the worker is a process on this machine and opens
+  the file itself (nothing is uploaded), `/api/fs/raw` already serves any
+  absolute path because this app IS a local file explorer, and the protection is
+  D3/D36's `X-Fused` guard plus the worker's own token. The route normalizes the
+  path and refuses one that is missing or is not a regular file with a 400
+  before a job row opens — a typo deserves an error the caller can show, not a
+  progress bar that dies. A RELATIVE path resolves against the calling page's
+  directory via `base`, the same page-relative rule `/api/fs/raw` follows
+  (RH-1): `fused.readFile("clip.m4a")` already means "beside this page", so
+  resolving here against the server's cwd would 400 on a path the author never
+  wrote — or, if a same-named file happened to sit under whatever directory the
+  app was launched from, silently transcribe the wrong recording. Relative with
+  no `base` is refused rather than guessed. `fused.ai.transcribe({path, …})`
+  resolves with the
+  text, the segments and a ready-made `/api/fs/raw` url, and falls back to the
+  file when the row has aged out from under a backgrounded tab.
+- **AI-10b** **No audio has ever been transcribed by this code, and the two
+  bullets above should be read as a design that is tested only down to the
+  worker's door.** faster-whisper cannot run on CI — CTranslate2 plus a model
+  download — so the route, the supervisor, the job row, the glossary, the
+  catalog and the bridge are all exercised against a FAKE worker speaking the
+  AI-3 contract with canned segments, exactly as the image path is. The
+  runner's OWN logic is tested a level down — `faster_whisper/worker.py` is
+  stdlib-only at import time (`faster_whisper` and `ctranslate2` are imported
+  inside the functions that need them), so its decode loop, its
+  seconds-of-audio arithmetic, both cancel paths, the two Whisper directions,
+  the files it writes and the CTranslate2-format check are all driven on CI
+  against a stub model. **What no test touches is Whisper itself**: no audio is
+  decoded anywhere in this suite, so the numbers a real `info.duration` and a
+  real `segment.end` supply, the CPU-vs-CUDA placement, the int8 quality trade
+  and the actual transcription quality are unverified — as is the assumption
+  that PyAV opens the container formats users will point at it. A first real
+  transcription is the outstanding verification, and until it happens this
+  section describes a design that is proven only down to the model's door.

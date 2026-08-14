@@ -36,6 +36,17 @@
  *     the download-manager record, and that row's ✕ really stops it. Rejects
  *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
  *     this machine — the reason is in the message).
+ *   fused.ai.transcribe({path, model, language, task, onProgress})
+ *                  -> Promise<{output, url, text, segments, language, ...}>
+ *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
+ *     file on THIS machine — nothing is uploaded — resolved beside this page
+ *     when relative, like readFile/rawUrl. Resolves with the
+ *     words plus the segments that carry their timestamps, which are most of
+ *     the value. task: "transcribe" (same language) | "translate" (into
+ *     English); language omitted means auto-detect. Minutes long: onProgress
+ *     fires with the download-manager record, whose done/total are SECONDS OF
+ *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
+ *     `output` and its `url` outlive the tab.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -2572,6 +2583,108 @@
     });
   }
 
+  // fused.ai.transcribe({path, ...}) -> Promise<{output, url, text, segments, ...}>
+  //
+  // The other call that resolves with a FILE, and the same waiting as
+  // aiImage — but it hands back the CONTENT too, because a transcript is words
+  // and a caller almost always wants them straight away. `output` and `url`
+  // are there for the caller that wants to keep it or link to it.
+  //
+  // SEGMENTS, not one flat string: {start, end, text} is what makes a
+  // transcript seekable next to a player, and flattening it here would throw
+  // away most of what Whisper produced.
+  //
+  // done/total on the progress record are SECONDS OF AUDIO — the unit a person
+  // watching a 90-minute recording is actually thinking in.
+  function aiTranscribe(opts) {
+    opts = opts || {};
+    if (typeof opts.path !== "string" || !opts.path.trim()) {
+      const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    // The page's own path, so a RELATIVE `path` resolves beside this page —
+    // the same `&base=` rawUrl sends and the same rule readFile/stat follow
+    // (RH-1). Without it "clip.m4a" would mean "beside wherever the server was
+    // launched from", which is a different file or no file at all, and a
+    // bridge call that resolves paths differently from its siblings is a trap
+    // whatever the error message says.
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
+    return aiPost("/api/ai/transcribe", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      // The transcript file is the result; the row only said when to read it.
+      //
+      // TYPED on failure, like every other rejection this bridge produces. The
+      // reads here can fail on their own — a transcript deleted between the
+      // row going `done` and this fetch, an unreadable path, a truncated file
+      // that fails JSON.parse — and without this a caller switching on
+      // `err.type` got a bare SyntaxError or "failed to read … HTTP 404" with
+      // no `.type` and no `.jobId`, falling through to its unknown-error path
+      // on the one failure it could most easily explain. `aiImage` has no
+      // equivalent exposure because its `done()` does no I/O.
+      const done = () =>
+        readFile(started.output)
+          .then(JSON.parse)
+          .then((written) => ({
+            ...started,
+            url: rawUrl(started.output),
+            text: written.text,
+            segments: written.segments,
+            language: written.language,
+            duration: written.duration,
+          }))
+          .catch((cause) => {
+            const err = new Error(
+              "the transcript could not be read: " + ((cause && cause.message) || cause),
+            );
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            err.cause = cause;
+            throw err;
+          });
+      return watcher.watch(onProgress).then((record) => {
+        if (!record) {
+          // The row is gone — and since the manager stopped evicting live
+          // SERVER work under its cap, that no longer happens MID-RUN. It means
+          // the row finished and aged out while this tab was asleep, which a
+          // transcription long enough to background does easily.
+          //
+          // The TRANSCRIPT is the other witness and the one that matters, so
+          // reading it is both the answer and the check: if it is there, the
+          // work landed. An earlier cut tried to out-wait a mid-run absence
+          // here instead, resuming the watcher and polling for the file — and
+          // that machinery could hang forever (a re-entered `watch` that never
+          // SEES the row never gives up) while also turning one flaky
+          // `/api/jobs` fetch into a hard failure. Both were compensation for
+          // an eviction that should not have been happening; the fix belonged
+          // in the manager, and this is a backstop again rather than a state
+          // machine.
+          return done().catch(() => {
+            const err = new Error("the transcription job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the transcription was cancelled"
+            : record.message || "the transcription failed",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
@@ -2592,6 +2705,7 @@
   };
   ai.models = aiModels;
   ai.image = aiImage;
+  ai.transcribe = aiTranscribe;
   // Stop the generation in flight on a local model, keeping it loaded — the
   // next message answers straight away. Resolves false when there was nothing
   // to stop, which is not an error: a Stop pressed as the last token lands
