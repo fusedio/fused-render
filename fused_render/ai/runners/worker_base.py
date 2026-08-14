@@ -38,6 +38,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import fnmatch
+import http.client
 import http.server
 import json
 import os
@@ -51,6 +52,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # ------------------------------------------------------------------- the state
@@ -320,7 +322,14 @@ RETRY_BACKOFF_S = 0.5
 FLUSH_EVERY_S = 1.0
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
+_RANGE_START = re.compile(r"^bytes\s+(\d+)-")
 _COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+#: Everything a segment retries on. `HTTPException` earns its place: an
+#: `IncompleteRead` or an `InvalidChunkLength` from a body that broke mid-stream
+#: is not an `OSError`, and outside this tuple one such hiccup — among the
+#: commonest ways a transport misbehaves — aborted the whole multi-file download.
+_TRANSIENT = (OSError, urllib.error.URLError, http.client.HTTPException, ValueError)
 
 
 class _Unsegmentable(Exception):
@@ -514,7 +523,7 @@ def _supports_ranges(location, token):
             if getattr(response, "status", 200) != 206:
                 return False
             return bool(_CONTENT_RANGE.search(response.headers.get("Content-Range") or ""))
-    except (OSError, urllib.error.URLError, ValueError):
+    except _TRANSIENT:
         return False
 
 
@@ -579,11 +588,22 @@ class _FileFetch:
         if os.path.exists(self.blob) and os.path.getsize(self.blob) == self.size:
             return []
         os.makedirs(os.path.dirname(self.blob), exist_ok=True)
-        count = _segment_count(self.size)
-        if count > 1 and not _supports_ranges(self.meta["location"], self.token):
-            count = 1
+        saved = self._saved()
+        if saved is not None:
+            # The layout to resume with is the layout the bytes were fetched
+            # INTO. Re-deriving it here would re-probe, and a probe that fails
+            # for a moment (a 503 on the one-byte request) yields one segment,
+            # a segment-count mismatch, and the deletion of gigabytes of
+            # durable, correctly recorded progress — for a network condition
+            # that says nothing about the bytes on disk.
+            count = len(saved)
+        else:
+            count = _segment_count(self.size)
+            if count > 1 and not _supports_ranges(self.meta["location"],
+                                                 self.token):
+                count = 1
         self.segments = _segments(self.size, count)
-        if not self._restore():
+        if saved is None or not self._restore(saved):
             _remove(self.part)
             _remove(self.sidecar)
         self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
@@ -593,30 +613,42 @@ class _FileFetch:
         self.pending = len(pending)
         return pending
 
-    def _restore(self):
-        """Put back the offsets a previous run recorded, or say no.
+    def _saved(self):
+        """The segments a previous run recorded for THIS file, or None.
 
-        Everything has to agree — etag, size, the segment layout, and a part
-        file still as long as it was. Anything else starts clean, because a
-        sidecar belonging to a different revision of the file would have us skip
-        bytes that were never fetched, and the result is a blob of exactly the
-        right length that is silently wrong. Validated in full BEFORE a single
-        cursor is moved, so a half-accepted sidecar cannot land either.
+        Identity first — etag, size, and a part file still as long as it was —
+        because a sidecar belonging to a different revision of the file would
+        have us skip bytes that were never fetched, and the result is a blob of
+        exactly the right length that is silently wrong. The layout itself is
+        checked in `_restore`, against the segments derived from this answer.
         """
         try:
             with open(self.sidecar) as handle:
                 state = json.load(handle)
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:
-                return False
+                return None
             saved = state["segments"]
-            if len(saved) != len(self.segments) or os.path.getsize(self.part) < self.size:
+            if not saved or os.path.getsize(self.part) < self.size:
+                return None
+            return saved
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _restore(self, saved):
+        """Put those offsets back, or say no.
+
+        Validated in full BEFORE a single cursor is moved, so a half-accepted
+        sidecar cannot land either.
+        """
+        try:
+            if len(saved) != len(self.segments):
                 return False
             for seg, old in zip(self.segments, saved):
                 if old["start"] != seg["start"] or old["end"] != seg["end"]:
                     return False
                 if not 0 <= old["done"] <= seg["end"] - seg["start"] + 1:
                     return False
-        except (OSError, ValueError, KeyError, TypeError):
+        except (KeyError, TypeError):
             return False
         for seg, old in zip(self.segments, saved):
             seg["done"] = old["done"]
@@ -676,8 +708,11 @@ class _FileFetch:
                 with _open(self.meta["location"], self.token,
                            start if want_range else None,
                            seg["end"] if want_range else None) as response:
-                    if want_range and getattr(response, "status", 200) != 206:
-                        start = self._whole_body(seg)
+                    if want_range:
+                        if getattr(response, "status", 200) != 206:
+                            start = self._whole_body(seg)
+                        else:
+                            self._check_range(response, start)
                     moved = self._drain(response, seg, start)
                 if _seg_complete(seg):
                     return
@@ -687,13 +722,20 @@ class _FileFetch:
                     # `location` is a presigned CDN URL and a multi-hour
                     # download outlives it. Re-resolving does NOT count against
                     # the budget: an expired signature is not evidence that the
-                    # file is unreachable.
+                    # file is unreachable. Its own failure is an ordinary
+                    # network fault and must be COUNTED rather than escape —
+                    # otherwise one unlucky moment aborts the whole download.
                     refreshed = True
-                    self.meta = _hub_file_meta(self.repo_id, self.filename,
-                                               self.revision)
-                    continue
-                reason = f"HTTP {error.code}"
-            except (OSError, urllib.error.URLError, ValueError) as error:
+                    try:
+                        self._re_resolve()
+                        continue
+                    except _Unsegmentable:
+                        raise
+                    except Exception as again:  # noqa: BLE001 - hf raises its own family
+                        reason = f"re-resolving after HTTP {error.code}: {again}"
+                else:
+                    reason = f"HTTP {error.code}"
+            except _TRANSIENT as error:
                 reason = f"{error.__class__.__name__}: {error}"
             tries = 0 if moved else tries + 1
             if tries:
@@ -702,6 +744,40 @@ class _FileFetch:
             return
         raise RuntimeError(f"{self.filename}: gave up at byte "
                            f"{seg['start'] + seg['done']} — {reason}")
+
+    def _re_resolve(self):
+        """A fresh presigned URL for this file. Only the LOCATION may change.
+
+        `etag`, `size` and `commit` are what the blob path, every segment offset
+        and the snapshot folder were derived from before any thread started. A
+        repo updated mid-download therefore has to abort, never continue: the
+        new revision's bytes written at the old revision's offsets and published
+        as `blobs/<old-etag>` are a mix of two revisions at exactly the right
+        length, under a name hf will then serve from cache forever.
+        """
+        fresh = _hub_file_meta(self.repo_id, self.filename, self.revision)
+        for field in ("etag", "size", "commit"):
+            if fresh.get(field) != self.meta[field]:
+                raise _Unsegmentable(
+                    f"{self.filename}: the repo changed mid-download "
+                    f"({field} {self.meta[field]!r} -> {fresh.get(field)!r})")
+        self.meta = fresh
+
+    def _check_range(self, response, start):
+        """A 206 is not a promise that it is the range we ASKED for.
+
+        A proxy that clamps ranges answers `bytes=1150000-` with `Content-Range:
+        bytes 0-…/size` — the scattering `_whole_body` refuses, wearing a legal
+        status code. Written where it was asked for, one body's bytes land at
+        four different offsets and the file is exactly the right LENGTH and
+        entirely wrong content.
+        """
+        header = (response.headers.get("Content-Range") or "").strip()
+        match = _RANGE_START.match(header)
+        if not match or int(match.group(1)) != start:
+            raise _Unsegmentable(
+                f"{self.filename}: asked for byte {start}, got "
+                f"{header or 'a 206 with no Content-Range'}")
 
     def _whole_body(self, seg):
         """Handle a 200 answering a request we ranged, or refuse to.
@@ -748,19 +824,30 @@ class _FileFetch:
     # -- publishing -------------------------------------------------------
 
     def finish(self):
-        """Publish the blob and link it. The LAST segment's thread runs this."""
+        """Publish the blob and link it. The LAST segment's thread runs this.
+
+        Checked against the CURSORS, never against the part file's length. The
+        file is `ftruncate`d to its final size before a byte arrives, so its
+        length is right from the first second and a sparse file of pure holes
+        passes a size check — which would put a zero-filled blob under a real
+        etag into the hub cache, where hf serves it from cache forever. The
+        cursors are the same durable-byte accounting the sidecar records, and
+        they are the only evidence there is that the file is whole.
+
+        No hash, like huggingface_hub itself, which relies on TLS and
+        `Content-Length`: re-reading every gigabyte off the disk would give back
+        a good part of what this feature is for.
+        """
         if self.fd is not None:
             os.fsync(self.fd)
+            landed = sum(seg["done"] for seg in self.segments)
+            missing = [seg for seg in self.segments if not _seg_complete(seg)]
+            if missing or landed != self.size:
+                raise RuntimeError(
+                    f"{self.filename}: {landed} of {self.size} bytes landed, "
+                    f"{len(missing)} segment(s) short")
             os.close(self.fd)
             self.fd = None
-            landed = os.path.getsize(self.part)
-            if landed != self.size:
-                # Size only, like huggingface_hub itself: it verifies no hash
-                # either, relying on TLS and Content-Length. Doing better here
-                # would mean re-reading every gigabyte from disk to answer a
-                # question the transport already answers.
-                raise RuntimeError(f"{self.filename}: fetched {landed} bytes, "
-                                   f"expected {self.size}")
             os.replace(self.part, self.blob)
             _remove(self.sidecar)
         return self.link()
@@ -810,8 +897,7 @@ def _run_segment(fetch, seg):
         fetch.run(seg)
     except BaseException:
         # The other segments stop pulling bytes nobody is going to use. What
-        # they already wrote stays on disk and stays recorded — the next attempt
-        # resumes from it, whether that is a retry or a fresh run of the app.
+        # they already wrote stays on disk and stays recorded.
         fetch.stop.set()
         raise
     finally:
@@ -832,6 +918,7 @@ def _segmented_fetch(model_id, filenames, revision="main"):
     which is what makes `MAX_CONNECTIONS` mean what it says: a pool per file
     would multiply the two caps together and open thirty sockets on a repo of
     thirty shards.
+
     """
     if not hasattr(os, "pwrite"):
         # Windows. Buffered seek-and-write would break the guarantee the whole

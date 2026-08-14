@@ -62,21 +62,33 @@ class _Threaded(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
 
-def _start_server(payload, ranges=True, lie_after_probe=False, budget=None):
+def _start_server(payload, **flags):
     """Serve `payload` over HTTP; return (url, state).
 
     `state["log"]` records the `Range` header of every request, which is what
     the resume test asserts on: "resumed" means the second run ASKED for only
-    the missing bytes, not merely that it ended up with the right file.
+    the missing bytes, not merely that it ended up with the right file. Every
+    flag lives in `state` too, so a test can change the server's behaviour
+    between two runs against one URL.
 
-    `ranges=False` is a server with no range support at all. `lie_after_probe`
-    answers the probe with a 206 and then ignores `Range` on the real fetch —
-    the shape that would scatter one body's bytes across four segment offsets
-    if the writer did not check the status it got back. `budget` serves that
-    many bytes and then hangs up mid-body, which is how a download gets
-    interrupted without a signal.
+    The flags are the ways a real CDN misbehaves, each of which is a test:
+
+      ranges=False        no range support at all
+      lie_after_probe     206 to the probe, then a full body ignoring `Range` —
+                          one body's bytes offered to four different offsets
+      clamp               206 to everything, but always `Content-Range` from
+                          byte 0: the same scattering wearing a legal status
+      budget=N            serve N bytes in total and then hang up mid-body,
+                          which is how a download is interrupted with no signal
+      unauthorized=N      401 on the first N real fetches — a presigned URL
+                          that expired, which the client answers by re-resolving
+      break_first=N       the first N real responses are a truncated chunked
+                          body, which raises `http.client.IncompleteRead`
     """
-    state = {"log": [], "served": 0, "budget": budget, "lock": threading.Lock()}
+    state = {"log": [], "served": 0, "broken": 0, "lock": threading.Lock(),
+             "ranges": True, "lie_after_probe": False, "clamp": False,
+             "budget": None, "unauthorized": 0, "break_first": 0}
+    state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -89,13 +101,45 @@ def _start_server(payload, ranges=True, lie_after_probe=False, budget=None):
             with state["lock"]:
                 state["log"].append(header)
             probe = header == "bytes=0-0"
+
+            if not probe and state["unauthorized"]:
+                with state["lock"]:
+                    state["unauthorized"] -= 1
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not probe and state["break_first"]:
+                with state["lock"]:
+                    broken = state["broken"] < state["break_first"]
+                    state["broken"] += 1 if broken else 0
+                if broken:
+                    # A well-formed HEAD and a body that falls apart: the
+                    # response has to be one the writer would accept, or this
+                    # tests the header checks instead of the retry loop.
+                    self.send_response(206 if header else 200)
+                    if header:
+                        spec = header.split("=", 1)[1]
+                        first, _, last = spec.partition("-")
+                        self.send_header(
+                            "Content-Range",
+                            f"bytes {int(first)}-{last or len(payload) - 1}"
+                            f"/{len(payload)}")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    self.wfile.write(b"not-a-chunk-length\r\n")
+                    self.close_connection = True
+                    return
+
             start, end, partial = 0, len(payload) - 1, False
-            if header and ranges and (probe or not lie_after_probe):
+            if header and state["ranges"] and (probe or not state["lie_after_probe"]):
                 spec = header.split("=", 1)[1]
                 first, _, last = spec.partition("-")
                 start = int(first)
                 end = int(last) if last else len(payload) - 1
                 partial = True
+            if partial and not probe and state["clamp"]:
+                start = 0  # the range is answered, but not the one that was asked
             body = payload[start:end + 1]
 
             allowed = len(body)
@@ -139,6 +183,17 @@ def _wire(base, monkeypatch, tmp_path, url, size, etag="e7ag", commit="c0m",
     monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: {
         "url": url, "location": url, "etag": etag, "commit": commit, "size": size})
     return folder
+
+
+def _planned(base, folder, url, size, etag="e7ag", commit="c0m"):
+    """One `_FileFetch` past `plan()`, for the rules that are about publishing
+    rather than about the wire."""
+    fetch = base._FileFetch(
+        folder, "org/m", "model.safetensors", "main",
+        {"url": url, "location": url, "etag": etag, "commit": commit, "size": size},
+        None, threading.Event())
+    fetch.plan()
+    return fetch
 
 
 def _ranges(log):
@@ -216,6 +271,129 @@ def test_a_server_that_ignores_range_mid_fetch_cannot_overrun(base, monkeypatch,
         assert os.path.getsize(os.path.join(folder, "blobs", name)) <= len(payload)
 
 
+def test_a_206_that_answers_a_different_range_is_refused(base, monkeypatch,
+                                                         tmp_path, payload):
+    """A 206 is not a promise that it is the range we ASKED for.
+
+    A proxy that clamps ranges answers `bytes=150000-` with `Content-Range:
+    bytes 0-…` — the same scattering as a bare 200, wearing a legal status
+    code, and the status check alone would wave it straight through into four
+    segment offsets.
+    """
+    url, _state = _start_server(payload, clamp=True)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    with pytest.raises(Exception):
+        base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert not os.path.exists(os.path.join(folder, "blobs", "e7ag"))
+
+
+def test_publishing_requires_every_segment_to_have_landed(base, monkeypatch,
+                                                          tmp_path, payload):
+    """The part file's LENGTH proves nothing, so it cannot be the check.
+
+    It is `ftruncate`d to the final size before a byte arrives — a sparse file
+    of pure holes measures exactly right. The only evidence a file is complete
+    is the per-segment cursors, the same numbers the sidecar records. Publishing
+    on the length would put a zero-filled blob under a real etag into the hub
+    cache, which hf then serves from cache forever.
+    """
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    fetch = _planned(base, folder, url, len(payload))
+    assert os.path.getsize(fetch.part) == len(payload), "the part file is pre-sized"
+
+    with pytest.raises(RuntimeError, match="landed"):
+        fetch.finish()
+
+    assert not os.path.exists(os.path.join(folder, "blobs", "e7ag"))
+
+
+# -- the presigned URL expires mid-download -------------------------------------
+
+
+def _changing_meta(url, sizes, etags, commits):
+    """A `_hub_file_meta` whose answer changes on the second call."""
+    calls = {"n": 0}
+
+    def meta(repo, name, revision):
+        i = min(calls["n"], 1)
+        calls["n"] += 1
+        return {"url": url, "location": url, "etag": etags[i],
+                "commit": commits[i], "size": sizes[i]}
+
+    return meta, calls
+
+
+def test_a_repo_that_changes_under_a_re_resolve_aborts(base, monkeypatch,
+                                                       tmp_path, payload):
+    """Re-resolving an expired CDN URL may only replace the LOCATION.
+
+    The blob path, every segment offset and the snapshot folder were all derived
+    from the first answer, so a repo updated mid-download would have the new
+    revision's bytes written at the old revision's offsets and published as
+    `blobs/<old-etag>` — a mix of two revisions at exactly the right length,
+    which nothing downstream would ever notice.
+    """
+    # One 401 per segment: after the re-resolve every fetch succeeds, so an
+    # unchecked re-resolve really would go on to publish the mixture.
+    url, _state = _start_server(payload, unauthorized=4)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    meta, _calls = _changing_meta(url, [len(payload)] * 2, ["e7ag", "newetag"],
+                                  ["c0m", "c0m"])
+    monkeypatch.setattr(base, "_hub_file_meta", meta)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    with pytest.raises(Exception):
+        base._segmented_fetch("org/m", ["model.safetensors"])
+
+    blobs = os.listdir(os.path.join(folder, "blobs"))
+    assert [name for name in blobs if not name.startswith("e7ag")] == [], blobs
+    assert "e7ag" not in blobs, "a mix of two revisions was published"
+
+
+def test_a_re_resolve_that_fails_is_a_retry_not_the_end_of_the_download(
+        base, monkeypatch, tmp_path, payload):
+    """The re-resolve is a network call like any other. Letting its failure
+    escape `run()` turns one unlucky moment into an aborted multi-file
+    download — the retry budget exists precisely for this."""
+    url, _state = _start_server(payload, unauthorized=99)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    calls = {"n": 0}
+
+    def meta(repo, name, revision):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise ValueError("the Hub is down")
+        return {"url": url, "location": url, "etag": "e7ag", "commit": "c0m",
+                "size": len(payload)}
+
+    monkeypatch.setattr(base, "_hub_file_meta", meta)
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    with pytest.raises(RuntimeError, match="gave up"):
+        base._segmented_fetch("org/m", ["model.safetensors"])
+
+
+def test_a_protocol_error_mid_stream_is_retried_rather_than_fatal(base, monkeypatch,
+                                                                  tmp_path, payload):
+    """`IncompleteRead` and friends are `http.client.HTTPException`, not
+    `OSError` — one of the commonest ways a transport misbehaves, and outside
+    the retry loop's reach it aborted the entire multi-file download."""
+    url, state = _start_server(payload, break_first=2)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert state["broken"] == 2, "the test never produced a protocol error"
+
+
 # -- resumability ---------------------------------------------------------------
 
 
@@ -263,6 +441,41 @@ def test_an_interrupted_fetch_resumes_from_the_recorded_offsets(base, monkeypatc
     assert resumed == expected, "the second run re-fetched bytes it already had"
     assert not os.path.exists(sidecar)
     assert not os.path.exists(part)
+
+
+def test_a_probe_that_fails_does_not_throw_away_recorded_progress(base, monkeypatch,
+                                                                  tmp_path, payload):
+    """4GB of a 4.6GB shard, the app quits, and on restart the CDN answers the
+    one-byte probe with a 503.
+
+    Deriving a fresh layout from that failed probe gives ONE segment, the
+    sidecar is then rejected on the segment-count mismatch, and four gigabytes
+    of durable, correctly recorded progress are deleted and re-fetched on a
+    single connection. A probe failing is a network condition; it is not
+    evidence that the bytes already on disk are wrong. The layout we already
+    fetched into is the layout to resume with.
+    """
+    url, state = _start_server(payload, budget=60_000)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    with pytest.raises(Exception):
+        base._segmented_fetch("org/m", ["model.safetensors"])
+
+    recorded = json.load(open(os.path.join(folder, "blobs", "e7ag.fusedpart.json")))
+    assert 0 < sum(seg["done"] for seg in recorded["segments"]) < len(payload)
+
+    state["budget"] = None
+    state["log"].clear()
+    monkeypatch.setattr(base, "_supports_ranges", lambda location, token: False)
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert _offsets(state["log"]) == sorted(
+        seg["start"] + seg["done"] for seg in recorded["segments"]
+        if seg["start"] + seg["done"] <= seg["end"])
 
 
 @pytest.mark.parametrize("wrong", ["etag", "size", "segments"])
