@@ -376,6 +376,46 @@ def applicable_dependencies_of(project_dir: str) -> list[str]:
     return [d for d in dependencies_of(project_dir) if marker_applies(d)]
 
 
+def missing_from_this_interpreter(project_dir: str) -> list[str]:
+    """Declared distributions THIS interpreter cannot provide, in declared order.
+
+    "This interpreter" is `sys.executable` itself, asked in-process through
+    `importlib.metadata` — deliberately NOT `engine.app_satisfies`, which probes
+    a *candidate* interpreter in a subprocess because the fused backend may run
+    children on one that is not this process. The built-in executor spawns
+    `sys.executable`, so the question here has a local answer and paying a
+    subprocess probe for it would be absurd.
+
+    Only the name is checked, never the version specifier: this decides whether
+    a run is IMPOSSIBLE here, and an unsatisfied `>=` is a much weaker claim than
+    an absent distribution — refusing on it would take working templates down
+    over a floor the app is one release away from meeting. `uv` still enforces
+    the specifier wherever a real environment gets built.
+
+    Every uncertain answer is "present", the same three-valued discipline
+    `app_satisfies` follows in the other direction: this function's caller turns
+    its output into a REFUSAL, so a name it cannot resolve must not become one.
+    """
+    import importlib.metadata as md
+
+    missing = []
+    for requirement in applicable_dependencies_of(project_dir):
+        name = requirement.split(";")[0].split("[")[0].strip()
+        for sep in ("<", ">", "=", "!", "~", " ", "("):
+            name = name.split(sep)[0]
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            md.version(name)
+        except md.PackageNotFoundError:
+            missing.append(name)
+        except Exception as e:  # noqa: BLE001 — "I could not tell" is not "absent"
+            logger.warning("could not resolve %r for %s: %s: %s",
+                           name, project_dir, type(e).__name__, e)
+    return missing
+
+
 # --------------------------------------------------------------------------
 # Staleness
 # --------------------------------------------------------------------------

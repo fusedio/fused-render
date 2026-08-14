@@ -141,6 +141,57 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
     }
 
 
+def project_env_refusal(path: str) -> str | None:
+    """Why this engine cannot run *path*, or None when it can.
+
+    This executor spawns `[sys.executable, _child.py]` and owns no venv
+    machinery: only the fused engine builds a project environment (SPEC
+    PY-16/PY-18, D174). Ignoring a declaration was free while `[bundled]` carried
+    everything the core templates import — the declaration was redundant here.
+    D275 removed 469 MB from that promise, so `map`, `vector`, `geometry_editor`
+    and `pdf_studio` now declare distributions no app interpreter ships, and this
+    engine would spawn them into a bare `ModuleNotFoundError` raised from inside
+    a tile request: true, and useless. It names a package but not the folder that
+    asked for it, and not the fact that a *setting* is what decides whether it
+    can ever be installed — on a packaged app, where `pip install` is not an
+    action the user has, that is D176's defect returning by a new road.
+
+    Keyed on what is MISSING rather than on the existence of a manifest, and that
+    distinction is the whole design. Every declaration is the COMPLETE list
+    (D172), so manifests routinely name pandas or numpy alongside the one thing
+    the app lacks; a script whose declaration this interpreter happens to meet
+    has always run correctly here and must keep doing so. Refusing on the
+    manifest itself would break working templates to fix a problem they do not
+    have.
+
+    Returned rather than raised: `/api/run`'s contract is the D1 wire shape, and
+    a refusal that arrives as `{"type": "RuntimeError", ...}` reaches the page's
+    error overlay and the call log like every other failure. Raising would take
+    out the request handler and lose the message that is the entire point.
+    """
+    from fused_render import projectenv
+
+    try:
+        project = projectenv.project_env_for(path)
+        if not project:
+            return None
+        missing = projectenv.missing_from_this_interpreter(project)
+    except Exception as e:  # noqa: BLE001 — never let the guard fail the run
+        logger.warning("project-env guard failed for %s: %s: %s",
+                       path, type(e).__name__, e)
+        return None
+    if not missing:
+        return None
+    return (
+        f"{projectenv.display_name(project)} declares its own environment "
+        f"({projectenv.pyproject_path(project)}), which the built-in executor "
+        f"cannot build — it has no venv machinery at all. This interpreter is "
+        f"missing {', '.join(missing)}. Set engine = fused in Preferences, or "
+        f"install fused-render[fused] (requires Python 3.11+), and the "
+        f"environment is built for you on the next render (SPEC PY-16/PY-18)."
+    )
+
+
 def _is_builtin_helper(path: str) -> bool:
     """True only for the allowlisted in-process helpers (D72): the duckdb/structure/
     duckdb/structure/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
@@ -239,6 +290,13 @@ def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
 def _run_python(path: str, params: dict, timeout: float) -> dict:
     if not os.path.isfile(path):
         return _error("FileNotFoundError", f"no such Python file: {path}")
+
+    # Before either execution path, because neither can honour a declaration:
+    # the in-process helpers run on this very interpreter and the subprocess one
+    # spawns it. See `project_env_refusal`.
+    refusal = project_env_refusal(path)
+    if refusal:
+        return _error("RuntimeError", refusal)
 
     # First-party helper -> in-process so its protected-folder access reuses
     # the app's TCC grant (D72). Everything else is user code -> subprocess.
