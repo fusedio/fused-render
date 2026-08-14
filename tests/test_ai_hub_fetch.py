@@ -351,3 +351,86 @@ def test_several_files_share_one_connection_budget(base, monkeypatch, tmp_path,
     for name in ("a.safetensors", "b.safetensors"):
         assert open(os.path.join(snapshot, name), "rb").read() == payload
         assert os.path.exists(os.path.join(folder, "blobs", "e-" + name))
+
+
+# -- the fallback ---------------------------------------------------------------
+
+
+def _fake_hub(monkeypatch, **members):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub",
+                        types.SimpleNamespace(**members))
+
+
+def test_a_failed_segmented_fetch_falls_back_to_snapshot_download(base, monkeypatch,
+                                                                  tmp_path):
+    """A repo we cannot range-fetch, or a Hub API that moved, must degrade to
+    the behaviour that shipped before this — never to a broken download."""
+    called = {}
+
+    def snapshot_download(model_id, ignore_patterns=None, **kwargs):
+        called["model"] = model_id
+        return "/cache/snapshots/abc"
+
+    _fake_hub(monkeypatch, snapshot_download=snapshot_download,
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(tmp_path))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    def boom(repo, name, revision):
+        raise RuntimeError("get_hf_file_metadata is gone")
+
+    monkeypatch.setattr(base, "_hub_file_meta", boom)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, ignore=None:
+                        [("model.safetensors", 10)])
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
+    assert called["model"] == "org/m"
+
+
+def test_the_fallback_does_not_inherit_our_half_written_parts(base, monkeypatch,
+                                                              tmp_path, payload):
+    """Our part files are deliberately not hf's `.incomplete` — hf resumes one
+    of those by seeking to its length, and ours are written out of order, so
+    handing it one would produce a silently corrupt blob. Belt and braces: the
+    fallback clears them anyway, so a stalled attempt cannot go on counting
+    towards the progress bar either."""
+    url, state = _start_server(payload, budget=60_000)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, ignore=None:
+                        [("model.safetensors", len(payload))])
+    _fake_hub(monkeypatch,
+              snapshot_download=lambda model_id, **kwargs: "/cache/snapshots/abc",
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
+    assert state["log"], "the segmented route was never tried"
+    left = os.listdir(os.path.join(folder, "blobs"))
+    assert left == [], f"our part files were left for hf to trip over: {left}"
+
+
+def test_download_file_returns_the_path_to_the_one_file(base, monkeypatch,
+                                                        tmp_path, payload):
+    """`download_file`'s contract is a PATH, and its caller opens it. A GGUF
+    fetched into the cache with no snapshot entry would return a path to
+    nothing."""
+    url, _state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, ignore=None:
+                        [(include, len(payload))])
+
+    path = base.download_file("org/m", "q4.gguf")
+
+    assert os.path.basename(path) == "q4.gguf"
+    assert open(path, "rb").read() == payload

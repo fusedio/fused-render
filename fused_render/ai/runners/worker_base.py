@@ -332,7 +332,6 @@ class _Unsegmentable(Exception):
     """
 
 
-
 def repo_folder(model_id, repo_type="model"):
     """This repo's folder in the hub cache, or None.
 
@@ -353,10 +352,19 @@ def repo_folder(model_id, repo_type="model"):
 def bytes_on_disk(folder):
     """How much of `folder` is on disk right now, in bytes — None if unknown.
 
-    Counts the `.incomplete` files hf writes while a download is in flight,
-    which is the whole point: they ARE the progress. Symlinks are skipped from
-    the `lstat` result itself, so the snapshot entries are not counted a second
-    time on top of the blobs they point at.
+    Counts the partial files a download in flight is writing — hf's
+    `.incomplete` and our own `.fusedpart` — which is the whole point: they ARE
+    the progress. Symlinks are skipped from the `lstat` result itself, so the
+    snapshot entries are not counted a second time on top of the blobs they
+    point at.
+
+    A `.fusedpart` is measured by ALLOCATED BLOCKS rather than by length. Our
+    segments write out of order, so the file is created at its final size with
+    `ftruncate` and filled as a sparse file: `st_size` is the full 4.6GB from
+    the first second, and reporting that would put the bar at 100% before a
+    byte had arrived. `st_blocks` is what the download has actually put on the
+    disk. Where the platform has no such notion (Windows), `st_blocks` is
+    absent and the length is the honest answer anyway — nothing is sparse there.
     """
     if not folder:
         return None
@@ -367,42 +375,61 @@ def bytes_on_disk(folder):
                 info = os.lstat(os.path.join(dirpath, name))
             except OSError:
                 continue
-            if not stat.S_ISLNK(info.st_mode):
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            blocks = getattr(info, "st_blocks", None)
+            if name.endswith(PART_SUFFIX) and blocks is not None:
+                total += min(info.st_size, blocks * 512)
+            else:
                 total += info.st_size
     return total
 
 
-def repo_total_bytes(model_id, include=None, ignore=None):
-    """The size of what will ACTUALLY be fetched, from the Hub, or None.
+def _repo_files(model_id, include=None, ignore=None):
+    """`(name, size)` for every file this download will ACTUALLY fetch.
 
-    One metadata call, no weights. Without it the bar has no total and shows as
-    indeterminate — which is honest, and much better than a wrong total.
+    One metadata call, no weights, and ONE place that decides what is in scope —
+    the total on the bar and the list the fetch works through come from the same
+    filter, or the two disagree and a bar measures itself against files nobody
+    is downloading.
 
     **Scoped, because a repo is rarely fetched whole.** `include` is a single
     filename (one GGUF out of a repo that publishes a dozen quantizations of the
     same model); `ignore` is the same fnmatch patterns `snapshot_download` takes,
     so a download that skips a subfolder does not measure itself against it.
-    Summing the whole repo either way is how a 2.6GB pull came to read as a
-    fraction of 30GB and then jump to "complete" against a figure it never
-    downloaded.
-    """
-    try:
-        from huggingface_hub import HfApi
 
-        info = HfApi().model_info(model_id, files_metadata=True)
-    except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
-        return None
-    total = 0
+    Raises, unlike its callers: the fetch cannot proceed on a guess, while the
+    bar can.
+    """
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(model_id, files_metadata=True)
+    files = []
     for sibling in getattr(info, "siblings", None) or []:
         name = getattr(sibling, "rfilename", None) or ""
-        size = getattr(sibling, "size", None)
-        if not isinstance(size, int) or size <= 0:
+        if not name:
             continue
         if include is not None and name != include:
             continue
         if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
             continue
-        total += size
+        files.append((name, getattr(sibling, "size", None)))
+    return files
+
+
+def repo_total_bytes(model_id, include=None, ignore=None):
+    """The size of what will ACTUALLY be fetched, from the Hub, or None.
+
+    Without it the bar has no total and shows as indeterminate — which is
+    honest, and much better than a wrong total. Summing the whole repo when only
+    part of it is being fetched is how a 2.6GB pull came to read as a fraction
+    of 30GB and then jump to "complete" against a figure it never downloaded.
+    """
+    try:
+        files = _repo_files(model_id, include=include, ignore=ignore)
+    except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
+        return None
+    total = sum(size for _name, size in files if isinstance(size, int) and size > 0)
     return total or None
 
 
@@ -868,6 +895,28 @@ def _write_ref(folder, revision, commit):
         handle.write(commit)
 
 
+def _clear_parts(folder):
+    """Drop our partial files before handing the repo back to huggingface_hub.
+
+    Not because hf would misread them — the suffix exists precisely so it never
+    sees them — but because they would go on counting towards the progress bar
+    for a download nothing is writing any more.
+    """
+    for dirpath, _dirs, files in os.walk(folder or ""):
+        for name in files:
+            if PART_SUFFIX in name:
+                _remove(os.path.join(dirpath, name))
+
+
+def _fallback(model_id, error):
+    """Say why we are back on hf's downloader. The supervisor captures stderr,
+    so a fallback that happens in the field is diagnosable rather than merely
+    slow."""
+    sys.stderr.write(
+        f"[fused] segmented fetch of {model_id} unavailable, falling back to "
+        f"huggingface_hub: {error.__class__.__name__}: {error}\n")
+    _clear_parts(repo_folder(model_id))
+
 
 def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…", job=None):
     """Run `call()` on a thread, reporting bytes-on-disk once a second.
@@ -913,15 +962,35 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     The total is measured against the SAME `ignore_patterns` the download uses,
     or a pull that deliberately skips a subfolder measures itself against
     weights it was never going to fetch — a bar that stalls partway and then
-    jumps.
+    jumps. The segmented fetch takes its file list from the same filter, for the
+    same reason.
     """
-    from huggingface_hub import snapshot_download
+    total = repo_total_bytes(model_id, ignore=ignore_patterns)
 
-    return fetch_with_progress(
-        model_id,
-        lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns, **kwargs),
-        total=repo_total_bytes(model_id, ignore=ignore_patterns),
-    )
+    def hub():
+        from huggingface_hub import snapshot_download
+
+        return fetch_with_progress(
+            model_id,
+            lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns,
+                                      **kwargs),
+            total=total)
+
+    if kwargs:
+        # An extra argument changes WHAT is fetched — `allow_patterns`, a
+        # revision, a local dir — and a fetch that quietly ignored one would
+        # download the wrong thing. Ours honours exactly the two it knows about.
+        return hub()
+    try:
+        names = [name for name, _size in _repo_files(model_id, ignore=ignore_patterns)]
+        return fetch_with_progress(model_id,
+                                   lambda: _segmented_fetch(model_id, names),
+                                   total=total)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
+        _fallback(model_id, error)
+    return hub()
 
 
 def download_file(repo_id, filename, detail=None):
@@ -932,14 +1001,27 @@ def download_file(repo_id, filename, detail=None):
     2.6GB pull against that is how a download reads as barely started for its
     whole life and then jumps to complete.
     """
-    from huggingface_hub import hf_hub_download
+    total = repo_total_bytes(repo_id, include=filename)
+    detail = detail or f"Fetching {filename}…"
 
-    return fetch_with_progress(
-        repo_id,
-        lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-        total=repo_total_bytes(repo_id, include=filename),
-        detail=detail or f"Fetching {filename}…",
-    )
+    def hub():
+        from huggingface_hub import hf_hub_download
+
+        return fetch_with_progress(
+            repo_id,
+            lambda: hf_hub_download(repo_id=repo_id, filename=filename),
+            total=total, detail=detail)
+
+    try:
+        return fetch_with_progress(
+            repo_id,
+            lambda: os.path.join(_segmented_fetch(repo_id, [filename]), filename),
+            total=total, detail=detail)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
+        _fallback(repo_id, error)
+    return hub()
 
 
 # -------------------------------------------------------------------- bring-up
