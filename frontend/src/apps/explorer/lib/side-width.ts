@@ -1,5 +1,6 @@
 // The preview SIDEBAR's width arithmetic, as pure functions: the floors, the
-// small-screen breakpoint, and the width an unsized column opens at.
+// the one share both companion columns take, and the width an unsized column
+// opens at.
 //
 // Split out of PreviewSidebar.tsx for the same reason listing/pane-math.ts is
 // split out of pane.ts — the arithmetic is the part worth testing, and a
@@ -19,25 +20,21 @@
 export const MIN_W = 280;
 export const CONTENT_MIN_W = 320;
 
-// The small-screen breakpoint, in container pixels. 720px is preview.css's own
-// narrow-window breakpoint (the one that drops the rev badge's note), so the
-// sidebar calls "small" exactly what the rest of the preview chrome already
-// calls small, instead of introducing a second, nearby number that would make
-// the preview area change shape twice on the way down.
-export const SMALL_W = 720;
-
-// A normal window gives the companion a third; a small one gives it half,
-// because on a narrow container a third is not a usable column — 30% of 720px
-// is 216px, under the floor CSS enforces anyway — and the thing the sidebar is
-// beside has less to show at that width too.
-export const DEFAULT_FRAC = 0.3;
-export const SMALL_FRAC = 0.5;
-
-// The share of a container this wide the column opens at. `<=` matches CSS
-// media-query semantics: `(max-width: 720px)` includes 720.
-export function defaultSideFrac(containerW: number): number {
-  return containerW <= SMALL_W ? SMALL_FRAC : DEFAULT_FRAC;
-}
+// **THE COMPANION COLUMN'S SHARE, and there is exactly one of it** (D280): 30%,
+// for the file view's sidebar and for the listing's preview pane alike, which is
+// why the constant lives here and `listing/pane-math.ts` imports it rather than
+// spelling its own. The owner's words were "they are the same concept now" — after
+// D278/D279 a folder's pane is the same companion column a file gets — and two
+// literals are exactly how they came to differ (the pane was on 50%, tiering to
+// 70% on a wide window).
+//
+// **No breakpoint decides it.** A `SMALL_FRAC` of 50% used to apply at or below a
+// 720px container, on the argument that 30% of 720 is 216px and not a usable
+// column. True, and the FLOOR below already says so — it answers 280px there — so
+// the step was a second rule reaching the same place. It is gone with the pane's
+// tiers; the floors are clamps on what a share is worth, not conditions on what
+// the share IS.
+export const COMPANION_FRAC = 0.3;
 
 // The width an unsized column opens at inside a container this wide, with both
 // floors applied: never below MIN_W, and never so wide that the content column
@@ -55,5 +52,5 @@ export function defaultSideWidth(containerW: number): number {
   if (!(containerW > 0)) return MIN_W;
   const max = containerW - CONTENT_MIN_W;
   if (max < MIN_W) return MIN_W;
-  return Math.round(Math.min(max, Math.max(MIN_W, containerW * defaultSideFrac(containerW))));
+  return Math.round(Math.min(max, Math.max(MIN_W, containerW * COMPANION_FRAC)));
 }

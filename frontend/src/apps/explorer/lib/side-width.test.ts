@@ -1,21 +1,22 @@
 import { describe, expect, it } from "bun:test";
 import {
-  defaultSideFrac,
+  COMPANION_FRAC,
   defaultSideWidth,
   CONTENT_MIN_W,
   MIN_W,
-  SMALL_W,
 } from "@apps/explorer/lib/side-width";
+import { PANE_DEFAULT_FRAC } from "@apps/explorer/listing/pane-math";
 
-describe("defaultSideFrac", () => {
-  it("gives a normal container a third", () => {
-    expect(defaultSideFrac(1440)).toBe(0.3);
-    expect(defaultSideFrac(SMALL_W + 1)).toBe(0.3);
-  });
-
-  it("gives a small container half, breakpoint inclusive", () => {
-    expect(defaultSideFrac(SMALL_W)).toBe(0.5);
-    expect(defaultSideFrac(600)).toBe(0.5);
+// ONE SHARE FOR BOTH COMPANION COLUMNS (D280): a file's sidebar and a folder's
+// preview pane are the same concept, so they take the same 30% — and the number
+// lives in one place, because two literals are how they drifted apart (the pane
+// was on 50%). The small-container 50% step that used to sit beside this is gone
+// with the pane's tiers: no width decides the SHARE any more, only the floors
+// below decide what a share is worth.
+describe("COMPANION_FRAC", () => {
+  it("is 30%, and is what the listing's pane uses too", () => {
+    expect(COMPANION_FRAC).toBe(0.3);
+    expect(PANE_DEFAULT_FRAC).toBe(COMPANION_FRAC);
   });
 });
 
@@ -25,10 +26,12 @@ describe("defaultSideWidth", () => {
     expect(defaultSideWidth(1200)).toBe(360);
   });
 
-  it("opens at 50% of a small container", () => {
-    // 720 is the breakpoint itself, and counts as small.
-    expect(defaultSideWidth(SMALL_W)).toBe(360);
-    expect(defaultSideWidth(680)).toBe(340);
+  it("opens at 30% of a small container too — no breakpoint", () => {
+    // 30% of 720 is 216, under the 280px floor, so the floor answers. The old
+    // 50%-when-small step said 360 here; the floor covers the same ground with
+    // one rule instead of two.
+    expect(defaultSideWidth(720)).toBe(MIN_W);
+    expect(defaultSideWidth(680)).toBe(MIN_W);
   });
 
   it("floors at MIN_W when 30% would be narrower than the column allows", () => {
@@ -38,9 +41,9 @@ describe("defaultSideWidth", () => {
     expect(900 - defaultSideWidth(900)).toBeGreaterThanOrEqual(CONTENT_MIN_W);
   });
 
-  it("gives the content column its floor back when the share is too greedy", () => {
-    // Small, so 50% = 300 — but that leaves the content column 300px, under
-    // its 320 floor, so the column gives the difference back.
+  it("gives the content column its floor back when the column's floor is greedy", () => {
+    // At 600px the column's own 280px floor beats 30% (=180), and 600−280 = 320
+    // is exactly the content floor: the two meet, and neither is starved.
     expect(defaultSideWidth(600)).toBe(600 - CONTENT_MIN_W);
     expect(defaultSideWidth(600)).toBe(280);
   });

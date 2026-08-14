@@ -217,19 +217,22 @@ export default function Listing({
   const indexScan = useIndexStatus(searching);
 
   // An embedded Listing never opens its own pane (no nesting): the feature is
-  // disabled at the hook, however wide the embedded listing gets. Otherwise
-  // `pane.on` is purely a measurement of the split container (see pane.ts).
+  // disabled at the hook, however wide the embedded listing gets. **These three
+  // flags are now the WHOLE of whether there is a pane** — `pane.on` is exactly
+  // `paneEnabled` since D280 deleted the width gate, so "is this a Listing that has
+  // a pane" is a question about the SURFACE and never about pixels.
   //
   // A FROZEN-TREE listing is the second no-nesting case, and `embedded` cannot
   // see it: the browsable snapshot (the `browse` framing of the removed timeline
   // mode, PT-14) is a whole shell loaded at `/explorer/embed/<tree>?snapshot=1`,
   // so its Listing is the page's OWN top-level one — `embedded=false` — inside
-  // the framing view's preview column. That column was 70% of the window, which on any
-  // ordinary screen is comfortably past PANE_SPLIT_MIN_W (measured: 954px in a
-  // 1600px window), so the frozen listing grew a preview pane INSIDE a preview
-  // pane. `?preview=false` used to stop it and was dropped with the toggle it
-  // belonged to, on the reasoning that the width decides — true for a listing
-  // that owns its window, false for one handed a column by a framer.
+  // the framing view's preview column, where it grew a preview pane INSIDE a
+  // preview pane. `?preview=false` used to stop it and was dropped with the toggle
+  // it belonged to, on the reasoning that the width decides — true for a listing
+  // that owns its window, false for one handed a column by a framer. *That
+  // reasoning is doubly dead now: with the width gate deleted (D280) the framed
+  // listing would grow a pane at ANY column width, so this flag is not a
+  // refinement of a measurement but the whole answer.*
   //
   // `snapshot=1` and not a second param of its own: the framing flag has
   // exactly one producer, and that producer is a template framing this listing
@@ -241,18 +244,17 @@ export default function Listing({
   // snapshot: a pane is a whole shell at `/explorer/embed/<path>`, so its
   // Listing is that frame's own top-level one — `embedded=false`, `barChrome`
   // true, everything about it says "I own this window". What it does not own is
-  // the layout: the user split it, and a pane of a 1600px window is ~800px,
-  // comfortably past PANE_SPLIT_MIN_W, so a split-right of a folder grew two
-  // half-width listings each with their own half-width preview. Four columns
-  // where the user asked for two, and the width test cannot object because the
-  // width is genuinely there. IS_PANEL_PANE is the host-side question the width
+  // the layout: the user split it, so a split-right of a folder grew two
+  // half-width listings each with their own preview. Four columns where the user
+  // asked for two — and no width test could ever have objected, because the width
+  // was genuinely there. IS_PANEL_PANE is the host-side question a measurement
   // cannot answer (see router.ts, including why `IS_EMBED` — which is also
   // every TAB, where the pane is right and stays — is the wrong flag here).
   //
-  // Switching it off HERE is the whole feature: `pane.on` is `paneEnabled &&`
-  // the measurement, so one predicate takes the slot, the divider, the closing
-  // chevron on the pane's header, the reopening SideToggleButton in the search
-  // row and the two `useDirMode` companion probes with it. Nothing about the
+  // Switching it off HERE is the whole feature: `pane.on` IS this predicate
+  // (D280 left nothing else in it), so one flag takes the slot, the divider, the
+  // closing chevron on the pane's header, the reopening SideToggleButton in the
+  // search row and the two `useDirMode` companion probes with it. Nothing about the
   // ROWS changes: a pane's listing still selects, arrow-keys, and opens on
   // double-click/Enter —
   // opening a file in a pane replaces that pane's document, which is the point.
@@ -1586,13 +1588,17 @@ export default function Listing({
                   down), so this button is on screen only while the pane is SHUT.
 
                   It is not the old pane toggle coming back. That one was an
-                  on/off for a bit the layout could answer itself, and it went
-                  when the split became purely a measurement of the container's
-                  width (listing/pane.ts) — `pane.on` below is still that
-                  measurement, and this button does not exist when it says no. It
-                  is a mode control: it says WHICH of the pane's three would
-                  return, wearing that mode's own icon, which is a thing the
-                  layout cannot answer.
+                  on/off for a bit the layout could answer itself, and it went when
+                  the split became a measurement of the container's width — a
+                  measurement that is itself gone now (D280): `pane.on` below is
+                  just "this Listing has a pane", and this button does not exist
+                  where it says no. It is a mode control: it says WHICH of the
+                  pane's three would return, wearing that mode's own icon.
+
+                  It also carries more weight than it did. With no width gate, a
+                  NARROW window shows the pane like any other, so `_side=off` — and
+                  this button back from it — is the only way to give a cramped
+                  listing the whole column. That is the trade the flat 30% buys.
 
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
@@ -1719,10 +1725,11 @@ export default function Listing({
               className="listing-pane-slot"
               // A PERCENTAGE, not a pixel width: the split is a fraction of
               // this container (listing/pane.ts), so a window resize keeps the
-              // proportion the user dragged instead of leaving the pane at one
-              // window's arithmetic — and, until it IS dragged, steps between
-              // 30/50/70% as the container crosses the width breakpoints. The
-              // pixel floors are the slot's / the list's CSS min-widths.
+              // proportion instead of leaving the pane at one window's
+              // arithmetic. Until it is dragged that fraction is a flat 30% —
+              // the same share a file's sidebar takes, with no breakpoints
+              // between them (D280). The pixel floors are the slot's / the
+              // list's CSS min-widths.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >
               {/* Keyed on WHAT THE PANE IS ABOUT (pane-side's paneKey), which is

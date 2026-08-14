@@ -21,8 +21,8 @@ describe("pane-store", () => {
   test("one width for every folder — the store is not keyed by path", () => {
     // THE BUG this module exists for: the width used to live in the per-path
     // viewstate map, so walking from a folder you had dragged into one you had
-    // not snapped the divider between your width and the breakpoint default on
-    // every navigation. There is now one width and every surface reads it.
+    // not snapped the divider between your width and the default on every
+    // navigation. There is now one width and every surface reads it.
     setPaneFrac(0.42);
     setPaneFrac(0.61);
     expect(getPaneFrac()).toBe(0.61);

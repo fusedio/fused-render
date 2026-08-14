@@ -72,7 +72,6 @@ import { MenuIcons } from "@platform/ui/MenuIcons";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import DeployModal from "@platform/cloud/DeployModal";
 import Listing from "@apps/explorer/Listing";
-import { useSplitIsWide } from "@apps/explorer/listing/pane";
 
 // The window global the injected runtime calls to hand this shell the commit the
 // git sidebar just selected (static/runtime.js `noteRevSelected`, reached from the
@@ -851,22 +850,24 @@ function TemplatePreview({
   // single `_listing` mode), so the preview header is uniform across files and
   // dirs.
   const isListing = entry.mode === "_listing";
-  // Whether the listing's right preview pane is showing. The pane has no
-  // on/off state to read any more (no toggle, no `preview` param, no saved
-  // key): it appears when the split container is wide enough, so the only way
-  // to answer the question is to ask the same measurement the listing asks —
-  // hence the same hook, pointed at THIS body, which is the box the listing's
-  // own split container fills. Gated on `isListing`: only a directory renders
-  // a listing, and only a listing has a pane.
+  // Whether the listing's right preview pane is showing — and it is now the same
+  // question as "is this a listing at all". The pane has no on/off state to read
+  // (no toggle, no `preview` param, no saved key) and, since D280, no width gate
+  // either: a Listing that can have a pane has one. This used to measure THIS body
+  // with the same ResizeObserver the listing used, so the two could not disagree
+  // about whether 700px had been reached; with the threshold deleted there is
+  // nothing to measure and nothing to agree on.
   //
   // Used for the one thing the pane displaces: .preview-browse-chip, whose
   // corner is INSIDE the pane when there is one (see its comment below) — an
-  // embed-only control now, but an embedded listing can have a pane too. The
-  // top-bar mode control is not displaced but removed — for an explorer folder
-  // it is gone whether the pane is open or not; see headerActions.
+  // embed-only control now, but an embedded listing can have a pane too. **So the
+  // chip no longer appears over a listing at any width**, where a narrow embed
+  // used to get one; a `.zarr` folder's embed reaches its map through the chip
+  // only while showing the MAP (the `isListing` half), not while showing the
+  // listing. The top-bar mode control is not displaced but removed — for an
+  // explorer folder it is gone whether the pane is open or not; see headerActions.
   const bodyRef = useRef<HTMLDivElement>(null);
-  const bodyIsWide = useSplitIsWide(bodyRef);
-  const listingPaneOpen = isListing && bodyIsWide;
+  const listingPaneOpen = isListing;
   // Tab title (App's StatView owns the actual document.title write, and it
   // also feeds the default bookmark name and the Recents row — see
   // Breadcrumb.tsx / recents.ts): only a "_render" entry is the file's OWN

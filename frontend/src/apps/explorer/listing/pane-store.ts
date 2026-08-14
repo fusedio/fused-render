@@ -7,19 +7,21 @@
 // panes, not about the folder that happened to be open when the divider moved,
 // so remembering it per path meant the divider jumped on ordinary navigation:
 // out of a folder you had dragged, into a sibling you had not, and the pane
-// snapped between your width and the breakpoint default every time. The file
-// preview's own `_side` sidebar had always used a single width and never had
-// this problem. Now the listing pane doesn't either.
+// snapped between your width and the default every time. The file preview's own
+// `_side` sidebar had always used a single width and never had this problem. Now
+// the listing pane doesn't either — and as of D280 the two even share the same
+// default share, 30%.
 //
 // MEMORY ONLY, DELIBERATELY — this is not a missing feature:
 //   • it survives everything the SHELL does, because the shell navigates by
 //     history.pushState (platform/lib/router) and never reloads the document.
 //     Folder → folder, folder → file, Back and Forward all keep the width.
-//   • a REFRESH clears it, and the pane goes back to following the container's
-//     width through defaultPaneFrac's breakpoints. That reset is the escape
-//     hatch: once dragged, a pane stops adapting to the window forever, and the
-//     way back has to be something a user can find without being told about a
-//     gesture. Reloading a page is that.
+//   • a REFRESH clears it, and the pane goes back to the plain 30% default
+//     (D280 — it used to go back to following the container's width through
+//     `defaultPaneFrac`'s breakpoints, which is the machinery that decision
+//     deleted). That reset is still the escape hatch: a dragged width otherwise
+//     holds for the whole session, and the way back has to be something a user can
+//     find without being told about a gesture. Reloading a page is that.
 // sessionStorage would survive the refresh and localStorage the browser, so
 // both would take the escape hatch away. Neither is an option here.
 
