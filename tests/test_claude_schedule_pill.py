@@ -204,6 +204,137 @@ def test_the_presets_include_one_short_enough_to_watch(code):
     assert '"5m": () =>' in code
 
 
+def test_the_two_choices_a_preset_list_cannot_express_are_offered(code):
+    """A fixed vocabulary of relative presets can say "this evening" and never
+    03:14 tomorrow, nor "every morning" — the two things the API always accepted
+    and the pill could not ask for. Both are choices in the same list (so the row
+    keeps its shape) with a panel behind them, and both are spelt with an ellipsis
+    because picking one asks a SECOND question instead of being the answer."""
+    assert '[WHEN_AT]: "Pick a time…"' in code
+    assert '[WHEN_REPEAT]: "Repeats…"' in code
+    # in the list the pill is filled from, or the label is unreachable
+    assert "WHEN_AT, WHEN_REPEAT]" in code
+    # one panel per choice per composer: a first message is as schedulable as a
+    # follow-up, which is the same reason the pill itself is on both rows
+    assert code.count('class="whenpanel" data-when="at"') == 2
+    assert code.count('class="whenpanel" data-when="repeat"') == 2
+    assert code.count('type="datetime-local"') == 2
+
+
+def test_a_recurring_send_carries_the_cron_line_INSTEAD_of_a_time(code):
+    """`repeats` and `due` are two answers to one question, so the endpoint
+    refuses a request holding both (400) — which makes a `due: null` sent
+    "just in case" a schedule that cannot be stored at all. The key is therefore
+    absent from the body, not empty in it."""
+    body = _schedule_message_fn(code)
+    assert "...(repeats ? { repeats } : { due: localDueString(at) })" in body
+    # exactly one mention of `due` on the wire, and it is inside that conditional
+    assert body.count("due:") == 1
+    # the third way to say when is a page's convenience and never this composer's:
+    # it would be the same collision with a cron line, one round trip later
+    assert "delay_seconds" not in code
+
+
+def test_the_repeat_presets_build_the_line_they_promise(code):
+    """The presets are a way of WRITING cron, not an alternative to it — three
+    shapes of the same five fields. Pinned as strings because the panel keeps no
+    rule of its own: these templates are the only definition of what "Daily at
+    9am" means, and the hint under the fields shows the line they produced."""
+    assert "`${min} * * * *`" in code          # hourly: that minute, every hour
+    assert "`${min} ${hr} * * *`" in code      # daily at HH:MM
+    assert "`${min} ${hr} * * ${dow}`" in code  # weekly, on that day
+    # Custom hands the field's own text through untouched — a power user's line is
+    # not re-derived from pickers that cannot express it
+    assert 'if (preset === "cron") return whenFieldValue("when-rep-cron").trim();' in code
+
+
+def test_the_lines_the_presets_build_are_lines_the_parser_accepts(code):
+    """The cross-module half of the test above, in the spirit of the permission
+    modes one: the template writes a cron line and `fused_render.cron` is what has
+    to read it, so the SHAPE is checked against the real parser rather than
+    against a second copy of the field order living in this file."""
+    from fused_render import cron
+
+    shapes = re.findall(r"return `(\$\{min\}[^`]*)`", code)
+    assert len(shapes) == 3, "the preset → cron templates moved"
+    for shape in shapes:
+        line = (shape.replace("${min}", "0").replace("${hr}", "9")
+                .replace("${dow}", "1"))
+        assert len(line.split()) == 5
+        cron.parse(line)   # ValueError here means the panel builds an unstorable rule
+
+
+def test_the_repeat_panel_counts_days_the_way_cron_does(code):
+    """0 = Sunday in a crontab, so the day list starts on Sunday and the option's
+    INDEX is the field's value. A Monday-first list would have needed a mapping,
+    and a mapping is where "weekly on Friday" quietly becomes Saturday."""
+    assert 'const REP_DAYS = ["Sunday", "Monday"' in code
+    # the value goes into the line as-is, with no arithmetic on the way
+    assert 'const dow = n(whenFieldValue("when-rep-dow"));' in code
+
+
+def test_the_generated_cron_line_is_shown_rather_than_hidden(code):
+    """A repeat rule is the one scheduling choice a user can get subtly wrong, and
+    the cron line is the only place the mistake is visible before the first run
+    fires (or does not). So the panel shows the line it built, which is also what
+    makes Custom a continuation of the presets rather than a different feature."""
+    assert "`runs ${expr}`" in code
+    assert "function cronComplaint(" in code
+    # a shape check only — the grammar has ONE owner, and it answers 400 with the
+    # field it choked on (see cron.parse), which the POST's error path already shows
+    assert "expected 5 fields (minute hour day month weekday)" in code
+
+
+def test_a_past_exact_time_is_refused_by_the_PAGE(code):
+    """`min` on the field would have been the obvious guard and is deliberately
+    absent: it turns on native constraint validation, which blocks the form's
+    submit BUTTON and says so in a bubble, while Enter in the textarea (its own
+    keydown handler, calling submitChat directly) sails past — two send paths
+    disagreeing about which times are allowed. The check lives where both paths
+    already meet."""
+    assert 'type="datetime-local" class="whenfield when-at"' in code
+    assert "min=" not in code.split('type="datetime-local"')[1][:400]
+    plan = code[code.index("function whenPlan("):]
+    plan = plan[:plan.index("\n}")]
+    assert "if (at <= new Date())" in plan
+    assert "has already gone by" in plan
+    # and the panel's own affordance says so before the send is attempted
+    assert 'document.querySelectorAll(".when-at-ok").forEach((el) => { el.disabled' in code
+
+
+def test_the_new_choices_are_deferrals_like_every_other(code):
+    """Nothing about approvals disclosure, the send guard, or the reset may know
+    which deferral was picked: `whenChoice() !== WHEN_NOW` is the whole test, so
+    adding a value to WHEN_OPTIONS is what makes "Pick a time…" and "Repeats…"
+    inherit the substituted permission mode (scheduledPerm), the one-copy guard,
+    and the return to "Send now"."""
+    sync = code[code.index("function syncSelects()"):]
+    sync = sync[:sync.index("\n}")]
+    assert "WHEN_AT" not in sync and "WHEN_REPEAT" not in sync
+    submit = code[code.index("function submitChat()"):]
+    submit = submit[:submit.index("\n}")]
+    assert "WHEN_AT" not in submit and "WHEN_REPEAT" not in submit
+    # panels are pill state, so the ONE owner of pill state shows and hides them —
+    # see the note above scheduledPerm on what a second function beside it cost
+    assert "renderWhenPanels();" in sync
+    # and the exact instant is dropped with the choice: a stale past time waiting
+    # in the panel is the NEXT scheduled send refused for no visible reason
+    reset = code[code.index("function resetWhen()"):]
+    reset = reset[:reset.index("\n}")]
+    assert 'document.querySelectorAll(".when-at").forEach((el) => { el.value = ""; });' in reset
+
+
+def test_a_recurring_confirmation_names_the_rule(code):
+    """A repeating job has no single instant to report, so the note names what was
+    actually stored — the cron line — plus the first occurrence the server worked
+    out from it, which is how a reader catches a rule that does not mean what they
+    thought before it has run twice."""
+    body = _schedule_message_fn(code)
+    assert "repeats: ${repeats}" in body
+    assert "data.entry.due" in body, "the first occurrence comes from the stored entry"
+    assert 'null, "◷");' in body
+
+
 def test_the_model_and_effort_pills_validate_their_param(code):
     """A URL carrying `?model=` with anything outside MODELS set a <select> value
     matching no option, which renders as a BLANK pill — fitSelect early-returns with
