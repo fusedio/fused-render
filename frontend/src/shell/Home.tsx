@@ -22,9 +22,32 @@ import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
 import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
 
-// One row per section — a strip, not a grid: the full lists live behind
-// "See all", so the home page only ever shows the freshest slice.
-const MAX_ROW = 5;
+// One row per section: the page measures its own width and renders exactly
+// as many full-size cards as fit — no wrapping, no clipping, no scrolling.
+// The full lists live behind "See all".
+// Card width + gap must match the .home-row CSS.
+const CARD_W = 330;
+const CARD_GAP = 16;
+// How many entries each section fetches/keeps — enough for a very wide window.
+const MAX_ROW = 12;
+
+// How many cards fit across the sections' shared container right now.
+// One ResizeObserver on the wrapper, one count for all three strips.
+function useStripCount() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [count, setCount] = useState(3);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () =>
+      setCount(Math.max(1, Math.floor((el.clientWidth + CARD_GAP) / (CARD_W + CARD_GAP))));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, count };
+}
 
 // Same order the /apps hub uses (Apps.tsx sortApps): recently-modified desc,
 // apps without a timestamp sink to the end, name breaks ties.
@@ -119,9 +142,11 @@ export default function Home({ config }: { config: Config }) {
   const indexScan = useIndexStatus(searching);
   const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
 
+  const { ref: stripRef, count } = useStripCount();
+
   return (
     <div className="files-home">
-      <div className="files-home-inner">
+      <div className="files-home-inner home-wide">
         <header className="home-hero files-hero">
           <FilesSearch
             home={home}
@@ -132,13 +157,13 @@ export default function Home({ config }: { config: Config }) {
         </header>
 
         {searching ? null : (
-          <>
+          <div ref={stripRef}>
             <Section title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <p className="fh-empty">Loading apps…</p>
               ) : apps.length ? (
-                <div className="apps-cards home-row">
-                  {apps.map((app) => (
+                <div className="home-row">
+                  {apps.slice(0, count).map((app) => (
                     <AppPreviewCard key={app.path} app={app} />
                   ))}
                 </div>
@@ -153,8 +178,8 @@ export default function Home({ config }: { config: Config }) {
               {sessions === null ? (
                 <p className="fh-empty">Looking for sessions…</p>
               ) : sessions.length ? (
-                <div className="fhb-grid home-row">
-                  {sessions.map((f) => (
+                <div className="home-row">
+                  {sessions.slice(0, count).map((f) => (
                     <FolderPreviewCard key={f.path} path={f.path} />
                   ))}
                 </div>
@@ -165,8 +190,8 @@ export default function Home({ config }: { config: Config }) {
 
             <Section title="Recent files" seeAllHref="/explorer?tab=recents">
               {recents.length ? (
-                <div className="fhb-grid home-row">
-                  {recents.map((r) => {
+                <div className="home-row">
+                  {recents.slice(0, count).map((r) => {
                     const fsPath = recentFsPath(r.url);
                     return (
                       <RecentPreviewCard
@@ -182,7 +207,7 @@ export default function Home({ config }: { config: Config }) {
                 <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
               )}
             </Section>
-          </>
+          </div>
         )}
       </div>
     </div>
