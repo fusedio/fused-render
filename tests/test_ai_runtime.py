@@ -1272,6 +1272,25 @@ def test_start_transcribe_raises_rather_than_opening_a_row(monkeypatch, recordin
     assert not jobs.list_jobs()
 
 
+def test_both_artefact_bridges_survive_a_row_that_aged_out():
+    """The page half, pinned as an INVARIANT rather than an instance.
+
+    Both `fused.ai.image` and `fused.ai.transcribe` wait on a job row that a
+    backgrounded tab can sleep straight past its retention — and when it is
+    gone, the FILE is the other witness and the one that matters. A new
+    minutes-long call that only trusted the row would fail on work that had in
+    fact finished, which is the failure this pins.
+    """
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    assert "ai.transcribe = aiTranscribe" in source
+    for call in ("function aiImage(", "function aiTranscribe("):
+        start = source.index(call)
+        end = source.index("\n  }\n", start)
+        assert "if (!record)" in source[start:end], call
+
+
 def test_a_transcription_job_id_is_reserved_and_sanitised():
     """`sys:` is what makes a row unwritable by a page (BG-4a), so the id is
     minted in the supervisor rather than assembled by the router."""

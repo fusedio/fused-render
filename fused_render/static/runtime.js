@@ -36,6 +36,16 @@
  *     the download-manager record, and that row's ✕ really stops it. Rejects
  *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
  *     this machine — the reason is in the message).
+ *   fused.ai.transcribe({path, model, language, task, onProgress})
+ *                  -> Promise<{output, url, text, segments, language, ...}>
+ *     Speech to text, locally (SPEC §40). Takes an absolute path to an audio or
+ *     video file on THIS machine — nothing is uploaded — and resolves with the
+ *     words plus the segments that carry their timestamps, which are most of
+ *     the value. task: "transcribe" (same language) | "translate" (into
+ *     English); language omitted means auto-detect. Minutes long: onProgress
+ *     fires with the download-manager record, whose done/total are SECONDS OF
+ *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
+ *     `output` and its `url` outlive the tab.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -2572,6 +2582,71 @@
     });
   }
 
+  // fused.ai.transcribe({path, ...}) -> Promise<{output, url, text, segments, ...}>
+  //
+  // The other call that resolves with a FILE, and the same waiting as
+  // aiImage — but it hands back the CONTENT too, because a transcript is words
+  // and a caller almost always wants them straight away. `output` and `url`
+  // are there for the caller that wants to keep it or link to it.
+  //
+  // SEGMENTS, not one flat string: {start, end, text} is what makes a
+  // transcript seekable next to a player, and flattening it here would throw
+  // away most of what Whisper produced.
+  //
+  // done/total on the progress record are SECONDS OF AUDIO — the unit a person
+  // watching a 90-minute recording is actually thinking in.
+  function aiTranscribe(opts) {
+    opts = opts || {};
+    if (typeof opts.path !== "string" || !opts.path.trim()) {
+      const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return aiPost("/api/ai/transcribe", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      // The transcript file is the result; the row only said when to read it.
+      const done = () =>
+        readFile(started.output)
+          .then(JSON.parse)
+          .then((written) => ({
+            ...started,
+            url: rawUrl(started.output),
+            text: written.text,
+            segments: written.segments,
+            language: written.language,
+            duration: written.duration,
+          }));
+      return watcher.watch(onProgress).then((record) => {
+        if (!record) {
+          // The row aged out from under us — a backgrounded tab can sleep past
+          // its retention on a transcription this long. The FILE is the other
+          // witness, and the one that actually matters. `done()` reads it, so
+          // its own failure is the answer to whether the work landed.
+          return done().catch(() => {
+            const err = new Error("the transcription job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the transcription was cancelled"
+            : record.message || "the transcription failed",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
@@ -2592,6 +2667,7 @@
   };
   ai.models = aiModels;
   ai.image = aiImage;
+  ai.transcribe = aiTranscribe;
   // Stop the generation in flight on a local model, keeping it loaded — the
   // next message answers straight away. Resolves false when there was nothing
   // to stop, which is not an error: a Stop pressed as the last token lands
