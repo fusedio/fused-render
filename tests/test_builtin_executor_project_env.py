@@ -1,27 +1,38 @@
-"""The built-in executor refuses a folder that declares its own environment.
+"""What the built-in executor does with a folder that declares an environment.
 
 The built-in executor spawns `[sys.executable, _child.py]` and has no venv
 machinery at all — only the fused engine can build a project environment
-(SPEC PY-16/PY-18, D174). That was harmless while `[bundled]` carried
-everything the core templates import: a declaration was redundant under this
-engine, and ignoring it cost nothing.
+(SPEC PY-16/PY-18, D174). That was harmless while `[bundled]` carried everything
+the core templates import: a declaration was redundant under this engine, and
+ignoring it cost nothing.
 
 D275 ended that. `map`, `vector`, `geometry_editor` and `pdf_studio` now import
-distributions no app interpreter ships, so under this engine their scripts spawn
-and die on a bare `ModuleNotFoundError` from inside a tile request — a message
-that names a package but not the reason, in a packaged app where `pip install`
-is not something the user can do (D176's defect all over again). Three reachable
-paths, all of which worked before D275:
+distributions no app interpreter ships, so under this engine their scripts can
+die on a bare `ModuleNotFoundError` from inside a tile request — a message that
+names a package but not the reason, in a packaged app where `pip install` is not
+something the user can do (D176's defect all over again). Three reachable paths,
+all of which worked before D275:
 
   1. Preferences -> engine = builtin, a first-class UI toggle;
   2. `pip install "fused-render[bundled]"` on Python 3.10, where the `fused`
      requirement's `python_version >= "3.11"` marker skips the engine entirely;
   3. `FUSED_RENDER_ENGINE=builtin`.
 
-So the executor now answers with the cause: which folder declared, what this
-interpreter is missing, and the two ways to fix it. This file is the test that
-did not exist — the whole gap was invisible because nothing exercised a
-folder-manifest template under this engine.
+**The fix explains, it does not refuse.** The first version of this file pinned a
+pre-flight refusal keyed on the folder's state, and that was wrong at a
+granularity the spec did not reveal: `docs`, `geotiff`, `latex`, `model_card`
+and `pano` have each declared a heavy optional dependency for months while their
+entry points stay stdlib-only ON PURPOSE — `geotiff`'s `ensure()`,
+`model_card`'s `inspect_model.py`, whose manifest promises the card "renders
+identically under either engine". A folder-scoped refusal took all five down,
+and this file ASSERTED that it did, which is how a green suite came to encode a
+regression. Both halves are fixed here: the run proceeds, and the explanation is
+attached only where an import actually failed.
+
+Every assertion below about a missing distribution uses SIMULATED absence. The
+dev venv has the whole stack installed, so a test that asked the real
+interpreter would take the "nothing is missing" branch and prove nothing — which
+is precisely what the four D275 folders did in the version this replaces.
 """
 import os
 
@@ -40,6 +51,22 @@ def _declaring_folders():
     )
 
 
+def _absent(monkeypatch, *names):
+    """Make `names` look uninstalled to `missing_from_this_interpreter`."""
+    import importlib.metadata as md
+
+    real = md.version
+
+    def fake(dist):
+        if projectenv._normalize_dist(dist) in {
+            projectenv._normalize_dist(n) for n in names
+        }:
+            raise md.PackageNotFoundError(dist)
+        return real(dist)
+
+    monkeypatch.setattr(md, "version", fake)
+
+
 def _project(tmp_path, deps, body="def main():\n    return 1\n"):
     """A folder that declares `deps`, with one script in it."""
     (tmp_path / "pyproject.toml").write_text(
@@ -52,77 +79,194 @@ def _project(tmp_path, deps, body="def main():\n    return 1\n"):
     return str(script)
 
 
-def test_a_declared_environment_this_interpreter_cannot_meet_is_refused(tmp_path):
-    """The regression D275 introduces, caught before the spawn.
+# ------------------------------------------------------ the message, end to end
 
-    Without this the child starts, imports, and dies with
-    `ModuleNotFoundError: No module named 'nonexistent_dist_...'` — true, and
-    useless: it names neither the folder that asked for it nor the fact that the
-    engine setting is what decides whether it can ever be installed.
-    """
-    path = _project(tmp_path, ["a-distribution-nobody-has-installed"])
+
+def test_a_declared_import_that_is_missing_here_explains_itself(tmp_path):
+    """The D275 regression, explained at the point it actually breaks."""
+    path = _project(
+        tmp_path,
+        ["a-distribution-nobody-has-installed"],
+        body="import a_distribution_nobody_has_installed\n\n"
+             "def main():\n    return 1\n",
+    )
     out = executor.run_python(path, {})
 
     assert out["ok"] is False
-    assert out["error"]["type"] == "RuntimeError"
+    assert out["error"]["type"] == "ModuleNotFoundError"
     message = out["error"]["message"]
+    assert "a_distribution_nobody_has_installed" in message
     assert "pyproject.toml" in message
     assert os.path.basename(str(tmp_path)) in message
-    assert "a-distribution-nobody-has-installed" in message
     # Both fixes must be reachable from the message alone.
     assert "Preferences" in message and "fused-render[fused]" in message
 
 
-def test_a_declaration_this_interpreter_already_meets_still_runs(tmp_path):
-    """Refuse the unmeetable, not the merely declared.
+def test_a_missing_module_nobody_declared_is_left_alone(tmp_path):
+    """Blaming the environment for a typo is worse than saying nothing.
 
-    A folder may declare something the app interpreter happens to have — every
-    declaration is the COMPLETE list (D172), so `pandas` appears in manifests
-    whose only unmet entry is something else. Under this engine such a script has
-    always run correctly on the app interpreter, and turning that into a hard
-    error would break working templates (`model_card`'s optional tokenizers path
-    among them) to fix a problem they do not have. The refusal is therefore
-    keyed on what is MISSING, not on the existence of a manifest.
+    The folder declares an environment AND has something missing from it, so
+    every precondition except the important one holds — and the important one is
+    that the failed import must be the thing the manifest asked for.
     """
-    path = _project(tmp_path, ["pytest"])  # certainly installed: it is running
+    path = _project(
+        tmp_path,
+        ["a-distribution-nobody-has-installed"],
+        body="import a_typo_the_user_made\n\ndef main():\n    return 1\n",
+    )
     out = executor.run_python(path, {})
-    assert out["ok"] is True, out.get("error")
-    assert out["result"] == 1
+
+    assert out["ok"] is False
+    assert out["error"]["message"] == "No module named 'a_typo_the_user_made'"
 
 
 def test_a_folder_with_no_manifest_is_untouched(tmp_path):
     """PY-17 is the common case and must stay free of all of this."""
     script = tmp_path / "plain.py"
-    script.write_text("def main():\n    return 2\n", encoding="utf-8")
+    script.write_text("import a_typo\n\ndef main():\n    return 2\n", encoding="utf-8")
     out = executor.run_python(str(script), {})
+    assert out["error"]["message"] == "No module named 'a_typo'"
+
+
+def test_a_declaring_folder_still_runs_when_nothing_actually_breaks(tmp_path):
+    """The whole point of explaining instead of refusing.
+
+    This is the shape of `geotiff`'s `ensure()`, `model_card`'s
+    `inspect_model.py`, `pano`, `docs` and `latex`: a manifest naming something
+    heavy, an entry point that never touches it. A pre-flight refusal failed
+    every one of these; this must not.
+    """
+    path = _project(tmp_path, ["a-distribution-nobody-has-installed"])
+    out = executor.run_python(path, {})
     assert out["ok"] is True, out.get("error")
-    assert out["result"] == 2
+    assert out["result"] == 1
+
+
+def test_the_missing_module_pattern_matches_a_real_error():
+    """Pin the message format against a genuinely raised error.
+
+    The enrichment reads the module name out of the message, because neither
+    execution path keeps the exception object. If CPython ever rewords this, the
+    enrichment would silently stop firing and every test above would still pass
+    on its "no match -> return None" branch — a check that quietly turns itself
+    off is the failure this whole file exists to prevent.
+    """
+    with pytest.raises(ModuleNotFoundError) as raised:
+        __import__("a_module_that_certainly_does_not_exist")
+    found = executor._MISSING_MODULE.search(str(raised.value))
+    assert found and found.group(1) == "a_module_that_certainly_does_not_exist"
+
+
+def test_an_import_error_with_no_module_name_is_left_alone(tmp_path):
+    """`ImportError` is not always "module missing" — a circular import and a
+    failed `from x import y` both arrive with this type and no such phrase."""
+    path = _project(tmp_path, ["a-distribution-nobody-has-installed"])
+    assert executor.explain_missing_module(
+        path, {"type": "ImportError", "message": "cannot import name 'z' from 'w'"}
+    ) is None
+
+
+def test_a_templates_own_richer_message_is_not_overwritten(tmp_path, monkeypatch):
+    """map/worker.py already explains ITS case better than this can.
+
+    It raises `ModuleNotFoundError("No module named 'x'. A Python map target
+    runs inside …")` for a target the Map Viewer exec'd in-process, and that
+    message starts with the phrase this enrichment matches on. It survives
+    because the gate is the DECLARATION, not the phrase: a module map's manifest
+    never named is not this function's business. Pinned because the two messages
+    overlapping is not obvious from either side.
+    """
+    _absent(monkeypatch, "geopandas")
+    original = (
+        "No module named 'xarray'. A Python map target runs inside the Map "
+        "Viewer's own environment (…)"
+    )
+    assert executor.explain_missing_module(
+        os.path.join(_TEMPLATES, "map", "worker.py"),
+        {"type": "ModuleNotFoundError", "message": original},
+    ) is None
+
+
+# ------------------------------------------------------- the real declarations
 
 
 @pytest.mark.parametrize("folder", _declaring_folders())
-def test_every_declaring_core_template_is_recognised_under_this_engine(folder):
-    """The real declarations, checked without spawning the real templates.
+def test_every_declaring_core_template_resolves_as_its_own_project(folder):
+    """`projectenv` must see these folders, or nothing below can ever fire.
 
-    Driving `run_python` at `map/map_render.py` would either execute the Map
-    Viewer (green suite, wrong reason) or depend on what the dev venv happens to
-    have. The refusal decision is the thing under test, so it is asked directly —
-    and asked about the SHIPPED manifests, because a copy of one in tmp_path
-    would only prove the test fixture works.
-
-    `projectenv` treats an immediate child of a template root as a project root
-    and `PACKAGE_TEMPLATES_DIR` is one of those roots, so these paths resolve to
-    the folder itself with no staging needed.
+    `PACKAGE_TEMPLATES_DIR` is one of the template roots and an immediate child
+    of a root is a project root, so these resolve with no staging needed.
     """
-    entry = os.path.join(_TEMPLATES, folder, "pyproject.toml")
-    assert projectenv.project_env_for(entry) == os.path.join(_TEMPLATES, folder), (
-        f"{folder} ships a pyproject.toml but projectenv does not resolve it as "
-        "the project root — the refusal below could never fire for it"
+    entry = os.path.join(_TEMPLATES, folder, "reader.py")
+    assert projectenv.project_env_for(entry) == os.path.join(_TEMPLATES, folder)
+
+
+@pytest.mark.parametrize("folder", _declaring_folders())
+def test_every_declaring_core_template_can_explain_its_own_dependency(
+    folder, monkeypatch
+):
+    """Each shipped manifest's first dependency, simulated absent, is explained.
+
+    Asked against SIMULATED absence rather than the real interpreter: on a dev
+    venv with the whole stack installed every one of these would take the
+    "nothing is missing" branch and assert nothing at all. That vacuity is not
+    hypothetical — it is what the version of this file that this replaces did
+    for `map`, `vector`, `pdf_studio` and `geometry_editor`.
+
+    Also covers the module-name -> distribution step for every name the shipped
+    manifests actually use, including `pypandoc-binary`, whose import name is
+    `pypandoc` and which no reverse lookup could resolve on its own.
+    """
+    declared = projectenv.applicable_dependencies_of(os.path.join(_TEMPLATES, folder))
+    assert declared, f"{folder} declares nothing; this parametrization is stale"
+    dist = projectenv._normalize_dist(declared[0].split(";")[0].split(">")[0]
+                                      .split("=")[0].split("[")[0].strip())
+    module = next(
+        (m for m, d in projectenv._MODULE_TO_DIST.items() if d == dist),
+        dist.replace("-", "_"),
     )
-    refusal = executor.project_env_refusal(os.path.join(_TEMPLATES, folder, "x.py"))
-    missing = projectenv.missing_from_this_interpreter(
-        os.path.join(_TEMPLATES, folder)
+
+    _absent(monkeypatch, dist)
+    explanation = executor.explain_missing_module(
+        os.path.join(_TEMPLATES, folder, "reader.py"),
+        {"type": "ModuleNotFoundError", "message": f"No module named '{module}'"},
     )
-    if missing:
-        assert refusal and folder in refusal and missing[0] in refusal
-    else:
-        assert refusal is None
+    assert explanation and folder in explanation and dist in explanation
+
+
+@pytest.mark.parametrize(
+    "folder,entrypoint",
+    [
+        # The five that a folder-scoped refusal broke, each with the entry point
+        # its own manifest or docstring documents as stdlib-only.
+        ("geotiff", "tiff_reader.py"),
+        ("model_card", "inspect_model.py"),
+        ("pano", "pano.py"),
+        ("docs", "docs.py"),
+        ("latex", "engine.py"),
+    ],
+)
+def test_a_stdlib_only_path_is_never_pre_refused(folder, entrypoint, monkeypatch):
+    """These five predate D275 and must keep working under this engine.
+
+    Every one declares something heavy and optional. A run that does not fail is
+    a run this executor must not interfere with, however much the folder
+    declares — asserted with the declaration's contents SIMULATED ABSENT, so the
+    guarantee holds on the machines where it matters rather than only on a fat
+    dev venv.
+    """
+    root = os.path.join(_TEMPLATES, folder)
+    _absent(monkeypatch, *(
+        projectenv._normalize_dist(d.split(";")[0].split(">")[0].split("=")[0].strip())
+        for d in projectenv.applicable_dependencies_of(root)
+    ))
+    assert projectenv.missing_from_this_interpreter(root), (
+        "the simulation did not take; this test would prove nothing"
+    )
+    # A successful run has no error dict at all, which is the only signal this
+    # executor gets — and it must produce no explanation and no refusal.
+    assert executor.explain_missing_module(
+        os.path.join(root, entrypoint), {}) is None
+    assert os.path.isfile(os.path.join(root, entrypoint)), (
+        f"{folder}/{entrypoint} no longer exists; re-anchor this test"
+    )

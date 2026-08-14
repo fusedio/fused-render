@@ -376,6 +376,61 @@ def applicable_dependencies_of(project_dir: str) -> list[str]:
     return [d for d in dependencies_of(project_dir) if marker_applies(d)]
 
 
+# Top-level import name -> distribution name, for the pairs where the two DIFFER
+# by more than punctuation. Everything else is resolved by normalisation
+# (`rio_tiler` -> `rio-tiler`), which is right for the large majority — duckdb,
+# numpy, pandas, requests, geopandas, shapely, rasterio, pyproj, pyogrio,
+# matplotlib, scipy, polars, zarr, openpyxl, msgpack, drain3, botocore,
+# imagecodecs, py360convert, tokenizers all install under their own name.
+#
+# Deliberately only the distributions this repo declares somewhere (`[bundled]`,
+# the core `dependencies`, or a core template's manifest). Guessing at the
+# ecosystem's other famous mismatches (bs4, yaml, sklearn, cv2) would be a list
+# nobody maintains and nothing checks; a user manifest naming one of those simply
+# gets no enrichment, which is the same outcome as before this existed.
+#
+# `pypandoc` -> `pypandoc-binary` is the load-bearing one: the two distributions
+# share an import name and only the `-binary` wheel carries the pandoc
+# executable, so the latex and docs templates declare the heavier sibling (the
+# `_MUST_USE_HEAVIER_SIBLING` pairing in tests/test_bundle_contents.py) and a
+# module->distribution lookup that did not know this would fail to connect the
+# failed import to the manifest entry that asks for it.
+_MODULE_TO_DIST = {
+    "pil": "pillow",
+    "pptx": "python-pptx",
+    "fitz": "pymupdf",
+    "fpdf": "fpdf2",
+    "pypandoc": "pypandoc-binary",
+    "google": "google-auth",
+    # A second import name for one distribution is as much a mismatch as a
+    # different one: a manifest declaring matplotlib and a script importing
+    # mpl_toolkits must still connect.
+    "mpl-toolkits": "matplotlib",
+    "multipart": "python-multipart",
+    "appkit": "pyobjc-framework-cocoa",
+    "foundation": "pyobjc-framework-cocoa",
+    "cocoa": "pyobjc-framework-cocoa",
+}
+
+
+def _normalize_dist(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def distribution_for_module(module: str) -> str:
+    """The distribution a top-level import name most likely comes from.
+
+    A best guess by construction — PyPI has no reverse index from an ABSENT
+    module to the distribution that would have provided it, and
+    `importlib.metadata.packages_distributions()` can only speak about what IS
+    installed, which is exactly what the caller has established is not. So this
+    is normalisation plus the small table above, and its one caller treats a
+    wrong answer as "no match" rather than as evidence of anything.
+    """
+    normalized = _normalize_dist(module)
+    return _MODULE_TO_DIST.get(normalized, normalized)
+
+
 def missing_from_this_interpreter(project_dir: str) -> list[str]:
     """Declared distributions THIS interpreter cannot provide, in declared order.
 

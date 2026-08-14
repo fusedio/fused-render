@@ -540,6 +540,37 @@ def test_a_declared_environment_is_complete(relpath):
     )
 
 
+def test_the_runtime_module_alias_table_covers_every_mismatch_here():
+    """Two maps of the same fact; make divergence a failure (D177).
+
+    `_IMPORT_TO_DIST` above is the test-side map. `projectenv._MODULE_TO_DIST` is
+    the RUNTIME one, read by `executor.explain_missing_module` to decide whether
+    a failed import is the thing the folder's manifest asked for. They exist for
+    different reasons and cover different sets — the runtime one also carries
+    `pypandoc` -> `pypandoc-binary`, which is a template's declaration and never
+    the app's — so they are not merged. What must not happen is the runtime one
+    lacking a mismatch this one knows about: the enrichment would then silently
+    fail to fire for that distribution, and every test of it would still pass on
+    its "no match" branch.
+
+    Only the genuine mismatches are checked. Everything else is resolved by
+    normalisation on both sides, which needs no table and cannot drift.
+    """
+    from fused_render import projectenv
+
+    missing = {
+        name: dist
+        for name, dist in _IMPORT_TO_DIST.items()
+        if projectenv.distribution_for_module(name) != _norm(dist)
+    }
+    assert not missing, (
+        f"{missing} are import-name -> distribution mismatches this file knows "
+        "about that projectenv._MODULE_TO_DIST cannot resolve, so "
+        "executor.explain_missing_module would not connect a failed import of "
+        "them to the manifest entry that declared them. Add them there."
+    )
+
+
 def test_every_optional_import_exemption_is_real_and_reasoned():
     """A stale exemption is as misleading as an undocumented one (D176's rule
     for `BUNDLED_EXCLUDED`, applied to the one hand list in this file).
