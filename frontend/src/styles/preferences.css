@@ -792,7 +792,7 @@
    move apart, not just a page-edge sliver. */
 .fhb-card:hover .fhb-sheet-d1,
 .fhb-card:hover .fhb-sheet-d2 {
-  margin-bottom: -20px;
+  margin-bottom: -19px;
 }
 
 .fhb-sheet-icon {
