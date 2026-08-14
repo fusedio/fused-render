@@ -5960,8 +5960,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   at a time, so a model whose bytes are a single 4.6GB shard downloaded at
   exactly one connection's speed — and a cancel, a crash or a quit threw all of
   it away, which is not a corner case: the supervisor KILLS the fetch on quit
-  (AI-5e). `worker_base` therefore fetches the repo itself, stdlib only:
-  `get_hf_file_metadata` per file for the CDN location, the etag and the commit,
+  (AI-5e). `worker_base` therefore fetches the repo itself, stdlib only. **One
+  Hub listing decides three things at once — the bar's total, the files to fetch
+  and the REVISION to fetch them at** — because deciding the revision separately
+  is how a list taken from a repo's default branch came to be fetched at a
+  hardcoded `main`: a different set of bytes, recorded under a ref for a revision
+  nobody read, internally consistent the whole way down since every etag still
+  matches its content. The revision is asked for by name (`main`, the same
+  default hf's own `snapshot_download` uses, so the fast path and the fallback
+  cannot land on different revisions of one model) and the fetch is pinned to the
+  COMMIT that name resolved to, which also settles the repo moving between the
+  listing and the last byte. Then `get_hf_file_metadata` per file at that commit,
+  for the CDN location, the etag and the commit,
   then — **carrying the Hub token only when the blob is served by the Hub
   itself**, since a presigned URL already holds its credentials in the query
   string and S3 refuses a request bearing two of them, which made every download

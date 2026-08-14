@@ -323,6 +323,10 @@ HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
 FLUSH_EVERY_S = 1.0
+#: The revision both paths use, named rather than implied. It is hf's own
+#: `snapshot_download` default, which is what keeps the fast path and the
+#: fallback on one revision of a model.
+DEFAULT_REVISION = "main"
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
 _RANGE_START = re.compile(r"^bytes\s+(\d+)-")
@@ -397,8 +401,22 @@ def bytes_on_disk(folder):
     return total
 
 
-def _repo_files(model_id, include=None, ignore=None):
-    """`(name, size)` for every file this download will ACTUALLY fetch.
+def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
+    """`(sha, files)` — the commit this listing resolved to, and what to fetch.
+
+    The sha comes back WITH the list because the two must not be decided
+    separately. A listing at the repo's default branch paired with a fetch at a
+    hardcoded "main" is two sources of truth that agree by coincidence: where
+    they differ, we would fetch a genuinely different revision than the list
+    implied, record a ref for it, and stay internally consistent while doing it
+    — etag matches content, so nothing downstream could ever notice. The
+    revision is therefore asked for explicitly (the same `main` hf's own
+    `snapshot_download` defaults to, so the fast path and the fallback cannot
+    land on different revisions of one model), and the fetch is pinned to the
+    SHA that answer resolved to, which also settles the repo moving between the
+    listing and the last byte.
+
+    `files` is `(name, size)` for every file this download will ACTUALLY fetch.
 
     One metadata call, no weights, and ONE place that decides what is in scope —
     the total on the bar and the list the fetch works through come from the same
@@ -415,7 +433,7 @@ def _repo_files(model_id, include=None, ignore=None):
     """
     from huggingface_hub import HfApi
 
-    info = HfApi().model_info(model_id, files_metadata=True)
+    info = HfApi().model_info(model_id, revision=revision, files_metadata=True)
     files = []
     for sibling in getattr(info, "siblings", None) or []:
         name = getattr(sibling, "rfilename", None) or ""
@@ -426,7 +444,7 @@ def _repo_files(model_id, include=None, ignore=None):
         if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
             continue
         files.append((name, getattr(sibling, "size", None)))
-    return files
+    return getattr(info, "sha", None), files
 
 
 def repo_total_bytes(model_id, include=None, ignore=None):
@@ -438,7 +456,7 @@ def repo_total_bytes(model_id, include=None, ignore=None):
     of 30GB and then jump to "complete" against a figure it never downloaded.
     """
     try:
-        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore))
+        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore)[1])
     except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
         return None
 
@@ -1068,8 +1086,15 @@ def _run_segment(fetch, seg):
         raise
 
 
-def _segmented_fetch(model_id, filenames, revision="main"):
+def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
     """Fetch `filenames` into the hub cache ourselves. Returns the snapshot dir.
+
+    `revision` is REQUIRED and has no default on purpose: it must be the commit
+    the caller's file list resolved to, and a default here is exactly how a list
+    taken from one revision came to be fetched at another. `ref` is the branch
+    NAME that resolved to it, recorded so a later offline load can resolve the
+    same name — hf writes that ref too, and a cache without it needs the network
+    to answer a question it already knows.
 
     The units of work in the pool are SEGMENTS ACROSS ALL FILES under one cap,
     which is what makes `MAX_CONNECTIONS` mean what it says: a pool per file
@@ -1125,6 +1150,11 @@ def _segmented_fetch(model_id, filenames, revision="main"):
         # One revision is one commit. Two would mean the repo moved under us
         # mid-listing, and half a snapshot of each is not a snapshot.
         raise _Unsegmentable(f"one revision reported {len(commits)} commits")
+    if _COMMIT_SHA.match(revision or "") and revision not in commits:
+        # Asked for a commit and given another: the listing this file set came
+        # from no longer describes what the Hub is serving.
+        raise _Unsegmentable(f"asked for commit {revision}, the Hub resolved "
+                             f"{commits.copy().pop()}")
 
     try:
         work = []
@@ -1145,19 +1175,19 @@ def _segmented_fetch(model_id, filenames, revision="main"):
         for fetch in fetches:
             fetch.close()
 
-    _write_ref(folder, revision, commits.pop())
+    _write_ref(folder, ref, commits.pop())
     return fetches[0].snapshot
 
 
-def _write_ref(folder, revision, commit):
+def _write_ref(folder, ref, commit):
     """`refs/<branch>` -> the commit, so a later load resolves it offline.
 
-    Only for a branch name: a revision that IS a sha needs no ref, and writing
-    one named after a sha is not something hf would ever read.
+    Only for a branch NAME: a revision that is itself a sha needs no ref, and
+    writing one named after a sha is not something hf would ever read.
     """
-    if _COMMIT_SHA.match(revision or ""):
+    if not ref or _COMMIT_SHA.match(ref):
         return
-    path = os.path.join(folder, "refs", revision)
+    path = os.path.join(folder, "refs", ref)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as handle:
         handle.write(commit)
@@ -1239,12 +1269,13 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     jumps. The segmented fetch takes its file list from the same filter, for the
     same reason.
     """
-    # ONE listing, serving both the bar's total and the list to fetch — asking
-    # twice is a second round trip to the Hub before any byte moves, for an
-    # answer already in hand.
-    files, total = None, None
+    # ONE listing, serving the bar's total, the list to fetch AND the revision
+    # to fetch it at. Asking twice is a second round trip before any byte moves;
+    # deciding the revision separately is how a list from one revision comes to
+    # be fetched at another.
+    sha, files, total = None, None, None
     try:
-        files = _repo_files(model_id, ignore=ignore_patterns)
+        sha, files = _repo_files(model_id, ignore=ignore_patterns)
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
@@ -1258,16 +1289,16 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
                                       **kwargs),
             total=total)
 
-    if kwargs or files is None:
+    if kwargs or files is None or not sha:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
         # revision, a local dir — and a fetch that quietly ignored one would
         # download the wrong thing. Ours honours exactly the two it knows about.
+        # A listing with no sha is the same problem: nothing to pin to.
         return hub()
     try:
         names = [name for name, _size in files]
-        return fetch_with_progress(model_id,
-                                   lambda: _segmented_fetch(model_id, names),
-                                   total=total)
+        return fetch_with_progress(
+            model_id, lambda: _segmented_fetch(model_id, names, sha), total=total)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
@@ -1283,7 +1314,15 @@ def download_file(repo_id, filename, detail=None):
     2.6GB pull against that is how a download reads as barely started for its
     whole life and then jumps to complete.
     """
-    total = repo_total_bytes(repo_id, include=filename)
+    # One listing here too, for the revision as much as for the total: a GGUF
+    # fetched at a revision its listing never described is the same bug as a
+    # whole snapshot fetched that way, one file wide.
+    sha, total = None, None
+    try:
+        sha, files = _repo_files(repo_id, include=filename)
+        total = _total_bytes(files)
+    except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
+        _fallback(repo_id, error)
     detail = detail or f"Fetching {filename}…"
 
     def hub():
@@ -1294,10 +1333,13 @@ def download_file(repo_id, filename, detail=None):
             lambda: hf_hub_download(repo_id=repo_id, filename=filename),
             total=total, detail=detail)
 
+    if not sha:
+        return hub()
     try:
         return fetch_with_progress(
             repo_id,
-            lambda: os.path.join(_segmented_fetch(repo_id, [filename]), filename),
+            lambda: os.path.join(_segmented_fetch(repo_id, [filename], sha),
+                                 filename),
             total=total, detail=detail)
     except Cancelled:
         raise

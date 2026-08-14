@@ -255,7 +255,7 @@ def test_a_large_file_is_fetched_on_several_connections(base, monkeypatch,
     url, state = _start_server(payload)
     folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert len(_ranges(state["log"])) > 1, "the file moved on one connection"
@@ -270,7 +270,7 @@ def test_a_small_file_costs_no_extra_request(base, monkeypatch, tmp_path, payloa
     url, state = _start_server(payload)
     _wire(base, monkeypatch, tmp_path, url, len(payload), segment_min=10_000_000)
 
-    base._segmented_fetch("org/m", ["config.json"])
+    base._segmented_fetch("org/m", ["config.json"], "c0m")
 
     assert state["log"] == [None], state["log"]
 
@@ -285,7 +285,7 @@ def test_a_server_that_ignores_ranges_still_produces_the_file(base, monkeypatch,
     url, state = _start_server(payload, ranges=False)
     _wire(base, monkeypatch, tmp_path, url, len(payload))
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert _ranges(state["log"]) == [], "it kept range-fetching a server that said no"
@@ -303,7 +303,7 @@ def test_a_server_that_ignores_range_mid_fetch_cannot_overrun(base, monkeypatch,
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(Exception):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert not os.path.exists(os.path.join(folder, "blobs", "e7ag")), (
         "a scattered body was published as a finished blob")
@@ -326,7 +326,7 @@ def test_a_206_that_answers_a_different_range_is_refused(base, monkeypatch,
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(Exception):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert not os.path.exists(os.path.join(folder, "blobs", "e7ag"))
 
@@ -380,7 +380,7 @@ def test_the_hub_token_is_not_sent_to_the_presigned_cdn_url(base, monkeypatch,
         "size": len(payload)})
     monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret")
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert state["requests"], "nothing was fetched"
@@ -397,7 +397,7 @@ def test_the_hub_token_is_still_sent_when_the_file_is_served_by_the_hub(
     _wire(base, monkeypatch, tmp_path, url, len(payload))
     monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret")
 
-    base._segmented_fetch("org/m", ["model.safetensors"])
+    base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert {r["auth"] for r in state["requests"]} == {"Bearer hf_secret"}
 
@@ -438,7 +438,7 @@ def test_a_repo_that_changes_under_a_re_resolve_aborts(base, monkeypatch,
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(Exception):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     blobs = os.listdir(os.path.join(folder, "blobs"))
     assert [name for name in blobs if not name.startswith("e7ag")] == [], blobs
@@ -466,7 +466,7 @@ def test_a_re_resolve_that_fails_is_a_retry_not_the_end_of_the_download(
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(RuntimeError, match="gave up"):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
 
 def test_a_second_expiry_in_one_download_is_re_resolved_too(base, monkeypatch,
@@ -485,7 +485,7 @@ def test_a_second_expiry_in_one_download_is_re_resolved_too(base, monkeypatch,
     monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert state["real"] == 4, state["log"]
@@ -512,7 +512,7 @@ def test_a_server_that_ignores_range_and_truncates_cannot_loop_forever(
 
     def go():
         try:
-            base._segmented_fetch("org/m", ["model.safetensors"])
+            base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
         except BaseException as error:  # noqa: BLE001 - carried out to the assertion
             outcome["error"] = error
         finally:
@@ -546,7 +546,7 @@ def test_bytes_that_landed_before_an_exception_still_count_as_progress(
     # that raises — which is what puts bytes on disk under an exception.
     monkeypatch.setattr(base, "READ_BYTES", 10_000)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert state["broken"] == 3, "the test never produced a mid-body failure"
@@ -561,7 +561,7 @@ def test_a_protocol_error_mid_stream_is_retried_rather_than_fatal(base, monkeypa
     _wire(base, monkeypatch, tmp_path, url, len(payload))
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert state["broken"] == 2, "the test never produced a protocol error"
@@ -586,7 +586,7 @@ def test_an_interrupted_fetch_resumes_from_the_recorded_offsets(base, monkeypatc
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(Exception):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     sidecar = os.path.join(folder, "blobs", "e7ag.fusedpart.json")
     recorded = json.load(open(sidecar))
@@ -605,7 +605,7 @@ def test_an_interrupted_fetch_resumes_from_the_recorded_offsets(base, monkeypatc
     state["budget"] = None
     state["log"].clear()
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     resumed = _offsets(state["log"])
@@ -639,7 +639,7 @@ def test_a_probe_that_fails_does_not_throw_away_recorded_progress(base, monkeypa
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(Exception):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     recorded = json.load(open(os.path.join(folder, "blobs", "e7ag.fusedpart.json")))
     assert 0 < sum(seg["done"] for seg in recorded["segments"]) < len(payload)
@@ -648,7 +648,7 @@ def test_a_probe_that_fails_does_not_throw_away_recorded_progress(base, monkeypa
     state["log"].clear()
     monkeypatch.setattr(base, "_supports_ranges", lambda location, token: None)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert _offsets(state["log"]) == sorted(
@@ -672,7 +672,7 @@ def test_a_probe_that_fails_once_does_not_demote_the_whole_repo(base, monkeypatc
         "url": url, "location": url, "etag": "e-" + name, "commit": "c0m",
         "size": len(payload)})
 
-    base._segmented_fetch("org/m", ["a.safetensors", "b.safetensors"])
+    base._segmented_fetch("org/m", ["a.safetensors", "b.safetensors"], "c0m")
 
     assert state["probes"] == 2, "the failure was cached as an answer"
     # The first file is on one connection, as it must be — nobody knows better
@@ -688,7 +688,7 @@ def test_two_identical_files_are_fetched_once(base, monkeypatch, tmp_path, paylo
     url, state = _start_server(payload)
     folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors", "copy.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors", "copy.safetensors"], "c0m")
 
     for name in ("model.safetensors", "copy.safetensors"):
         assert open(os.path.join(snapshot, name), "rb").read() == payload
@@ -715,7 +715,7 @@ def test_a_rejected_sidecar_does_not_keep_its_layout(base, monkeypatch, tmp_path
             {"start": 0, "end": 10, "done": 0},
             {"start": 11, "end": len(payload) - 1, "done": 0}]}, handle)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
@@ -741,7 +741,7 @@ def test_a_resume_whose_server_stopped_honouring_ranges_restarts_that_file(
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
 
     with pytest.raises(Exception):
-        base._segmented_fetch("org/m", ["model.safetensors"])
+        base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     sidecar = os.path.join(folder, "blobs", "e7ag.fusedpart.json")
     assert sum(s["done"] for s in json.load(open(sidecar))["segments"]) > 0
@@ -749,7 +749,7 @@ def test_a_resume_whose_server_stopped_honouring_ranges_restarts_that_file(
     state["budget"], state["ranges"] = None, False
     state["log"].clear()
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert _ranges(state["log"]) == [], "it kept range-fetching a server that said no"
@@ -841,7 +841,7 @@ def test_a_sidecar_that_does_not_match_is_thrown_away(base, monkeypatch, tmp_pat
     with open(os.path.join(blobs, "e7ag.fusedpart.json"), "w") as handle:
         json.dump(state, handle)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
 
@@ -857,7 +857,7 @@ def test_the_cache_layout_is_the_one_huggingface_hub_reads(base, monkeypatch,
     url, _state = _start_server(payload)
     folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert snapshot == os.path.join(folder, "snapshots", "c0m")
     link = os.path.join(snapshot, "model.safetensors")
@@ -880,7 +880,7 @@ def test_a_file_already_in_the_cache_is_not_fetched_again(base, monkeypatch,
     with open(os.path.join(folder, "blobs", "e7ag"), "wb") as handle:
         handle.write(payload)
 
-    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     assert state["log"] == [], "a cached file was fetched again"
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
@@ -896,7 +896,7 @@ def test_several_files_share_one_connection_budget(base, monkeypatch, tmp_path,
         "url": url, "location": url, "etag": "e-" + name, "commit": "c0m",
         "size": len(payload)})
 
-    snapshot = base._segmented_fetch("org/m", ["a.safetensors", "b.safetensors"])
+    snapshot = base._segmented_fetch("org/m", ["a.safetensors", "b.safetensors"], "c0m")
 
     for name in ("a.safetensors", "b.safetensors"):
         assert open(os.path.join(snapshot, name), "rb").read() == payload
@@ -913,32 +913,94 @@ def _fake_hub(monkeypatch, **members):
                         types.SimpleNamespace(**members))
 
 
-def test_one_metadata_call_serves_both_the_total_and_the_file_list(base, monkeypatch,
+def test_one_listing_pins_the_total_the_file_list_and_the_revision(base, monkeypatch,
                                                                    tmp_path, payload):
-    """`_repo_files`' whole claim is "one metadata call, no weights". Asking
-    once for the bar's total and again for the list to fetch is a second round
-    trip to the Hub before any byte moves, for an answer already in hand."""
-    calls = []
+    """One Hub call decides all three, which is the only way they agree.
+
+    Two of those were once decided separately: the list came from
+    `model_info` with no revision — whatever the repo's DEFAULT branch is —
+    while the fetch was hardcoded to `main`. Where a repo's default is not
+    `main`, that is a list from one revision fetched at another: a genuinely
+    different set of bytes, recorded under a ref for the revision we did not
+    read, and internally consistent the whole way down, since every etag still
+    matches its content. Nothing downstream could detect it.
+
+    So the revision is asked for by name and the fetch is pinned to the COMMIT
+    that name resolved to — which also settles the repo moving between the
+    listing and the last byte, and it is the same `main` hf's own
+    `snapshot_download` defaults to, so the fast path and the fallback cannot
+    land on different revisions of one model.
+    """
+    sha = "a1b2c3d4" * 5  # a real 40-hex commit, so the sha path is exercised
+    listings, resolved = [], []
 
     class _Api:
-        def model_info(self, model_id, files_metadata=False):
-            calls.append(model_id)
-            return types.SimpleNamespace(siblings=[
+        def model_info(self, model_id, revision=None, files_metadata=False):
+            listings.append((model_id, revision))
+            return types.SimpleNamespace(sha=sha, siblings=[
                 types.SimpleNamespace(rfilename="model.safetensors",
                                       size=len(payload))])
 
     url, _state = _start_server(payload)
     folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
-    _fake_hub(monkeypatch, HfApi=_Api,
-              snapshot_download=lambda *a, **k: "/never")
+    _fake_hub(monkeypatch, HfApi=_Api, snapshot_download=lambda *a, **k: "/never")
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: (
+        resolved.append(revision) or {
+            "url": url, "location": url, "etag": "e7ag", "commit": sha,
+            "size": len(payload)}))
 
     snapshot = base.download_snapshot("org/m")
 
+    assert listings == [("org/m", "main")], f"{len(listings)} listings, {listings}"
+    assert resolved == [sha], "the file was fetched at a revision by NAME"
     # …and the happy path really did run through us, not through the fallback.
-    assert snapshot == os.path.join(folder, "snapshots", "c0m")
+    assert snapshot == os.path.join(folder, "snapshots", sha)
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
-    assert calls == ["org/m"], f"{len(calls)} metadata calls for one download"
+    # The ref is the NAME that resolved to it, which is what a later offline
+    # load asks for — hf writes the same one.
+    assert open(os.path.join(folder, "refs", "main")).read() == sha
+
+
+def test_a_repo_whose_default_branch_is_not_main_never_fetches_at_main(
+        base, monkeypatch, tmp_path):
+    """The listing names its revision, so a repo that has no `main` fails the
+    LISTING rather than quietly fetching something else.
+
+    That is the same answer hf's own downloader gives such a repo — it defaults
+    to `main` too — so the two paths agree about it, and the fallback is a
+    fallback rather than a divergence. What must never happen is the middle
+    case: resolving files at a revision the file list never described.
+    """
+    resolved = []
+
+    class _Api:
+        def model_info(self, model_id, revision=None, files_metadata=False):
+            if revision == "main":
+                raise RuntimeError("Revision Not Found: main")
+            return types.SimpleNamespace(sha="deadbee", siblings=[])
+
+    _fake_hub(monkeypatch, HfApi=_Api,
+              snapshot_download=lambda *a, **k: "/cache/snapshots/abc")
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(tmp_path))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_hub_file_meta",
+                        lambda repo, name, revision: resolved.append(revision))
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
+    assert resolved == [], "a file was resolved at a revision nothing listed"
+
+
+def test_a_ref_is_only_written_for_a_name_a_loader_would_ask_for(base, tmp_path):
+    """`refs/<sha>` is not a thing hf ever reads, and a missing ref name is not
+    a filename. Both are skipped rather than written as junk beside the blobs."""
+    base._write_ref(str(tmp_path), "a1b2c3d4" * 5, "a1b2c3d4" * 5)
+    base._write_ref(str(tmp_path), None, "a1b2c3d4" * 5)
+    assert not os.path.exists(os.path.join(tmp_path, "refs"))
+
+    base._write_ref(str(tmp_path), "main", "c0m")
+    assert open(os.path.join(tmp_path, "refs", "main")).read() == "c0m"
 
 
 def test_a_cache_filesystem_without_sparse_files_falls_back(base, monkeypatch,
@@ -957,8 +1019,8 @@ def test_a_cache_filesystem_without_sparse_files_falls_back(base, monkeypatch,
                         lambda model_id, repo_type="model": str(tmp_path))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None:
-                        [("model.safetensors", 10)])
+                        lambda model_id, include=None, ignore=None, revision="main":
+                        ("c0m", [("model.safetensors", 10)]))
     monkeypatch.setattr(base, "_sparse_ok", lambda folder: False)
 
     assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
@@ -994,8 +1056,8 @@ def test_a_failed_segmented_fetch_falls_back_to_snapshot_download(base, monkeypa
 
     monkeypatch.setattr(base, "_hub_file_meta", boom)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None:
-                        [("model.safetensors", 10)])
+                        lambda model_id, include=None, ignore=None, revision="main":
+                        ("c0m", [("model.safetensors", 10)]))
 
     assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
     assert called["model"] == "org/m"
@@ -1014,8 +1076,8 @@ def test_the_fallback_does_not_inherit_our_half_written_parts(base, monkeypatch,
     monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None:
-                        [("model.safetensors", len(payload))])
+                        lambda model_id, include=None, ignore=None, revision="main":
+                        ("c0m", [("model.safetensors", len(payload))]))
     _fake_hub(monkeypatch,
               snapshot_download=lambda model_id, **kwargs: "/cache/snapshots/abc",
               HfApi=lambda: types.SimpleNamespace(
@@ -1027,6 +1089,23 @@ def test_the_fallback_does_not_inherit_our_half_written_parts(base, monkeypatch,
     assert left == [], f"our part files were left for hf to trip over: {left}"
 
 
+def test_a_commit_that_moved_under_the_listing_is_refused(base, monkeypatch,
+                                                          tmp_path, payload):
+    """The fetch is pinned to a commit; the Hub answering with a different one
+    means the listing this file set came from no longer describes what is being
+    served, and half of each revision is not a snapshot."""
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: {
+        "url": url, "location": url, "etag": "e7ag", "commit": "b" * 40,
+        "size": len(payload)})
+
+    with pytest.raises(Exception, match="asked for commit"):
+        base._segmented_fetch("org/m", ["model.safetensors"], "a" * 40)
+
+    assert not os.path.exists(os.path.join(folder, "blobs", "e7ag"))
+
+
 def test_download_file_returns_the_path_to_the_one_file(base, monkeypatch,
                                                         tmp_path, payload):
     """`download_file`'s contract is a PATH, and its caller opens it. A GGUF
@@ -1036,8 +1115,8 @@ def test_download_file_returns_the_path_to_the_one_file(base, monkeypatch,
     _wire(base, monkeypatch, tmp_path, url, len(payload))
     monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
     monkeypatch.setattr(base, "_repo_files",
-                        lambda model_id, include=None, ignore=None:
-                        [(include, len(payload))])
+                        lambda model_id, include=None, ignore=None, revision="main":
+                        ("c0m", [(include, len(payload))]))
 
     path = base.download_file("org/m", "q4.gguf")
 
