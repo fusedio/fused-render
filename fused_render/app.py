@@ -847,6 +847,15 @@ def main() -> None:
         _write_pidfile(port)
         state["ready"] = True
         logger.info("server ready on port %s", port)
+        # Self-update checks (update/mac.py): a background loop that only
+        # flips /api/config's `update` field — the shell shows the badge and
+        # drives install from there. Never on the startup critical path.
+        try:
+            from fused_render.update import mac as mac_update
+
+            mac_update.start()
+        except Exception:
+            logger.exception("update manager failed to start")
         if state["pin"] is not None:
             # AppKit is main-thread-only; this bootstrap runs on a worker.
             from PyObjCTools import AppHelper

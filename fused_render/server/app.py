@@ -40,6 +40,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
@@ -61,6 +62,7 @@ from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
 # (tests repoint it at a staged copy before calling create_app, and
 # core_templates staging is the reason it can move at all), and a by-value
@@ -333,12 +335,19 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Self-update triggers (routers/update.py) — POSTs that kick a manifest
+    # check / an install; both carry the D3 X-Fused guard and 404 unless the
+    # mac app started the update manager.
+    app.include_router(update_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
+    # Artifacts published from those sessions, recovered from the same
+    # transcripts (routers/claude_artifacts.py) — read-only, no auth guard.
+    app.include_router(claude_artifacts_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)

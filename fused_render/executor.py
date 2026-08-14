@@ -25,6 +25,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -141,6 +142,89 @@ def _error(err_type: str, message: str, detail: str = "") -> dict:
     }
 
 
+# `str(ModuleNotFoundError)` is "No module named 'x'" (or "…'x.y'"), and for a
+# missing top-level package Python reports the top-level name even when a
+# submodule was imported — `_child.py`'s own `fused_render` diagnosis documents
+# the same asymmetry. Read from the message rather than the exception because
+# neither execution path keeps the object: the subprocess one gets JSON back and
+# the in-process one has already flattened it to `{type, message, traceback}`.
+# `test_the_missing_module_pattern_matches_a_real_error` pins the format against
+# a genuinely raised error, so a CPython wording change fails loudly instead of
+# silently switching the enrichment below off.
+_MISSING_MODULE = re.compile(r"No module named '([^']+)'")
+
+
+def explain_missing_module(path: str, error: dict) -> str | None:
+    """A better message for an import that the project's manifest asked for.
+
+    This executor spawns `[sys.executable, _child.py]` and owns no venv
+    machinery: only the fused engine builds a project environment (SPEC
+    PY-16/PY-18, D174). Ignoring a declaration was free while `[bundled]` carried
+    everything the core templates import; D276 ended that, so `map`, `vector`,
+    `geometry_editor` and `pdf_studio` can now fail here on a bare
+    `ModuleNotFoundError` raised from inside a tile request — true, and useless.
+    It names a package but not the folder that asked for it, and not the fact
+    that a *setting* decides whether it can ever be installed. On a packaged app,
+    where `pip install` is not an action the user has, that is D176's defect
+    returning by a new road.
+
+    **This runs at FAILURE time, not before the run, and the difference is the
+    whole design.** A pre-flight refusal keyed on the folder's state was tried
+    first and was wrong at a granularity nobody would have guessed from the
+    spec: `docs`, `geotiff`, `latex`, `model_card` and `pano` have declared a
+    heavy optional dependency for months while their entry points stay
+    stdlib-only on purpose — `geotiff`'s `ensure()`, `model_card`'s
+    `inspect_model.py`, whose manifest comment promises the card "renders
+    identically under either engine". Refusing on the manifest took all five
+    down. An AST pass over the script would only move the same mistake: the
+    lazy, in-function imports that make `pdf_studio`'s cheap `health` action
+    answerable while its venv is still building are exactly what a static scan
+    would refuse.
+
+    So the run proceeds, every stdlib-only path keeps working, and the
+    explanation is attached only where something actually broke — with no need to
+    predict which imports a script will reach.
+
+    Strictly gated: the failed module must resolve to a distribution the folder
+    DECLARES and this interpreter LACKS. A missing module nobody asked for is a
+    plain error and is left alone, because blaming the environment for a user's
+    typo is worse than saying nothing. Returns None whenever it cannot be sure.
+    """
+    if (error or {}).get("type") not in ("ModuleNotFoundError", "ImportError"):
+        return None
+    found = _MISSING_MODULE.search(str((error or {}).get("message") or ""))
+    if not found:
+        return None
+    module = found.group(1).split(".")[0]
+
+    from fused_render import projectenv
+
+    try:
+        project = projectenv.project_env_for(path)
+        if not project:
+            return None
+        missing = projectenv.missing_from_this_interpreter(project)
+        if projectenv.distribution_for_module(module) not in {
+            projectenv._normalize_dist(d) for d in missing
+        }:
+            return None
+        declaration = projectenv.pyproject_path(project)
+    except Exception as e:  # noqa: BLE001 — never let the explanation fail a run
+        logger.warning("could not explain a missing module for %s: %s: %s",
+                       path, type(e).__name__, e)
+        return None
+    return (
+        f"No module named '{module}'. It is declared in {declaration}, so this "
+        f"script is meant to run in {projectenv.display_name(project)}'s own "
+        f"environment — but the built-in executor cannot build one (it has no "
+        f"venv machinery at all), so the script ran on the app's interpreter, "
+        f"which is missing {', '.join(missing)}. Set engine = fused in "
+        f"Preferences, or install fused-render[fused] (requires Python 3.11+), "
+        f"and the environment is built for you on the next render "
+        f"(SPEC PY-16/PY-18)."
+    )
+
+
 def _is_builtin_helper(path: str) -> bool:
     """True only for the allowlisted in-process helpers (D72): the duckdb/structure/
     duckdb/structure/xlsx/sqlite readers and the api inspector. Exact realpath membership — every other
@@ -221,6 +305,14 @@ def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
     result = _run_python(path, params, timeout)
     result.setdefault("duration_ms", round((time.monotonic() - started) * 1000))
     if not result.get("ok"):
+        # An import this project's manifest declared, missing because this
+        # engine cannot build the environment that would have held it: say so
+        # instead of leaving a bare "No module named 'x'". Applied HERE rather
+        # than inside either execution path, so the subprocess one and the
+        # in-process helper one (D72) are both covered by one hook.
+        explanation = explain_missing_module(path, result.get("error") or {})
+        if explanation:
+            result["error"]["message"] = explanation
         # A failed run is the common "something wrong with right-click open"
         # symptom, and the browser only flashes it in an error overlay. Record
         # it here — with the worker's traceback in `detail` — so the log file
@@ -274,8 +366,10 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             # fork()+exec (verified: the default close_fds=True takes the fork
             # path on macOS/Linux). This is a native-crash fix, not an fd-policy
             # choice. The server process has libproj resident with a live SQLite
-            # handle to proj.db in PROJ's SQLiteHandleCache (pyproj is pulled in
-            # transitively — e.g. via `fused`/geopandas). fork() runs every
+            # handle to proj.db in PROJ's SQLiteHandleCache (whenever pyproj is
+            # importable here — transitively via `fused`/geopandas until D276
+            # removed the geo stack from `[bundled]`, and still so in any
+            # environment that has one). fork() runs every
             # registered pthread_atfork *child* handler in the forked child
             # before exec; PROJ's handler calls sqlite3_close/VFSClose on that
             # inherited-but-now-invalid handle and segfaults (SIGSEGV) — so the

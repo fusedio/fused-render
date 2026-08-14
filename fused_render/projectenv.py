@@ -41,8 +41,8 @@ to rebuild the environment. mtimes are wrong here for a different reason:
 byte-identical dependencies on every upgrade. See `state_digest`.
 
 This module is consulted on every `/api/run`, so it imports nothing from
-`fused.*` — pulling the engine in would cost a geopandas/pyproj import on the
-request path.
+`fused.*` — pulling the engine in would cost its whole import tree (pandas and
+friends, historically geopandas/pyproj too) on the request path.
 """
 import hashlib
 import json
@@ -281,7 +281,7 @@ def has_project_env(project_dir: str) -> bool:
     The last one is not a nicety. An empty declaration — a bare `uv init`
     scaffold, or a manifest added only for `[tool.*]` config that happens to
     carry `[project]` — would otherwise take the script OFF the app interpreter
-    and onto an empty venv: no numpy, no pandas, no duckdb, no geopandas, so a
+    and onto an empty venv: no numpy, no pandas, no duckdb, no pillow, so a
     script that worked yesterday fails on its first import. The pre-flight would
     also render the empty list as "…are not installed yet: . They need a one-time
     download." Nothing to install means PY-17: run on the app's own interpreter,
@@ -374,6 +374,115 @@ def applicable_dependencies_of(project_dir: str) -> list[str]:
     stripping them would lose information for no gain.
     """
     return [d for d in dependencies_of(project_dir) if marker_applies(d)]
+
+
+# Top-level import name -> distribution name, for the pairs where the two DIFFER
+# by more than punctuation. Everything else is resolved by normalisation
+# (`rio_tiler` -> `rio-tiler`), which is right for the large majority — duckdb,
+# numpy, pandas, requests, geopandas, shapely, rasterio, pyproj, pyogrio,
+# matplotlib, scipy, polars, zarr, openpyxl, msgpack, drain3, botocore,
+# imagecodecs, py360convert, tokenizers all install under their own name.
+#
+# Deliberately only the distributions this repo declares somewhere (`[bundled]`,
+# the core `dependencies`, or a core template's manifest). Guessing at the
+# ecosystem's other famous mismatches (bs4, yaml, sklearn, cv2) would be a list
+# nobody maintains and nothing checks; a user manifest naming one of those simply
+# gets no enrichment, which is the same outcome as before this existed.
+#
+# `pypandoc` -> `pypandoc-binary` is the load-bearing one: the two distributions
+# share an import name and only the `-binary` wheel carries the pandoc
+# executable, so the latex and docs templates declare the heavier sibling (the
+# `_MUST_USE_HEAVIER_SIBLING` pairing in tests/test_bundle_contents.py) and a
+# module->distribution lookup that did not know this would fail to connect the
+# failed import to the manifest entry that asks for it.
+_MODULE_TO_DIST = {
+    "pil": "pillow",
+    "pptx": "python-pptx",
+    "fitz": "pymupdf",
+    "fpdf": "fpdf2",
+    "pypandoc": "pypandoc-binary",
+    "google": "google-auth",
+    # A second import name for one distribution is as much a mismatch as a
+    # different one: a manifest declaring matplotlib and a script importing
+    # mpl_toolkits must still connect.
+    "mpl-toolkits": "matplotlib",
+    "multipart": "python-multipart",
+    "appkit": "pyobjc-framework-cocoa",
+    "foundation": "pyobjc-framework-cocoa",
+    "cocoa": "pyobjc-framework-cocoa",
+}
+
+
+def _normalize_dist(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def distribution_for_module(module: str) -> str:
+    """The distribution a top-level import name most likely comes from.
+
+    A best guess by construction — PyPI has no reverse index from an ABSENT
+    module to the distribution that would have provided it, and
+    `importlib.metadata.packages_distributions()` can only speak about what IS
+    installed, which is exactly what the caller has established is not. So this
+    is normalisation plus the small table above, and its one caller treats a
+    wrong answer as "no match" rather than as evidence of anything.
+    """
+    normalized = _normalize_dist(module)
+    return _MODULE_TO_DIST.get(normalized, normalized)
+
+
+def missing_from_this_interpreter(project_dir: str) -> list[str]:
+    """Declared distributions THIS interpreter cannot provide, in declared order.
+
+    **What this is for, and the one thing it must never be used for.** It exists
+    so that a run which has ALREADY FAILED on an import can be explained — see
+    `executor.explain_missing_module`, its only caller. It answers "was the thing
+    that just broke something this folder asked for", after the fact.
+
+    **Its output must NOT be turned into a pre-flight refusal.** That was tried
+    and it broke five templates that had been working for months: `docs`,
+    `geotiff`, `latex`, `model_card` and `pano` each declare a heavy optional
+    dependency while their entry points stay stdlib-only on purpose —
+    `geotiff`'s `ensure()`, and `model_card`'s manifest promising the card
+    "renders identically under either engine". A non-empty list here means the
+    folder declares something absent; it does NOT mean this run needs it, and
+    almost every run does not (D276). The distinction is the entire lesson.
+
+    "This interpreter" is `sys.executable` itself, asked in-process through
+    `importlib.metadata` — deliberately NOT `engine.app_satisfies`, which probes
+    a *candidate* interpreter in a subprocess because the fused backend may run
+    children on one that is not this process. The built-in executor spawns
+    `sys.executable`, so the question here has a local answer and paying a
+    subprocess probe for it would be absurd.
+
+    Only the name is checked, never the version specifier: an unsatisfied `>=` is
+    a much weaker claim than an absent distribution, and attributing a failure to
+    a floor the app is one release away from meeting would point the reader at
+    the wrong thing. `uv` still enforces the specifier wherever a real
+    environment gets built.
+
+    Every uncertain answer is "present", the same three-valued discipline
+    `app_satisfies` follows in the other direction: a name here becomes part of
+    an explanation blaming the environment, so one this cannot resolve must not.
+    """
+    import importlib.metadata as md
+
+    missing = []
+    for requirement in applicable_dependencies_of(project_dir):
+        name = requirement.split(";")[0].split("[")[0].strip()
+        for sep in ("<", ">", "=", "!", "~", " ", "("):
+            name = name.split(sep)[0]
+        name = name.strip()
+        if not name:
+            continue
+        try:
+            md.version(name)
+        except md.PackageNotFoundError:
+            missing.append(name)
+        except Exception as e:  # noqa: BLE001 — "I could not tell" is not "absent"
+            logger.warning("could not resolve %r for %s: %s: %s",
+                           name, project_dir, type(e).__name__, e)
+    return missing
 
 
 # --------------------------------------------------------------------------

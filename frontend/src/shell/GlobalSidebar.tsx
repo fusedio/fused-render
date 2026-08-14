@@ -10,6 +10,7 @@
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
+import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
@@ -281,6 +282,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </div>
       <BookmarksSection />
       <div className="sidebar-section sidebar-settings">
+        <UpdateBadge />
         <PreferencesMenu entries={menuEntries} dot={triggerDot} active={prefsActive} />
       </div>
     </SidebarFrame>

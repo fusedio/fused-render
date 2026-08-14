@@ -33,9 +33,11 @@ package = false
 ```
 
 A folder with no `pyproject.toml` — or one that declares no dependencies — runs
-on the app's own interpreter, which already ships numpy, pandas, duckdb,
-geopandas, rasterio and the rest. That is the common case and it needs no
-download and no waiting.
+on the app's own interpreter, which already ships numpy, pandas, pyarrow,
+duckdb, pillow, openpyxl, requests and the rest of the always-there set. That is
+the common case and it needs no download and no waiting. Heavier libraries the
+app deliberately does not carry — polars, matplotlib, scipy, geopandas,
+rasterio, pymupdf — are exactly what the declaration above is for.
 
 When a folder does declare dependencies, the first render shows a one-time
 install (one progress row for the whole project, however many scripts the page

@@ -1023,8 +1023,8 @@ def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
 
 # --- a header the app interpreter ALREADY satisfies ----------------------------
 #
-# The `[bundled]` extra puts pandas/duckdb/pyarrow/numpy/geopandas/rasterio/zarr/
-# pyproj/keyring/yaml/cryptography on the app interpreter, and D172 stops a header
+# The `[bundled]` extra puts pandas/duckdb/pyarrow/numpy/pillow/openpyxl/
+# requests/msgpack on the app interpreter, and D172 stops a header
 # being EXTENDED with a baseline — but nothing checked whether a header was already
 # SATISFIED. So a header naming `pandas` built a multi-GB venv beside the pandas the
 # app already ships. Measured on one machine's venv store: the set

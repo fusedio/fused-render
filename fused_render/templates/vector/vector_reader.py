@@ -1,7 +1,8 @@
 """Vector preview reader for fused-render (.shp, .kml, .kmz, .gpx, ...).
 
-Reads any pyogrio/GDAL-readable vector file (geopandas is in the app's
-bundled runner; LIBKML handles .kml/.kmz), reprojects to EPSG:4326 and
+Reads any pyogrio/GDAL-readable vector file (geopandas comes from this folder's
+own environment — `pyproject.toml`, SPEC PY-16; LIBKML handles .kml/.kmz),
+reprojects to EPSG:4326 and
 returns GeoJSON for the MapLibre template plus schema/CRS/bounds metadata
 and an attribute-table preview. Multi-layer sources (KML folders, GPX
 tracks/waypoints) are concatenated with a `_layer` column.
