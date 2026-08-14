@@ -99,6 +99,20 @@ dev = [
     # mock-based and cross-platform, but importorskip("cryptography") skips them
     # in CI unless it's installed here — it's win32-only in windows-desktop.
     "cryptography",
+    # A TEST dependency since D275, not a shipped one. The notebook kernel turns
+    # a cell's open figures into inline PNGs (`kernel_body.py`), which is real
+    # behaviour with two tests on it — and matplotlib left `[bundled]`, so
+    # nothing installed it for the suite any more. The unit test's
+    # importorskip would then have skipped silently for good, and
+    # tests/test_notebook_e2e.py's figure cell had no skip at all and would
+    # simply have gone red. Declared here rather than skipped, because
+    # "does the kernel render figures" is worth keeping covered, and the
+    # honest description of matplotlib now is that this repo tests with it and
+    # does not ship it. No packaged build installs `[dev]`
+    # (build_dmg.sh / build_linux_appimage.sh / build_windows_installer.ps1 all
+    # install `[bundled,...]`), and the macOS force-list is derived by walking
+    # `[bundled]`'s own requirements, so nothing here can reach the bundle.
+    "matplotlib",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.

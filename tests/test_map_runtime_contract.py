@@ -160,6 +160,40 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
         assert f'"{package}"' not in setup
 
 
+def test_a_map_target_importing_what_this_venv_lacks_is_told_where_it_ran(tmp_path):
+    """The D275 capability regression, made legible (C1).
+
+    A Python map target is exec'd IN THIS TEMPLATE'S PROCESS, because the
+    descriptor is built from the live object it returns. That process used to be
+    the app interpreter with all of `[bundled]`; it is now map's own environment.
+    So a target doing `import duckdb` fails — and the bare `No module named
+    'duckdb'` sends the reader to their own folder's pyproject.toml, which is not
+    consulted for this call and cannot fix it.
+
+    Asserted on the MESSAGE rather than the type, because the type is right
+    already and the message is the entire defect.
+    """
+    target = tmp_path / "layer.py"
+    target.write_text(
+        "import a_module_that_does_not_exist\n\ndef main():\n    return None\n",
+        encoding="utf-8",
+    )
+    worker = _load("worker")
+    out = worker.main({
+        "target": str(target),
+        "artifact_dir": str(tmp_path),
+        "artifact_id": "t1",
+    })
+
+    assert out["status"] == "error"
+    message = out["message"]
+    assert "a_module_that_does_not_exist" in message
+    assert "map/pyproject.toml" in message
+    # The correction that stops the reader looking in the wrong place.
+    assert "NOT the app's interpreter" in message
+    assert "will not change that" in message
+
+
 def test_browsable_vector_formats_are_supported_by_every_loading_path():
     discover = _load("discover")
     classify = _load("geo_classify")
@@ -193,6 +227,14 @@ def test_optional_runtime_lists_only_missing_distributions(monkeypatch):
     assert "not installed: rio-tiler" in message
     assert message.endswith("uv pip install rio-tiler")
     assert message.count("rio-tiler") == 2
+    # D275 makes this message reachable on a PACKAGED app for the first time
+    # (the geo stack moved from `[bundled]` into map/pyproject.toml), and a DMG
+    # user cannot pip install anything. So the manual command may no longer be
+    # the ONLY thing offered — the two causes a packaged user can actually act
+    # on come first. Pinned, because "just tell them to pip install" is the
+    # shape this keeps regressing to (D176, and pdf_studio's boot panel).
+    assert "on first render" in message
+    assert "Preferences" in message
 
 
 def test_large_vector_reports_install_command_before_registering_tiles(

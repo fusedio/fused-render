@@ -476,23 +476,37 @@ def _learn_groups() -> list[tuple[str, list[str]]]:
     return list(module.SUPPORTED)
 
 
+# (file, section-start marker, section-end marker, row pattern). The markers are
+# what keep this honest: an unanchored row pattern matches ANY `<tr class="lg-h">`
+# or ANY `- **Label:** …` bullet in the file, so an unrelated note added to the
+# skill would fail a test whose message claims the library list drifted — a
+# false accusation is worse than no check, because the next reader "fixes" the
+# wrong thing. Both markers must exist, which is itself asserted: a renamed
+# anchor must break loudly rather than silently narrow the section to nothing.
+_DOC_LIBRARY_LISTS = [
+    # The Learn page's static table — what a user sees before the live versions
+    # arrive, and all they ever see outside the app.
+    (
+        os.path.join("core_apps", "learn", "index.html"),
+        '<table class="apitable" id="libTable">',
+        "</table>",
+        r'<tr><td class="lg-h">([^<]+)</td><td>(.*?)</td></tr>',
+    ),
+    # The authoring skill's list — what an agent writing a page reads.
+    (
+        os.path.join("skills", "fused-render-authoring", "SKILL.md"),
+        "### Available Python libraries",
+        "Anything outside this set",
+        r"(?m)^- \*\*([^:*]+):\*\* (.*)$",
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    "relpath,pattern",
-    [
-        # The Learn page's static table — what a user sees before the live
-        # versions arrive, and all they ever see outside the app.
-        (
-            os.path.join("core_apps", "learn", "index.html"),
-            r'<tr><td class="lg-h">([^<]+)</td><td>(.*?)</td></tr>',
-        ),
-        # The authoring skill's list — what an agent writing a page reads.
-        (
-            os.path.join("skills", "fused-render-authoring", "SKILL.md"),
-            r"(?m)^- \*\*([^:*]+):\*\* (.*)$",
-        ),
-    ],
+    "relpath,start,end,pattern", _DOC_LIBRARY_LISTS,
+    ids=[row[0] for row in _DOC_LIBRARY_LISTS],
 )
-def test_the_documented_library_list_matches_check_libs(relpath, pattern):
+def test_the_documented_library_list_matches_check_libs(relpath, start, end, pattern):
     """Three copies of one promise; pin them to each other (D177).
 
     `check_libs.py`'s SUPPORTED is the source of truth — it is the only one that
@@ -513,11 +527,16 @@ def test_the_documented_library_list_matches_check_libs(relpath, pattern):
 
     with open(os.path.join(_REPO, relpath), encoding="utf-8") as f:
         text = f.read()
+    begin = text.find(start)
+    assert begin >= 0, f"{relpath} no longer contains {start!r}; re-anchor this test"
+    finish = text.find(end, begin + len(start))
+    assert finish >= 0, f"{relpath} no longer contains {end!r}; re-anchor this test"
+    section = text[begin:finish]
     found = [
         (_html.unescape(group).strip(),
          [_norm(n) for n in re.findall(r"<code>([^<]+)</code>|`([^`]+)`", body)
           for n in [n[0] or n[1]]])
-        for group, body in re.findall(pattern, text)
+        for group, body in re.findall(pattern, section)
     ]
     expected = [(g, [_norm(n) for n in names]) for g, names in _learn_groups()]
     assert found == expected, (

@@ -52,6 +52,42 @@ def _run_entrypoint(module: Any, preferred: str = "") -> tuple[Any, str]:
     )
 
 
+def _missing_module_help(error: ModuleNotFoundError) -> str:
+    """Explain the one thing about this process a user cannot guess.
+
+    A Python map target is loaded and executed IN THIS PROCESS (`_load_module`
+    above), because the descriptor is built from the live object it returns —
+    not from JSON, so there is no process boundary to put between them. That
+    process used to be the app's own interpreter, carrying everything `[bundled]`
+    promised user code. Since D275 it is this template's environment
+    (`map/pyproject.toml`, SPEC PY-16), which contains exactly the geo stack the
+    Map Viewer itself needs and nothing else — so a target that imports duckdb,
+    requests or anything else from the app's set now fails here.
+
+    The bare error says `No module named 'duckdb'`, which is true and sends the
+    reader looking in the wrong place: their own folder's `pyproject.toml` is not
+    consulted for this call, so nothing they can write near their script fixes
+    it. Naming the environment is the difference between a puzzle and a decision.
+
+    A message, not a repair: adding the app's set to `map/pyproject.toml` would
+    be a hand-kept second copy of `[bundled]` living inside a template (D177), and
+    it could never be complete — a map target may import anything. The real fix
+    is for the target to run under the environment PY-16 gives the USER's folder,
+    which needs the live object to cross a process boundary. Recorded in D275.
+    """
+    name = error.name or "a package"
+    return (
+        f"{error}. A Python map target runs inside the Map Viewer's own "
+        f"environment (fused_render/templates/map/pyproject.toml — geopandas, "
+        f"rasterio, matplotlib, numpy, pandas and pillow), NOT the app's "
+        f"interpreter and not your script's folder, so {name!r} is not available "
+        f"to it and a pyproject.toml beside your script will not change that. "
+        f"Either rewrite the target using the packages above, or precompute with "
+        f"{name!r} in a separate script and point the Map Viewer at the file it "
+        f"writes."
+    )
+
+
 def build(
     request: dict[str, Any],
     raster_engine=None,
@@ -68,10 +104,13 @@ def build(
     entrypoint = None
     with contextlib.redirect_stdout(logs), contextlib.redirect_stderr(logs):
         if isinstance(target, str) and target.lower().endswith(".py"):
-            module = _load_module(target)
-            obj, entrypoint = _run_entrypoint(
-                module, str(options.get("entrypoint") or "")
-            )
+            try:
+                module = _load_module(target)
+                obj, entrypoint = _run_entrypoint(
+                    module, str(options.get("entrypoint") or "")
+                )
+            except ModuleNotFoundError as missing:
+                raise ModuleNotFoundError(_missing_module_help(missing)) from missing
         else:
             obj = target
 
