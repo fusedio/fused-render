@@ -6295,6 +6295,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   heartbeat when a single long segment produces no ticks — so an evicted
   running row can be absent for longer than the page tolerates. Closing that
   needs the row to stop being evictable rather than another cadence (see D276).
+  **So the PAGE must not treat absence as completion**, which is the half no
+  amount of supervisor work can fix: a promise that has resolved cannot be
+  un-resolved by a row that comes back. `fused.ai.transcribe` therefore treats
+  the TRANSCRIPT as the authority on an absent row — it keeps looking for the
+  file, resumes watching if the row returns, and rejects only after a bounded
+  grace period, so it still always settles. `fused.ai.image` has the same
+  exposure and is deliberately unchanged here: `watchJob` is shared with it and
+  with the download manager, so raising its give-up threshold belongs in a
+  change that can be reviewed against all three callers.
   **The turn is taken before the MODEL is resolved**, and
   that ordering is load-bearing: resolving first put the one destructive step —
   `_start_resident`, which EVICTS the resident model when the requested one
