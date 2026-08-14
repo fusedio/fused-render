@@ -219,27 +219,35 @@ def workspace_apps(root: str) -> list[dict]:
     to the page, and so was an app one level below a tag dir. The walk is now
     recursive, with the depth bound and the per-level rules below.
 
-    Per level, relative to `root`, an app is a non-hidden directory that:
+    A PAGE IS WHAT MAKES A FOLDER AN APP, at every level — an entry-less folder
+    is a SHELF the apps sit on, never a card. So, relative to `root`, an app is a
+    non-hidden directory that:
 
-      * DEPTH 1 — HAS A PAGE. Any `*.html` will do (whatever `app_entry`
-        resolves), so a folder saved straight into the workspace
-        (`~/Documents/Fused/sine/sine.html`) is an app. A page-less one is NOT:
-        the workspace's top level is where `examples/`, `local/` and `showcase/`
-        live, and a shelf of apps is not itself an app — listing one would put a
-        blank card on the page for every tag folder a user has.
-      * DEPTH 2 — anything, page or no page. Unchanged from the two-level walk,
-        deliberately: this level WAS the whole of the old listing, and an
-        entry-less folder has always been a card that opens the folder (see
-        `app_dict`), so anything stricter here silently retires cards people
-        already have.
-      * DEPTH 3 — has an `index.html`, directly. The permissive rule cannot be
-        carried this deep: a checked-out code repo in the workspace turns every
-        third-level folder into a card (measured: 55 candidates on one repo, 47
-        of them a single `templates/` tree). An explicit `index.html` is the
-        author saying "this folder is a page", the only signal worth trusting
+      * DEPTH 1 or 2 — has an entry, i.e. any `*.html` that `app_entry` resolves.
+        A folder saved straight into the workspace
+        (`~/Documents/Fused/sine/sine.html`) is an app; `local/`, `showcase/` and
+        a `sandbox/<person>/` are not.
+      * DEPTH 3 — has an `index.html`, directly. The permissive "any page" rule
+        cannot be carried this deep: a checked-out code repo in the workspace
+        turns every third-level folder into a card (measured: 55 candidates on one
+        repo, 47 of them a single `templates/` tree). An explicit `index.html` is
+        the author saying "this folder is a page", the only signal worth trusting
         that far down.
 
-    DESCENT stops (depth 2 onward) only at a folder whose entry is literally
+    The two-level walk this replaced emitted entry-less folders as cards that
+    opened a directory, and depth 2 kept that rule at first. A real workspace
+    showed why it had to go: `sandbox/` held ten PEOPLE's folders with the 14 real
+    apps one level inside them, so the page drew a blank, title-less card for
+    every person beside the apps it now also found. The shelf and its contents
+    both appearing is the tell. `app_dict` still accepts `entry=None` — the
+    linked-app registry (`linked_apps.linked_apps`) passes one for a registered
+    folder that has no page — so this changed what the WALK emits, never the dict
+    contract.
+
+    DESCENT IS A SEPARATE DECISION and did not change with that one: an
+    entry-less folder is not a card but it IS walked, which is exactly how the
+    apps inside those ten people's folders are found. Descent stops (depth 2
+    onward) only at a folder whose entry is literally
     `index.html`. That name is the author declaring "this folder IS the page, and
     what is below it is my assets" — without the rule, an app with an
     `index.html` and a `sub/index.html` lists twice and a multi-page app scatters
@@ -249,10 +257,10 @@ def workspace_apps(root: str) -> list[dict]:
     its root, and treating that as "this repo is one page, its subfolders are
     assets" silently deleted every app in the repo from the grid.
 
-    Depth 1 is descended unconditionally, `index.html` or not: the top level is
-    the workspace's shelf of tag/repo folders, and one of those holding a landing
-    page (a `showcase/index.html`) must not delete every app underneath it. So a
-    top-level folder with a page lists AND its children still list.
+    Depth 1 is descended unconditionally, even on an `index.html`: the top level
+    is the workspace's shelf of tag/repo folders, and one of those holding a
+    landing page (a `showcase/index.html`) must not delete every app underneath
+    it. So a top-level folder with a page lists AND its children still list.
 
     `tag` — the page's "Repo" facet — is THE FIRST PATH SEGMENT at every depth,
     so `showcase/sub/bar` files under `showcase` exactly as `showcase/bar` does.
@@ -331,10 +339,10 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
             if is_index:
                 apps.append(app_dict(path, name, tag, entry_html))
             continue
-        # Depth 1 emits only WITH a page: an entry-less top-level folder is a
-        # shelf of apps (`local/`, `showcase/`), not an app. Depth 2 emits either
-        # way — that is the old two-level rule, kept to the letter.
-        if depth > 1 or entry_html is not None:
+        # A PAGE is what makes a folder an app, at every level. An entry-less one
+        # is a shelf the apps sit on, and it is still WALKED (below) — that is how
+        # the apps under it are found.
+        if entry_html is not None:
             apps.append(app_dict(path, name, tag, entry_html))
         # Descent is a separate question from emission. A symlink and a package
         # are never descended; below the top level, a self-declared page

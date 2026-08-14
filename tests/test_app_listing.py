@@ -84,8 +84,9 @@ def test_a_page_less_top_level_folder_is_a_shelf_not_an_app(tmp_path):
     A folder at depth 1 with no page of its own is where apps LIVE —
     `examples/`, `local/`, `showcase/` — not an app. Listing it puts a blank,
     title-less card on the apps page for every tag folder the user has, named
-    after a chip that is already in the Repo facet right above the grid. The
-    permissive "entry may be None" rule belongs to depth 2 and stops there.
+    after a chip that is already in the Repo facet right above the grid. Depth 2
+    now answers the same way, for the same reason (see the shelf test below); it
+    is asserted separately because it was the level that got this wrong twice.
     """
     _app(tmp_path / "local", "real")
     (tmp_path / "empty").mkdir()
@@ -120,9 +121,8 @@ def test_a_third_level_folder_with_an_index_html_is_an_app(tmp_path):
     _app(tmp_path / "showcase" / "sub", "bar")
 
     apps = {a["name"]: a for a in app_listing.workspace_apps(tmp_path)}
-    # `showcase` is page-less, so it is a shelf; `sub` is the depth-2 permissive
-    # card; `bar` is the depth-3 app.
-    assert set(apps) == {"sub", "bar"}
+    # `showcase` and `sub` are page-less shelves; only `bar` is an app.
+    assert set(apps) == {"bar"}
     assert apps["bar"]["tag"] == "showcase"
     assert apps["bar"]["entry"].endswith(os.path.join("sub", "bar", "index.html"))
 
@@ -133,15 +133,18 @@ def test_a_third_level_folder_with_another_html_is_not_an_app(tmp_path):
     some .html file; only `index.html` is an author saying "this is a page"."""
     _app(tmp_path / "repo" / "docs", "guide", entry="other.html")
 
-    assert _names(tmp_path) == ["docs"]
+    # `repo` and `docs` are page-less shelves, and `guide`'s page is not an
+    # index — so this tree has no app in it at all.
+    assert _names(tmp_path) == []
 
 
 def test_a_third_level_folder_with_no_html_is_not_an_app(tmp_path):
-    """And a page-less third-level folder is nothing at all — where the same
-    folder one level up would still be an entry-less card."""
+    """And a page-less third-level folder is nothing at all — same answer the
+    shallower levels give, reached by a stricter rule: at depth 3 even a page is
+    not enough unless it is `index.html`."""
     _app(tmp_path / "repo" / "src", "utils", entry=None)
 
-    assert _names(tmp_path) == ["src"]
+    assert _names(tmp_path) == []
 
 
 def test_the_walk_stops_at_the_third_level(tmp_path):
@@ -149,7 +152,9 @@ def test_the_walk_stops_at_the_third_level(tmp_path):
     listing that runs on every page load from being a full recursive crawl."""
     _app(tmp_path / "repo" / "a" / "b", "deep")
 
-    assert _names(tmp_path) == ["a"]
+    # `repo` and `a` are page-less shelves; `b` is at depth 3 with no page of
+    # its own; `deep` sits at depth 4, which is never looked at.
+    assert _names(tmp_path) == []
 
 
 def test_an_apps_own_subfolder_is_not_a_second_app(tmp_path):
@@ -204,15 +209,41 @@ def test_a_second_level_folder_with_any_html_still_lists(tmp_path):
     assert app["entry"].endswith("dashboard.html")
 
 
-def test_a_second_level_folder_with_no_html_still_lists_entry_less(tmp_path):
-    """The other half of the guard: a page-less second-level folder is still a
-    card (one that opens the folder), exactly as before. Anything stricter would
-    silently retire cards people already have."""
-    _app(tmp_path / "local", "bare", entry=None)
+def test_a_second_level_folder_with_no_page_is_a_shelf_not_an_app(tmp_path):
+    """INVERTED on purpose — this test used to assert the opposite, and the
+    reason it flipped is worth more than the assertion.
 
-    (app,) = app_listing.workspace_apps(tmp_path)
-    assert app["entry"] is None and app["entry_html"] is None
-    assert app["updated_at"] is not None
+    The two-level walk emitted an entry-less folder as a card that opened a
+    directory, and the recursive walk kept that at depth 2 to avoid retiring
+    anyone's cards. A real workspace showed what the rule actually produced: a
+    `sandbox/` holding ten PEOPLE's folders, with the 14 real apps one level
+    inside them, drew a blank title-less card for every person right beside the
+    apps it now also found. Depth 2 is as often a shelf level as depth 1 is.
+
+    So: a page is what makes a folder an app, at every level. Do not "restore"
+    this — the entry-less card was never a feature, it was the two-level walk
+    having nowhere deeper to look.
+    """
+    _app(tmp_path / "local", "bare", entry=None)
+    _app(tmp_path / "local", "real")
+
+    assert _names(tmp_path) == ["real"]
+
+
+def test_the_shelf_of_people_folders_lists_the_apps_and_not_the_people(tmp_path):
+    """The user-reported shape, staged exactly: `sandbox/<person>/<app>/`.
+
+    Nothing at the person level, `index.html` in each app. The apps list; the
+    person does not; `sandbox` does not.
+    """
+    aman = tmp_path / "sandbox" / "Aman"
+    _app(aman, "alphaearth")
+    _app(aman, "clay")
+
+    apps = app_listing.workspace_apps(tmp_path)
+    assert [a["name"] for a in apps] == ["alphaearth", "clay"]
+    # Both still file under the top-level segment, so one Repo chip covers them.
+    assert {a["tag"] for a in apps} == {"sandbox"}
 
 
 def test_vendor_dirs_contribute_nothing_whatever_their_case(tmp_path):
@@ -343,10 +374,10 @@ def test_a_folder_that_becomes_unreadable_mid_walk_costs_only_itself(tmp_path,
                                                                     monkeypatch):
     """The walk's OWN listing guard, distinct from the one around `app_entry`.
 
-    A page-less folder is listed as a card and then DESCENDED INTO, and those are
-    two separate reads: the entry lookup can succeed and the descent still fail
-    (permissions changed, folder deleted, a network volume going away in
-    between). Without the guard the whole page 500s over one folder — so the
+    A page-less folder is a shelf, and a shelf is still WALKED — so its entry
+    lookup and its descent are two separate reads, and the second one can fail on
+    its own (permissions changed, folder deleted, a network volume going away in
+    between). Without the guard the whole page 500s over one folder, so the
     stand-in refuses `probed`'s SECOND listing, the one the descent does.
     """
     _app(tmp_path / "local", "ok")
@@ -364,9 +395,9 @@ def test_a_folder_that_becomes_unreadable_mid_walk_costs_only_itself(tmp_path,
 
     monkeypatch.setattr(os, "listdir", refuse_on_second_look)
 
-    # `probed` still lists (its entry resolved, as None); `deep` is lost with
-    # the failed descent; `ok` is untouched.
-    assert _names(tmp_path) == ["ok", "probed"]
+    # `deep` is lost with the failed descent and `probed` is a page-less shelf,
+    # so neither appears — but `ok` is untouched and the listing still answers.
+    assert _names(tmp_path) == ["ok"]
 
 
 # ------------------------------------------------------------------ the title
@@ -387,9 +418,11 @@ def test_an_unreadable_entry_has_no_title_rather_than_failing(tmp_path):
 
 def test_a_directory_named_index_html_is_not_an_entry(tmp_path):
     """An entry has to be a FILE — `app_entry` checks `isfile`, not just the
-    suffix. A folder called `index.html` leaves the app entry-less (it opens as a
-    folder) rather than producing an `entry` the shell would hand to /render and
-    fail to read.
+    suffix. A folder called `index.html` therefore resolves to NO entry, and
+    since a page is what makes a folder an app, the folder does not list at all
+    rather than producing an `entry` the shell would hand to /render and fail to
+    read. (It used to list as an entry-less card; the card is what changed, not
+    the entry rule, which is asserted directly here so the two cannot drift.)
 
     There is no end-to-end test here for an entry that is a real file the server
     cannot open: as root every file is readable, so the only way to stage one is
@@ -399,10 +432,8 @@ def test_a_directory_named_index_html_is_not_an_entry(tmp_path):
     app_dir = _app(tmp_path / "local", "odd", entry=None)
     (app_dir / "index.html").mkdir()
 
-    (listed,) = app_listing.workspace_apps(tmp_path)
-    assert listed["name"] == "odd"
-    assert listed["entry"] is None and listed["entry_html"] is None
-    assert listed["title"] is None
+    assert app_listing.app_entry(str(app_dir)) is None
+    assert app_listing.workspace_apps(tmp_path) == []
 
 
 # --------------------------------------------------------------- the recency
