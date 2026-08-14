@@ -13,6 +13,7 @@ import {
   rangeBetween,
   rowPressAction,
   selParam,
+  selectionAfterVanish,
   INITIAL_SEARCH_SELECT,
   nextSearchSelection,
   searchAutoSelectPath,
@@ -105,6 +106,51 @@ describe("a freshly opened folder selects nothing", () => {
     // Deep links and the cross-remount stash are NOT part of this removal: a
     // `?sel=` and a click in the pre-stat scaffold still seed the selection.
     expect(src).toContain("nextSearchSelection(");
+  });
+});
+
+// What happens when the LEAD's row is not among the rendered rows — the one
+// remaining way a row the user never chose could end up selected (D276).
+//
+// Two situations reach this, and they get opposite answers. The test writes both
+// out because the distinction IS the rule: it hangs entirely on whether the
+// selection was ever seen as a live row of this listing.
+describe("selectionAfterVanish", () => {
+  const rows = ["/d/a.txt", "/d/b.txt", "/d/c.txt"];
+
+  test("a selection that was never a live row selects NOTHING", () => {
+    // The `?sel=` miss: a bookmark or a shared link names `old.txt`, the file is
+    // gone, so the seeded lead is a path this folder does not have and never had.
+    // Clamping there picks row one — a file nobody named, previewed in an iframe
+    // nobody asked for, which is exactly what D275 removed.
+    expect(selectionAfterVanish(rows, -1)).toEqual(EMPTY_SELECTION);
+  });
+
+  test("a row that vanished WHILE the folder was open re-anchors to its slot", () => {
+    // The half that must not change: an external delete, or a rename the user
+    // made themselves, should leave the selection on the row that took the old
+    // one's place — not empty, and not row one.
+    expect(selectionAfterVanish(rows, 1)).toEqual(oneSelected("/d/b.txt"));
+  });
+
+  test("a slot past the end lands on the last row", () => {
+    // The folder shrank under the selection (a multi-delete of the tail).
+    expect(selectionAfterVanish(rows, 7)).toEqual(oneSelected("/d/c.txt"));
+    expect(selectionAfterVanish(rows, 2)).toEqual(oneSelected("/d/c.txt"));
+  });
+
+  test("no rows left to re-anchor to selects nothing", () => {
+    // Emptied folder: there is no neighbour, however well anchored it was.
+    expect(selectionAfterVanish([], 1)).toEqual(EMPTY_SELECTION);
+    expect(selectionAfterVanish([], -1)).toEqual(EMPTY_SELECTION);
+  });
+
+  // The reconcile effect needs a DOM and a React renderer this setup does not
+  // have, so the wiring is pinned at the source: the decision must not be
+  // re-inlined as a bare clamp, which is the shape the bug had.
+  test("the reconcile's vanished-lead path defers to this decision", () => {
+    const src = readFileSync(join(import.meta.dir, "./useListingSelection.ts"), "utf8");
+    expect(src).toContain("selectionAfterVanish(rows, lastSelIndexRef.current)");
   });
 });
 

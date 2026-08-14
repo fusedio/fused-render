@@ -15,6 +15,7 @@ import {
   recallSelection,
   rememberSelection,
   selParam,
+  selectionAfterVanish,
   type Selection,
 } from "@apps/explorer/listing/selection";
 
@@ -72,8 +73,10 @@ export function useListingSelection({
   //     (recallSelection) — it is the LIVE selection, and always outranks;
   //   • otherwise `?sel=` from the URL, which is how a reload or a shared link
   //     comes back to the row it was on, with the pane already showing it.
-  // A `?sel=` naming a row this folder no longer has just falls through to the
-  // reconcile effect's clamp, which lands on the nearest surviving row.
+  // A `?sel=` naming a row this folder does not have — a bookmark or a link to a
+  // file since deleted or renamed — seeds a lead that the reconcile effect then
+  // finds among no rows, and it resolves that to NOTHING SELECTED rather than to
+  // a row (selectionAfterVanish, D276). A link that misses is a link that missed.
   const [sel, setSel] = useState<Selection>(() => {
     const recalled = recallSelection(fsPath);
     if (recalled.paths.length || !globalKeys) return recalled;
@@ -149,6 +152,12 @@ export function useListingSelection({
   // Last known index of the selection within navRows. When the selected path
   // vanishes (delete / move to bin / rename with no re-anchor) the reconcile
   // effect clamps to this slot so selection lands on the nearest surviving row.
+  //
+  // **-1 means the selection has never been seen in these rows at all** — a lead
+  // that was seeded rather than chosen (a `?sel=` naming a file that is gone) —
+  // and that is a different case with a different answer: nothing selected, not
+  // row one (selectionAfterVanish, D276). So the -1 must reach that decision
+  // intact; clamping it to 0 on the way is exactly the bug.
   const lastSelIndexRef = useRef<number>(-1);
 
   // --- selection mutators ---------------------------------------------------
@@ -410,6 +419,12 @@ export function useListingSelection({
     if (selectedPath === null) {
       // No selection to reconcile. Only force one when a pending target was just
       // abandoned (so selection never stays dead); otherwise leave it unset.
+      //
+      // This one KEEPS its `Math.max(…, 0)` where the vanished-lead path below
+      // dropped it (D276), and the difference is what got us here: a pending
+      // target exists only because the user renamed or duplicated something, so
+      // an operation they asked for is what left the selection dead, and row one
+      // beats nothing. A `?sel=` miss has no such gesture behind it.
       if (!clampFallback || rows.length === 0) return;
       const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
       setSel(oneSelected(rows[clamped]));
@@ -439,12 +454,12 @@ export function useListingSelection({
     // here is what dropped an arrow-key selection made just after opening a
     // folder, even with the selection carried across the remount.
     if (!listingLoaded) return;
-    if (rows.length === 0) {
-      setSel(EMPTY_SELECTION);
-      return;
-    }
-    const clamped = Math.min(Math.max(lastSelIndexRef.current, 0), rows.length - 1);
-    setSel(oneSelected(rows[clamped]));
+    // Re-anchor to the slot the lead used to hold — or, for a lead that never
+    // held one, select nothing. The `lastSelIndexRef.current === -1` case is a
+    // `?sel=` that MISSED (a bookmark naming a since-deleted file), and this used
+    // to clamp it to row one; the rule and the reasons are on
+    // selectionAfterVanish (D276).
+    setSel(selectionAfterVanish(rows, lastSelIndexRef.current));
   }, [navRows, selectedPath, sel, listingLoaded]);
 
   return {

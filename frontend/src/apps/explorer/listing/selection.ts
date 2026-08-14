@@ -42,6 +42,37 @@ export function rememberSelection(fsPath: string, sel: Selection): void {
   lastSelection = { fsPath, sel };
 }
 
+// What the selection becomes when the LEAD's row is NOT among the rendered rows
+// (D276). The reconcile in useListingSelection owns WHEN this is asked — it has
+// already waited out a still-loading listing and a pending rename target — and
+// this owns the answer.
+//
+// `lastIndex` is the last slot the lead was seen occupying in these rows, or
+// **-1 for a lead that has never been seen in them at all**, and that number is
+// the whole decision:
+//
+//   * seen before, and now gone -> RE-ANCHOR to whatever occupies its slot
+//     (clamped to the last row when the folder shrank past it). This is a row
+//     the user was demonstrably on and something took it away — an external
+//     delete, a move to the bin, a rename the user made themselves — and landing
+//     the highlight on the neighbour is what every file manager does; going
+//     empty there would punish the user for an edit they asked for.
+//   * NEVER seen -> select NOTHING. The only way to get here is a lead that was
+//     SEEDED rather than chosen: a `?sel=` from a bookmark, a shared link or the
+//     upward hop, naming a file that has since been deleted or renamed. There is
+//     no slot to re-anchor to, because the selection never had one — the old
+//     clamp read the -1 as "row zero" and selected the folder's first row, which
+//     is a file nobody named and a preview iframe nobody asked for. That is
+//     precisely the guess D275 removed from the folder open, arriving by another
+//     door: a link that misses is a link that missed, not a request for row one.
+//
+// An EMPTY row list is empty either way — there is no neighbour to fall back to,
+// however well anchored the selection was.
+export function selectionAfterVanish(rows: string[], lastIndex: number): Selection {
+  if (rows.length === 0 || lastIndex < 0) return EMPTY_SELECTION;
+  return oneSelected(rows[Math.min(lastIndex, rows.length - 1)]);
+}
+
 // The first row in the RENDERED order that is actually ON SCREEN, or null when
 // there is none. The order is the one the user is looking at, so the answer
 // follows the active sort, and a directory is an ordinary candidate.
