@@ -132,12 +132,72 @@ def test_raised_exception_comes_back_under_the_sentinel(dm, monkeypatch):
         srv.server_close()
 
 
-def test_claim_spawn_admits_one_winner_and_steals_a_stale_lock(dm):
-    assert dm._claim_spawn() is True     # first caller wins the spawn
-    assert dm._claim_spawn() is False    # lock held → a concurrent caller waits instead
-    old = time.time() - (dm._SPAWN_WAIT_S + 10)
-    os.utime(dm.LOCK, (old, old))        # a crashed spawner left the lock behind
-    assert dm._claim_spawn() is True     # stale lock is stolen
+def test_main_reuses_a_live_daemon_without_spawning(dm, monkeypatch):
+    monkeypatch.setattr(dm, "_read_state",
+                        lambda: {"port": 7, "token": "tok", "version": dm._version()})
+    monkeypatch.setattr(dm, "_alive", lambda *a: True)
+    spawned = []
+    monkeypatch.setattr(dm, "_spawn", lambda: spawned.append(1))
+    assert dm.main() == {"port": 7, "token": "tok", "reused": True}
+    assert spawned == []                 # a healthy daemon is never re-spawned
+
+
+def test_main_serializes_the_spawn_so_a_waiter_reuses_the_winners_daemon(dm, monkeypatch):
+    # Two concurrent ensures: the winner spawns once; the waiter blocks on the
+    # file_lock, then finds the daemon the winner started and reuses it — no
+    # orphaned second server.
+    monkeypatch.setattr(dm, "_read_state", lambda: None)
+    monkeypatch.setattr(dm, "_await_daemon", lambda v: {"port": 5, "token": "t", "reused": False})
+    spawns = []
+
+    def slow_spawn():
+        spawns.append(1)
+        monkeypatch.setattr(dm, "_read_state",
+                            lambda: {"port": 5, "token": "t", "version": dm._version()})
+        monkeypatch.setattr(dm, "_alive", lambda *a: True)
+        time.sleep(0.3)
+    monkeypatch.setattr(dm, "_alive", lambda *a: False)
+    monkeypatch.setattr(dm, "_spawn", slow_spawn)
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(dm.main())) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(spawns) == 1                       # only one server ever spawned
+    assert any(r.get("reused") for r in results)  # the waiter reused it
+
+
+def test_json_response_is_no_store(dm):
+    # Poll/compile GETs reuse the same URL; without no-store a memory cache would
+    # replay the first response and warming/compiles would look stuck.
+    srv, port, token = dm._make_server()
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        r = _get(port, f"/ping?_token={token}")
+        assert r.headers.get("Cache-Control") == "no-store"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_main_creates_cache_root_on_a_fresh_machine(dm, tmp_path, monkeypatch):
+    # CACHE_ROOT doesn't exist yet; main() must create it before touching the
+    # lock/state under it. LOCK points at an existing dir so only main()'s own
+    # makedirs can create CACHE_ROOT here.
+    fresh = tmp_path / "fresh" / "cache" / "latex"
+    monkeypatch.setattr(dm.engine, "CACHE_ROOT", str(fresh))
+    monkeypatch.setattr(dm, "LOCK", str(tmp_path / "daemon.spawn.lock"))
+    monkeypatch.setattr(dm, "STATE", str(fresh / "daemon.json"))
+    monkeypatch.setattr(dm, "_read_state", lambda: None)
+    monkeypatch.setattr(dm, "_alive", lambda *a: False)
+    monkeypatch.setattr(dm, "_spawn", lambda: None)
+    monkeypatch.setattr(dm, "_await_daemon", lambda v: {"port": 1, "token": "t", "reused": False})
+    assert not fresh.exists()
+    dm.main()
+    assert fresh.is_dir()
 
 
 def test_state_file_records_port_token_and_version(dm):

@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import engine  # noqa: E402 — the existing main(action=…) dispatcher, reused verbatim
-from procutil import clean_env, spawn_python  # noqa: E402 — engine put templates/shared on the path
+from procutil import clean_env, file_lock, spawn_python  # noqa: E402 — engine put templates/shared on the path
 
 STATE = os.path.join(engine.CACHE_ROOT, "daemon.json")
 LOCK = os.path.join(engine.CACHE_ROOT, "daemon.spawn.lock")
@@ -117,23 +117,6 @@ def _dispatch(params: dict):
     return engine.main(**kwargs)
 
 
-def _claim_spawn() -> bool:
-    """True if this caller wins the right to spawn (else another already is and we
-    wait for its daemon) — stops two concurrent ensures orphaning a server. A lock
-    older than the spawn budget is a crashed spawner; steal it."""
-    try:
-        os.close(os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        return True
-    except FileExistsError:
-        try:
-            if time.time() - os.path.getmtime(LOCK) > _SPAWN_WAIT_S + 5:
-                os.remove(LOCK)
-                return _claim_spawn()
-        except OSError:
-            pass
-        return False
-
-
 def _await_daemon(version):
     deadline = time.time() + _SPAWN_WAIT_S
     while time.time() < deadline:
@@ -157,24 +140,23 @@ def _spawn():
 
 
 def main():
-    """runPython entrypoint: ensure the daemon is up, return {port, token}."""
+    """runPython entrypoint: ensure the daemon is up, return {port, token}. The
+    spawn is serialized on a kernel `file_lock` so concurrent ensures can't
+    orphan a second server; a waiter blocks, then finds the daemon the winner
+    already started."""
     os.makedirs(engine.CACHE_ROOT, exist_ok=True)   # LOCK/STATE/log all live under it
     version = _version()
     st = _read_state()
     if st and _alive(st.get("port"), version, st.get("token")):
         return {"port": st["port"], "token": st["token"], "reused": True}
-    if not _claim_spawn():
-        return _await_daemon(version)   # another ensure is already spawning
-    try:
+    with file_lock(LOCK, timeout=_SPAWN_WAIT_S + 10):
+        st = _read_state()   # recheck: a racing ensure may have spawned while we waited
+        if st and _alive(st.get("port"), version, st.get("token")):
+            return {"port": st["port"], "token": st["token"], "reused": True}
         if st and st.get("port"):
             _quit(st["port"], st.get("token", ""))   # stale version / wrong code — retire it
         _spawn()
         return _await_daemon(version)
-    finally:
-        try:
-            os.remove(LOCK)
-        except OSError:
-            pass
 
 
 # --- the server ------------------------------------------------------------

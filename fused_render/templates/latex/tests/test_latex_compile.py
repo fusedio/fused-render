@@ -161,7 +161,7 @@ def test_pandoc_venv_returns_cached_without_building(eng, tmp_path, monkeypatch)
     assert eng._pandoc_venv_python() == str(vpy)
 
 
-def test_pandoc_venv_builds_under_lock_and_releases_it(eng, tmp_path, monkeypatch):
+def test_pandoc_venv_builds_once_and_writes_marker_after_a_clean_install(eng, tmp_path, monkeypatch):
     pandoc = tmp_path / "_pandoc"
     monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
     monkeypatch.setattr(eng.shutil, "which", lambda n: "uv" if n == "uv" else None)
@@ -174,8 +174,25 @@ def test_pandoc_venv_builds_under_lock_and_releases_it(eng, tmp_path, monkeypatc
 
     eng._pandoc_venv_python()
     assert any("venv" in c for c in runs) and any("install" in c for c in runs)
-    assert os.path.exists(os.path.join(str(pandoc), "deps_ok"))
-    assert not os.path.exists(os.path.join(str(pandoc), "build.lock"))   # released in finally
+    assert os.path.exists(os.path.join(str(pandoc), "deps_ok"))   # only after a clean install
+
+
+def test_pandoc_venv_leaves_no_marker_when_install_fails(eng, tmp_path, monkeypatch):
+    # A failed uv install must NOT write deps_ok, so the next export rebuilds
+    # rather than reusing a half-built tree.
+    pandoc = tmp_path / "_pandoc"
+    monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
+    monkeypatch.setattr(eng.shutil, "which", lambda n: "uv" if n == "uv" else None)
+
+    def fail_install(cmd, **kw):
+        if "install" in cmd:
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(eng.subprocess, "run", fail_install)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        eng._pandoc_venv_python()
+    assert not os.path.exists(os.path.join(str(pandoc), "deps_ok"))
 
 
 def test_export_falls_back_to_ondemand_venv_when_pypandoc_missing(eng, tmp_path, monkeypatch):
