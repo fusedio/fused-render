@@ -1,0 +1,38 @@
+# The vector template's environment (SPEC PY-16). Every .py here shares it:
+# `vector_reader.py`, `browse.py` and `convert_parquet.py` are all runPython
+# entrypoints in their own right.
+#
+# geopandas, shapely and pyogrio are the reason this folder declares anything at
+# all — the geo stack left `[bundled]` (D234) and this template reads .shp/.gpkg/
+# .geojson/.fgb through exactly it. pyogrio is named rather than inherited from
+# geopandas: `vector_reader.py` and `convert_parquet.py` both import it directly
+# for `pyogrio.list_layers`, and a declaration that leans on someone else's
+# dependency edge breaks the day that edge moves.
+#
+# numpy and pandas ARE still on the app's interpreter and are declared anyway
+# because this declaration is the COMPLETE list (D172) — the venv holds exactly
+# what is written here, so an undeclared import is simply absent.
+#
+# pyarrow is here for a reason no import scan can see: `convert_parquet.py` calls
+# `gdf.to_parquet(...)`, and geopandas' parquet IO is an OPTIONAL backend it does
+# not require. Without this line the venv builds cleanly, every import succeeds
+# and the convert action fails at runtime — the same trap as `pypandoc` vs
+# `pypandoc-binary` in the latex template, which is why "is it importable" is
+# never the completeness question.
+[project]
+name = "fused-render-template-vector"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "geopandas",
+    "shapely",
+    "pyogrio",
+    "pyarrow",
+    "numpy",
+    "pandas",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

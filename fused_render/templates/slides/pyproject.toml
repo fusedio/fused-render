@@ -1,0 +1,29 @@
+# The slides template's environment (SPEC PY-16). `slides.py` is the runPython
+# entrypoint; `engine.py` is imported beside it, and `tests/` sits under this
+# folder so it shares the venv too — which is why python-pptx has to be here and
+# not only in the entrypoint's own reading of it.
+#
+# fpdf2 is the reason this folder declares anything at all: it left `[bundled]`
+# with the rest of the PDF stack (D234), and `engine.py`'s PDF export imports it.
+# That import used to raise `ImportError("PDF export needs fpdf2: pip install
+# fpdf2")` if it was ever missing — advice a DMG user cannot follow, the exact
+# D176 failure — so the fix is a declaration, not a better message.
+#
+# python-pptx and pillow ARE still on the app's interpreter and are declared
+# anyway because this declaration is the COMPLETE list (D172): the venv holds
+# exactly what is written here. python-pptx reads and writes the .pptx itself;
+# pillow handles the image slides.
+[project]
+name = "fused-render-template-slides"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fpdf2>=2.8.7",
+    "python-pptx",
+    "pillow",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

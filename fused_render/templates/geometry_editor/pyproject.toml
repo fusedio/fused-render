@@ -1,0 +1,32 @@
+# The geometry_editor template's environment (SPEC PY-16). geometry_io.py is the
+# only .py here and the only runPython entrypoint.
+#
+# geopandas and shapely left `[bundled]` with the rest of the geo stack (D234),
+# and this template is nothing without them: `load` reads any vector format into
+# a GeoDataFrame and `export` writes GeoParquet back out, both through geopandas,
+# with shapely doing the geometry itself. Both are named even though geopandas
+# requires shapely: geometry_io.py imports shapely directly, and a declaration
+# that leans on someone else's dependency edge breaks the day that edge moves.
+#
+# pyarrow is here for a reason no import scan can see: `load` calls
+# `gpd.read_parquet` and `export` calls `gdf.to_parquet`, and geopandas' parquet
+# IO is an OPTIONAL backend it does not require. Without this line the venv
+# builds cleanly, every import succeeds and both actions fail at runtime — the
+# same trap as `pypandoc` vs `pypandoc-binary` in the latex template.
+#
+# pyogrio and pyproj are NOT listed — they arrive as geopandas' own required
+# dependencies and no file here imports or calls into either one.
+[project]
+name = "fused-render-template-geometry-editor"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "geopandas",
+    "shapely",
+    "pyarrow",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false

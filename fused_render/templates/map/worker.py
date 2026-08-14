@@ -1,7 +1,8 @@
 """Execute a Python map target and classify the returned object.
 
-The warm loopback service calls :func:`main` directly from FusedRender's
-bundled geo runtime. A one-shot CLI invocation remains as a degraded fallback
+The warm loopback service calls :func:`main` directly from this folder's geo
+runtime (declared in `pyproject.toml`, SPEC PY-16 — see `geo_classify.py`'s
+header). A one-shot CLI invocation remains as a degraded fallback
 if that service cannot start. Raster paths are offered to ``RasterEngine``
 first; vector and in-memory results then fall through to ``geo_classify``.
 """

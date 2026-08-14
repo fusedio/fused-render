@@ -123,6 +123,13 @@ _IMPORT_TO_DIST = {
     "rasterio": "rasterio",
     "rio_tiler": "rio-tiler",
     "zarr": "zarr",
+    # Never named in `[bundled]`, but on the app interpreter until D234 all the
+    # same — they arrived with geopandas and rasterio, which is precisely why
+    # `map/vector_engine.py` could import both directly and nothing complained.
+    # Mapped now so that borrowed edge is checked instead of assumed: a template
+    # importing either must say so.
+    "pyproj": "pyproj",
+    "pyogrio": "pyogrio",
     "fitz": "pymupdf",
     "pymupdf": "pymupdf",
     "pikepdf": "pikepdf",

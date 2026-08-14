@@ -1,0 +1,28 @@
+# The excel template's environment (SPEC PY-16). reader.py is the only .py here
+# and the only runPython entrypoint.
+#
+# fpdf2 is the reason this folder declares anything at all: it left `[bundled]`
+# with the rest of the PDF stack (D234), and `_pdf_from_rows` imports it for the
+# `export` action's PDF output. On a packaged app there is no other way to get
+# it — this used to be the shape that told a DMG user to `pip install` (D176).
+#
+# duckdb, openpyxl and pyarrow ARE still on the app's interpreter and are
+# declared anyway because this declaration is the COMPLETE list: the venv holds
+# exactly what is written here, with no baseline unioned in (D172). Together
+# they are the editor's two data paths — openpyxl for the rich xlsx load/save,
+# duckdb + pyarrow for the windowed Parquet cache behind big sheets.
+[project]
+name = "fused-render-template-excel"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fpdf2>=2.8.7",
+    "duckdb>=1.1",
+    "openpyxl",
+    "pyarrow",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false
