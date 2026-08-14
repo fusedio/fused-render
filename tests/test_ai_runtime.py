@@ -300,6 +300,28 @@ def test_every_suggested_model_names_a_capability_with_a_runner():
         assert any(r.capability == capability for r in registry.all_runners()), capability
 
 
+def test_speech_recognition_is_a_capability_something_here_serves(monkeypatch):
+    """The glossary move is the whole feature from the page's point of view.
+
+    "speech recognition" is the label `ai_models` puts on a Whisper repo, and
+    while it sat in `NO_RUNNER_YET` every one of those cards showed no Load
+    button on every machine. It resolves to a capability now — and to a runner
+    on ALL of them, unlike text generation, which is the reason the runner is
+    CTranslate2 rather than MLX.
+    """
+    assert registry.capability_for_task("speech recognition") == registry.SPEECH_TO_TEXT
+    assert "speech recognition" not in registry.NO_RUNNER_YET
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    runner = registry.for_capability(registry.SPEECH_TO_TEXT)
+    assert runner is not None and runner.code == "faster-whisper"
+
+
+def test_the_registry_describes_the_transcription_runner():
+    rows = {row["code"]: row for row in registry.describe()}
+    assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
+
+
 def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
     """Wheels only — a VCS or URL dependency is a source build, and a source
     build is a build backend running in an interpreter uv creates for it.
@@ -793,7 +815,8 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
-    assert {r["code"] for r in body["runners"]} == {"mlx-text", "diffusers-image"}
+    assert {r["code"] for r in body["runners"]} == {
+        "mlx-text", "diffusers-image", "faster-whisper"}
     assert body["loaded"] == []
 
 
