@@ -110,6 +110,27 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 #: And one row per RECORDING, for the same reason.
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 
+#: One transcription in flight at a time, decided HERE rather than left to the
+#: worker's `GENERATE_LOCK`.
+#:
+#: The worker serializes generations anyway — one model, one process — but it
+#: does so by parking the second request inside `_single`, BEFORE that handler
+#: reaches `heartbeat()`. So the second row got no ticks at all while it waited,
+#: and with `TRANSCRIBE_TIMEOUT_S` at four hours that wait is long enough to hit
+#: every timer in `jobs`: stalled at 30s ("no longer reporting" about work that
+#: is merely queued), swept away at 600s, at which point `watchJob` resolves
+#: with nothing and the page is told a still-running transcription failed. Two
+#: 90-minute recordings back to back is all it takes.
+#:
+#: Waiting on THIS side of the request is what makes the wait describable. The
+#: row says it is queued, keeps saying so, and its ✕ is honoured — none of which
+#: is reachable from inside a blocked `urlopen`.
+_TRANSCRIBE_LOCK = threading.Lock()
+
+#: How often a queued transcription re-states itself. Well under
+#: `jobs.STALE_AFTER_S` (30s), which is the whole point of it.
+_QUEUE_TICK_S = 5.0
+
 
 class SupervisorError(RuntimeError):
     """Something the caller can be told verbatim."""
@@ -1102,6 +1123,37 @@ def generate_image(model: str, request: dict, job: str) -> dict:
     return payload.get("result") or {}
 
 
+def _await_turn(job: str) -> None:
+    """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
+
+    Returns holding the lock — the caller releases it. Raises
+    `SupervisorError("cancelled")` if the ✕ is pressed while waiting, which is
+    the other half of why the wait lives here: a queued request has sent nothing
+    to the worker, so there is nothing there to cancel and no tick coming back
+    to carry the request.
+
+    The fast path costs one uncontended `acquire` and reports nothing, so a
+    lone transcription's row is unchanged.
+    """
+    if _TRANSCRIBE_LOCK.acquire(blocking=False):
+        return
+    _report(job, state="running", kind="task", unit="s", done=None, total=None,
+            detail="Queued behind another transcription…")
+    while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_TICK_S):
+        if _cancel_requested(job):
+            raise SupervisorError("cancelled")
+        # Re-stated rather than left to go stale. The bar does not move — there
+        # is nothing to say but "still waiting" — and that is exactly what a
+        # heartbeat is (AI-5h).
+        _report(job, detail="Queued behind another transcription…")
+    # Checked once more now that it is ours: a ✕ pressed in the moment between
+    # the last poll and the acquire would otherwise start a transcription the
+    # user had already stopped.
+    if _cancel_requested(job):
+        _TRANSCRIBE_LOCK.release()
+        raise SupervisorError("cancelled")
+
+
 def generate_transcript(model: str, request: dict, job: str) -> dict:
     """Transcribe one recording. Blocking — call it on a thread, never on the loop.
 
@@ -1115,16 +1167,21 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     if worker is None:
         worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job)
 
+    _await_turn(job)
     try:
-        response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                   timeout=TRANSCRIBE_TIMEOUT_S)
-    except (OSError, ValueError) as e:
-        raise SupervisorError(f"the transcription process did not answer: {e}") from e
-    with response:
         try:
-            payload = json.loads(response.read().decode() or "{}")
-        except ValueError as e:
-            raise SupervisorError("the transcription process sent a malformed reply") from e
+            response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                       timeout=TRANSCRIBE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the transcription process did not answer: {e}") from e
+        with response:
+            try:
+                payload = json.loads(response.read().decode() or "{}")
+            except ValueError as e:
+                raise SupervisorError(
+                    "the transcription process sent a malformed reply") from e
+    finally:
+        _TRANSCRIBE_LOCK.release()
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):

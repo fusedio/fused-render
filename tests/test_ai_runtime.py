@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -1309,6 +1310,140 @@ def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
     # Comfortably past any recording somebody would actually hand it: four
     # hours of DECODING is ~20 hours of audio at the default model's CPU speed.
     assert seen["timeout"] >= 4 * 3600
+
+
+def _row_now(job_id):
+    """The row as it stands RIGHT NOW — `_row` waits for a terminal state, and
+    everything below is about a row that is deliberately still running."""
+    return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+
+
+def _wait_for_queued(job_id, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = _row_now(job_id)
+        if row and "ueued" in (row.get("detail") or ""):
+            return row
+        time.sleep(0.02)
+    return _row_now(job_id)
+
+
+def _open_transcribe_row(job, title="recording.m4a"):
+    """Open the row the way `start_transcribe` does, since these tests drive
+    `generate_transcript` directly — the first report for a job must carry a
+    title, and in production that one has already happened."""
+    supervisor._report(job, title=title, state="running", kind="task",
+                       cancellable=True, unit="s", detail="Preparing…",
+                       done=None, total=None)
+
+
+def _blocking_worker_request(release, started=None):
+    """A `_worker_request` that parks until `release` is set, like a worker
+    holding its GENERATE_LOCK through a long decode."""
+    class _Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True, "result": {"duration": 1.0}}).encode()
+
+    def request(worker, path, body=None, timeout=None):
+        if started is not None:
+            started.set()
+        release.wait(20)
+        return _Reply()
+
+    return request
+
+
+def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch):
+    """The cost of a four-hour timeout, and the bug it turned from rare to normal.
+
+    A second transcription blocks inside the worker's `_single` BEFORE it
+    reaches `heartbeat()`, so its row gets no ticks at all while it waits.
+    `jobs.STALE_AFTER_S` is 30s, so the manager labelled merely-queued work "no
+    longer reporting", its ✕ did nothing, and `_sweep` dropped the row after
+    ten minutes — at which point `fused.ai.transcribe()` rejects work that is
+    still running and about to write a perfectly good transcript.
+    """
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5), "the first transcription never reached the worker"
+
+    second = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/b"}, supervisor.TRANSCRIBE_JOB_PREFIX + "two"),
+        daemon=True)
+    second.start()
+    try:
+        row = _wait_for_queued(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+        assert row and "ueued" in (row.get("detail") or ""), row
+        assert row["state"] == "running", row
+        # Ticking is the point: a row that keeps reporting is never stalled and
+        # is never swept, however long the queue is.
+        first_update = row["updated_at"]
+        time.sleep(0.25)
+        assert _row_now(supervisor.TRANSCRIBE_JOB_PREFIX + "two")["updated_at"] > first_update
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+
+
+def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
+    """Its ✕ used to do nothing: cancellation reaches a worker through the
+    reply to a tick, and a queued request is not ticking — nor has anything of
+    it reached the worker to cancel."""
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5)
+
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "two"
+    _open_transcribe_row(job)
+    failed = {}
+
+    def run():
+        try:
+            supervisor.generate_transcript("org/w", {"path": "/b"}, job)
+        except supervisor.SupervisorError as e:
+            failed["error"] = str(e)
+
+    second = threading.Thread(target=run, daemon=True)
+    second.start()
+    try:
+        _wait_for_queued(job)
+        jobs.request_cancel(job)
+        second.join(5)
+        assert failed.get("error") == "cancelled", failed
+    finally:
+        release.set()
+        first.join(10)
 
 
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
