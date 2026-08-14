@@ -593,11 +593,27 @@ def _failure_text(e: BaseException) -> str:
     return f"{e.__class__.__name__}: {e}".strip().rstrip(":")
 
 
-def _cancel_requested(job: str) -> bool:
+def _cancel_state(job: str) -> bool | None:
+    """Was the ✕ pressed — or is there no row to ask?
+
+    Three answers, not two, because "no row" is not "no". A row can be EVICTED
+    by the cap at any moment (`jobs._sweep`), and `cancel_requested` is server
+    state that no report can restore — so a poller reading a missing row as
+    False is not observing that the ✕ was not pressed, it is guessing. The
+    guess is usually right and occasionally silently loses a cancel, which is
+    the worst combination for something nobody will ever see.
+
+    Callers that can act on the distinction take the tri-state; the rest keep
+    the boolean below, whose behaviour is unchanged.
+    """
     for record in jobs.list_jobs():
         if record["id"] == job:
             return bool(record.get("cancel_requested"))
-    return False
+    return None
+
+
+def _cancel_requested(job: str) -> bool:
+    return _cancel_state(job) is True
 
 
 def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
@@ -1132,8 +1148,19 @@ def generate_text(model: str, body: dict):
                 continue
 
 
-def _wait_ready(model: str, capability: str, job: str) -> Worker:
+def _wait_ready(model: str, capability: str, job: str,
+                row: dict | None = None) -> Worker:
     """Make `model` resident, reporting the wait to `job`. Blocking.
+
+    `row` is the caller's row IDENTITY, restated on every tick of the wait —
+    see `transcribe_row_fields`. Optional because the image path does not yet
+    supply one, and its ticks behave exactly as before without it; but a wait
+    for a COLD model is the longest-running reporter in this module (a
+    multi-GB pull), so it is the likeliest of all of them to be the tick that
+    has to re-create an evicted row rather than update it. Without an identity
+    it cannot: `upsert` refuses a first report with no title, `_report`
+    swallows that, and the row stays gone for the whole download — no
+    progress, no ✕, and a page told the transcription failed.
 
     Text generation cannot do this — a chat box must not hang for the minutes a
     cold load takes, so `generate_text` fails fast with the job id instead. An
@@ -1150,6 +1177,7 @@ def _wait_ready(model: str, capability: str, job: str) -> Worker:
     """
     started, pending = _start_resident(model, capability)
     deadline = time.monotonic() + LOAD_WAIT_TIMEOUT_S
+    unreadable = False
     while time.monotonic() < deadline:
         worker = ready_worker(capability, model)
         if worker is not None:
@@ -1170,9 +1198,22 @@ def _wait_ready(model: str, capability: str, job: str) -> Worker:
             # capability, or an unload landed. The record we hold never errored,
             # so there is no better answer than what happened to it.
             raise SupervisorError(f"{model} was unloaded before it could be used")
-        if _cancel_requested(job):
+        cancel = _cancel_state(job)
+        if cancel:
             raise SupervisorError("cancelled")
-        _report(job, detail=f"Waiting for {model} — {detail or state}…")
+        if cancel is None and not unreadable:
+            # No row to ask. Said once rather than every half-second, and NOT
+            # treated as a cancel: a cold load is minutes of legitimate work
+            # and aborting it on capacity pressure would be a worse failure
+            # than the one this guards. The tick below rebuilds the row when
+            # the caller gave us its identity, so the blind window is one
+            # iteration rather than the whole download.
+            unreadable = True
+            logger.warning(
+                "job row %s is gone while waiting for %s; a cancel requested "
+                "now cannot be read until the row is rebuilt", job, model)
+        _report(job, **(row or {}), **({"state": "running"} if row else {}),
+                detail=f"Waiting for {model} — {detail or state}…")
         time.sleep(0.5)
     raise SupervisorError(
         f"{model} did not finish loading in time (watch {started['jobId']})")
@@ -1290,7 +1331,11 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     try:
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:
-            worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job)
+            # The row identity travels into the wait too — it is the longest
+            # reporter on this path, so it is the one most likely to meet an
+            # evicted row.
+            worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job,
+                                 row=request.get("row"))
         try:
             response = _worker_request(worker, "/generate", body={**request, "job": job},
                                        timeout=TRANSCRIBE_TIMEOUT_S)

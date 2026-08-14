@@ -1561,6 +1561,67 @@ def test_a_queued_row_EVICTED_by_the_cap_reopens_on_the_next_tick(monkeypatch):
         second.join(10)
 
 
+def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The last reporter on this path that could not rebuild its row — and the
+    likeliest of all of them to have to.
+
+    A cold model is a multi-GB pull, so `_wait_ready` is the longest-running
+    reporter in the supervisor; with the cap biting, its row is evicted during
+    the download. Its tick used to carry only a `detail`, so `upsert` refused
+    it, `_report` swallowed the error, and the row stayed gone for the whole
+    load: no progress, no ✕, and `watch()` resolving null a few seconds in
+    while the transcription was still perfectly alive.
+    """
+    # Long enough that the whole assertion below happens INSIDE the wait: the
+    # worker's own ticks would rebuild the row too, so a test that let the load
+    # finish would pass without `_wait_ready` restating anything.
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "6")
+    started = _post_transcribe(client, path=recording).json()
+    job = started["jobId"]
+
+    # Evict it exactly as the cap does, mid-load.
+    deadline = time.monotonic() + 5
+    row = None
+    while time.monotonic() < deadline:
+        row = _row_now(job)
+        if row and "Waiting for" in (row.get("detail") or ""):
+            break
+        time.sleep(0.02)
+    assert row and "Waiting for" in (row.get("detail") or ""), row
+    with jobs._lock:
+        jobs._jobs.pop(job, None)
+
+    deadline = time.monotonic() + 3
+    rebuilt = None
+    while time.monotonic() < deadline:
+        rebuilt = _row_now(job)
+        if rebuilt is not None:
+            break
+        time.sleep(0.02)
+    assert rebuilt is not None, "the wait could not rebuild its row"
+    # STILL WAITING — so it was the wait's own tick that rebuilt it, not a
+    # later reporter. That is what makes this test about `_wait_ready`.
+    assert "Waiting for" in (rebuilt.get("detail") or ""), rebuilt
+    assert rebuilt["title"] == os.path.basename(recording)
+    assert rebuilt["cancellable"] is True and rebuilt["unit"] == "s"
+    _wait_job(job, timeout=40)
+
+
+def test_a_missing_row_is_UNKNOWN_rather_than_not_cancelled():
+    """The half that matters on its own. `cancel_requested` is server state no
+    report can restore, so a poller reading a missing row as False is guessing
+    — usually right, occasionally losing a ✕, and silent either way."""
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "ghost"
+    assert supervisor._cancel_state(job) is None
+    assert supervisor._cancel_requested(job) is False  # unchanged for its callers
+
+    supervisor._report(job, **supervisor._transcribe_row("x.m4a", "Preparing…"))
+    assert supervisor._cancel_state(job) is False
+    jobs.request_cancel(job)
+    assert supervisor._cancel_state(job) is True
+
+
 def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     """Its ✕ used to do nothing: cancellation reaches a worker through the
     reply to a tick, and a queued request is not ticking — nor has anything of
