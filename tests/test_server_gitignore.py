@@ -213,16 +213,28 @@ def test_an_unusable_tempdir_degrades_instead_of_raising(monkeypatch):
     assert gitignore._EMPTY_GIT_DIR is None
 
 
-def test_a_listing_survives_a_gitignore_oracle_that_cannot_be_built(tmp_path, monkeypatch):
-    """The same thing one layer up, through the route the user actually hits."""
+def test_a_walk_survives_a_gitignore_oracle_that_cannot_be_built(tmp_path, monkeypatch):
+    """The same thing one layer up, through the route that actually reaches it.
+
+    `/api/fs/walk` is the caller: it builds an `_IgnoreOracle` per directory,
+    and a standalone-.gitignore tree is exactly the case that needs the scratch
+    `.git`. (`/api/fs/list` takes the `_git_ignored` path and never asks for one
+    — a route-level test written against it would pass with the guard removed,
+    which is no test at all.)
+    """
     (tmp_path / ".gitignore").write_text("*.log\n", encoding="utf-8")  # no repo here
     (tmp_path / "debug.log").write_text("l", encoding="utf-8")
+    (tmp_path / "keep.txt").write_text("k", encoding="utf-8")
     monkeypatch.setattr(gitignore, "_EMPTY_GIT_DIR", None)
     monkeypatch.setattr(
         gitignore.tempfile, "mkdtemp",
         lambda **kw: (_ for _ in ()).throw(OSError(28, "No space left on device")))
 
-    r = _client(tmp_path).get("/api/fs/list", params={"path": str(tmp_path)})
+    r = _client(tmp_path).get("/api/fs/walk", params={"path": str(tmp_path)})
 
     assert r.status_code == 200
-    assert all(e["ignored"] is False for e in r.json()["entries"])
+    rels = {e["rel"] for e in r.json()["entries"]}
+    assert "keep.txt" in rels
+    # Pruning is what is lost when the oracle cannot be built, and losing it is
+    # the DEGRADED behaviour this is asserting: the walk still answers.
+    assert "debug.log" in rels
