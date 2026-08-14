@@ -82,12 +82,23 @@ def _start_server(payload, **flags):
                           which is how a download is interrupted with no signal
       unauthorized=N      401 on the first N real fetches — a presigned URL
                           that expired, which the client answers by re-resolving
+      unauthorized_on={n} 401 on those real fetches by number, so a download can
+                          be made to outlive TWO presigned URLs
       break_first=N       the first N real responses are a truncated chunked
                           body, which raises `http.client.IncompleteRead`
+      chunk_cap=N         at most N bytes per response, then hang up — a slow
+                          link that keeps needing another connection
+      probe_fail_first=N  the first N one-byte probes get a 503
+
+    `state["requests"]` records the path, `Range` and `Authorization` of every
+    request, which is how the CDN-credential test can assert on a header that
+    must NOT be there.
     """
-    state = {"log": [], "served": 0, "broken": 0, "lock": threading.Lock(),
+    state = {"log": [], "requests": [], "served": 0, "broken": 0, "real": 0,
+             "probes": 0, "lock": threading.Lock(),
              "ranges": True, "lie_after_probe": False, "clamp": False,
-             "budget": None, "unauthorized": 0, "break_first": 0}
+             "budget": None, "unauthorized": 0, "unauthorized_on": (),
+             "break_first": 0, "chunk_cap": None, "probe_fail_first": 0}
     state.update(flags)
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -98,13 +109,28 @@ def _start_server(payload, **flags):
 
         def do_GET(self):
             header = self.headers.get("Range")
+            probe = header == "bytes=0-0"
             with state["lock"]:
                 state["log"].append(header)
-            probe = header == "bytes=0-0"
+                state["requests"].append({
+                    "path": self.path, "range": header,
+                    "auth": self.headers.get("Authorization")})
+                if probe:
+                    state["probes"] += 1
+                    failed_probe = state["probes"] <= state["probe_fail_first"]
+                else:
+                    state["real"] += 1
+                    expired = (state["unauthorized"] > 0
+                               or state["real"] in state["unauthorized_on"])
+                    if state["unauthorized"] > 0:
+                        state["unauthorized"] -= 1
 
-            if not probe and state["unauthorized"]:
-                with state["lock"]:
-                    state["unauthorized"] -= 1
+            if probe and failed_probe:
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not probe and expired:
                 self.send_response(401)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -143,9 +169,11 @@ def _start_server(payload, **flags):
             body = payload[start:end + 1]
 
             allowed = len(body)
+            if state["chunk_cap"] is not None and not probe:
+                allowed = min(allowed, state["chunk_cap"])
             if state["budget"] is not None and not probe:
                 with state["lock"]:
-                    allowed = max(0, min(len(body), state["budget"] - state["served"]))
+                    allowed = max(0, min(allowed, state["budget"] - state["served"]))
                     state["served"] += allowed
 
             self.send_response(206 if partial else 200)
@@ -310,6 +338,56 @@ def test_publishing_requires_every_segment_to_have_landed(base, monkeypatch,
         fetch.finish()
 
     assert not os.path.exists(os.path.join(folder, "blobs", "e7ag"))
+
+
+# -- credentials go to the Hub, never to the CDN --------------------------------
+
+
+def test_the_hub_token_is_not_sent_to_the_presigned_cdn_url(base, monkeypatch,
+                                                            tmp_path, payload):
+    """S3 rejects a request carrying two authentication mechanisms with a 400.
+
+    huggingface_hub drops the `Authorization` header the moment the download
+    URL differs from the Hub URL, and it is not being fussy: a presigned URL
+    already carries its credentials in the query string. Sent anyway, the probe
+    fails, every segment burns its whole retry budget on 400s, and the download
+    falls back — SLOWER than before this feature existed and silently so,
+    because the fallback is invisible by design. For a user with a token set,
+    which is everyone pulling a gated model, that is every download.
+
+    The local server cannot reproduce the 400, so what is pinned is the header
+    itself: nothing but the Hub URL may ever carry one.
+    """
+    hub_url, state = _start_server(payload)
+    # Same server, deliberately a different HOST — that difference is the whole
+    # rule, and a test that redirected within one host would not see it.
+    cdn_url = hub_url.replace("127.0.0.1", "localhost").replace("/weights", "/cdn")
+    _wire(base, monkeypatch, tmp_path, hub_url, len(payload))
+    monkeypatch.setattr(base, "_hub_file_meta", lambda repo, name, revision: {
+        "url": hub_url, "location": cdn_url, "etag": "e7ag", "commit": "c0m",
+        "size": len(payload)})
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret")
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert state["requests"], "nothing was fetched"
+    for request in state["requests"]:
+        assert request["auth"] is None, request
+
+
+def test_the_hub_token_is_still_sent_when_the_file_is_served_by_the_hub(
+        base, monkeypatch, tmp_path, payload):
+    """The other half of the same rule. A gated repo answers the metadata call
+    for an anonymous caller and then 401s on the blob, so dropping the header
+    unconditionally would break exactly the downloads it was added for."""
+    url, state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "_hf_token", lambda: "hf_secret")
+
+    base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert {r["auth"] for r in state["requests"]} == {"Bearer hf_secret"}
 
 
 # -- the presigned URL expires mid-download -------------------------------------

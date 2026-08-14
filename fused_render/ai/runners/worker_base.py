@@ -659,8 +659,8 @@ class _FileFetch:
             count = len(saved)
         else:
             count = _segment_count(self.size)
-            if count > 1 and not _probe_host(self.meta["location"], self.token,
-                                             self.probes):
+            if count > 1 and not _probe_host(self.meta["location"],
+                                             self._cdn_token(), self.probes):
                 count = 1
         self.segments = _segments(self.size, count)
         if saved is None or not self._restore(saved):
@@ -672,6 +672,23 @@ class _FileFetch:
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
         self.pending = len(pending)
         return pending
+
+    def _cdn_token(self):
+        """The credential to send with the BLOB request — usually none.
+
+        huggingface_hub drops `Authorization` the moment the download URL
+        differs from the Hub URL, and S3 is the reason: a presigned URL already
+        carries its credentials in the query string, and a request bearing two
+        authentication mechanisms is refused with a 400. Sent anyway, the probe
+        fails and every segment burns its whole retry budget for any user with a
+        token set — which is everyone pulling a gated model — and the download
+        falls back to something SLOWER than what this replaced, silently,
+        because the fallback is invisible by design.
+
+        Computed per request rather than stored: `_re_resolve` can hand us a
+        location on a different host than the one we started on.
+        """
+        return None if self.meta["location"] != self.meta["url"] else self.token
 
     def _saved(self):
         """The segments a previous run recorded for THIS file, or None.
@@ -765,7 +782,7 @@ class _FileFetch:
             want_range = ranged or seg["done"] > 0
             moved = False
             try:
-                with _open(self.meta["location"], self.token,
+                with _open(self.meta["location"], self._cdn_token(),
                            start if want_range else None,
                            seg["end"] if want_range else None) as response:
                     if want_range:
