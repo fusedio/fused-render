@@ -6284,8 +6284,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   the worker's heartbeat: the active decode is the row whose absence would be
   noticed, and a queued one blinking out costs nothing now that its next tick
   rebuilds it. Its ✕ is polled on a separate, faster cadence, so that ordering
-  is not paid for in cancel latency. **The turn is taken before the MODEL is
-  resolved**, and
+  is not paid for in cancel latency — and the rebuild happens on DETECTION
+  rather than on that slow schedule, because the poll has already read the list
+  that says the row is gone. **The governing property is `maximum row-absence <
+  the watcher's give-up window`** (`fused.watchJob` resolves null after five
+  consecutive misses, ~3.5s, at which point the page is told a live
+  transcription stopped reporting), and it is derived from both sides' real
+  constants rather than chosen. **It does not yet hold for the ACTIVE decode**:
+  that row is refreshed by the worker, whose worst case is `worker_base`'s 5s
+  heartbeat when a single long segment produces no ticks — so an evicted
+  running row can be absent for longer than the page tolerates. Closing that
+  needs the row to stop being evictable rather than another cadence (see D276).
+  **The turn is taken before the MODEL is resolved**, and
   that ordering is load-bearing: resolving first put the one destructive step —
   `_start_resident`, which EVICTS the resident model when the requested one
   differs — outside the very lock that serializes this path, so a page asking
