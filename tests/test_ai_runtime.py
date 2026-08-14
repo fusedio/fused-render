@@ -1460,6 +1460,7 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
 
     _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
     _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
@@ -1509,6 +1510,7 @@ def test_a_queued_row_EVICTED_by_the_cap_reopens_on_the_next_tick(monkeypatch):
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
 
     job = supervisor.TRANSCRIBE_JOB_PREFIX + "two"
     _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
@@ -1608,6 +1610,41 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     _wait_job(job, timeout=40)
 
 
+def test_the_queue_cadence_stays_below_the_worker_heartbeat():
+    """The eviction ordering is a RELATIONSHIP between two modules, so it is
+    pinned rather than left to a comment.
+
+    `jobs._sweep` sheds the least recently updated running row first, and the
+    row that must survive is the active decode's. That decode's `updated_at`
+    is refreshed by `worker_base.HEARTBEAT_S` in the worst case — one long
+    segment produces no per-segment ticks at all — so a queue that reports
+    FASTER than the heartbeat makes every waiting row fresher than the running
+    one and inverts the ordering. An earlier cut did exactly that, reasoning
+    that 1s "matched the worker's cadence".
+
+    Read out of `worker_base` rather than restated here, so changing the
+    heartbeat fails this instead of silently re-inverting the sweep.
+    """
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "ai", "runners", "worker_base.py")
+    spec = importlib.util.spec_from_file_location("worker_base_cadence", path)
+    assert spec is not None and spec.loader is not None
+    worker_base = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker_base)
+
+    assert supervisor._QUEUE_TICK_S > worker_base.HEARTBEAT_S, (
+        "a queued row reporting faster than the worker's heartbeat makes the "
+        "ACTIVE decode the first thing the cap evicts")
+    # …and still comfortably inside the stale window, or a queued row is
+    # reported as "no longer reporting" while it waits.
+    assert supervisor._QUEUE_TICK_S < jobs.STALE_AFTER_S
+    # The ✕ is read on its own, faster cadence — the eviction fix must not be
+    # paid for in cancel latency.
+    assert supervisor._QUEUE_POLL_S <= 1.0
+
+
 def test_a_missing_row_is_UNKNOWN_rather_than_not_cancelled():
     """The half that matters on its own. `cancel_requested` is server state no
     report can restore, so a poller reading a missing row as False is guessing
@@ -1632,6 +1669,7 @@ def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
 
     _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
     first = threading.Thread(
@@ -1730,6 +1768,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
     monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
 
     _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
     _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "two")

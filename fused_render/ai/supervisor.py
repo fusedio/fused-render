@@ -127,21 +127,35 @@ TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: is reachable from inside a blocked `urlopen`.
 _TRANSCRIBE_LOCK = threading.Lock()
 
-#: How often a queued transcription re-states itself.
+#: How often a queued transcription looks at its ✕, and how often it re-states
+#: its row. **Two numbers, because they answer opposite questions.**
 #:
-#: 1s, not the 5s this started at, and the number is set by EVICTION rather than
-#: by staleness. `jobs._sweep` drops rows over `MAX_JOBS` (64) sorted by
+#: `jobs._sweep` drops rows over `MAX_JOBS` (64) sorted by
 #: `(state == RUNNING, updated_at)`, so among running rows the least recently
-#: updated goes first — and a queue is exactly the situation that produces more
-#: than 64 rows, since queueing is what a user pointing at a folder of
-#: recordings is doing. Ticking slower than the decode being waited for made the
-#: waiting rows the FIRST candidates for eviction, which is precisely backwards:
-#: the active one is the one whose absence anybody would notice.
+#: updated goes first — and a queue is exactly what produces more than 64 rows,
+#: since queueing is what a user pointing at a folder of recordings is doing.
+#: The row that should survive that is the ACTIVE decode's: a queued row
+#: blinking out and coming back on its next tick costs nothing now that every
+#: tick can rebuild it, while the running one is the one whose absence anybody
+#: would notice.
 #:
-#: Matching the worker's own per-segment cadence keeps every transcription row,
-#: running or queued, equally recent. Staleness (`STALE_AFTER_S`, 30s) was never
-#: the binding constraint; it is simply also satisfied.
-_QUEUE_TICK_S = 1.0
+#: So the reporting cadence must be SLOWER than the running row's worst case,
+#: and that worst case is not the per-segment tick — it is `worker_base`'s
+#: HEARTBEAT_S (5s), which is what re-states a decode sitting on one long
+#: segment. An earlier cut set this to 1s reasoning that it "matched the
+#: worker's cadence"; it did not, it beat it, so every queued row was FRESHER
+#: than the active decode and the sweep ate the active row first — the exact
+#: inversion the comment claimed to avoid. 2x the heartbeat leaves no ambiguity,
+#: and is still far inside `STALE_AFTER_S` (30s) so a queued row is never
+#: reported as stalled. `test_the_queue_cadence_stays_below_the_worker_heartbeat`
+#: is what keeps this true if the heartbeat ever moves.
+_QUEUE_TICK_S = 10.0
+
+#: …but the ✕ must not wait 10 seconds to be noticed, so the lock is polled far
+#: more often than the row is written. Separating the two is what lets the
+#: eviction ordering be right without making cancelling a queued transcription
+#: feel broken.
+_QUEUE_POLL_S = 1.0
 
 
 class SupervisorError(RuntimeError):
@@ -1272,11 +1286,17 @@ def _await_turn(job: str, title: str) -> None:
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
         _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
         identity = _row_identity(job)
-        while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_TICK_S):
+        warned = False
+        next_tick = time.monotonic() + _QUEUE_TICK_S
+        # POLLED often, REPORTED rarely — see the two constants. The ✕ is read
+        # every `_QUEUE_POLL_S`; the row is written every `_QUEUE_TICK_S`,
+        # which is deliberately slower than the running row so the sweep sheds
+        # queued rows before the active decode's.
+        while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_POLL_S):
             if _cancel_requested(job):
                 raise SupervisorError("cancelled")
             current = _row_identity(job)
-            if current != identity:
+            if current != identity and not warned:
                 # The row we opened is GONE and what we are polling is whatever
                 # our own last tick rebuilt. `cancel_requested` is server state
                 # a report may not set, so it cannot survive that — and reading
@@ -1294,13 +1314,19 @@ def _await_turn(job: str, title: str) -> None:
                 logger.warning(
                     "transcription row %s was evicted while queued and rebuilt; "
                     "a cancel requested just before that is not recoverable", job)
-                identity = current
+                # Once per wait: with sixty queued recordings the sweep evicts
+                # and each tick rebuilds, so a warning per rebuild would be a
+                # log full of the normal case.
+                warned = True
+            if time.monotonic() < next_tick:
+                continue
             # Re-stated rather than left to go stale. The bar does not move —
             # there is nothing to say but "still waiting" — and that is exactly
             # what a heartbeat is (AI-5h). The FULL payload every time; see
             # `_transcribe_row` for why a partial one is not a row.
             _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
             identity = _row_identity(job)
+            next_tick = time.monotonic() + _QUEUE_TICK_S
     if _cancel_requested(job):
         _TRANSCRIBE_LOCK.release()
         raise SupervisorError("cancelled")
