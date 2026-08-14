@@ -9,9 +9,9 @@
 //   preview  the SELECTED ROW's own default view — pane-modes.ts decides what
 //            that resolves to (a file's first template; for a folder, only the
 //            `_listing` peek it falls back to). **Offered for a FILE row, and for
-//            a folder only when neither companion is** (D279 — a folder is not a
+//            a folder only when neither companion is** (D280 — a folder is not a
 //            thing this pane previews; see paneSideList). It used to resolve a
-//            folder to the PAGE it holds and render it, which is what D278
+//            folder to the PAGE it holds and render it, which is what D279
 //            deleted.
 //   claude   the chat, `chat_only=1`, about the selected row.
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
@@ -100,7 +100,7 @@ export function paneSideParam(state: PaneSideState): string | null {
 //
 // `preview` for a FILE row always: it is the pane's identity there, and even a row
 // with no template at all has a preview state (the metadata card). **For a FOLDER
-// row it is offered only when neither companion is** (D279, `rowIsDir` below) —
+// row it is offered only when neither companion is** (D280, `rowIsDir` below) —
 // see the block on the function for why a folder has no preview and what the
 // exception is for. The companions exist only while the folder's own entry for them
 // does (dir-mode.ts), so a folder outside a repository can be SHOWN no Git and a
@@ -135,12 +135,12 @@ export interface PaneSideEntries {
 
 // `rowIsDir` — the previewed row is a FOLDER the user selected (not the pane's own
 // self target, which is a folder too and keeps its hint). **A selected folder has
-// no `preview`** (D279): a folder is not a thing this pane can preview. Rendering
-// the page it holds is what D278 stopped, and the other candidate — the embedded
+// no `preview`** (D280): a folder is not a thing this pane can preview. Rendering
+// the page it holds is what D279 stopped, and the other candidate — the embedded
 // listing peek — is the very listing on the other side of the divider. Leaving
 // `preview` on the list was the whole of the bug the owner reported: the pill read
 // "Preview" while a chat rendered in it, because the folder's default MODE had
-// become `claude` (registry, D278) while the pane's own default SIDE was still
+// become `claude` (registry, D279) while the pane's own default SIDE was still
 // `preview`. Two controls naming the same content differently.
 //
 // So a directory row offers the COMPANIONS, and since `_side` absent parses as
@@ -162,7 +162,7 @@ export interface PaneSideEntries {
 // `lib/dir-mode` resolves them, so "no companion offered" and "not answered yet"
 // arrive in the same shape; taking the `preview` fallback there reproduced the bug
 // this whole rule exists to fix, for the window after a folder opens. The pill read
-// "Preview" while the row's own default mode — `claude` since D278 — rendered a chat
+// "Preview" while the row's own default mode — `claude` since D279 — rendered a chat
 // inside it, and when the probe landed the side flipped to `claude`, the key changed
 // and `agent.py` was spawned a SECOND time. So the caller holds a SKELETON on an
 // empty list: no mode resolved, nothing mounted, one spawn when the answer arrives.
@@ -182,7 +182,7 @@ export function paneSideList(entries: PaneSideEntries, rowIsDir = false): PaneSi
 }
 
 // One row per mode the pane MAY BE ON — all three for a file row, and the two
-// companions for a folder row (D279: no Preview for a folder, `rowIsDir` below).
+// companions for a folder row (D280: no Preview for a folder, `rowIsDir` below).
 //
 // Within that list, an unofferable COMPANION is still drawn, which is the folder
 // half of the rule the file sidebar states at length (lib/preview-side,
@@ -205,7 +205,7 @@ export interface PaneSideMenuEntry {
   disabledReason?: string;
 }
 
-// The `preview` ROW follows the LIST (D279): a directory row that offers the
+// The `preview` ROW follows the LIST (D280): a directory row that offers the
 // companions draws no Preview row, because the pane cannot be on it there. That
 // is not a hole in the "list every mode, disable the unavailable ones" rule — that
 // rule is about the two COMPANIONS, which are unavailable for a REASON the user is
@@ -257,7 +257,7 @@ export function paneSideIconEntry(
 // `_panelMode` had before it: the next folder that does offer the mode picks it up
 // again, so a hop out of a repo and back in does not silently reset the pane.
 //
-// "First on offer" rather than the pane's own `preview` default (D279), because
+// "First on offer" rather than the pane's own `preview` default (D280), because
 // `preview` is no longer always on offer: a selected FOLDER row hasn't got one, and
 // an absent `_side` parses as exactly that request — so falling back to the
 // constant would have resolved a folder row to a side the list refuses, which is

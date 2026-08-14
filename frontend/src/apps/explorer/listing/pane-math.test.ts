@@ -3,7 +3,7 @@
 // to a browser — which is why these live in their own router-free module (see
 // pane-math.ts), so this file runs with no DOM and in any order.
 //
-// Two things this file used to test and no longer can, both DELETED with D280:
+// Two things this file used to test and no longer can, both DELETED with D281:
 // the 700px split threshold (`shouldShowPane`) and the undragged 30/50/70 tiers
 // (`defaultPaneFrac`). The pane is one plain 30% now, the same share the file
 // view's sidebar takes, and nothing about its width or its presence is decided by
@@ -22,7 +22,7 @@ import {
 // The whole module, to assert what it no longer offers.
 import * as paneMath from "./pane-math";
 
-// ONE WIDTH FOR BOTH COMPANION COLUMNS (D280, the owner's "they are the same
+// ONE WIDTH FOR BOTH COMPANION COLUMNS (D281, the owner's "they are the same
 // concept now"). The two surfaces are a folder's preview pane and a file's
 // sidebar; the number is shared rather than spelled twice, because two literals
 // are how they drifted to 50% and 30% in the first place.

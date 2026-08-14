@@ -254,7 +254,7 @@ def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
 
 
 def test_claude_leads_the_universal_directory_key():
-    # `claude` is the LEAD of the universal `/` key (D278) and `_listing` follows
+    # `claude` is the LEAD of the universal `/` key (D279) and `_listing` follows
     # it, because the listing's preview pane reads this order for its default
     # (`activePaneMode` takes the first offered mode literally): selecting a
     # folder row opens the chat about that folder rather than running anything of
@@ -316,7 +316,7 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
     # every directory resolves the universal `/` key (D81): `claude` (the pane's
-    # default for a folder, D278), the built-in listing, and the offered-but-gated
+    # default for a folder, D279), the built-in listing, and the offered-but-gated
     # candidates — `git`, `graph` (the link graph, SPEC §32), `zarr_aoi` and the
     # two model views (SPEC §38) — for a plain folder, a dotted folder and the
     # filesystem root alike. Each gated mode is dropped unless its condition.py
@@ -882,7 +882,7 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     assert entries[4]["mode"] == "zarr_aoi" and entries[4].get("conditional") is True
     assert entries[5]["mode"] == "model_card" and entries[5].get("conditional") is True
     assert len(entries) == 6
-    # `_listing` moved to index 1 behind the gated `claude` (D278) and is STILL the
+    # `_listing` moved to index 1 behind the gated `claude` (D279) and is STILL the
     # only entry here carrying no `conditional` flag. That is load-bearing twice
     # over: the full-screen folder route resolves "first unconditional", so the
     # folder still opens as its file table from second place, and the "no

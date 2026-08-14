@@ -24,7 +24,7 @@
 const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
 
-// **THE PANE'S WIDTH: 30% of its container, full stop** (D280). Not a function of
+// **THE PANE'S WIDTH: 30% of its container, full stop** (D281). Not a function of
 // anything — the same share the file view's sidebar takes, imported from there so
 // the two cannot drift apart again.
 //

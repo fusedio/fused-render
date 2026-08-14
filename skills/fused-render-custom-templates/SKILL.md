@@ -18,7 +18,7 @@ A custom template runs on every open of its extension, with the local server's p
 
 **In the reader `.py` / `condition.py`:**
 - ❌ Don't shell out — no `subprocess`, `os.system`, `os.popen`, or invoking system binaries (`gdalinfo`, `curl`, `ffmpeg`, …). They may not exist in the packaged app, run with the server's privileges, and pay a process-spawn cost on every preview.
-- ✅ Do the work in-process with the **bundled libraries** (pandas, polars, pyarrow, duckdb, rasterio, pillow, pymupdf, requests/httpx, … — the authoritative set is in `fused-render-authoring`). Reading local files with `open()` / `os.path` relative to your script is fine and idiomatic; spawning commands is not.
+- ✅ Do the work in-process with the **bundled libraries** (numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests/httpx, … — the authoritative set is in `fused-render-authoring`, and it is smaller than it used to be: geopandas, rasterio, matplotlib, polars, pymupdf and friends now come from a folder `pyproject.toml`, not from the app). Reading local files with `open()` / `os.path` relative to your script is fine and idiomatic; spawning commands is not.
 - ✅ In `condition.py`, **keep reads bounded** — sniff a footer/header/prefix, never `read()` a whole file, and never shell out. The gate runs for every file of the extension, some on remote mounts.
 
 **In `template.html`:**

@@ -71,7 +71,7 @@ describe("firstEntryPath", () => {
   });
 });
 
-// OPENING A FOLDER SELECTS NOTHING (FS-16, D276 — superseding D263's answer
+// OPENING A FOLDER SELECTS NOTHING (FS-16, D277 — superseding D263's answer
 // and, with it, D240's). The rule is now an ABSENCE, so there is no function
 // left to test and the whole `autoSelectPath` suite is gone with the decision it
 // pinned: a folder's pane opens on its self target and its `Select a file to
@@ -110,7 +110,7 @@ describe("a freshly opened folder selects nothing", () => {
 });
 
 // What happens when the LEAD's row is not among the rendered rows — the one
-// remaining way a row the user never chose could end up selected (D277).
+// remaining way a row the user never chose could end up selected (D278).
 //
 // Two situations reach this, and they get opposite answers. The test writes both
 // out because the distinction IS the rule: it hangs entirely on whether the
@@ -122,7 +122,7 @@ describe("selectionAfterVanish", () => {
     // The `?sel=` miss: a bookmark or a shared link names `old.txt`, the file is
     // gone, so the seeded lead is a path this folder does not have and never had.
     // Clamping there picks row one — a file nobody named, previewed in an iframe
-    // nobody asked for, which is exactly what D276 removed.
+    // nobody asked for, which is exactly what D277 removed.
     expect(selectionAfterVanish(rows, -1)).toEqual(EMPTY_SELECTION);
   });
 

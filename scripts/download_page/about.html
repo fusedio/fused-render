@@ -325,10 +325,12 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
         <h2>Batteries included</h2>
         <ul class="ethos">
           <li>The app bundles Python, the fused CLI, and an offline
-          wheelhouse: pandas, duckdb, polars, geopandas, matplotlib and
+          wheelhouse: numpy, pandas, pyarrow, duckdb, pillow and
           friends.</li>
           <li>Common-stack views work with no network and no install
-          step.</li>
+          step. Anything heavier — geopandas, rasterio, matplotlib,
+          polars — is a <code>pyproject.toml</code> beside your script,
+          installed once on first run.</li>
         </ul>
       </section>
 
@@ -394,13 +396,13 @@ draw(data);  <span class="c">// freq rides in the URL</span></code></pre>
           <div class="wheel">
             <span class="chip hot">pandas</span>
             <span class="chip">duckdb</span>
-            <span class="chip hot">polars</span>
-            <span class="chip">geopandas</span>
-            <span class="chip">matplotlib</span>
-            <span class="chip hot">shapely</span>
-            <span class="chip">scipy</span>
-            <span class="chip">pillow</span>
+            <span class="chip hot">numpy</span>
             <span class="chip">pyarrow</span>
+            <span class="chip">openpyxl</span>
+            <span class="chip hot">pillow</span>
+            <span class="chip">requests</span>
+            <span class="chip">python-pptx</span>
+            <span class="chip">msgpack</span>
             <span class="wheel-label">offline wheelhouse — bundled, no install</span>
           </div>
         </div>

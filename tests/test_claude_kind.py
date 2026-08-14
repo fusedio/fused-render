@@ -256,7 +256,7 @@ def test_the_dead_framing_params_are_gone_from_their_consumers_too():
 
     `?preview=true|false` has since gone the same way, for the same reason and
     one better: the pane's visibility is no longer a state at all. It became a
-    measurement of the container's width, and then not even that — D280 deleted
+    measurement of the container's width, and then not even that — D281 deleted
     the 700px threshold too, so a listing that has a pane simply has one. Nothing
     writes the param, nothing carries it across a folder hop, and nothing may read
     it — a stale one in an old bookmark must not resurrect a toggle that does not

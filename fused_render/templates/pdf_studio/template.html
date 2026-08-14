@@ -2291,9 +2291,15 @@ async function boot() {
       $("boot").innerHTML = "";
       const msg = document.createElement("div");
       msg.innerHTML = `<b>PDF Studio needs its Python engines.</b><br>
-        Install into the server environment:<br>
-        <code style="font-family:var(--mono);background:#fff;padding:2px 8px;border-radius:4px;border:1px solid var(--hair)">uv pip install pymupdf pikepdf</code><br>
-        The packaged app ships both, so this only happens in a source checkout.`;
+        pymupdf and pikepdf are declared in this template's
+        <code style="font-family:var(--mono)">pyproject.toml</code>, so the app
+        normally installs them into this folder's environment the first time you
+        open a PDF — watch for the one-time install row and reload when it
+        finishes.<br>
+        If it never appears, this server is running the built-in executor, which
+        ignores folder declarations. Switch the execution engine to Fused in
+        Preferences, or install them yourself:<br>
+        <code style="font-family:var(--mono);background:#fff;padding:2px 8px;border-radius:4px;border:1px solid var(--hair)">uv pip install pymupdf pikepdf</code>`;
       $("boot").appendChild(msg);
       return;
     }

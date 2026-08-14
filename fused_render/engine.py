@@ -86,7 +86,7 @@ _backend = None
 #
 # A script whose project root declares no dependencies runs with
 # `interpreter=<this app's python>` and gets no venv at all: the app already
-# ships `[bundled]` + its core `dependencies`, so numpy/pandas/duckdb/rasterio/…
+# ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/…
 # are there for free, with no download and no first-run wait. A script whose
 # FOLDER declares some (PY-16) runs on that folder's venv, which contains exactly
 # what the manifest declares — the complete list, not a delta against an
@@ -389,10 +389,10 @@ def app_interpreter() -> str | None:
 # D172 settled that a header is the script's COMPLETE dependency list: no baseline
 # is unioned into it. What nothing checked is the INVERSE question — whether the
 # list is already satisfied by the interpreter the app ships. `[bundled]` bakes
-# pandas/numpy/duckdb/pyarrow/geopandas/rasterio/zarr/pyproj/keyring/pyyaml/
-# cryptography into that interpreter, so a header naming `pandas` built a
-# multi-gigabyte venv beside the pandas already on disk, then downloaded it again
-# for the next header that differed by one package.
+# pandas/numpy/duckdb/pyarrow/pillow/openpyxl/requests/msgpack into that
+# interpreter (a shorter list since D276, but the same argument), so a header
+# naming `pandas` built a multi-gigabyte venv beside the pandas already on disk,
+# then downloaded it again for the next header that differed by one package.
 #
 # Measured on one developer machine's venv store: 33 venvs / 4.9GB beside a 51GB uv
 # cache, in which the set ['duckdb>=1.5.0','keyring>=24','pandas>=2.0.0',

@@ -219,7 +219,7 @@ export default function Listing({
   // An embedded Listing never opens its own pane (no nesting): the feature is
   // disabled at the hook, however wide the embedded listing gets. **These three
   // flags are now the WHOLE of whether there is a pane** — `pane.on` is exactly
-  // `paneEnabled` since D280 deleted the width gate, so "is this a Listing that has
+  // `paneEnabled` since D281 deleted the width gate, so "is this a Listing that has
   // a pane" is a question about the SURFACE and never about pixels.
   //
   // A FROZEN-TREE listing is the second no-nesting case, and `embedded` cannot
@@ -230,7 +230,7 @@ export default function Listing({
   // preview pane. `?preview=false` used to stop it and was dropped with the toggle
   // it belonged to, on the reasoning that the width decides — true for a listing
   // that owns its window, false for one handed a column by a framer. *That
-  // reasoning is doubly dead now: with the width gate deleted (D280) the framed
+  // reasoning is doubly dead now: with the width gate deleted (D281) the framed
   // listing would grow a pane at ANY column width, so this flag is not a
   // refinement of a measurement but the whole answer.*
   //
@@ -252,7 +252,7 @@ export default function Listing({
   // every TAB, where the pane is right and stays — is the wrong flag here).
   //
   // Switching it off HERE is the whole feature: `pane.on` IS this predicate
-  // (D280 left nothing else in it), so one flag takes the slot, the divider, the
+  // (D281 left nothing else in it), so one flag takes the slot, the divider, the
   // closing chevron on the pane's header, the reopening SideToggleButton in the
   // search row and the two `useDirMode` companion probes with it. Nothing about the
   // ROWS changes: a pane's listing still selects, arrow-keys, and opens on
@@ -711,7 +711,7 @@ export default function Listing({
   }, [searching, visibleHits, sortedEntries, base]);
   rowCtxByPathRef.current = rowCtxByPath;
 
-  // OPENING A FOLDER SELECTS NOTHING (FS-16, D276). There is no folder
+  // OPENING A FOLDER SELECTS NOTHING (FS-16, D277). There is no folder
   // auto-select here and there is deliberately no code for one: a freshly opened
   // folder has an empty selection, so its pane sits on its self target and its
   // `Select a file to preview.` hint (FS-11) until the user picks a row.
@@ -781,7 +781,7 @@ export default function Listing({
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
-  // THE ROW THE PANE IS ABOUT, which is the lead ONCE IT HAS SETTLED (D279's cost
+  // THE ROW THE PANE IS ABOUT, which is the lead ONCE IT HAS SETTLED (D280's cost
   // fix — the rule, and why a pane mount has to be earned, are on pane-settle.ts).
   // Every mount is an iframe load, and the `claude` side's iframe spawns `agent.py`
   // through /api/run before it draws, so the pane must not chase a held arrow key
@@ -809,7 +809,7 @@ export default function Listing({
 
   // WHICH of the pane's three modes it is on. Resolved here, below the selection,
   // because a previewed FOLDER row has no `preview` side at all (pane-side's
-  // paneSideList, D279) and so lands on the chat about it — a folder is not a thing
+  // paneSideList, D280) and so lands on the chat about it — a folder is not a thing
   // this pane previews.
   //
   // "A folder the user SELECTED" is exactly one row, and a directory: the pane's
@@ -1610,7 +1610,7 @@ export default function Listing({
                   It is not the old pane toggle coming back. That one was an
                   on/off for a bit the layout could answer itself, and it went when
                   the split became a measurement of the container's width — a
-                  measurement that is itself gone now (D280): `pane.on` below is
+                  measurement that is itself gone now (D281): `pane.on` below is
                   just "this Listing has a pane", and this button does not exist
                   where it says no. It is a mode control: it says WHICH of the
                   pane's three would return, wearing that mode's own icon.
@@ -1748,7 +1748,7 @@ export default function Listing({
               // proportion instead of leaving the pane at one window's
               // arithmetic. Until it is dragged that fraction is a flat 30% —
               // the same share a file's sidebar takes, with no breakpoints
-              // between them (D280). The pixel floors are the slot's / the
+              // between them (D281). The pixel floors are the slot's / the
               // list's CSS min-widths.
               style={{ flexBasis: `${pane.frac * 100}%` }}
             >

@@ -1,7 +1,7 @@
 // The preview pane (right-hand split): the usePreviewPane hook that owns the
 // pane's width and its divider drag.
 //
-// **NO CONDITIONAL LAYOUT LOGIC LIVES HERE ANY MORE** (D280, the owner's "remove
+// **NO CONDITIONAL LAYOUT LOGIC LIVES HERE ANY MORE** (D281, the owner's "remove
 // any complicated breakpoint logic"). Two generations of that are gone. First a
 // user-facing on/off — a toggle button, a `?preview=true|false` URL param that
 // rode along on directory navigation, and a `pane=0` viewstate key so a folder
@@ -60,7 +60,7 @@ import { PANE_DEFAULT_FRAC, dragPaneFrac } from "@apps/explorer/listing/pane-mat
 // its params instead of clearing the map.
 purgeViewStateParams("panew", "pane");
 
-// (deleted with D280) `useSplitWidth` measured the split container with a
+// (deleted with D281) `useSplitWidth` measured the split container with a
 // ResizeObserver in a useLayoutEffect, and `useSplitIsWide` turned that number
 // into the 700px verdict for its two readers — this hook's own `on`, and Preview's
 // browse chip. Nothing asks how wide anything is any more, so the observer is gone

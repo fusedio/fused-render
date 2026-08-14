@@ -148,7 +148,7 @@ describe("defaultMode", () => {
   });
 
   it("keeps a folder browsable when the registry leads with a GATED mode", () => {
-    // The safety net under D278's reorder. The universal `/` key now ships
+    // The safety net under D279's reorder. The universal `/` key now ships
     // `["claude", "_listing", …]` so the preview PANE lands on the chat
     // (`activePaneMode` takes modes[0] literally). The FULL-SCREEN folder route
     // resolves through here instead, and "first unconditional" makes `_listing`

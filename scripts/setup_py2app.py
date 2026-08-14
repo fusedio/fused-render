@@ -11,9 +11,9 @@ fused-render + [bundled,app] install happens into the build venv beforehand
 `packages` (below) forces WHOLE-DIRECTORY copies instead of py2app's default
 "trace imports statically, freeze into a zip" behavior. Two independent
 reasons every one of these needs it:
-  1. Binary/data-bearing packages (numpy, pandas, pyarrow, scipy, geopandas,
-     matplotlib's mpl-data, ...) ship .so/.dylib files and non-Python data
-     that a zipped archive can't hold anyway.
+  1. Binary/data-bearing packages (numpy, pandas, pyarrow, duckdb, pillow,
+     ...) ship .so/.dylib files and non-Python data that a zipped archive
+     can't hold anyway.
   2. fused-render's own executor model: `runPython` loads arbitrary user .py
      files via importlib in a CHILD PROCESS (_child.py), not via a static
      `import` anywhere in fused_render's own source. py2app's modulegraph
@@ -76,9 +76,13 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # either hand-listed or, worse, arriving incidentally.
 
 # Distributions from `[bundled]` that this bundle deliberately does NOT ship.
-# Currently none: the bundle carries everything `[bundled]` promises, accepting
-# ~85 MB of growth, because completeness beat size (D176 — the size-based split
-# proposed there is SUPERSEDED and must not be reinstated).
+# Currently none, and D276 is the reason it STAYED none while 541.9 MB came out of
+# the bundle: the size problem was solved by shrinking `[bundled]` itself, so all
+# three platform builds got smaller together. Excluding here would have shrunk
+# only macOS, leaving Linux and Windows carrying packages the extra still
+# promises — which is D176's defect exactly, in the other direction. The rule is
+# unchanged: this dict is for a distribution the EXTRA still needs and the macOS
+# BUNDLE cannot carry, not for one the product no longer wants.
 #
 # The mechanism stays even while the dict is empty, and that is the point. It
 # makes the bundle's invariant enforceable: every `[bundled]` distribution
@@ -93,9 +97,9 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # does need holding back, both the machinery and its tests are already here.
 #
 # Excluding a distribution has a real consequence to weigh: a script venv cannot
-# see the app's site-packages, so the templates that import it must declare their
-# COMPLETE third-party closure in a PEP 723 header, and everything else in that
-# closure gets re-downloaded per venv.
+# see the app's site-packages, so every template that imports it must declare its
+# COMPLETE third-party closure in its folder's `pyproject.toml` (SPEC PY-16), and
+# everything else in that closure gets re-downloaded per venv.
 BUNDLED_EXCLUDED = {}
 
 # Top-level names that must never be forced via `packages`, whatever the
@@ -211,7 +215,7 @@ def bundled_force_lists():
 
     # BOTH site directories, because the two schemes are not always one path:
     # pure-Python distributions land in `purelib`, extension ones (numpy, pandas,
-    # scipy, pyarrow, shapely) in `platlib`. They coincide in a venv, so probing
+    # pyarrow, duckdb) in `platlib`. They coincide in a venv, so probing
     # only `purelib` works here and silently misfiles every native package on any
     # interpreter where they differ — sending it to `includes`, i.e. the bare-.py
     # shadowing failure the `_duckdb` comment below describes.
@@ -243,7 +247,7 @@ def bundled_force_lists():
         stack.extend(_runtime_requires(dist))
 
     # distribution -> top-level import names, from metadata rather than guesswork
-    # (python-pptx -> pptx, fpdf2 -> fpdf, pymupdf -> fitz+pymupdf).
+    # (python-pptx -> pptx, pillow -> PIL, google-auth -> google).
     top_level = {}
     for import_name, dist_names in importlib_metadata.packages_distributions().items():
         for dist_name in dist_names:

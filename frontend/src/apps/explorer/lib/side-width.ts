@@ -19,11 +19,11 @@
 export const MIN_W = 280;
 export const CONTENT_MIN_W = 320;
 
-// **THE COMPANION COLUMN'S SHARE, and there is exactly one of it** (D280): 30%,
+// **THE COMPANION COLUMN'S SHARE, and there is exactly one of it** (D281): 30%,
 // for the file view's sidebar and for the listing's preview pane alike, which is
 // why the constant lives here and `listing/pane-math.ts` imports it rather than
 // spelling its own. The owner's words were "they are the same concept now" — after
-// D278/D279 a folder's pane is the same companion column a file gets — and two
+// D279/D280 a folder's pane is the same companion column a file gets — and two
 // literals are exactly how they came to differ (the pane was on 50%, tiering to
 // 70% on a wide window).
 //

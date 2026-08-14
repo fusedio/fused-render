@@ -852,7 +852,7 @@ function TemplatePreview({
   const isListing = entry.mode === "_listing";
   // Whether the listing's right preview pane is showing — and it is now the same
   // question as "is this a listing at all". The pane has no on/off state to read
-  // (no toggle, no `preview` param, no saved key) and, since D280, no width gate
+  // (no toggle, no `preview` param, no saved key) and, since D281, no width gate
   // either: a Listing that can have a pane has one. This used to measure THIS body
   // with the same ResizeObserver the listing used, so the two could not disagree
   // about whether 700px had been reached; with the threshold deleted there is
@@ -1402,7 +1402,7 @@ function TemplatePreview({
             the previewed file's), so a bare mode name like "Claude" sitting
             there is a mystery button.
 
-            **That guard now bites in `_listing` mode ALWAYS**, because since D280
+            **That guard now bites in `_listing` mode ALWAYS**, because since D281
             a listing always has a pane — `listingPaneOpen` is exactly `isListing`.
             So the chip only ever renders over a NON-listing mode, and its label is
             unconditionally "Browse contents"; the `isListing` label branches
@@ -1416,7 +1416,7 @@ function TemplatePreview({
             is a dead end, not a degradation, and it is left standing on purpose —
             the fix is either a chip that does not sit under the pane's corner or a
             pane the embed does not get, and re-gating either on a WIDTH is what
-            D280 removed. Recorded in D280 for the owner to rule on. */}
+            D281 removed. Recorded in D281 for the owner to rule on. */}
         {toggleListing && !listingPaneOpen && (
           <button
             type="button"
