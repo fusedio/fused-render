@@ -353,3 +353,4 @@ One genuine gap, so nobody discovers it mid-migration: **relocating the index di
 - Writing or debugging the `.html`/`.py` files themselves — the `fused` API, `main()`, params-as-state, the traceback overlay → **`fused-render-authoring`**.
 - Binding a preview template to a file extension → **`fused-render-custom-templates`**.
 - Opening a view or driving the running app → **`fused-render-usage`**.
+- Calling an AI model, local models, or image generation → **`fused-render-ai`**.
