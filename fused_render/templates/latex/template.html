@@ -810,7 +810,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   }
 
   // ---- Package cache warming: the first compile on a fresh Tectonic install
-  // fetches ~30 MB of packages/fonts (a minute or two). It runs in a detached
+  // fetches ~50 MB of packages/fonts (several minutes). It runs in a detached
   // worker; we show a one-time "preparing…" panel and recompile when it lands.
   let warmPolling = false;
   function renderWarming(progress) {

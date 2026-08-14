@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -37,6 +38,7 @@ def _load(name, filename):
 def dm(tmp_path, monkeypatch):
     d = _load("latex_daemon", "daemon.py")
     monkeypatch.setattr(d, "STATE", str(tmp_path / "daemon.json"))
+    monkeypatch.setattr(d, "LOCK", str(tmp_path / "daemon.spawn.lock"))
     return d
 
 
@@ -128,6 +130,14 @@ def test_raised_exception_comes_back_under_the_sentinel(dm, monkeypatch):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_claim_spawn_admits_one_winner_and_steals_a_stale_lock(dm):
+    assert dm._claim_spawn() is True     # first caller wins the spawn
+    assert dm._claim_spawn() is False    # lock held → a concurrent caller waits instead
+    old = time.time() - (dm._SPAWN_WAIT_S + 10)
+    os.utime(dm.LOCK, (old, old))        # a crashed spawner left the lock behind
+    assert dm._claim_spawn() is True     # stale lock is stolen
 
 
 def test_state_file_records_port_token_and_version(dm):

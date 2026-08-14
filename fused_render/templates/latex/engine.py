@@ -137,8 +137,9 @@ def _tectonic_install():
 # needs (~50 MB, ~485 files pulled one at a time — several minutes on a slow
 # link) — far beyond the 60s runPython budget, so it can never finish inside a
 # compile.
-# When that happens we compile the document in a detached worker (no timeout)
-# into its build dir; the page polls warm_status and, when it finishes, a plain
+# When that happens we compile the document in a detached worker (a generous
+# timeout backstop, not the compile budget) into its build dir; the page polls
+# warm_status and, when it finishes, a plain
 # recompile serves the produced PDF. `.warmed` records that the cache has been
 # populated once, so a fresh install's first compile skips the doomed inline
 # attempt and defers straight to the background compile.
@@ -168,8 +169,8 @@ def _warm_running() -> bool:
 
 def _ensure_warming(main_path: str):
     """Spawn the detached worker to compile `main_path` (fetching whatever
-    packages it needs, no timeout) into its build dir, unless one is already
-    running. The worker drops the `.warmed` marker on success."""
+    packages it needs, off the compile budget) into its build dir, unless one is
+    already running. The worker drops the `.warmed` marker on success."""
     bin_path = _tectonic_bin()
     if not bin_path or not main_path or _warm_running():
         return
@@ -379,10 +380,8 @@ def _run_tectonic(cmd, env, cwd, hard_timeout: int = 28):
     out_chunks, err_chunks = [], []
 
     def _drain(stream, sink):
-        # readline(), NOT `for line in stream`: the file-iterator does read-ahead
-        # buffering that holds lines back until its buffer fills or the child
-        # exits, so the download notes the early-defer watches for wouldn't be
-        # visible in time. readline returns each line as Tectonic flushes it.
+        # readline(), NOT `for line in stream`: the file-iterator's read-ahead
+        # holds lines back until the child exits, defeating the early-defer.
         try:
             for line in iter(stream.readline, ""):
                 sink.append(line)
@@ -473,8 +472,8 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
     deferred, p = _run_tectonic(cmd, env, cwd=os.path.dirname(main_path))
     if deferred:
         # A cold fetch of this document's packages — too big for the budget.
-        # Compile it in the background (no timeout) so the cache warms and the PDF
-        # lands in the build dir; the page polls and serves it.
+        # Compile it in the background (off the budget) so the cache warms and the
+        # PDF lands in the build dir; the page polls and serves it.
         _ensure_warming(main_path)
         return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
                 "error": "Fetching the LaTeX packages this document needs (one-time). "

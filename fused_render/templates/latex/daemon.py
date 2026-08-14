@@ -1,22 +1,14 @@
 """Persistent localhost HTTP daemon for the latex template.
 
-`fused.runPython` spawns a fresh subprocess per call, and under the "fused"
-engine each one pays 5–25 s of backend overhead — brutal for this template's
-chatty calls (compile, then outline+bib, plus warm/install status polls every
-~1.5 s and a synctex probe per cursor settle). So this file doubles as:
-
-  * a runPython entrypoint — `main()` ensures the daemon is up and returns
-    `{port, token}`; the page then makes every engine call over direct HTTP,
-    bypassing /api/run entirely (the geotiff/netcdf/zarr pattern);
-  * the daemon — a ThreadingHTTPServer that dispatches `/run?action=…` straight
-    to `engine.main()`, the SAME dispatcher, so there is no second copy of the
-    domain logic here.
-
-Runs in the folder's project venv (the one pyproject.toml declares), so export's
-`import pypandoc` resolves here exactly as it would under a direct runPython; the
-daemon's own code is stdlib-only. A random per-run token gates every request; the
-server self-exits after 30 min idle and respawns whenever the code or deps change
-(the state file records a content hash of daemon.py / engine.py / pyproject.toml).
+Under the "fused" engine each `fused.runPython` pays 5–25 s of backend overhead,
+brutal for this chatty template (compile → outline+bib, ~1.5 s status polls, a
+synctex probe per cursor settle). So the page spawns this daemon once (one
+runPython → `{port, token}`) and makes every later engine call over direct HTTP,
+dispatched straight to `engine.main()` — no second copy of the domain logic (the
+geotiff/netcdf/zarr pattern). Runs in the folder's project venv, so export's
+`import pypandoc` resolves here. A random per-run token gates every request; the
+server self-exits after 30 min idle and respawns when daemon.py/engine.py/
+pyproject.toml change.
 
 Run detached:  python daemon.py --serve
 """
@@ -41,6 +33,7 @@ import engine  # noqa: E402 — the existing main(action=…) dispatcher, reused
 from procutil import clean_env, spawn_python  # noqa: E402 — engine put templates/shared on the path
 
 STATE = os.path.join(engine.CACHE_ROOT, "daemon.json")
+LOCK = os.path.join(engine.CACHE_ROOT, "daemon.spawn.lock")
 IDLE_EXIT_S = 30 * 60
 _SPAWN_WAIT_S = 8.0
 
@@ -49,11 +42,9 @@ _hit_lock = threading.Lock()
 
 
 def _version() -> str:
-    """Hash the CODE (these files), not the interpreter path, so two identically-
-    staged copies agree and an edit respawns a fresh daemon — hashing the
-    interpreter was the db_console "could not start the daemon" churn bug.
-    pyproject.toml is included so a dependency change respawns onto the rebuilt
-    venv rather than serving from the stale one."""
+    """Content hash of the code + manifest (NOT the interpreter path — that was
+    the db_console churn bug). An edit or a dependency change respawns a fresh
+    daemon onto the rebuilt venv."""
     h = hashlib.sha1()
     for f in ("daemon.py", "engine.py", "pyproject.toml"):
         try:
@@ -126,14 +117,34 @@ def _dispatch(params: dict):
     return engine.main(**kwargs)
 
 
-def main():
-    """runPython entrypoint: ensure the daemon is up, return {port, token}."""
-    version = _version()
-    st = _read_state()
-    if st and _alive(st.get("port"), version, st.get("token")):
-        return {"port": st["port"], "token": st["token"], "reused": True}
-    if st and st.get("port"):
-        _quit(st["port"], st.get("token", ""))   # stale version / wrong code — retire it
+def _claim_spawn() -> bool:
+    """True if this caller wins the right to spawn (else another already is and we
+    wait for its daemon) — stops two concurrent ensures orphaning a server. A lock
+    older than the spawn budget is a crashed spawner; steal it."""
+    try:
+        os.close(os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        return True
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(LOCK) > _SPAWN_WAIT_S + 5:
+                os.remove(LOCK)
+                return _claim_spawn()
+        except OSError:
+            pass
+        return False
+
+
+def _await_daemon(version):
+    deadline = time.time() + _SPAWN_WAIT_S
+    while time.time() < deadline:
+        st = _read_state()
+        if st and st.get("version") == version and _alive(st.get("port"), version, st.get("token")):
+            return {"port": st["port"], "token": st["token"], "reused": False}
+        time.sleep(0.15)
+    return {"error": "latex daemon did not start in time"}
+
+
+def _spawn():
     os.makedirs(engine.CACHE_ROOT, exist_ok=True)
     log = os.path.join(engine.CACHE_ROOT, "daemon.log")
     # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP (NOT CREATE_NO_WINDOW — the two
@@ -144,13 +155,26 @@ def main():
         subprocess.Popen([spawn_python(), os.path.join(HERE, "daemon.py"), "--serve"],
                          stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, cwd=HERE,
                          env=clean_env(), **detach)
-    deadline = time.time() + _SPAWN_WAIT_S
-    while time.time() < deadline:
-        st = _read_state()
-        if st and st.get("version") == version and _alive(st.get("port"), version, st.get("token")):
-            return {"port": st["port"], "token": st["token"], "reused": False}
-        time.sleep(0.15)
-    return {"error": "latex daemon did not start in time"}
+
+
+def main():
+    """runPython entrypoint: ensure the daemon is up, return {port, token}."""
+    version = _version()
+    st = _read_state()
+    if st and _alive(st.get("port"), version, st.get("token")):
+        return {"port": st["port"], "token": st["token"], "reused": True}
+    if not _claim_spawn():
+        return _await_daemon(version)   # another ensure is already spawning
+    try:
+        if st and st.get("port"):
+            _quit(st["port"], st.get("token", ""))   # stale version / wrong code — retire it
+        _spawn()
+        return _await_daemon(version)
+    finally:
+        try:
+            os.remove(LOCK)
+        except OSError:
+            pass
 
 
 # --- the server ------------------------------------------------------------
@@ -185,9 +209,8 @@ def _make_server():
         def do_GET(self):
             global _last_hit
             u = urlsplit(self.path)
-            # keep_blank_values: an empty param ("target=") must arrive as "" —
-            # dropping it would silently diverge from the runPython fallback,
-            # which passes "" straight through to engine.main.
+            # keep_blank_values so an empty param ("target=") arrives as "" (as the
+            # runPython fallback passes it), not dropped to engine.main's default.
             q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
             if q.get("_token") != token:
                 self._json({"error": "forbidden"}, 403)
@@ -205,9 +228,8 @@ def _make_server():
                 try:
                     self._json(_dispatch(q))
                 except Exception as e:  # noqa: BLE001
-                    # A RAISED exception, not an engine {error} return — carry it
-                    # under a sentinel so the page rejects (like runPython does)
-                    # rather than mistaking it for a normal {error} result.
+                    # A RAISED exception under a sentinel, so the page rejects like
+                    # runPython instead of treating it as a normal {error} return.
                     import traceback
                     self._json({"__exc__": {"type": type(e).__name__,
                                             "message": f"{type(e).__name__}: {e}",

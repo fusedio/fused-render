@@ -6,12 +6,10 @@ progress via a JSON file the page polls (runPython has a 30s budget; a cold
 download can run longer than that on a slow connection).
 
 Once the binary lands it also warms the base package/font cache on a trivial
-document — the ~50 MB, ~485-file one-time fetch — so that cost is paid up front
-during install rather than gating the user's first real compile. It writes the
-same WARM_DIR/progress.json + `.warmed` marker engine.py's own warm path uses,
-and claims that warm slot before the download starts, so a compile that fires
-the instant the binary appears waits on this fetch instead of launching a
-second, competing one.
+document (the ~50 MB one-time fetch), writing the same WARM_DIR/progress.json +
+`.warmed` marker engine.py's warm path uses — and claims that warm slot before
+the download starts, so a compile firing the instant the binary appears waits on
+this fetch instead of launching a second, competing one.
 
 Run detached:
   python install_worker.py <version> <bin_dir> <progress_dir> [<cache_dir> <warm_dir>]
@@ -29,6 +27,7 @@ import urllib.request
 import zipfile
 
 CHUNK = 1 << 20
+WARM_TIMEOUT_S = 30 * 60   # generous backstop so a stalled fetch can't hang forever
 
 # A trivial document that still pulls in the packages the built-in project
 # templates use (amsmath, hyperref, geometry, graphicx, booktabs), so warming it
@@ -57,7 +56,7 @@ def _warm_progress(warm_dir, stage, detail, done=False, error=None):
 
 def _warm_base(cache_dir, warm_dir, tectonic_bin):
     """Fetch the base LaTeX format + common packages/fonts once, on a trivial
-    doc, into the shared cache — no timeout. A `.log` means Tectonic fetched what
+    doc, into the shared cache under a generous timeout backstop. A `.log` means Tectonic fetched what
     it needed and started typesetting, so the cache is warm even if the trivial
     doc itself hiccuped; that drops the `.warmed` marker."""
     marker = os.path.join(cache_dir, ".warmed")
@@ -72,10 +71,16 @@ def _warm_base(cache_dir, warm_dir, tectonic_bin):
     _warm_progress(warm_dir, "warm",
                    "downloading the base LaTeX packages and fonts (one-time)")
     env = dict(os.environ, TECTONIC_CACHE_DIR=cache_dir)
-    subprocess.run(
-        [tectonic_bin, "-X", "compile", "--keep-logs", "--outdir", scratch, doc],
-        env=env, cwd=scratch, capture_output=True, text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    try:
+        subprocess.run(
+            [tectonic_bin, "-X", "compile", "--keep-logs", "--outdir", scratch, doc],
+            env=env, cwd=scratch, capture_output=True, text=True, timeout=WARM_TIMEOUT_S,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    except subprocess.TimeoutExpired:
+        _warm_progress(warm_dir, "error", "package fetch timed out", done=True,
+                       error="Preparing the LaTeX packages took too long — check your "
+                             "connection and open the document again to retry.")
+        return
     if os.path.exists(os.path.join(scratch, "warm.log")):
         with open(marker, "w", encoding="utf-8") as f:
             f.write(str(time.time()))

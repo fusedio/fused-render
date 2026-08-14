@@ -1,14 +1,9 @@
 """Detached background LaTeX compile, spawned by engine.py when a foreground
-compile can't fit the runPython budget — almost always a cold Tectonic fetch of
-the packages/fonts a document needs (~50 MB, several minutes). It compiles the document
-into its real build dir with no timeout, so any package set completes out of
-band; the page polls `warm_status` and, once this finishes, a plain recompile
-serves the resulting PDF (or shows the document's real compile errors). A
-`.warmed` marker records that the cache has been populated at least once —
-written whenever Tectonic got far enough to emit a .log, since that means the
-packages were fetched even if the document itself then failed — letting a fresh
-install skip the doomed inline attempt on its very first compile. Progress is
-written to a JSON file the page polls.
+compile can't fit the runPython budget — almost always a cold Tectonic fetch
+(~50 MB, several minutes) of the packages a document needs. Compiles into the
+real build dir under a generous timeout backstop, drops a `.warmed` marker once
+Tectonic emits a .log (packages fetched, even if the doc itself then failed),
+and writes progress the page polls; the page recompiles when this finishes.
 
 Run detached:
   python warm_worker.py <tectonic_bin> <cache_dir> <warm_dir> <main_path> <build_dir>
@@ -18,6 +13,8 @@ import os
 import subprocess
 import sys
 import time
+
+WARM_TIMEOUT_S = 30 * 60   # generous backstop so a stalled fetch can't hang forever
 
 
 def _progress(warm_dir, stage, detail, done=False, error=None):
@@ -40,11 +37,8 @@ def warm(bin_path, cache_dir, warm_dir, main_path, build_dir):
     try:
         _progress(warm_dir, "warm", "downloading the LaTeX packages this document needs (one-time)")
         env = dict(os.environ, TECTONIC_CACHE_DIR=cache_dir)
-        # Clear a prior run's PDF and log first so their presence reflects THIS
-        # warm run, not an earlier success. Otherwise a warm that fails before
-        # TeX even starts (offline during the fetch) would find a stale .log,
-        # wrongly mark the cache warmed, and the page would loop retrying an
-        # unwarmed cache with the last good PDF already gone.
+        # Clear a prior run's PDF/log so their presence reflects THIS run — a
+        # stale .log would otherwise wrongly mark the cache warmed.
         stem = os.path.splitext(os.path.basename(main_path))[0]
         for leftover in (stem + ".pdf", stem + ".log"):
             try:
@@ -55,15 +49,12 @@ def warm(bin_path, cache_dir, warm_dir, main_path, build_dir):
             [bin_path, "-X", "compile", "--keep-logs", "--synctex",
              "--outdir", build_dir, main_path],
             env=env, cwd=os.path.dirname(main_path), capture_output=True, text=True,
+            timeout=WARM_TIMEOUT_S,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        # What we're really warming is the package cache; the PDF is a side
-        # effect. Tectonic only writes a .log once it has fetched what it needs
-        # and started typesetting, so a .log (with or without a PDF) means the
-        # cache IS warm — even if the document then failed to compile. In that
-        # case mark it warmed and finish cleanly; the foreground recompile the
-        # page runs next surfaces the real LaTeX diagnostics, rather than us
-        # blaming a genuine document error on the network. Only a run that never
-        # wrote a log truly failed to fetch (offline / repo unreachable).
+        # A .log means Tectonic fetched what it needed and started typesetting, so
+        # the cache is warm even if the doc then failed — mark it and let the page's
+        # recompile surface the real diagnostics. Only a run that wrote no log
+        # truly failed to fetch (offline / repo unreachable).
         if os.path.exists(os.path.join(build_dir, stem + ".log")):
             _mark_warmed(cache_dir)
             _progress(warm_dir, "done", "LaTeX packages ready", done=True)
@@ -71,6 +62,10 @@ def warm(bin_path, cache_dir, warm_dir, main_path, build_dir):
             _progress(warm_dir, "error", "couldn't fetch packages", done=True,
                       error="Couldn't prepare the LaTeX packages — check your connection "
                             "and try again.")
+    except subprocess.TimeoutExpired:
+        _progress(warm_dir, "error", "package fetch timed out", done=True,
+                  error="Preparing the LaTeX packages took too long — check your "
+                        "connection and try again.")
     except Exception as e:  # noqa: BLE001 — any failure must land in the progress file
         _progress(warm_dir, "error", f"{type(e).__name__}: {e}", done=True,
                   error=f"{type(e).__name__}: {e}")
