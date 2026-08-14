@@ -160,11 +160,18 @@ def _app_folder_exists(rel: str) -> bool:
     disk? Rejects a key that would escape the workspace — the store is
     user-writable, so `rel` cannot be trusted to stay under it."""
     # Split on the OS separator too: a user-edited backslash key on Windows
-    # must not smuggle `..` past a "/"-only split.
+    # must not smuggle `..` past a "/"-only split. Segments are then vetted
+    # individually — a drive-relative segment like "C:foo" would make a
+    # starred os.path.join discard the workspace base entirely, so anything
+    # carrying a drive or absolute form is rejected, and the join happens as
+    # ONE "/"-joined string (a legal separator on Windows as well) so no
+    # segment can ever reset the base.
     parts = rel.replace(os.sep, "/").split("/")
     if os.path.isabs(rel) or rel.startswith(".") or ".." in parts:
         return False
-    return os.path.isdir(os.path.join(fused_dir(), *parts))
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
+        return False
+    return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
 
 @router.get("/api/apps/recents")
