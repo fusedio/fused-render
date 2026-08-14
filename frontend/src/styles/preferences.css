@@ -294,13 +294,15 @@
   color: var(--fg);
 }
 
-/* The strips never wrap: the sections preview their full pages, so anything
-   past the first row lives behind "See all" rather than pushing the next
-   section below the fold. */
-.home-row {
-  grid-template-rows: auto;
-  grid-auto-rows: 0;
-  overflow: hidden;
+/* The strips never wrap: five equal columns (Home.tsx MAX_ROW), so anything
+   past the row lives behind "See all" rather than pushing the next section
+   below the fold. Doubled selectors on purpose: the base grids (.apps-cards
+   in apps.css, .fhb-grid above) load in an order this file can't rely on,
+   and their auto-fill template must lose to the strip's fixed tracks. */
+.apps-cards.home-row,
+.fhb-grid.home-row {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .fh-empty {
