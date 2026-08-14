@@ -316,6 +316,9 @@ MAX_CONNECTIONS = 8
 #: the fallback clean — hf never sees our state at all.
 PART_SUFFIX = ".fusedpart"
 READ_BYTES = 1024 * 1024
+#: Big enough that a filesystem which really allocates cannot hide it in a
+#: block, small enough that paying for it on one is nothing.
+SPARSE_PROBE_BYTES = 4 * 1024 * 1024
 HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
@@ -435,9 +438,13 @@ def repo_total_bytes(model_id, include=None, ignore=None):
     of 30GB and then jump to "complete" against a figure it never downloaded.
     """
     try:
-        files = _repo_files(model_id, include=include, ignore=ignore)
+        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore))
     except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
         return None
+
+
+def _total_bytes(files):
+    """What `_repo_files` adds up to, or None for an indeterminate bar."""
     total = sum(size for _name, size in files if isinstance(size, int) and size > 0)
     return total or None
 
@@ -527,6 +534,51 @@ def _supports_ranges(location, token):
         return False
 
 
+def _probe_host(location, token, probes):
+    """`_supports_ranges`, asked once per HOST for the length of one download.
+
+    Range support belongs to the CDN answering, not to the path: every shard of
+    a repo comes off the same host with the same presigning scheme. Asked per
+    file it is a serial TLS handshake per file before a single byte moves — the
+    same startup cost `_resolve` was parallelised to remove, reintroduced on a
+    thirty-shard repo.
+    """
+    host = urllib.parse.urlsplit(location).netloc
+    if host not in probes:
+        probes[host] = _supports_ranges(location, token)
+    return probes[host]
+
+
+def _sparse_ok(folder):
+    """Can this filesystem hold a pre-sized file without allocating it?
+
+    The whole design writes segments OUT OF ORDER, which means creating each
+    part file at its final size up front. Where `ftruncate` allocates instead of
+    punching a hole that costs the repo's full size — 25GB reserved before a
+    byte downloads, on a filesystem that may not have it — and `bytes_on_disk`,
+    which counts allocated blocks, would report 100% from the first second.
+    Both are hf's job on such a filesystem, so this is a fallback condition and
+    not a bug to work around.
+
+    Asked once per download with a throwaway file, because asking it of the
+    first real part file means the zero-fill has already happened.
+    """
+    probe = os.path.join(folder, ".fusedpart-probe")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.ftruncate(fd, SPARSE_PROBE_BYTES)
+            blocks = getattr(os.fstat(fd), "st_blocks", None)
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+    finally:
+        _remove(probe)
+    return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
+
+
 def _segment_count(size):
     if size < SEGMENT_MIN_BYTES:
         return 1
@@ -554,7 +606,8 @@ class _FileFetch:
     would recognise. Everything in between is ours and carries our own suffix.
     """
 
-    def __init__(self, folder, repo_id, filename, revision, meta, token, stop):
+    def __init__(self, folder, repo_id, filename, revision, meta, token, stop,
+                 probes=None):
         self.folder = folder
         self.repo_id = repo_id
         self.filename = filename
@@ -562,6 +615,7 @@ class _FileFetch:
         self.meta = meta
         self.token = token
         self.stop = stop
+        self.probes = {} if probes is None else probes
         self.size = meta["size"]
         self.blob = os.path.join(folder, "blobs", meta["etag"])
         self.part = self.blob + PART_SUFFIX
@@ -586,6 +640,12 @@ class _FileFetch:
         `SIGKILL` mid-download resumable rather than merely restartable.
         """
         if os.path.exists(self.blob) and os.path.getsize(self.blob) == self.size:
+            # Whatever a previous attempt left is dead the moment the blob
+            # exists: nothing will ever resume into it, and unremoved it is a
+            # multi-gigabyte leak inside the hub cache that also goes on
+            # counting towards the bar.
+            _remove(self.part)
+            _remove(self.sidecar)
             return []
         os.makedirs(os.path.dirname(self.blob), exist_ok=True)
         saved = self._saved()
@@ -599,8 +659,8 @@ class _FileFetch:
             count = len(saved)
         else:
             count = _segment_count(self.size)
-            if count > 1 and not _supports_ranges(self.meta["location"],
-                                                 self.token):
+            if count > 1 and not _probe_host(self.meta["location"], self.token,
+                                             self.probes):
                 count = 1
         self.segments = _segments(self.size, count)
         if saved is None or not self._restore(saved):
@@ -896,8 +956,10 @@ def _run_segment(fetch, seg):
     try:
         fetch.run(seg)
     except BaseException:
-        # The other segments stop pulling bytes nobody is going to use. What
-        # they already wrote stays on disk and stays recorded.
+        # The other segments stop pulling bytes nobody is going to use, and
+        # what they already wrote is recorded before they go. That state is for
+        # a LATER RUN of the app: this attempt is about to hand the repo to
+        # huggingface_hub, which fetches those files itself (see `_clear_parts`).
         fetch.stop.set()
         raise
     finally:
@@ -919,6 +981,15 @@ def _segmented_fetch(model_id, filenames, revision="main"):
     would multiply the two caps together and open thirty sockets on a repo of
     thirty shards.
 
+    **No cache lock, unlike `snapshot_download`, and deliberately.** Two app
+    instances fetching one repo would write the SAME bytes at the SAME offsets:
+    the etag names the content, so there is no version of this race that puts
+    wrong bytes in a blob. What can happen is wasted work — one instance's
+    `os.replace` pulls the part file out from under the other, whose next
+    syscall fails and whose download falls back to hf — and that costs a slower
+    download, never a corrupt cache. Inside one app it cannot happen at all:
+    the supervisor's deterministic job id joins a second Download of a model
+    onto the first (AI-5a).
     """
     if not hasattr(os, "pwrite"):
         # Windows. Buffered seek-and-write would break the guarantee the whole
@@ -929,15 +1000,19 @@ def _segmented_fetch(model_id, filenames, revision="main"):
         raise _Unsegmentable("the hub cache layout is unavailable")
     if not filenames:
         raise _Unsegmentable("the Hub listed no files for this repo")
+    if not _sparse_ok(folder):
+        raise _Unsegmentable(f"{folder} cannot hold a sparse file")
 
     token = _hf_token()
     stop = threading.Event()
+    probes = {}  # host -> range support, so a repo of shards probes once
     fetches = []
     for name, meta in zip(filenames, _resolve(model_id, filenames, revision)):
         if not (isinstance(meta.get("size"), int) and meta.get("etag")
                 and meta.get("commit")):
             raise _Unsegmentable(f"{name}: the Hub reported no size, etag or commit")
-        fetches.append(_FileFetch(folder, model_id, name, revision, meta, token, stop))
+        fetches.append(_FileFetch(folder, model_id, name, revision, meta, token,
+                                  stop, probes))
 
     commits = {fetch.meta["commit"] for fetch in fetches}
     if len(commits) != 1:
@@ -986,8 +1061,14 @@ def _clear_parts(folder):
     """Drop our partial files before handing the repo back to huggingface_hub.
 
     Not because hf would misread them — the suffix exists precisely so it never
-    sees them — but because they would go on counting towards the progress bar
-    for a download nothing is writing any more.
+    sees them — but because hf is about to fetch those same files ITSELF. Kept,
+    they would count towards the progress bar for a download nothing is writing,
+    and then sit in the hub cache forever beside the blob hf finished: nothing
+    ever resumes into a part file whose blob already exists.
+
+    So the resume story is honest about its scope. It covers the app being
+    killed, quit or crashed — the case that motivated it (AI-5e) — and not a
+    fetch that failed its way into the fallback, which re-downloads.
     """
     for dirpath, _dirs, files in os.walk(folder or ""):
         for name in files:
@@ -1052,7 +1133,15 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     jumps. The segmented fetch takes its file list from the same filter, for the
     same reason.
     """
-    total = repo_total_bytes(model_id, ignore=ignore_patterns)
+    # ONE listing, serving both the bar's total and the list to fetch — asking
+    # twice is a second round trip to the Hub before any byte moves, for an
+    # answer already in hand.
+    files, total = None, None
+    try:
+        files = _repo_files(model_id, ignore=ignore_patterns)
+        total = _total_bytes(files)
+    except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
+        _fallback(model_id, error)
 
     def hub():
         from huggingface_hub import snapshot_download
@@ -1063,13 +1152,13 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
                                       **kwargs),
             total=total)
 
-    if kwargs:
+    if kwargs or files is None:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
         # revision, a local dir — and a fetch that quietly ignored one would
         # download the wrong thing. Ours honours exactly the two it knows about.
         return hub()
     try:
-        names = [name for name, _size in _repo_files(model_id, ignore=ignore_patterns)]
+        names = [name for name, _size in files]
         return fetch_with_progress(model_id,
                                    lambda: _segmented_fetch(model_id, names),
                                    total=total)

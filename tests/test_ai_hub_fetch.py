@@ -576,6 +576,65 @@ def _fake_hub(monkeypatch, **members):
                         types.SimpleNamespace(**members))
 
 
+def test_one_metadata_call_serves_both_the_total_and_the_file_list(base, monkeypatch,
+                                                                   tmp_path, payload):
+    """`_repo_files`' whole claim is "one metadata call, no weights". Asking
+    once for the bar's total and again for the list to fetch is a second round
+    trip to the Hub before any byte moves, for an answer already in hand."""
+    calls = []
+
+    class _Api:
+        def model_info(self, model_id, files_metadata=False):
+            calls.append(model_id)
+            return types.SimpleNamespace(siblings=[
+                types.SimpleNamespace(rfilename="model.safetensors",
+                                      size=len(payload))])
+
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    _fake_hub(monkeypatch, HfApi=_Api,
+              snapshot_download=lambda *a, **k: "/never")
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    snapshot = base.download_snapshot("org/m")
+
+    # …and the happy path really did run through us, not through the fallback.
+    assert snapshot == os.path.join(folder, "snapshots", "c0m")
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert calls == ["org/m"], f"{len(calls)} metadata calls for one download"
+
+
+def test_a_cache_filesystem_without_sparse_files_falls_back(base, monkeypatch,
+                                                            tmp_path, payload):
+    """Out-of-order segments need a file that can be pre-sized for free.
+
+    Where `ftruncate` allocates instead of punching a hole, pre-sizing every
+    file up front asks for the repo's whole 25GB before a byte downloads, and
+    the progress walk — which counts allocated blocks — would read 100% from the
+    first second. Both are hf's job on such a filesystem, not ours.
+    """
+    _fake_hub(monkeypatch, snapshot_download=lambda *a, **k: "/cache/snapshots/abc",
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(tmp_path))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda model_id, include=None, ignore=None:
+                        [("model.safetensors", 10)])
+    monkeypatch.setattr(base, "_sparse_ok", lambda folder: False)
+
+    assert base.download_snapshot("org/m") == "/cache/snapshots/abc"
+
+
+def test_this_machine_can_hold_a_sparse_file(base, tmp_path):
+    """A guard against silently losing the whole feature: every filesystem the
+    app supports does this, so a red here says the cache lives somewhere that
+    cannot, not that the code is wrong."""
+    assert base._sparse_ok(str(tmp_path)) is True
+    assert os.listdir(tmp_path) == [], "the probe file was left behind"
+
+
 def test_a_failed_segmented_fetch_falls_back_to_snapshot_download(base, monkeypatch,
                                                                   tmp_path):
     """A repo we cannot range-fetch, or a Hub API that moved, must degrade to

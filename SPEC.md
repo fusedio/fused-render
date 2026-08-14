@@ -5972,22 +5972,37 @@ an AI Models page that could say what was on disk but not what was *running*.
   partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
   resumes one of those by seeking to its length, ours are written out of order,
   and handing it one would produce a silently corrupt blob. Resume demands that
-  etag, size and segment layout all still agree, and starts clean otherwise —
-  never a guess. A segment reconnects on an exception AND on a body that simply
-  ends early (a server closing mid-stream raises nothing), resets its retry
-  budget whenever bytes arrive, re-resolves the presigned URL once on a 401/403
-  (a multi-hour download outlives it), and refuses a 200 answering a range
-  request at a non-zero offset — that body would be written at four different
-  offsets, giving a file of exactly the right length and entirely wrong content,
-  the one failure no size check would catch. Verification is SIZE only, like
-  huggingface_hub itself, which relies on TLS and `Content-Length`. **Every
-  failure and every incapability falls back to `snapshot_download` /
+  etag and size still agree and that the recorded LAYOUT is the one resumed with
+  — re-deriving it would re-probe, and a probe failing for a moment is a network
+  condition, not evidence about the bytes on disk; anything that does not agree
+  starts clean, never a guess. A segment reconnects on an exception AND on a body
+  that simply ends early (a server closing mid-stream raises nothing), resets its
+  retry budget whenever bytes arrive, and treats a failed re-resolve as a retry
+  rather than the end of the download.
+  **Three rules exist because a wrong-content blob under a correct etag is the
+  worst failure available here** — hf then serves it from cache forever. (a) A
+  200 answering a ranged request at a non-zero offset is refused, and so is a
+  **206 whose `Content-Range` does not start where we asked** (a clamping proxy):
+  either body written at four segment offsets gives a file of exactly the right
+  length and entirely wrong content. (b) The 401/403 re-resolve may replace only
+  the LOCATION; a changed etag, size or commit aborts, because the blob path and
+  every offset were derived from the first answer and a repo updated mid-download
+  would publish a mixture of two revisions. (c) Publishing is gated on the
+  per-segment CURSORS, never on the part file's length — the file is pre-sized
+  before a byte arrives, so a sparse file of pure holes measures exactly right.
+  No hash, like huggingface_hub itself, which relies on TLS and `Content-Length`.
+  **Every failure and every incapability falls back to `snapshot_download` /
   `hf_hub_download`** — no range support, a Hub API that moved, a platform with
-  no `os.pwrite`, an argument ours does not understand — logging the reason to
-  stderr and clearing our part files first, because a download that got faster
-  and sometimes broken would be a bad trade. Explicitly out of scope: no
-  bandwidth limit, no detached daemon (quitting still stops it; the on-disk state
-  is what makes that cheap rather than destructive), no per-segment UI.
+  no `os.pwrite`, a cache filesystem that allocates rather than holding a sparse
+  file, an argument ours does not understand — logging the reason to stderr and
+  clearing our part files first, because a download that got faster and sometimes
+  broken would be a bad trade. Resume therefore covers the app being killed, quit
+  or crashed — the case that motivated it — and not a fetch that fell back, which
+  hf re-downloads. Explicitly out of scope: no bandwidth limit, no detached
+  daemon (quitting still stops it; the on-disk state is what makes that cheap
+  rather than destructive), no per-segment UI, and no cache lock — the etag names
+  the content, so two instances write identical bytes at identical offsets and
+  the loser of a rename race falls back rather than corrupting anything.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
