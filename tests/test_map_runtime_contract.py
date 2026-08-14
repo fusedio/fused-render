@@ -107,6 +107,24 @@ def test_daemon_bootstraps_sibling_modules_without_launcher_sys_path(
 
 
 def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
+    """The Map Viewer's runtime is declared in ONE place, and it is not the app.
+
+    Two halves, and only one of them changed with D275. The half that did not:
+    the abandoned mapbox-vector-tile/xlrd/pyclipper stack must stay out of both
+    `[bundled]` and the macOS force-list, and `map_render.py` must launch the
+    plain interpreter it was handed rather than reaching for `uv run` — the
+    template does not get to invent its own environment plumbing beside the
+    engine's.
+
+    The half that did: `map/pyproject.toml` used to be asserted ABSENT, because
+    the geo stack was in `[bundled]` and a folder manifest would have bought a
+    download for packages the app already had. D275 took that stack out of the
+    extra, so the same reasoning now demands the opposite — the manifest is
+    where those dependencies live, and its absence would leave every map render
+    importing rasterio out of an interpreter that has none. Inverted rather than
+    deleted: this line is the one that notices if the manifest is ever dropped
+    without the extra being restored.
+    """
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = project["project"]["optional-dependencies"]["bundled"]
 
@@ -118,7 +136,24 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     assert "CREATE_NO_WINDOW" in launcher
     assert "uv run" not in launcher
     assert "FUSED_RENDER_UV" not in launcher
-    assert not (MAP / "pyproject.toml").exists()
+
+    manifest = MAP / "pyproject.toml"
+    assert manifest.exists(), (
+        "fused_render/templates/map/pyproject.toml is gone. The geo stack left "
+        "`[bundled]` in D275, so this folder's manifest is the only place "
+        "geopandas/rasterio/rio-tiler/matplotlib are declared — without it every "
+        "map render fails at import on a packaged app (SPEC PY-16)."
+    )
+    assert (MAP / "uv.lock").exists(), (
+        "map declares an environment but ships no uv.lock, so a released build "
+        "would resolve it against PyPI on first render (SPEC PY-16)"
+    )
+    declared = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    for package in ("mapbox-vector-tile", "xlrd", "pyclipper"):
+        assert not any(
+            item.startswith(package)
+            for item in declared["project"]["dependencies"]
+        ), f"{package} is abandoned; it must not come back via the map manifest"
 
     setup = (ROOT / "scripts" / "setup_py2app.py").read_text(encoding="utf-8")
     for package in ("mapbox_vector_tile", "xlrd", "pyclipper"):
