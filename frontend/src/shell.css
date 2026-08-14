@@ -25,6 +25,10 @@
    (.cc-main / .cc-heading / .cc-pill) and only adds its own row layout. */
 @import "./styles/ai-models.css";
 @import "./styles/mounts.css";
+/* After mounts.css for the same reason mounts.css sits after preferences.css:
+   the scheduled-messages page is another settings-family surface that only adds
+   its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */
+@import "./styles/schedule.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";

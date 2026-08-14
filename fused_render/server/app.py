@@ -59,6 +59,7 @@ from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
+from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
@@ -226,6 +227,21 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_sync_user_skills():
         sync_user_skills()
 
+    # Scheduled Claude messages (schedule.py). A startup event and emphatically
+    # NOT the create_app body: this loop SENDS things, and its first tick fires
+    # everything already overdue. Tests build the app without running lifespan,
+    # so under the create_app body every test that constructs an app would spawn
+    # whatever the developer's own store happened to hold.
+    #
+    # The first tick is also the catch-up pass — it is what sends a message that
+    # came due while the app was closed — so nothing here waits for a due time
+    # that has already gone by.
+    @app.on_event("startup")
+    async def _startup_schedule():
+        from fused_render import schedule
+
+        schedule.start()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
@@ -342,6 +358,10 @@ def create_app(start_dir: str) -> FastAPI:
     # Artifacts published from those sessions, recovered from the same
     # transcripts (routers/claude_artifacts.py) — read-only, no auth guard.
     app.include_router(claude_artifacts_router)
+    # Scheduled Claude messages (routers/schedule.py): the durable list, and the
+    # POSTs that add to and cancel from it. The loop that SENDS them is started
+    # as a startup event below, not here — see there.
+    app.include_router(schedule_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)

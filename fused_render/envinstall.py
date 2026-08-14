@@ -187,6 +187,7 @@ _SPAWNED: set[int] = set()
 # recent, oldest evicted, and a miss simply falls back to the older wording.
 _ENDINGS: dict[int, int] = {}
 _ENDINGS_KEPT = 32
+_ENDINGS_LOCK = threading.Lock()
 
 # Backend attributes the loader reads to stay in step with it. Named here so
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
@@ -1212,10 +1213,26 @@ def _recorded_progress(key: str) -> dict | None:
 
 
 def _remember_ending(pid: int, status: int) -> None:
-    """Keep the `waitpid` status of a worker we just reaped. See `_ENDINGS`."""
-    _ENDINGS[pid] = status
-    while len(_ENDINGS) > _ENDINGS_KEPT:
-        _ENDINGS.pop(next(iter(_ENDINGS)))
+    """Keep the `waitpid` status of a worker we just reaped. See `_ENDINGS`.
+
+    Locked, because the eviction is a READ-THEN-WRITE and the callers are
+    concurrent: `/api/env/progress` and `/api/env/cancel` are sync `def`, so
+    FastAPI runs them in a threadpool (the same fact `_claim` is built on), and
+    two of them can reap two different workers at once. Each dict operation is
+    atomic on its own; `next(iter(...))` followed by `pop(...)` is not — the
+    second thread pops a key the first already took and gets a `KeyError`, or
+    reads an iterator whose dict changed size and gets a `RuntimeError`. Either
+    one escapes `_pid_alive` into a 500 on a poll, which would make a diagnosis
+    aid the thing that breaks the page it was written for.
+
+    The read side stays unlocked deliberately: `_ENDINGS.get` is one atomic
+    lookup, and a miss is already a supported answer (`_how_it_ended` returns ""
+    and the message falls back to its older wording).
+    """
+    with _ENDINGS_LOCK:
+        _ENDINGS[pid] = status
+        while len(_ENDINGS) > _ENDINGS_KEPT:
+            _ENDINGS.pop(next(iter(_ENDINGS)))
 
 
 def _signal_name(number: int) -> str:

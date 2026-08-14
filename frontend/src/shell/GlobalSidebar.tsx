@@ -84,6 +84,14 @@ const MOUNTS_ICON = (
   </svg>
 );
 
+// A clock: scheduled messages are the one page about *when* something happens.
+const SCHEDULED_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3.5 2" />
+  </svg>
+);
+
 const PREFERENCES_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="3" />
@@ -236,6 +244,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
+    // Ungated, unlike Claude Config / App Basics above: the page is useful (and
+    // says so) even with nothing scheduled yet, and there is no machine state
+    // that can make scheduling unavailable.
+    { href: "/scheduled", label: "Scheduled", icon: SCHEDULED_ICON },
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     {
       href: "/preferences",

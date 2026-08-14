@@ -2282,3 +2282,113 @@ export function aiComplete(prompt: string, system_prompt?: string): Promise<stri
     ...(system_prompt ? { system_prompt } : {}),
   }).then((r) => r.result.text);
 }
+
+// -- Scheduled Claude messages (/api/schedule) --------------------------------
+// A durable list of "send this prompt to this target at this time", fired by the
+// server's own loop (fused_render/schedule.py) so a scheduled turn runs in the
+// app's environment rather than a cron job's. `state` is the whole story of one
+// entry: `pending` until due, then `sent` (with `run_id`), or `missed` when the
+// app was not running between the due time and the catch-up bound, or `error`
+// with a reason. Terminal entries are kept — a message that did not send is
+// exactly the one the user needs to be able to read afterwards.
+export type ScheduledState =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "missed"
+  | "error"
+  | "cancelled";
+
+export interface ScheduledMessage {
+  id: string;
+  target: string;
+  message: string;
+  due: string;
+  session_id: string;
+  permission_mode: string;
+  state: ScheduledState;
+  created: string;
+  fired: string;
+  run_id: string;
+  error: string;
+  // `state` says whether the message was SENT; `turn` says how the session it
+  // started then went. Two fields because they fail independently: a message can
+  // send perfectly and its turn still die on the first tool call. "" until the
+  // turn ends (and on entries stored before this field existed).
+  // "unknown" = the watch ended without a verdict (the app stopped being able to
+  // say). The work may well have finished; `run_id` is how to go and read it.
+  turn?: "" | "ok" | "failed" | "cancelled" | "unknown";
+  // The Claude Code session the turn actually ran in — filled in by the watcher,
+  // and distinct from `session_id` (which is the input: resume this one, or ""
+  // for a fresh one). This is the id the Inbox addresses a session by, so it is
+  // what a row links to. Absent on entries stored before it existed.
+  claude_session_id?: string;
+}
+
+export interface ScheduleResult {
+  entries: ScheduledMessage[];
+  // The catch-up bound, in seconds (FUSED_RENDER_SCHEDULE_MAX_LATE server-side).
+  // Configurable, so the page cannot explain a `missed` entry without asking.
+  max_late_seconds: number;
+  permission_modes: string[];
+}
+
+export function getSchedule(): Promise<ScheduleResult> {
+  return getJson<ScheduleResult>("/api/schedule");
+}
+
+// Exactly one of `due` (ISO 8601) or `delay_seconds` — the server refuses both,
+// so a caller offering "in 30 minutes" never has to do timezone arithmetic.
+export function scheduleMessage(body: {
+  target: string;
+  message: string;
+  due?: string;
+  delay_seconds?: number;
+  session_id?: string;
+  permission_mode?: string;
+}): Promise<{ entry: ScheduledMessage }> {
+  return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
+}
+
+// Rejects with the server's 404 message when the entry is no longer pending —
+// a message that sent while the user was reaching for Cancel cannot be withdrawn.
+export function cancelScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
+  return postJson<{ entry: ScheduledMessage }>("/api/schedule/cancel", { id });
+}
+
+// The running narration of what scheduled messages DID — polled app-wide by
+// useScheduleEvents and turned into toasts. A separate endpoint from the listing
+// for the reason the mount-health log is separate: this poll runs forever in
+// every shell and must not carry the page's payload.
+//
+// Append-only with monotonically increasing ids, so a poller both dedups and
+// orders by tracking a high-water mark. Bounded server-side: it is a narration,
+// not history — the schedule store holds every outcome durably.
+export type ScheduleEventKind = "done" | "failed" | "missed";
+
+export interface ScheduleEvent {
+  id: number;
+  kind: ScheduleEventKind;
+  entry_id: string;
+  target: string;
+  // The prompt, not a summary: a toast saying "a scheduled message failed" sends
+  // the user hunting, and the first words of what they asked for identify it.
+  message: string;
+  detail: string;
+  ts: number;
+}
+
+// Undelivered events only — the SERVER remembers which those are, so a reload is
+// quiet without the client guessing, and a `missed` verdict emitted by the
+// scheduler's first tick (before any shell had loaded) still gets narrated.
+export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
+  return getJson<{ events: ScheduleEvent[] }>("/api/schedule/events");
+}
+
+// Confirm every event up to `id` has been shown. Called AFTER narrating, so a
+// client that dies in between gets a duplicate toast rather than a silent miss.
+// A POST, not a drain-on-read: a GET with that side effect would let any page
+// silently consume the user's notifications with a no-cors fetch.
+export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
+  return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
+}

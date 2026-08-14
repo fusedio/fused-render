@@ -3273,6 +3273,42 @@ def test_a_worker_we_reaped_ourselves_is_diagnosed_by_its_SIGNAL(tmp_path, monke
     assert "exited with status 3" in err and "killed" not in err
 
 
+def test_the_endings_table_survives_concurrent_reaps():
+    """Two threadpooled `/api/env/progress` calls can reap two workers at once.
+
+    The eviction is read-then-write (`next(iter(...))` then `pop`), and neither
+    half being atomic on its own is enough: the loser pops a key the winner
+    already took (`KeyError`), or iterates a dict that changed size
+    (`RuntimeError`), and either escapes `_pid_alive` into a 500 on a poll. A
+    lock is the whole fix; this pins that the cap and the table hold under
+    threads rather than trying to reproduce a timing window.
+    """
+    kept = dict(envinstall._ENDINGS)
+    errors = []
+    try:
+        envinstall._ENDINGS.clear()
+
+        def _hammer(base):
+            try:
+                for pid in range(base, base + 400):
+                    envinstall._remember_ending(pid, 9)
+            except BaseException as e:  # noqa: BLE001 - the point of the test
+                errors.append(e)
+
+        threads = [threading.Thread(target=_hammer, args=(n * 10_000,))
+                   for n in range(1, 9)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, errors
+        assert len(envinstall._ENDINGS) == envinstall._ENDINGS_KEPT
+    finally:
+        envinstall._ENDINGS.clear()
+        envinstall._ENDINGS.update(kept)
+
+
 def test_the_endings_table_cannot_grow_without_bound():
     """One entry per installer this server has ever buried would be a slow leak in
     a process that runs for days; the record is read once, immediately after the
