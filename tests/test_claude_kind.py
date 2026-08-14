@@ -388,7 +388,7 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     # renderAnn draws THREE things and they answer differently now: the pins need a
     # layer (null bindings when the host shows nothing marked, and the loop is
     # skipped), the annotation chips are the payload of a message this chat can
-    # still send, and the ATTACHED PICTURES (D278) belong to no pane at all — a
+    # still send, and the ATTACHED PICTURES (D279) belong to no pane at all — a
     # screenshot pasted or dropped into a folder chat with no preview is still an
     # attachment, so the no-pane exit draws those and only those.
     render = code[code.index("function renderAnn() {"):]
@@ -761,12 +761,20 @@ def test_the_sidebar_teardown_releases_the_target_for_the_next_instance():
     handlers the browser no longer runs. The teardown must hand the target
     back: clear both guards, and disarm `annOn` so any leftover handler of ours
     that the browser does still run gates itself out.
+
+    The MutationObserver goes the same way, and BEFORE the guards: it watches
+    the HOST's document, and a mutation over there between the teardown and our
+    destruction would run renderAnn → annSyncTarget — which re-injects the
+    layer and re-sets the very guards the teardown just cleared.
     """
     code = _pane_code()
     start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
     wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start)]
     hide = wiring[wiring.index('window.addEventListener("pagehide"'):]
     assert "annOn = false;" in hide
+    assert "annObserver.disconnect();" in hide
+    assert hide.index("annObserver.disconnect();") \
+        < hide.index("annFrame.__fusedAnnWatched = false;")
     assert "annFrame.__fusedAnnWatched = false;" in hide
     assert "doc.__fusedAnnWired = false;" in hide
 

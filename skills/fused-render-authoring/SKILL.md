@@ -60,14 +60,13 @@ Rules that matter (each has a reason):
 
 Write `main()` against **stdlib plus the supported library set** below — a folder with no `pyproject.toml` runs on the app's own interpreter, which ships exactly these with no download and no first-run wait. Dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in the repo's `pyproject.toml`, plus core deps):
 
-- **Data:** numpy, pandas, polars, pyarrow, duckdb, scipy, openpyxl, msgpack
-- **Geospatial:** shapely, geopandas, rasterio, zarr
-- **Plots & images:** matplotlib, pillow
-- **Documents:** pymupdf, pikepdf, fpdf2, python-pptx
-- **Network & cloud:** requests, httpx, botocore, google-auth
-- **Logs:** drain3
+- **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
+- **Images:** `pillow`
+- **Documents:** `python-pptx`
+- **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
+- **Logs:** `drain3`
 
-Anything outside this set (e.g. torch, sklearn, xarray, plotly) is missing by default. Reaching for one is a deliberate choice with a cost, so prefer rewriting with the supported set — but when the set genuinely cannot do the job, the folder can declare its own dependencies (next section).
+Anything outside this set is missing by default — including several packages the app used to ship and no longer does: **polars, matplotlib, scipy, geopandas, shapely, rasterio, rio-tiler, zarr, pymupdf, pikepdf**. They were 541.9 MB every user carried for a minority of pages, so they moved to per-folder declarations. **`fpdf2` is still bundled and still importable** — it is not in the table above only because that table is curated, and PDF export via `from fpdf import FPDF` needs no declaration and no install. Reaching for any of them (or for torch, sklearn, xarray, plotly) is a deliberate choice with a cost — a one-time install the user waits through — so prefer rewriting with the always-there set; when it genuinely cannot do the job, declare the folder's dependencies (next section).
 
 ### Declaring extra dependencies: `pyproject.toml`
 
@@ -110,7 +109,7 @@ def main(names: str = "pandas,numpy"):
 EOF
 curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
   -H 'Content-Type: application/json' \
-  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,geopandas,duckdb"}}'
+  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,duckdb,geopandas"}}'
 ```
 
 A `null` version means the package is missing from *this* environment — the same result an `import` in `main()` would hit.

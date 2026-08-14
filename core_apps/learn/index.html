@@ -714,16 +714,15 @@
 
     <details class="libdrop" id="libDrop">
       <summary>Supported Python libraries</summary>
-      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python (<span id="libPyV">3.12</span>), which ships the standard library plus this data stack. No <code>pip install</code> needed (or possible):</p>
+      <p class="sub" style="margin-top:10px">Your <code>.py</code> files run in the app's bundled Python (<span id="libPyV">3.12</span>), which ships the standard library plus this stack — always there, nothing to install:</p>
       <table class="apitable" id="libTable">
-        <tr><td class="lg-h">Data</td><td><code>numpy</code> <code>pandas</code> <code>polars</code> <code>pyarrow</code> <code>duckdb</code> <code>scipy</code> <code>openpyxl</code> <code>msgpack</code></td></tr>
-        <tr><td class="lg-h">Geospatial</td><td><code>shapely</code> <code>geopandas</code> <code>rasterio</code> <code>zarr</code></td></tr>
-        <tr><td class="lg-h">Plots &amp; images</td><td><code>matplotlib</code> <code>pillow</code></td></tr>
-        <tr><td class="lg-h">Documents</td><td><code>pymupdf</code> <code>pikepdf</code> <code>fpdf2</code> <code>python-pptx</code></td></tr>
+        <tr><td class="lg-h">Data</td><td><code>numpy</code> <code>pandas</code> <code>pyarrow</code> <code>duckdb</code> <code>openpyxl</code> <code>msgpack</code></td></tr>
+        <tr><td class="lg-h">Images</td><td><code>pillow</code></td></tr>
+        <tr><td class="lg-h">Documents</td><td><code>python-pptx</code></td></tr>
         <tr><td class="lg-h">Network &amp; cloud</td><td><code>requests</code> <code>httpx</code> <code>botocore</code> <code>google-auth</code></td></tr>
         <tr><td class="lg-h">Logs</td><td><code>drain3</code></td></tr>
       </table>
-      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Stick to these (and the standard library) when writing Python for your pages: imports outside this set will fail in the packaged app.<span id="libLive"></span></p>
+      <p class="sub" style="margin:10px 0 0;font-size:12px;color:var(--mut)">Anything else — <code>polars</code>, <code>matplotlib</code>, <code>scipy</code>, <code>geopandas</code>, <code>rasterio</code>, <code>pymupdf</code>, or any package on PyPI — is one file away: declare it in a <code>pyproject.toml</code> at your <b>project root</b> with a <code>[project] dependencies = [...]</code> list, and the app builds that project its own environment the first time you run it (a progress bar, once). Every <code>.py</code> under the root shares it, however deep — and the root is your app folder, or the <b>topmost</b> folder above your script that has a <code>pyproject.toml</code>, so a second one in a subfolder is ignored. The environment holds <b>exactly</b> what you listed — so list everything it imports, including the ones above.<span id="libLive"></span></p>
     </details>
 
     <h2>Starter ideas</h2>

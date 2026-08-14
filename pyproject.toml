@@ -50,11 +50,12 @@ dependencies = [
     # PEP 508 requirement/specifier parsing, for deciding whether the app
     # interpreter already satisfies a script's PEP 723 header (engine.app_satisfies
     # — a header it already meets runs with no venv at all). Core rather than an
-    # extra, and declared rather than borrowed: it arrives transitively from
-    # geopandas/matplotlib/rasterio/zarr today, so a plain `pip install
-    # fused-render` had it by luck. Without it every header silently falls back to
-    # building its own venv — a permanent slowdown with no failing test, which is
-    # exactly the shape of the `httpx`/`tomli` mistakes above.
+    # extra, and declared rather than borrowed: it used to arrive transitively
+    # from geopandas/matplotlib/rasterio/zarr, so a plain `pip install
+    # fused-render` had it by luck — and D276 then removed all four, which is
+    # what "borrowed" always eventually means. Without it every header silently
+    # falls back to building its own venv — a permanent slowdown with no failing
+    # test, which is exactly the shape of the `httpx`/`tomli` mistakes above.
     "packaging>=22",
     # AppKit, for the macOS half of the OS clipboard bridge
     # (shell/pasteboard/_darwin.py reads and writes NSPasteboard file URLs).
@@ -98,43 +99,97 @@ dev = [
     # mock-based and cross-platform, but importorskip("cryptography") skips them
     # in CI unless it's installed here — it's win32-only in windows-desktop.
     "cryptography",
+    # A TEST dependency since D276, not a shipped one. The notebook kernel turns
+    # a cell's open figures into inline PNGs (`kernel_body.py`), which is real
+    # behaviour with two tests on it — and matplotlib left `[bundled]`, so
+    # nothing installed it for the suite any more. The unit test's
+    # importorskip would then have skipped silently for good, and
+    # tests/test_notebook_e2e.py's figure cell had no skip at all and would
+    # simply have gone red. Declared here rather than skipped, because
+    # "does the kernel render figures" is worth keeping covered, and the
+    # honest description of matplotlib now is that this repo tests with it and
+    # does not ship it. No packaged build installs `[dev]`
+    # (build_dmg.sh / build_linux_appimage.sh / build_windows_installer.ps1 all
+    # install `[bundled,...]`), and the macOS force-list is derived by walking
+    # `[bundled]`'s own requirements, so nothing here can reach the bundle.
+    "matplotlib",
 ]
 # Baked into the bundled CPython of the .app (SPEC DM-2): users of the packaged
 # app cannot pip install, so the interpreter ships with the popular data stack.
 # Dev installs: pip install -e ".[bundled]"
+#
+# This list is a SIZE BUDGET, not a wish list (D276). Every entry is carried by
+# every user of every platform build, forever, whether or not they ever open a
+# file that needs it — so a distribution earns its place here by being needed
+# from a cold start across many templates, not by being useful once. Anything
+# that serves one or two templates belongs in THOSE FOLDERS' `pyproject.toml`
+# (SPEC PY-16): the app then installs it on first render, under the PY-18
+# progress flow, only for the users who open that kind of file. Measured on
+# macOS/arm64/py3.12, moving five groups out took the installed set from
+# 954 MB to 398 MB.
 bundled = [
     "numpy",
     "pandas",
     "requests",
-    "polars",
-    "matplotlib",
-    "scipy",
     "pillow",
     "openpyxl",
-    "shapely",
-    "geopandas",
+    # REMOVED (D276): polars (197 MB — `polars` + the `polars-runtime-32` wheel
+    # that carries the actual engine). It was the single largest thing in this
+    # extra and NOTHING in the product imports it: no template, no core app, no
+    # server code. It was here purely as an advertised convenience for user
+    # `runPython` code, which is not worth a fifth of the download to everyone.
+    # A user who wants it declares it in their own folder's `pyproject.toml`,
+    # which is the supported way to get anything else too (PY-16).
+    #
+    # REMOVED (D276): scipy (70 MB). Its one consumer is
+    # `netcdf/grid_tile_server.py`, which already installs it into the daemon
+    # venv it manages itself (DAEMON_DEPS, D174) — so on a packaged app it was
+    # shipped once and downloaded again, and the shipped copy was never imported.
+    #
+    # REMOVED (D276): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
+    # consumers, neither of which needed it HERE: `map/geo_classify.py` (now
+    # declared in fused_render/templates/map/pyproject.toml) and
+    # `notebook/kernel_body.py`, which only harvests figures the user's own cell
+    # created and does nothing at all when matplotlib is absent.
+
     # Preview-template backends. pandoc, typst and usd-core are intentionally
     # absent — they are large per-platform binaries fetched on demand at
     # runtime (see docs/docs.py, docs/install_worker.py, latex/engine.py,
     # usd/convert_worker.py's _ensure_pxr — D119).
     "python-pptx",
-    "fpdf2>=2.8.7",
     "msgpack>=1.0",
-    "rasterio",
-    "rio-tiler",
-    # Matches zarr_aoi/tile_server.py's header (and its DAEMON_DEPS): it reads
-    # v3 stores through the 3.x API, so a bare pin could resolve to 2.x here.
-    # Marked 3.11+ like the `fused` pins below: every zarr 3.x requires
-    # Python>=3.11 (3.2+ wants 3.12), so an unmarked floor makes this extra
-    # unresolvable on the 3.10 that `requires-python` still promises — which is
-    # not a hypothetical, it broke v0.3.13's Windows installer build (the
-    # project-level `uv run` in scripts/build_windows_installer.ps1 resolves
-    # every version split, not just the bundle's 3.12). The desktop bundles all
-    # ship 3.12, so they still get zarr; a 3.10 pip install loses the zarr_aoi
-    # template's in-process path and falls back to its own daemon venv.
-    'zarr>=3.0.8 ; python_version >= "3.11"',
-    "pymupdf>=1.25",
-    "pikepdf>=9",
+    # KEPT, against the first cut of D276, and the reason is PY-16's SCOPE. A
+    # declaration governs the whole FOLDER, so moving fpdf2 out put `excel` and
+    # `slides` entirely behind a project venv: opening any .xlsx, any .csv in
+    # Excel mode, or any .pptx would block on a first-render install of
+    # duckdb + pyarrow + openpyxl / python-pptx + pillow — ~150 MB of packages
+    # the app ALREADY SHIPS — to add 1.5 MB for an export path most users never
+    # touch. The export is not separable from the folder, so the choice was
+    # "everyone carries 14 MB" versus "two everyday templates get an install
+    # gate", and 14 MB is the cheaper answer. Measured marginal cost: fpdf2 is
+    # 1.5 MB and drags fonttools (12.6) + defusedxml (0.1), and fonttools has no
+    # other user left now matplotlib is gone.
+    "fpdf2>=2.8.7",
+    # REMOVED (D276): pymupdf (56 MB) and pikepdf (13 MB), the two largest
+    # single wheels this extra ever had. They serve `pdf_studio` alone, which is
+    # a whole-folder tool — every action in it is a PDF action — so the PY-16
+    # scope argument that KEPT fpdf2 above runs the other way here: the venv it
+    # gets is the venv it needs. Declared in
+    # fused_render/templates/pdf_studio/pyproject.toml. Note the plain `pdf`
+    # template is untouched: it renders in the browser (pdf.js) and imports
+    # none of this.
+    #
+    # REMOVED (D276): the geo stack — geopandas, rasterio, rio-tiler, shapely
+    # and zarr, 180 MB once their exclusive transitives go with them (pyogrio
+    # 77, pyproj 18, numcodecs, morecantile, the pystac-ext-* fan-out). They are
+    # the deepest per-user cost in the extra and they serve four templates:
+    # `map`, `vector`, `geometry_editor` and — through venvs those files already
+    # manage themselves — `geotiff`, `netcdf`, `zarr_aoi` and `pyramid`. The
+    # first three now declare them (SPEC PY-16); the rest always installed their
+    # own, so the bundled copy was pure duplication there. The zarr floor that
+    # used to live here (`zarr>=3.0.8`, v3 store API) survives where it is
+    # actually read, in `zarr_aoi/tile_server.py`'s DAEMON_DEPS.
+
     "drain3>=0.9.11",
     # Private-cloud credential chains (the [cloud-auth] extra), folded into the
     # bundled app: DMG users cannot pip install, and the feature's promise —

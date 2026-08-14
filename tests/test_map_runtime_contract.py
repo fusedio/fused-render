@@ -1,6 +1,7 @@
 """Packaging and process contracts for the built-in Map Viewer runtime."""
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import sys
 from pathlib import Path
@@ -107,6 +108,24 @@ def test_daemon_bootstraps_sibling_modules_without_launcher_sys_path(
 
 
 def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
+    """The Map Viewer's runtime is declared in ONE place, and it is not the app.
+
+    Two halves, and only one of them changed with D276. The half that did not:
+    the abandoned mapbox-vector-tile/xlrd/pyclipper stack must stay out of both
+    `[bundled]` and the macOS force-list, and `map_render.py` must launch the
+    plain interpreter it was handed rather than reaching for `uv run` — the
+    template does not get to invent its own environment plumbing beside the
+    engine's.
+
+    The half that did: `map/pyproject.toml` used to be asserted ABSENT, because
+    the geo stack was in `[bundled]` and a folder manifest would have bought a
+    download for packages the app already had. D276 took that stack out of the
+    extra, so the same reasoning now demands the opposite — the manifest is
+    where those dependencies live, and its absence would leave every map render
+    importing rasterio out of an interpreter that has none. Inverted rather than
+    deleted: this line is the one that notices if the manifest is ever dropped
+    without the extra being restored.
+    """
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = project["project"]["optional-dependencies"]["bundled"]
 
@@ -118,11 +137,148 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     assert "CREATE_NO_WINDOW" in launcher
     assert "uv run" not in launcher
     assert "FUSED_RENDER_UV" not in launcher
-    assert not (MAP / "pyproject.toml").exists()
+
+    manifest = MAP / "pyproject.toml"
+    assert manifest.exists(), (
+        "fused_render/templates/map/pyproject.toml is gone. The geo stack left "
+        "`[bundled]` in D276, so this folder's manifest is the only place "
+        "geopandas/rasterio/rio-tiler/matplotlib are declared — without it every "
+        "map render fails at import on a packaged app (SPEC PY-16)."
+    )
+    assert (MAP / "uv.lock").exists(), (
+        "map declares an environment but ships no uv.lock, so a released build "
+        "would resolve it against PyPI on first render (SPEC PY-16)"
+    )
+    declared = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    for package in ("mapbox-vector-tile", "xlrd", "pyclipper"):
+        assert not any(
+            item.startswith(package)
+            for item in declared["project"]["dependencies"]
+        ), f"{package} is abandoned; it must not come back via the map manifest"
 
     setup = (ROOT / "scripts" / "setup_py2app.py").read_text(encoding="utf-8")
     for package in ("mapbox_vector_tile", "xlrd", "pyclipper"):
         assert f'"{package}"' not in setup
+
+
+def test_a_map_target_importing_what_this_venv_lacks_is_told_where_it_ran(tmp_path):
+    """The D276 capability regression, made legible (C1).
+
+    A Python map target is exec'd IN THIS TEMPLATE'S PROCESS, because the
+    descriptor is built from the live object it returns. That process used to be
+    the app interpreter with all of `[bundled]`; it is now map's own environment.
+    So a target doing `import duckdb` fails — and the bare `No module named
+    'duckdb'` sends the reader to their own folder's pyproject.toml, which is not
+    consulted for this call and cannot fix it.
+
+    Asserted on the MESSAGE rather than the type, because the type is right
+    already and the message is the entire defect.
+    """
+    target = tmp_path / "layer.py"
+    target.write_text(
+        "import a_module_that_does_not_exist\n\ndef main():\n    return None\n",
+        encoding="utf-8",
+    )
+    worker = _load("worker")
+    out = worker.main({
+        "target": str(target),
+        "artifact_dir": str(tmp_path),
+        "artifact_id": "t1",
+    })
+
+    assert out["status"] == "error"
+    message = out["message"]
+    assert "a_module_that_does_not_exist" in message
+    assert "map/pyproject.toml" in message
+    # The correction that stops the reader looking in the wrong place.
+    assert "NOT the app's interpreter" in message
+    assert "will not change that" in message
+
+
+def _manifest_dependency_names() -> list[str]:
+    declared = tomllib.loads(
+        (MAP / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    return [d.split(";")[0].split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
+            for d in declared]
+
+
+def _hide_tomllib(monkeypatch):
+    """Make `import tomllib` raise, as it does on Python 3.10 and older."""
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ImportError("No module named 'tomllib'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "tomllib", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def test_the_map_target_message_names_every_package_the_venv_actually_has():
+    """The message tells the user to "rewrite the target using the packages
+    above", so the list had better be the real one (D177).
+
+    Hand-written, it listed six of thirteen and omitted `duckdb` and `requests`
+    — the two put in the manifest specifically so user targets could import
+    them, i.e. the two most likely to save the reader. It is derived from the
+    manifest now, and this is the check that keeps it derived: a future entry
+    added to `map/pyproject.toml` must appear here without anyone remembering.
+    """
+    names = _manifest_dependency_names()
+    assert "duckdb" in names and "requests" in names, (
+        "map/pyproject.toml no longer declares the two packages added for "
+        "user-supplied targets (D276); if that was deliberate, update this test "
+        "and worker.py's docstring together"
+    )
+
+    worker = _load("worker")
+    message = worker._missing_module_help(
+        ModuleNotFoundError("No module named 'x'", name="x"))
+    missing = [n for n in names if n not in message]
+    assert not missing, (
+        f"{missing} are in map/pyproject.toml but absent from the help text a "
+        "user gets when their map target fails to import — the message points at "
+        "'the packages above' and would be hiding exactly the ones that could "
+        "fix their script"
+    )
+
+
+def test_the_package_list_is_still_derived_on_a_python_without_tomllib(monkeypatch):
+    """The 3.10 hole this test exists to close.
+
+    `tomllib` is stdlib only from 3.11, and the derivation used to sit inside a
+    bare `except Exception: return []`. On `pip install fused-render` under 3.10
+    that swallowed the ImportError and the help text named NO packages while
+    still telling the reader to use "the packages above" — the exact D177
+    failure the derivation was introduced to prevent, only silent. Simulated
+    rather than version-gated so it is checked on every interpreter.
+    """
+    worker = _load("worker")
+    _hide_tomllib(monkeypatch)
+
+    names = _manifest_dependency_names()
+    assert set(names) <= set(worker._declared_packages())
+
+    message = worker._missing_module_help(
+        ModuleNotFoundError("No module named 'x'", name="x"))
+    assert [n for n in names if n not in message] == []
+
+
+def test_an_unreadable_manifest_says_so_instead_of_enumerating_nothing(monkeypatch):
+    """The degraded path must be loud, not empty.
+
+    A diagnostic must not raise, so a manifest that cannot be read at all still
+    yields no list — but the message then has to admit that, rather than reading
+    as if the environment simply contains nothing.
+    """
+    worker = _load("worker")
+    monkeypatch.setattr(worker, "_declared_packages", lambda: [])
+
+    message = worker._missing_module_help(
+        ModuleNotFoundError("No module named 'x'", name="x"))
+    assert "could not read" in message
+    assert "map/pyproject.toml" in message
 
 
 def test_browsable_vector_formats_are_supported_by_every_loading_path():
@@ -158,6 +314,14 @@ def test_optional_runtime_lists_only_missing_distributions(monkeypatch):
     assert "not installed: rio-tiler" in message
     assert message.endswith("uv pip install rio-tiler")
     assert message.count("rio-tiler") == 2
+    # D276 makes this message reachable on a PACKAGED app for the first time
+    # (the geo stack moved from `[bundled]` into map/pyproject.toml), and a DMG
+    # user cannot pip install anything. So the manual command may no longer be
+    # the ONLY thing offered — the two causes a packaged user can actually act
+    # on come first. Pinned, because "just tell them to pip install" is the
+    # shape this keeps regressing to (D176, and pdf_studio's boot panel).
+    assert "on first render" in message
+    assert "Preferences" in message
 
 
 def test_large_vector_reports_install_command_before_registering_tiles(

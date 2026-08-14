@@ -1,0 +1,73 @@
+# The map template's environment (SPEC PY-16). Every .py in this folder shares
+# the venv built from this file — the two runPython entrypoints (`discover.py`,
+# `map_render.py`) and everything they reach: `raster_engine.py`,
+# `vector_engine.py`, `geo_classify.py`, `worker.py`, `daemon.py`,
+# `raster_categories.py`, `geo_paths.py`, `optional_runtime.py`.
+#
+# This is the heaviest declaration in the tree and the reason the geo stack could
+# leave `[bundled]` at all (D276): the Map Viewer is the only template that needs
+# ALL of it in one process, and it is not a format everyone opens. Users who never
+# open a raster or a vector layer no longer carry ~180 MB for it; users who do pay
+# one PY-18 install on first render.
+#
+# The declaration is the COMPLETE list, with no baseline unioned in (D172), so
+# distributions the app's own interpreter still ships (numpy, pandas, pillow,
+# pyarrow) are named here too — the venv contains exactly this and nothing else.
+#
+#   geopandas/shapely   vector_engine.py, geo_classify.py — layer reading,
+#                       geometry ops, the classifier's GeoDataFrame paths
+#   pyogrio/pyproj      imported DIRECTLY by vector_engine.py (OGR read/write and
+#                       CRS math), not merely inherited from geopandas
+#   rasterio/rio-tiler  raster_engine.py — GDAL dataset access, COG derivatives,
+#                       XYZ tiling
+#   matplotlib          geo_classify.py — colormap lookup for classified rasters
+#
+# `duckdb` and `requests` are here for a different reason from everything else,
+# and the distinction matters if you ever revisit this list. Nothing in this
+# FOLDER imports either one. They are here because `worker.py` loads and
+# executes the USER's own `.py` map target in this process — it has to, since the
+# descriptor is built from the live object the script returns, so there is no
+# boundary to put between them — and that process used to be the app's
+# interpreter carrying all of `[bundled]`. Since D276 it is this venv, so a
+# target doing `import duckdb` broke with no fix available to its author: their
+# own folder's `pyproject.toml` is not consulted for this call.
+#
+# These two, and only these two, buy back the overwhelmingly common case at a
+# measured +47.7 MB on this whole environment (D276 records how that is counted;
+# the delta is what to trust — absolutes vary by method). This is NOT
+# an attempt to mirror `[bundled]` — that would be a hand-kept second copy of it
+# living inside a template (D177) which could never be complete, since a map
+# target may import anything. **The real fix is
+# to run the target under the environment PY-16 gives the USER's folder**, which
+# needs the returned object to cross a process boundary; until then
+# `worker.py`'s `_missing_module_help` explains what happened for everything
+# else. Owner's call, made with that argument in front of it (D276).
+#
+# `xarray` is deliberately absent: geo_classify.py probes for it to RECOGNISE a
+# DataArray a user's own script returned, in a branch that is skipped when it is
+# not importable. Declaring it would install 100+ MB to identify an object this
+# environment cannot produce on its own.
+[project]
+name = "fused-render-template-map"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "geopandas",
+    "shapely",
+    "pyogrio",
+    "pyproj",
+    "rasterio",
+    "rio-tiler",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pillow",
+    "pyarrow",
+    "duckdb>=1.1",
+    "requests",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install. Without this uv would try to build the "project" itself and fail.
+[tool.uv]
+package = false
