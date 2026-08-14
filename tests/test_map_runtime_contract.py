@@ -1,6 +1,7 @@
 """Packaging and process contracts for the built-in Map Viewer runtime."""
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import sys
 from pathlib import Path
@@ -194,6 +195,26 @@ def test_a_map_target_importing_what_this_venv_lacks_is_told_where_it_ran(tmp_pa
     assert "will not change that" in message
 
 
+def _manifest_dependency_names() -> list[str]:
+    declared = tomllib.loads(
+        (MAP / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    return [d.split(";")[0].split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
+            for d in declared]
+
+
+def _hide_tomllib(monkeypatch):
+    """Make `import tomllib` raise, as it does on Python 3.10 and older."""
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ImportError("No module named 'tomllib'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "tomllib", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
 def test_the_map_target_message_names_every_package_the_venv_actually_has():
     """The message tells the user to "rewrite the target using the packages
     above", so the list had better be the real one (D177).
@@ -204,10 +225,7 @@ def test_the_map_target_message_names_every_package_the_venv_actually_has():
     manifest now, and this is the check that keeps it derived: a future entry
     added to `map/pyproject.toml` must appear here without anyone remembering.
     """
-    declared = tomllib.loads(
-        (MAP / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
-    names = [d.split(";")[0].split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
-             for d in declared]
+    names = _manifest_dependency_names()
     assert "duckdb" in names and "requests" in names, (
         "map/pyproject.toml no longer declares the two packages added for "
         "user-supplied targets (D276); if that was deliberate, update this test "
@@ -224,6 +242,43 @@ def test_the_map_target_message_names_every_package_the_venv_actually_has():
         "'the packages above' and would be hiding exactly the ones that could "
         "fix their script"
     )
+
+
+def test_the_package_list_is_still_derived_on_a_python_without_tomllib(monkeypatch):
+    """The 3.10 hole this test exists to close.
+
+    `tomllib` is stdlib only from 3.11, and the derivation used to sit inside a
+    bare `except Exception: return []`. On `pip install fused-render` under 3.10
+    that swallowed the ImportError and the help text named NO packages while
+    still telling the reader to use "the packages above" — the exact D177
+    failure the derivation was introduced to prevent, only silent. Simulated
+    rather than version-gated so it is checked on every interpreter.
+    """
+    worker = _load("worker")
+    _hide_tomllib(monkeypatch)
+
+    names = _manifest_dependency_names()
+    assert set(names) <= set(worker._declared_packages())
+
+    message = worker._missing_module_help(
+        ModuleNotFoundError("No module named 'x'", name="x"))
+    assert [n for n in names if n not in message] == []
+
+
+def test_an_unreadable_manifest_says_so_instead_of_enumerating_nothing(monkeypatch):
+    """The degraded path must be loud, not empty.
+
+    A diagnostic must not raise, so a manifest that cannot be read at all still
+    yields no list — but the message then has to admit that, rather than reading
+    as if the environment simply contains nothing.
+    """
+    worker = _load("worker")
+    monkeypatch.setattr(worker, "_declared_packages", lambda: [])
+
+    message = worker._missing_module_help(
+        ModuleNotFoundError("No module named 'x'", name="x"))
+    assert "could not read" in message
+    assert "map/pyproject.toml" in message
 
 
 def test_browsable_vector_formats_are_supported_by_every_loading_path():

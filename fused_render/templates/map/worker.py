@@ -52,6 +52,32 @@ def _run_entrypoint(module: Any, preferred: str = "") -> tuple[Any, str]:
     )
 
 
+def _dependencies_without_tomllib(text: str) -> list[str]:
+    """Read `[project] dependencies` out of the manifest without a TOML parser.
+
+    `tomllib` is stdlib only from 3.11. The app bundles 3.12 and this manifest
+    requires it, but `pip install fused-render` supports 3.10 and its test suite
+    imports this module under whatever interpreter it runs on — where the
+    tomllib import raised, the old `except` swallowed it, and the help text below
+    silently enumerated nothing while still telling the reader to use "the
+    packages above". Taking a `tomli` dependency would make the template
+    non-standalone for one string, so this reads the one array it needs.
+
+    Deliberately small and deliberately not a TOML parser: this folder's
+    manifest writes one quoted requirement per line inside a single
+    `dependencies = [...]`, and this is the only file this function is ever
+    pointed at. If it ever finds nothing, `_missing_module_help` says so rather
+    than pretending the environment is empty.
+    """
+    import re
+
+    block = re.search(r"^[ \t]*dependencies[ \t]*=[ \t]*\[(.*?)\]", text, re.S | re.M)
+    if block is None:
+        return []
+    body = "\n".join(line.split("#")[0] for line in block.group(1).splitlines())
+    return re.findall(r"""['"]([^'"]+)['"]""", body)
+
+
 def _declared_packages() -> list[str]:
     """This folder's declaration, READ rather than restated (D177).
 
@@ -62,20 +88,28 @@ def _declared_packages() -> list[str]:
     most likely to save them. A hand-copied list of another list drifts; this one
     drifted before it was a day old.
 
-    `tomllib` is stdlib from 3.11 and this manifest requires 3.12, so reading it
-    costs no dependency and keeps the template standalone-copyable — it imports
-    nothing from `fused_render` (SPEC PY-15). An unreadable manifest degrades to
-    an empty list and a message that simply omits the enumeration, because a
-    diagnostic must never be the thing that raises.
+    Reading the manifest keeps the template standalone-copyable — it imports
+    nothing from `fused_render` (SPEC PY-15) and nothing outside the stdlib. A
+    manifest that cannot be read at all degrades to an empty list, because a
+    diagnostic must never be the thing that raises; the caller then SAYS the
+    list is missing instead of quietly emitting a message that enumerates
+    nothing.
     """
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        with open(os.path.join(here, "pyproject.toml"), encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return []
     try:
         import tomllib
-
-        here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, "pyproject.toml"), "rb") as handle:
-            declared = tomllib.load(handle)["project"]["dependencies"]
-    except Exception:  # noqa: BLE001 — a help string must not be able to fail
-        return []
+    except ImportError:  # Python 3.10 and older have no tomllib.
+        declared = _dependencies_without_tomllib(text)
+    else:
+        try:
+            declared = tomllib.loads(text)["project"]["dependencies"]
+        except Exception:  # noqa: BLE001 — a help string must not be able to fail
+            declared = _dependencies_without_tomllib(text)
     names = []
     for requirement in declared:
         name = requirement.split(";")[0].split("[")[0]
@@ -113,7 +147,11 @@ def _missing_module_help(error: ModuleNotFoundError) -> str:
     """
     name = error.name or "a package"
     available = _declared_packages()
-    listing = (" — " + ", ".join(available)) if available else ""
+    listing = (
+        " — " + ", ".join(available)
+        if available
+        else " — which this message could not read, so open that file for the list"
+    )
     return (
         f"{error}. A Python map target runs inside the Map Viewer's own "
         f"environment (fused_render/templates/map/pyproject.toml{listing}), "
