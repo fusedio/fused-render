@@ -61,6 +61,13 @@ speed, never its correctness.
 events that land mid-scan are replayed — harmlessly re-checked — next time rather than
 missed.
 
+**Replayed alongside the cache read, not after it.** `load_dir_cache` (parquet IO) and
+`hint` (a CFRunLoop draining the journal) are independent and both release the GIL, so
+`run_scan` runs them on two threads and pays `max()` rather than the sum — measured
+~0.75 s and 0.1–2.9 s respectively on a 588k-file index. The consequence is that the
+hint is computed **unconditionally**, before it is known whether there is a cache to
+apply it to, and discarded on a full or rules-changed run.
+
 **Any doubt falls back to a walk.** `hint` returns `None` when: no saved event id for
 this root; the root spans more than one device (per-device ids don't apply); the volume
 UUID differs from the saved one; or the replay itself bails. `_replay` bails on

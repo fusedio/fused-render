@@ -478,6 +478,81 @@ def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):
     assert pq.read_table(part).column("path").to_pylist() == [str(src / "a.txt")]
 
 
+def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
+    """The setup reads (dir cache, journal replay) run concurrently, so the hint
+    is computed BEFORE it is known whether there is a cache to apply it to — a
+    full or rules-changed run must throw it away rather than act on it.
+
+    The hint pinned here names a directory that no longer holds the file, so a
+    run that wrongly took the journal path would carry the stale cached row
+    forward instead of dropping it."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    os.remove(src / "sub" / "b.md")
+    monkeypatch.setattr(fsevents, "hint", lambda _cfg, _root: (set(), []))
+
+    run_dir = _run(cfg, str(src), full=True, run_name="run2")
+    msgs = [e.get("msg") for e in _events(run_dir)]
+    assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
+    assert "scanning (full)" in msgs
+    assert not any((m or "").startswith("scanning (fsevents") for m in msgs)
+    paths = []
+    for part in partition_files(cfg):
+        paths += pq.read_table(part).column("path").to_pylist()
+    assert paths == [str(src / "a.txt")]
+
+
+def test_a_rules_changed_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
+    """Same discard, reached the other way: the cache is dropped because the
+    ignore rules moved, and the phase events still read as they always did —
+    the rules-changed notice first, then the full-scan phase."""
+    from fused_render.index import fsevents
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    monkeypatch.setattr(fsevents, "hint", lambda _cfg, _root: (set(), []))
+
+    wider = _cfg(tmp_path, ignore=["node_modules", "sub"])
+    run_dir = _run(wider, str(src), run_name="run2")
+    msgs = [e.get("msg") for e in _events(run_dir)]
+    assert msgs.index("ignore rules changed - full rescan") < msgs.index(
+        "scanning (full)")
+    part = os.path.join(cfg.files_dir, read_manifest(cfg)["partitions"][0]["file"])
+    assert pq.read_table(part).column("path").to_pylist() == [str(src / "a.txt")]
+
+
+def test_a_hint_that_explodes_fails_the_run_rather_than_scanning_full(
+        tmp_path, monkeypatch):
+    """fsevents.hint returns None on every failure it knows about, so anything
+    raising out of it is a defect. Computing it on a thread must not turn that
+    into a silent "no hint": a full walk of a large root looks like a slow scan,
+    not like a bug, and would keep looking like one every run."""
+    from fused_render.index import fsevents
+
+    def boom(*a, **k):
+        raise RuntimeError("journal exploded")
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path, ignore=["node_modules"])
+    _run(cfg, str(src))
+    monkeypatch.setattr(fsevents, "hint", boom)
+
+    run_dir = _run(cfg, str(src), run_name="run2")
+    end = _summary(run_dir)
+    assert end["msg"] == "failed"
+    assert "journal exploded" in (end.get("error") or "")
+
+
 def test_a_cancelled_run_leaves_the_index_untouched(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
