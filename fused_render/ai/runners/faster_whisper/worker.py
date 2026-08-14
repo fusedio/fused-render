@@ -36,6 +36,7 @@ this was written on and fail on a user's.
 """
 
 import json
+import math
 import os
 import sys
 import threading
@@ -148,8 +149,21 @@ def _clock(seconds):
     pair as "1:30:00" one line above (`jobAmount`), so one row states the same
     number two ways. Same rule as that formatter, for the same reason "720 /
     5400" was wrong there.
+
+    **Rounds, because that formatter rounds.** Truncating disagreed with it on
+    any fractional segment end — 89.6s read "1:30" in the manager and "1:29"
+    one line below — and segment ends are fractional essentially always, so the
+    mismatch was the common case rather than an edge one. Two formatters
+    encoding one rule have to encode all of it.
+
+    `floor(x + 0.5)` rather than `round`, because Python's `round` is BANKER'S
+    rounding and JavaScript's `Math.round` is not: they disagree on an exact
+    half — `round(88.5)` is 88, `Math.round(88.5)` is 89 — and segment ends
+    arrive rounded to two decimals, so an exact half is reachable rather than
+    theoretical. Reaching for `round` here would have fixed the common case and
+    left the same bug behind on the boundary.
     """
-    seconds = int(seconds or 0)
+    seconds = math.floor((seconds or 0) + 0.5)
     hours, rest = divmod(seconds, 3600)
     minutes, secs = divmod(rest, 60)
     if hours:

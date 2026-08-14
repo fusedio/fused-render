@@ -294,6 +294,23 @@ def test_the_clock_rolls_over_to_HOURS(worker):
     assert worker._clock(3661) == "1:01:01"
 
 
+def test_the_clock_ROUNDS_the_way_the_manager_does(worker):
+    """Same invariant as the hours field, broken by a different half-second.
+
+    `jobAmount`'s `clock()` uses Math.round; truncating here made the detail
+    line disagree with the row above it on any fractional segment end — 89.6s
+    reading "1:30" in the manager and "1:29" one line below. Segment ends are
+    fractional essentially always, so this was the common case, not an edge."""
+    assert worker._clock(89.6) == "1:30"
+    assert worker._clock(89.4) == "1:29"
+    assert worker._clock(3599.7) == "1:00:00"
+    # An EXACT half, where Python's banker's `round` would disagree with
+    # JavaScript's `Math.round`: round(88.5) is 88, Math.round(88.5) is 89.
+    # Segment ends arrive at two decimals, so this is reachable, not academic.
+    assert worker._clock(88.5) == "1:29"
+    assert worker._clock(89.5) == "1:30"
+
+
 def test_the_ETA_does_not_charge_the_decode_to_the_first_segment(worker, base, tmp_path):
     """The eager phase produced no segments, so counting its seconds against
     the first one makes the rate read as wildly slower than it is — a 90-minute
