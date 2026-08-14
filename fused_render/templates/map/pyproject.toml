@@ -22,6 +22,26 @@
 #                       XYZ tiling
 #   matplotlib          geo_classify.py — colormap lookup for classified rasters
 #
+# `duckdb` and `requests` are here for a different reason from everything else,
+# and the distinction matters if you ever revisit this list. Nothing in this
+# FOLDER imports either one. They are here because `worker.py` loads and
+# executes the USER's own `.py` map target in this process — it has to, since the
+# descriptor is built from the live object the script returns, so there is no
+# boundary to put between them — and that process used to be the app's
+# interpreter carrying all of `[bundled]`. Since D275 it is this venv, so a
+# target doing `import duckdb` broke with no fix available to its author: their
+# own folder's `pyproject.toml` is not consulted for this call.
+#
+# These two, and only these two, buy back the overwhelmingly common case at a
+# measured +47.7 MB (425.1 -> 472.8 MB for this whole environment). This is NOT
+# an attempt to mirror `[bundled]` — that would be a hand-kept second copy of it
+# living inside a template (D177) which could never be complete, since a map
+# target may import anything. **The real fix is
+# to run the target under the environment PY-16 gives the USER's folder**, which
+# needs the returned object to cross a process boundary; until then
+# `worker.py`'s `_missing_module_help` explains what happened for everything
+# else. Owner's call, made with that argument in front of it (D275).
+#
 # `xarray` is deliberately absent: geo_classify.py probes for it to RECOGNISE a
 # DataArray a user's own script returned, in a branch that is skipped when it is
 # not importable. Declaring it would install 100+ MB to identify an object this
@@ -42,6 +62,8 @@ dependencies = [
     "pandas",
     "pillow",
     "pyarrow",
+    "duckdb>=1.1",
+    "requests",
 ]
 
 # Not a distribution — this folder is a set of scripts, not something to build
