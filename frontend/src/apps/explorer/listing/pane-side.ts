@@ -6,9 +6,13 @@
 //
 // THE THREE, in this order, and it is a closed list rather than the registry's:
 //
-//   preview  the SELECTED ROW's own default view — the pane exactly as it has
-//            always been (pane-modes.ts still decides what that resolves to: a
-//            folder's embedded listing, a lone app, a file's first template).
+//   preview  the SELECTED ROW's own default view — pane-modes.ts decides what
+//            that resolves to (a file's first template; for a folder, only the
+//            `_listing` peek it falls back to). **Offered for a FILE row, and for
+//            a folder only when neither companion is** (D279 — a folder is not a
+//            thing this pane previews; see paneSideList). It used to resolve a
+//            folder to the PAGE it holds and render it, which is what D278
+//            deleted.
 //   claude   the chat, `chat_only=1`, about the selected row.
 //   git      the OPEN FOLDER's working tree — not the row's. See dir-mode.ts:
 //            a working tree belongs to the folder, so `git` is bound to the
@@ -91,12 +95,16 @@ export function paneSideParam(state: PaneSideState): string | null {
   return state.mode === DEFAULT_PANE_SIDE ? null : state.mode;
 }
 
-// Which of the three a folder actually offers. `preview` ALWAYS — it is the
-// pane's identity, and even a row with no template at all has a preview state
-// (the metadata card). The other two exist only while the folder's own entry for
-// them does (dir-mode.ts), so a folder outside a repository can be SHOWN no Git
-// and a mount-backed folder — where both gates refuse — can be shown neither
-// companion.
+// Which of the three this target actually offers — and it is TWO questions now,
+// not one: what the FOLDER can back, and what the previewed ROW can be.
+//
+// `preview` for a FILE row always: it is the pane's identity there, and even a row
+// with no template at all has a preview state (the metadata card). **For a FOLDER
+// row it is offered only when neither companion is** (D279, `rowIsDir` below) —
+// see the block on the function for why a folder has no preview and what the
+// exception is for. The companions exist only while the folder's own entry for them
+// does (dir-mode.ts), so a folder outside a repository can be SHOWN no Git and a
+// mount-backed folder — where both gates refuse — can be shown neither.
 //
 // What the switcher DRAWS is a different question and `paneSideMenu` below
 // answers it: an unofferable mode is listed as a disabled row rather than
@@ -151,13 +159,18 @@ export function paneSideList(entries: PaneSideEntries, rowIsDir = false): PaneSi
   return ["preview", ...companions];
 }
 
-// One row per mode, ALWAYS all three, which is the folder half of the rule the
-// file sidebar states at length (lib/preview-side, mode-visibility's
-// `unavailableReason`): a closed list of companions is one the user is entitled
-// to see all of, with the unavailable members disabled and saying why, rather
-// than a header that quietly shrank — and, at one row, hid its switcher
-// altogether, leaving a mount-backed folder's pane with a chevron and nothing
-// else.
+// One row per mode the pane MAY BE ON — all three for a file row, and the two
+// companions for a folder row (D279: no Preview for a folder, `rowIsDir` below).
+//
+// Within that list, an unofferable COMPANION is still drawn, which is the folder
+// half of the rule the file sidebar states at length (lib/preview-side,
+// mode-visibility's `unavailableReason`): a closed pair the user is entitled to see
+// both of, with the unavailable one disabled and saying why, rather than a header
+// that quietly shrank — and, at one row, hid its switcher altogether, leaving a
+// mount-backed folder's pane with a chevron and nothing else. That rule is about
+// the companions and always was; `preview` is not one of them, and the difference
+// is that a companion is unavailable for a REASON the user is owed, while a folder
+// simply has no preview to offer.
 //
 // `preview` never carries a reason: it is the pane's identity and cannot be
 // unavailable. The other two are disabled when the folder has no entry for them,

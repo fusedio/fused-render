@@ -63,6 +63,39 @@ function offeredSets(): Array<{ where: string; modes: string[] }> {
   return sets;
 }
 
+// NO FOLDER MODE IS EVER LABELLED "Preview" (the owner's bar: no Preview option
+// for a folder, in EVERY dropdown that has one). Two different lists carry that
+// word, and only one of them ever had it:
+//
+//   * the pane's own `_side` pill — `Preview | Claude | Git` — where a selected
+//     folder row now offers the companions alone (D279, pane-side.test.ts covers
+//     it, including that a hand-typed `?_side=preview` resolves onward instead of
+//     resurrecting it);
+//   * every list of TEMPLATE modes: the full-screen topbar menu, the panel/tab
+//     pane menus (PaneModeMenu), the Open With menu, and this pane's row modes.
+//     Those render `modeTitle(mode)`, and no mode a directory resolves humanizes
+//     to "Preview" — `_listing` is "Listing", which is why the full-screen route
+//     keeps a plainly-named way to the file table.
+//
+// So the second bullet is a no-op TODAY and this is what keeps it one: the guard
+// reads the shipped registry, so binding a `preview` template back onto a
+// directory key — the deleted D185 folder-preview template's own name, the most
+// likely way it returns — fails here instead of in a user's dropdown.
+test("no directory mode is labelled \"Preview\"", () => {
+  const offenders: string[] = [];
+  for (const { where, modes } of offeredSets()) {
+    if (!where.includes("/") && !where.includes("isDir=true")) continue;
+    for (const m of new Set(modes)) {
+      if (modeTitle(m) === "Preview") offenders.push(`${where}: ${m}`);
+    }
+  }
+  expect(offenders).toEqual([]);
+  // The positive half, so the test also states what a folder DOES get: the file
+  // table's mode is offered under its own name.
+  expect(modeTitle("_listing")).toBe("Listing");
+  expect(REGISTRY["/"]).toContain("_listing");
+});
+
 test("no two modes offered together resolve to the same label", () => {
   const clashes: string[] = [];
   for (const { where, modes } of offeredSets()) {

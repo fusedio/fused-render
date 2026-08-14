@@ -28,15 +28,22 @@ export interface PaneModeInput {
 // system's own order, untouched — `_listing` stays exactly where the registry
 // ranks it, and is dropped only for a FILE (no slot for a listing of a file).
 //
-// It used to hoist an APP entry to the lead — a folder's own app being what
-// that folder IS, so it outranked the opt-in tools aimed at it — with a
-// pane-only `_app` sentinel standing in wherever the registry's `app` mode was
-// absent or gate-denied. Both are gone with the app concept itself (D264) and
-// D269 brought neither back: a folder that IS an app never reaches this module
-// at all, because the pane resolves it to its entry PAGE before asking for a
-// mode list (ListingPreviewPane's retarget), and what arrives here is then an
-// html FILE like any other. Every folder this module still sees previews as its
-// listing, like every other folder.
+// **EVERY folder reaches this module, and what it gets back leads with `claude`**
+// — the registry's own order for the universal `/` key (D278). Two earlier answers
+// are gone. This once hoisted an APP entry to the lead, a folder's own app being
+// what that folder IS, with a pane-only `_app` sentinel standing in wherever the
+// registry's `app` mode was absent or gate-denied; both went with the app concept
+// (D264). Then D269 kept app folders away from here entirely, because the pane
+// resolved such a folder to its entry PAGE before asking for a mode list, so what
+// arrived was an html FILE like any other — **that retarget is deleted** (D278:
+// selecting a row must not run the folder's app), so a folder arrives as a folder
+// and this list is the FOLDER's modes.
+//
+// The pane does not render that lead directly for a folder row, and this module is
+// not where that is decided: a selected folder has no `preview` side at all
+// (pane-side's paneSideList, D279), so the pill lands on the chat. This list still
+// answers for the `preview` FALLBACK a folder gets when neither companion is
+// offered, where the gates have dropped `claude` and `_listing` is what remains.
 //
 // Every entry here is a REAL mode: the list says what the pane can show, never
 // that it should show nothing. An EMPTY list means a target with nothing to

@@ -153,8 +153,9 @@ export default function ListingPreviewPane({
   // (D269's OTHER half is untouched: an app CARD on the hub still opens the entry
   // page, and the server keeps its own entry rule — `app_listing.app_entry`,
   // `templates/shared/app_entry.py` — for the surfaces that ask "which page is
-  // this folder". This pane simply stops asking. The frontend copy of the rule,
-  // `lib/app-entry.ts`, now has no caller in the explorer.)
+  // this folder". This pane simply stops asking — and the frontend copy of the
+  // rule, `apps/explorer/lib/app-entry.ts`, is DELETED, since this pane was its
+  // only caller. Re-deriving it here is the change to refuse.)
 
   // Stat the selected row to discover its modes. Files and folders alike carry a
   // template mode list (folders at minimum the `_listing` sentinel). The cleanup
