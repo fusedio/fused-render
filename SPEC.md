@@ -6202,3 +6202,58 @@ an AI Models page that could say what was on disk but not what was *running*.
   interpreter and framework; the allocator carries buffers RSS has not seen yet),
   so the honest claim is "at least this much". A runner's probe that raises is
   worth no memory figure, never a broken `/health`.
+- **AI-10** **Speech to text is the third capability, and it is the first one
+  that works EVERYWHERE** (D275). `automatic-speech-recognition` — the Hub's own
+  tag — served by a `faster_whisper` runner folder built on CTranslate2, which
+  publishes wheels for macOS on both architectures, Linux and Windows. That
+  choice is the point of the bullet: mlx-whisper would be quicker on Apple
+  Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
+  app whose local AI is something most users read about is not the app this is
+  meant to be. An `mlx_whisper` runner may be added later ABOVE this one — the
+  registry's first-match-wins ordering (AI-2) exists for exactly that, and this
+  would be the first capability to use it. Both Whisper directions ship:
+  `task: "transcribe"` (same language) and `task: "translate"` (into English)
+  are one flag to the model, so omitting either would only buy a second change
+  later — but the value is **named, never silently defaulted**, since
+  "translation" instead of "translate" would transcribe in the original language
+  and read as the model ignoring the request. `language` omitted means Whisper's
+  own auto-detect. **The whole audio dependency stays inside the runner folder**:
+  faster-whisper decodes through PyAV, whose wheels carry the ffmpeg libraries,
+  so nothing shells out to an `ffmpeg` binary this app does not ship — the rule
+  AI-2 states about mlx and torch, applied to a system tool. **The format
+  constraint is surfaced rather than hidden**: the runner loads CTranslate2
+  conversions, so a transformers-format repo like `openai/whisper-large-v3` will
+  not load however happily the AI Models page offers it a Load button (the same
+  situation text generation has with GGUF and AWQ). The load error names the
+  cause and a repo that works, because a user who picked the wrong one should
+  learn it from the error rather than from a web search. Text-to-speech and
+  audio generation stay in `NO_RUNNER_YET` as SEPARATE future capabilities, not
+  as a direction flag on one "audio" capability: AI-4 keeps one resident model
+  per capability, so sharing one would have a synthesis model and a Whisper
+  model evict each other on every alternation.
+- **AI-10a** **A transcription is job-backed like an image, and its result is a
+  FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
+  the output paths already settled, exactly as AI-9 does — a 90-minute recording
+  is minutes of decoding, so nothing waits on it, and the wait for a cold model
+  belongs inside the job for the same reason it does for a render. Progress is
+  **seconds of audio** (`unit: "s"`, `done` = the last segment's end timestamp,
+  `total` = the decoder's reported duration), which is the unit the person
+  watching is thinking in; the ✕ reaches the per-segment loop, which is a real
+  interruption point because `transcribe()` hands back a generator that decodes
+  as it is consumed. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
+  with timestamps, language, duration, model) and a `.txt` (plain words) —
+  **segments, not a flat token stream**, because the timestamps are most of what
+  Whisper produced and a transcript beside a player needs them. Writing a file
+  rather than streaming is the same argument the PNG makes: work that took four
+  minutes should outlive the tab that asked, and a page that navigated away
+  mid-run should still find it. **The input is an absolute path and there is no
+  allowlist**, deliberately: the worker is a process on this machine and opens
+  the file itself (nothing is uploaded), `/api/fs/raw` already serves any
+  absolute path because this app IS a local file explorer, and the protection is
+  D3/D36's `X-Fused` guard plus the worker's own token. The route normalizes the
+  path and refuses one that is missing or is not a regular file with a 400
+  before a job row opens — a typo deserves an error the caller can show, not a
+  progress bar that dies. `fused.ai.transcribe({path, …})` resolves with the
+  text, the segments and a ready-made `/api/fs/raw` url, and falls back to the
+  file when the row has aged out from under a backgrounded tab.
