@@ -1125,6 +1125,98 @@ def test_a_probe_that_cannot_be_SPAWNED_destroys_nothing_and_reports_installed(
     assert str(venv_dir) not in envinstall._VALIDATED
 
 
+def test_the_probe_classifies_a_returncode_the_way_engine_probe_does(monkeypatch):
+    """`_venv_runs` alone, with no `fused` and no venv — the classification IS the
+    behaviour under test.
+
+    `engine._probe` already carries this exact rule ("a child killed by a SIGNAL
+    — `returncode < 0` — is inconclusive: it never got to answer"), which D277
+    gave it while naming this function as the sibling it was not applying it to.
+    Written without the `requires_fused` gate the sibling tests need, because
+    the branch it covers is the one that decides whether a user's environment
+    gets deleted, and it should not go unrun wherever that wheel is absent.
+    """
+    def _answer(code, **fields):
+        monkeypatch.setattr(
+            envinstall.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess(args=["python"], returncode=code,
+                                                        stdout="", stderr=""),
+        )
+        return envinstall._venv_runs("/nonexistent/venv")
+
+    assert _answer(0) is True
+    assert _answer(1) is False, "an interpreter that RAN and refused is definite"
+    for signal_number in (11, 9, 15, 64):  # 64 has no name on macOS/Linux
+        assert _answer(-signal_number) is None, f"signal {signal_number}"
+
+
+@requires_fused
+def test_a_probe_KILLED_BY_A_SIGNAL_destroys_nothing_and_reports_installed(
+    tmp_path, monkeypatch
+):
+    """A child that was killed never answered, so it is not evidence either.
+
+    This is the half of the three-valued probe D277 left open: the exceptions
+    were classified, the RETURN CODE was not, so a negative one — a signal —
+    fell through to `returncode != 0` and read as "this venv cannot run its own
+    python", which unlinks the marker and buys a multi-GB re-download.
+
+    The signal that motivated it is `-11`. This probe spawns from the SERVER
+    process, which has PROJ resident, and until the sibling fix below it did so
+    with `close_fds=True`: CPython forks, the child runs PROJ's `pthread_atfork`
+    handler, and dies of SIGSEGV at ~1ms without ever reaching the interpreter.
+    Both halves are needed — the flag stops the crash we know about, and this
+    stops any other signal (an OOM SIGKILL, a shutdown SIGTERM) from being read
+    as a verdict about the venv.
+    """
+    for number in (11, 9, 15):
+        proj = _project(tmp_path, f"sig{number}")
+        venv_dir = _marked_venv(proj, runnable=True)
+
+        monkeypatch.setattr(
+            envinstall.subprocess, "run",
+            lambda *a, _n=number, **k: subprocess.CompletedProcess(
+                args=["python"], returncode=-_n, stdout="", stderr=""),
+        )
+        assert envinstall.is_installed(proj) is True, f"signal {number}"
+        assert (venv_dir / envinstall.READY_MARKER).exists(), (
+            f"a probe killed by signal {number} must not cost the user a rebuild"
+        )
+        assert str(venv_dir) not in envinstall._VALIDATED
+        monkeypatch.undo()
+
+
+@requires_fused
+def test_the_readiness_probe_spawns_off_the_fork_path(tmp_path, monkeypatch):
+    """`close_fds=False`, so CPython uses posix_spawn rather than fork()+exec.
+
+    The site D277 flagged and did not touch. It spawns from the server process,
+    where `fused`/geopandas have pulled in libproj: `fork()` runs PROJ's atfork
+    child handler, which closes a SQLite handle that is no longer valid, and the
+    child takes SIGSEGV before exec. posix_spawn runs no atfork handlers.
+
+    Asserted at the call rather than reproduced, exactly as `tests/test_engine.py`
+    and `tests/test_worker_forksafe.py` do: the real crash needs a resident
+    libproj holding a live handle, which a test cannot arrange.
+    """
+    proj = _project(tmp_path, deps=["some-dist"])
+    _marked_venv(proj, runnable=True)
+
+    seen = {}
+    real = envinstall.subprocess.run
+    monkeypatch.setattr(
+        envinstall.subprocess, "run",
+        lambda *a, **k: (seen.update(k), real(*a, **k))[1],
+    )
+    envinstall.is_installed(proj)
+
+    assert seen.get("close_fds") is False, (
+        "the venv readiness probe must pass close_fds=False so the child is "
+        "spawned via posix_spawn, not fork() (which runs PROJ's crashing atfork "
+        "handler and makes a healthy venv look broken)"
+    )
+
+
 @requires_fused
 def test_a_missing_or_unexecutable_interpreter_IS_definite_corruption(
     tmp_path, monkeypatch
@@ -2173,6 +2265,82 @@ def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
 
 
 @requires_fused
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
+def test_the_installer_is_spawned_off_the_fork_path(tmp_path, monkeypatch):
+    """`start_new_session=True` here is a crash, not a detail.
+
+    CPython's fast path requires `not close_fds and not start_new_session`
+    (`subprocess.Popen._execute_child`), so asking for a new session forces
+    `fork()+exec` — and this spawn happens in the SERVER process, where PROJ is
+    resident. The forked child runs PROJ's `pthread_atfork` handler, closes a
+    stale SQLite handle and dies of SIGSEGV before exec.
+
+    What the user sees is deliberately hard to read, which is why this is pinned
+    at the call: the worker never runs, so `worker.log` is EMPTY and
+    `progress.json` still holds the parent's `spawn` record — reported as an
+    installer that "was killed rather than failing". Every retry repeats it for
+    as long as the server process lives, so a runner environment (and the model
+    that needs it) can never be built.
+
+    The detachment is not given up, it MOVES: `_env_install_worker._detach`
+    calls `os.setsid()` in the child. See the test below.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
+
+    seen = {}
+    monkeypatch.setattr(envinstall.subprocess, "Popen",
+                        lambda cmd, **kw: (seen.update(kw), _FakePopen())[1])
+    envinstall.start(proj)
+
+    assert seen, "no worker was spawned"
+    assert "start_new_session" not in seen, (
+        "start_new_session forces fork()+exec; the worker detaches itself with "
+        "os.setsid() instead"
+    )
+    assert seen.get("close_fds") is False, "close_fds=False is what selects posix_spawn"
+    assert "preexec_fn" not in seen, "preexec_fn would force the fork path too"
+    assert "cwd" not in seen, "a cwd would force the fork path too"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
+def test_the_installer_worker_leads_its_own_session(tmp_path, monkeypatch):
+    """The other half: the child takes the session the spawner stopped asking for.
+
+    Not cosmetic — `envinstall._kill` signals the process GROUP, and only when
+    the pid leads it, because a stale pid living in the server's group once made
+    `killpg` shut down a pytest session. Without this call an installer's ✕
+    would leave the multi-GB `uv sync` it started running.
+
+    Asserted as "before anything else it does", because the point is to be a
+    group leader before uv exists to be killed with it.
+    """
+    from fused_render import _env_install_worker as worker
+
+    order = []
+    monkeypatch.setattr(worker.os, "setsid", lambda: order.append("setsid"))
+    monkeypatch.setattr(worker, "install",
+                        lambda *a, **k: order.append("install"))
+    worker.main(["k", str(tmp_path / "prog"), str(tmp_path / "proj"),
+                 str(tmp_path / "venv"), str(tmp_path / "cache"), "", ""])
+
+    assert order == ["setsid", "install"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows uses flags")
+def test_an_already_leading_worker_still_installs(monkeypatch):
+    """EPERM out of `setsid` means we are ALREADY a group leader — the same end
+    state — so it must not take the install down with it."""
+    from fused_render import _env_install_worker as worker
+
+    def _eperm():
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(worker.os, "setsid", _eperm)
+    worker._detach()  # must not raise
+
+
+@requires_fused
 def test_no_uv_is_reported_as_a_lost_capability_not_a_crash(tmp_path, monkeypatch):
     """uv IS the builder now, so without it a project venv is impossible (D231).
 
@@ -3076,3 +3244,146 @@ def test_a_crash_message_says_how_far_it_got_and_whether_the_log_is_empty(tmp_pa
     err = envinstall.progress(key)["error"]
     assert "see worker.log" in err
     assert "killed rather than failing" not in err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
+def test_a_worker_we_reaped_ourselves_is_diagnosed_by_its_SIGNAL(tmp_path, monkeypatch):
+    """The guess becomes a fact when the status is ours to read.
+
+    `_pid_alive` is the only `waitpid` on an installer, and it was throwing the
+    status away — so a user whose install was killed got a list of four things it
+    might have been (an OOM kill, a cancel, a quit, a sleeping machine) when the
+    kernel had already said which. A SIGKILL is the first of those, a SIGTERM the
+    middle two, and a SIGSEGV is none of them: it is a spawn that crashed before
+    it ran, which is what this module's own fork-path bug looked like.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    key = "abcdefabcdef0123"
+    d = envinstall.progress_dir(key)
+    os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "worker.log"), "wb").close()  # killed, so it logged nothing
+
+    def _died_of(number, pid):
+        """One reaped worker, exactly as `_pid_alive` would have buried it."""
+        record = {"stage": "spawn", "pct": 0, "detail": "starting installer for mlx_text",
+                  "done": False, "error": None, "pid": pid, "ts": time.time()}
+        with open(os.path.join(d, "progress.json"), "w") as f:
+            json.dump(record, f)
+        envinstall._SPAWNED.add(pid)
+        monkeypatch.setattr(
+            envinstall.os, "waitpid",
+            lambda p, flags, _n=number: (p, _n),  # WIFSIGNALED: low byte is the signal
+        )
+        return envinstall.progress(key)["error"]
+
+    err = _died_of(signal.SIGKILL, 424201)
+    assert "SIGKILL" in err and "out-of-memory" in err
+    assert "the app quitting" not in err, "the fact replaces the list of guesses"
+    assert "last stage: spawn" in err, "how far it got is still the useful half"
+
+    err = _died_of(signal.SIGTERM, 424202)
+    assert "SIGTERM" in err and "unload" in err
+
+    err = _died_of(signal.SIGSEGV, 424203)
+    assert "SIGSEGV" in err and "fork()" in err
+
+    # An ordinary non-zero exit is not a kill, and must not be described as one.
+    monkeypatch.setattr(envinstall.os, "waitpid", lambda p, flags: (p, 3 << 8))
+    envinstall._SPAWNED.add(424204)
+    record = {"stage": "install", "pct": 25, "detail": "resolving mlx-lm", "done": False,
+              "error": None, "pid": 424204, "ts": time.time()}
+    with open(os.path.join(d, "progress.json"), "w") as f:
+        json.dump(record, f)
+    err = envinstall.progress(key)["error"]
+    assert "exited with status 3" in err and "killed" not in err
+
+
+def _has_no_signal_name(number):
+    try:
+        signal.Signals(number)
+    except ValueError:
+        return True
+    return False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
+def test_an_unreaped_or_nameless_ending_degrades_instead_of_failing():
+    """The message must survive not knowing. Three ways it can not know: a pid we
+    never buried (a record left by a previous server), a pid that is not a number
+    at all (`progress.json` is a file on disk and may say anything), and a signal
+    this platform has no name for — which must not print "signal 64 (signal 64)".
+    """
+    assert envinstall._how_it_ended(2 ** 31 - 1) == ""
+    assert envinstall._how_it_ended("nonsense") == ""
+    assert envinstall._how_it_ended(None) == ""
+
+    # Found rather than hardcoded: which numbers have names is the PLATFORM's
+    # answer (Linux names every realtime signal up to SIGRTMAX, macOS does not),
+    # and a literal here would test the wrong thing on one of them.
+    nameless = next((n for n in range(1, 128) if _has_no_signal_name(n)), None)
+
+    kept = dict(envinstall._ENDINGS)
+    try:
+        if nameless is not None:
+            envinstall._remember_ending(4242, nameless)  # WIFSIGNALED
+            assert envinstall._how_it_ended(4242) == (
+                f"it was killed by signal {nameless}"), "never 'signal N (signal N)'"
+        envinstall._remember_ending(4243, 7 << 8)  # a plain exit, not a kill
+        assert envinstall._how_it_ended(4243) == (
+            "it exited with status 7 without finishing")
+    finally:
+        envinstall._ENDINGS.clear()
+        envinstall._ENDINGS.update(kept)
+
+
+def test_the_endings_table_survives_concurrent_reaps():
+    """Two threadpooled `/api/env/progress` calls can reap two workers at once.
+
+    The eviction is read-then-write (`next(iter(...))` then `pop`), and neither
+    half being atomic on its own is enough: the loser pops a key the winner
+    already took (`KeyError`), or iterates a dict that changed size
+    (`RuntimeError`), and either escapes `_pid_alive` into a 500 on a poll. A
+    lock is the whole fix; this pins that the cap and the table hold under
+    threads rather than trying to reproduce a timing window.
+    """
+    kept = dict(envinstall._ENDINGS)
+    errors = []
+    try:
+        envinstall._ENDINGS.clear()
+
+        def _hammer(base):
+            try:
+                for pid in range(base, base + 400):
+                    envinstall._remember_ending(pid, 9)
+            except BaseException as e:  # noqa: BLE001 - the point of the test
+                errors.append(e)
+
+        threads = [threading.Thread(target=_hammer, args=(n * 10_000,))
+                   for n in range(1, 9)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        assert not errors, errors
+        assert len(envinstall._ENDINGS) == envinstall._ENDINGS_KEPT
+    finally:
+        envinstall._ENDINGS.clear()
+        envinstall._ENDINGS.update(kept)
+
+
+def test_the_endings_table_cannot_grow_without_bound():
+    """One entry per installer this server has ever buried would be a slow leak in
+    a process that runs for days; the record is read once, immediately after the
+    reap, and is worthless after that."""
+    kept = dict(envinstall._ENDINGS)
+    try:
+        envinstall._ENDINGS.clear()
+        for pid in range(1000, 1000 + envinstall._ENDINGS_KEPT * 3):
+            envinstall._remember_ending(pid, 9)
+        assert len(envinstall._ENDINGS) == envinstall._ENDINGS_KEPT
+        newest = 1000 + envinstall._ENDINGS_KEPT * 3 - 1
+        assert newest in envinstall._ENDINGS, "the oldest goes, not the newest"
+    finally:
+        envinstall._ENDINGS.clear()
+        envinstall._ENDINGS.update(kept)
