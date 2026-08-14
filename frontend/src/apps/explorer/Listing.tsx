@@ -89,6 +89,7 @@ import {
 } from "@apps/explorer/listing/selection";
 import { useRowDrag } from "@apps/explorer/listing/useRowDrag";
 import { useMarquee } from "@apps/explorer/listing/useMarquee";
+import { useSettledLead } from "@apps/explorer/listing/useSettledLead";
 import { useDirListing } from "@apps/explorer/listing/useDirListing";
 import { useWalkSearch } from "@apps/explorer/listing/useWalkSearch";
 import { useIndexStatus } from "@platform/lib/index-status";
@@ -778,6 +779,19 @@ export default function Listing({
   // The lead row, for the single-entry operations (Rename, paste target).
   const leadRow = sel.lead ? rowCtxByPath.get(sel.lead) : undefined;
 
+  // THE ROW THE PANE IS ABOUT, which is the lead ONCE IT HAS SETTLED (D279's cost
+  // fix — the rule, and why a pane mount has to be earned, are on pane-settle.ts).
+  // Every mount is an iframe load, and the `claude` side's iframe spawns `agent.py`
+  // through /api/run before it draws, so the pane must not chase a held arrow key
+  // down the listing. A move from rest still lands at once; only the rows passed
+  // THROUGH are skipped.
+  //
+  // The whole pane reads this and not `sel.lead`: the row it renders, the mode key
+  // that remounts it, and the folder/file question behind the pill. Reading the
+  // live lead for any of them would put the per-keystroke mount straight back.
+  const settledLead = useSettledLead(sel.paths.length === 1 ? sel.lead : null);
+  const paneRow = settledLead ? rowCtxByPath.get(settledLead) : undefined;
+
   // WHICH of the pane's three modes it is on. Resolved here, below the selection,
   // because a previewed FOLDER row has no `preview` side at all (pane-side's
   // paneSideList, D279) and so lands on the chat about it — a folder is not a thing
@@ -786,7 +800,7 @@ export default function Listing({
   // "A folder the user SELECTED" is exactly one row, and a directory: the pane's
   // own SELF target (nothing selected) is a folder too and keeps its Preview, which
   // is the `Select a file to preview.` hint (FS-11).
-  const previewedRowIsDir = sel.paths.length === 1 && !!leadRow?.isDir;
+  const previewedRowIsDir = sel.paths.length === 1 && !!paneRow?.isDir;
   const paneSide = activePaneSide(
     paneSideList(sideEntries, previewedRowIsDir),
     sideState.mode
@@ -1724,12 +1738,12 @@ export default function Listing({
                 key={paneKey(
                   paneSide,
                   fsPath,
-                  sel.paths.length === 1 && leadRow ? leadRow.path : null,
+                  sel.paths.length === 1 && paneRow ? paneRow.path : null,
                   sel.paths.length
                 )}
                 row={
-                  sel.paths.length === 1 && leadRow
-                    ? leadRow
+                  sel.paths.length === 1 && paneRow
+                    ? paneRow
                     : sel.paths.length === 0
                       ? {
                           path: fsPath,
