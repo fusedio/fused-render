@@ -20,7 +20,7 @@ export const MIN_W = 280;
 export const CONTENT_MIN_W = 320;
 
 // **THE COMPANION COLUMN'S SHARE — one rule, both surfaces** (D283, amending
-// D282/D281): **30% normally, 50% in a container of 720px or less.** The file
+// D282/D281): **30% normally, 50% in a container of 1000px or less.** The file
 // view's sidebar and the listing's preview pane read the same function, which is
 // why it lives here and `listing/pane-math.ts` imports it rather than spelling its
 // own. The owner's words were "they are the same concept now" — after D280/D281 a
@@ -39,12 +39,22 @@ export const CONTENT_MIN_W = 320;
 // and must stay deleted: the 30/50/70% ladder on 1000px/1440px breakpoints, the
 // constants behind it, `defaultPaneFrac`, and — separately — the 700px
 // `shouldShowPane` gate. **This changes the pane's SHARE and never whether it
-// exists**; a small container still gets a pane, now a usable one.
+// exists**; a small container still gets a pane, now a usable one. *The step below
+// reuses the ladder's FIRST BOUNDARY (1000px) and none of its behaviour: one
+// comparison with two outcomes, where the ladder had two comparisons, three
+// outcomes and a floor folded into the fraction. Sharing a number with something
+// deleted is not the same as reviving it — and picking the boundary this codebase
+// already reasoned about beats inventing a third one.*
 //
-// The threshold is 720px, the value the deleted `SMALL_W` carried, kept rather than
-// re-invented: it is also `preview.css`'s own narrow breakpoint, so the preview
-// chrome and this column call the same width small. **720 itself IS small** (`<=`),
-// matching CSS `(max-width: 720px)` semantics.
+// **The threshold is 1000px** — raised from 720 on the owner's "make it 50% for a
+// viewport a bit bigger than the current one", looking at a window that was getting
+// 30% and wanted half. 1000 is not a fresh invention: it is the old `PANE_MID_W`,
+// the first rung of the deleted tier ladder, so the boundary is one this codebase
+// already had. **1000 itself IS small** (`<=`), matching CSS `(max-width: 1000px)`
+// semantics. *It was 720 for one commit — `SMALL_W`'s old value, chosen because
+// `preview.css` calls that width narrow. That coincidence is worth less than the
+// owner's actual window, so the two numbers no longer agree and this one is right
+// for this question: how much of a container a companion column should take.*
 //
 // An UNMEASURED container (0, NaN — detached, `display:none`, or a state
 // initialiser running before layout) is deliberately NOT small: 30% is the general
@@ -52,7 +62,7 @@ export const CONTENT_MIN_W = 320;
 // third on the first real measurement.
 export const COMPANION_FRAC = 0.3;
 export const COMPANION_SMALL_FRAC = 0.5;
-export const COMPANION_SMALL_W = 720;
+export const COMPANION_SMALL_W = 1000;
 
 export function companionFrac(containerW: number): number {
   return containerW > 0 && containerW <= COMPANION_SMALL_W

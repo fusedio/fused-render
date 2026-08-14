@@ -26,15 +26,18 @@ describe("defaultSideWidth", () => {
     expect(defaultSideWidth(1200)).toBe(360);
   });
 
-  it("opens at 50% of a small container — 720 counts as small", () => {
+  it("opens at 50% of a small container — 1000 counts as small", () => {
     // D283 restored this step, and the boundary is inclusive (`<=`), matching CSS
-    // `(max-width: 720px)`. The assertion this replaces claimed the 280px FLOOR
+    // `(max-width: 1000px)`. The assertion this replaces claimed the 280px FLOOR
     // reached the same answer without a step, which was simply false: 280 of 720
-    // is 39%, not 50%.
+    // is 39%, not 50%. The boundary itself moved from 720 to 1000 on the owner's
+    // window, which was on the 30% side of it and wanted half.
+    expect(defaultSideWidth(1000)).toBe(500);
     expect(defaultSideWidth(720)).toBe(360);
     expect(defaultSideWidth(680)).toBe(340);
-    // Just over the boundary is the general case, floored: 30% of 721 is 216.
-    expect(defaultSideWidth(721)).toBe(MIN_W);
+    // Just over the boundary is the general case: 30% of 1001 is 300, over the
+    // 280px floor, so the share itself answers.
+    expect(defaultSideWidth(1001)).toBe(300);
   });
 
   it("floors at MIN_W when 30% would be narrower than the column allows", () => {

@@ -25,7 +25,7 @@ const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
 
 // **THE PANE'S WIDTH: the companion share of its container** — 30%, or 50% at
-// 720px and under (D283 amending D282). The same function the file view's sidebar
+// 1000px and under (D283 amending D282). The same function the file view's sidebar
 // uses, imported from there so the two cannot drift apart again; the reasoning,
 // including why D282's argument for deleting the small step was wrong, is on
 // `companionFrac`.

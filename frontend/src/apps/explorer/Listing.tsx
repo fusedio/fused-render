@@ -1747,7 +1747,7 @@ export default function Listing({
               // this container (listing/pane.ts), so a window resize keeps the
               // proportion instead of leaving the pane at one window's
               // arithmetic. Until it is dragged that fraction is the companion
-              // share — 30%, or 50% in a container of 720px or less (D283), the
+              // share — 30%, or 50% in a container of 1000px or less (D283), the
               // same rule a file's sidebar reads. The pixel floors are the slot's
               // / the list's CSS min-widths, and under ~440px they are what the
               // pane actually gets: half of anything narrower is below the 220px

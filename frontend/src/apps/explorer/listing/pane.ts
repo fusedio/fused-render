@@ -61,7 +61,7 @@ import { companionFrac, dragPaneFrac } from "@apps/explorer/listing/pane-math";
 purgeViewStateParams("panew", "pane");
 
 // The split container's measured width — back with D283, for ONE question: is this
-// container small (`companionFrac`, 720px and under → the companion takes half
+// container small (`companionFrac`, 1000px and under → the companion takes half
 // instead of a third). Measured on the CONTAINER and never read off
 // `window.innerWidth`, because the same Listing renders full-window, inside a
 // chrome-free embed and inside another view's split, and only the container knows
