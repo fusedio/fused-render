@@ -74,6 +74,10 @@ def _load_worker(base):
     try:
         spec = importlib.util.spec_from_file_location(
             "faster_whisper_worker_under_test", WORKER_PATH)
+        # Both are Optional in the stubs, and a None here would otherwise
+        # surface as an AttributeError three lines later with no clue that the
+        # runner had simply been moved or renamed.
+        assert spec is not None and spec.loader is not None, WORKER_PATH
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module

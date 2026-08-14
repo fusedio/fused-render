@@ -169,7 +169,10 @@ _TICK_S = 1.0
 #: running on one process and one `WhisperModel` — the exact thing that lock
 #: exists to prevent. The lock belongs to the base and is not ours to hold
 #: longer, so the abandoned thread is remembered and waited for here instead.
-_orphan = {"thread": None}
+#:
+#: Annotated because the initialiser alone types the slot as None-only, and the
+#: only thing ever assigned to it is a Thread.
+_orphan: "dict[str, threading.Thread | None]" = {"thread": None}
 
 
 def _await_orphan(job):
