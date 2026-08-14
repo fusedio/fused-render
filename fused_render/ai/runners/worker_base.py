@@ -35,11 +35,15 @@ stub callables standing in for the model.
 """
 
 import argparse
+import concurrent.futures
 import contextlib
 import fnmatch
+import http.client
 import http.server
 import json
 import os
+import re
+import shutil
 import socket
 import socketserver
 import stat
@@ -48,6 +52,7 @@ import threading
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # ------------------------------------------------------------------- the state
@@ -284,6 +289,63 @@ def resident_bytes():
 # all — so the row also went stale mid-download and the manager declared nobody
 # was reporting. Walking the repo folder answers both: real bytes, and a tick
 # every second whatever huggingface_hub is doing inside.
+#
+# The FETCH is ours too (SPEC AI-5i). `snapshot_download` opens one connection
+# per file and one file at a time, so a model whose bytes are a single 4.6GB
+# shard downloads on exactly one connection — and an interruption throws the
+# whole thing away, which matters because the supervisor kills the fetch on quit
+# (AI-5e). What is below fetches with several connections at once, split across
+# files AND inside one file with `Range`, recording per-segment offsets as the
+# bytes land. Every failure and every incapability falls back to
+# `snapshot_download` under the same progress wrapper: a download that got
+# faster and sometimes broken would be a bad trade.
+
+#: Below this a file is fetched whole: splitting a 200KB config across four
+#: sockets costs four round trips to save nothing.
+SEGMENT_MIN_BYTES = 32 * 1024 * 1024
+#: Per file. Past a handful the Hub's per-connection throughput is the limit
+#: rather than the connection count, and each one is another socket to retry.
+MAX_SEGMENTS_PER_FILE = 4
+#: Across everything — the ONE number that bounds how many sockets a download
+#: opens. A pool per file would multiply the caps together.
+MAX_CONNECTIONS = 8
+#: Deliberately NOT hf's `.incomplete`. hf resumes one of those by seeking to
+#: its current length; our segments write out of order, so a partial file of
+#: length N does not mean the first N bytes are there, and handing hf one of
+#: ours would produce a silently corrupt blob. A suffix of our own also keeps
+#: the fallback clean — hf never sees our state at all.
+PART_SUFFIX = ".fusedpart"
+READ_BYTES = 1024 * 1024
+#: Big enough that a filesystem which really allocates cannot hide it in a
+#: block, small enough that paying for it on one is nothing.
+SPARSE_PROBE_BYTES = 4 * 1024 * 1024
+HTTP_TIMEOUT_S = 30.0
+SEGMENT_ATTEMPTS = 5
+RETRY_BACKOFF_S = 0.5
+FLUSH_EVERY_S = 1.0
+#: The revision both paths use, named rather than implied. It is hf's own
+#: `snapshot_download` default, which is what keeps the fast path and the
+#: fallback on one revision of a model.
+DEFAULT_REVISION = "main"
+
+_CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
+_RANGE_START = re.compile(r"^bytes\s+(\d+)-")
+_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+#: Everything a segment retries on. `HTTPException` earns its place: an
+#: `IncompleteRead` or an `InvalidChunkLength` from a body that broke mid-stream
+#: is not an `OSError`, and outside this tuple one such hiccup — among the
+#: commonest ways a transport misbehaves — aborted the whole multi-file download.
+_TRANSIENT = (OSError, urllib.error.URLError, http.client.HTTPException, ValueError)
+
+
+class _Unsegmentable(Exception):
+    """This repo cannot be fetched our way, so hf's downloader gets it back.
+
+    Not an error in itself — no range support, a platform without `os.pwrite`,
+    a Hub that reported no size — which is why it reads as a fallback rather
+    than as a failed download.
+    """
 
 
 def repo_folder(model_id, repo_type="model"):
@@ -306,10 +368,19 @@ def repo_folder(model_id, repo_type="model"):
 def bytes_on_disk(folder):
     """How much of `folder` is on disk right now, in bytes — None if unknown.
 
-    Counts the `.incomplete` files hf writes while a download is in flight,
-    which is the whole point: they ARE the progress. Symlinks are skipped from
-    the `lstat` result itself, so the snapshot entries are not counted a second
-    time on top of the blobs they point at.
+    Counts the partial files a download in flight is writing — hf's
+    `.incomplete` and our own `.fusedpart` — which is the whole point: they ARE
+    the progress. Symlinks are skipped from the `lstat` result itself, so the
+    snapshot entries are not counted a second time on top of the blobs they
+    point at.
+
+    A `.fusedpart` is measured by ALLOCATED BLOCKS rather than by length. Our
+    segments write out of order, so the file is created at its final size with
+    `ftruncate` and filled as a sparse file: `st_size` is the full 4.6GB from
+    the first second, and reporting that would put the bar at 100% before a
+    byte had arrived. `st_blocks` is what the download has actually put on the
+    disk. Where the platform has no such notion (Windows), `st_blocks` is
+    absent and the length is the honest answer anyway — nothing is sparse there.
     """
     if not folder:
         return None
@@ -320,42 +391,79 @@ def bytes_on_disk(folder):
                 info = os.lstat(os.path.join(dirpath, name))
             except OSError:
                 continue
-            if not stat.S_ISLNK(info.st_mode):
+            if stat.S_ISLNK(info.st_mode):
+                continue
+            blocks = getattr(info, "st_blocks", None)
+            if name.endswith(PART_SUFFIX) and blocks is not None:
+                total += min(info.st_size, blocks * 512)
+            else:
                 total += info.st_size
     return total
 
 
-def repo_total_bytes(model_id, include=None, ignore=None):
-    """The size of what will ACTUALLY be fetched, from the Hub, or None.
+def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
+    """`(sha, files)` — the commit this listing resolved to, and what to fetch.
 
-    One metadata call, no weights. Without it the bar has no total and shows as
-    indeterminate — which is honest, and much better than a wrong total.
+    The sha comes back WITH the list because the two must not be decided
+    separately. A listing at the repo's default branch paired with a fetch at a
+    hardcoded "main" is two sources of truth that agree by coincidence: where
+    they differ, we would fetch a genuinely different revision than the list
+    implied, record a ref for it, and stay internally consistent while doing it
+    — etag matches content, so nothing downstream could ever notice. The
+    revision is therefore asked for explicitly (the same `main` hf's own
+    `snapshot_download` defaults to, so the fast path and the fallback cannot
+    land on different revisions of one model), and the fetch is pinned to the
+    SHA that answer resolved to, which also settles the repo moving between the
+    listing and the last byte.
+
+    `files` is `(name, size)` for every file this download will ACTUALLY fetch.
+
+    One metadata call, no weights, and ONE place that decides what is in scope —
+    the total on the bar and the list the fetch works through come from the same
+    filter, or the two disagree and a bar measures itself against files nobody
+    is downloading.
 
     **Scoped, because a repo is rarely fetched whole.** `include` is a single
     filename (one GGUF out of a repo that publishes a dozen quantizations of the
     same model); `ignore` is the same fnmatch patterns `snapshot_download` takes,
     so a download that skips a subfolder does not measure itself against it.
-    Summing the whole repo either way is how a 2.6GB pull came to read as a
-    fraction of 30GB and then jump to "complete" against a figure it never
-    downloaded.
-    """
-    try:
-        from huggingface_hub import HfApi
 
-        info = HfApi().model_info(model_id, files_metadata=True)
-    except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
-        return None
-    total = 0
+    Raises, unlike its callers: the fetch cannot proceed on a guess, while the
+    bar can.
+    """
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(model_id, revision=revision, files_metadata=True)
+    files = []
     for sibling in getattr(info, "siblings", None) or []:
         name = getattr(sibling, "rfilename", None) or ""
-        size = getattr(sibling, "size", None)
-        if not isinstance(size, int) or size <= 0:
+        if not name:
             continue
         if include is not None and name != include:
             continue
         if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
             continue
-        total += size
+        files.append((name, getattr(sibling, "size", None)))
+    return getattr(info, "sha", None), files
+
+
+def repo_total_bytes(model_id, include=None, ignore=None):
+    """The size of what will ACTUALLY be fetched, from the Hub, or None.
+
+    Without it the bar has no total and shows as indeterminate — which is
+    honest, and much better than a wrong total. Summing the whole repo when only
+    part of it is being fetched is how a 2.6GB pull came to read as a fraction
+    of 30GB and then jump to "complete" against a figure it never downloaded.
+    """
+    try:
+        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore)[1])
+    except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
+        return None
+
+
+def _total_bytes(files):
+    """What `_repo_files` adds up to, or None for an indeterminate bar."""
+    total = sum(size for _name, size in files if isinstance(size, int) and size > 0)
     return total or None
 
 
@@ -369,6 +477,749 @@ def _capped(done, total):
     if done is None or total is None:
         return done
     return min(done, total)
+
+
+def _remove(path):
+    with contextlib.suppress(OSError):
+        os.remove(path)
+
+
+def _hf_token():
+    """The user's Hub token, or None.
+
+    Sent on OUR requests as well as hf's: a gated repo answers the metadata call
+    for an anonymous caller and then 401s on the blob, which reads as a broken
+    download rather than as a missing login.
+    """
+    try:
+        from huggingface_hub.utils import get_token
+
+        return get_token()
+    except Exception:  # noqa: BLE001 - an unreadable token is an anonymous fetch, not a failure
+        return None
+
+
+def _hub_file_meta(repo_id, filename, revision):
+    """Everything one file needs to be fetched and filed: where, and what.
+
+    `location` is the post-redirect CDN/Xet URL — the one worth range-fetching,
+    and the one that expires mid-download. `etag` names the blob in the cache
+    and `commit` names the snapshot folder its entry lives in; both are hf's own
+    layout, so both come from hf rather than from a second derivation here.
+    """
+    from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
+    url = hf_hub_url(repo_id, filename, revision=revision)
+    meta = get_hf_file_metadata(url, token=_hf_token())
+    return {"url": url, "location": getattr(meta, "location", None) or url,
+            "etag": getattr(meta, "etag", None),
+            "commit": getattr(meta, "commit_hash", None),
+            "size": getattr(meta, "size", None)}
+
+
+def _open(url, token, start=None, end=None):
+    """One GET, ranged when `start` is given.
+
+    `identity` is not politeness: a gzipped body's bytes are not the file's
+    bytes, and every offset here is an offset into the file.
+    """
+    headers = {"Accept-Encoding": "identity"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if start is not None:
+        headers["Range"] = "bytes=%d-%s" % (start, "" if end is None else end)
+    return urllib.request.urlopen(
+        urllib.request.Request(url, headers=headers), timeout=HTTP_TIMEOUT_S)
+
+
+def _supports_ranges(location, token):
+    """Does this URL really serve ranges? One byte answers it.
+
+    A 206 with a parseable `Content-Range`, or no. A server that answers a Range
+    request with 200 is saying it will send the whole body every time, and four
+    segments of that is four times the download — so a doubtful answer means one
+    segment, never an optimistic four.
+
+    Skipped entirely for a file too small to split, so a repo of small configs
+    costs no extra request at all. None means the question could not be ASKED,
+    which is a different thing from a no — see `_probe_host`.
+    """
+    try:
+        with _open(location, token, 0, 0) as response:
+            if getattr(response, "status", 200) != 206:
+                return False
+            return bool(_CONTENT_RANGE.search(response.headers.get("Content-Range") or ""))
+    except _TRANSIENT:
+        return None
+
+
+def _probe_host(location, token, probes):
+    """`_supports_ranges`, asked once per HOST for the length of one download.
+
+    Range support belongs to the CDN answering, not to the path: every shard of
+    a repo comes off the same host with the same presigning scheme. Asked per
+    file it is a serial TLS handshake per file before a single byte moves — the
+    same startup cost `_resolve` was parallelised to remove, reintroduced on a
+    thirty-shard repo.
+
+    True, False, or None for "could not ask" — and the three are distinct
+    because two rules turn on the difference. Only an ANSWER is remembered:
+    caching a probe that FAILED lets one transient 503 put every remaining shard
+    of the repo on a single connection for the rest of the download, with
+    nothing on screen to say the fast path switched itself off. And only an
+    answer of NO is grounds for throwing away a recorded layout (see `plan`);
+    silence is not.
+    """
+    host = urllib.parse.urlsplit(location).netloc
+    if probes.get(host) is None:
+        answer = _supports_ranges(location, token)
+        if answer is None:
+            return None  # this file goes on one connection; the next re-asks
+        probes[host] = answer
+    return probes[host]
+
+
+def _sparse_ok(folder):
+    """Can this filesystem hold a pre-sized file without allocating it?
+
+    The whole design writes segments OUT OF ORDER, which means creating each
+    part file at its final size up front. Where `ftruncate` allocates instead of
+    punching a hole that costs the repo's full size — 25GB reserved before a
+    byte downloads, on a filesystem that may not have it — and `bytes_on_disk`,
+    which counts allocated blocks, would report 100% from the first second.
+    Both are hf's job on such a filesystem, so this is a fallback condition and
+    not a bug to work around.
+
+    Asked once per download with a throwaway file, because asking it of the
+    first real part file means the zero-fill has already happened.
+    """
+    probe = os.path.join(folder, ".fusedpart-probe")
+    # Bound before the try, not inside it. Today the only escape from that block
+    # is an OSError that returns early, so this cannot be read unbound — but that
+    # is an argument about which exceptions three syscalls raise, and `_drain`
+    # just showed what happens when such an argument stops holding.
+    blocks = None
+    try:
+        os.makedirs(folder, exist_ok=True)
+        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.ftruncate(fd, SPARSE_PROBE_BYTES)
+            blocks = getattr(os.fstat(fd), "st_blocks", None)
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+    finally:
+        _remove(probe)
+    return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
+
+
+def _segment_count(size):
+    if size < SEGMENT_MIN_BYTES:
+        return 1
+    return min(MAX_SEGMENTS_PER_FILE, -(-size // SEGMENT_MIN_BYTES))
+
+
+def _segments(size, count):
+    """Split [0, size) into `count` contiguous ranges. `done` is the cursor."""
+    span = size // count
+    return [{"start": i * span,
+             "end": size - 1 if i == count - 1 else (i + 1) * span - 1,
+             "done": 0}
+            for i in range(count)]
+
+
+def _seg_complete(seg):
+    return seg["start"] + seg["done"] > seg["end"]
+
+
+class _FileFetch:
+    """One file's download: its part file, its segments, its sidecar.
+
+    Owns everything between "we know the etag" and "the snapshot entry exists",
+    because those two are the only points at which the state on disk is state hf
+    would recognise. Everything in between is ours and carries our own suffix.
+    """
+
+    def __init__(self, folder, repo_id, filename, revision, meta, token, stop,
+                 probes=None):
+        self.folder = folder
+        self.repo_id = repo_id
+        self.filename = filename
+        #: Every name in the repo that resolves to this blob. A repo really does
+        #: publish the same bytes twice, and one etag is one blob — so the extra
+        #: names are LINKS to make, never a second download to run.
+        self.filenames = [filename]
+        self.revision = revision
+        self.meta = meta
+        self.token = token
+        self.stop = stop
+        self.probes = {} if probes is None else probes
+        self.size = meta["size"]
+        self.blob = os.path.join(folder, "blobs", meta["etag"])
+        self.part = self.blob + PART_SUFFIX
+        self.sidecar = self.part + ".json"
+        self.snapshot = os.path.join(folder, "snapshots", meta["commit"])
+        self.lock = threading.Lock()      # guards the segment cursors
+        self.flush_lock = threading.Lock()  # one writer of the sidecar at a time
+        self.fd = None
+        self.segments = []
+        self.pending = 0
+        self.flushed = 0.0
+
+    # -- planning ---------------------------------------------------------
+
+    def plan(self):
+        """The segments still to fetch. Empty means the bytes are already here.
+
+        Segments share ONE fd, opened read-write and pre-sized, and write
+        through `os.pwrite` — no userspace buffering, so bytes a segment has
+        counted are bytes the kernel already has. That is precisely what makes a
+        `SIGKILL` mid-download resumable rather than merely restartable.
+        """
+        if os.path.exists(self.blob) and os.path.getsize(self.blob) == self.size:
+            # Whatever a previous attempt left is dead the moment the blob
+            # exists: nothing will ever resume into it, and unremoved it is a
+            # multi-gigabyte leak inside the hub cache that also goes on
+            # counting towards the bar.
+            _remove(self.part)
+            _remove(self.sidecar)
+            return []
+        os.makedirs(os.path.dirname(self.blob), exist_ok=True)
+        saved = self._saved()
+        if saved is not None:
+            # The layout to resume with is the layout the bytes were fetched
+            # INTO. A probe that fails for a moment (a 503 on the one-byte
+            # request) must not cost us that: re-deriving on silence yields one
+            # segment, a segment-count mismatch, and the deletion of gigabytes
+            # of durable, correctly recorded progress — for a network condition
+            # that says nothing about the bytes on disk.
+            #
+            # A probe that ANSWERS NO is different, and asking is what makes the
+            # difference visible. Without it, a server that has stopped honouring
+            # ranges hands byte 0 to every segment past the first, `_whole_body`
+            # refuses, and the refusal takes down the whole repo — the fallback
+            # then deleting this file's sidecar along with every OTHER file's
+            # progress. Restarting this one file whole is strictly cheaper.
+            self.segments = _segments(self.size, len(saved))
+            if not self._restore(saved):
+                saved = None
+            elif len(saved) > 1 and _probe_host(self.meta["location"],
+                                                self._cdn_token(),
+                                                self.probes) is False:
+                saved = None
+        if saved is None:
+            # …and once the sidecar is out, its layout goes with it. Kept, it
+            # would split a download that starts from zero by a number that
+            # described a file we just deleted: one connection for a 4.6GB
+            # shard, or dozens for a small one.
+            count = _segment_count(self.size)
+            if count > 1 and _probe_host(self.meta["location"],
+                                         self._cdn_token(),
+                                         self.probes) is not True:
+                count = 1
+            self.segments = _segments(self.size, count)
+            _remove(self.part)
+            _remove(self.sidecar)
+        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
+        os.ftruncate(self.fd, self.size)
+        self.flush(force=True)
+        pending = [seg for seg in self.segments if not _seg_complete(seg)]
+        self.pending = len(pending)
+        return pending
+
+    def _cdn_token(self):
+        """The credential to send with the BLOB request — usually none.
+
+        huggingface_hub drops `Authorization` the moment the download URL
+        differs from the Hub URL, and S3 is the reason: a presigned URL already
+        carries its credentials in the query string, and a request bearing two
+        authentication mechanisms is refused with a 400. Sent anyway, the probe
+        fails and every segment burns its whole retry budget for any user with a
+        token set — which is everyone pulling a gated model — and the download
+        falls back to something SLOWER than what this replaced, silently,
+        because the fallback is invisible by design.
+
+        Computed per request rather than stored: `_re_resolve` can hand us a
+        location on a different host than the one we started on.
+        """
+        return None if self.meta["location"] != self.meta["url"] else self.token
+
+    def _saved(self):
+        """The segments a previous run recorded for THIS file, or None.
+
+        Identity first — etag, size, and a part file still as long as it was —
+        because a sidecar belonging to a different revision of the file would
+        have us skip bytes that were never fetched, and the result is a blob of
+        exactly the right length that is silently wrong. The layout itself is
+        checked in `_restore`, against the segments derived from this answer.
+        """
+        try:
+            with open(self.sidecar) as handle:
+                state = json.load(handle)
+            if state["etag"] != self.meta["etag"] or state["size"] != self.size:
+                return None
+            saved = state["segments"]
+            if not saved or os.path.getsize(self.part) < self.size:
+                return None
+            return saved
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _restore(self, saved):
+        """Put those offsets back, or say no.
+
+        Validated in full BEFORE a single cursor is moved, so a half-accepted
+        sidecar cannot land either.
+        """
+        try:
+            if len(saved) != len(self.segments):
+                return False
+            for seg, old in zip(self.segments, saved):
+                if old["start"] != seg["start"] or old["end"] != seg["end"]:
+                    return False
+                if not 0 <= old["done"] <= seg["end"] - seg["start"] + 1:
+                    return False
+        except (KeyError, TypeError):
+            return False
+        for seg, old in zip(self.segments, saved):
+            seg["done"] = old["done"]
+        return True
+
+    def flush(self, force=False):
+        """Record the offsets, durably, at most once a second.
+
+        The ORDER here is the correctness argument for the whole feature:
+        snapshot the cursors, fsync the DATA, then write the snapshot down.
+        Recorded offsets are therefore always bytes the disk already has, never
+        bytes still in flight — which a kill would lose while the sidecar went
+        on claiming them, and a resume would then skip.
+
+        Driven by the writing threads rather than by a timer of its own: a
+        segment that is not moving has nothing new to record, and a thread would
+        be one more thing to shut down. Written atomically, because a torn
+        sidecar loses the whole download.
+        """
+        with self.lock:
+            now = time.monotonic()
+            if not force and now - self.flushed < FLUSH_EVERY_S:
+                return
+            self.flushed = now
+            state = {"etag": self.meta["etag"], "size": self.size,
+                     "segments": [dict(seg) for seg in self.segments]}
+        with self.flush_lock:
+            if self.fd is not None:
+                os.fsync(self.fd)
+            tmp = self.sidecar + ".tmp"
+            with open(tmp, "w") as handle:
+                json.dump(state, handle)
+            os.replace(tmp, self.sidecar)
+
+    # -- moving the bytes -------------------------------------------------
+
+    def run(self, seg):
+        """Fill one segment, reconnecting until it is done or the budget is out.
+
+        Reconnects on both kinds of interruption: an exception, and a body that
+        simply ends early — a server closing mid-stream raises nothing.
+
+        The budget resets on the CURSOR MOVING across a whole attempt, which is
+        not the same as bytes arriving, and the difference is both a hang and an
+        abort. Bytes arriving is too generous: a server that ignores `Range` and
+        truncates hands back the same prefix every time, `_whole_body` rewinds
+        the cursor to zero to take it safely, and a budget keyed on bytes never
+        expires — the job hangs with the bar oscillating between 0% and 50%
+        until someone kills the process. And it is too mean, because it was read
+        from a drain that a raising `read()` never returns from: half a gigabyte
+        on disk followed by a connection reset counted as a failed attempt, so a
+        link that resets reliably exhausted the budget and took the whole
+        multi-file download into a fallback that then deleted every recorded
+        byte. The cursor before and after answers both.
+        """
+        ranged = len(self.segments) > 1
+        refreshed = False
+        tries = 0
+        reason = "nothing was attempted"
+        while tries < SEGMENT_ATTEMPTS and not self.stop.is_set():
+            if _seg_complete(seg):
+                return
+            start = seg["start"] + seg["done"]
+            want_range = ranged or seg["done"] > 0
+            before = seg["done"]
+            try:
+                with _open(self.meta["location"], self._cdn_token(),
+                           start if want_range else None,
+                           seg["end"] if want_range else None) as response:
+                    if want_range:
+                        if getattr(response, "status", 200) != 206:
+                            start = self._whole_body(seg)
+                        else:
+                            self._check_range(response, start)
+                    self._drain(response, seg, start)
+                if _seg_complete(seg):
+                    return
+                reason = f"the stream ended at byte {seg['start'] + seg['done']}"
+            except urllib.error.HTTPError as error:
+                if error.code in (401, 403) and not refreshed:
+                    # `location` is a presigned CDN URL and a multi-hour
+                    # download outlives it. Re-resolving does NOT count against
+                    # the budget: an expired signature is not evidence that the
+                    # file is unreachable. Its own failure is an ordinary
+                    # network fault and must be COUNTED rather than escape —
+                    # otherwise one unlucky moment aborts the whole download.
+                    refreshed = True
+                    try:
+                        self._re_resolve()
+                        continue
+                    except _Unsegmentable:
+                        raise
+                    except Exception as again:  # noqa: BLE001 - hf raises its own family
+                        reason = f"re-resolving after HTTP {error.code}: {again}"
+                else:
+                    reason = f"HTTP {error.code}"
+            except _TRANSIENT as error:
+                reason = f"{error.__class__.__name__}: {error}"
+            if seg["done"] > before:
+                # The cursor moved, so the connection worked, so BOTH allowances
+                # come back. The re-resolve is one per stall and not one per
+                # segment: a presigned URL is good for minutes and a
+                # multi-gigabyte download is not, so a second expiry is ordinary
+                # — and unhandled it spends the whole retry budget on 401s and
+                # aborts into a fallback that then deletes the resumable state.
+                tries, refreshed = 0, False
+            else:
+                tries += 1
+                time.sleep(min(5.0, RETRY_BACKOFF_S * tries))
+        if self.stop.is_set():
+            return
+        raise RuntimeError(f"{self.filename}: gave up at byte "
+                           f"{seg['start'] + seg['done']} — {reason}")
+
+    def _re_resolve(self):
+        """A fresh presigned URL for this file. Only the LOCATION may change.
+
+        `etag`, `size` and `commit` are what the blob path, every segment offset
+        and the snapshot folder were derived from before any thread started. A
+        repo updated mid-download therefore has to abort, never continue: the
+        new revision's bytes written at the old revision's offsets and published
+        as `blobs/<old-etag>` are a mix of two revisions at exactly the right
+        length, under a name hf will then serve from cache forever.
+        """
+        fresh = _hub_file_meta(self.repo_id, self.filename, self.revision)
+        for field in ("etag", "size", "commit"):
+            if fresh.get(field) != self.meta[field]:
+                raise _Unsegmentable(
+                    f"{self.filename}: the repo changed mid-download "
+                    f"({field} {self.meta[field]!r} -> {fresh.get(field)!r})")
+        self.meta = fresh
+
+    def _check_range(self, response, start):
+        """A 206 is not a promise that it is the range we ASKED for.
+
+        A proxy that clamps ranges answers `bytes=1150000-` with `Content-Range:
+        bytes 0-…/size` — the scattering `_whole_body` refuses, wearing a legal
+        status code. Written where it was asked for, one body's bytes land at
+        four different offsets and the file is exactly the right LENGTH and
+        entirely wrong content.
+        """
+        header = (response.headers.get("Content-Range") or "").strip()
+        match = _RANGE_START.match(header)
+        if not match or int(match.group(1)) != start:
+            raise _Unsegmentable(
+                f"{self.filename}: asked for byte {start}, got "
+                f"{header or 'a 206 with no Content-Range'}")
+
+    def _whole_body(self, seg):
+        """Handle a 200 answering a request we ranged, or refuse to.
+
+        A server that answered the probe with a 206 and then ignores `Range` is
+        sending byte 0 to every segment. Writing that at a segment's own offset
+        produces a file of exactly the right LENGTH and entirely wrong content —
+        the one failure mode of this whole design that no size check would
+        catch. Only the segment that starts at zero can use such a body, and it
+        has to rewrite from the top rather than resume into it.
+        """
+        if seg["start"]:
+            raise _Unsegmentable(
+                f"{self.filename}: the server ignored Range on a segment "
+                f"starting at byte {seg['start']}")
+        with self.lock:
+            seg["done"] = 0
+        return 0
+
+    def _drain(self, response, seg, start):
+        """Copy this response into the part file, advancing the cursor as it goes.
+
+        Deliberately reports nothing: what an attempt achieved is the cursor's
+        movement, which the caller can still read after this raises — and a
+        `read()` raising mid-body, on top of bytes already written, is the case
+        a returned flag got wrong.
+
+        Three paths leave without the loop body ever running — an empty first
+        read, no room left in the segment, and `stop` already set on entry —
+        and the last of those is the ORDINARY one: `stop` is set exactly when a
+        sibling segment has failed, so every other segment arrives here to wind
+        down. A vestigial `return moved` survived the rewrite of this function
+        and raised `UnboundLocalError` on all three, which is a `NameError` and
+        therefore not in `_TRANSIENT`: it escaped the retry loop entirely and
+        turned a tidy wind-down into the fallback deleting every recorded byte.
+        """
+        offset = start
+        while not self.stop.is_set():
+            chunk = response.read(READ_BYTES)
+            if not chunk:
+                break
+            # A server ignoring the END of the range must not overrun into the
+            # next segment's bytes.
+            room = seg["end"] - (seg["start"] + seg["done"]) + 1
+            if room <= 0:
+                break
+            chunk = chunk[:room]
+            written = 0
+            while written < len(chunk):
+                written += os.pwrite(self.fd, chunk[written:], offset + written)
+            offset += len(chunk)
+            with self.lock:
+                seg["done"] += len(chunk)
+            self.flush()
+
+    # -- publishing -------------------------------------------------------
+
+    def finish(self):
+        """Publish the blob and link it. The LAST segment's thread runs this.
+
+        Checked against the CURSORS, never against the part file's length. The
+        file is `ftruncate`d to its final size before a byte arrives, so its
+        length is right from the first second and a sparse file of pure holes
+        passes a size check — which would put a zero-filled blob under a real
+        etag into the hub cache, where hf serves it from cache forever. The
+        cursors are the same durable-byte accounting the sidecar records, and
+        they are the only evidence there is that the file is whole.
+
+        No hash, like huggingface_hub itself, which relies on TLS and
+        `Content-Length`: re-reading every gigabyte off the disk would give back
+        a good part of what this feature is for.
+        """
+        if self.fd is not None:
+            os.fsync(self.fd)
+            landed = sum(seg["done"] for seg in self.segments)
+            missing = [seg for seg in self.segments if not _seg_complete(seg)]
+            if missing or landed != self.size:
+                raise RuntimeError(
+                    f"{self.filename}: {landed} of {self.size} bytes landed, "
+                    f"{len(missing)} segment(s) short")
+            os.close(self.fd)
+            self.fd = None
+            os.replace(self.part, self.blob)
+            _remove(self.sidecar)
+        return self.link()
+
+    def link(self):
+        """The snapshot entry hf's own loaders read.
+
+        A RELATIVE symlink into `blobs/`, matching hf's `_create_symlink`: an
+        absolute one breaks the moment the cache is moved or read through
+        another mount. Windows without developer mode cannot make one at all,
+        and hf's own answer there is a copy, so ours is too.
+        """
+        targets = [os.path.join(self.snapshot, name) for name in self.filenames]
+        for target in targets:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            relative = os.path.relpath(self.blob, os.path.dirname(target))
+            _remove(target)
+            try:
+                os.symlink(relative, target)
+            except OSError:
+                shutil.copyfile(self.blob, target)
+        return targets[0]
+
+    def close(self):
+        if self.fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(self.fd)
+            self.fd = None
+
+
+def _resolve(repo_id, filenames, revision):
+    """One metadata call per file, concurrently.
+
+    Serially this is a round trip per file before a single byte moves, which on
+    a repo of thirty shards is several seconds of nothing happening — the exact
+    thing this feature exists to remove.
+    """
+    with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(MAX_CONNECTIONS, len(filenames)),
+            thread_name_prefix="meta") as pool:
+        return list(pool.map(
+            lambda name: _hub_file_meta(repo_id, name, revision), filenames))
+
+
+def _run_segment(fetch, seg):
+    """One unit of work in the pool: fill a segment, and finalise if it was the
+    last one its file was waiting on."""
+    try:
+        try:
+            fetch.run(seg)
+        finally:
+            fetch.flush(force=True)
+        if not _seg_complete(seg):
+            return  # abandoned because a sibling segment failed; nothing to publish
+        with fetch.lock:
+            fetch.pending -= 1
+            last = fetch.pending == 0
+        if last:
+            fetch.finish()
+    except BaseException:
+        # The other segments stop pulling bytes nobody is going to use, and
+        # what they already wrote is recorded before they go. That state is for
+        # a LATER RUN of the app: this attempt is about to hand the repo to
+        # huggingface_hub, which fetches those files itself (see `_clear_parts`).
+        #
+        # `finish()` is INSIDE this guard, not after it. It fails for reasons
+        # that have nothing to do with the download — a full disk, an
+        # `os.replace` across devices, another instance publishing the same blob
+        # first — and outside the guard that exception reached the caller with
+        # `stop` still clear, so the pool's own shutdown waited for every
+        # remaining segment of every remaining file to finish first: minutes and
+        # gigabytes spent on a download that had already failed.
+        fetch.stop.set()
+        raise
+
+
+def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
+    """Fetch `filenames` into the hub cache ourselves. Returns the snapshot dir.
+
+    `revision` is REQUIRED and has no default on purpose: it must be the commit
+    the caller's file list resolved to, and a default here is exactly how a list
+    taken from one revision came to be fetched at another. `ref` is the branch
+    NAME that resolved to it, recorded so a later offline load can resolve the
+    same name — hf writes that ref too, and a cache without it needs the network
+    to answer a question it already knows.
+
+    The units of work in the pool are SEGMENTS ACROSS ALL FILES under one cap,
+    which is what makes `MAX_CONNECTIONS` mean what it says: a pool per file
+    would multiply the two caps together and open thirty sockets on a repo of
+    thirty shards.
+
+    **No cache lock, unlike `snapshot_download`, and deliberately.** Two app
+    instances fetching one repo would write the SAME bytes at the SAME offsets:
+    the etag names the content, so there is no version of this race that puts
+    wrong bytes in a blob. What can happen is wasted work — one instance's
+    `os.replace` pulls the part file out from under the other, whose next
+    syscall fails and whose download falls back to hf — and that costs a slower
+    download, never a corrupt cache. Inside one app it cannot happen at all:
+    the supervisor's deterministic job id joins a second Download of a model
+    onto the first (AI-5a).
+    """
+    if not hasattr(os, "pwrite"):
+        # Windows. Buffered seek-and-write would break the guarantee the whole
+        # design rests on — that a counted byte is a written byte.
+        raise _Unsegmentable("os.pwrite is unavailable on this platform")
+    folder = repo_folder(model_id)
+    if not folder:
+        raise _Unsegmentable("the hub cache layout is unavailable")
+    if not filenames:
+        raise _Unsegmentable("the Hub listed no files for this repo")
+    if not _sparse_ok(folder):
+        raise _Unsegmentable(f"{folder} cannot hold a sparse file")
+
+    token = _hf_token()
+    stop = threading.Event()
+    probes = {}  # host -> range support, so a repo of shards probes once
+    fetches, by_etag = [], {}
+    for name, meta in zip(filenames, _resolve(model_id, filenames, revision)):
+        if not (isinstance(meta.get("size"), int) and meta.get("etag")
+                and meta.get("commit")):
+            raise _Unsegmentable(f"{name}: the Hub reported no size, etag or commit")
+        already = by_etag.get(meta["etag"])
+        if already is not None:
+            # One etag is one blob, and a repo really does publish the same
+            # bytes under two names. A second fetch of it would share the part
+            # file, the sidecar and the blob path with the first: the bytes
+            # pulled twice, and whichever `os.replace` lost the race finding
+            # nothing there and taking the whole download into the fallback.
+            already.filenames.append(name)
+            continue
+        fetch = _FileFetch(folder, model_id, name, revision, meta, token, stop,
+                           probes)
+        by_etag[meta["etag"]] = fetch
+        fetches.append(fetch)
+
+    commits = {fetch.meta["commit"] for fetch in fetches}
+    if len(commits) != 1:
+        # One revision is one commit. Two would mean the repo moved under us
+        # mid-listing, and half a snapshot of each is not a snapshot.
+        raise _Unsegmentable(f"one revision reported {len(commits)} commits")
+    if _COMMIT_SHA.match(revision or "") and revision not in commits:
+        # Asked for a commit and given another: the listing this file set came
+        # from no longer describes what the Hub is serving.
+        raise _Unsegmentable(f"asked for commit {revision}, the Hub resolved "
+                             f"{commits.copy().pop()}")
+
+    try:
+        work = []
+        for fetch in fetches:
+            pending = fetch.plan()
+            if pending:
+                work.extend((fetch, seg) for seg in pending)
+            else:
+                fetch.finish()  # already on disk, or restored complete: just file it
+        if work:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(MAX_CONNECTIONS, len(work)),
+                    thread_name_prefix="fetch") as pool:
+                futures = [pool.submit(_run_segment, f, seg) for f, seg in work]
+                for future in concurrent.futures.as_completed(futures):
+                    future.result()
+    finally:
+        for fetch in fetches:
+            fetch.close()
+
+    _write_ref(folder, ref, commits.pop())
+    return fetches[0].snapshot
+
+
+def _write_ref(folder, ref, commit):
+    """`refs/<branch>` -> the commit, so a later load resolves it offline.
+
+    Only for a branch NAME: a revision that is itself a sha needs no ref, and
+    writing one named after a sha is not something hf would ever read.
+    """
+    if not ref or _COMMIT_SHA.match(ref):
+        return
+    path = os.path.join(folder, "refs", ref)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as handle:
+        handle.write(commit)
+
+
+def _clear_parts(folder):
+    """Drop our partial files before handing the repo back to huggingface_hub.
+
+    Not because hf would misread them — the suffix exists precisely so it never
+    sees them — but because hf is about to fetch those same files ITSELF. Kept,
+    they would count towards the progress bar for a download nothing is writing,
+    and then sit in the hub cache forever beside the blob hf finished: nothing
+    ever resumes into a part file whose blob already exists.
+
+    So the resume story is honest about its scope. It covers the app being
+    killed, quit or crashed — the case that motivated it (AI-5e) — and not a
+    fetch that failed its way into the fallback, which re-downloads.
+    """
+    for dirpath, _dirs, files in os.walk(folder or ""):
+        for name in files:
+            if PART_SUFFIX in name:
+                _remove(os.path.join(dirpath, name))
+
+
+def _fallback(model_id, error):
+    """Say why we are back on hf's downloader. The supervisor captures stderr,
+    so a fallback that happens in the field is diagnosable rather than merely
+    slow."""
+    sys.stderr.write(
+        f"[fused] segmented fetch of {model_id} unavailable, falling back to "
+        f"huggingface_hub: {error.__class__.__name__}: {error}\n")
+    _clear_parts(repo_folder(model_id))
 
 
 def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…", job=None):
@@ -415,15 +1266,44 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     The total is measured against the SAME `ignore_patterns` the download uses,
     or a pull that deliberately skips a subfolder measures itself against
     weights it was never going to fetch — a bar that stalls partway and then
-    jumps.
+    jumps. The segmented fetch takes its file list from the same filter, for the
+    same reason.
     """
-    from huggingface_hub import snapshot_download
+    # ONE listing, serving the bar's total, the list to fetch AND the revision
+    # to fetch it at. Asking twice is a second round trip before any byte moves;
+    # deciding the revision separately is how a list from one revision comes to
+    # be fetched at another.
+    sha, files, total = None, None, None
+    try:
+        sha, files = _repo_files(model_id, ignore=ignore_patterns)
+        total = _total_bytes(files)
+    except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
+        _fallback(model_id, error)
 
-    return fetch_with_progress(
-        model_id,
-        lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns, **kwargs),
-        total=repo_total_bytes(model_id, ignore=ignore_patterns),
-    )
+    def hub():
+        from huggingface_hub import snapshot_download
+
+        return fetch_with_progress(
+            model_id,
+            lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns,
+                                      **kwargs),
+            total=total)
+
+    if kwargs or files is None or not sha:
+        # An extra argument changes WHAT is fetched — `allow_patterns`, a
+        # revision, a local dir — and a fetch that quietly ignored one would
+        # download the wrong thing. Ours honours exactly the two it knows about.
+        # A listing with no sha is the same problem: nothing to pin to.
+        return hub()
+    try:
+        names = [name for name, _size in files]
+        return fetch_with_progress(
+            model_id, lambda: _segmented_fetch(model_id, names, sha), total=total)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
+        _fallback(model_id, error)
+    return hub()
 
 
 def download_file(repo_id, filename, detail=None):
@@ -434,14 +1314,38 @@ def download_file(repo_id, filename, detail=None):
     2.6GB pull against that is how a download reads as barely started for its
     whole life and then jumps to complete.
     """
-    from huggingface_hub import hf_hub_download
+    # One listing here too, for the revision as much as for the total: a GGUF
+    # fetched at a revision its listing never described is the same bug as a
+    # whole snapshot fetched that way, one file wide.
+    sha, total = None, None
+    try:
+        sha, files = _repo_files(repo_id, include=filename)
+        total = _total_bytes(files)
+    except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
+        _fallback(repo_id, error)
+    detail = detail or f"Fetching {filename}…"
 
-    return fetch_with_progress(
-        repo_id,
-        lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-        total=repo_total_bytes(repo_id, include=filename),
-        detail=detail or f"Fetching {filename}…",
-    )
+    def hub():
+        from huggingface_hub import hf_hub_download
+
+        return fetch_with_progress(
+            repo_id,
+            lambda: hf_hub_download(repo_id=repo_id, filename=filename),
+            total=total, detail=detail)
+
+    if not sha:
+        return hub()
+    try:
+        return fetch_with_progress(
+            repo_id,
+            lambda: os.path.join(_segmented_fetch(repo_id, [filename], sha),
+                                 filename),
+            total=total, detail=detail)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader
+        _fallback(repo_id, error)
+    return hub()
 
 
 # -------------------------------------------------------------------- bring-up

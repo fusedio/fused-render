@@ -99,6 +99,10 @@ The link-status half of this rule is gone with the route that reported it
     (ws_twin / "index.html").write_text("<html></html>")
     ws_free = workspace / "linked" / "solo"
     ws_free.mkdir(parents=True)
+    # A page, because a page is what makes a folder an app at any depth
+    # (app_listing.workspace_apps) — without one this folder is a shelf and the
+    # "non-colliding twin still lists" half of this test would assert nothing.
+    (ws_free / "index.html").write_text("<html></html>")
 
     d = _folder(tmp_path, "notes")
     _register(d)
@@ -182,6 +186,12 @@ def test_a_linked_folder_resolves_its_entry_on_the_shared_rule(client, tmp_path)
     _register(bare)
     (app,) = client.get("/api/apps").json()["apps"]
     assert app["entry_html"] is None
+    # The registry is now the ONLY way an entry-less app reaches the listing —
+    # the workspace walk stopped emitting page-less folders — so the rest of the
+    # `app_dict` shape for that case is pinned here (moved from
+    # test_apps_api.py::test_updated_at_is_a_float).
+    assert app["entry"] is None
+    assert isinstance(app["updated_at"], float)
 
 
 def test_corrupt_registry_reads_as_empty(client, tmp_path, monkeypatch):

@@ -149,7 +149,7 @@ export default function Apps({ config }: { config: Config }) {
 
   // Showcase apps are ordinary workspace apps now: the server clones the
   // community repo into <workspace>/showcase in the background on startup,
-  // and the two-level scan picks it up like any other tag dir. No synthetic
+  // and the workspace scan picks it up like any other tag dir. No synthetic
   // chip, no separate catalog surface.
   const all = apps.status === "ok" ? apps.data : [];
   const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);

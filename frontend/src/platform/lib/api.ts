@@ -24,6 +24,10 @@ export interface Config {
   learn_mount_ready: boolean;
   // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
+  // Self-update state (fused_render/update/mac.py) — present only when the
+  // packaged mac app started the update manager; absent on dev servers and
+  // the Windows/Linux packages (those update through their supervisor).
+  update?: UpdateStatus;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -151,6 +155,32 @@ export const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST",
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
+}
+
+// -- Self-update (fused_render/server/routers/update.py) ---------------------
+
+export interface UpdateStatus {
+  // idle | checking | available | installing | installed | error
+  state: string;
+  // brew: install delegates to `brew upgrade --cask`; dmg: the app downloads
+  // and swaps its own bundle; none: not updatable in place.
+  method: string;
+  latest_version: string | null;
+  // Bytes downloaded so far (dmg method only) — the manifest carries no total
+  // size, so the UI shows MB downloaded rather than a percentage.
+  progress: number | null;
+  error: string | null;
+  // Set when the user must run the update themselves (brew failed) — shown
+  // with a copy button, never retried against the DMG path.
+  manual_command: string | null;
+}
+
+export function updateCheck(): Promise<UpdateStatus> {
+  return postJson<UpdateStatus>("/api/update/check", {});
+}
+
+export function updateInstall(): Promise<UpdateStatus> {
+  return postJson<UpdateStatus>("/api/update/install", {});
 }
 
 export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
@@ -1815,12 +1845,16 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 }
 
 // -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
-// An app folder two levels under the workspace: <fused_dir>/<tag>/<name>/.
-// `tag` is just the top-level folder's name — any folder qualifies, there is
-// no fixed tag set. `entry_html` is the app's "/" route entry file (absolute
-// path), null when the folder has no single resolvable .html entry; `title`
-// comes from that file's <title>, null falls back to the folder name in the
-// UI.
+// An app folder one to three levels under the workspace, found by a bounded
+// recursive walk (the rules live in app_listing.workspace_apps: a page makes a
+// folder an app — any *.html at depth 1 or 2, an index.html at depth 3, nothing
+// deeper; a page-less folder is a shelf, walked but never listed).
+// `tag` is the FIRST path segment — any folder qualifies, there is no fixed tag
+// set, and a third-level app carries the same tag as its second-level
+// neighbours. `entry_html` is the app's "/" route entry file (absolute path);
+// null only for a LINKED app, which the registry lists whether or not the folder
+// has a page. `title` comes from that file's <title>, null falls back to the
+// folder name in the UI.
 export interface AppInfo {
   name: string;
   tag: string;

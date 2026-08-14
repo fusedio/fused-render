@@ -14,6 +14,7 @@ to the user's file.
 import hashlib
 import json
 import math
+import mimetypes
 import os
 import time
 
@@ -28,6 +29,11 @@ CACHE_ROOT = os.path.expanduser(os.path.join("~", ".fused-render", "cache", "pan
 
 DISPLAY_MAX_W = 8192   # keep under common WebGL texture limits
 CONVERT_MAX_W = 4096   # resample source cap so conversions stay interactive
+
+# Formats a browser <img>/WebGL texture accepts as-is. When the source is one of
+# these, already within DISPLAY_MAX_W, and needs no EXIF rotation, the display
+# copy is skipped and the original file is served directly.
+BROWSER_FMTS = {"JPEG", "PNG", "WEBP", "GIF"}
 
 
 def _pil():
@@ -115,6 +121,13 @@ def _content_hash(path):
     return h.hexdigest()[:16]
 
 
+def _display_file(meta):
+    """Absolute path of the image to display: the cached copy, or the original
+    file itself when it was served as-is (passthrough, display=None)."""
+    return (os.path.join(meta["dir"], meta["display"]) if meta.get("display")
+            else meta["source"])
+
+
 def _prepare(file):
     """Classify the image and build its browser-displayable copy, cached by
     content hash. Returns the meta dict with 'dir' set to the cache folder."""
@@ -126,41 +139,62 @@ def _prepare(file):
     if os.path.isfile(meta_path):
         with open(meta_path, encoding="utf-8") as f:
             meta = json.load(f)
-        if os.path.isfile(os.path.join(cdir, meta["display"])):
-            meta["dir"] = cdir
+        meta["dir"] = cdir
+        # Cache is keyed by content hash, so `file` is a valid path to these
+        # exact bytes: bind name/source to the requested path, not the first one
+        # cached — right filename on a duplicate open, and no dependency on the
+        # first path still existing.
+        meta["name"] = os.path.basename(file)
+        meta["source"] = file
+        if os.path.isfile(_display_file(meta)):
             return meta
 
     Image, ImageOps = _pil()
     Image.MAX_IMAGE_PIXELS = 400_000_000
     img = Image.open(file)
     fmt = (img.format or "?").upper()
-    img = ImageOps.exif_transpose(img)
-    w, h = img.size
+    orient = img.getexif().get(0x0112, 1)   # EXIF orientation (274); 1 = upright
     with open(file, "rb") as f:
         head = f.read(256 * 1024)
-    kind, valid, reasons = _classify(w, h, head, img)
-
     os.makedirs(cdir, exist_ok=True)
-    has_alpha = img.mode in ("RGBA", "LA", "PA") or (
-        img.mode == "P" and "transparency" in img.info
-    )
-    disp = img.convert("RGBA" if has_alpha else "RGB")
-    if disp.width > DISPLAY_MAX_W:
-        disp = disp.resize(
-            (DISPLAY_MAX_W, max(1, round(disp.height * DISPLAY_MAX_W / disp.width))),
-            Image.LANCZOS,
-        )
-    if has_alpha:
-        display = "display.png"
-        disp.save(os.path.join(cdir, display))
+
+    mime, _ = mimetypes.guess_type(file)
+    if (fmt in BROWSER_FMTS and (mime or "").startswith("image/")
+            and img.width <= DISPLAY_MAX_W and orient in (0, 1)):
+        # Upright, browser-displayable, within the texture cap, and its path maps
+        # to an image/* content-type (/api/fs/raw types the served bytes from the
+        # path and sends nosniff, so a non-image extension would fail to render):
+        # serve the original as-is — skip exif_transpose (its copy() forces a full
+        # decode) and the re-encode. _classify only touches pixels for the 4:3
+        # cube-cross check; a 2:1 pano is classified from dimensions, never decoded.
+        w, h = img.size
+        kind, valid, reasons = _classify(w, h, head, img)
+        display, disp_w, disp_h = None, w, h
     else:
-        display = "display.jpg"
-        disp.save(os.path.join(cdir, display), quality=92)
+        img = ImageOps.exif_transpose(img)
+        w, h = img.size
+        kind, valid, reasons = _classify(w, h, head, img)
+        has_alpha = img.mode in ("RGBA", "LA", "PA") or (
+            img.mode == "P" and "transparency" in img.info
+        )
+        disp = img.convert("RGBA" if has_alpha else "RGB")
+        if disp.width > DISPLAY_MAX_W:
+            disp = disp.resize(
+                (DISPLAY_MAX_W, max(1, round(disp.height * DISPLAY_MAX_W / disp.width))),
+                Image.LANCZOS,
+            )
+        if has_alpha:
+            display = "display.png"
+            disp.save(os.path.join(cdir, display))
+        else:
+            display = "display.jpg"
+            disp.save(os.path.join(cdir, display), quality=92)
+        disp_w, disp_h = disp.width, disp.height
 
     meta = {"name": os.path.basename(file), "format": fmt,
             "bytes": os.path.getsize(file), "width": w, "height": h,
-            "kind": kind, "valid": valid, "reasons": reasons,
-            "display": display, "display_w": disp.width, "display_h": disp.height}
+            "kind": kind, "valid": valid, "reasons": reasons, "source": file,
+            "display": display, "display_w": disp_w, "display_h": disp_h}
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f)
     meta["dir"] = cdir
@@ -169,7 +203,8 @@ def _prepare(file):
 
 def op_open(file):
     meta = _prepare(file)
-    meta["display_path"] = os.path.join(meta.pop("dir"), meta["display"])
+    meta["display_path"] = _display_file(meta)
+    meta.pop("dir", None)
     return {"asset": meta}
 
 
@@ -182,7 +217,7 @@ def _load_equirect(meta):
 
     py360convert = _py360()
     Image, _ = _pil()
-    img = Image.open(os.path.join(meta["dir"], meta["display"])).convert("RGB")
+    img = Image.open(_display_file(meta)).convert("RGB")
     if img.width > CONVERT_MAX_W:
         img = img.resize(
             (CONVERT_MAX_W, max(1, round(img.height * CONVERT_MAX_W / img.width))),
@@ -336,6 +371,30 @@ def main(
     out_h: int = 0,
     face_w: int = 0,
 ):
+    # Numeric params can arrive as strings from an engine that doesn't coerce by
+    # annotation; coerce here so a blank falls back to the default and a truthy
+    # "0" string can't slip into py360convert and break every projection.
+    def _int(v, d):
+        try:
+            return int(float(v)) if str(v).strip() != "" else d
+        except (TypeError, ValueError):
+            return d
+
+    def _float(v, d):
+        try:
+            return float(v) if str(v).strip() != "" else d
+        except (TypeError, ValueError):
+            return d
+
+    fov = _float(fov, 90.0)
+    yaw = _float(yaw, 0.0)
+    pitch = _float(pitch, 0.0)
+    roll = _float(roll, 0.0)
+    zoom = _float(zoom, 1.0)
+    out_w = _int(out_w, 0)
+    out_h = _int(out_h, 0)
+    face_w = _int(face_w, 0)
+
     if not file:
         raise ValueError("missing 'file' param (the image to view)")
     if action == "open":

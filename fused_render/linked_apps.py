@@ -1,7 +1,7 @@
 """Linked apps: a READ-ONLY registry of app folders living anywhere on disk.
 
-The workspace walk (`app_listing.two_level_apps`) only sees folders under
-``<workspace>/<tag>/<name>``. A *linked* app is any folder elsewhere on disk
+The workspace walk (`app_listing.workspace_apps`) only sees folders inside the
+workspace, at most three levels down. A *linked* app is any folder elsewhere on disk
 that the user once marked as an app: an entry in
 ``~/.fused-render/linked_apps.json`` mapping a name to an absolute folder path.
 

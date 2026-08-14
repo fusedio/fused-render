@@ -1,5 +1,6 @@
 # Dependencies are declared once for the whole folder in `pyproject.toml`
 # (SPEC PY-16) — `pypandoc-binary`, and see that file for why NOT `pypandoc`.
+# Only the `export` action imports it; compile/outline/bib/synctex are stdlib.
 """Backend for the latex template — a local, live-preview LaTeX viewer/editor.
 
 One bare `main(action=...)` dispatcher (the fused-render contract; see the note
@@ -36,6 +37,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 # NOTE: bare `def main` (no @fused.udf) is deliberate — under the built-in
@@ -46,7 +48,10 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from procutil import clean_env as _clean_env
+from procutil import file_lock as _file_lock
 from procutil import pid_alive as _pid_alive
+from procutil import spawn_python as _spawn_python
 
 CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/latex")
 TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/font cache
@@ -111,8 +116,13 @@ def _tectonic_install():
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
         if os.name == "nt" else {"start_new_session": True}
     )
+    # The installer warms the base package/font cache on a trivial doc as soon as
+    # the binary lands (writing WARM_DIR + `.warmed`), so the ~10-min one-time
+    # fetch happens up front instead of gating the user's first document — pass it
+    # the cache and warm-progress dirs it needs for that.
     child = subprocess.Popen(
-        [sys.executable, worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR],
+        [_spawn_python(), worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR,
+         TECTONIC_CACHE, WARM_DIR],
         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
     logf.close()
     stamp = os.path.join(INSTALL_DIR, "progress.json")
@@ -125,10 +135,13 @@ def _tectonic_install():
 
 
 # ------------------------------------------------------------- cache warm ---
-# A cold compile fetches the packages/fonts a document needs (~30 MB, ~2 min) —
-# far beyond the 60s runPython budget, so it can never finish inside a compile.
-# When that happens we compile the document in a detached worker (no timeout)
-# into its build dir; the page polls warm_status and, when it finishes, a plain
+# A cold compile fetches the base LaTeX format, packages and fonts a document
+# needs (~50 MB, ~485 files pulled one at a time — several minutes on a slow
+# link) — far beyond the 60s runPython budget, so it can never finish inside a
+# compile.
+# When that happens we compile the document in a detached worker (a generous
+# timeout backstop, not the compile budget) into its build dir; the page polls
+# warm_status and, when it finishes, a plain
 # recompile serves the produced PDF. `.warmed` records that the cache has been
 # populated once, so a fresh install's first compile skips the doomed inline
 # attempt and defers straight to the background compile.
@@ -158,14 +171,14 @@ def _warm_running() -> bool:
 
 def _ensure_warming(main_path: str):
     """Spawn the detached worker to compile `main_path` (fetching whatever
-    packages it needs, no timeout) into its build dir, unless one is already
-    running. The worker drops the `.warmed` marker on success."""
+    packages it needs, off the compile budget) into its build dir, unless one is
+    already running. The worker drops the `.warmed` marker on success."""
     bin_path = _tectonic_bin()
     if not bin_path or not main_path or _warm_running():
         return
     os.makedirs(WARM_DIR, exist_ok=True)
     worker = os.path.join(HERE, "warm_worker.py")
-    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR,
+    args = [_spawn_python(), worker, bin_path, TECTONIC_CACHE, WARM_DIR,
             os.path.abspath(main_path), _build_dir_for(main_path)]
     logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
     detach_kwargs = (
@@ -202,6 +215,65 @@ def _export_dir_for(main_path: str) -> str:
     d = os.path.join(EXPORTS, h)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+PANDOC_DIR = os.path.join(CACHE_ROOT, "_pandoc")   # export-only fallback venv (see _pandoc_convert)
+
+
+def _pandoc_venv_python() -> str:
+    """A private venv holding `pypandoc-binary`, built once with uv. Only reached
+    when `import pypandoc` fails — i.e. the built-in engine ran export on the app
+    interpreter (which has no folder venv, D174) rather than the fused engine's.
+    Concurrent first-exports serialize on a kernel `file_lock`; `deps_ok` is
+    written only after a clean install, so a half-built tree is rebuilt not
+    reused."""
+    vpy = os.path.join(PANDOC_DIR, "venv", "Scripts" if os.name == "nt" else "bin",
+                       "python.exe" if os.name == "nt" else "python")
+    marker = os.path.join(PANDOC_DIR, "deps_ok")
+    ready = lambda: os.path.exists(vpy) and os.path.exists(marker)
+    if ready():
+        return vpy
+    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+    if not (shutil.which("uv") or os.path.exists(uv)):
+        raise RuntimeError("Export needs the 'uv' tool to set up pandoc — install it "
+                           "from https://astral.sh/uv and try again.")
+    os.makedirs(PANDOC_DIR, exist_ok=True)
+    with _file_lock(os.path.join(PANDOC_DIR, "build.lock")):
+        if ready():   # another export finished the build while we waited
+            return vpy
+        env = _clean_env()   # a bundle-pointing PYTHON* would shadow the venv's pypandoc
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        if not os.path.exists(vpy):
+            subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
+                           check=True, capture_output=True, env=env, creationflags=flags)
+        subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
+                       check=True, capture_output=True, env=env, creationflags=flags)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("ok")
+    return vpy
+
+
+def _pandoc_convert(src, to, out, extra):
+    """Convert `src` -> `out` with pypandoc. Fast path: import it from the folder
+    venv (the fused engine's). Fallback: the built-in engine has no such venv, so
+    fetch pandoc into a private one and run the conversion there. Raises on
+    failure so the one caller reports it uniformly."""
+    try:
+        import pypandoc
+    except ImportError:
+        vpy = _pandoc_venv_python()
+        code = ("import json,sys,pypandoc;a=json.loads(sys.argv[1]);"
+                "pypandoc.convert_file(a['src'],a['to'],format='latex+raw_tex',"
+                "outputfile=a['out'],extra_args=a['extra'])")
+        args = json.dumps({"src": src, "to": to, "out": out, "extra": extra})
+        p = subprocess.run([vpy, "-c", code, args], capture_output=True, text=True,
+                           env=_clean_env(),
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        if p.returncode != 0 or not os.path.exists(out):
+            detail = (p.stderr or p.stdout or "").strip().splitlines()
+            raise RuntimeError(detail[-1] if detail else "pandoc conversion failed")
+        return
+    pypandoc.convert_file(src, to, format="latex+raw_tex", outputfile=out, extra_args=extra)
 
 
 # -------------------------------------------------------------- compile + log
@@ -344,6 +416,65 @@ def _newest_source_mtime(root):
     return newest
 
 
+# Tectonic prints one `note: downloading <file>` per package/font it fetches.
+_DL_RE = re.compile(r"downloading", re.I)
+
+
+def _should_defer_download(output: str, elapsed: float,
+                           min_files: int = 6, grace: float = 1.5) -> bool:
+    """True once a foreground compile is clearly a large cold package fetch (many
+    `downloading` notes) rather than a quick self-heal — so we can drop to the
+    background warmer in a couple of seconds instead of blocking the whole
+    runPython budget and then throwing the attempt away on a 28s timeout. A
+    pure typesetting run (a warm cache) downloads nothing and never trips this."""
+    return elapsed >= grace and len(_DL_RE.findall(output)) >= min_files
+
+
+def _run_tectonic(cmd, env, cwd, hard_timeout: int = 28):
+    """Run tectonic, watching its output for a large cold fetch. Returns
+    (deferred, completed): `deferred` True means we abandoned the foreground run
+    for the background warmer; otherwise `completed` is a CompletedProcess whose
+    .stdout/.stderr carry the run's output for the usual diagnostics parsing."""
+    p = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+        cwd=cwd, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    out_chunks, err_chunks = [], []
+
+    def _drain(stream, sink):
+        # readline(), NOT `for line in stream`: the file-iterator's read-ahead
+        # holds lines back until the child exits, defeating the early-defer.
+        try:
+            for line in iter(stream.readline, ""):
+                sink.append(line)
+        except (OSError, ValueError):
+            pass
+
+    threads = [threading.Thread(target=_drain, args=(p.stdout, out_chunks), daemon=True),
+               threading.Thread(target=_drain, args=(p.stderr, err_chunks), daemon=True)]
+    for t in threads:
+        t.start()
+    t0 = time.time()
+    deferred = False
+    while p.poll() is None:
+        elapsed = time.time() - t0
+        combined = "".join(out_chunks) + "".join(err_chunks)
+        if elapsed > hard_timeout or _should_defer_download(combined, elapsed):
+            deferred = True
+            p.kill()
+            break
+        time.sleep(0.2)
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    for t in threads:
+        t.join(timeout=1)
+    if deferred:
+        return True, None
+    return False, subprocess.CompletedProcess(
+        cmd, p.returncode or 0, stdout="".join(out_chunks), stderr="".join(err_chunks))
+
+
 def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: bool = False):
     main_path = os.path.abspath(main_path)
     if not os.path.exists(main_path):
@@ -358,7 +489,7 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
     if not _cache_warm():
         _ensure_warming(main_path)
         return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
-                "error": "Preparing the LaTeX packages (one-time, ~1–2 min). "
+                "error": "Preparing the LaTeX packages (one-time, several minutes). "
                          "Your document compiles automatically when they're ready."}
     build = _build_dir_for(main_path)
     stem = os.path.splitext(os.path.basename(main_path))[0]
@@ -395,18 +526,15 @@ def _compile(main_path: str, synctex: bool = True, force: bool = False, remote: 
     except OSError:
         pass
     t0 = time.time()
-    try:
-        # cwd = the .tex file's own directory, so relative \input/\includegraphics
-        # resolve the way the author expects. CREATE_NO_WINDOW: the server is
-        # windowless (pythonw), so a console subprocess would otherwise flash
-        # a terminal window per compile.
-        p = subprocess.run(cmd, capture_output=True, text=True, env=env,
-                           cwd=os.path.dirname(main_path), timeout=28,
-                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-    except subprocess.TimeoutExpired:
-        # Didn't fit the budget — almost always a cold fetch of this document's
-        # packages. Compile it in the background (no timeout) so the cache warms
-        # and the PDF lands in the build dir; the page polls and serves it.
+    # cwd = the .tex file's own directory, so relative \input/\includegraphics
+    # resolve the way the author expects. _run_tectonic bails to the background
+    # warmer the moment it sees a large cold fetch (rather than burning the whole
+    # 28s budget on it), and enforces the same 28s ceiling as a backstop.
+    deferred, p = _run_tectonic(cmd, env, cwd=os.path.dirname(main_path))
+    if deferred:
+        # A cold fetch of this document's packages — too big for the budget.
+        # Compile it in the background (off the budget) so the cache warms and the
+        # PDF lands in the build dir; the page polls and serves it.
         _ensure_warming(main_path)
         return {"ok": False, "warming": True, "progress": _warm_progress(), "errors": [],
                 "error": "Fetching the LaTeX packages this document needs (one-time). "
@@ -1016,7 +1144,6 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
             c = _compile(path)
             return {"path": c.get("pdf", ""), "ok": c.get("ok", False),
                     "missing_tectonic": c.get("missing_tectonic", False)}
-        import pypandoc
         exports = _export_dir_for(path)
         stem = os.path.splitext(os.path.basename(path))[0]
         to = {"docx": "docx", "html": "html", "md": "gfm",
@@ -1037,9 +1164,8 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
         elif to in ("docx", "odt"):
             extra += ["--toc"]
         try:
-            pypandoc.convert_file(path, to, format="latex+raw_tex",
-                                  outputfile=out, extra_args=extra)
-        except Exception as e:
+            _pandoc_convert(path, to, out, extra)
+        except Exception as e:  # noqa: BLE001 — surface the failure to the UI
             return {"error": f"export to {fmt} failed: {e}"}
         return {"path": out, "name": os.path.basename(out), "size": os.path.getsize(out)}
 
