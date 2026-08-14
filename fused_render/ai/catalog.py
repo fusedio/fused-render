@@ -68,6 +68,22 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "quantization is new, so measure it against a 4-bit model "
                     "you already trust.",
         },
+        # Qwen3.8 27B. The family ships two sizes and only this one is on the
+        # table: the other is 2.4T-A95B, which no laptop runs. Listed LAST and
+        # not as the default on purpose — it is the biggest download here by a
+        # factor of three, and it is the one entry whose runner support is
+        # unproven (see the note).
+        {
+            "id": "mlx-community/Qwen3.8-27B-4bit",
+            "label": "Qwen3.8 27B (MLX 4-bit)",
+            # Measured from the repo's blob sizes, not estimated.
+            "size_gb": 16.1,
+            "note": "Newest Qwen, and the strongest thing on this list — but it "
+                    "wants 32GB+; on a 16GB machine it will not fit. It is also "
+                    "a vision checkpoint (Qwen3_5ForConditionalGeneration), so "
+                    "the text-only mlx-lm loader here may refuse it. Try it if "
+                    "you have the RAM to spare; keep a 4-bit model you trust.",
+        },
     ],
     registry.IMAGE_GENERATION: [
         {
