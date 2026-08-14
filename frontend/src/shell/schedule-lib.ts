@@ -50,9 +50,13 @@ const STATE_LABELS: Record<ScheduledState, string> = {
 // and conflating them would report a dead turn as a clean send — so a sent row is
 // labelled by its turn once the turn has one.
 export function stateLabel(entry: ScheduledMessage): string {
-  // A cancelled OCCURRENCE was skipped, not killed: its schedule continues.
-  // Naming it "Cancelled" made people think they had stopped the whole job.
-  if (entry.state === "cancelled" && entry.template_id) return "Skipped";
+  // An OCCURRENCE that didn't run was SKIPPED, whoever decided it: a cancelled
+  // one is the user's skip, and a `missed` one is the loop's own skip-not-
+  // catch-up verdict (SCH-13 / D292 — the store's error text already says
+  // "skipped"). Painting the loop's as "Missed" filed routine behavior under
+  // faults.
+  if ((entry.state === "cancelled" || entry.state === "missed") && entry.template_id)
+    return "Skipped";
   if (entry.state === "sent") {
     if (entry.turn === "ok") return "Ran";
     if (entry.turn === "failed") return "Turn failed";
@@ -68,7 +72,8 @@ export function stateLabel(entry: ScheduledMessage): string {
 // Which CSS state class a row paints with. A failed turn reads as a failure even
 // though `state` is the cheerful half of the pair.
 export function stateTone(entry: ScheduledMessage): string {
-  if (entry.state === "cancelled" && entry.template_id) return "skipped";
+  if ((entry.state === "cancelled" || entry.state === "missed") && entry.template_id)
+    return "skipped";
   if (entry.state === "sent" && (entry.turn === "failed" || entry.turn === "unknown"))
     return "error";
   if (entry.state === "sent" && !entry.turn) return "sending";

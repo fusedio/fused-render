@@ -282,9 +282,17 @@ function EntryCard({
 export default function Scheduled() {
   const [state, setState] = useState<ScheduleResult | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // localStorage can THROW (private mode, locked-down webviews), and this read
+  // runs during first render — unguarded it took the whole page down for a
+  // preference. Same posture as the Inbox's layout memory: storage failing
+  // costs the memory, never the page.
   const [view, setView] = useState<"calendar" | "list" | "board">(() => {
-    const saved = localStorage.getItem(VIEW_KEY);
-    return saved === "list" || saved === "board" ? saved : "calendar";
+    try {
+      const saved = localStorage.getItem(VIEW_KEY);
+      return saved === "list" || saved === "board" ? saved : "calendar";
+    } catch {
+      return "calendar";
+    }
   });
   // null = closed; a Date = open, prefilled (from a calendar slot click);
   // "blank" = open from the New job button, prefilled with "in an hour".
@@ -337,7 +345,11 @@ export default function Scheduled() {
 
   const pickView = (v: "calendar" | "list" | "board") => {
     setView(v);
-    localStorage.setItem(VIEW_KEY, v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // A blocked store forgets the choice; the switch itself still happens.
+    }
   };
 
   const entries = state?.entries ?? [];

@@ -98,7 +98,7 @@ describe("calendarEvents", () => {
 });
 
 // ---- boardColumn: which Board column a task sits in --------------------------
-import { boardColumn } from "./schedule-lib";
+import { boardColumn, stateLabel as stateLabelOf, stateTone as stateToneOf } from "./schedule-lib";
 
 describe("boardColumn", () => {
   it("routes by the same collapse the pill shows", () => {
@@ -113,5 +113,19 @@ describe("boardColumn", () => {
     expect(boardColumn(entry({ state: "error" }))).toBe("attention");
     expect(boardColumn(entry({ state: "cancelled" }))).toBe("cancelled");
     expect(boardColumn(entry({ state: "cancelled", template_id: "t" }))).toBe("cancelled");
+  });
+});
+
+// ---- the loop's own skip verdict reads as Skipped, not a fault ---------------
+describe("missed recurring runs", () => {
+  it("label, tone, and board column all say skipped", () => {
+    const missedOcc = entry({ state: "missed", template_id: "t1" });
+    expect(stateLabelOf(missedOcc)).toBe("Skipped");
+    expect(stateToneOf(missedOcc)).toBe("skipped");
+    expect(boardColumn(missedOcc)).toBe("cancelled");
+    // A missed ONE-SHOT stays a fault — the day-long catch-up genuinely failed.
+    const missedOneShot = entry({ state: "missed" });
+    expect(stateLabelOf(missedOneShot)).toBe("Missed");
+    expect(boardColumn(missedOneShot)).toBe("attention");
   });
 });
