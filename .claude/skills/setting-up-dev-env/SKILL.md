@@ -42,7 +42,7 @@ Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m 
 |------|-----|
 | Python 3.12 | **pinned, not a default** (D214): the server passes its own interpreter to `uv sync` as the base for every project venv, so this version decides which wheels those venvs can resolve. A 3.14 venv made project venvs cp314, and a folder declaring `tensorflow` (no cp314 wheels) was an unresolvable dead end. 3.12 is what all three installers already ship, so a dev checkout matches the shipped app. `scripts/dev.sh` enforces it and rebuilds a `.venv` that is on anything else |
 | `dev` extra | pytest + httpx (backs TestClient) |
-| `bundled` extra | duckdb, rasterio, zarr, pandas, geopandas… (templates + daemons) |
+| `bundled` extra | duckdb, pandas, numpy, pyarrow, pillow… (templates + daemons). NOT the geo/PDF/plotting stack any more (D234) — `map`, `vector`, `pdf_studio` and friends declare those in their own folder `pyproject.toml`, and the server installs them into a project venv on first render |
 | `fused` extra | compute-engine wheel for `/api/run` |
 | frontend build | `create_app()` refuses to start without `shell-dist/` |
 | seeded `pip` | `uv venv` makes a pip-less venv; `test_deploy.py`'s install/one-click-installable tests exercise the *real* `_pip_available()` against this interpreter, so they fail without it |

@@ -435,6 +435,100 @@ def test_excluded_distributions_are_not_forced_into_the_bundle():
             )
 
 
+def test_the_learn_page_only_promises_what_the_app_ships():
+    """The Learn page's library table is a promise; keep it true (D177).
+
+    `core_apps/learn/check_libs.py` is a hand-written mirror of `[bundled]` —
+    the shape that always diverges — and it is read by USERS deciding what they
+    may import. Divergence here does not break a build; it tells someone
+    `polars` is available and then fails their page in the packaged app, where
+    `pip install` is not a thing they can do (D176).
+
+    Only one direction is asserted. Every name promised must be shipped; the
+    reverse is a curation choice, since the app's own plumbing (fastapi,
+    packaging, tomli, pyobjc, the engine itself) is not something a page should
+    be told to import.
+    """
+    path = os.path.join(_REPO, "core_apps", "learn", "check_libs.py")
+    spec = importlib.util.spec_from_file_location("_learn_check_libs", path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    promised = {_norm(n) for _group, names in module.SUPPORTED for n in names}
+    lying = sorted(promised - _macos_dists())
+    assert not lying, (
+        f"core_apps/learn/check_libs.py tells users they can import {lying}, "
+        "which the app does not ship. They render as '—' in the live table and "
+        "as ModuleNotFoundError in their page. Drop them from SUPPORTED (and "
+        "from the static table in core_apps/learn/index.html), or put them back "
+        "in `[bundled]`."
+    )
+
+
+def _learn_groups() -> list[tuple[str, list[str]]]:
+    """`core_apps/learn/check_libs.py`'s SUPPORTED, imported."""
+    path = os.path.join(_REPO, "core_apps", "learn", "check_libs.py")
+    spec = importlib.util.spec_from_file_location("_learn_check_libs", path)
+    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return list(module.SUPPORTED)
+
+
+@pytest.mark.parametrize(
+    "relpath,pattern",
+    [
+        # The Learn page's static table — what a user sees before the live
+        # versions arrive, and all they ever see outside the app.
+        (
+            os.path.join("core_apps", "learn", "index.html"),
+            r'<tr><td class="lg-h">([^<]+)</td><td>(.*?)</td></tr>',
+        ),
+        # The authoring skill's list — what an agent writing a page reads.
+        (
+            os.path.join("skills", "fused-render-authoring", "SKILL.md"),
+            r"(?m)^- \*\*([^:*]+):\*\* (.*)$",
+        ),
+    ],
+)
+def test_the_documented_library_list_matches_check_libs(relpath, pattern):
+    """Three copies of one promise; pin them to each other (D177).
+
+    `check_libs.py`'s SUPPORTED is the source of truth — it is the only one that
+    RUNS, and the previous test pins it to what the bundle really ships. The
+    Learn page's static table and the authoring skill's bullet list restate it
+    for a human and for an agent respectively, which is exactly the shape that
+    rotted here: `polars`, `scipy`, `matplotlib`, `geopandas` and the rest were
+    advertised in all three long after anyone would have wanted to check.
+
+    Deriving them at build time was considered and rejected: the packaged app
+    ships no `pyproject.toml`, the skill is read as plain Markdown outside any
+    build, and `importlib.metadata` cannot tell a promised library from a
+    transitive one. So this is D177's third rung — the copies stay, and their
+    divergence is a test failure.
+    """
+    import html as _html
+    import re
+
+    with open(os.path.join(_REPO, relpath), encoding="utf-8") as f:
+        text = f.read()
+    found = [
+        (_html.unescape(group).strip(),
+         [_norm(n) for n in re.findall(r"<code>([^<]+)</code>|`([^`]+)`", body)
+          for n in [n[0] or n[1]]])
+        for group, body in re.findall(pattern, text)
+    ]
+    expected = [(g, [_norm(n) for n in names]) for g, names in _learn_groups()]
+    assert found == expected, (
+        f"{relpath}'s library list has drifted from core_apps/learn/check_libs.py's "
+        f"SUPPORTED, which is the one that actually runs.\n  doc:       {found}\n"
+        f"  check_libs: {expected}\n"
+        "Update the doc (or SUPPORTED, if the app's contents changed). Users and "
+        "agents read these lists to decide what they may import."
+    )
+
+
 # ------------------------------------------------- templates vs the real bundle
 
 

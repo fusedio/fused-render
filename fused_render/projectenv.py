@@ -41,8 +41,8 @@ to rebuild the environment. mtimes are wrong here for a different reason:
 byte-identical dependencies on every upgrade. See `state_digest`.
 
 This module is consulted on every `/api/run`, so it imports nothing from
-`fused.*` — pulling the engine in would cost a geopandas/pyproj import on the
-request path.
+`fused.*` — pulling the engine in would cost its whole import tree (pandas and
+friends, historically geopandas/pyproj too) on the request path.
 """
 import hashlib
 import json
@@ -281,7 +281,7 @@ def has_project_env(project_dir: str) -> bool:
     The last one is not a nicety. An empty declaration — a bare `uv init`
     scaffold, or a manifest added only for `[tool.*]` config that happens to
     carry `[project]` — would otherwise take the script OFF the app interpreter
-    and onto an empty venv: no numpy, no pandas, no duckdb, no geopandas, so a
+    and onto an empty venv: no numpy, no pandas, no duckdb, no pillow, so a
     script that worked yesterday fails on its first import. The pre-flight would
     also render the empty list as "…are not installed yet: . They need a one-time
     download." Nothing to install means PY-17: run on the app's own interpreter,
