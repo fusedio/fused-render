@@ -6,7 +6,7 @@ to introspect them — confirmed there's no existing wiring in this repo that
 installs a template's own pyproject.toml deps into the pytest env, so this is
 self-documented rather than added to CI):
 
-    uv run --with joblib --with scikit-learn --with xgboost --with lightgbm \
+    uv run --with joblib --with scikit-learn --with xgboost --with lightgbm --with pandas \
         pytest fused_render/templates/joblib_model/tests/test_reader.py -v
 """
 import io
@@ -132,6 +132,69 @@ def test_pipeline_surfaces_the_inner_estimators_it_wraps(tmp_path):
     types = {e["type"] for e in out["estimators"]}
     assert types == {"Pipeline", "StandardScaler", "RandomForestClassifier"}
     assert out["trees"]  # the wrapped RandomForestClassifier's trees surfaced
+
+
+def test_pipeline_nested_in_a_dict_is_still_discovered(tmp_path):
+    # joblib.dump({"model": pipe}) is the realistic layout (matches _make_bundle's
+    # own shape) -- one extra depth level must not exhaust the traversal budget.
+    from sklearn.pipeline import Pipeline
+
+    rng = np.random.RandomState(0)
+    x = rng.rand(100, 4)
+    y = rng.randint(0, 2, size=100)
+    pipe = Pipeline([
+        ("scale", StandardScaler()),
+        ("clf", RandomForestClassifier(n_estimators=3, max_depth=2, random_state=0)),
+    ]).fit(x, y)
+    path = _dump({"model": pipe}, tmp_path)
+
+    out = reader.main(file=path)
+    assert out["scan"]["verdict"] == "safe"
+    types = {e["type"] for e in out["estimators"]}
+    assert types == {"Pipeline", "StandardScaler", "RandomForestClassifier"}
+    assert out["trees"]
+
+
+def test_random_forest_members_are_not_treated_as_separate_models(tmp_path):
+    # Each DecisionTreeClassifier inside estimators_ also has get_params(); walking
+    # into it as if it were a nested composite estimator would duplicate the forest
+    # once per tree instead of showing the forest as a single ensemble.
+    rng = np.random.RandomState(1)
+    x = rng.rand(100, 4)
+    y = rng.randint(0, 2, size=100)
+    clf = RandomForestClassifier(n_estimators=5, max_depth=2, random_state=0).fit(x, y)
+    path = _dump(clf, tmp_path)
+
+    out = reader.main(file=path)
+    assert out["scan"]["verdict"] == "safe"
+    assert [e["type"] for e in out["estimators"]] == ["RandomForestClassifier"]
+    assert len(out["trees"]) == 1
+
+
+def test_pandas_dataframe_bundle_is_safe(tmp_path):
+    # pandas' own Block/Index reconstruction is via module-level functions
+    # (_unpickle_block, _new_Index), not classes -- any DataFrame/Index in a bundle
+    # used to be misreported as "blocked".
+    pd = pytest.importorskip("pandas")
+    rng = np.random.RandomState(2)
+    df = pd.DataFrame({"a": rng.rand(20), "b": pd.Categorical(["x", "y"] * 10)})
+    path = _dump({"data": df, "cols": df.columns}, tmp_path)
+
+    out = reader.main(file=path)
+    assert out["scan"]["verdict"] == "safe"
+
+
+def test_function_transformer_wrapping_a_trusted_ufunc_is_safe(tmp_path):
+    # A numpy ufunc reference is only ever STORED as an attribute here, never
+    # called -- treating every non-class reference as unsafe over-blocked this.
+    from sklearn.preprocessing import FunctionTransformer
+
+    rng = np.random.RandomState(3)
+    ft = FunctionTransformer(np.log1p).fit(rng.rand(20, 2))
+    path = _dump(ft, tmp_path)
+
+    out = reader.main(file=path)
+    assert out["scan"]["verdict"] == "safe"
 
 
 def test_array_with_huge_declared_shape_is_blocked_before_allocating(tmp_path):

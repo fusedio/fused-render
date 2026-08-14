@@ -34,10 +34,11 @@ _PREFIX_ALLOW = (
     "pandas.", "joblib.",
 )
 
-# A prefix-trusted FUNCTION (unlike a class) is called directly with
-# attacker-chosen arguments the moment REDUCE runs (e.g. joblib.load itself
-# would re-enter an unrestricted load) — so only these known reconstruction
-# helpers may resolve as functions; see find_class.
+# A prefix-trusted FUNCTION (unlike a class) is DANGEROUS ONLY once REDUCE
+# actually calls it with attacker-chosen args (e.g. joblib.load would re-enter
+# an unrestricted load) -- merely resolving/storing a reference is harmless, so
+# find_class allows that freely and _RestrictedUnpickler.load_reduce is the
+# real gate. These are the known-safe functions real pickles need to CALL.
 _PREFIX_FUNCTION_ALLOW = {
     ("numpy.core.multiarray", "_reconstruct"),
     ("numpy.core.multiarray", "scalar"),
@@ -48,6 +49,10 @@ _PREFIX_FUNCTION_ALLOW = {
     ("numpy.random._pickle", "__randomstate_ctor"),
     ("numpy.random._pickle", "__bit_generator_ctor"),
     ("numpy.random._pickle", "__generator_ctor"),
+    ("pandas._libs.internals", "_unpickle_block"),
+    ("pandas.core.indexes.base", "_new_Index"),
+    ("pandas.core.internals.blocks", "new_block"),
+    ("pandas.core.series", "_new_Series"),
 }
 
 
@@ -161,6 +166,13 @@ class _RestrictedUnpickler(joblib.numpy_pickle.NumpyUnpickler):
         self._seen = set()
         self.blocked = []
         self.missing = set()
+        # A prefix-trusted name may resolve to a real, uncalled reference (e.g. a
+        # FunctionTransformer merely storing numpy.log1p as an attribute) -- that's
+        # harmless, so find_class doesn't block it. What IS dangerous is REDUCE
+        # actually CALLING an unvetted function with attacker-chosen args (e.g.
+        # joblib.load). load_reduce below is the real gate for that; this maps
+        # id(resolved) -> (module, name) for anything it must refuse to call.
+        self._unsafe_to_call = {}
 
     def find_class(self, module, name):
         key = (module, name)
@@ -191,11 +203,29 @@ class _RestrictedUnpickler(joblib.numpy_pickle.NumpyUnpickler):
         prefix_trusted = exact is None or name not in exact
         is_safe_function = key in _PREFIX_FUNCTION_ALLOW or _is_pyx_unpickle_helper(name)
         if prefix_trusted and not isinstance(resolved, type) and not is_safe_function:
-            record(False)
-            self.blocked.append({"module": module, "name": name})
-            return _Stub
+            self._unsafe_to_call[id(resolved)] = key
         record(True)
         return resolved
+
+    def load_reduce(self):
+        # Mirrors pickle._Unpickler.load_reduce exactly, except a call target
+        # find_class flagged unsafe-to-call is never actually invoked.
+        args = self.stack.pop()
+        func = self.stack[-1]
+        origin = self._unsafe_to_call.get(id(func))
+        if origin is not None:
+            module, name = origin
+            for ref in self.refs:
+                if ref["module"] == module and ref["name"] == name:
+                    ref["allowed"] = False
+                    break
+            self.blocked.append({"module": module, "name": name})
+            self.stack[-1] = _Stub()
+        else:
+            self.stack[-1] = func(*args)
+
+    dispatch = dict(joblib.numpy_pickle.NumpyUnpickler.dispatch)
+    dispatch[pickle.REDUCE[0]] = load_reduce
 
     def persistent_load(self, pid):
         raise pickle.UnpicklingError(f"unsupported persistent reference: {pid!r}")
@@ -332,7 +362,10 @@ def _is_ndarray(obj) -> bool:
     return type(obj).__module__.startswith("numpy") and type(obj).__name__ == "ndarray"
 
 
-def _find_estimators(obj, path="", depth=0, max_depth=4, seen=None):
+_FIND_ESTIMATORS_MAX_DEPTH = 12  # a dict-wrapped Pipeline alone needs dict->Pipeline->steps->tuple->estimator
+
+
+def _find_estimators(obj, path="", depth=0, max_depth=_FIND_ESTIMATORS_MAX_DEPTH, seen=None):
     """All objects with a scikit-learn-style get_params(), tagged with their path."""
     if seen is None:
         seen = set()
@@ -353,9 +386,11 @@ def _find_estimators(obj, path="", depth=0, max_depth=4, seen=None):
     elif isinstance(obj, (list, tuple)):
         for index, value in enumerate(obj[:50]):
             found.extend(_find_estimators(value, f"{path}[{index}]", depth + 1, max_depth, seen))
-    elif is_estimator and hasattr(obj, "__dict__"):
-        # Composite estimators (Pipeline, VotingClassifier, ...) hold sub-estimators
-        # as plain attributes, not get_params() values.
+    elif is_estimator and _tree_kind(obj) is None and hasattr(obj, "__dict__"):
+        # Composite estimators (Pipeline, VotingClassifier, ...) hold sub-estimators as
+        # plain attributes. Skipped once _tree_kind recognises obj as an ensemble itself
+        # (RandomForest, Bagging, ...): its members are already covered by the tree
+        # viewer, not independent top-level models.
         for key, value in list(vars(obj).items())[:50]:
             child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
             found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
