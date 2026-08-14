@@ -22,6 +22,15 @@ def spawn_python():
     return exe
 
 
+def clean_env():
+    """os.environ minus PYTHONHOME/PYTHONPATH, for spawning a venv interpreter:
+    a bundle-pointing PYTHONPATH/PYTHONHOME (set when the packaged app launched)
+    would otherwise leak the app's stdlib/site into the child and shadow the
+    venv's own packages. The venv python resolves its stdlib/site from its own
+    location (pyvenv.cfg), so dropping these is safe."""
+    return {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
+
+
 def pid_alive(pid):
     # os.kill(pid, 0) is the POSIX no-op liveness check, but on Windows signal 0
     # aliases CTRL_C_EVENT and doesn't reliably error on a dead pid — check the

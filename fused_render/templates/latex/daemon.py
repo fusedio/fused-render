@@ -37,7 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import engine  # noqa: E402 — the existing main(action=…) dispatcher, reused verbatim
-from procutil import spawn_python  # noqa: E402 — engine put templates/shared on the path
+from procutil import clean_env, spawn_python  # noqa: E402 — engine put templates/shared on the path
 
 STATE = os.path.join(engine.CACHE_ROOT, "daemon.json")
 IDLE_EXIT_S = 30 * 60
@@ -136,7 +136,8 @@ def main():
               if os.name == "nt" else {"start_new_session": True})
     with open(log, "ab") as lf:
         subprocess.Popen([spawn_python(), os.path.join(HERE, "daemon.py"), "--serve"],
-                         stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, cwd=HERE, **detach)
+                         stdout=lf, stderr=lf, stdin=subprocess.DEVNULL, cwd=HERE,
+                         env=clean_env(), **detach)
     deadline = time.time() + _SPAWN_WAIT_S
     while time.time() < deadline:
         st = _read_state()
