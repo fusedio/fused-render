@@ -12,15 +12,7 @@ next listing, and a third-level app files under the same tag as its second-level
 neighbours. An app's entry is its
 ``index.html``, else the first non-hidden direct-child ``.html`` in name order
 — the shared entry rule (D269), so the card, the preview pane and the templates
-all resolve one folder to one page. ``entry_html: null`` still occurs in this
-payload, but only for a LINKED app now (linked_apps.py): the registry lists a
-registered folder whether or not it has a page.
-
-Alongside the workspace walk, the listing merges in *linked apps*: folders
-anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
-under the reserved virtual tag ``linked`` (fused_render/linked_apps.py — a
-registry, deliberately not a symlink dir; see that module for why). Nothing
-registers one any more — see the note above the recents section.
+all resolve one folder to one page.
 
 The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
@@ -58,7 +50,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing, linked_apps
+from fused_render import app_listing
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
 
@@ -81,29 +73,9 @@ _APP_STARTER_DIR = os.path.join(
 
 @router.get("/api/apps")
 def api_apps():
-    # "linked" is the registry's reserved tag, but nothing stops a user from
-    # creating a real <workspace>/linked/<name> folder. The two cards would
-    # then be two entries with the same (tag, name) identity — which is the key
-    # the recents store and the link-status probe speak — so the workspace twin
-    # is dropped rather than listed as an indistinguishable duplicate. (Their
-    # CARDS would still open different folders correctly: a card opens its own
-    # `path`.) Non-colliding workspace "linked" apps keep listing.
-    registry = linked_apps.linked_apps()
-    taken = {a["name"] for a in registry}
-    workspace = [
-        a for a in app_listing.workspace_apps(fused_dir())
-        if not (a["tag"] == linked_apps.LINKED_TAG and a["name"] in taken)
-    ]
-    apps = workspace + registry
+    apps = list(app_listing.workspace_apps(fused_dir()))
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
-
-
-# Linked apps: the routes that REGISTERED one (GET /api/apps/link-status,
-# POST /api/apps/link, /api/apps/unlink) are gone with the app concept they
-# served (D264 — "Add as app" was their only caller). The registry is read-only
-# now: `GET /api/apps` still merges whatever an earlier version registered, so
-# nobody's cards disappear, and nothing can add to it.
 
 
 # ------------------------------------------------------------------- recents
@@ -143,11 +115,7 @@ def _read_app_recents() -> dict:
 
 def _app_folder_exists(tag: str, name: str) -> bool:
     """Does the (tag, name) app currently resolve to a folder on disk?
-    Workspace apps resolve under <workspace>/<tag>/<name>; a "linked" tag
-    resolves through the registry instead."""
-    if tag == linked_apps.LINKED_TAG:
-        path = linked_apps.linked_path(name)
-        return path is not None and os.path.isdir(path)
+    Apps resolve under <workspace>/<tag>/<name>."""
     return os.path.isdir(os.path.join(fused_dir(), tag, name))
 
 

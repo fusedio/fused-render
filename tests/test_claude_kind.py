@@ -23,7 +23,7 @@ Three things are worth pinning down, and each of them broke once:
 
 * the FILE branch of the gate must test `isfile`, not `not isdir`. The loose form
   reads every path that does not exist as "a file", which is how a nonexistent
-  child of a linked-app folder got a `True` out of a gate.
+  child of a registered folder once got a `True` out of a gate.
 * the pane must resolve the file's template the way the SHELL does — the first
   non-`conditional` entry from stat — rather than from a per-extension table,
   which drifts from the registry the moment a binding changes and ignores a user
@@ -97,7 +97,7 @@ def test_an_empty_path_is_refused(workspace):
 
 def test_every_directory_is_offered_the_chat(tmp_path, workspace):
     """The directory rule is now "any directory". It used to be exactly
-    <workspace>/<tag>/<project>, plus a registered linked app — a narrowing that
+    <workspace>/<tag>/<project> — a narrowing that
     existed only because an ordinary folder's chat was the separate `claude` mode,
     whose pane had no app entry to render. `claude` is deleted, so narrowing here
     would leave an ordinary folder with no chat at all — the capability the delete
@@ -255,11 +255,12 @@ def test_the_dead_framing_params_are_gone_from_their_consumers_too():
     read and the guard rather than keeping an untestable tolerance alive.
 
     `?preview=true|false` has since gone the same way, for the same reason and
-    one better: the pane's visibility is no longer a state at all. The listing
-    splits when its container is wide enough to be worth splitting
-    (`listing/pane-math.shouldShowPane`), so nothing writes the param, nothing
-    carries it across a folder hop, and nothing may read it — a stale one in an
-    old bookmark must not resurrect a toggle that does not exist.
+    one better: the pane's visibility is no longer a state at all. It became a
+    measurement of the container's width, and then not even that — D282 deleted
+    the 700px threshold too, so a listing that has a pane simply has one. Nothing
+    writes the param, nothing carries it across a folder hop, and nothing may read
+    it — a stale one in an old bookmark must not resurrect a toggle that does not
+    exist.
     """
     with open(os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx"),
               encoding="utf-8") as f:
@@ -388,7 +389,7 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     # renderAnn draws THREE things and they answer differently now: the pins need a
     # layer (null bindings when the host shows nothing marked, and the loop is
     # skipped), the annotation chips are the payload of a message this chat can
-    # still send, and the ATTACHED PICTURES (D280) belong to no pane at all — a
+    # still send, and the ATTACHED PICTURES (D287) belong to no pane at all — a
     # screenshot pasted or dropped into a folder chat with no preview is still an
     # attachment, so the no-pane exit draws those and only those.
     render = code[code.index("function renderAnn() {"):]

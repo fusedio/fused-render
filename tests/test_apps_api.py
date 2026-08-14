@@ -237,9 +237,8 @@ def test_entry_is_reported_alongside_entry_html(client, workspace):
     is a renderable page". They coincide for a workspace app.
 
     A page-less folder is no longer listed at all, so the walk has no null-entry
-    card to assert here; the null-under-both-keys shape is `app_dict`'s and is
-    still reachable through the linked-app registry, which is where it is now
-    covered (tests/test_linked_apps.py).
+    card to assert here; the null-under-both-keys shape remains `app_dict`'s
+    contract (it accepts `entry=None`) with no listing caller today.
     """
     _app_dir(workspace, "withentry")
     (workspace / "local" / "bare").mkdir()
@@ -383,9 +382,8 @@ def test_updated_at_is_a_float(client, workspace):
 
     This used to stage a page-less folder, to pin that `updated_at` is filled in
     even with no entry. That folder is no longer an app (a page is what makes one,
-    at any depth), so the entry-less half of the claim moved to where an
-    entry-less app still exists: the linked-app registry, in
-    tests/test_linked_apps.py::test_a_linked_folder_resolves_its_entry_on_the_shared_rule.
+    at any depth), so the entry-less half of the claim has no listable app left
+    to carry it and is dropped.
     """
     _app_dir(workspace, "stamped")
     apps = client.get("/api/apps").json()["apps"]

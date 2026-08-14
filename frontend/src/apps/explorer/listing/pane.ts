@@ -1,41 +1,43 @@
-// The preview pane (right-hand split): the usePreviewPane hook that decides
-// whether the pane is there at all and owns the divider drag.
+// The preview pane (right-hand split): the usePreviewPane hook that owns the
+// pane's width and its divider drag.
 //
-// VISIBILITY IS NOT A CHOICE ANY MORE. It used to be: a toggle button, a
-// `?preview=true|false` URL param that rode along on directory navigation, and
-// a `pane=0` viewstate key so a folder remembered being closed. Three places to
-// keep in agreement for one bit, and the bit was almost always a proxy for a
-// question the app can answer itself — "is there room for two panes here?".
-// So the pane now appears purely from the width of the split container
-// (pane-math's shouldShowPane), measured with a ResizeObserver. Measured, not
-// read off `window.innerWidth`: the same Listing renders full-window, inside a
-// chrome-free embed, and inside another view's split, and only the container
-// knows which.
+// **NO CONDITIONAL LAYOUT LOGIC LIVES HERE ANY MORE** (D282, the owner's "remove
+// any complicated breakpoint logic"). Two generations of that are gone. First a
+// user-facing on/off — a toggle button, a `?preview=true|false` URL param that
+// rode along on directory navigation, and a `pane=0` viewstate key so a folder
+// remembered being closed: three places to keep in agreement for one bit. Then the
+// thing that replaced it, a **700px width gate** on the split container measured
+// with a `ResizeObserver`, which decided whether there was a pane at all, plus
+// 30/50/70 width tiers stepping on two more breakpoints.
+//
+// Now: the pane is there whenever this Listing is one that has a pane (the
+// caller's `enabled` — not embedded, not a snapshot, not a panel pane), and it
+// takes 30% of its container, the same share the file view's sidebar takes. There
+// is no measurement, no threshold and no tier; a narrow window gets a narrow
+// listing beside a floored pane, and `_side=off` is the way out of it, exactly as
+// on a wide one.
 //
 // What SURVIVES from the old model is the width, and only the width: a dragged
 // split is a real preference, unlike an on/off the layout can infer. But it is
 // no longer remembered PER FOLDER, and no longer stored at all. It used to be a
 // `panew` key in the per-path viewstate map, which meant the divider jumped on
 // ordinary navigation — out of a folder you had dragged, into one you had not,
-// and the pane snapped between your width and the breakpoint default. There is
+// and the pane snapped between your width and the default. There is
 // now one width for the session, in memory, in pane-store.ts (which is where
 // the reasoning about that lives, including why a REFRESH deliberately clears
 // it). Off the URL for the same reason as before: one machine's split isn't
 // something a shared link should impose.
 //
 // Width is a FRACTION of the split container, rendered as a percentage
-// flex-basis — so a dragged pane keeps its proportion when the window resizes,
-// which a resolved pixel width never did. UNDRAGGED, the fraction is not fixed
-// at all: it steps with the container's width (pane-math's defaultPaneFrac,
-// 30/50/70), so the same folder gives the preview a third of a small window and
-// most of a wide one without anyone touching the divider. The pixel floors
-// survive as
-// CSS min-widths (.listing-pane-slot / .listing-main) and as the drag's clamp.
-// The arithmetic itself is pure and lives in listing/pane-math.ts.
+// flex-basis — so a pane keeps its proportion when the window resizes, which a
+// resolved pixel width never did. UNDRAGGED it is `PANE_DEFAULT_FRAC`, a constant.
+// The pixel floors survive as CSS min-widths (.listing-pane-slot /
+// .listing-main) and as the drag's clamp; those are clamps, not breakpoints. The
+// arithmetic itself is pure and lives in listing/pane-math.ts.
 import { useLayoutEffect, useRef, useState } from "react";
 import { purgeViewStateParams } from "@platform/lib/viewstate";
 import { getPaneFrac, setPaneFrac } from "@apps/explorer/listing/pane-store";
-import { defaultPaneFrac, dragPaneFrac, shouldShowPane } from "@apps/explorer/listing/pane-math";
+import { companionFrac, dragPaneFrac } from "@apps/explorer/listing/pane-math";
 
 // THE ONE-TIME PURGE of the per-folder width, run at module init — which is the
 // first time anything in the app cares about a pane at all, and the only place
@@ -58,20 +60,21 @@ import { defaultPaneFrac, dragPaneFrac, shouldShowPane } from "@apps/explorer/li
 // its params instead of clearing the map.
 purgeViewStateParams("panew", "pane");
 
-// Does the element this ref points at have room for the split? The one place
-// the measurement happens, shared by the listing (its split container) and by
-// Preview (the body the embed's browse chip pins into, which is the same box).
+// The split container's measured width — back with D283, for ONE question: is this
+// container small (`companionFrac`, 1000px and under → the companion takes half
+// instead of a third). Measured on the CONTAINER and never read off
+// `window.innerWidth`, because the same Listing renders full-window, inside a
+// chrome-free embed and inside another view's split, and only the container knows
+// which — an embedded pane in a small frame is small.
 //
-// useLayoutEffect, not useEffect: the first measurement lands BEFORE paint, so
-// a wide container never shows one frame of unsplit listing and then jumps.
-// The observed element is the container that is always rendered — never the
-// pane itself — so showing or hiding the pane cannot feed back into the
-// measurement and oscillate.
-// The measured width of that container, 0 until the first measurement lands.
-// The pane needs the NUMBER and not just the verdict, because the undragged
-// split's fraction steps with the width too (pane-math's defaultPaneFrac) —
-// same observer, so the visibility and the proportion can never be reading two
-// different widths.
+// `useLayoutEffect`, so the first measurement lands before paint and a wide
+// container never shows one frame at half width and then jumps. The observed
+// element is the container that is always rendered — never the pane itself — so the
+// pane's own width cannot feed back into the measurement and oscillate.
+//
+// *D282 deleted this, and it deleted `useSplitIsWide` with it — the 700px verdict
+// that decided whether there was a pane at all, plus the 30/50/70 tiers. Neither
+// comes back: what returns is the number, read for one boolean.*
 export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
   const [w, setW] = useState(0);
   useLayoutEffect(() => {
@@ -89,34 +92,32 @@ export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
   return w;
 }
 
-// The verdict alone, for the callers that only ask "is there room?" (Preview's
-// browse chip). Same measurement, one policy — pane-math's shouldShowPane.
-export function useSplitIsWide(ref: React.RefObject<HTMLElement>): boolean {
-  return shouldShowPane(useSplitWidth(ref));
-}
-
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
 // listing is, it never grows a pane of its own — no nesting.
 export function usePreviewPane(enabled = true) {
   // The fraction the USER chose — dragged somewhere in this session, on this
   // folder or another (pane-store). `null` is not a missing number but a real
-  // state, "no choice yet": the pane then FOLLOWS THE WINDOW through
-  // defaultPaneFrac's breakpoints, and keeps following it as the window is
-  // resized. That is why the default is not seeded into state — held as a
-  // number it would freeze at whatever width the listing happened to open on,
-  // and (having become indistinguishable from a dragged one) would be recorded
-  // as a choice.
+  // state, "no choice yet", and it is still worth distinguishing now that the
+  // alternative is a constant: `setPaneFrac` must record a width only when a drag
+  // produced one, so that a refresh returns everyone to the plain 30% rather than
+  // to a number that was never chosen.
   //
   // Seeded from the store rather than mirrored from it: the store is the source
   // of truth ACROSS mounts (this hook remounts on every navigation and reads it
   // again), while within a mount the React state is what re-renders. Nothing
   // else writes the store, so the two cannot drift.
   const [chosen, setChosen] = useState<number | null>(getPaneFrac);
+  // Still a ref, and still the split container: the DRAG reads its rect directly
+  // (below) to turn a cursor position into a fraction. What went is the standing
+  // measurement of it.
   const splitRef = useRef<HTMLDivElement>(null);
+  // `on` is exactly the caller's own question — is this a Listing that has a pane at
+  // all — and no width enters into it. That is the half D282 settled and D283 does
+  // not reopen: the measurement below decides the pane's SHARE, never its existence.
+  const on = enabled;
   const width = useSplitWidth(splitRef);
-  const on = enabled && shouldShowPane(width);
-  const frac = chosen ?? defaultPaneFrac(width);
+  const frac = chosen ?? companionFrac(width);
 
   // The divider drag: pointer capture keeps the drag alive when the cursor
   // crosses into the pane's iframe (which would otherwise swallow mousemove).
@@ -127,8 +128,8 @@ export function usePreviewPane(enabled = true) {
     divider.classList.add("dragging");
     // The pre-drag fraction, captured once: nothing else can change it while
     // this drag owns the pointer. It is the RENDERED one, so a drag that starts
-    // from a width the breakpoints picked continues from where the divider
-    // actually is rather than jumping.
+    // from the undragged default continues from where the divider actually is
+    // rather than jumping.
     let dragged = frac;
     // Did the drag produce a real fraction? That is what the COMMIT below
     // reads: in a container narrower than both floors dragPaneFrac returns null
@@ -153,8 +154,8 @@ export function usePreviewPane(enabled = true) {
       if (next === null) return;
       resized = true;
       dragged = next;
-      // The first move is already a choice: from here the pane stops following
-      // the window's breakpoints and renders what the cursor says.
+      // The first move is already a choice: from here the pane leaves the shared
+      // default and renders what the cursor says.
       setChosen((prev) => (prev === next ? prev : next));
     };
     const onUp = () => {
