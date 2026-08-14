@@ -33,7 +33,7 @@ resolution pyramid tangible, and fixes files that don't have one.
 
 The reader manages its own uv venv (`~/.cache/fused-render-compressbench`,
 rasterio + rio-cogeo + tifffile + pillow) so it works from the app's bundled
-python, which ships none of them (D234). That venv is shared with cog_doctor and
+python, which ships none of them (D275). That venv is shared with cog_doctor and
 the compression playground — one install between the three tools — which is why
 it stays self-managed rather than becoming a folder `pyproject.toml` (SPEC
 PY-16, D174). The map tab reuses the **geotiff template's tile daemon** via the

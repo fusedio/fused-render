@@ -4,7 +4,7 @@
 # not only in the entrypoint's own reading of it.
 #
 # fpdf2 is the reason this folder declares anything at all: it left `[bundled]`
-# with the rest of the PDF stack (D234), and `engine.py`'s PDF export imports it.
+# with the rest of the PDF stack (D275), and `engine.py`'s PDF export imports it.
 # That import used to raise `ImportError("PDF export needs fpdf2: pip install
 # fpdf2")` if it was ever missing — advice a DMG user cannot follow, the exact
 # D176 failure — so the fix is a declaration, not a better message.

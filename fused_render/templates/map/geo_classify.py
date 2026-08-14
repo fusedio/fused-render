@@ -4,7 +4,7 @@ map layer descriptor, writing render-ready artifacts.
 Runs inside this folder's geo runtime (geopandas, rasterio, rio-tiler, numpy,
 pandas, pyproj, shapely, pillow, matplotlib) — declared once for the whole
 template in `pyproject.toml` and installed on first render (SPEC PY-16), no
-longer carried by every app install (D234). The Map Viewer consumes the returned
+longer carried by every app install (D275). The Map Viewer consumes the returned
 descriptor generically — one `descriptorToLayer()` switch on `kind`.
 
 The single entry point is `classify(obj, artifact_dir, artifact_id, opts)`.

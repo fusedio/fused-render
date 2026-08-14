@@ -5,7 +5,7 @@
 # `raster_categories.py`, `geo_paths.py`, `optional_runtime.py`.
 #
 # This is the heaviest declaration in the tree and the reason the geo stack could
-# leave `[bundled]` at all (D234): the Map Viewer is the only template that needs
+# leave `[bundled]` at all (D275): the Map Viewer is the only template that needs
 # ALL of it in one process, and it is not a format everyone opens. Users who never
 # open a raster or a vector layer no longer carry ~180 MB for it; users who do pay
 # one PY-18 install on first render.

@@ -76,7 +76,7 @@ APP = [os.path.join(SCRIPT_DIR, "app_entry.py")]
 # either hand-listed or, worse, arriving incidentally.
 
 # Distributions from `[bundled]` that this bundle deliberately does NOT ship.
-# Currently none, and D234 is the reason it STAYED none while 556 MB came out of
+# Currently none, and D275 is the reason it STAYED none while 556 MB came out of
 # the bundle: the size problem was solved by shrinking `[bundled]` itself, so all
 # three platform builds got smaller together. Excluding here would have shrunk
 # only macOS, leaving Linux and Windows carrying packages the extra still

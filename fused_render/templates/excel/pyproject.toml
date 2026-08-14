@@ -2,7 +2,7 @@
 # and the only runPython entrypoint.
 #
 # fpdf2 is the reason this folder declares anything at all: it left `[bundled]`
-# with the rest of the PDF stack (D234), and `_pdf_from_rows` imports it for the
+# with the rest of the PDF stack (D275), and `_pdf_from_rows` imports it for the
 # `export` action's PDF output. On a packaged app there is no other way to get
 # it — this used to be the shape that told a DMG user to `pip install` (D176).
 #

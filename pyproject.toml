@@ -52,7 +52,7 @@ dependencies = [
     # — a header it already meets runs with no venv at all). Core rather than an
     # extra, and declared rather than borrowed: it used to arrive transitively
     # from geopandas/matplotlib/rasterio/zarr, so a plain `pip install
-    # fused-render` had it by luck — and D234 then removed all four, which is
+    # fused-render` had it by luck — and D275 then removed all four, which is
     # what "borrowed" always eventually means. Without it every header silently
     # falls back to building its own venv — a permanent slowdown with no failing
     # test, which is exactly the shape of the `httpx`/`tomli` mistakes above.
@@ -104,7 +104,7 @@ dev = [
 # app cannot pip install, so the interpreter ships with the popular data stack.
 # Dev installs: pip install -e ".[bundled]"
 #
-# This list is a SIZE BUDGET, not a wish list (D234). Every entry is carried by
+# This list is a SIZE BUDGET, not a wish list (D275). Every entry is carried by
 # every user of every platform build, forever, whether or not they ever open a
 # file that needs it — so a distribution earns its place here by being needed
 # from a cold start across many templates, not by being useful once. Anything
@@ -119,7 +119,7 @@ bundled = [
     "requests",
     "pillow",
     "openpyxl",
-    # REMOVED (D234): polars (197 MB — `polars` + the `polars-runtime-32` wheel
+    # REMOVED (D275): polars (197 MB — `polars` + the `polars-runtime-32` wheel
     # that carries the actual engine). It was the single largest thing in this
     # extra and NOTHING in the product imports it: no template, no core app, no
     # server code. It was here purely as an advertised convenience for user
@@ -127,12 +127,12 @@ bundled = [
     # A user who wants it declares it in their own folder's `pyproject.toml`,
     # which is the supported way to get anything else too (PY-16).
     #
-    # REMOVED (D234): scipy (70 MB). Its one consumer is
+    # REMOVED (D275): scipy (70 MB). Its one consumer is
     # `netcdf/grid_tile_server.py`, which already installs it into the daemon
     # venv it manages itself (DAEMON_DEPS, D174) — so on a packaged app it was
     # shipped once and downloaded again, and the shipped copy was never imported.
     #
-    # REMOVED (D234): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
+    # REMOVED (D275): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
     # consumers, neither of which needed it HERE: `map/geo_classify.py` (now
     # declared in fused_render/templates/map/pyproject.toml) and
     # `notebook/kernel_body.py`, which only harvests figures the user's own cell
@@ -143,14 +143,14 @@ bundled = [
     # usd/convert_worker.py's _ensure_pxr — D119).
     "python-pptx",
     "msgpack>=1.0",
-    # REMOVED (D234): the PDF stack — pymupdf (56 MB), pikepdf (13 MB) and
+    # REMOVED (D275): the PDF stack — pymupdf (56 MB), pikepdf (13 MB) and
     # fpdf2 (1.5 MB, which drags fonttools' 13 MB). pymupdf and pikepdf serve
     # `pdf_studio` alone; fpdf2 is the PDF *export* path of `excel` and
     # `slides`. All three now live in those folders' manifests. Note the plain
     # `pdf` template is untouched: it renders in the browser (pdf.js) and
     # imports none of this.
     #
-    # REMOVED (D234): the geo stack — geopandas, rasterio, rio-tiler, shapely
+    # REMOVED (D275): the geo stack — geopandas, rasterio, rio-tiler, shapely
     # and zarr, 180 MB once their exclusive transitives go with them (pyogrio
     # 77, pyproj 18, numcodecs, morecantile, the pystac-ext-* fan-out). They are
     # the deepest per-user cost in the extra and they serve four templates:

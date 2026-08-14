@@ -24,7 +24,7 @@ Subprocess discipline: `git -C <dir>` (never `cwd=`) and `close_fds=False`,
 matching every other subprocess spawn in this codebase (agent.py, history.py,
 executor.py, server/ai.py). The server process gets libproj resident
 (the fused engine's import tree reaches pyproj whenever a geo stack is
-installed beside it — it did so via geopandas until D234 took that out of
+installed beside it — it did so via geopandas until D275 took that out of
 `[bundled]`, and still does wherever one is present — and prefs' availability
 probe imports it in-process), and from then on a plain fork() runs PROJ's
 pthread_atfork child handler into a SIGSEGV before exec — the default

@@ -21,7 +21,7 @@ exactly what a user's page code can import — the list can't drift from the app
 # plumbing (fastapi, packaging, tomli, …) is not something a page should import.
 #
 # What is deliberately NOT here: polars, matplotlib, scipy, geopandas, shapely,
-# rasterio, zarr, pymupdf, pikepdf, fpdf2. They left the bundle in D234 —
+# rasterio, zarr, pymupdf, pikepdf, fpdf2. They left the bundle in D275 —
 # 556 MB that every user carried for a minority of pages. They are still one
 # line away: a `pyproject.toml` next to your .py naming them gets that folder
 # its own environment, built on first run (SPEC PY-16/PY-18). The Learn page

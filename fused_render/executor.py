@@ -275,7 +275,7 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             # path on macOS/Linux). This is a native-crash fix, not an fd-policy
             # choice. The server process has libproj resident with a live SQLite
             # handle to proj.db in PROJ's SQLiteHandleCache (whenever pyproj is
-            # importable here — transitively via `fused`/geopandas until D234
+            # importable here — transitively via `fused`/geopandas until D275
             # removed the geo stack from `[bundled]`, and still so in any
             # environment that has one). fork() runs every
             # registered pthread_atfork *child* handler in the forked child
