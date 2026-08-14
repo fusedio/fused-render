@@ -16,6 +16,7 @@ import {
   type ClaudeSessionFolder,
   type Config,
 } from "@platform/lib/api";
+import { sortApps } from "@platform/lib/appEntry";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
@@ -47,14 +48,6 @@ function useStripCount() {
     return () => ro.disconnect();
   }, []);
   return { ref, count };
-}
-
-// Same order the /apps hub uses (Apps.tsx sortApps): recently-modified desc,
-// apps without a timestamp sink to the end, name breaks ties.
-function sortApps(apps: AppInfo[]): AppInfo[] {
-  const byName = (a: AppInfo, b: AppInfo) =>
-    (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
-  return apps.slice().sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
 }
 
 // Section chrome: title row with the "See all" action on the right edge.

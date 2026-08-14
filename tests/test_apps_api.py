@@ -390,6 +390,96 @@ def test_updated_at_is_a_float(client, workspace):
     assert isinstance(apps[0]["updated_at"], float)
 
 
+# ------------------------------------------------- opened_at (recency of open)
+
+@pytest.fixture()
+def recents_home(tmp_path, monkeypatch):
+    """Per-test recents store — the session-wide FUSED_RENDER_HOME is shared,
+    and app_recents.json written by one test must not rank apps in another."""
+    home = tmp_path / "frhome"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    return home
+
+
+def test_opening_an_app_stamps_opened_at_in_the_listing(
+        client, workspace, recents_home):
+    """The recency the shell sorts /home and /apps by: POST recents/open
+    records the open (keyed on the app's path), and GET /api/apps reports it
+    as epoch seconds (updated_at's unit). An app never opened carries null."""
+    _app_dir(workspace, "opened")
+    _app_dir(workspace, "untouched")
+    r = client.post("/api/apps/recents/open",
+                    json={"path": str(workspace / "local" / "opened")},
+                    headers={"X-Fused": "1"})
+    assert r.json() == {"recorded": True}
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert isinstance(apps["opened"]["opened_at"], float)
+    assert abs(apps["opened"]["opened_at"] - time.time()) < 60
+    assert apps["untouched"]["opened_at"] is None
+
+
+def test_open_records_at_every_depth_and_shelves_do_not_collide(
+        client, workspace, recents_home):
+    """The path key exists because (tag, name) was ambiguous: two depth-3 apps
+    under different shelves of one tag share both. Each depth the walk lists
+    (1-3) must record, and opening one same-named app must not stamp the other."""
+    # depth 1: the folder is its own tag; depth 3: index.html under tag/shelf/app.
+    (workspace / "solo").mkdir()
+    (workspace / "solo" / "page.html").write_text("<html></html>")
+    for shelf in ("a", "b"):
+        d = workspace / "deep" / shelf / "twin"
+        d.mkdir(parents=True)
+        (d / "index.html").write_text("<html></html>")
+    for p in ("solo", "deep/a/twin"):
+        r = client.post("/api/apps/recents/open",
+                        json={"path": str(workspace / p)},
+                        headers={"X-Fused": "1"})
+        assert r.json() == {"recorded": True}, p
+    apps = {a["path"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert isinstance(apps[str(workspace / "solo")]["opened_at"], float)
+    assert isinstance(apps[str(workspace / "deep" / "a" / "twin")]["opened_at"], float)
+    assert apps[str(workspace / "deep" / "b" / "twin")]["opened_at"] is None
+
+
+def test_open_outside_the_workspace_is_a_no_op(client, workspace, recents_home, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    r = client.post("/api/apps/recents/open",
+                    json={"path": str(outside)}, headers={"X-Fused": "1"})
+    assert r.json() == {"recorded": False}
+
+
+def test_a_malformed_recents_timestamp_never_fails_the_listing(
+        client, workspace, recents_home):
+    """app_recents.json is user-writable: a garbage openedAt drops that
+    entry's opened_at, it must not 500 GET /api/apps."""
+    _app_dir(workspace, "victim")
+    recents_home.mkdir(parents=True, exist_ok=True)
+    (recents_home / "app_recents.json").write_text(json.dumps({
+        "entries": [
+            {"path": "local/victim", "openedAt": "not-a-date"},
+            {"path": "local/victim2", "openedAt": 12345},
+        ]
+    }))
+    r = client.get("/api/apps")
+    assert r.status_code == 200
+    apps = {a["name"]: a for a in r.json()["apps"]}
+    assert apps["victim"]["opened_at"] is None
+
+
+def test_reopening_updates_opened_at_not_duplicates(
+        client, workspace, recents_home):
+    _app_dir(workspace, "again")
+    for _ in range(2):
+        client.post("/api/apps/recents/open",
+                    json={"path": str(workspace / "local" / "again")},
+                    headers={"X-Fused": "1"})
+    entries = client.get("/api/apps/recents").json()["entries"]
+    assert [e["path"] for e in entries] == ["local/again"]
+    apps = client.get("/api/apps").json()["apps"]
+    assert isinstance(apps[0]["opened_at"], float)
+
+
 # ---------------------------------------------------- the fork-safe spawn seam
 
 def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(

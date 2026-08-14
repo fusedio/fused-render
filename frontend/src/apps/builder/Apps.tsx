@@ -5,12 +5,14 @@
 // filter row — a Category/Repo mode selector with chips derived from the apps
 // themselves (categories from each folder's metadata.json, repos from the
 // top-level tag dirs) — and a search box (name/title/tag/category,
-// case-insensitive). Order is always recently-modified; filtering never
-// reorders cards relative to each other.
+// case-insensitive). Order is always recently-opened (modified time stands in
+// for an app never opened — appEntry.sortApps); filtering never reorders cards
+// relative to each other.
 import { useEffect, useMemo, useState } from "react";
 import { getApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
+import { sortApps } from "@platform/lib/appEntry";
 import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
 import { requestCloneApp } from "@platform/cloud/cloneApp";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -33,14 +35,6 @@ const MODES: { key: FilterMode; label: string }[] = [
   { key: "category", label: "Category" },
   { key: "repo", label: "Repo" },
 ];
-
-// Always recently-modified desc; apps without a timestamp sink to the end,
-// name breaks ties so the order is stable.
-function sortApps(apps: AppInfo[]): AppInfo[] {
-  const byName = (a: AppInfo, b: AppInfo) =>
-    (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
-  return apps.slice().sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0) || byName(a, b));
-}
 
 type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
 

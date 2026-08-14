@@ -36,8 +36,32 @@
 // click handler — which is the second reason this module exists: `hrefFor` and
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
-import type { AppInfo } from "./api";
+import { postAppOpen, type AppInfo } from "./api";
 import { navigate, urlForFsPath } from "./router";
+
+// The ONE ordering every app grid uses (/home's strip, the /apps hub):
+// recently-OPENED desc; an app never opened falls back to its modified time,
+// and one with neither sinks to the end. Name breaks ties so the order is
+// stable. Lives here so the two surfaces can't drift.
+export function sortApps(apps: AppInfo[]): AppInfo[] {
+  const byName = (a: AppInfo, b: AppInfo) =>
+    (a.title || a.name).localeCompare(b.title || b.name) || a.name.localeCompare(b.name);
+  return apps.slice().sort((a, b) => appRecency(b) - appRecency(a) || byName(a, b));
+}
+
+// The timestamp the sort above ranks by — exported so the card's "…ago" label
+// (AppPreviewCard) shows the SAME time the ordering used; a card sorted first
+// for being opened just now must not say "1d ago" off its modified time.
+export function appRecency(app: AppInfo): number {
+  return app.opened_at ?? app.updated_at ?? 0;
+}
+
+// Record the open in the app recents store — what `opened_at` (and so the
+// sort above) is fed by. Fire-and-forget: recording must never delay or fail
+// the navigation itself.
+function recordAppOpen(app: AppInfo): void {
+  void postAppOpen(app.path, app.title).catch(() => undefined);
+}
 
 // The file this card is about, tolerating a backend that predates `entry`.
 // `entry` is "the file a card opens and previews"; `entry_html` is the narrower
@@ -107,6 +131,7 @@ export function hrefFor(app: AppInfo): string {
 }
 
 export function openApp(app: AppInfo): void {
+  recordAppOpen(app);
   const { path, opts } = openTargetFor(app);
   navigate(path, opts);
 }
@@ -143,7 +168,22 @@ export function isBrowserHandledClick(e: CardClickEvent): boolean {
 // in-app navigation (no page reload, no lost state); everything else is left to
 // the href, which is why the anchor must always carry one.
 export function onAppCardClick(e: CardClickEvent, app: AppInfo): void {
-  if (e.defaultPrevented || isBrowserHandledClick(e)) return;
+  if (e.defaultPrevented) return;
+  if (isBrowserHandledClick(e)) {
+    // The browser owns the click, but SOME of these gestures still open the
+    // app — record those so the recency sort sees them. Only the unambiguous
+    // ones: middle-click, Cmd-click and Shift-click all navigate. Ctrl-click
+    // is the context menu on macOS (no navigation) and Alt-click is a
+    // download — a false record would scramble the sort, where a missed one
+    // just falls back to the modified time, so both are skipped even though
+    // Ctrl-click does open a tab on other platforms. No preventDefault:
+    // recording rides alongside the browser's own handling.
+    const opens =
+      e.button === 1 ||
+      (e.button === 0 && (e.metaKey || e.shiftKey) && !e.ctrlKey && !e.altKey);
+    if (opens) recordAppOpen(app);
+    return;
+  }
   e.preventDefault();
   openApp(app);
 }
