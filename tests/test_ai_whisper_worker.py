@@ -1,0 +1,265 @@
+"""The transcription runner's own logic, driven directly (SPEC AI-10, AI-10a).
+
+`tests/test_ai_runtime.py` proves the SUPERVISOR's half against a fake worker;
+`tests/test_ai_worker_base.py` proves the CONTRACT. Neither touches what
+`faster_whisper/worker.py` actually does with a model, and the claims that
+matter most in this feature live exactly there: that progress is seconds of
+audio, and that a ✕ is honoured throughout the run.
+
+Those claims are testable here because the module is **stdlib-only at import
+time** — `faster_whisper` and `ctranslate2` are imported inside the functions
+that need them, never at the top — so the decode loop can be driven with a stub
+model standing in for Whisper. That is the same reason `worker_base` is
+testable, applied one level down. What is still NOT covered is Whisper itself:
+no audio is decoded here, and the numbers the stub feeds in are the numbers a
+real `info.duration` and a real `segment.end` would have to supply.
+"""
+import importlib.util
+import json
+import os
+import sys
+import threading
+import time
+import types
+
+import pytest
+
+WORKER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "fused_render", "ai", "runners", "faster_whisper", "worker.py",
+)
+
+
+class FakeBase:
+    """A stand-in for `worker_base`, recording every tick.
+
+    Injected into `sys.modules` rather than monkeypatched onto the real module,
+    so a test can assert on the ticks without mutating the contract module every
+    other AI test imports.
+    """
+
+    class Cancelled(Exception):
+        pass
+
+    def __init__(self):
+        self.ticks = []
+        self.CANCEL = threading.Event()
+        #: Set by a test to have the NEXT tick answer "the ✕ was pressed",
+        #: which is how a real cancel reaches a worker (the reply to the tick
+        #: it was sending anyway).
+        self.cancel_on_tick = None
+
+    def report(self, job=None, **fields):
+        self.ticks.append({"job": job, **fields})
+        return None
+
+    def report_or_cancel(self, job=None, **fields):
+        self.ticks.append({"job": job, **fields})
+        if self.cancel_on_tick is not None and len(self.ticks) >= self.cancel_on_tick:
+            raise self.Cancelled()
+        return None
+
+
+def _load_worker(base):
+    """A fresh import of the whisper worker, against `base`.
+
+    By path and with `worker_base` primed in `sys.modules`, for the reason the
+    runner exists: it loads its base off `sys.path` in its own interpreter, not
+    as `fused_render.ai.runners.…`, so importing it the packaged way would be
+    testing an import that never ships.
+    """
+    saved = sys.modules.get("worker_base")
+    sys.modules["worker_base"] = base
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "faster_whisper_worker_under_test", WORKER_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if saved is None:
+            sys.modules.pop("worker_base", None)
+        else:
+            sys.modules["worker_base"] = saved
+
+
+@pytest.fixture()
+def base():
+    return FakeBase()
+
+
+@pytest.fixture()
+def worker(base):
+    return _load_worker(base)
+
+
+class FakeSegment:
+    def __init__(self, start, end, text):
+        self.start, self.end, self.text = start, end, text
+
+
+class FakeModel:
+    """Whisper's shape: `transcribe()` returns `(generator, info)` — but only
+    after doing the eager work first, which is the property under test."""
+
+    def __init__(self, segments, duration=180.0, decode_seconds=0.0, language="en"):
+        self.segments = segments
+        self.info = types.SimpleNamespace(duration=duration, language=language)
+        self.decode_seconds = decode_seconds
+        self.calls = []
+
+    def transcribe(self, source, **kwargs):
+        self.calls.append({"source": source, **kwargs})
+        # The eager phase: PyAV decodes the whole file and (with the VAD on)
+        # silero runs over all of it, BEFORE the generator is handed back.
+        time.sleep(self.decode_seconds)
+        return iter(self.segments), self.info
+
+
+def _request(tmp_path, **over):
+    base_path = str(tmp_path / "out")
+    return {
+        "path": str(tmp_path / "meeting.m4a"),
+        "out": base_path + ".json",
+        "outText": base_path + ".txt",
+        "job": "sys:ai-transcribe:abc",
+        **over,
+    }
+
+
+# -- the eager phase, which is neither lazy nor free -----------------------------
+
+
+def test_the_decode_phase_ticks_while_it_runs(worker, base, tmp_path):
+    """`transcribe()` LOOKS lazy — it returns a generator — but faster-whisper
+    decodes the whole file and runs the VAD before handing it back. On a long
+    recording that is minutes, and the row must not sit silent through them."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 3.0, "hi")],
+                                        decode_seconds=0.35)
+    worker._TICK_S = 0.05
+
+    worker.generate(_request(tmp_path))
+
+    decoding = [t for t in base.ticks if "Decoding" in str(t.get("detail"))]
+    assert len(decoding) > 2, base.ticks
+
+
+def test_a_cancel_during_DECODING_is_honoured_before_any_segment(worker, base, tmp_path):
+    """The claim that made this a bug: the docstring promised the ✕ was
+    honoured through the run, while the only tick before the first segment was
+    a plain `report` that cannot carry a cancel back. A user pressing ✕ over a
+    90-minute file waited out the whole decode."""
+    model = FakeModel([FakeSegment(0.0, 3.0, "hi")], decode_seconds=0.4)
+    worker._loaded["model"] = model
+    worker._TICK_S = 0.05
+    base.cancel_on_tick = 2  # the first tick INSIDE the decode wait
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+    # It stopped INSIDE the decode, not at the first segment — no tick ever
+    # carried a `done`, which is what a segment tick is. Without this the test
+    # passes on the very bug it exists for.
+    assert not [t for t in base.ticks if t.get("done")], base.ticks
+    # And nothing was written: a cancelled run leaves no half-transcript behind.
+    assert not os.path.exists(_request(tmp_path)["out"])
+
+
+def test_a_cancel_between_segments_is_still_honoured(worker, base, tmp_path):
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 3.0, "one"), FakeSegment(3.0, 6.0, "two")])
+    base.cancel_on_tick = 2
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+
+
+# -- what the row is told -------------------------------------------------------
+
+
+def test_progress_is_SECONDS_OF_AUDIO_against_the_duration(worker, base, tmp_path):
+    """`done` is the last segment's end timestamp and `total` is the audio's
+    duration — the unit a person watching a recording is thinking in, and the
+    one SPEC AI-10a promises."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 12.0, "one"), FakeSegment(12.0, 30.0, "two")],
+        duration=90.0)
+
+    worker.generate(_request(tmp_path))
+
+    segment_ticks = [t for t in base.ticks if t.get("unit") == "s" and t.get("done")]
+    assert [t["done"] for t in segment_ticks] == [12.0, 30.0]
+    assert {t["total"] for t in segment_ticks} == {90.0}
+
+
+def test_every_tick_carries_the_job_the_route_opened(worker, base, tmp_path):
+    """Per-request row, not the worker's own load row — two renders would
+    otherwise overwrite each other's progress."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker.generate(_request(tmp_path, job="sys:ai-transcribe:zzz"))
+    assert {t["job"] for t in base.ticks} == {"sys:ai-transcribe:zzz"}
+
+
+# -- what lands on disk ---------------------------------------------------------
+
+
+def test_both_transcript_files_are_written_where_the_server_said(worker, tmp_path):
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 1.5, " hello"), FakeSegment(1.5, 3.0, " world ")],
+        duration=3.0)
+    request = _request(tmp_path)
+
+    result = worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert written["text"] == "hello world"
+    assert written["segments"] == [
+        {"start": 0.0, "end": 1.5, "text": "hello"},
+        {"start": 1.5, "end": 3.0, "text": "world"},
+    ]
+    assert written["language"] == "en" and written["duration"] == 3.0
+    assert open(request["outText"], encoding="utf-8").read() == "hello world\n"
+    # The reply COUNTS the segments rather than carrying them: a 90-minute
+    # recording is thousands, and the caller already has the file.
+    assert result["segments"] == 2
+
+
+def test_the_two_whisper_directions_reach_the_model(worker, tmp_path):
+    model = FakeModel([FakeSegment(0.0, 1.0, "bonjour")])
+    worker._loaded["model"] = model
+    worker.generate(_request(tmp_path, task="translate", language="fr"))
+    assert model.calls[0]["task"] == "translate"
+    assert model.calls[0]["language"] == "fr"
+
+
+def test_an_absent_language_means_auto_detect_not_an_empty_code(worker, tmp_path):
+    """`""` would be passed through as a language code matching nothing;
+    Whisper reads None as "detect it", which is the documented default."""
+    model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker._loaded["model"] = model
+    worker.generate(_request(tmp_path, language=""))
+    assert model.calls[0]["language"] is None
+
+
+def test_generating_with_no_model_loaded_says_so(worker, tmp_path):
+    with pytest.raises(RuntimeError):
+        worker.generate(_request(tmp_path))
+
+
+# -- the format trap ------------------------------------------------------------
+
+
+def test_a_transformers_format_repo_is_named_as_the_cause(worker, tmp_path):
+    """The AI Models page offers Load on anything whose TASK maps to a
+    capability, and the format is not in the task — so `openai/whisper-large-v3`
+    gets a button it cannot honour. The check runs BEFORE `faster_whisper` is
+    imported, so the explanation does not depend on the runner environment
+    being importable here."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model.safetensors").write_bytes(b"")
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.load("openai/whisper-large-v3", str(snapshot))
+    message = str(caught.value)
+    assert "model.bin" in message and "CTranslate2" in message
+    assert "Systran/faster-whisper-large-v3" in message

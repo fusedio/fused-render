@@ -6238,9 +6238,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   belongs inside the job for the same reason it does for a render. Progress is
   **seconds of audio** (`unit: "s"`, `done` = the last segment's end timestamp,
   `total` = the decoder's reported duration), which is the unit the person
-  watching is thinking in; the ✕ reaches the per-segment loop, which is a real
-  interruption point because `transcribe()` hands back a generator that decodes
-  as it is consumed. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  watching is thinking in, and the download manager renders that unit as a
+  CLOCK (`12:00 / 1:30:00`) rather than a bare pair, since `720 / 5400` is a
+  number a reader takes for segments or steps. **The ✕ has to reach two
+  phases, not one.** The per-segment loop is a real interruption point because
+  `transcribe()` hands back a generator that decodes as it is consumed — but
+  before it returns that generator it has already decoded the entire file and
+  run the VAD over it, which on a long recording is minutes. That eager phase
+  is therefore ticked from a thread (the poll IS the progress and the
+  cancellation point, as it is for downloads); leaving it behind a single plain
+  `report` left a window where the row sat at zero and a ✕ was not honoured
+  until the first segment landed. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
   transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
   with timestamps, language, duration, model) and a `.txt` (plain words) —
   **segments, not a flat token stream**, because the timestamps are most of what
@@ -6262,14 +6270,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   worker's door.** faster-whisper cannot run on CI — CTranslate2 plus a model
   download — so the route, the supervisor, the job row, the glossary, the
   catalog and the bridge are all exercised against a FAKE worker speaking the
-  AI-3 contract with canned segments, exactly as the image path is. Everything
-  INSIDE `faster_whisper/worker.py` is unverified against a real model: the
-  decode loop, the seconds-of-audio arithmetic behind the progress bar, the
-  cancel path through the per-segment `report_or_cancel`, the CUDA-vs-CPU
-  placement, and the CTranslate2-format check that is meant to turn a
-  transformers-format repo into a readable error. This is the standing position
-  for every concrete runner in this app (AI-9a says the contract is testable
-  precisely because the workers are not), but it is stated rather than left to
-  be inferred, because AI-10a's prose about units and interruption points
-  describes code that has so far only been read. A first real transcription is
-  the outstanding verification.
+  AI-3 contract with canned segments, exactly as the image path is. The
+  runner's OWN logic is tested a level down — `faster_whisper/worker.py` is
+  stdlib-only at import time (`faster_whisper` and `ctranslate2` are imported
+  inside the functions that need them), so its decode loop, its
+  seconds-of-audio arithmetic, both cancel paths, the two Whisper directions,
+  the files it writes and the CTranslate2-format check are all driven on CI
+  against a stub model. **What no test touches is Whisper itself**: no audio is
+  decoded anywhere in this suite, so the numbers a real `info.duration` and a
+  real `segment.end` supply, the CPU-vs-CUDA placement, the int8 quality trade
+  and the actual transcription quality are unverified — as is the assumption
+  that PyAV opens the container formats users will point at it. A first real
+  transcription is the outstanding verification, and until it happens this
+  section describes a design that is proven only down to the model's door.

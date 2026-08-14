@@ -18,11 +18,16 @@ being a RECORDING rather than a prompt:
   process owns the words. It never invents a location, which is also why the
   `.txt` sibling is passed rather than derived from the `.json`.
 
-**Cancelling works through the job row**, as it does for images: `transcribe()`
-hands back a GENERATOR and the decoding happens as it is consumed, so the
-per-segment loop is a real interruption point — and the reply to the progress
-tick we were sending anyway is how the manager's ✕ reaches a process that is
-otherwise looking at nothing else.
+**Cancelling works through the job row**, as it does for images — the reply to
+the progress tick we were sending anyway is how the manager's ✕ reaches a
+process that is otherwise looking at nothing else. It takes TWO mechanisms here,
+because the run has two phases and only the second one looks like one:
+`transcribe()` hands back a generator that decodes as it is consumed (so the
+per-segment loop is a real interruption point), but before it returns it has
+already decoded the whole file and run the VAD over it. That eager phase is
+minutes on a long recording, so it is ticked from a thread — see
+`_call_with_ticks`, which exists because the first cut left exactly that window
+silent and uncancellable.
 
 **Nothing here shells out to ffmpeg.** faster-whisper decodes through PyAV,
 whose wheels carry the ffmpeg libraries — see this folder's `pyproject.toml`.
@@ -33,6 +38,7 @@ this was written on and fail on a user's.
 import json
 import os
 import sys
+import threading
 import time
 
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
@@ -83,9 +89,10 @@ _CT2_WEIGHTS = "model.bin"
 
 
 def load(model_id, fetched):
-    from faster_whisper import WhisperModel
-
-    device, compute_type = _placement()
+    # The format check comes FIRST, before either import. A repo in the wrong
+    # format is a fact about the download, not about this environment, and
+    # ordering the import ahead of it would replace the explanation below with
+    # whichever ImportError happened to come first.
     if not os.path.isfile(os.path.join(fetched, _CT2_WEIGHTS)):
         # The same trap text generation has with GGUF and AWQ repos: the AI
         # Models page offers Load on anything whose task label maps to a
@@ -96,6 +103,10 @@ def load(model_id, fetched):
             "transformers-format Whisper repo, and this runner loads "
             "CTranslate2 conversions. Try Systran/faster-whisper-large-v3 or "
             "deepdml/faster-whisper-large-v3-turbo-ct2.")
+
+    from faster_whisper import WhisperModel
+
+    device, compute_type = _placement()
     _loaded["model"] = WhisperModel(fetched, device=device, compute_type=compute_type)
     _loaded["device"] = device
 
@@ -135,6 +146,55 @@ def _clock(seconds):
     return "%d:%02d" % (seconds // 60, seconds % 60)
 
 
+#: How often the eager phase ticks. Module-level so a test can shorten it.
+_TICK_S = 1.0
+
+
+def _call_with_ticks(call, job, detail):
+    """Run `call()` on a thread, ticking once a second until it returns.
+
+    **`model.transcribe()` is not the lazy call it looks like.** It hands back a
+    generator, which reads as "nothing has happened yet" — but before it
+    returns, faster-whisper decodes the ENTIRE file through PyAV and, with the
+    VAD on (this runner's default), runs silero over all of it. On a 90-minute
+    recording that is tens of seconds to minutes, and the first cut spent them
+    behind a single plain `report`: the row sat at 0 with only the heartbeat
+    repeating it, and — the part that made this a bug rather than a cosmetic
+    gap — a ✕ pressed in that window was not honoured until the first segment
+    landed, because a plain `report` cannot carry a cancel back.
+
+    Same shape as `worker_base.fetch_with_progress`, and for the same reason:
+    the poll IS the progress and the cancellation point. A `Cancelled` raised
+    here leaves the decode running on a daemon thread that nobody waits for —
+    it finishes into a result that is discarded, which is the same trade the
+    download path already makes and is bounded by the file.
+    """
+    result = {}
+
+    def run():
+        try:
+            result["value"] = call()
+        except BaseException as e:  # noqa: BLE001 - re-raised on the caller's thread
+            result["error"] = e
+
+    thread = threading.Thread(target=run, name="decode", daemon=True)
+    thread.start()
+    while thread.is_alive():
+        thread.join(timeout=_TICK_S)
+        if not thread.is_alive():
+            break
+        # No `done`/`total`: nothing is known about the audio until `info`
+        # arrives, and an invented percentage is what makes live work read as
+        # frozen. The tick is here to be answered, not to move a bar.
+        worker_base.report_or_cancel(job=job, kind="task", unit="s",
+                                     done=None, total=None, detail=detail)
+        if worker_base.CANCEL.is_set():
+            raise worker_base.Cancelled()
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
 def generate(body):
     """Transcribe one file. Returns `{path, output, segments, language, …}`."""
     model = _loaded.get("model")
@@ -160,13 +220,16 @@ def generate(body):
     started = time.time()
     worker_base.report(job=job, state="running", kind="task", unit="s",
                        done=0, total=None, detail="Decoding audio…")
-    # Lazy: `transcribe` returns a GENERATOR and does the work as it is
-    # consumed, which is what makes the loop below both the progress and the
-    # cancellation point. `info` is available immediately, so the total is known
-    # before the first segment.
-    stream, info = model.transcribe(
-        source, task=task, language=language, initial_prompt=initial_prompt,
-        vad_filter=vad)
+    # TWO phases, and only the second one is lazy. `transcribe` returns a
+    # generator that decodes segment by segment as it is consumed — but it
+    # decodes the whole file and runs the VAD before handing that generator
+    # over, so this call blocks for minutes on a long recording. Ticking
+    # through it is what keeps the ✕ live in that window (see `_call_with_ticks`).
+    stream, info = _call_with_ticks(
+        lambda: model.transcribe(
+            source, task=task, language=language, initial_prompt=initial_prompt,
+            vad_filter=vad),
+        job, "Decoding audio…")
     total = round(float(getattr(info, "duration", 0) or 0), 2) or None
 
     segments = []
