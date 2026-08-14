@@ -35,6 +35,7 @@ TIER_ONE_TEMPLATES = (
     "duckdb",
     "git",
     "graph",
+    "joblib_model",
     "log_studio",
     "markdown",
     "model_card",
