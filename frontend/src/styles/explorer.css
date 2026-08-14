@@ -45,7 +45,19 @@
   box-sizing: border-box;
 }
 
-/* ★ bookmark button, leftmost in the bar. Subtle: bare glyph, no box —
+/* ‹ › history arrows, first in the bar — the slot browsers and file managers
+   reserve for them, which the ★ used to occupy (Breadcrumb.tsx says why they
+   traded places). Nothing of their own beyond the grouping: both buttons ride
+   the shared `.bar-ctl-icon` recipe further down, and the 2px gap is the same
+   one `.bar-zone` uses to make a run of glyph buttons read as one control. */
+.crumb-nav {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ★ bookmark button, at the tail of the path. Subtle: bare glyph, no box —
    muted until hovered; a FILLED FOREGROUND star when the view is bookmarked
    or an armed bookmark is live. Deliberately not accent-yellow any more: the
    accent means exactly one thing in this chrome, the active view mode.
@@ -79,13 +91,17 @@
 }
 
 /* The star belongs TO the path, so it should sit in the path's own rhythm, not
-   at the bar's zone spacing. Between the two the bar contributed its 10px flex
-   gap plus the star's 5px padding plus the first crumb's 4px — 19px of air,
-   more than twice the 8px the crumbs keep between themselves, which made the
-   star read as an island. A negative margin is the only way to retune ONE pair
-   inside a `gap` container; the bar-wide 10px between the other zones stands. */
+   at the bar's zone spacing. Between the two the bar contributes its 10px flex
+   gap plus the star's 5px padding plus the crumb's 4px — 19px of air, more than
+   twice the 8px the crumbs keep between themselves, which made the star read as
+   an island. A negative margin is the only way to retune ONE pair inside a `gap`
+   container; the bar-wide 10px between the other zones stands.
+
+   `margin-left` now, where it was `margin-right`: the star moved from the head
+   of the path to its tail (Breadcrumb.tsx), so the pair being tightened is
+   last-crumb/★ rather than ★/first-crumb. Same 11px, other side. */
 #breadcrumb .bookmark-star-btn {
-  margin-right: -11px;
+  margin-left: -11px;
 }
 
 .bookmark-star-btn:hover {
@@ -160,12 +176,20 @@
    its own arrangement. Over a FOLDER the search row's `margin-left: auto` is the
    claimant instead (.crumb-search-slot below) and this one stands down: two auto
    margins in one row split the slack between them, which is the layout that pair
-   exists to prevent. */
-#breadcrumb .crumbs:has(.path-crumb) {
+   exists to prevent.
+
+   IT RIDES ON THE ★, NOT ON THE STRIP, since the star moved to the path's tail
+   (Breadcrumb.tsx). Left where it was, the slack would open up BETWEEN the path
+   and its own star and fling the star to the far end of the bar — the auto
+   margin has to sit on whatever is genuinely last in the path zone, and that is
+   now the star. The sibling combinator rather than `:last-child` because the
+   zone's tail is only the star when the path is a real crumb strip; in edit mode
+   the field's own `flex: 1 1 auto` eats the width and no claimant is wanted. */
+#breadcrumb .crumbs:has(.path-crumb) ~ .bookmark-star-btn {
   margin-right: auto;
 }
 
-#breadcrumb:has(.crumb-search-slot) .crumbs {
+#breadcrumb:has(.crumb-search-slot) .bookmark-star-btn {
   margin-right: 0;
 }
 
@@ -514,10 +538,11 @@
    the layout half of that sharing.
 
    NO RULE FOR THE BUTTONS THEMSELVES (.side-close, .side-toggle): both ride the
-   plain .bar-ctl-icon recipe above, and their glyphs are a 16px chevron / the
-   companion's own mode icon, in currentColor like everything else in these rows.
+   plain .bar-ctl-icon recipe above, and their glyphs are the 16px right-hand
+   panel icon (platform/ui/PanelIcon) / the companion's own mode icon, in
+   currentColor like everything else in these rows.
    A `.side-toggle.active` pressed look lived here for one round, while the opener
-   stayed on screen with the panel open and the column carried a closing chevron of
+   stayed on screen with the panel open and the column carried a close button of
    its own. Exactly one of the two buttons is ever rendered now (SideChrome
    documents the split), so there is no "on" state left for either to wear.
 
@@ -1094,7 +1119,7 @@
    sidebar's header exactly, and the shared `.side-header-tail` above is what packs
    that end. `flex-start` here, therefore, rather than the `flex-end` this rule
    carried while the strip had no leading item at all: the left end now holds the
-   close chevron and (for a folder with a page to open) the folder's own primary,
+   close button and (for a folder with a page to open) the folder's own primary,
    and those pack from the left like any bar's.
 
    Horizontal padding stays at the PANE's 10px gutter (the crumb bar keeps the
@@ -1402,14 +1427,17 @@ table.listing-table tr.skel-row:hover {
   display: none;
 }
 
-/* …and so does the ★, for the same reason the path did. It acts on the folder,
-   which has not changed — but it was the last thing holding the field off the
-   left edge, and a search box that spans the whole bar is what someone typing a
-   query is asking for. Bookmarking is still one keystroke away (Esc).
+/* …and so do the ★ and the history arrows, for the same reason the path did.
+   Neither acts on the search — the star bookmarks the folder, which has not
+   changed, and the arrows leave it entirely — but between them they are the
+   whole of what holds the field off the left edge, and a search box that spans
+   the bar is what someone typing a query is asking for. Both come straight back
+   on Esc or an emptied query, so nothing is lost, only deferred.
 
    `display: none`, not visibility/opacity: the star's box is 24px plus the
-   deliberate -11px right margin above, and hiding it while keeping the box would
-   leave the field starting 13px in from a gap. A flex item removed this way
+   deliberate -11px margin above and the arrows are 28px each, and hiding any of
+   them while keeping the box would leave the field starting in from a gap. A
+   flex item removed this way
    takes its `gap` share with it, so there is nothing left behind. (This is the
    opposite of the table-column case in listing/column-shedding.test.ts, where
    the shed element had to stay rendered — a table column under
@@ -1420,7 +1448,9 @@ table.listing-table tr.skel-row:hover {
    Scoped under #breadcrumb because panel mode renders one star per pane from the
    same component. */
 #breadcrumb:has(.listing-search.searching) .bookmark-star-btn,
-#breadcrumb:has(.listing-search.expanded) .bookmark-star-btn {
+#breadcrumb:has(.listing-search.expanded) .bookmark-star-btn,
+#breadcrumb:has(.listing-search.searching) .crumb-nav,
+#breadcrumb:has(.listing-search.expanded) .crumb-nav {
   display: none;
 }
 

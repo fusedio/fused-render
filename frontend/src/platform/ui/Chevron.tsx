@@ -1,10 +1,18 @@
-// THE COLLAPSE CHEVRON — one glyph, stated once, for every control whose job is
-// "this panel goes away in that direction".
+// THE DIRECTIONAL CHEVRON — one glyph, stated once, for every control whose job
+// is "go that way".
+//
+// IT USED TO BE THE COLLAPSE CHEVRON, worn by all three panel controls: the left
+// sidebar's collapse button, its rail's expand button, and the right-hand
+// companion column's close button (SideChrome). Those are a panel glyph now
+// (platform/ui/PanelIcon, which carries the argument), and what is left is the
+// use the shape was always right for — the crumb bar's back/forward arrows,
+// where "that way" is a direction through history and not a direction a column
+// slides in. Same component, same weight, narrower meaning.
 //
 // It exists because there were three hand-written copies of it and they had
 // drifted: the left sidebar's collapse button drew it at 14px, the collapsed
-// rail's expand button beside it at 16px, and the right-hand companion column's
-// close button (SideChrome) at 16px as a `<polyline>` instead of a `<path>`.
+// rail's expand button beside it at 16px, and the companion column's close
+// button at 16px as a `<polyline>` instead of a `<path>`.
 // Same 24-unit grid and the same strokeWidth="2" in all three, which is exactly
 // what made the difference hard to name and impossible to unsee once named: a
 // 24-grid stroke of 2 renders at 2 x (box / 24) actual pixels, so 14px drew a
@@ -24,13 +32,12 @@
 // app's Lucide-style 24-grid icons use; with round caps and joins the two
 // primitives rasterise identically, so this is purely about having one spelling.
 //
-// DIRECTION IS THE ONLY PROP. The chevron always points the way the panel goes,
-// which is a fact about which seam the button sits on and not a style choice:
-// `left` for a left-hand sidebar collapsing away from the content, `right` for a
-// right-hand column doing the same, and the same glyph mirrored is what makes an
-// expand control legible as the inverse of its collapse control. Size and weight
-// are deliberately NOT props — a caller that wants a different weight wants a
-// different icon, and this file is the answer to callers having had that choice.
+// DIRECTION IS THE ONLY PROP. The chevron always points the way the click goes —
+// `left` for backwards through history, `right` for forwards — and the same
+// glyph mirrored is what makes the pair read as one control with two ends. Size
+// and weight are deliberately NOT props: a caller that wants a different weight
+// wants a different icon, and this file is the answer to callers having had that
+// choice.
 
 // Both on the 24-unit grid, each a mirror of the other about x=12: (15,18) ->
 // (9,12) -> (15,6) points left, (9,18) -> (15,12) -> (9,6) points right.
