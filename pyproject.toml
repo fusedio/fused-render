@@ -144,12 +144,26 @@ bundled = [
     # usd/convert_worker.py's _ensure_pxr — D119).
     "python-pptx",
     "msgpack>=1.0",
-    # REMOVED (D275): the PDF stack — pymupdf (56 MB), pikepdf (13 MB) and
-    # fpdf2 (1.5 MB, which drags fonttools' 13 MB). pymupdf and pikepdf serve
-    # `pdf_studio` alone; fpdf2 is the PDF *export* path of `excel` and
-    # `slides`. All three now live in those folders' manifests. Note the plain
-    # `pdf` template is untouched: it renders in the browser (pdf.js) and
-    # imports none of this.
+    # KEPT, against the first cut of D275, and the reason is PY-16's SCOPE. A
+    # declaration governs the whole FOLDER, so moving fpdf2 out put `excel` and
+    # `slides` entirely behind a project venv: opening any .xlsx, any .csv in
+    # Excel mode, or any .pptx would block on a first-render install of
+    # duckdb + pyarrow + openpyxl / python-pptx + pillow — ~150 MB of packages
+    # the app ALREADY SHIPS — to add 1.5 MB for an export path most users never
+    # touch. The export is not separable from the folder, so the choice was
+    # "everyone carries 14 MB" versus "two everyday templates get an install
+    # gate", and 14 MB is the cheaper answer. Measured marginal cost: fpdf2 is
+    # 1.5 MB and drags fonttools (12.6) + defusedxml (0.1), and fonttools has no
+    # other user left now matplotlib is gone.
+    "fpdf2>=2.8.7",
+    # REMOVED (D275): pymupdf (56 MB) and pikepdf (13 MB), the two largest
+    # single wheels this extra ever had. They serve `pdf_studio` alone, which is
+    # a whole-folder tool — every action in it is a PDF action — so the PY-16
+    # scope argument that KEPT fpdf2 above runs the other way here: the venv it
+    # gets is the venv it needs. Declared in
+    # fused_render/templates/pdf_studio/pyproject.toml. Note the plain `pdf`
+    # template is untouched: it renders in the browser (pdf.js) and imports
+    # none of this.
     #
     # REMOVED (D275): the geo stack — geopandas, rasterio, rio-tiler, shapely
     # and zarr, 180 MB once their exclusive transitives go with them (pyogrio
