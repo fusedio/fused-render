@@ -26,6 +26,7 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
     # /explorer/embed/<path>.
     return FileResponse(shell_path)
 
+@router.get("/home")
 @router.get("/learn")
 @router.get("/sessions")
 # The Claude pages: the settings panel (frontend apps/claude_config) and the

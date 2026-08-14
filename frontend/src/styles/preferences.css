@@ -263,6 +263,75 @@
   margin-top: 30px;
 }
 
+/* -- Home page sections (shell/Home.tsx) --------------------------------------
+   Title row with the "See all" action on its right edge, over a one-row strip
+   of the same cards the full pages use. */
+/* The Home page alone runs full-bleed: its strips are meant to fill the
+   window's width with cards, so the 1120px launcher clamp stays on the
+   explorer home only. The search hero keeps a readable line on its own
+   max-width below. */
+.files-home-inner.home-wide {
+  max-width: none;
+  /* Tighter than the explorer home's 36px: the search bar is the first thing
+     on the front door, so it sits closer to the top. */
+  padding-top: 8px;
+}
+
+.home-wide .files-search-wrap {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.home-sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.home-sec-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.home-sec-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.home-sec-more:hover {
+  color: var(--fg);
+}
+
+/* One plain row of full-size cards. The page computes how many whole cards
+   fit (Home.tsx useStripCount — its CARD_W/CARD_GAP must match the width and
+   gap here) and renders exactly that many, so nothing wraps, clips, or
+   scrolls. The full lists live behind "See all". */
+/* The centered column holding the three sections — exactly as wide as the
+   cards that fit (Home.tsx sets the pixel width inline). */
+.home-strips {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.home-row {
+  display: flex;
+  gap: 16px;
+}
+
+.home-row > * {
+  width: 330px;
+  flex: none;
+  min-width: 0;
+}
+
 .fh-empty {
   margin: 0;
   font-size: 13.5px;
