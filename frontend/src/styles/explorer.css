@@ -176,12 +176,16 @@
    window-width-dependent amount, which is what a bar with no claimant looked
    like the moment the `⋮` came out.
 
-   `:has(.path-crumb)` keeps it to the PATH strip — the layout modes' static label
-   bar (StaticBreadcrumb) shares the class with a `.current` span and is left to
-   its own arrangement. Over a FOLDER the search row's `margin-left: auto` is the
-   claimant instead (.crumb-search-slot below) and this one stands down: two auto
-   margins in one row split the slack between them, which is the layout that pair
-   exists to prevent.
+   `:has(.path-crumb)` covers the PATH strip and `:has(.current)` the layout
+   modes' static label bar (StaticBreadcrumb) — same shape, same claimant: the
+   static bar renders arrows, label and star as the same opening trio, and
+   without its own claim the `space-between` slack opened up INSIDE that trio
+   (label floating mid-bar, star flung to the far right). What both exclude is
+   edit mode, whose field is neither a crumb nor a label and eats the width
+   itself. Over a FOLDER the search row's `margin-left: auto` is the claimant
+   instead (.crumb-search-slot below) and this one stands down: two auto
+   margins in one row split the slack between them, which is the layout that
+   pair exists to prevent.
 
    IT RIDES ON THE ★, NOT ON THE STRIP, since the star moved to the path's tail
    (Breadcrumb.tsx). Left where it was, the slack would open up BETWEEN the path
@@ -190,7 +194,8 @@
    now the star. The sibling combinator rather than `:last-child` because the
    zone's tail is only the star when the path is a real crumb strip; in edit mode
    the field's own `flex: 1 1 auto` eats the width and no claimant is wanted. */
-#breadcrumb .crumbs:has(.path-crumb) ~ .bookmark-star-btn {
+#breadcrumb .crumbs:has(.path-crumb) ~ .bookmark-star-btn,
+#breadcrumb .crumbs:has(.current) ~ .bookmark-star-btn {
   margin-right: auto;
 }
 
