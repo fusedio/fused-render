@@ -219,7 +219,7 @@
     <tr><td><kbd>1</kbd> … <kbd>8</kbd></td><td>switch projection view</td></tr>
     <tr><td><kbd>d</kbd></td><td>download current view</td></tr>
     <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>
-    <tr><td colspan="2" style="padding-top:10px">Perspective / fisheye: drag the image to look around. Set FOV with the slider or by typing a value.</td></tr>
+    <tr><td colspan="2" style="padding-top:10px">Perspective / fisheye / little planet: adjust the sliders (or type a value), then click Apply to render.</td></tr>
   </table>
 </div></div>
 
@@ -357,7 +357,7 @@
   function slider(key, label, min, max, step) {
     const v = P.get(key);
     return `<div class="row"><label>${label}` +
-      `<input class="num" type="number" data-p="${key}" min="${min}" ` +
+      `<input class="num" type="number" id="n-${key}" data-num="${key}" min="${min}" ` +
       `max="${max}" step="${step}" value="${v}"></label>` +
       `<input type="range" data-p="${key}" min="${min}" max="${max}" ` +
       `step="${step}" value="${v}"></div>`;
@@ -368,20 +368,8 @@
       options.map((o) => `<option value="${o[0]}"${String(o[0]) === v ? " selected" : ""}>${o[1]}</option>`).join("") +
       `</select></div>`;
   }
-  function syncControls() {
-    // Same mode as last build: refresh values in place rather than rebuilding
-    // the DOM, so a focused number field or an in-flight drag isn't clobbered.
-    els.ctrl.querySelectorAll("[data-p]").forEach((el) => {
-      if (el === document.activeElement) return;
-      const v = P.get(el.dataset.p);
-      if (el.value !== v) el.value = v;
-    });
-  }
-  let ctrlMode = null;
   function renderControls() {
     const m = mode();
-    if (m === ctrlMode) { syncControls(); return; }
-    ctrlMode = m;
     let html = "";
     if (m === "perspective") {
       html = `<h4>Perspective (e2p)</h4>` +
@@ -392,7 +380,7 @@
         sizeSelect("psize", "Output size", [["1024x576", "1024 × 576"],
           ["1280x720", "1280 × 720"], ["1920x1080", "1920 × 1080"],
           ["1080x1080", "1080 × 1080"]]) +
-        `<div class="hint">drag image to look around</div>`;
+        `<div class="hint">adjust the sliders, then Apply to render</div>`;
     } else if (m === "little_planet") {
       html = `<h4>Little planet</h4>` +
         slider("zoom", "Zoom", 0.2, 3, 0.05) +
@@ -403,28 +391,46 @@
         slider("yaw", "Yaw °", -180, 180, 1) +
         slider("pitch", "Pitch °", -90, 90, 1) +
         sizeSelect("csize", "Output size", [["512", "512 px"], ["1024", "1024 px"], ["2048", "2048 px"]]) +
-        `<div class="hint">drag image to look around</div>`;
+        `<div class="hint">adjust the sliders, then Apply to render</div>`;
     } else if (m === "cube_dice" || m === "cube_horizon" || m === "cube_faces") {
       html = `<h4>${m === "cube_faces" ? "Cube faces (e2c)" : "Cubemap (e2c)"}</h4>` +
         sizeSelect("face", "Face size", [["0", "auto (source/4)"], ["256", "256 px"],
           ["512", "512 px"], ["1024", "1024 px"]]);
     }
+    // Manual render: adjusting a control only stages its value and enables the
+    // button. Nothing re-renders until Apply commits the values to the params.
+    if (html) html += `<button class="btn primary" id="applyBtn" ` +
+      `style="margin-top:12px;width:100%" disabled>Apply changes</button>`;
     els.ctrl.style.display = html ? "block" : "none";
     els.ctrl.innerHTML = html;
+    const markDirty = () => { const ab = $("applyBtn"); if (ab) ab.disabled = false; };
     els.ctrl.querySelectorAll("[data-p]").forEach((el) => {
-      const sync = () => {
-        if (el.value === "") return;   // mid-edit blank; commit clamps on change
-        P.set(el.dataset.p, el.value);
-        els.ctrl.querySelectorAll(`[data-p="${el.dataset.p}"]`).forEach((s) => {
-          if (s !== el) s.value = el.value;
-        });
-      };
-      el.addEventListener("input", sync);
-      if (el.type === "number") el.addEventListener("change", () => {
-        const n = parseFloat(el.value);   // keep a legit 0; only empty/NaN falls back
-        el.value = Math.max(+el.min, Math.min(+el.max, isNaN(n) ? +el.min : n));
-        sync();
+      el.addEventListener("input", () => {
+        const num = $("n-" + el.dataset.p);
+        if (num) num.value = el.value;          // slider -> number box
+        markDirty();
       });
+    });
+    els.ctrl.querySelectorAll("[data-num]").forEach((el) => {
+      const range = () => els.ctrl.querySelector(`[data-p="${el.dataset.num}"]`);
+      el.addEventListener("input", () => {      // typed value -> slider (clamped)
+        const r = range();
+        if (r && el.value !== "") {
+          let n = parseFloat(el.value);
+          if (!isNaN(n)) {
+            n = Math.max(parseFloat(el.min), Math.min(parseFloat(el.max), n));
+            r.value = String(n);
+          }
+        }
+        markDirty();
+      });
+      el.addEventListener("change", () => { const r = range(); if (r) el.value = r.value; });
+    });
+    const applyBtn = $("applyBtn");
+    if (applyBtn) applyBtn.addEventListener("click", () => {
+      const vals = {};
+      els.ctrl.querySelectorAll("[data-p]").forEach((el) => { vals[el.dataset.p] = el.value; });
+      Object.keys(vals).forEach((k) => P.set(k, vals[k]));
     });
   }
 
@@ -540,19 +546,15 @@
 
     const m = mode();
     if (m === "view360") {
-      els.img.classList.remove("grabbable");
       draw360(meta);
     } else if (m === "original") {
       destroyViewer(); show("img");
-      els.img.classList.remove("grabbable");
       els.img.src = fused.rawUrl(meta.display_path);
       lastView = { path: meta.display_path };
       setViewStatus(`original pixels · ${meta.display_w}×${meta.display_h}` +
         (meta.display_w !== meta.width ? " (display copy, downscaled)" : ""), "");
     } else {
       destroyViewer();
-      els.img.classList.toggle("grabbable",
-        m === "perspective" || m === "fisheye180");
       scheduleRender();
     }
   }
@@ -566,32 +568,6 @@
     link.download = `${meta.name.replace(/\.[^.]+$/, "")}_${mode()}.jpg`;
     link.click();
   }
-
-  // ------------------------------------------------------------- drag look
-  (function dragLook() {
-    let drag = null;
-    els.img.addEventListener("pointerdown", (e) => {
-      const m = mode();
-      if (m !== "perspective" && m !== "fisheye180") return;
-      drag = { x: e.clientX, y: e.clientY, yaw: P.num("yaw"), pitch: P.num("pitch") };
-      els.img.classList.add("grabbing");
-      els.img.setPointerCapture(e.pointerId);
-    });
-    els.img.addEventListener("pointermove", (e) => {
-      if (!drag) return;
-      const fov = P.num("fov");
-      const scale = (mode() === "fisheye180" ? 120 : fov) / els.img.clientWidth;
-      let yaw = drag.yaw - (e.clientX - drag.x) * scale;
-      let pitch = drag.pitch + (e.clientY - drag.y) * scale;
-      yaw = ((yaw + 180) % 360 + 360) % 360 - 180;
-      pitch = Math.max(-90, Math.min(90, pitch));
-      P.set("yaw", Math.round(yaw));
-      P.set("pitch", Math.round(pitch));
-    });
-    const end = () => { drag = null; els.img.classList.remove("grabbing"); };
-    els.img.addEventListener("pointerup", end);
-    els.img.addEventListener("pointercancel", end);
-  })();
 
   // ------------------------------------------------------------- keyboard
   document.addEventListener("keydown", (e) => {
