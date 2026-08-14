@@ -1,77 +1,8 @@
-"""Reader backing joblib_model/template.html: a restricted, allowlisted load
-of a `.joblib`/`.pkl`/`.pickle` file, and — only when every referenced class
-turned out to be trusted — real introspection of what's inside (estimator
-hyperparameters, feature importances, and tree-ensemble structure).
-
-`pickle.load()`/`joblib.load()` is arbitrary code execution: a crafted
-`__reduce__` calls any importable callable with attacker-chosen arguments the
-moment it's unpickled, and this template is offered on any `.joblib`/`.pkl`
-a user opens — including downloaded files. So the object is never
-reconstructed except through a single restricted pass that resolves every
-referenced class/callable against an explicit allowlist *before* it is ever
-invoked.
-
-The restriction uses the "Restricting Globals" pattern from the `pickle`
-module's own docs — subclassing `Unpickler` and overriding `find_class` —
-rather than hand-parsing opcodes: CPython's Unpickler already gets the
-stack/memo bookkeeping right (GET/BINGET can make a class reference arrive
-via a memo slot rather than an adjacent literal, which a naive "last two
-strings seen" opcode-stream heuristic would get wrong), and, just as
-importantly, joblib's own on-disk format for numpy arrays isn't plain
-pickle: `joblib.numpy_pickle.NumpyUnpickler.load_build` reads raw array
-bytes directly off the file handle immediately after a genuine
-`NumpyArrayWrapper` is built, bypassing normal opcode parsing entirely. A
-naive scanner that replaces every class — including that wrapper — with an
-inert stand-in desyncs from the byte stream the moment it hits the first
-array (confirmed by hand: it throws "invalid load key" a few opcodes later,
-reading array bytes as if they were opcodes). So `_RestrictedUnpickler`
-subclasses `NumpyUnpickler` itself to inherit its framing, and
-`find_class(module, name)` resolves the REAL class via the normal
-`super().find_class()` for anything on the allowlist (needed both for
-correct framing and because the object has to be genuinely usable
-afterwards) and substitutes `_Stub` — an inert class that swallows any
-constructor/state/append/etc. call as a no-op — for anything that is not.
-`EXT1`/`EXT2`/`EXT4` and `INST`/`OBJ` all route through the same
-`find_class` call as `GLOBAL`/`STACK_GLOBAL`, so nothing bypasses this.
-
-The one guarantee this preserves absolutely: a disallowed class or callable
-is never instantiated or invoked — `find_class` simply never returns it.
-What it does NOT try to prevent is an allowlisted class (real numpy/sklearn/
-xgboost/etc.) being constructed with adversarial arguments before a later,
-disallowed reference is reached and blocks the overall verdict — that
-residual resource-exhaustion risk is the same one a from-scratch pure-opcode
-scan would still face for the eventually-safe case, and it is bounded the
-same way: the byte cap in `_bounded_bytes` (a pickle stream can only encode
-as many opcodes as it has bytes, so the cap bounds the restricted load's own
-work too), and this reader's process — like every template reader not
-listed in `fused_render/executor.py`'s `INPROCESS_HELPERS` — already runs in
-a fresh, timeout-killed subprocess per call.
-
-One allowlisted class needs a carve-out from "find_class resolves the real
-class": `NumpyArrayWrapper.read_array` (the same joblib method this reader
-depends on for framing, see above) calls a bare `pickle.load()` directly on
-the file handle when the array's dtype is `object` — entirely outside
-`find_class`, so an object-dtype array can smuggle in any callable regardless
-of the allowlist. Its declared `shape` is also used to size a `np.empty(...)`
-allocation before any array bytes are even read, so a tiny pickle can still
-declare a huge shape. `find_class` handles this by substituting
-`_SafeNumpyArrayWrapper` (and, for the joblib<=0.9 on-disk format,
-`_SafeNDArrayWrapper`) for the real wrapper class: same fields, same framing,
-but the oversized-shape case is refused outright, and the object-dtype case
-is re-read with a fresh `pickle.Unpickler` wired to the *same* restricted
-`find_class` rather than a plain one — real ensembles (GradientBoosting,
-AdaBoost, bagging, ...) genuinely store their per-round estimators in an
-object-dtype array, so it can't simply be refused without breaking ordinary
-models.
-
-A module that resolves but is not actually importable (e.g. a pickle
-referencing `catboost.*`, which is allowlisted-by-policy but not bundled
-with this template) is reported as "unavailable" rather than "blocked" —
-trusted, just absent.
-
-Self-contained on purpose: a template is a set of scripts run by the engine,
-not part of the package (SPEC PY-15/D166), so it never imports
-`fused_render`.
+"""Reader backing joblib_model/template.html: restricted, allowlist-based
+loading of untrusted `.joblib`/`.pkl`/`.pickle` files, then introspection
+(hyperparameters, feature importances, tree structure) once every referenced
+class/callable is confirmed trusted. Self-contained — templates are scripts
+run by the engine, not part of the package (SPEC PY-15/D166).
 """
 import io
 import json
@@ -82,38 +13,51 @@ import zlib
 
 import joblib.numpy_pickle
 
-_RAW_SIZE_CAP = 2 * 1024 * 1024 * 1024  # refuse to even open a pickle bigger than this
-_DECOMPRESSED_CAP = 512 * 1024 * 1024  # cap on the decompressed byte stream handed to the loader
-_MAX_ARRAY_BYTES = _DECOMPRESSED_CAP  # cap on a single array's declared size; see _SafeNumpyArrayWrapper
-_MAX_TREE_DEPTH = 200  # real trees rarely exceed depth 30-40; this only bounds pathological/adversarial state
+_RAW_SIZE_CAP = 2 * 1024 * 1024 * 1024
+_DECOMPRESSED_CAP = 512 * 1024 * 1024
+_MAX_ARRAY_BYTES = _DECOMPRESSED_CAP
+_MAX_TREE_DEPTH = 200  # real trees rarely exceed depth 30-40
 
-# Exact-symbol allow: the handful of builtin/stdlib names a pickled ML object
-# routinely needs to reconstruct plain containers and numpy scalars. Never
-# widened to a prefix — "builtins" as a prefix would allow eval/exec/open.
+# Exact-symbol allow: never widened to a prefix ("builtins" would allow eval/exec/open).
 _EXACT_ALLOW = {
     "builtins": {"dict", "list", "tuple", "set", "frozenset", "complex",
                  "bytes", "bytearray", "str", "int", "float", "bool", "slice"},
     "collections": {"OrderedDict", "defaultdict"},
     "copyreg": {"_reconstructor", "__newobj__", "__newobj_ex__"},
-    "_codecs": {"encode"},  # numpy scalars round-trip through latin1 via this
+    "_codecs": {"encode"},
 }
 
-# Prefix allow: trust-the-package, not its internal module layout (a name
-# like "sklearn.tree._tree" breaks silently on every version bump; the real
-# security boundary is which packages are trusted, not where their classes
-# happen to live this release).
+# Prefix allow: trust the package, not its internal module layout.
 _PREFIX_ALLOW = (
     "numpy.", "numpy._core.", "numpy.core.",
     "scipy.", "sklearn.", "xgboost.", "lightgbm.", "catboost.",
     "pandas.", "joblib.",
 )
 
+# A prefix-trusted FUNCTION (unlike a class) is called directly with
+# attacker-chosen arguments the moment REDUCE runs (e.g. joblib.load itself
+# would re-enter an unrestricted load) — so only these known reconstruction
+# helpers may resolve as functions; see find_class.
+_PREFIX_FUNCTION_ALLOW = {
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy.core.multiarray", "scalar"),
+    ("numpy._core.multiarray", "_reconstruct"),
+    ("numpy._core.multiarray", "scalar"),
+    ("numpy.core.numeric", "_frombuffer"),
+    ("numpy._core.numeric", "_frombuffer"),
+    ("numpy.random._pickle", "__randomstate_ctor"),
+    ("numpy.random._pickle", "__bit_generator_ctor"),
+    ("numpy.random._pickle", "__generator_ctor"),
+}
+
+
+def _is_pyx_unpickle_helper(name: str) -> bool:
+    """Cython's auto-generated `__pyx_unpickle_<Class>` reconstruction helpers."""
+    return name.startswith("__pyx_unpickle_")
+
 
 class _Stub:
-    """Stands in for every disallowed class a scanned pickle references.
-    Swallows any constructor call, state, or container mutation as a no-op,
-    so a mixed object graph (some allowed, some not) can still finish
-    loading — the disallowed branches just come out inert."""
+    """Inert stand-in for every disallowed class; swallows any call as a no-op."""
 
     def __init__(self, *args, **kwargs):
         pass
@@ -150,8 +94,7 @@ class _Stub:
 
 
 def _classify(module: str, name: str) -> bool:
-    """True if (module, name) is on the allowlist. Fail closed: anything not
-    explicitly recognised is unsafe by default."""
+    """Fail closed: anything not explicitly recognised is unsafe by default."""
     allowed_names = _EXACT_ALLOW.get(module)
     if allowed_names is not None and name in allowed_names:
         return True
@@ -159,12 +102,8 @@ def _classify(module: str, name: str) -> bool:
 
 
 class _DelegatingUnpickler(pickle.Unpickler):
-    """A plain `pickle.Unpickler` whose `find_class`/`persistent_load`
-    delegate to externally supplied callables. Needed because the
-    C-accelerated `pickle.Unpickler` refuses to have `find_class` set as an
-    instance attribute ("object attribute 'find_class' is read-only") — it
-    has to be overridden by subclassing, even though the callable itself is
-    just forwarded straight through unchanged."""
+    """Plain Unpickler with externally supplied find_class/persistent_load
+    (the C-accelerated Unpickler won't allow find_class as an instance attribute)."""
 
     def __init__(self, file_handle, find_class, persistent_load):
         super().__init__(file_handle)
@@ -179,26 +118,14 @@ class _DelegatingUnpickler(pickle.Unpickler):
 
 
 class _SafeNumpyArrayWrapper(joblib.numpy_pickle.NumpyArrayWrapper):
-    """Same fields and on-disk framing as the real `NumpyArrayWrapper`, but
-    `read_array` closes the two ways it escapes the restricted-unpickle
-    guarantee entirely (module docstring): an object-dtype array is read via
-    a bare `pickle.load()` on the file handle, and the element count comes
-    from this wrapper's own declared `shape`/`dtype`, otherwise never
-    checked against anything before `np.empty(count, dtype)` allocates it.
-
-    Real ensembles (GradientBoostingClassifier, AdaBoost, bagging, ...)
-    genuinely store their per-round estimators in an object-dtype array, so
-    the object-dtype case can't simply be refused outright without breaking
-    ordinary models — instead it's re-read with a fresh `pickle.Unpickler`
-    whose `find_class` is `unpickler.find_class` itself (the enclosing
-    `_RestrictedUnpickler`), so every reference inside still goes through the
-    same allowlist and is recorded in the same refs/blocked/missing
-    bookkeeping."""
+    """NumpyArrayWrapper.read_array bypasses find_class entirely for
+    object-dtype arrays (a bare pickle.load()) and sizes its allocation from
+    its own declared shape before reading a single byte. This closes both:
+    object-dtype content is re-read through the same restricted find_class,
+    and an oversized declared shape is refused before allocating."""
 
     def read_array(self, unpickler, ensure_native_byte_order):
         if self.dtype.hasobject:
-            # (no native-byte-order fixup needed here: that only ever matters
-            # for numeric dtypes, never for "|O" object arrays)
             embedded = _DelegatingUnpickler(unpickler.file_handle, unpickler.find_class, unpickler.persistent_load)
             return embedded.load()
         count = 1
@@ -215,11 +142,8 @@ class _SafeNumpyArrayWrapper(joblib.numpy_pickle.NumpyArrayWrapper):
 
 
 class _SafeNDArrayWrapper(joblib.numpy_pickle.NDArrayWrapper):
-    """The joblib<=0.9 compat wrapper: `read` loads an attacker-named sibling
-    file via `np.load(..., allow_pickle=True)`, the same bare-pickle escape
-    as `_SafeNumpyArrayWrapper` above, plus an attacker-controlled filename.
-    Nothing produced by any joblib in the last decade uses this format, so
-    refuse it outright rather than re-deriving numpy's own dtype sniffing."""
+    """Legacy joblib<=0.9 wrapper: loads an attacker-named sibling file via
+    np.load(allow_pickle=True). Nothing recent uses this format — refuse outright."""
 
     def read(self, unpickler):
         raise pickle.UnpicklingError(
@@ -228,10 +152,8 @@ class _SafeNDArrayWrapper(joblib.numpy_pickle.NDArrayWrapper):
 
 
 class _RestrictedUnpickler(joblib.numpy_pickle.NumpyUnpickler):
-    """`NumpyUnpickler` (not plain `pickle.Unpickler`) so joblib's own
-    array-wrapper framing (see module docstring) still works. `find_class`
-    is the sole gate: allowed references resolve for real, everything else
-    becomes an inert `_Stub` and is recorded as blocked."""
+    """find_class is the sole gate: allowed references resolve for real,
+    everything else becomes an inert _Stub and is recorded as blocked."""
 
     def __init__(self, filename, file_obj):
         super().__init__(filename, file_obj, ensure_native_byte_order=True)
@@ -241,36 +163,47 @@ class _RestrictedUnpickler(joblib.numpy_pickle.NumpyUnpickler):
         self.missing = set()
 
     def find_class(self, module, name):
-        allowed = _classify(module, name)
         key = (module, name)
-        if key not in self._seen:
-            self._seen.add(key)
-            self.refs.append({"module": module, "name": name, "allowed": allowed})
-        if not allowed:
+        first_seen = key not in self._seen
+        self._seen.add(key)
+
+        def record(final_allowed):
+            if first_seen:
+                self.refs.append({"module": module, "name": name, "allowed": final_allowed})
+
+        if not _classify(module, name):
+            record(False)
             self.blocked.append({"module": module, "name": name})
             return _Stub
         try:
             resolved = super().find_class(module, name)
         except (ImportError, AttributeError):
+            record(True)
             self.missing.add(module.split(".", 1)[0])
             return _Stub
         if resolved is joblib.numpy_pickle.NumpyArrayWrapper:
+            record(True)
             return _SafeNumpyArrayWrapper
         if resolved is joblib.numpy_pickle.NDArrayWrapper:
+            record(True)
             return _SafeNDArrayWrapper
+        exact = _EXACT_ALLOW.get(module)
+        prefix_trusted = exact is None or name not in exact
+        is_safe_function = key in _PREFIX_FUNCTION_ALLOW or _is_pyx_unpickle_helper(name)
+        if prefix_trusted and not isinstance(resolved, type) and not is_safe_function:
+            record(False)
+            self.blocked.append({"module": module, "name": name})
+            return _Stub
+        record(True)
         return resolved
 
     def persistent_load(self, pid):
-        # Out-of-band persistent references have no callable to allowlist —
-        # refuse rather than guess at what they'd resolve to.
         raise pickle.UnpicklingError(f"unsupported persistent reference: {pid!r}")
 
 
 def _decompress_capped(raw: bytes, cap: int):
     """None on cap exceeded. Recognises joblib's own zlib/gzip wrapping;
-    anything else (lz4, xz, or genuinely raw pickle bytes) passes through
-    unchanged — an unrecognised compressed format simply fails to parse as
-    pickle opcodes later, which is already treated as blocked."""
+    anything else passes through unchanged (fails to parse later, already treated as blocked)."""
     if raw[:2] == b"\x1f\x8b":
         decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
     elif raw[:1] == b"\x78":
@@ -294,9 +227,7 @@ def _decompress_capped(raw: bytes, cap: int):
 
 
 def _bounded_bytes(path: str):
-    """(bytes, error) — error is a human-readable string on failure, bytes is
-    None in that case. Never raises: a bound that can itself throw defeats
-    the point of having one."""
+    """(bytes, error); never raises."""
     try:
         size = os.path.getsize(path)
     except OSError as exc:
@@ -318,15 +249,11 @@ def _bounded_bytes(path: str):
 
 
 def _restricted_load(path: str, data: bytes):
-    """(verdict, refs, message, obj). verdict is "safe" | "unavailable" |
-    "blocked"; obj is the real reconstructed object only when verdict is
-    "safe" — a partially-stubbed object from a blocked/unavailable file is
-    never handed to the introspection helpers below."""
+    """(verdict, refs, message, obj); obj is real only when verdict is "safe"."""
     unpickler = _RestrictedUnpickler(path, io.BytesIO(data))
     try:
         obj = unpickler.load()
-    except Exception as exc:  # noqa: BLE001 - any failure here means "not
-        # proven safe", never "safe by default".
+    except Exception as exc:  # noqa: BLE001 - any failure here means "not proven safe"
         return "blocked", [], f"could not parse as a pickle stream: {exc}", None
 
     if unpickler.blocked:
@@ -337,8 +264,7 @@ def _restricted_load(path: str, data: bytes):
 
 
 def _sibling_chunks(path: str):
-    """joblib's memmap-backing sibling files, when `joblib.dump` split large
-    arrays out of the main pickle (`name.pkl_01.npy`, `_02.npy`, ...)."""
+    """joblib's memmap sibling files (`name.pkl_01.npy`, `_02.npy`, ...)."""
     base = os.path.basename(path)
     directory = os.path.dirname(path) or "."
     try:
@@ -358,12 +284,8 @@ def _short_repr(value, limit=120) -> str:
 
 
 def _json_float(v):
-    """float, or a JSON-safe string sentinel for nan/inf. The production
-    response path (fused_render/executor.py's dumps_result, `allow_nan:
-    False`) rejects non-finite floats outright with an uncaught ValueError —
-    and nan is not an exotic edge case here: XGBClassifier's default
-    `missing` param IS nan, so almost every real fitted XGBoost model has one
-    in its params."""
+    """float, or a JSON-safe string sentinel for nan/inf (XGBClassifier's
+    default `missing` param is nan, so this is common, not exotic)."""
     f = float(v)
     if math.isnan(f):
         return "NaN"
@@ -373,22 +295,12 @@ def _json_float(v):
 
 
 def _escape_path_key(key) -> str:
-    """A dict key, escaped for splicing into a synthesized dotted/bracketed
-    path. Without this, a dict key containing a literal "." (or "[]") could
-    collide with a path built from actually-nested dicts — e.g.
-    {"sensor.temp": a, "sensor": {"temp": b}} would otherwise both produce
-    the path "sensor.temp" — and template.html's
-    `data.trees.find(x => x.path === t.path)` would then silently pick the
-    wrong one."""
+    """Escapes a dict key before splicing into a synthesized dotted path, so a
+    literal "." in a key can't collide with an actually-nested path."""
     return str(key).replace("\\", "\\\\").replace(".", "\\.").replace("[", "\\[").replace("]", "\\]")
 
 
 def _describe(obj, path="", depth=0, max_depth=4):
-    """Bounded recursive structure walk: what _describe returns is also how
-    plain training-provenance metadata (dataset name, dropped-sample ids, ...)
-    surfaces for a bundle like {"classifier": ..., "dataset": "...", ...} —
-    it's just dict values the walk already shows, no separate "model card"
-    merge step needed for that part."""
     if depth >= max_depth:
         return {"path": path, "kind": "truncated"}
     if isinstance(obj, dict):
@@ -421,8 +333,7 @@ def _is_ndarray(obj) -> bool:
 
 
 def _find_estimators(obj, path="", depth=0, max_depth=4, seen=None):
-    """All objects with a scikit-learn-style get_params(), anywhere in the
-    (bounded-depth) structure, tagged with their path."""
+    """All objects with a scikit-learn-style get_params(), tagged with their path."""
     if seen is None:
         seen = set()
     if depth >= max_depth:
@@ -431,7 +342,8 @@ def _find_estimators(obj, path="", depth=0, max_depth=4, seen=None):
     if obj_id in seen:
         return []
     found = []
-    if hasattr(obj, "get_params") and callable(obj.get_params):
+    is_estimator = hasattr(obj, "get_params") and callable(obj.get_params)
+    if is_estimator:
         seen.add(obj_id)
         found.append((path, obj))
     if isinstance(obj, dict):
@@ -441,6 +353,12 @@ def _find_estimators(obj, path="", depth=0, max_depth=4, seen=None):
     elif isinstance(obj, (list, tuple)):
         for index, value in enumerate(obj[:50]):
             found.extend(_find_estimators(value, f"{path}[{index}]", depth + 1, max_depth, seen))
+    elif is_estimator and hasattr(obj, "__dict__"):
+        # Composite estimators (Pipeline, VotingClassifier, ...) hold sub-estimators
+        # as plain attributes, not get_params() values.
+        for key, value in list(vars(obj).items())[:50]:
+            child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
+            found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
     return found
 
 
@@ -480,11 +398,7 @@ def _feature_importance(path: str, est):
     elif hasattr(est, "coef_"):
         coef = est.coef_
         if getattr(coef, "ndim", 1) > 1:
-            # multi-class: one coefficient row per class. Mean of absolute
-            # values across classes is a standard, defensible way to
-            # summarize importance in one ranking, rather than arbitrarily
-            # picking class 0 and silently discarding the rest.
-            values = list(abs(coef).mean(axis=0))
+            values = list(abs(coef).mean(axis=0))  # multi-class: mean |coef| across classes
         else:
             values = [abs(float(v)) for v in coef]
     if values is None:
@@ -504,12 +418,8 @@ def _tree_kind(est):
     if hasattr(est, "booster_") and hasattr(est.booster_, "dump_model"):
         return "lightgbm"
     if hasattr(est, "estimators_"):
-        # GradientBoostingClassifier/Regressor's estimators_ is 2-D — one row
-        # of trees per boosting round, one column per class (a single column
-        # for binary/regression) — not a flat list of one tree each like a
-        # RandomForest/AdaBoost's estimators_.
         if getattr(est.estimators_, "ndim", 1) > 1:
-            return "sklearn_gradient_boosting"
+            return "sklearn_gradient_boosting"  # 2-D: one row of trees per round
         return "sklearn_forest"
     if hasattr(est, "tree_") and hasattr(est.tree_, "children_left"):
         return "sklearn_tree"
@@ -531,14 +441,9 @@ def _sklearn_tree_node(tree, node_id, depth=0):
 
 
 def _xgboost_feature_index(split: str):
-    # xgboost's JSON dump names an unnamed feature "f<index>" (a string) where
-    # sklearn/lightgbm give a bare int — normalized back to an int here so the
-    # three libraries agree on what "feature" means and the view can format it
-    # uniformly. A booster trained with real feature_names keeps its own name
-    # — including one that happens to look like "f<something>" (e.g. "f007",
-    # or "f²" whose "²" is a Unicode digit str.isdigit() accepts but int()
-    # can't parse) — so this only treats it as an auto-generated index if it
-    # round-trips exactly back to the original string.
+    """xgboost names an unnamed feature "f<index>" (a string); normalized to
+    an int only when it round-trips exactly, so a real feature literally
+    named "f007" isn't corrupted."""
     if split.startswith("f"):
         try:
             index = int(split[1:])
@@ -601,10 +506,8 @@ def _tree_ensemble(path: str, est, tree_index):
             round_idx, class_idx = divmod(idx, n_classes)
             return _sklearn_tree_node(est.estimators_[round_idx, class_idx].tree_, 0)
     elif kind == "xgboost":
-        # Tree count comes from num_boosted_rounds() (cheap: no dump), not
-        # len(get_dump()) — dumping every tree as JSON text just to count them
-        # cost 6+ seconds on a 992-tree model; get_dump() only ever runs, lazily,
-        # for the one tree actually requested.
+        # num_boosted_rounds() is cheap; get_dump() (needed only for the one
+        # requested tree) costs seconds on a large model.
         booster = est.get_booster()
         n_classes = len(est.classes_) if hasattr(est, "classes_") and len(est.classes_) > 2 else 1
         count = booster.num_boosted_rounds() * n_classes
@@ -614,7 +517,7 @@ def _tree_ensemble(path: str, est, tree_index):
         def node_builder():
             return _xgboost_tree_node(json.loads(booster.get_dump(dump_format="json")[idx]))
     elif kind == "lightgbm":
-        count = est.booster_.num_trees()  # cheap: dump_model() only runs lazily below
+        count = est.booster_.num_trees()
         meta = [{"index": i} for i in range(count)]
         idx = tree_index if tree_index is not None else 0
 
@@ -633,12 +536,7 @@ def _tree_ensemble(path: str, est, tree_index):
 
 
 def _safe(fn, *args):
-    """None on any failure. The estimator being introspected here came
-    through __reduce__/__setstate__ rather than a normal constructor, so a
-    real allowlisted class with adversarial internal state can raise from
-    these getters in ways hasattr()'s AttributeError-only suppression won't
-    catch — and one bad estimator anywhere in a multi-model bundle must not
-    kill every other estimator's data too."""
+    """None on any failure, isolating one bad estimator from the rest of the bundle."""
     try:
         return fn(*args)
     except Exception:  # noqa: BLE001 - best-effort, isolated per estimator
@@ -646,9 +544,6 @@ def _safe(fn, *args):
 
 
 def main(file: str, tree_index=None) -> dict:
-    # tree_index is intentionally unannotated (matches structure/reader.py's
-    # row_group convention): a param round-tripped through the URL arrives
-    # as a string or JS null, and an `int` annotation would blow up on null.
     try:
         idx = int(tree_index) if tree_index not in (None, "") else None
     except (TypeError, ValueError):

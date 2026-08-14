@@ -238,9 +238,7 @@ function buildStructNode(item, keyHtml, depth) {
     : item.items.map((it, i) => [String(i), it]);
   const open = item.kind === "dict" ? "{" : "[";
   const close = item.kind === "dict" ? "}" : "]";
-  // item.length is the true count server-side; item.items is capped at 50 —
-  // they can diverge, so the label (and the "+N more" row below) reflect the
-  // true count rather than just what was actually walked.
+  // item.length is the true count; item.items is capped at 50 and can diverge.
   const total = item.length !== undefined ? item.length : entries.length;
   const countLabel = `${total} ${item.kind === "dict" ? "key" : "item"}${total === 1 ? "" : "s"}`;
 
@@ -283,9 +281,7 @@ function buildStructNode(item, keyHtml, depth) {
   return container;
 }
 
-// reader.py sends nan/inf as the strings "NaN"/"Infinity"/"-Infinity" (the
-// production response path rejects literal non-finite floats) -- format
-// those as-is instead of crashing a bare .toFixed() call on a string.
+// reader.py sends nan/inf as the strings "NaN"/"Infinity"/"-Infinity"; format as-is.
 function fmtNum(v, digits) {
   return typeof v === "number" ? v.toFixed(digits) : String(v);
 }
@@ -433,9 +429,7 @@ function renderTreeSections(treesList) {
 
 function wireTreeSections(treesList) {
   treesList.forEach((t, ti) => {
-    // Section-qualified key: each estimator's tree section has its own
-    // independent selection, same idea as structure/template.html's "view"
-    // tab param but keyed per section since there can be several here.
+    // Section-qualified key: each estimator's tree section has its own selection.
     const paramKey = `tree_${ti}`;
     const select = document.getElementById(`treesel-${ti}`);
     let initialIndex = 0;

@@ -1,23 +1,7 @@
-"""End-to-end tests for the joblib model viewer template, driven through
-Playwright against a real fused-render server (FUSED_RENDER_CORE_TEMPLATES
-points at this checkout's templates so edits are served live).
+"""End-to-end tests for the joblib model viewer template (Playwright, real server).
 
-Unlike every other template's e2e test, this one also needs the optional
-`fused` local-compute-backend package importable in the SAME interpreter that
-runs the server: reader.py's dependencies (joblib/scikit-learn/xgboost/
-lightgbm) only ever get installed through that engine's per-folder project-env
-mechanism (SPEC PY-16) — without it, the built-in executor runs reader.py on
-the app's own interpreter with no per-template venv at all, and every open
-reports "No module named 'joblib'". This mirrors model_card's own note about
-needing the engine switched for its tokenizer section, except here it's not
-optional: verified manually against the running app (fused package installed
-via `uv pip install fused==2.9.3b3`) before this test was written.
-
-First run downloads scikit-learn/xgboost/lightgbm into a fresh per-template
-venv (SPEC PY-16/18), which can take a minute or more and needs network
-access — this is why it is skipped by default rather than wired into CI (no
-existing template test needs extra deps at pytest time; this is the first).
-Run explicitly:
+First run downloads scikit-learn/xgboost/lightgbm into a fresh per-template venv
+and needs the "fused" engine active, so it's opt-in, not wired into CI. Run explicitly:
     PYTHONPATH=<checkout> python -m pytest \
         fused_render/templates/joblib_model/tests/test_viewer_e2e.py -o addopts=""
 """
@@ -149,18 +133,12 @@ def _open(browser, port, path):
 
 def test_safe_bundle_renders_all_sections(server, browser):
     page, frame = _open(browser, server["port"], os.path.join(server["work"], "bundle.joblib"))
-    # timeout=240: a cold run pays for a real `uv sync` of scikit-learn/xgboost/
-    # lightgbm/pandas into this template's own venv (SPEC PY-16/18) before the
-    # first render can happen at all — confirmed via the server log the one time
-    # this legitimately took over 90s. A warm venv (every run after the first on
-    # this machine) returns in a few seconds, same as the reader.py unit tests.
+    # timeout=240: a cold run pays for a real `uv sync` of the template's venv first.
     state = _wait(lambda: frame.evaluate(
         """() => {
             const pill = document.querySelector('h1 .pill');
             if (!pill || pill.textContent !== 'Loaded') return null;
-            // The tree diagram is a SEPARATE lazily-fetched runPython call made
-            // after the initial render (a 15-tree ensemble isn't eagerly
-            // included), so it can still be loading after the pill flips.
+            // Tree diagram is a separate, lazily-fetched runPython call.
             const svgRects = document.querySelectorAll('.treebox svg rect').length;
             if (svgRects === 0) return null;
             return {
