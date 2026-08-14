@@ -1214,6 +1214,22 @@ def test_transcribing_needs_a_file_that_actually_exists(
                 if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
 
 
+def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """A page spreading an options object with an unset `vad` key must not
+    silently turn the VAD off — `bool(x, True)` reads null as False."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent, expected in (({}, True), ({"vad": None}, True),
+                           ({"vad": True}, True), ({"vad": False}, False)):
+        started = _post_transcribe(client, path=recording, **sent).json()
+        assert seen["vad"] is expected, sent
+        _wait_job(started["jobId"])
+
+
 def test_an_unknown_task_names_both_valid_ones(client, fake_transcribe_runner,
                                                recording):
     """Named rather than silently defaulted: "translation" instead of

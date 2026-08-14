@@ -353,7 +353,13 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "initialPrompt": body.get("initialPrompt") or None,
         # The VAD skips silence, which on a recording with long gaps is most of
         # the wall clock. Off is for a caller who found it clipping speech.
-        "vad": bool(body.get("vad", True)),
+        #
+        # `is None` rather than a `get` default: a JSON null means "not
+        # specified", and `bool(body.get("vad", True))` reads it as False — so
+        # a page spreading an options object with an unset key got the opposite
+        # of the documented default. `task` and `language` use `or` above and
+        # are null-safe already; this was the one that inverted.
+        "vad": True if body.get("vad") is None else bool(body.get("vad")),
         "out": base + ".json",
         "outText": base + ".txt",
     }
