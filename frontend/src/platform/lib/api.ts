@@ -162,16 +162,16 @@ export function getConfig(): Promise<Config> {
 export interface UpdateStatus {
   // idle | checking | available | installing | installed | error
   state: string;
-  // brew: install delegates to `brew upgrade --cask`; dmg: the app downloads
-  // and swaps its own bundle; none: not updatable in place.
+  // brew: the user runs `brew upgrade --cask` themselves (see manual_command);
+  // dmg: the app downloads and swaps its own bundle; none: not updatable.
   method: string;
   latest_version: string | null;
   // Bytes downloaded so far (dmg method only) — the manifest carries no total
   // size, so the UI shows MB downloaded rather than a percentage.
   progress: number | null;
   error: string | null;
-  // Set when the user must run the update themselves (brew failed) — shown
-  // with a copy button, never retried against the DMG path.
+  // Set when the user must run the update themselves (brew-managed installs,
+  // state "available") — shown with a copy button.
   manual_command: string | null;
 }
 

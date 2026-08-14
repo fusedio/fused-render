@@ -4,13 +4,15 @@ signed manifest and surfaces a newer version only through /api/config's
 `update` field — the shell shows a badge. Downloading and installing happen
 solely on an explicit POST /api/update/install.
 
-Two install methods, decided once per process:
+Two methods, decided once per process:
 
-- "brew": the running bundle is Homebrew-managed. Install delegates to
-  `brew upgrade --cask fused-render` so brew's own bookkeeping (Caskroom
-  metadata, `brew list`) stays truthful. On failure there is NO fallback to
-  the DMG path — swapping the bundle behind brew's back would desync it
-  permanently — the error surfaces the exact command for the user to run.
+- "brew": the running bundle is Homebrew-managed. The app never runs brew
+  itself — swapping the bundle behind brew's back would desync its
+  bookkeeping (Caskroom metadata, `brew list`) permanently. Instead the
+  "available" state carries `manual_command` (`brew upgrade --cask
+  fused-render`) for the user to run in a terminal; POST /api/update/install
+  is a no-op. The next check() tick reads the bundle on disk and flips to
+  "installed" once the user's upgrade lands.
 - "dmg": download the signed DMG, verify, and swap the .app bundle in place.
   Replacing the bundle under a running process is the SUPPORTED existing flow
   (a manual DMG drag does exactly this): installed.installed_version() then
@@ -49,7 +51,7 @@ CASK_NAME = "fused-render"
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
 BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
-BREW_TIMEOUT_S = 15 * 60
+BREW_COMMAND = f"brew upgrade --cask {CASK_NAME}"
 _DOWNLOAD_PREFIX = "FusedRender-"
 _DOWNLOAD_SUFFIX = ".dmg"
 # Keep a margin over the DMG itself: the download and the staged .app copy
@@ -196,6 +198,7 @@ class UpdateManager:
                         self._state = "available"
                     else:
                         self._state = "idle"
+                    self._sync_manual_command()
             return self.status()
         # The bundle on disk, not the running __version__, decides "already
         # installed": after a successful swap (ours, brew's, or a manual one
@@ -215,7 +218,17 @@ class UpdateManager:
                 else:
                     self._latest = None
                     self._state = "idle"
+                self._sync_manual_command()
         return self.status()
+
+    def _sync_manual_command(self) -> None:
+        """Brew-managed installs are never updated by the app: "available"
+        carries the terminal command for the user to run instead. Called with
+        the lock held after every check() state transition."""
+        if self._state == "available" and self.method() == "brew":
+            self._manual_command = BREW_COMMAND
+        else:
+            self._manual_command = None
 
     def _disk_version(self) -> str | None:
         """CFBundleShortVersionString of the bundle on disk — what would launch
@@ -240,6 +253,10 @@ class UpdateManager:
                 return self.status()
             if self._latest is None or self._state not in ("available", "error"):
                 return self.status()
+            if self.method() == "brew":
+                # Brew-managed: the user runs manual_command themselves; a
+                # stray POST must not put the manager into "installing".
+                return self.status()
             manifest = self._latest
             self._state = "installing"
             self._error = None
@@ -254,9 +271,7 @@ class UpdateManager:
 
     def _install(self, manifest: dict) -> None:
         try:
-            if self.method() == "brew":
-                self._install_brew(manifest)
-            elif self.method() == "dmg":
+            if self.method() == "dmg":
                 self._install_dmg(manifest)
             else:
                 raise RuntimeError("not running from an installed bundle")
@@ -269,46 +284,6 @@ class UpdateManager:
         with self._lock:
             self._state = "installed"
             self._progress = None
-
-    # -- brew path ------------------------------------------------------------
-
-    def _install_brew(self, manifest: dict) -> None:
-        brew = find_brew()
-        command = f"brew upgrade --cask {CASK_NAME}"
-        if brew is None:
-            with self._lock:
-                self._manual_command = command
-            raise RuntimeError("Homebrew was not found")
-        try:
-            result = subprocess.run(
-                [brew, "upgrade", "--cask", CASK_NAME],
-                capture_output=True, text=True, timeout=BREW_TIMEOUT_S,
-                env={**os.environ, "HOMEBREW_NO_ENV_HINTS": "1"},
-            )
-        except subprocess.TimeoutExpired as error:
-            with self._lock:
-                self._manual_command = command
-            raise RuntimeError("brew upgrade timed out") from error
-        if result.returncode != 0:
-            # No DMG fallback — a brew-managed install must stay brew-managed.
-            # Surface the exact command so the user can run it themselves.
-            tail = (result.stderr or result.stdout or "").strip().splitlines()[-5:]
-            with self._lock:
-                self._manual_command = command
-            raise RuntimeError("brew upgrade failed: " + " / ".join(tail))
-        # brew exits 0 without upgrading anything when it considers the cask
-        # current — which it is whenever the tap bump (release CI's last job)
-        # hasn't landed yet, since the signed manifest publishes first. Only
-        # the bundle on disk proves the install happened.
-        target = manifest["version"]
-        disk = self._disk_version()
-        if disk is None or common.is_newer(target, disk):
-            with self._lock:
-                self._manual_command = command
-            raise RuntimeError(
-                f"brew finished but the installed app is still v{disk or 'unknown'} "
-                f"— v{target} may not have reached the Homebrew tap yet. "
-                "Try again in a few minutes.")
 
     # -- dmg path -------------------------------------------------------------
 
