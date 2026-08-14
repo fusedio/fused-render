@@ -1720,7 +1720,7 @@ def test_a_waiting_row_never_reads_as_no_longer_reporting():
 
     Deliberately re-derived rather than left pointing at the heartbeat — a
     rationale that no longer describes the code is worse than none, because the
-    next person trusts it (D277).
+    next person trusts it (D278).
     """
     assert supervisor._QUEUE_TICK_S < jobs.STALE_AFTER_S, (
         "a queued transcription would be reported as stalled while waiting")

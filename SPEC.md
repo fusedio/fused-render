@@ -5297,7 +5297,7 @@ stop it short of quitting the app.
   until dismissed (the persistent-error toast's rule, §3). `MAX_JOBS` (64) caps
   the list; over the cap, finished rows are evicted before running ones and
   least-recently-updated first, so a live download is the last thing to go.
-  **Live SERVER work is never evicted by the cap at all** (D277), so the list
+  **Live SERVER work is never evicted by the cap at all** (D278), so the list
   can exceed `MAX_JOBS`. For work the app itself runs, the row is not a view of
   the work but its only channel — the ✕'s route to the process, and the
   completion signal `fused.watchJob` polls, which reads a missing row as work
@@ -6230,7 +6230,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   so the honest claim is "at least this much". A runner's probe that raises is
   worth no memory figure, never a broken `/health`.
 - **AI-10** **Speech to text is the third capability, and it is the first one
-  that works EVERYWHERE** (D277). `automatic-speech-recognition` — the Hub's own
+  that works EVERYWHERE** (D278). `automatic-speech-recognition` — the Hub's own
   tag — served by a `faster_whisper` runner folder built on CTranslate2, which
   publishes wheels for macOS on both architectures, Linux and Windows. That
   choice is the point of the bullet: mlx-whisper would be quicker on Apple
@@ -6305,7 +6305,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   what the row is — the cold-model wait included, since it is the longest
   reporter of the lot.
   **Why the row can no longer vanish under a live transcription is BG-6's rule,
-  not a cadence here** (D277): the cap does not evict live server work. That is
+  not a cadence here** (D278): the cap does not evict live server work. That is
   the fix nine rounds of this feature had been compensating for from the
   reporting side — restate the row harder, tick faster, rebuild on detection —
   and none of it could reach the actual consequence, because `fused.watchJob`
