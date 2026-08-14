@@ -390,7 +390,7 @@ def app_interpreter() -> str | None:
 # is unioned into it. What nothing checked is the INVERSE question — whether the
 # list is already satisfied by the interpreter the app ships. `[bundled]` bakes
 # pandas/numpy/duckdb/pyarrow/pillow/openpyxl/requests/msgpack into that
-# interpreter (a shorter list since D275, but the same argument), so a header
+# interpreter (a shorter list since D276, but the same argument), so a header
 # naming `pandas` built a multi-gigabyte venv beside the pandas already on disk,
 # then downloaded it again for the next header that differed by one package.
 #

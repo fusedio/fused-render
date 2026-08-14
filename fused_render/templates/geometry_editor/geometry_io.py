@@ -13,7 +13,7 @@ export out=<abs>        -> edited FeatureCollection (EPSG:4326, passed as the
 
 Runs in this folder's environment (`pyproject.toml`, SPEC PY-16): geopandas /
 pyogrio / pyarrow / shapely, installed on first render rather than carried by
-every app install (D275).
+every app install (D276).
 """
 
 import json

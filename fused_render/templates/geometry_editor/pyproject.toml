@@ -1,7 +1,7 @@
 # The geometry_editor template's environment (SPEC PY-16). geometry_io.py is the
 # only .py here and the only runPython entrypoint.
 #
-# geopandas and shapely left `[bundled]` with the rest of the geo stack (D275),
+# geopandas and shapely left `[bundled]` with the rest of the geo stack (D276),
 # and this template is nothing without them: `load` reads any vector format into
 # a GeoDataFrame and `export` writes GeoParquet back out, both through geopandas,
 # with shapely doing the geometry itself. Both are named even though geopandas

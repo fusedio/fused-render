@@ -3,7 +3,7 @@
 # entrypoints in their own right.
 #
 # geopandas, shapely and pyogrio are the reason this folder declares anything at
-# all — the geo stack left `[bundled]` (D275) and this template reads .shp/.gpkg/
+# all — the geo stack left `[bundled]` (D276) and this template reads .shp/.gpkg/
 # .geojson/.fgb through exactly it. pyogrio is named rather than inherited from
 # geopandas: `vector_reader.py` and `convert_parquet.py` both import it directly
 # for `pyogrio.list_layers`, and a declaration that leans on someone else's

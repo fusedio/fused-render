@@ -2,7 +2,7 @@
 # entrypoint; `inspector.py` is imported beside it and shares this venv.
 #
 # pymupdf and pikepdf are the reason this folder declares anything at all — they
-# left `[bundled]` (D275) as the two largest single wheels in it (56 MB and
+# left `[bundled]` (D276) as the two largest single wheels in it (56 MB and
 # 13 MB), and they exist for this template alone. pikepdf (qpdf) does the
 # structural work — merge, split, rotate, linearize, encryption inspection —
 # and PyMuPDF does text extraction, in-place editing and rasterization. Both are

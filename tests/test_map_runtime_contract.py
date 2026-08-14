@@ -109,7 +109,7 @@ def test_daemon_bootstraps_sibling_modules_without_launcher_sys_path(
 def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     """The Map Viewer's runtime is declared in ONE place, and it is not the app.
 
-    Two halves, and only one of them changed with D275. The half that did not:
+    Two halves, and only one of them changed with D276. The half that did not:
     the abandoned mapbox-vector-tile/xlrd/pyclipper stack must stay out of both
     `[bundled]` and the macOS force-list, and `map_render.py` must launch the
     plain interpreter it was handed rather than reaching for `uv run` — the
@@ -118,7 +118,7 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
 
     The half that did: `map/pyproject.toml` used to be asserted ABSENT, because
     the geo stack was in `[bundled]` and a folder manifest would have bought a
-    download for packages the app already had. D275 took that stack out of the
+    download for packages the app already had. D276 took that stack out of the
     extra, so the same reasoning now demands the opposite — the manifest is
     where those dependencies live, and its absence would leave every map render
     importing rasterio out of an interpreter that has none. Inverted rather than
@@ -140,7 +140,7 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
     manifest = MAP / "pyproject.toml"
     assert manifest.exists(), (
         "fused_render/templates/map/pyproject.toml is gone. The geo stack left "
-        "`[bundled]` in D275, so this folder's manifest is the only place "
+        "`[bundled]` in D276, so this folder's manifest is the only place "
         "geopandas/rasterio/rio-tiler/matplotlib are declared — without it every "
         "map render fails at import on a packaged app (SPEC PY-16)."
     )
@@ -161,7 +161,7 @@ def test_map_runtime_dependencies_stay_out_of_project_and_platform_packaging():
 
 
 def test_a_map_target_importing_what_this_venv_lacks_is_told_where_it_ran(tmp_path):
-    """The D275 capability regression, made legible (C1).
+    """The D276 capability regression, made legible (C1).
 
     A Python map target is exec'd IN THIS TEMPLATE'S PROCESS, because the
     descriptor is built from the live object it returns. That process used to be
@@ -210,7 +210,7 @@ def test_the_map_target_message_names_every_package_the_venv_actually_has():
              for d in declared]
     assert "duckdb" in names and "requests" in names, (
         "map/pyproject.toml no longer declares the two packages added for "
-        "user-supplied targets (D275); if that was deliberate, update this test "
+        "user-supplied targets (D276); if that was deliberate, update this test "
         "and worker.py's docstring together"
     )
 
@@ -259,7 +259,7 @@ def test_optional_runtime_lists_only_missing_distributions(monkeypatch):
     assert "not installed: rio-tiler" in message
     assert message.endswith("uv pip install rio-tiler")
     assert message.count("rio-tiler") == 2
-    # D275 makes this message reachable on a PACKAGED app for the first time
+    # D276 makes this message reachable on a PACKAGED app for the first time
     # (the geo stack moved from `[bundled]` into map/pyproject.toml), and a DMG
     # user cannot pip install anything. So the manual command may no longer be
     # the ONLY thing offered — the two causes a packaged user can actually act

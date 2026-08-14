@@ -93,7 +93,7 @@ def _missing_module_help(error: ModuleNotFoundError) -> str:
     above), because the descriptor is built from the live object it returns —
     not from JSON, so there is no process boundary to put between them. That
     process used to be the app's own interpreter, carrying everything `[bundled]`
-    promised user code. Since D275 it is this template's environment
+    promised user code. Since D276 it is this template's environment
     (`map/pyproject.toml`, SPEC PY-16), which contains exactly what that file
     declares and nothing else — so a target importing anything outside it fails
     here, and only here.
@@ -105,7 +105,7 @@ def _missing_module_help(error: ModuleNotFoundError) -> str:
     puzzle and a decision.
 
     A message, not a repair. `duckdb` and `requests` were added to the manifest
-    to buy back the common case (D275), but mirroring the app's whole set there
+    to buy back the common case (D276), but mirroring the app's whole set there
     would be a hand-kept second copy of `[bundled]` inside a template (D177) that
     could never be complete — a map target may import anything. The real fix is
     for the target to run under the environment PY-16 gives the USER's folder,

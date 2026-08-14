@@ -34,7 +34,7 @@ def dependency_message(feature: str, packages: Iterable[str]) -> str | None:
     honest while these lived in `[bundled]` and the only way to be missing them
     was a source checkout, where a `uv pip install` is a thing the reader can do.
 
-    D275 moved them into `map/pyproject.toml`, which makes this message reachable
+    D276 moved them into `map/pyproject.toml`, which makes this message reachable
     on a PACKAGED app for the first time — and a DMG user cannot pip install
     anything, so a message that only offers that is the exact defect D176 is
     about. The normal cause now is a project environment that has not finished

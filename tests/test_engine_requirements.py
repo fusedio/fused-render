@@ -35,7 +35,7 @@ claimed the two were in sync while being wrong in ten places.
   4. **A template that imports something the app does NOT ship must declare an
      environment at all** — the converse of 2, and the half that was missing.
      Parts 1-3 only ever constrain a folder that already has a
-     `pyproject.toml`, so shrinking `[bundled]` (D275) could have quietly left
+     `pyproject.toml`, so shrinking `[bundled]` (D276) could have quietly left
      `map`, `vector`, `slides` and friends importing distributions no packaged
      app carries, with every test still green and the failure landing on a user
      as `ModuleNotFoundError` — or, worse, as `pip install rasterio` advice a
@@ -90,7 +90,7 @@ _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 #     its folder declares, so an undeclared import of something the app happens
 #     to have is simply absent there;
 #   * the distributions `[bundled]` USED to promise and no longer does (polars,
-#     matplotlib, scipy, the PDF stack, the geo stack — D275). Part 4 needs
+#     matplotlib, scipy, the PDF stack, the geo stack — D276). Part 4 needs
 #     these: dropping them from the map at the same time as from the extra would
 #     have made every template that imports one silently exempt from BOTH halves,
 #     which is the failure the extra was shrunk under, not a consequence of it.
@@ -123,7 +123,7 @@ _IMPORT_TO_DIST = {
     "rasterio": "rasterio",
     "rio_tiler": "rio-tiler",
     "zarr": "zarr",
-    # Never named in `[bundled]`, but on the app interpreter until D275 all the
+    # Never named in `[bundled]`, but on the app interpreter until D276 all the
     # same — they arrived with geopandas and rasterio, which is precisely why
     # `map/vector_engine.py` could import both directly and nothing complained.
     # Mapped now so that borrowed edge is checked instead of assumed: a template
@@ -602,7 +602,7 @@ def test_a_template_declares_whatever_the_app_does_not_ship(relpath):
     Parts 1-3 all start from "this folder has a pyproject.toml". None of them
     can see the template that has none and needs one — and that is the state
     every template importing `rasterio`/`geopandas`/`matplotlib`/… was left in
-    the moment those left `[bundled]` (D275). The user-visible failure is a
+    the moment those left `[bundled]` (D276). The user-visible failure is a
     `ModuleNotFoundError` inside a tile request, or an install hint a packaged
     app cannot act on (D176). So the obligation runs in both directions now:
     declare nothing you already have (test_bundle_contents.py), and declare

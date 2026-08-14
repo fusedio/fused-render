@@ -6,12 +6,12 @@ machinery at all — only the fused engine can build a project environment
 the core templates import: a declaration was redundant under this engine, and
 ignoring it cost nothing.
 
-D275 ended that. `map`, `vector`, `geometry_editor` and `pdf_studio` now import
+D276 ended that. `map`, `vector`, `geometry_editor` and `pdf_studio` now import
 distributions no app interpreter ships, so under this engine their scripts can
 die on a bare `ModuleNotFoundError` from inside a tile request — a message that
 names a package but not the reason, in a packaged app where `pip install` is not
 something the user can do (D176's defect all over again). Three reachable paths,
-all of which worked before D275:
+all of which worked before D276:
 
   1. Preferences -> engine = builtin, a first-class UI toggle;
   2. `pip install "fused-render[bundled]"` on Python 3.10, where the `fused`
@@ -32,7 +32,7 @@ attached only where an import actually failed.
 Every assertion below about a missing distribution uses SIMULATED absence. The
 dev venv has the whole stack installed, so a test that asked the real
 interpreter would take the "nothing is missing" branch and prove nothing — which
-is precisely what the four D275 folders did in the version this replaces.
+is precisely what the four D276 folders did in the version this replaces.
 """
 import os
 
@@ -83,7 +83,7 @@ def _project(tmp_path, deps, body="def main():\n    return 1\n"):
 
 
 def test_a_declared_import_that_is_missing_here_explains_itself(tmp_path):
-    """The D275 regression, explained at the point it actually breaks."""
+    """The D276 regression, explained at the point it actually breaks."""
     path = _project(
         tmp_path,
         ["a-distribution-nobody-has-installed"],
@@ -178,7 +178,7 @@ def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
         worker's message survives, because the gate is the declaration and a
         module map never asked for is not this function's business;
       * **declared and absent here** (`duckdb` on a packaged app running the
-        built-in engine, the real post-D275 state) — the enrichment REPLACES
+        built-in engine, the real post-D276 state) — the enrichment REPLACES
         worker's message.
 
     The second is the interesting one and it was described wrongly before: the
@@ -276,6 +276,12 @@ _STDLIB_ONLY_RUNS = [
     ("model_card", "inspect_model.py", lambda tmp: {"path": str(tmp)}),
     ("pano", "pano.py", _equirect_image),
     ("docs", "docs.py", lambda tmp: {"action": "typst_status"}),
+    # `engine.py`, not `daemon.py`, even though #513 made the daemon the primary
+    # runPython entry point: `daemon.main()` SPAWNS a long-lived localhost server
+    # and would leave one running per test session. `engine.py` is still a real
+    # entry point — template.html falls back to `runPython("./engine.py")`
+    # whenever the daemon cannot be reached — and it is the one that answers a
+    # status action in-process.
     ("latex", "engine.py", lambda tmp: {"action": "tectonic_status"}),
 ]
 
@@ -289,7 +295,7 @@ def test_a_stdlib_only_template_really_runs_under_this_engine(
 ):
     """The headline claim of this whole change, actually executed.
 
-    These five predate D275 and each declares something heavy and optional —
+    These five predate D276 and each declares something heavy and optional —
     `imagecodecs`, `tokenizers`, `py360convert`, `pypandoc-binary` — while the
     entry point below stays stdlib-only on purpose. A folder-scoped pre-flight
     refusal took all five down, and the version of this test that replaced it
@@ -318,6 +324,6 @@ def test_a_stdlib_only_template_really_runs_under_this_engine(
     out = executor.run_python(os.path.join(root, entrypoint), params(tmp_path))
     assert out["ok"] is True, (
         f"{folder}/{entrypoint} is a stdlib-only entry point that ran fine "
-        f"before D275 and must keep running under the built-in executor however "
+        f"before D276 and must keep running under the built-in executor however "
         f"much its folder declares — got {out.get('error')}"
     )

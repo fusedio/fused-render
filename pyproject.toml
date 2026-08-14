@@ -52,7 +52,7 @@ dependencies = [
     # — a header it already meets runs with no venv at all). Core rather than an
     # extra, and declared rather than borrowed: it used to arrive transitively
     # from geopandas/matplotlib/rasterio/zarr, so a plain `pip install
-    # fused-render` had it by luck — and D275 then removed all four, which is
+    # fused-render` had it by luck — and D276 then removed all four, which is
     # what "borrowed" always eventually means. Without it every header silently
     # falls back to building its own venv — a permanent slowdown with no failing
     # test, which is exactly the shape of the `httpx`/`tomli` mistakes above.
@@ -99,7 +99,7 @@ dev = [
     # mock-based and cross-platform, but importorskip("cryptography") skips them
     # in CI unless it's installed here — it's win32-only in windows-desktop.
     "cryptography",
-    # A TEST dependency since D275, not a shipped one. The notebook kernel turns
+    # A TEST dependency since D276, not a shipped one. The notebook kernel turns
     # a cell's open figures into inline PNGs (`kernel_body.py`), which is real
     # behaviour with two tests on it — and matplotlib left `[bundled]`, so
     # nothing installed it for the suite any more. The unit test's
@@ -118,7 +118,7 @@ dev = [
 # app cannot pip install, so the interpreter ships with the popular data stack.
 # Dev installs: pip install -e ".[bundled]"
 #
-# This list is a SIZE BUDGET, not a wish list (D275). Every entry is carried by
+# This list is a SIZE BUDGET, not a wish list (D276). Every entry is carried by
 # every user of every platform build, forever, whether or not they ever open a
 # file that needs it — so a distribution earns its place here by being needed
 # from a cold start across many templates, not by being useful once. Anything
@@ -133,7 +133,7 @@ bundled = [
     "requests",
     "pillow",
     "openpyxl",
-    # REMOVED (D275): polars (197 MB — `polars` + the `polars-runtime-32` wheel
+    # REMOVED (D276): polars (197 MB — `polars` + the `polars-runtime-32` wheel
     # that carries the actual engine). It was the single largest thing in this
     # extra and NOTHING in the product imports it: no template, no core app, no
     # server code. It was here purely as an advertised convenience for user
@@ -141,12 +141,12 @@ bundled = [
     # A user who wants it declares it in their own folder's `pyproject.toml`,
     # which is the supported way to get anything else too (PY-16).
     #
-    # REMOVED (D275): scipy (70 MB). Its one consumer is
+    # REMOVED (D276): scipy (70 MB). Its one consumer is
     # `netcdf/grid_tile_server.py`, which already installs it into the daemon
     # venv it manages itself (DAEMON_DEPS, D174) — so on a packaged app it was
     # shipped once and downloaded again, and the shipped copy was never imported.
     #
-    # REMOVED (D275): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
+    # REMOVED (D276): matplotlib (25 MB with contourpy/cycler/kiwisolver). Two
     # consumers, neither of which needed it HERE: `map/geo_classify.py` (now
     # declared in fused_render/templates/map/pyproject.toml) and
     # `notebook/kernel_body.py`, which only harvests figures the user's own cell
@@ -158,7 +158,7 @@ bundled = [
     # usd/convert_worker.py's _ensure_pxr — D119).
     "python-pptx",
     "msgpack>=1.0",
-    # KEPT, against the first cut of D275, and the reason is PY-16's SCOPE. A
+    # KEPT, against the first cut of D276, and the reason is PY-16's SCOPE. A
     # declaration governs the whole FOLDER, so moving fpdf2 out put `excel` and
     # `slides` entirely behind a project venv: opening any .xlsx, any .csv in
     # Excel mode, or any .pptx would block on a first-render install of
@@ -170,7 +170,7 @@ bundled = [
     # 1.5 MB and drags fonttools (12.6) + defusedxml (0.1), and fonttools has no
     # other user left now matplotlib is gone.
     "fpdf2>=2.8.7",
-    # REMOVED (D275): pymupdf (56 MB) and pikepdf (13 MB), the two largest
+    # REMOVED (D276): pymupdf (56 MB) and pikepdf (13 MB), the two largest
     # single wheels this extra ever had. They serve `pdf_studio` alone, which is
     # a whole-folder tool — every action in it is a PDF action — so the PY-16
     # scope argument that KEPT fpdf2 above runs the other way here: the venv it
@@ -179,7 +179,7 @@ bundled = [
     # template is untouched: it renders in the browser (pdf.js) and imports
     # none of this.
     #
-    # REMOVED (D275): the geo stack — geopandas, rasterio, rio-tiler, shapely
+    # REMOVED (D276): the geo stack — geopandas, rasterio, rio-tiler, shapely
     # and zarr, 180 MB once their exclusive transitives go with them (pyogrio
     # 77, pyproj 18, numcodecs, morecantile, the pystac-ext-* fan-out). They are
     # the deepest per-user cost in the extra and they serve four templates:

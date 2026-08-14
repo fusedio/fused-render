@@ -3,7 +3,7 @@
 A script in a folder with no `pyproject.toml` runs on the app's own interpreter
 and installs nothing (PY-17). A folder that DOES declare `[project].dependencies`
 — geotiff's imagecodecs and pyproj, pano's py360convert, the pandocs, and since
-D275 the geo stacks of `map`, `vector` and `geometry_editor`, and
+D276 the geo stacks of `map`, `vector` and `geometry_editor`, and
 `pdf_studio`'s pymupdf/pikepdf — needs a
 real download, and `fused.runPython` has roughly a 30-second budget. A build
 that overruns it used to surface as a timeout or an opaque `EngineError` with

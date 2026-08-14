@@ -160,7 +160,7 @@ def explain_missing_module(path: str, error: dict) -> str | None:
     This executor spawns `[sys.executable, _child.py]` and owns no venv
     machinery: only the fused engine builds a project environment (SPEC
     PY-16/PY-18, D174). Ignoring a declaration was free while `[bundled]` carried
-    everything the core templates import; D275 ended that, so `map`, `vector`,
+    everything the core templates import; D276 ended that, so `map`, `vector`,
     `geometry_editor` and `pdf_studio` can now fail here on a bare
     `ModuleNotFoundError` raised from inside a tile request — true, and useless.
     It names a package but not the folder that asked for it, and not the fact
@@ -367,7 +367,7 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             # path on macOS/Linux). This is a native-crash fix, not an fd-policy
             # choice. The server process has libproj resident with a live SQLite
             # handle to proj.db in PROJ's SQLiteHandleCache (whenever pyproj is
-            # importable here — transitively via `fused`/geopandas until D275
+            # importable here — transitively via `fused`/geopandas until D276
             # removed the geo stack from `[bundled]`, and still so in any
             # environment that has one). fork() runs every
             # registered pthread_atfork *child* handler in the forked child

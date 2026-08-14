@@ -446,7 +446,7 @@ def missing_from_this_interpreter(project_dir: str) -> list[str]:
     `geotiff`'s `ensure()`, and `model_card`'s manifest promising the card
     "renders identically under either engine". A non-empty list here means the
     folder declares something absent; it does NOT mean this run needs it, and
-    almost every run does not (D275). The distinction is the entire lesson.
+    almost every run does not (D276). The distinction is the entire lesson.
 
     "This interpreter" is `sys.executable` itself, asked in-process through
     `importlib.metadata` — deliberately NOT `engine.app_satisfies`, which probes
