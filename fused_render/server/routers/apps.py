@@ -83,14 +83,21 @@ def api_apps():
 
 
 def _workspace_rel(root: str, path: str) -> str | None:
-    """`path` as a workspace-relative key, or None when it isn't inside the
-    workspace. The store's identity: unique at every depth the walk lists
-    (1-3), where (tag, name) is not — two depth-3 apps under different shelves
-    of one tag share both."""
-    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    """`path` as a workspace-relative, forward-slash key, or None when it isn't
+    inside the workspace. The store's identity: unique at every depth the walk
+    lists (1-3), where (tag, name) is not — two depth-3 apps under different
+    shelves of one tag share both. Normalized to "/" so a key written on
+    Windows matches the split in _app_folder_exists; the replace is os.sep-
+    conditional because on POSIX a backslash is a legal filename character."""
+    try:
+        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    except ValueError:
+        # Windows: relpath across drives has no relative form — that is just
+        # "not inside the workspace", not an error.
+        return None
     if rel == "." or rel.startswith(".."):
         return None
-    return rel
+    return rel.replace(os.sep, "/") if os.sep != "/" else rel
 
 
 def _opened_at_by_app() -> dict[str, float]:
@@ -152,9 +159,12 @@ def _app_folder_exists(rel: str) -> bool:
     """Does the workspace-relative app path currently resolve to a folder on
     disk? Rejects a key that would escape the workspace — the store is
     user-writable, so `rel` cannot be trusted to stay under it."""
-    if os.path.isabs(rel) or rel.startswith(".") or ".." in rel.split("/"):
+    # Split on the OS separator too: a user-edited backslash key on Windows
+    # must not smuggle `..` past a "/"-only split.
+    parts = rel.replace(os.sep, "/").split("/")
+    if os.path.isabs(rel) or rel.startswith(".") or ".." in parts:
         return False
-    return os.path.isdir(os.path.join(fused_dir(), rel))
+    return os.path.isdir(os.path.join(fused_dir(), *parts))
 
 
 @router.get("/api/apps/recents")

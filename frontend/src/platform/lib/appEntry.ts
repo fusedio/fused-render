@@ -170,10 +170,18 @@ export function isBrowserHandledClick(e: CardClickEvent): boolean {
 export function onAppCardClick(e: CardClickEvent, app: AppInfo): void {
   if (e.defaultPrevented) return;
   if (isBrowserHandledClick(e)) {
-    // The browser owns the navigation (new tab/window via the href), but the
-    // open still happened — record it so the recency sort sees it too. No
-    // preventDefault: recording rides alongside the browser's own handling.
-    recordAppOpen(app);
+    // The browser owns the click, but SOME of these gestures still open the
+    // app — record those so the recency sort sees them. Only the unambiguous
+    // ones: middle-click, Cmd-click and Shift-click all navigate. Ctrl-click
+    // is the context menu on macOS (no navigation) and Alt-click is a
+    // download — a false record would scramble the sort, where a missed one
+    // just falls back to the modified time, so both are skipped even though
+    // Ctrl-click does open a tab on other platforms. No preventDefault:
+    // recording rides alongside the browser's own handling.
+    const opens =
+      e.button === 1 ||
+      (e.button === 0 && (e.metaKey || e.shiftKey) && !e.ctrlKey && !e.altKey);
+    if (opens) recordAppOpen(app);
     return;
   }
   e.preventDefault();
