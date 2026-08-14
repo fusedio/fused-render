@@ -725,12 +725,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     // one of the two words, so absent must not be equated with either.
     setParam("drawer", collapsed ? "collapsed" : "open");
   }
+  // A pane changed width (sidebar, mode, or splitter). PDF canvases are sized
+  // from S.scale × dpr, never pane width, so they need no re-render — only
+  // CodeMirror, which caches its measured width, has to remeasure. (Re-rendering
+  // here would refetch + blank the PDF for nothing, and race an in-flight pass.)
+  function relayoutPanes() {
+    if (S.view) setTimeout(() => S.view.requestMeasure(), 50);
+  }
   function setSideCollapsed(collapsed) {
     document.body.classList.toggle("side-collapsed", collapsed);
     setParam("side", collapsed ? "collapsed" : "open",
              document.body.classList.contains("file-preview") ? "collapsed" : "open");
-    if (S.view) setTimeout(() => S.view.requestMeasure(), 50);   // the panes just changed width
-    if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);
+    relayoutPanes();
   }
   async function compile(force) {
     if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
@@ -1296,8 +1302,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.classList.toggle("mode-edit", mode === "edit");
     $("modeSeg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
     setParam("mode", mode, "edit");   // stamped at boot (and on every re-entry of startWorkspace) as a replace; a real switch pushes
-    if (mode === "edit" && S.view) setTimeout(() => S.view.requestMeasure(), 50);
-    if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
+    relayoutPanes();
   }
   $("modeSeg").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
   // preventDefault on mousedown so clicking Recompile doesn't pull focus out of
@@ -1338,7 +1343,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       dragging = false; sp.classList.remove("drag");
       const frac = parseFloat(ep.style.flex.split(" ")[2]) || 50;
       setParam("split", String(Math.round(frac)), "50");   // a drag that lands back on the boot ratio settles nothing new
-      if (S.lastPdf) renderPdf(S.lastPdf);
+      relayoutPanes();
     });
   })();
 
