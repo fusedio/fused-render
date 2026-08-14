@@ -1,5 +1,5 @@
-// The preview SIDEBAR's width arithmetic, as pure functions: the floors, the
-// small-screen breakpoint, and the width an unsized column opens at.
+// The preview SIDEBAR's width arithmetic, as pure functions: the floors, the one
+// share both companion columns take, and the width an unsized column opens at.
 //
 // Split out of PreviewSidebar.tsx for the same reason listing/pane-math.ts is
 // split out of pane.ts — the arithmetic is the part worth testing, and a
@@ -19,24 +19,55 @@
 export const MIN_W = 280;
 export const CONTENT_MIN_W = 320;
 
-// The small-screen breakpoint, in container pixels. 720px is preview.css's own
-// narrow-window breakpoint (the one that drops the rev badge's note), so the
-// sidebar calls "small" exactly what the rest of the preview chrome already
-// calls small, instead of introducing a second, nearby number that would make
-// the preview area change shape twice on the way down.
-export const SMALL_W = 720;
+// **THE COMPANION COLUMN'S SHARE — one rule, both surfaces** (D283, amending
+// D282/D281): **30% normally, 50% in a container of 1000px or less.** The file
+// view's sidebar and the listing's preview pane read the same function, which is
+// why it lives here and `listing/pane-math.ts` imports it rather than spelling its
+// own. The owner's words were "they are the same concept now" — after D280/D281 a
+// folder's pane is the same companion column a file gets — and two literals are
+// exactly how they came to differ (the pane was on 50%, tiering to 70%).
+//
+// **The small-screen step is BACK, and the argument that removed it was wrong.**
+// D282 deleted it claiming "the FLOOR below already says so", i.e. that at 720px
+// the 280px floor reached the same answer a 50% step would. **It does not: 280 of
+// 720 is 39%, not 50%** — the floor stops a column being unusably narrow, it does
+// not give a cramped layout the half it wants. The owner reported the gap from the
+// case that shows it, a small browser window, where a 30% companion is a column you
+// cannot read beside content that has little to show at that width either.
+//
+// **This is one step, not the tier ladder that went with it.** What D282 deleted
+// and must stay deleted: the 30/50/70% ladder on 1000px/1440px breakpoints, the
+// constants behind it, `defaultPaneFrac`, and — separately — the 700px
+// `shouldShowPane` gate. **This changes the pane's SHARE and never whether it
+// exists**; a small container still gets a pane, now a usable one. *The step below
+// reuses the ladder's FIRST BOUNDARY (1000px) and none of its behaviour: one
+// comparison with two outcomes, where the ladder had two comparisons, three
+// outcomes and a floor folded into the fraction. Sharing a number with something
+// deleted is not the same as reviving it — and picking the boundary this codebase
+// already reasoned about beats inventing a third one.*
+//
+// **The threshold is 1000px** — raised from 720 on the owner's "make it 50% for a
+// viewport a bit bigger than the current one", looking at a window that was getting
+// 30% and wanted half. 1000 is not a fresh invention: it is the old `PANE_MID_W`,
+// the first rung of the deleted tier ladder, so the boundary is one this codebase
+// already had. **1000 itself IS small** (`<=`), matching CSS `(max-width: 1000px)`
+// semantics. *It was 720 for one commit — `SMALL_W`'s old value, chosen because
+// `preview.css` calls that width narrow. That coincidence is worth less than the
+// owner's actual window, so the two numbers no longer agree and this one is right
+// for this question: how much of a container a companion column should take.*
+//
+// An UNMEASURED container (0, NaN — detached, `display:none`, or a state
+// initialiser running before layout) is deliberately NOT small: 30% is the general
+// case, and guessing 50% would open a wide window's column at half and snap it to a
+// third on the first real measurement.
+export const COMPANION_FRAC = 0.3;
+export const COMPANION_SMALL_FRAC = 0.5;
+export const COMPANION_SMALL_W = 1000;
 
-// A normal window gives the companion a third; a small one gives it half,
-// because on a narrow container a third is not a usable column — 30% of 720px
-// is 216px, under the floor CSS enforces anyway — and the thing the sidebar is
-// beside has less to show at that width too.
-export const DEFAULT_FRAC = 0.3;
-export const SMALL_FRAC = 0.5;
-
-// The share of a container this wide the column opens at. `<=` matches CSS
-// media-query semantics: `(max-width: 720px)` includes 720.
-export function defaultSideFrac(containerW: number): number {
-  return containerW <= SMALL_W ? SMALL_FRAC : DEFAULT_FRAC;
+export function companionFrac(containerW: number): number {
+  return containerW > 0 && containerW <= COMPANION_SMALL_W
+    ? COMPANION_SMALL_FRAC
+    : COMPANION_FRAC;
 }
 
 // The width an unsized column opens at inside a container this wide, with both
@@ -55,5 +86,5 @@ export function defaultSideWidth(containerW: number): number {
   if (!(containerW > 0)) return MIN_W;
   const max = containerW - CONTENT_MIN_W;
   if (max < MIN_W) return MIN_W;
-  return Math.round(Math.min(max, Math.max(MIN_W, containerW * defaultSideFrac(containerW))));
+  return Math.round(Math.min(max, Math.max(MIN_W, containerW * companionFrac(containerW))));
 }

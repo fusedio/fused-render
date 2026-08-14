@@ -196,6 +196,11 @@
       "standard_mime": "application/x-java-archive"
     },
     {
+      "extension": ".joblib",
+      "icon": "file",
+      "standard_mime": null
+    },
+    {
       "extension": ".jpeg",
       "icon": "image",
       "standard_mime": "image/jpeg"
@@ -349,6 +354,16 @@
       "extension": ".pdf",
       "icon": "doc",
       "standard_mime": "application/pdf"
+    },
+    {
+      "extension": ".pickle",
+      "icon": "file",
+      "standard_mime": null
+    },
+    {
+      "extension": ".pkl",
+      "icon": "file",
+      "standard_mime": null
     },
     {
       "extension": ".plist",

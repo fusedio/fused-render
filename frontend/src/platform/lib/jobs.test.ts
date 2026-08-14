@@ -73,6 +73,20 @@ test("a non-byte unit counts plainly", () => {
   expect(jobAmount(job({ unit: "", done: 3, total: 12 }))).toBe("3 / 12");
 });
 
+test("seconds of audio read as a CLOCK, not as a bare pair of numbers", () => {
+  // A transcription reports seconds (SPEC AI-10a), and "720 / 5400" is the
+  // number a reader takes for segments or steps — the one unit where the bare
+  // pair actively misinforms. h:mm:ss appears only once there are hours, so a
+  // short clip does not read as a long one.
+  expect(jobAmount(job({ unit: "s", done: 720, total: 5400 }))).toBe("12:00 / 1:30:00");
+  expect(jobAmount(job({ unit: "s", done: 9, total: 185 }))).toBe("0:09 / 3:05");
+});
+
+test("seconds with no total still say how far in we are", () => {
+  // The window before the decoder knows the duration — it must not read as 0.
+  expect(jobAmount(job({ unit: "s", done: 42, total: null }))).toBe("0:42");
+});
+
 test("nothing reported reads as nothing, not as 0", () => {
   expect(jobAmount(job({ done: null, total: null }))).toBe("");
 });

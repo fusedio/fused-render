@@ -19,17 +19,10 @@ const STEPS: DriveStep[] = [
     },
   },
   {
-    element: "#apps-link",
+    element: "#home-link",
     popover: {
-      title: "Apps",
-      description: "Your apps live here — build new ones with a prompt.",
-    },
-  },
-  {
-    element: "#explorer-link",
-    popover: {
-      title: "File Explorer",
-      description: "Browse and render your local files and bookmarks.",
+      title: "Home",
+      description: "Search your files, and jump back into apps, Claude sessions and recent files.",
     },
   },
   {
@@ -152,7 +145,7 @@ export function maybeAutoStartTour(): boolean {
   // has. Wait for it; the caller retries on every route change.
   if (!document.querySelector(".listing-split")) return false;
   // A collapsed sidebar is a rail with none of the tour's sidebar targets
-  // (.sidebar-brand, #explorer-link, .sidebar-bookmarks) — starting there
+  // (.sidebar-brand, #home-link, .sidebar-bookmarks) — starting there
   // would run a truncated walkthrough and mark it seen. The brand row exists
   // only in the expanded frame, so it is the expansion check.
   if (!document.querySelector(".sidebar-brand")) return false;

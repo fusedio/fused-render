@@ -116,9 +116,15 @@ def test_the_claude_backend_resolves_through_the_shared_rule(tmp_path):
 
 # ---------------------------------------------------------------- the parity
 #
-# The shell's THIRD copy of this rule (frontend/src/apps/explorer/lib/app-entry.ts,
-# read by the listing's preview pane) is pinned by its own bun test against the
-# same cases; it cannot be exercised from here, so the two Python copies are.
+# TWO copies now, and both are Python — so the parity below is the whole of it.
+#
+# There was a THIRD, in the shell (frontend/src/apps/explorer/lib/app-entry.ts,
+# read by the listing's preview pane), pinned by its own bun test against these
+# same cases. **It is deleted (D280):** selecting a folder row no longer resolves
+# the folder to its page, because merely highlighting a row must not run the
+# folder's app, and the pane was that copy's only caller. Nothing on the frontend
+# derives this rule any more — so if a third copy ever comes back, it needs its own
+# pin against these cases, and this note is what says so.
 
 
 def test_the_server_listing_resolves_the_same_page_as_the_shared_rule(tmp_path):

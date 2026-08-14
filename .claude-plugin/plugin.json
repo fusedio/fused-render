@@ -1,7 +1,7 @@
 {
   "name": "fused-render",
   "displayName": "Fused Render",
-  "description": "Skills for using and authoring fused-render: running the local explorer and opening views, plus authoring HTML pages with a fused.runPython() bridge to local Python, URL-synced params, file IO helpers, and custom preview templates.",
+  "description": "Skills for using and authoring fused-render: running the local explorer and opening views, authoring HTML pages with a fused.runPython() bridge to local Python, URL-synced params, file IO helpers, custom preview templates, the machine-wide file index, and the AI API (fused.ai text/streaming, local models, image generation).",
   "author": {
     "name": "Fused",
     "url": "https://github.com/fusedio"
@@ -14,6 +14,9 @@
     "python",
     "preview",
     "templates",
-    "data-viz"
+    "data-viz",
+    "ai",
+    "local-models",
+    "llm"
   ]
 }

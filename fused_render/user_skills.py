@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # user-level install is machine-wide, so there is no reason to subset: usage
 # guidance is as relevant as authoring.
 SKILLS = (
+    "fused-render-ai",
     "fused-render-authoring",
     "fused-render-custom-templates",
     "fused-render-index",

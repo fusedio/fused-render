@@ -137,6 +137,12 @@
   body.mode-view #pdfPane { flex: 1 1 100%; }
   body.mode-view #pdfscroll { padding: 28px; }
 
+  /* Files + Outline sidebar is collapsible via the topbar toggle; a file preview
+     opens with it collapsed so the workspace is just the editor + PDF panes, and
+     the boot skeleton drops its column too so nothing flashes first. */
+  body.side-collapsed #side { display: none; }
+  body.file-preview .boot-side { display: none; }
+
   /* tectonic-missing install prompt (shown in place of the PDF) */
   .install-box { margin: auto; max-width: 360px; text-align: center; color: var(--ink-2); padding: 24px; }
   .install-box .t { font-weight: 600; color: var(--ink); margin-bottom: 6px; }
@@ -203,6 +209,10 @@
   .brand .home-btn:hover { background: var(--hair-2); color: var(--blue); }
   .brand .home-btn svg { width: 16px; height: 16px; display: block; }
   body.has-home .brand .home-btn { display: inline-flex; }
+  .brand .side-btn { border: none; background: none; padding: 4px; border-radius: 5px; color: var(--ink-3); cursor: pointer; display: inline-flex; }
+  .brand .side-btn:hover { background: var(--hair-2); color: var(--blue); }
+  .brand .side-btn svg { width: 16px; height: 16px; display: block; }
+  body:not(.side-collapsed) .brand .side-btn { color: var(--blue); }
 
   /* ---- file browser ---- */
   .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
@@ -304,6 +314,7 @@
   <div class="brand">
     <span class="mark">TeX</span>
     <button class="home-btn" id="homeBtn" title="All documents"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5"/><path d="M5 10v10h14V10"/></svg></button>
+    <button class="side-btn" id="sideToggle" title="Files & outline" aria-label="Toggle files and outline"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></button>
   </div>
   <span class="docname" id="docName"></span>
   <div class="spacer"></div>
@@ -400,6 +411,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 (async () => {
   fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
   const FILE = fused.params.get("_file") || "";
+  if (FILE) document.body.classList.add("file-preview");
   // No _file: this template was opened directly (not as a preview of a .tex).
   // Instead of dead-ending, we show the Home library and let the user create or
   // reopen a project — its main.tex then drives the exact same workspace below.
@@ -422,10 +434,55 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // ---- shorthands
   const $ = (id) => document.getElementById(id);
-  // key:null — every engine.py action (compile/export writes, detached install,
-  // status poll, concurrent outline+bib) shares this helper; the default per-file
-  // cancellation would abort in-flight work or stall the poll loop (D114).
-  const py = (params) => fused.runPython("./engine.py", params, { key: null });
+  // Every engine action goes over a persistent localhost daemon (daemon.py)
+  // instead of runPython: under the "fused" engine each runPython pays 5–25s of
+  // backend overhead, and this template is chatty (compile, then outline+bib,
+  // plus ~1.5s warm/install status polls and a synctex probe per cursor settle).
+  // One runPython spawns the daemon and hands back {port, token}; from then on
+  // it's a direct fetch. If the daemon can't be reached for any reason we fall
+  // straight back to runPython, so the worst case is today's behaviour, never a
+  // dead call. key:null on the spawn: the default per-file cancellation would
+  // abort concurrent engine work / stall the poll loop (D114).
+  let _daemon = null, _daemonPromise = null, _daemonFailed = false;
+  function ensureDaemon() {
+    if (_daemon) return Promise.resolve(_daemon);
+    if (_daemonFailed) return Promise.resolve(null);   // tried once and failed — don't hammer runPython
+    if (_daemonPromise) return _daemonPromise;         // dedupe concurrent first-calls onto one spawn
+    _daemonPromise = (async () => {
+      try {
+        const r = await fused.runPython("./daemon.py", {}, { key: null });
+        if (r && r.port) { _daemon = r; return _daemon; }
+      } catch (e) { /* fall back to runPython below */ }
+      _daemonFailed = true;
+      return null;
+    })();
+    return _daemonPromise;
+  }
+  async function py(params) {
+    const d = await ensureDaemon();
+    if (d && d.port) {
+      let res = null;
+      try {
+        const qs = new URLSearchParams();
+        for (const [k, v] of Object.entries(params || {})) qs.set(k, v == null ? "" : String(v));
+        qs.set("_token", d.token || "");
+        res = await fetch(`http://127.0.0.1:${d.port}/run?${qs.toString()}`, { cache: "no-store" });
+      } catch (e) { /* transport failure — the daemon likely died */ }
+      if (res && res.ok) {
+        const out = await res.json();
+        // A RAISED exception rejects like runPython (drives the error overlay /
+        // callers' try-catch); a normal {error} return passes through resolved.
+        if (out && out.__exc__) {
+          const err = new Error(out.__exc__.message || "python error");
+          err.type = out.__exc__.type; err.traceback = out.__exc__.traceback;
+          throw err;
+        }
+        return out;
+      }
+      _daemon = null; _daemonPromise = null; _daemonFailed = false;   // unreachable — retire and re-ensure (respawn) next call
+    }
+    return fused.runPython("./engine.py", params, { key: null });
+  }
   // Mount-safe listing: origin lets the worker route a mount-backed dir through
   // /api/fs/list (and skip project-dir walks) instead of a kernel scan that
   // could drop the mount. Origin only; stays mount-agnostic.
@@ -668,6 +725,19 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     // one of the two words, so absent must not be equated with either.
     setParam("drawer", collapsed ? "collapsed" : "open");
   }
+  // A pane changed width (sidebar, mode, or splitter). PDF canvases are sized
+  // from S.scale × dpr, never pane width, so they need no re-render — only
+  // CodeMirror, which caches its measured width, has to remeasure. (Re-rendering
+  // here would refetch + blank the PDF for nothing, and race an in-flight pass.)
+  function relayoutPanes() {
+    if (S.view) setTimeout(() => S.view.requestMeasure(), 50);
+  }
+  function setSideCollapsed(collapsed) {
+    document.body.classList.toggle("side-collapsed", collapsed);
+    setParam("side", collapsed ? "collapsed" : "open",
+             document.body.classList.contains("file-preview") ? "collapsed" : "open");
+    relayoutPanes();
+  }
   async function compile(force) {
     if (S.compiling) { S.pendingCompile = true; return; }   // coalesce: one in flight
     S.compiling = true; setStatus("busy", "compiling…");
@@ -755,7 +825,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   }
 
   // ---- Package cache warming: the first compile on a fresh Tectonic install
-  // fetches ~30 MB of packages/fonts (a minute or two). It runs in a detached
+  // fetches ~50 MB of packages/fonts (several minutes). It runs in a detached
   // worker; we show a one-time "preparing…" panel and recompile when it lands.
   let warmPolling = false;
   function renderWarming(progress) {
@@ -768,9 +838,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       <div class="install-box">
         <div class="t">Preparing LaTeX packages…</div>
         <div class="d">The first compile downloads the LaTeX packages and fonts this
-          document needs (up to ~30&nbsp;MB) and caches them. This is a one-time step and
-          can take a minute or two — your document compiles automatically when it's ready.
-          You can keep editing in the meantime.</div>
+          document needs (~50&nbsp;MB, fetched one file at a time) and caches them. This is a
+          one-time step and can take several minutes on a slow connection — your document
+          compiles automatically when it's ready. You can keep editing in the meantime.</div>
         <div class="bar indet"><div></div></div>
         <div class="d" id="warmDetail"></div>
         <div class="err hidden" id="warmErr"></div>
@@ -1212,12 +1282,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.appendChild(a); a.click(); a.remove();
   }
   async function doExport(fmt) {
-    toast("Exporting to " + fmt + "…", 5000);
-    const r = await py({ action: "export", path: S.mainAbs, target: fmt });
-    if (r.error) { toast("Export failed: " + r.error, 5000); return; }
-    const a = document.createElement("a"); a.href = fused.rawUrl(r.path); a.download = r.name;
-    document.body.appendChild(a); a.click(); a.remove();
-    toast("Downloaded " + r.name);
+    if (S.exporting) return;   // first export can fetch pandoc (minutes) — don't overlap builds
+    S.exporting = true;
+    toast("Exporting to " + fmt + "…", 8000);
+    try {
+      const r = await py({ action: "export", path: S.mainAbs, target: fmt });
+      if (r.error) { toast("Export failed: " + r.error, 5000); return; }
+      const a = document.createElement("a"); a.href = fused.rawUrl(r.path); a.download = r.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      toast("Downloaded " + r.name);
+    } finally {
+      S.exporting = false;
+    }
   }
 
   // =========================================================== wiring
@@ -1226,8 +1302,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     document.body.classList.toggle("mode-edit", mode === "edit");
     $("modeSeg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
     setParam("mode", mode, "edit");   // stamped at boot (and on every re-entry of startWorkspace) as a replace; a real switch pushes
-    if (mode === "edit" && S.view) setTimeout(() => S.view.requestMeasure(), 50);
-    if (S.lastPdf) setTimeout(() => renderPdf(S.lastPdf), 60);   // reflow at new width
+    relayoutPanes();
   }
   $("modeSeg").querySelectorAll("button").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
   // preventDefault on mousedown so clicking Recompile doesn't pull focus out of
@@ -1239,6 +1314,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
   $("zoomOut").addEventListener("click", () => setZoom(S.scale - 0.15));
   $("addFileBtn").addEventListener("click", openFileBrowser);
   $("drawerHead").addEventListener("click", () => setDrawerCollapsed(!$("drawer").classList.contains("collapsed")));
+  $("sideToggle").addEventListener("click", () => setSideCollapsed(!document.body.classList.contains("side-collapsed")));
 
   // download / export menu
   $("menuBtn").addEventListener("click", (e) => { e.stopPropagation(); $("menu").classList.toggle("hidden"); });
@@ -1267,7 +1343,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       dragging = false; sp.classList.remove("drag");
       const frac = parseFloat(ep.style.flex.split(" ")[2]) || 50;
       setParam("split", String(Math.round(frac)), "50");   // a drag that lands back on the boot ratio settles nothing new
-      if (S.lastPdf) renderPdf(S.lastPdf);
+      relayoutPanes();
     });
   })();
 
@@ -1368,6 +1444,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
     const qZoom = parseInt(fused.params.get("zoom") || "100", 10);
     const qSplit = parseFloat(fused.params.get("split") || "50");
     const qDrawer = fused.params.get("drawer");
+    const qSide = fused.params.get("side");
+    setSideCollapsed(qSide ? qSide === "collapsed" : !opts.home);   // a preview opens collapsed; Home/project expanded
     setMode(qMode);
     S.scale = Math.max(0.4, Math.min(3, qZoom / 100));
     $("zoomLbl").textContent = Math.round(S.scale * 100) + "%";

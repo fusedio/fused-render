@@ -35,7 +35,7 @@ import type { AppInfo } from "./api";
   clearTimeout: globalThis.clearTimeout.bind(globalThis),
 };
 
-const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor } =
+const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor, sortApps } =
   await import("./appEntry");
 
 function app(over: Partial<AppInfo> = {}): AppInfo {
@@ -120,16 +120,6 @@ test("an older server that reports only entry_html still opens the page", () => 
   });
 });
 
-test("a linked app opens its page like any other app", () => {
-  // A linked app's folder lives OUTSIDE the workspace, which used to mean the
-  // card needed the registry-resolved /apps/linked/<name> route. An explorer
-  // URL is an fs path, so the entry is addressable directly and the tag stops
-  // mattering to the open path at all.
-  const linked = app({ tag: "linked", name: "notes", path: "/elsewhere/notes",
-    entry: "/elsewhere/notes/index.html", entry_html: "/elsewhere/notes/index.html" });
-  expect(hrefFor(linked)).toBe("/explorer/view/elsewhere/notes/index.html");
-});
-
 // -------------------------------------------------------------- the new tab
 
 test("href points at the same target a left click opens", () => {
@@ -198,4 +188,23 @@ test("a click something else already handled is not hijacked", () => {
   const handled = click({ defaultPrevented: true });
   onAppCardClick(handled, app());
   expect(handled.prevented).toBe(false);
+});
+
+// ------------------------------------------------------------------ ordering
+
+test("sortApps orders by last-opened, modified time standing in", () => {
+  // The one grid order (/home and /apps): opened_at desc; an app never opened
+  // ranks by updated_at; one with neither sinks to the end.
+  const opened = app({ name: "opened", opened_at: 300, updated_at: 10 });
+  const editedButUnopened = app({ name: "edited", opened_at: null, updated_at: 200 });
+  const stale = app({ name: "stale", opened_at: 100, updated_at: 400 });
+  const bare = app({ name: "bare" }); // older backend: neither key at all
+  expect(sortApps([bare, stale, editedButUnopened, opened]).map((a) => a.name))
+    .toEqual(["opened", "edited", "stale", "bare"]);
+});
+
+test("sortApps breaks timestamp ties by display name, stably", () => {
+  const b = app({ name: "b", title: "Beta", opened_at: 100 });
+  const a = app({ name: "a", title: "Alpha", opened_at: 100 });
+  expect(sortApps([b, a]).map((x) => x.name)).toEqual(["a", "b"]);
 });

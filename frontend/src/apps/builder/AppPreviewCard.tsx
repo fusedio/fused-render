@@ -23,7 +23,7 @@
 import { useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { rawUrl } from "@platform/lib/api";
-import { hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
+import { appRecency, hrefFor, onAppCardClick, openTargetFor } from "@platform/lib/appEntry";
 import { hueFor } from "@apps/builder/AppCard";
 
 import { timeAgo } from "@platform/lib/format";
@@ -47,7 +47,11 @@ export function AppPreviewCard({
   badge?: string;
 }) {
   const title = app.title || app.name;
-  const ago = timeAgo(app.updated_at);
+  // The same timestamp the grid SORTS by (last opened, modified standing in) —
+  // a card ranked first for being opened just now must not label itself with a
+  // stale modified time. appRecency's 0-for-neither is falsy, so timeAgo still
+  // returns null and the label hides.
+  const ago = timeAgo(appRecency(app));
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);

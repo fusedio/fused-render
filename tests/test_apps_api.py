@@ -3,9 +3,14 @@ the workspace's app folders (entry = the single direct-child .html), and
 POST /api/apps/new scaffolds a folder from the app starter kit and optionally
 starts a detached Claude session on its index.html.
 
-Apps live two levels under the workspace: <workspace>/<tag>/<name>/. A tag is
-any non-hidden top-level folder — there is no registry, so these tests cover
+Apps live one to three levels under the workspace (app_listing.workspace_apps),
+and a tag is the first path segment — there is no registry, so these tests cover
 arbitrary tag names alongside "local" (where POST /api/apps/new always lands).
+Every workspace staged here puts its apps at depth 2, where the rule is the
+original one: any non-hidden folder, page or no page. The tag folder itself does
+not list — a page-less folder at depth 1 is a shelf of apps, not an app — so
+these assertions are unchanged by the walk becoming recursive. The depth rules
+are exercised directly in tests/test_app_listing.py.
 
 The spawn is stubbed at the module seam (_start_app_session) — no test here
 launches a real claude.
@@ -64,9 +69,10 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     (workspace / "loose.html").write_text("<html></html>")     # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
-    assert set(apps) == {"one", "none", "many", "indexed"}
+    # `none` is absent: a page is what makes a folder an app, so a folder with no
+    # html is a shelf, not an entry-less card (app_listing.workspace_apps).
+    assert set(apps) == {"one", "many", "indexed"}
     assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
-    assert apps["none"]["entry_html"] is None
     assert apps["many"]["entry_html"] == str(workspace / "local" / "many" / "a.html")
     assert apps["indexed"]["entry_html"] == str(
         workspace / "local" / "indexed" / "index.html"
@@ -127,11 +133,15 @@ def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
 
 
 def test_entry_match_is_non_recursive(client, workspace):
+    """`app_entry` looks at DIRECT children only, so a page one level down does
+    not become the parent's entry. The parent has no page and so is not a card at
+    all; the nested page surfaces as its own app instead (the depth-3 rule)."""
     d = _app_dir(workspace, "app", htmls=())
     (d / "sub").mkdir()
     (d / "sub" / "index.html").write_text("<html></html>")
     apps = client.get("/api/apps").json()["apps"]
-    assert apps[0]["entry_html"] is None
+    assert [a["name"] for a in apps] == ["sub"]
+    assert apps[0]["entry_html"] == str(d / "sub" / "index.html")
 
 
 def test_sorted_case_insensitively(client, workspace):
@@ -224,8 +234,11 @@ def test_entry_is_reported_alongside_entry_html(client, workspace):
     """Both keys, same file — the shell reads `entry` and needs it to be there.
 
     `entry` is "the file a card opens"; `entry_html` is the narrower "this entry
-    is a renderable page". They coincide for a workspace app, and an entry-less
-    folder reports null under both rather than omitting either key.
+    is a renderable page". They coincide for a workspace app.
+
+    A page-less folder is no longer listed at all, so the walk has no null-entry
+    card to assert here; the null-under-both-keys shape remains `app_dict`'s
+    contract (it accepts `entry=None`) with no listing caller today.
     """
     _app_dir(workspace, "withentry")
     (workspace / "local" / "bare").mkdir()
@@ -234,7 +247,7 @@ def test_entry_is_reported_alongside_entry_html(client, workspace):
 
     assert apps["withentry"]["entry"] == apps["withentry"]["entry_html"]
     assert apps["withentry"]["entry"].endswith("index.html")
-    assert apps["bare"]["entry"] is None and apps["bare"]["entry_html"] is None
+    assert "bare" not in apps
 
 
 # ------------------------------------------------------------------- creation
@@ -364,10 +377,107 @@ def test_updated_at_tracks_direct_children_not_just_the_dir(client, workspace):
     assert apps[0]["updated_at"] == pytest.approx(future, abs=0.01)
 
 
-def test_updated_at_is_a_float_and_present_for_entryless_apps(client, workspace):
-    _app_dir(workspace, "empty", htmls=())
+def test_updated_at_is_a_float(client, workspace):
+    """A float in the JSON, not a string or an int — the shell sorts on it.
+
+    This used to stage a page-less folder, to pin that `updated_at` is filled in
+    even with no entry. That folder is no longer an app (a page is what makes one,
+    at any depth), so the entry-less half of the claim has no listable app left
+    to carry it and is dropped.
+    """
+    _app_dir(workspace, "stamped")
     apps = client.get("/api/apps").json()["apps"]
     assert isinstance(apps[0]["updated_at"], float)
+
+
+# ------------------------------------------------- opened_at (recency of open)
+
+@pytest.fixture()
+def recents_home(tmp_path, monkeypatch):
+    """Per-test recents store — the session-wide FUSED_RENDER_HOME is shared,
+    and app_recents.json written by one test must not rank apps in another."""
+    home = tmp_path / "frhome"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    return home
+
+
+def test_opening_an_app_stamps_opened_at_in_the_listing(
+        client, workspace, recents_home):
+    """The recency the shell sorts /home and /apps by: POST recents/open
+    records the open (keyed on the app's path), and GET /api/apps reports it
+    as epoch seconds (updated_at's unit). An app never opened carries null."""
+    _app_dir(workspace, "opened")
+    _app_dir(workspace, "untouched")
+    r = client.post("/api/apps/recents/open",
+                    json={"path": str(workspace / "local" / "opened")},
+                    headers={"X-Fused": "1"})
+    assert r.json() == {"recorded": True}
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert isinstance(apps["opened"]["opened_at"], float)
+    assert abs(apps["opened"]["opened_at"] - time.time()) < 60
+    assert apps["untouched"]["opened_at"] is None
+
+
+def test_open_records_at_every_depth_and_shelves_do_not_collide(
+        client, workspace, recents_home):
+    """The path key exists because (tag, name) was ambiguous: two depth-3 apps
+    under different shelves of one tag share both. Each depth the walk lists
+    (1-3) must record, and opening one same-named app must not stamp the other."""
+    # depth 1: the folder is its own tag; depth 3: index.html under tag/shelf/app.
+    (workspace / "solo").mkdir()
+    (workspace / "solo" / "page.html").write_text("<html></html>")
+    for shelf in ("a", "b"):
+        d = workspace / "deep" / shelf / "twin"
+        d.mkdir(parents=True)
+        (d / "index.html").write_text("<html></html>")
+    for p in ("solo", "deep/a/twin"):
+        r = client.post("/api/apps/recents/open",
+                        json={"path": str(workspace / p)},
+                        headers={"X-Fused": "1"})
+        assert r.json() == {"recorded": True}, p
+    apps = {a["path"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert isinstance(apps[str(workspace / "solo")]["opened_at"], float)
+    assert isinstance(apps[str(workspace / "deep" / "a" / "twin")]["opened_at"], float)
+    assert apps[str(workspace / "deep" / "b" / "twin")]["opened_at"] is None
+
+
+def test_open_outside_the_workspace_is_a_no_op(client, workspace, recents_home, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    r = client.post("/api/apps/recents/open",
+                    json={"path": str(outside)}, headers={"X-Fused": "1"})
+    assert r.json() == {"recorded": False}
+
+
+def test_a_malformed_recents_timestamp_never_fails_the_listing(
+        client, workspace, recents_home):
+    """app_recents.json is user-writable: a garbage openedAt drops that
+    entry's opened_at, it must not 500 GET /api/apps."""
+    _app_dir(workspace, "victim")
+    recents_home.mkdir(parents=True, exist_ok=True)
+    (recents_home / "app_recents.json").write_text(json.dumps({
+        "entries": [
+            {"path": "local/victim", "openedAt": "not-a-date"},
+            {"path": "local/victim2", "openedAt": 12345},
+        ]
+    }))
+    r = client.get("/api/apps")
+    assert r.status_code == 200
+    apps = {a["name"]: a for a in r.json()["apps"]}
+    assert apps["victim"]["opened_at"] is None
+
+
+def test_reopening_updates_opened_at_not_duplicates(
+        client, workspace, recents_home):
+    _app_dir(workspace, "again")
+    for _ in range(2):
+        client.post("/api/apps/recents/open",
+                    json={"path": str(workspace / "local" / "again")},
+                    headers={"X-Fused": "1"})
+    entries = client.get("/api/apps/recents").json()["entries"]
+    assert [e["path"] for e in entries] == ["local/again"]
+    apps = client.get("/api/apps").json()["apps"]
+    assert isinstance(apps[0]["opened_at"], float)
 
 
 # ---------------------------------------------------- the fork-safe spawn seam

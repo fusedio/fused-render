@@ -23,8 +23,10 @@ repository opened in the editor — is never committed to.
 Subprocess discipline: `git -C <dir>` (never `cwd=`) and `close_fds=False`,
 matching every other subprocess spawn in this codebase (agent.py, history.py,
 executor.py, server/ai.py). The server process gets libproj resident
-(importing the fused engine pulls geopandas→pyproj, and prefs' availability
-probe does that in-process), and from then on a plain fork() runs PROJ's
+(the fused engine's import tree reaches pyproj whenever a geo stack is
+installed beside it — it did so via geopandas until D276 took that out of
+`[bundled]`, and still does wherever one is present — and prefs' availability
+probe imports it in-process), and from then on a plain fork() runs PROJ's
 pthread_atfork child handler into a SIGSEGV before exec — the default
 close_fds=True forks here on macOS, so every `git add` died rc=-11 with empty
 stderr the moment the shell first polled /api/prefs (see apps.py's

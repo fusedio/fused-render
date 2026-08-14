@@ -40,6 +40,7 @@ import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
 import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
+import Home from "@shell/Home";
 import { learnEntryPath } from "@apps/learn";
 import { sessionsEntryPath } from "@apps/sessions";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
@@ -531,12 +532,12 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, true);
   }, []);
 
-  // The explorer home is the front door — "/" lands there. Render-time
+  // The Home page is the front door — "/" lands there. Render-time
   // write is safe — it changes pathname, so the re-render (via fused:urlchange)
   // derives the real route. (Legacy /view/_home, /view/_account, and the whole
   // /view//embed namespaces are rewritten at boot by router.ts.)
   if (location.pathname === "/") {
-    history.replaceState(null, "", "/explorer");
+    history.replaceState(null, "", "/home");
   }
   // Legacy: the CLAUDE.md explorer is a section of the Config panel again, so
   // the old page URL folds into it (same render-time rewrite as "/" above)
@@ -562,8 +563,10 @@ export default function App({ config }: { config: Config }) {
   const isAiModels = pathname === "/ai-models";
   // Apps hub = the app home: all detected apps with search + tag filters.
   const isApps = pathname === "/apps";
-  // File-explorer homepage: the bookmark launcher.
+  // File-explorer homepage: the recents/sessions/repos launcher.
   const isExplorerHome = pathname === "/explorer";
+  // The app's front door: search hero + the three recency strips.
+  const isHome = pathname === "/home";
   const isLearn = pathname === "/learn";
   const isSessions = pathname === "/sessions";
   const isClaudeConfig = pathname === "/claude-config";
@@ -576,7 +579,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isLearn || isSessions || isClaudeConfig || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isHome || isLearn || isSessions || isClaudeConfig || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -600,6 +603,8 @@ export default function App({ config }: { config: Config }) {
                 ? "AI Models"
                 : isApps
                 ? "Apps"
+                : isHome
+                  ? "Home"
                 : isExplorerHome
                   ? "File Explorer"
                   : isLearn
@@ -743,8 +748,16 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
+  } else if (isHome) {
+    // The front door: search hero + Fused Apps / Claude Sessions / Recent
+    // files strips (shell/Home.tsx).
+    main = (
+      <div id="content" key={epoch}>
+        <Home key={epoch} config={config} />
+      </div>
+    );
   } else if (isExplorerHome) {
-    // File-explorer homepage: the bookmark launcher (FilesHome).
+    // File-explorer homepage: the recents/sessions/repos launcher (FilesHome).
     main = (
       <div id="content" key={epoch}>
         <FilesHome key={epoch} config={config} />

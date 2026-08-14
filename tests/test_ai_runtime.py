@@ -13,8 +13,10 @@ that does not run.
 """
 import json
 import os
+import re
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -176,6 +178,82 @@ FAKE_IMAGE_WORKER = textwrap.dedent('''
 ''')
 
 
+# A transcription worker: loads instantly, answers /health, and writes the two
+# transcript files where the request tells it to. Stands in for
+# faster_whisper/worker.py's CONTRACT — a single JSON reply and files on disk —
+# not for Whisper.
+FAKE_TRANSCRIBE_WORKER = textwrap.dedent('''
+    import argparse, http.server, json, os, socketserver, sys, threading, time
+
+    TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+    STATE = {"state": "loading", "model": "", "detail": "", "error": "",
+             "resident_bytes": None, "loaded_at": None}
+    SEGMENTS = [{"start": 0.0, "end": 1.5, "text": "hello"},
+                {"start": 1.5, "end": 3.0, "text": "world"}]
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def ok(self):
+            if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
+                return True
+            self.send_response(403); self.send_header("Content-Length","0"); self.end_headers()
+            return False
+        def _json(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if not self.ok(): return
+            self._json(STATE)
+        def do_POST(self):
+            if not self.ok(): return
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            body = json.loads(raw or b"{}")
+            if self.path.startswith("/quit"):
+                self._json({"ok": True})
+                threading.Thread(target=lambda: (time.sleep(0.05), os._exit(0)), daemon=True).start()
+                return
+            if self.path.startswith("/generate"):
+                if os.environ.get("FAKE_TRANSCRIBE_FAILS") == "1":
+                    self._json({"ok": False, "error": "the decoder exploded"}); return
+                out, out_text = body["out"], body["outText"]
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                text = " ".join(s["text"] for s in SEGMENTS)
+                result = {"path": body["path"], "output": out, "outputText": out_text,
+                          "task": body.get("task"), "language": "en", "duration": 3.0,
+                          "seconds": 0.1}
+                with open(out, "w") as f:
+                    json.dump({**result, "segments": SEGMENTS, "text": text}, f)
+                with open(out_text, "w") as f: f.write(text + "\\n")
+                self._json({"ok": True, "result": {**result, "segments": len(SEGMENTS)}})
+                return
+            self._json({"ok": True})
+
+    class S(socketserver.ThreadingTCPServer):
+        daemon_threads = True; allow_reuse_address = True
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--model"); p.add_argument("--status", default="")
+    p.add_argument("--job", default=""); p.add_argument("--download-only", action="store_true")
+    a = p.parse_args()
+    if a.download_only:
+        sys.exit(0)
+    STATE["model"] = a.model
+    srv = S(("127.0.0.1", 0), H)
+    with open(a.status, "w") as f:
+        json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
+    def ready():
+        time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
+        STATE.update(state="ready", resident_bytes=2222, loaded_at=time.time())
+    threading.Thread(target=ready, daemon=True).start()
+    srv.serve_forever()
+''')
+
+
 @pytest.fixture()
 def fake_runner(tmp_path, monkeypatch):
     """A registry with one runner whose worker is the fake, and whose venv is
@@ -220,6 +298,34 @@ def fake_image_runner(tmp_path, monkeypatch):
     yield runner
     supervisor.unload()
     supervisor.reset()
+
+
+@pytest.fixture()
+def fake_transcribe_runner(tmp_path, monkeypatch):
+    """A registry whose ONLY runner transcribes, with the fake worker and this
+    interpreter — so no CTranslate2, no weights, no audio."""
+    folder = tmp_path / "fake_transcribe_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_TRANSCRIBE_WORKER)
+    runner = registry.Runner(
+        code="fake-whisper", capability=registry.SPEECH_TO_TEXT,
+        folder=str(folder), label="Fake whisper",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def recording(tmp_path):
+    """A file to point the route at. Its BYTES are never read — the fake worker
+    stands in for the decoder — but its existence is what the route checks."""
+    path = tmp_path / "meeting.m4a"
+    path.write_bytes(b"not really audio")
+    return str(path)
 
 
 @pytest.fixture(autouse=True)
@@ -298,6 +404,28 @@ def test_every_suggested_model_names_a_capability_with_a_runner():
     # A suggestion for a capability nothing serves is a dead card on the page.
     for capability in catalog.SUGGESTIONS:
         assert any(r.capability == capability for r in registry.all_runners()), capability
+
+
+def test_speech_recognition_is_a_capability_something_here_serves(monkeypatch):
+    """The glossary move is the whole feature from the page's point of view.
+
+    "speech recognition" is the label `ai_models` puts on a Whisper repo, and
+    while it sat in `NO_RUNNER_YET` every one of those cards showed no Load
+    button on every machine. It resolves to a capability now — and to a runner
+    on ALL of them, unlike text generation, which is the reason the runner is
+    CTranslate2 rather than MLX.
+    """
+    assert registry.capability_for_task("speech recognition") == registry.SPEECH_TO_TEXT
+    assert "speech recognition" not in registry.NO_RUNNER_YET
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    runner = registry.for_capability(registry.SPEECH_TO_TEXT)
+    assert runner is not None and runner.code == "faster-whisper"
+
+
+def test_the_registry_describes_the_transcription_runner():
+    rows = {row["code"]: row for row in registry.describe()}
+    assert rows["faster-whisper"]["capability"] == registry.SPEECH_TO_TEXT
 
 
 def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
@@ -793,13 +921,14 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
-    assert {r["code"] for r in body["runners"]} == {"mlx-text", "diffusers-image"}
+    assert {r["code"] for r in body["runners"]} == {
+        "mlx-text", "diffusers-image", "faster-whisper"}
     assert body["loaded"] == []
 
 
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
-                 "/api/ai/runtime/download", "/api/ai/image"):
+                 "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -1033,6 +1162,909 @@ def test_a_model_taken_away_mid_wait_still_says_it_was_unloaded(fake_image_runne
         supervisor._wait_ready("org/paints", registry.IMAGE_GENERATION,
                                supervisor.IMAGE_JOB_PREFIX + "waiter")
     assert "unloaded before it could be used" in str(caught.value)
+
+
+# -- transcription (SPEC §40) ---------------------------------------------------
+# Job-backed like an image and for the same reason — a 90-minute recording is
+# not a chat turn — with one addition: the transcript is a FILE, so the work
+# outlives the tab that asked for it.
+
+
+def _post_transcribe(client, **body):
+    return client.post("/api/ai/transcribe", json=body, headers={"X-Fused": "1"})
+
+
+def test_a_transcript_is_written_to_disk_and_the_job_finishes(
+        client, fake_transcribe_runner, recording):
+    started = _post_transcribe(client, path=recording).json()
+
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    # The output path the POST promised is the path that exists — no second
+    # lookup, exactly as the image route works.
+    written = json.load(open(started["output"]))
+    assert written["text"] == "hello world"
+    assert written["segments"][0]["start"] == 0.0
+    # …and the plain-text sibling beside it, for anything that wants words
+    # without timestamps.
+    assert open(started["outputText"]).read().strip() == "hello world"
+
+
+def test_the_transcribe_reply_settles_the_request_before_anything_runs(
+        client, fake_transcribe_runner, recording):
+    """Everything the caller needs comes back from the POST: which model, which
+    file, and where the transcript will land. Nothing waits on the work."""
+    reply = _post_transcribe(client, path=recording, task="translate").json()
+    assert reply["path"] == os.path.abspath(recording)
+    assert reply["model"] == catalog.default_for(registry.SPEECH_TO_TEXT)
+    assert reply["task"] == "translate"
+    assert reply["output"].endswith(".json")
+    assert os.path.dirname(reply["output"]).endswith(os.path.join("ai", "transcripts"))
+    _wait_job(reply["jobId"])
+
+
+def test_transcribing_needs_a_file_that_actually_exists(
+        client, fake_transcribe_runner, recording, tmp_path):
+    """Refused with a 400 BEFORE a job row opens. A path typo should be an
+    error the caller can show, not a progress bar that dies."""
+    for body in ({}, {"path": ""}, {"path": 7},
+                 {"path": str(tmp_path / "nothing.wav")},
+                 {"path": str(tmp_path)}):
+        assert _post_transcribe(client, **body).status_code == 400, body
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """A page spreading an options object with an unset `vad` key must not
+    silently turn the VAD off — `bool(x, True)` reads null as False."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent, expected in (({}, True), ({"vad": None}, True),
+                           ({"vad": True}, True), ({"vad": False}, False)):
+        started = _post_transcribe(client, path=recording, **sent).json()
+        assert seen["vad"] is expected, sent
+        _wait_job(started["jobId"])
+
+
+def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
+        client, fake_transcribe_runner, recording):
+    """The same page-relative rule every other path-taking call follows (RH-1).
+
+    `fused.readFile("clip.m4a")` resolves against the calling page's directory,
+    so `fused.ai.transcribe({path: "clip.m4a"})` reading it against the
+    SERVER's cwd is a trap — a 400 about a path the author never wrote, or,
+    if a same-named file happens to sit under the server's cwd, silently
+    transcribing the wrong recording. `base` is the page's own absolute path,
+    exactly as `/api/fs/raw` takes it.
+    """
+    reply = client.post("/api/ai/transcribe",
+                        json={"path": os.path.basename(recording),
+                              "base": os.path.join(os.path.dirname(recording),
+                                                   "page.html")},
+                        headers={"X-Fused": "1"})
+    assert reply.status_code == 200, reply.json()
+    assert reply.json()["path"] == recording
+    _wait_job(reply.json()["jobId"])
+
+
+def test_a_relative_path_with_no_page_is_refused_rather_than_guessed(
+        client, fake_transcribe_runner):
+    """A caller reaching the API directly has no page to resolve against, and
+    the server's cwd is never the right answer — it is wherever the app
+    happened to be launched from."""
+    response = client.post("/api/ai/transcribe", json={"path": "clip.m4a"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "absolute" in response.json()["error"]
+
+
+def test_an_unknown_task_names_both_valid_ones(client, fake_transcribe_runner,
+                                               recording):
+    """Named rather than silently defaulted: "translation" instead of
+    "translate" would otherwise transcribe in the original language and look
+    like the model ignoring the request."""
+    response = _post_transcribe(client, path=recording, task="summarise")
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "transcribe" in message and "translate" in message
+
+
+def test_the_worker_is_given_the_row_identity_to_restate(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The worker reports to this row for the whole decode, from another
+    PROCESS — so it has to be told what the row is, or its ticks cannot rebuild
+    one the manager evicted mid-run."""
+    seen = {}
+    real = supervisor.generate_transcript
+    monkeypatch.setattr(supervisor, "generate_transcript",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job))[1])
+    started = _post_transcribe(client, path=recording).json()
+    _wait_job(started["jobId"])
+
+    assert seen["row"] == {"title": os.path.basename(recording), "kind": "task",
+                           "cancellable": True, "unit": "s"}
+
+
+def test_the_terminal_report_can_rebuild_an_evicted_row(
+        client, fake_transcribe_runner, recording):
+    """A decode can run for hours, so the row may well be gone by the time it
+    finishes — and a bare `state="done"` is refused, leaving the page watching
+    a row that never completes for a transcript already on disk."""
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done"
+
+    # Evict it exactly as the cap does, then replay the terminal report.
+    with jobs._lock:
+        jobs._jobs.pop(started["jobId"], None)
+    supervisor._report(started["jobId"],
+                       **supervisor.transcribe_row_fields(os.path.basename(recording)),
+                       state="done", detail="Saved")
+    rebuilt = _row_now(started["jobId"])
+    assert rebuilt is not None and rebuilt["state"] == "done"
+    assert rebuilt["title"] == os.path.basename(recording)
+
+
+def test_a_transcription_row_is_server_owned_and_reserved(
+        client, fake_transcribe_runner, recording):
+    started = _post_transcribe(client, path=recording).json()
+    assert started["jobId"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)
+    row = _wait_job(started["jobId"])
+    assert row["owner"] == jobs.OWNER_SERVER
+    refused = client.post("/api/jobs", json={"id": started["jobId"], "state": "done"},
+                          headers={"X-Fused": "1"})
+    assert refused.status_code == 400
+
+
+def test_a_failure_reaches_the_page_even_with_the_QUEUE_OVER_THE_CAP(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The outcome a watcher sees, end to end, on the queue this feature is for.
+
+    With more than `MAX_JOBS` live server rows, a row that had just reached a
+    terminal state was the only thing the cap could still evict — so it went on
+    the next `list_jobs()`, which is the same read `fused.watchJob` polls, and
+    the page learned nothing. A success survives that because the transcript is
+    on disk; a FAILURE has no artefact, so `fused.ai.transcribe()` rejected with
+    "no longer being reported" instead of the reason.
+
+    `_wait_job` polls exactly what the bridge polls, so this asserts what the
+    page would actually observe rather than what the registry contains.
+    """
+    monkeypatch.setenv("FAKE_TRANSCRIBE_FAILS", "1")
+    # A queue already over the cap, all of it live server work.
+    for i in range(jobs.MAX_JOBS + 4):
+        supervisor._report(f"{jobs.SERVER_ID_PREFIX}ai-transcribe:bulk{i}",
+                           **supervisor._transcribe_row(f"rec{i}.m4a", "Queued…"))
+
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error", row
+    assert "exploded" in row["message"], row
+
+
+def test_a_failing_transcription_reports_the_reason_on_the_row(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    monkeypatch.setenv("FAKE_TRANSCRIBE_FAILS", "1")
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error"
+    assert "exploded" in row["message"]
+
+
+def test_a_transcription_with_no_runner_says_why_before_a_row_opens(
+        client, monkeypatch, recording):
+    """The image route's property, kept: the runner check is synchronous, so an
+    unservable request answers with the reason instead of opening a row."""
+    ghost = registry.Runner(
+        code="ghost", capability=registry.SPEECH_TO_TEXT,
+        folder="/nowhere", label="Ghost",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    response = _post_transcribe(client, path=recording)
+    assert response.status_code == 409
+    assert "not built yet" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_start_transcribe_raises_rather_than_opening_a_row(monkeypatch, recording):
+    """The same thing at the supervisor's own door, since that is where the
+    property lives — the route only passes the error on."""
+    monkeypatch.setattr(registry, "_RUNNERS", ())
+    with pytest.raises(supervisor.SupervisorError):
+        supervisor.start_transcribe(
+            "org/whisper", {"path": recording, "out": "/tmp/x.json",
+                            "outText": "/tmp/x.txt"},
+            supervisor.transcribe_job_id("abc"))
+    assert not jobs.list_jobs()
+
+
+def test_a_transcription_is_not_capped_at_the_image_timeout(monkeypatch):
+    """The socket timeout has to outlast the DECODE, because nothing is sent
+    until it finishes.
+
+    `_single` writes one JSON reply when `generate` returns, so `urlopen` blocks
+    for the whole run — and at `GENERATE_TIMEOUT_S` (900s) the 90-minute
+    recording this whole feature is designed around (~18 minutes at CPU int8)
+    times out, errors the row, and rejects `fused.ai.transcribe()` while the
+    worker carries on and writes a perfectly good transcript nobody is told
+    about. Worse, that worker still holds `GENERATE_LOCK`, so every queued
+    request repeats the failure in turn.
+    """
+    seen = {}
+
+    class _Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True, "result": {"duration": 5400.0}}).encode()
+
+    def fake_request(worker, path, body=None, timeout=None):
+        seen["timeout"] = timeout
+        return _Reply()
+
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request", fake_request)
+    supervisor.generate_transcript("org/whisper", {"path": "/x"},
+                                   supervisor.TRANSCRIBE_JOB_PREFIX + "t")
+
+    assert seen["timeout"] > supervisor.GENERATE_TIMEOUT_S
+    # Comfortably past any recording somebody would actually hand it: four
+    # hours of DECODING is ~20 hours of audio at the default model's CPU speed.
+    assert seen["timeout"] >= 4 * 3600
+
+
+def _row_now(job_id):
+    """The row as it stands RIGHT NOW — `_row` waits for a terminal state, and
+    everything below is about a row that is deliberately still running."""
+    return next((j for j in jobs.list_jobs() if j["id"] == job_id), None)
+
+
+def _wait_for_queued(job_id, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = _row_now(job_id)
+        if row and "ueued" in (row.get("detail") or ""):
+            return row
+        time.sleep(0.02)
+    return _row_now(job_id)
+
+
+def _open_transcribe_row(job, title="recording.m4a"):
+    """Open the row the way `start_transcribe` does, since these tests drive
+    `generate_transcript` directly — the first report for a job must carry a
+    title, and in production that one has already happened."""
+    supervisor._report(job, title=title, state="running", kind="task",
+                       cancellable=True, unit="s", detail="Preparing…",
+                       done=None, total=None)
+
+
+def _blocking_worker_request(release, started=None):
+    """A `_worker_request` that parks until `release` is set, like a worker
+    holding its GENERATE_LOCK through a long decode."""
+    class _Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True, "result": {"duration": 1.0}}).encode()
+
+    def request(worker, path, body=None, timeout=None):
+        if started is not None:
+            started.set()
+        release.wait(20)
+        return _Reply()
+
+    return request
+
+
+def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch):
+    """The cost of a four-hour timeout, and the bug it turned from rare to normal.
+
+    A second transcription blocks inside the worker's `_single` BEFORE it
+    reaches `heartbeat()`, so its row gets no ticks at all while it waits.
+    `jobs.STALE_AFTER_S` is 30s, so the manager labelled merely-queued work "no
+    longer reporting", its ✕ did nothing, and `_sweep` dropped the row after
+    ten minutes — at which point `fused.ai.transcribe()` rejects work that is
+    still running and about to write a perfectly good transcript.
+    """
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
+
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5), "the first transcription never reached the worker"
+
+    second = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/b"}, supervisor.TRANSCRIBE_JOB_PREFIX + "two"),
+        daemon=True)
+    second.start()
+    try:
+        row = _wait_for_queued(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+        assert row and "ueued" in (row.get("detail") or ""), row
+        assert row["state"] == "running", row
+        # Ticking is the point: a row that keeps reporting is never stalled and
+        # is never swept, however long the queue is.
+        first_update = row["updated_at"]
+        time.sleep(0.25)
+        assert _row_now(supervisor.TRANSCRIBE_JOB_PREFIX + "two")["updated_at"] > first_update
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+
+
+def test_an_EVICTED_queued_row_is_rebuilt_on_DETECTION_not_on_the_next_tick(monkeypatch):
+    """A queued row is thrown away by the cap, and it has to come back FAST.
+
+    `jobs._sweep` drops rows over `MAX_JOBS` sorted by `(running, updated_at)`,
+    and queueing is exactly what produces more than 64 rows. Two ways this
+    used to break: a rebuild carrying only a `title` came back as a different
+    row (no ✕, no unit), and — once the write cadence was slowed so the cap
+    sheds queued rows before the active decode's — a rebuild that waited for
+    the next scheduled tick left the row absent for ten seconds against a
+    watcher that gives up after ~3.5s, so the page was told a queued
+    transcription had stopped reporting.
+
+    So the write cadence is a heartbeat and the POLL is what guarantees the
+    row: it has just read the list, so it knows the row is gone and restates it
+    at once. `_QUEUE_TICK_S` is set far beyond this test's patience here —
+    nothing but detection can make it pass.
+    """
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 30.0)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
+
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "two"
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    _open_transcribe_row(job, title="recording.m4a")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5)
+
+    def run_second():
+        # Swallowed because the assertion below CANCELS this one on purpose,
+        # and a SupervisorError raised at the top of a thread is raised at
+        # nobody but pytest's unhandled-exception warning.
+        try:
+            supervisor.generate_transcript("org/w", {"path": "/recording.m4a"}, job)
+        except supervisor.SupervisorError:
+            pass
+
+    second = threading.Thread(target=run_second, daemon=True)
+    second.start()
+    try:
+        _wait_for_queued(job)
+        # Exactly what the sweep does to it when the cap bites.
+        with jobs._lock:
+            jobs._jobs.pop(job, None)
+        assert _row_now(job) is None
+
+        evicted_at = time.monotonic()
+        deadline = evicted_at + 2
+        while time.monotonic() < deadline and _row_now(job) is None:
+            time.sleep(0.01)
+        reopened = _row_now(job)
+        assert reopened is not None, "an evicted queue row never came back"
+        # Within a poll, not within a tick — the tick is 30s here, so this
+        # latency is the property under test and not incidental.
+        assert time.monotonic() - evicted_at < 1.0
+        # THE SAME row, not merely a row with the same id. A rebuild that
+        # restated only the title came back with `cancellable` defaulted to
+        # False, so the manager hid the ✕ and the user still could not stop a
+        # queued transcription — the exact failure reopening exists to prevent.
+        # `unit` matters for the same reason at one remove: without it the
+        # seconds clock reverts to a bare pair of numbers.
+        assert reopened["cancellable"] is True, reopened
+        assert reopened["state"] == "running" and reopened["kind"] == "task"
+        assert reopened["unit"] == "s"
+        assert reopened["title"] == "recording.m4a"
+        # …and the ✕ works again, which is the whole reason the row matters.
+        assert jobs.request_cancel(job) is not None
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+
+
+def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The last reporter on this path that could not rebuild its row — and the
+    likeliest of all of them to have to.
+
+    A cold model is a multi-GB pull, so `_wait_ready` is the longest-running
+    reporter in the supervisor; with the cap biting, its row is evicted during
+    the download. Its tick used to carry only a `detail`, so `upsert` refused
+    it, `_report` swallowed the error, and the row stayed gone for the whole
+    load: no progress, no ✕, and `watch()` resolving null a few seconds in
+    while the transcription was still perfectly alive.
+    """
+    # Long enough that the whole assertion below happens INSIDE the wait: the
+    # worker's own ticks would rebuild the row too, so a test that let the load
+    # finish would pass without `_wait_ready` restating anything.
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "6")
+    started = _post_transcribe(client, path=recording).json()
+    job = started["jobId"]
+
+    # Evict it exactly as the cap does, mid-load.
+    deadline = time.monotonic() + 5
+    row = None
+    while time.monotonic() < deadline:
+        row = _row_now(job)
+        if row and "Waiting for" in (row.get("detail") or ""):
+            break
+        time.sleep(0.02)
+    assert row and "Waiting for" in (row.get("detail") or ""), row
+    with jobs._lock:
+        jobs._jobs.pop(job, None)
+
+    deadline = time.monotonic() + 3
+    rebuilt = None
+    while time.monotonic() < deadline:
+        rebuilt = _row_now(job)
+        if rebuilt is not None:
+            break
+        time.sleep(0.02)
+    assert rebuilt is not None, "the wait could not rebuild its row"
+    # STILL WAITING — so it was the wait's own tick that rebuilt it, not a
+    # later reporter. That is what makes this test about `_wait_ready`.
+    assert "Waiting for" in (rebuilt.get("detail") or ""), rebuilt
+    assert rebuilt["title"] == os.path.basename(recording)
+    assert rebuilt["cancellable"] is True and rebuilt["unit"] == "s"
+    _wait_job(job, timeout=40)
+
+
+def _watcher_giveup_window_s():
+    """How long `fused.watchJob` tolerates a missing row, read from the bridge.
+
+    Two numbers in `runtime.js`: the poll interval and the number of
+    consecutive misses that resolve the promise with null. Read rather than
+    restated, for the same reason `HEARTBEAT_S` is — this is a relationship
+    between the supervisor and the page, and a copy here would go stale in the
+    direction that looks fine.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    watch = source[source.index("async watch(onUpdate, intervalMs)"):]
+    watch = watch[:watch.index("stop()")]
+    interval_ms = int(re.search(r"intervalMs \|\| (\d+)", watch).group(1))
+    misses = int(re.search(r"\+\+missing >= (\d+)", watch).group(1))
+    return misses * interval_ms / 1000.0
+
+
+def test_a_LIVE_transcription_row_is_never_absent_at_all():
+    """The guarantee, and it is now structural rather than arithmetic.
+
+    Nine rounds of this feature tried to make the row come BACK fast enough:
+    restate it on every tick, split the cadences, rebuild on detection. All of
+    it was compensation for the row being evictable in the first place, and
+    none of it could reach the real consequence — `watchJob` resolves null
+    after five consecutive misses (~3.5s) and a settled promise cannot be
+    un-settled by a row that returns.
+
+    Live server rows are exempt from the cap now
+    (`test_live_SERVER_work_is_never_evicted_by_the_cap`), so for a live
+    transcription the maximum absence is ZERO and the watcher's window does not
+    constrain any cadence this module picks. What is asserted here is that the
+    exemption actually covers the rows this feature opens — a `sys:` id and a
+    running state — because that is the link between the two modules and the
+    thing that would break silently if either end changed.
+    """
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "exempt"
+    supervisor._report(job, **supervisor._transcribe_row("rec.m4a", "Preparing…"))
+    row = _row_now(job)
+    assert row is not None
+    assert row["owner"] == jobs.OWNER_SERVER and row["state"] == "running"
+
+    # Enough page-owned rows to blow the cap several times over: the
+    # transcription row must still be there afterwards.
+    for i in range(jobs.MAX_JOBS * 2):
+        jobs.upsert({"id": f"noise{i}", "title": "x", "state": "running"})
+    assert _row_now(job) is not None, "a live transcription row was evicted"
+
+    # Every removal path was walked against a row of this exact shape and none
+    # of them reaches it: cap eviction (exempt), the age sweep (`_QUEUE_TICK_S`
+    # is far inside `STALE_DROP_S`), `dismiss` and `clear_finished` (both refuse
+    # a RUNNING row that is not stalled). ONE remote path survives — a tick
+    # thread starved past `STALE_AFTER_S` makes the row dismissible, and a user
+    # looking at "no longer reporting" may well dismiss it — and the rebuild on
+    # detection heals that, because `_transcribe_row` carries the `title` and
+    # `state: "running"` that reopen a forgotten id. So the poll cadence is the
+    # backstop's latency, and it still has to beat the watcher.
+    window = _watcher_giveup_window_s()
+    assert supervisor._QUEUE_POLL_S < window / 2, (
+        f"a dismissed-while-stalled row takes {supervisor._QUEUE_POLL_S}s to come "
+        f"back against a {window}s give-up window")
+
+
+def test_a_waiting_row_never_reads_as_no_longer_reporting():
+    """What the write cadence is FOR, now that it is not about eviction.
+
+    It used to be sized against `worker_base.HEARTBEAT_S`, to decide which live
+    row the cap would shed first. The cap does not shed live server rows any
+    more, so that relationship is gone and the only remaining constraint is the
+    honest one it always also had: a queued row must report often enough not to
+    be displayed as "no longer reporting" while it is merely waiting its turn.
+
+    Deliberately re-derived rather than left pointing at the heartbeat — a
+    rationale that no longer describes the code is worse than none, because the
+    next person trusts it (D288).
+    """
+    assert supervisor._QUEUE_TICK_S < jobs.STALE_AFTER_S, (
+        "a queued transcription would be reported as stalled while waiting")
+    # And the ✕ is read on its own, much faster cadence, so cancelling a queued
+    # transcription does not wait on the display heartbeat.
+    assert supervisor._QUEUE_POLL_S <= 1.0
+    assert supervisor._QUEUE_POLL_S < supervisor._QUEUE_TICK_S
+
+
+def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monkeypatch):
+    """`_TRANSCRIBE_LOCK` is a module global that is never re-created, so a
+    single leak is permanent and process-wide.
+
+    `_await_turn` returns HOLDING the lock, and the post-acquire cancel check
+    ran before any caller's `finally` existed — it walks `jobs.list_jobs()`, so
+    an exception there escaped with the lock held and every later transcription
+    blocked forever showing "Queued behind another transcription…" with nothing
+    running.
+    """
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "boom"
+    _open_transcribe_row(job)
+
+    def explode(_job):
+        raise RuntimeError("the job registry blew up")
+
+    monkeypatch.setattr(supervisor, "_cancel_state", explode)
+    with pytest.raises(RuntimeError):
+        supervisor._await_turn(job, "x.m4a")
+    monkeypatch.undo()
+
+    # The lock is free, so the NEXT transcription is not wedged.
+    assert supervisor._TRANSCRIBE_LOCK.acquire(blocking=False)
+    supervisor._TRANSCRIBE_LOCK.release()
+
+
+def test_the_turn_is_released_even_when_the_body_raises(monkeypatch):
+    """The pairing itself: acquisition and release are one construct, so a
+    caller cannot take a turn and forget to give it back."""
+    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title: None)
+    supervisor._TRANSCRIBE_LOCK.acquire()
+    with pytest.raises(ValueError):
+        with supervisor._transcribe_turn("sys:ai-transcribe:x", "x.m4a"):
+            raise ValueError("boom")
+    assert supervisor._TRANSCRIBE_LOCK.acquire(blocking=False)
+    supervisor._TRANSCRIBE_LOCK.release()
+
+
+def test_a_missing_row_is_UNKNOWN_rather_than_not_cancelled():
+    """The half that matters on its own. `cancel_requested` is server state no
+    report can restore, so a poller reading a missing row as False is guessing
+    — usually right, occasionally losing a ✕, and silent either way."""
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "ghost"
+    assert supervisor._cancel_state(job) is None
+    assert supervisor._cancel_requested(job) is False  # unchanged for its callers
+
+    supervisor._report(job, **supervisor._transcribe_row("x.m4a", "Preparing…"))
+    assert supervisor._cancel_state(job) is False
+    jobs.request_cancel(job)
+    assert supervisor._cancel_state(job) is True
+
+
+def test_the_cross_on_a_QUEUED_transcription_is_honoured(monkeypatch):
+    """Its ✕ used to do nothing: cancellation reaches a worker through the
+    reply to a tick, and a queued request is not ticking — nor has anything of
+    it reached the worker to cancel."""
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
+
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/w", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5)
+
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "two"
+    _open_transcribe_row(job)
+    failed = {}
+
+    def run():
+        try:
+            supervisor.generate_transcript("org/w", {"path": "/b"}, job)
+        except supervisor.SupervisorError as e:
+            failed["error"] = str(e)
+
+    second = threading.Thread(target=run, daemon=True)
+    second.start()
+    try:
+        _wait_for_queued(job)
+        jobs.request_cancel(job)
+        second.join(5)
+        assert failed.get("error") == "cancelled", failed
+    finally:
+        release.set()
+        first.join(10)
+
+
+def test_the_cross_is_honoured_on_the_UNCONTENDED_path_too(monkeypatch):
+    """The cancel check has to sit on every route into "we hold the lock", not
+    only on the slow one.
+
+    `_await_turn`'s fast path — one non-blocking acquire, added so a lone
+    transcription's row is untouched — returned holding the lock without ever
+    reading `cancel_requested`. So with a model already resident, a ✕ pressed
+    on "Preparing…" still POSTed `/generate` and started faster-whisper's eager
+    full-file decode; the cancel was noticed a tick later, by which point the
+    abandoned decode thread was running and the NEXT transcription had to wait
+    it out (`_await_orphan`). An optimisation that skips a guard is the guard
+    being wrong, not the optimisation.
+    """
+    posted = []
+    monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        lambda *a, **k: posted.append(a) or pytest.fail(
+                            "a cancelled transcription reached the worker"))
+
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "solo"
+    _open_transcribe_row(job)
+    jobs.request_cancel(job)
+
+    # Nothing else holds the lock: this is the uncontended path, start to finish.
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor.generate_transcript("org/w", {"path": "/a"}, job)
+    assert str(caught.value) == "cancelled"
+    assert not posted
+    # And the lock is not left held behind the raise, or the next transcription
+    # queues forever behind a request that never ran.
+    assert supervisor._TRANSCRIBE_LOCK.acquire(blocking=False)
+    supervisor._TRANSCRIBE_LOCK.release()
+
+
+def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(monkeypatch):
+    """Resolving the worker outside the lock lets a queued request kill a
+    running one.
+
+    `_wait_ready` -> `_start_resident` evicts whatever holds the capability when
+    the model differs: it sets `stopping` and terminates the worker. Done before
+    taking `_TRANSCRIBE_LOCK`, that is the ONE destructive step in this path
+    happening outside the lock that exists to serialize it — so a page asking
+    for `faster-whisper-small` while a 90-minute run is mid-decode on the
+    catalog default kills that worker, loses the transcript, fails the first row
+    with "the transcription process did not answer", and then queues behind a
+    lock nobody is holding.
+
+    The same ordering breaks the identical-model case more quietly: a `worker`
+    captured before a wait that can last hours is a handle to a process an
+    unload may since have killed, so the request goes to a dead port instead of
+    re-resolving.
+    """
+    release = threading.Event()
+    first_in_flight = threading.Event()
+    resolved = []
+
+    def spy_ready_worker(capability, model=None):
+        resolved.append(model)
+        return object()
+
+    monkeypatch.setattr(supervisor, "ready_worker", spy_ready_worker)
+    monkeypatch.setattr(
+        supervisor, "_wait_ready",
+        lambda *a, **k: pytest.fail("a queued request evicted the running model"))
+    monkeypatch.setattr(supervisor, "_worker_request",
+                        _blocking_worker_request(release, first_in_flight))
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
+
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "one")
+    _open_transcribe_row(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+    first = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/default", {"path": "/a"}, supervisor.TRANSCRIBE_JOB_PREFIX + "one"),
+        daemon=True)
+    first.start()
+    assert first_in_flight.wait(5)
+
+    second = threading.Thread(
+        target=supervisor.generate_transcript,
+        args=("org/other", {"path": "/b"}, supervisor.TRANSCRIBE_JOB_PREFIX + "two"),
+        daemon=True)
+    second.start()
+    try:
+        _wait_for_queued(supervisor.TRANSCRIBE_JOB_PREFIX + "two")
+        # The whole point: while the first is still decoding, the second has
+        # touched NOTHING about which model is resident.
+        assert resolved == ["org/default"], resolved
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+    # …and once it had its turn, it resolved for itself rather than reusing a
+    # handle taken before the wait.
+    assert resolved == ["org/default", "org/other"], resolved
+
+
+def _run_ai_transcribe(readfile, record, node_required=True):
+    """Run `aiTranscribe` out of runtime.js under node, against stubs.
+
+    The same extraction the claude suites use (`tests/test_claude_narrow.py`):
+    a named function is lifted out and driven with its closure stubbed, because
+    what matters is the decision it reaches rather than the DOM it reached it
+    in. This bridge had only source assertions until now, which cannot tell a
+    typed rejection from an untyped one.
+
+    `readfile` is JS for the body of the stub `readFile`; `record` is the job
+    row `watch` resolves with. Returns the settled outcome as a dict.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own transcription glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    end = source.index("\n  }\n", start) + 4
+    fn = source[start:end]
+
+    prelude = f"""
+      const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
+                        outputText: "/t/out.txt", path: "/t/a.m4a",
+                        model: "m", task: "transcribe"}};
+      const window = {{location: {{search: "?path=/pages/p.html"}}}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const readFile = () => {readfile};
+      const watchJob = () => ({{
+        watch: () => Promise.resolve({record}),
+        get: () => Promise.resolve({record}),
+        stop() {{}}, cancel: () => Promise.resolve(true),
+      }});
+    """
+    call = """
+      aiTranscribe({path: "a.m4a"}).then(
+        (value) => console.log(JSON.stringify({ok: true, value})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, jobId: err.jobId})),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_an_unreadable_transcript_rejects_TYPED_like_every_other_failure():
+    """`done()` does I/O, so it can fail on its own — a transcript deleted
+    between the row going `done` and this fetch, an unreadable path, a
+    truncated file that fails `JSON.parse`.
+
+    Untyped, those arrived as a bare `SyntaxError` or "failed to read … HTTP
+    404" with no `.type` and no `.jobId`, so a caller switching on `err.type`
+    fell through to its unknown-error path on the one failure it could most
+    easily explain — while the sibling branch three lines below was typed.
+    `aiImage` has no equivalent exposure: its `done()` does no I/O.
+    """
+    row = '{state: "done"}'
+    missing = _run_ai_transcribe('Promise.reject(new Error("failed to read (HTTP 404)"))', row)
+    assert missing["ok"] is False
+    assert missing["type"] == "ai_error"
+    assert missing["jobId"] == "sys:ai-transcribe:x"
+    assert "transcript could not be read" in missing["message"]
+
+    truncated = _run_ai_transcribe('Promise.resolve("{\\"text\\": ")', row)
+    assert truncated["ok"] is False and truncated["type"] == "ai_error"
+    assert truncated["jobId"] == "sys:ai-transcribe:x"
+
+
+def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
+    """The success path, end to end through the real function."""
+    good = ('Promise.resolve(JSON.stringify({text: "hello world", '
+            'segments: [{start: 0, end: 1.5, text: "hello world"}], '
+            'language: "en", duration: 1.5}))')
+    settled = _run_ai_transcribe(good, '{state: "done"}')
+    assert settled["ok"] is True, settled
+    value = settled["value"]
+    assert value["text"] == "hello world"
+    assert value["segments"][0]["end"] == 1.5
+    assert value["language"] == "en" and value["duration"] == 1.5
+    assert value["url"] == "/api/fs/raw?path=/t/out.json"
+
+
+def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
+    settled = _run_ai_transcribe('Promise.reject(new Error("no file"))',
+                                 '{state: "cancelled"}')
+    assert settled["ok"] is False and settled["type"] == "cancelled"
+    assert "cancelled" in settled["message"]
+
+
+def test_both_artefact_bridges_survive_a_row_that_aged_out():
+    """The page half, pinned as an INVARIANT rather than an instance.
+
+    Both `fused.ai.image` and `fused.ai.transcribe` wait on a job row that a
+    backgrounded tab can sleep straight past its retention — and when it is
+    gone, the FILE is the other witness and the one that matters. A new
+    minutes-long call that only trusted the row would fail on work that had in
+    fact finished, which is the failure this pins.
+
+    **This asserts on SOURCE TEXT and cannot catch a runtime regression — do
+    not read a pass here as the fallback working.** There is no JS harness for
+    either bridge (the image one has never had a test of any kind), so what is
+    checked is that the branch is still WRITTEN, not that it behaves: a
+    `!record` arm that called the wrong function, read the wrong field, or threw
+    on its own would pass this test. It is a tripwire against the branch being
+    deleted or a third artefact call being added without one, and that is all.
+    A real test needs node driving `runtime.js` against a stub `fetch`, which is
+    worth doing the next time either bridge is touched.
+    """
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    assert "ai.transcribe = aiTranscribe" in source
+    transcribe = source[source.index("function aiTranscribe("):]
+    transcribe = transcribe[:transcribe.index("\n  const aiModels")]
+    # The page-relative half is the bridge's job (RH-1): the server can only
+    # resolve "clip.m4a" if the page says where it is standing.
+    assert "body.base = ownPath" in transcribe
+    # Both bridges answer an absent row the SAME way, which is the point:
+    # read the artefact. Transcribe briefly grew a retry loop here to out-wait
+    # mid-run evictions, and that loop could hang forever; live server rows are
+    # cap-exempt now (`test_live_SERVER_work_is_never_evicted_by_the_cap`), so
+    # the branch is a backstop for a row that finished and aged out under a
+    # sleeping tab, not a state machine. Kept assertion-shaped so the loop
+    # cannot creep back in.
+    assert "regrace" not in transcribe and "GRACE_TRIES" not in transcribe
+    for call in ("function aiImage(", "function aiTranscribe("):
+        start = source.index(call)
+        end = source.index("\n  }\n", start)
+        assert "if (!record)" in source[start:end], call
+
+
+def test_a_transcription_job_id_is_reserved_and_sanitised():
+    """`sys:` is what makes a row unwritable by a page (BG-4a), so the id is
+    minted in the supervisor rather than assembled by the router."""
+    job = supervisor.transcribe_job_id("ab/cd 12")
+    assert job.startswith(jobs.SERVER_ID_PREFIX)
+    assert job == supervisor.TRANSCRIBE_JOB_PREFIX + "abcd12"
 
 
 # -- history and cancel, the two things a chat client needs ---------------------

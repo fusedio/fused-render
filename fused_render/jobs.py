@@ -70,9 +70,19 @@ STALE_AFTER_S = 30.0
 # back; the row would otherwise sit there for the life of the app.
 STALE_DROP_S = 600.0
 
-# Hard cap on live records. Reached only by a pathological reporter (a loop
-# minting a fresh id per update), and the eviction order below is chosen so
-# that when it IS reached, what survives is what a person would want to see.
+# Cap on records the sweep will evict down to. Written for a pathological
+# reporter (a loop minting a fresh id per update), and the eviction order below
+# is chosen so that when it IS reached, what survives is what a person would
+# want to see.
+#
+# **Not a hard cap any more, and deliberately so.** A queue of transcriptions
+# (SPEC AI-10a) makes "more than 64 rows of live work" the designed usage, and
+# for that work the row is the only channel the ✕ and the page have — so live
+# SERVER rows are exempt and the list can exceed this. What that costs is a
+# dict entry per piece of work the user actually started; what the exemption
+# buys is that asking for sixty transcriptions does not silently fail some of
+# them. Page-owned rows are still capped, which is where the unbounded risk
+# lives (a page can mint rows it never finishes).
 MAX_JOBS = 64
 
 # Ids are chosen by the reporter — the runtime mints one per `fused.trackJob()`, and
@@ -433,6 +443,11 @@ def _public(job: Job, now: float) -> dict:
 def _sweep(now: float) -> None:
     """Drop what has aged out, then enforce the cap. Caller holds the lock.
 
+    Two different statements with two different rules. Ageing out says *this
+    row is over*; the cap says *there are too many rows to show*. So the cap
+    never drops live SERVER work — for that, the row is the only channel the
+    work has, not a view of it. See the comment on the cap branch below.
+
     Ageing out goes through `_forget`, exactly like a user dismissing the row,
     because it is the same statement — *this row is over* — and it needs the
     same protection from the same late tick. A reporter that posts its FULL
@@ -452,7 +467,25 @@ def _sweep(now: float) -> None:
         elif (now - (job.finished_at or job.updated_at)) > FINISHED_TTL_S:
             _forget(job_id, now)
 
-    if len(_jobs) <= MAX_JOBS:
+    # **The cap counts only what it could actually shed.** Measuring it against
+    # every row while refusing to evict most of them does not bound anything —
+    # it just moves which row pays, and the row that paid was whichever had
+    # JUST finished: over the cap with 64+ live server rows, the terminal row
+    # was the only candidate left and went on the very next `list_jobs()`, which
+    # is the same read `fused.watchJob` polls. So a watcher never saw the
+    # outcome. A success survives that (the artefact is on disk) but a failure
+    # or a cancel has no artefact, so the page reported "no longer being
+    # reported" instead of the real reason — on exactly the large queue the
+    # exemption exists to support.
+    #
+    # It also put the cap in contradiction with BG-6: a finished record is
+    # supposed to stay `FINISHED_TTL_S` so someone not watching the corner can
+    # notice it, and this was silently shortening that to zero under pressure.
+    evictable = [
+        job for job in _jobs.values()
+        if not (job.state == RUNNING and job.owner == OWNER_SERVER)
+    ]
+    if len(evictable) <= MAX_JOBS:
         return
     # Over the cap: finished rows go before running ones (the work they
     # describe is over), and within each group the least recently updated
@@ -463,9 +496,29 @@ def _sweep(now: float) -> None:
     # download whose reporter is mid-loop, and forgetting it would silence that
     # reporter for good — the row could never come back, because its ticks are
     # deltas and only an opening report reopens a forgotten id.
-    order = sorted(
-        _jobs.values(),
-        key=lambda j: (j.state == RUNNING, j.updated_at),
-    )
-    for job in order[: len(_jobs) - MAX_JOBS]:
+    #
+    # **Live SERVER work is not a candidate at all.** The rows above are a
+    # display; a row describing work the app itself is running is a CHANNEL —
+    # it is simultaneously the queue's state, the ✕'s only route to the
+    # process, the progress readout, and the completion signal `fused.watchJob`
+    # polls. Dropping one does not show less, it takes the ✕ away and tells the
+    # page the work stopped: `watch` resolves null after five consecutive
+    # misses and a settled promise cannot be un-settled by a row that comes
+    # back. This cap was sized for a handful of downloads, and then a queue of
+    # sixty recordings (SPEC AI-10a) made "more than 64 live rows" the designed
+    # usage rather than the pathological case — at which point the eviction was
+    # rejecting transcriptions that went on to succeed.
+    #
+    # The asymmetry with page-owned rows is what makes this safe rather than
+    # unbounded: a `sys:` row can only be minted by this process's own code and
+    # is bounded by work actually in flight, while `fused.trackJob()` lets any
+    # page open rows it never finishes. So those stay evictable, and the cap
+    # goes on doing its job for the case it was written for.
+    #
+    # FINISHED server rows are evictable like anything else — the exemption is
+    # for live work, not for a `sys:` prefix — and the age sweep above still
+    # drops a running row whose reporter has gone silent for `STALE_DROP_S`,
+    # so a crashed worker cannot pin a row for the session.
+    order = sorted(evictable, key=lambda j: (j.state == RUNNING, j.updated_at))
+    for job in order[: len(evictable) - MAX_JOBS]:
         del _jobs[job.id]

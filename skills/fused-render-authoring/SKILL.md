@@ -21,12 +21,12 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    │
    ├─ fused.readFile / writeFile / stat / rawUrl   ← direct file IO, no Python needed
    │
-   ├─ fused.ai("...")          ← runs the local claude CLI, returns {text, model, usage}
+   ├─ fused.ai("...")          ← the claude CLI, or a local model; {text, model, usage}
    │
    └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
 
-Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model through the local claude CLI and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model — the claude CLI or a local one — and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract
 
@@ -60,14 +60,13 @@ Rules that matter (each has a reason):
 
 Write `main()` against **stdlib plus the supported library set** below — a folder with no `pyproject.toml` runs on the app's own interpreter, which ships exactly these with no download and no first-run wait. Dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in the repo's `pyproject.toml`, plus core deps):
 
-- **Data:** numpy, pandas, polars, pyarrow, duckdb, scipy, openpyxl, msgpack
-- **Geospatial:** shapely, geopandas, rasterio, zarr
-- **Plots & images:** matplotlib, pillow
-- **Documents:** pymupdf, pikepdf, fpdf2, python-pptx
-- **Network & cloud:** requests, httpx, botocore, google-auth
-- **Logs:** drain3
+- **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
+- **Images:** `pillow`
+- **Documents:** `python-pptx`
+- **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
+- **Logs:** `drain3`
 
-Anything outside this set (e.g. torch, sklearn, xarray, plotly) is missing by default. Reaching for one is a deliberate choice with a cost, so prefer rewriting with the supported set — but when the set genuinely cannot do the job, the folder can declare its own dependencies (next section).
+Anything outside this set is missing by default — including several packages the app used to ship and no longer does: **polars, matplotlib, scipy, geopandas, shapely, rasterio, rio-tiler, zarr, pymupdf, pikepdf**. They were 541.9 MB every user carried for a minority of pages, so they moved to per-folder declarations. **`fpdf2` is still bundled and still importable** — it is not in the table above only because that table is curated, and PDF export via `from fpdf import FPDF` needs no declaration and no install. Reaching for any of them (or for torch, sklearn, xarray, plotly) is a deliberate choice with a cost — a one-time install the user waits through — so prefer rewriting with the always-there set; when it genuinely cannot do the job, declare the folder's dependencies (next section).
 
 ### Declaring extra dependencies: `pyproject.toml`
 
@@ -110,7 +109,7 @@ def main(names: str = "pandas,numpy"):
 EOF
 curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
   -H 'Content-Type: application/json' \
-  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,geopandas,duckdb"}}'
+  -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,duckdb,geopandas"}}'
 ```
 
 A `null` version means the package is missing from *this* environment — the same result an `import` in `main()` would hit.
@@ -177,25 +176,32 @@ try {
 - `model` — the **full model id that actually ran**; an alias request (`"sonnet"`) echoes the resolved id.
 - `usage` — either `null` or exactly `{input_tokens, output_tokens}` (both integers). These are **Anthropic-style names** — there is NO `prompt_tokens`/`completion_tokens` (OpenAI names); reading those yields `undefined`.
 
-The page never talks to a model directly: the server runs the call through the **`claude` (Claude Code) CLI** on the author's machine — the user's Claude Code login is the credential; the binary comes from `PATH`, overridable with the `FUSED_RENDER_CLAUDE_BIN` env var. That makes it **local-only**: an exported/hosted page has no local CLI to run, so the exporter rejects any page that calls `fused.ai` (SPEC RH-11). If a view must survive export, gate the AI UI on `fused.env === "local"` and keep the string `fused.ai(` out of the code path entirely (the exporter matches the call textually).
+The page never talks to a model directly, and there are **two destinations** — the model id decides which. An id **containing a `/`** is a Hugging Face repo and runs on **this machine** (a resident worker process); anything else goes to the **`claude` (Claude Code) CLI**, where the user's Claude Code login is the credential (binary from `PATH`, overridable with `FUSED_RENDER_CLAUDE_BIN`).
 
-Options:
+Both are **local-only**: an exported/hosted page has neither, so the exporter rejects any page containing the string `fused.ai(` (SPEC RH-11) — a textual match, so an `if (fused.env === "local")` guard does not make the page exportable. Keep AI out of a view that must export.
+
+Core options:
 
 | Option | Meaning |
 |---|---|
-| `systemPrompt` | System message (string). Put role + ground rules here; put the data + question in `prompt`. |
-| `model` | Model id. Default `claude-haiku-4-5-20251001`. |
-| `effort` | `"low"` \| `"medium"` \| `"high"` → max_tokens 1024 / 4096 / 16384. Default medium. |
-| `maxTokens` | Explicit token cap; overrides `effort`. |
+| `systemPrompt` | System message (string). Role + ground rules here; data + question in `prompt`. |
+| `model` | Model id. Default `claude-haiku-4-5-20251001` (or the user's configured default). A `/` in it means a local model. |
+| `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"`. Claude path only; default low = no extended thinking. |
+| `onChunk(text)` | Opts into streaming; the promise still resolves with the same `{text, model, usage}`. |
+
+`history`, `raw`, `temperature`, `topP` and `maxTokens` are **local-model only** and are **refused with a 400 on the Claude path**, not dropped.
 
 Rejections carry an `Error` with `.type`:
 
 | `.type` | Cause | UI response |
 |---|---|---|
-| `ai_unavailable` | `claude` binary not found/runnable — message says what to install or set. | Friendly "AI unavailable" state, not a raw overlay. |
-| `bad_request` | Empty prompt / bad options. | Fix the call; surfacing it usually means a bug in your page. |
-| `ai_error` | CLI ran but reported an error (bad model id, upstream failure). | Show `err.message`. |
-| `timeout` | No answer within 120 s. | Offer retry; suggest lower `effort`. |
+| `model_loading` | A local model isn't resident. The call **started the load**; `err.jobId` is it. | Not a failure — show the download, then retry. |
+| `ai_unavailable` | `claude` binary not found/runnable, or the local worker won't start. | Friendly "AI unavailable" state, not a raw overlay. |
+| `bad_request` | Empty prompt / bad options / a local-only option on the Claude path. | Fix the call; usually a bug in your page. |
+| `ai_error` | Ran but reported an error (bad model id, upstream failure). | Show `err.message`. |
+| `timeout` | No answer within 600 s. | Offer retry; suggest lower `effort`. |
+
+**There is more to the AI API than this call** — `fused.ai.models.*` (list/catalog/load/download/unload), `fused.ai.image()`, `fused.ai.cancel()`, and the rules for driving local models. For any of that → **`fused-render-ai`**.
 
 The canonical shape — compute data in Python, reduce it to **compact aggregates**, and hand the model those, never the raw dataset (a full table blows the token budget and drowns the signal):
 
@@ -234,7 +240,7 @@ async function ask(question) {
 Two behaviors that differ from `runPython`, each for a reason:
 
 - **No stale-cancel channel.** An AI call is never a slider scrub — you asked a question and want the answer — so calls run fully concurrent. The flip side: nothing stops a double-click from firing two paid calls. Disable the button while a call is in flight (as above).
-- **The relay times out at 120 s** server-side (vs 60 s for `runPython`) — generation is slower than computation. A `high`-effort call on a big model can legitimately take a while; keep the loading state honest.
+- **The relay times out at 600 s** server-side (vs 60 s for `runPython`) — generation is slower than computation. A `high`-effort call on a big model can legitimately take a while; keep the loading state honest.
 
 When a call fails, check the CLI before blaming the page — same probe style as `/api/run`:
 

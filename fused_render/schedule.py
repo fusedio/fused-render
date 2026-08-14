@@ -323,7 +323,7 @@ def parse_due(value) -> datetime:
 
 def _read() -> list[dict]:
     """The stored entries, in order. A missing or corrupt store reads as empty —
-    same posture as every other registry here (linked_apps, recents): the
+    same posture as every other registry here (bookmarks, recents): the
     schedule degrades to "nothing scheduled", it never raises into a listing."""
     data = storage.read_json(store_path())
     if not isinstance(data, dict):
