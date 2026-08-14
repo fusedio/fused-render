@@ -978,19 +978,6 @@ def _transcribe_row(title: str, detail: str) -> dict:
             "done": None, "total": None, "detail": detail}
 
 
-def _row_identity(job: str) -> float | None:
-    """`started_at` for `job`, or None if there is no such row.
-
-    The row's identity for the purpose of "is this still the row I opened".
-    `started_at` is stamped at creation and never rewritten, so a change in it
-    means the record was rebuilt rather than updated.
-    """
-    for record in jobs.list_jobs():
-        if record["id"] == job:
-            return record.get("started_at")
-    return None
-
-
 def _transcribe_title(request: dict, model: str) -> str:
     """The row's title: the FILE, not the model.
 
@@ -1285,47 +1272,52 @@ def _await_turn(job: str, title: str) -> None:
     """
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
         _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
-        identity = _row_identity(job)
         warned = False
         next_tick = time.monotonic() + _QUEUE_TICK_S
-        # POLLED often, REPORTED rarely — see the two constants. The ✕ is read
-        # every `_QUEUE_POLL_S`; the row is written every `_QUEUE_TICK_S`,
-        # which is deliberately slower than the running row so the sweep sheds
-        # queued rows before the active decode's.
+        # POLLED often, REPORTED rarely — and rebuilt ON DETECTION, which is
+        # the part that makes the two cadences safe to differ.
         while not _TRANSCRIBE_LOCK.acquire(timeout=_QUEUE_POLL_S):
-            if _cancel_requested(job):
+            # ONE pass over the rows answers both questions: was the ✕ pressed,
+            # and is there still a row to press it on.
+            cancel = _cancel_state(job)
+            if cancel:
                 raise SupervisorError("cancelled")
-            current = _row_identity(job)
-            if current != identity and not warned:
-                # The row we opened is GONE and what we are polling is whatever
-                # our own last tick rebuilt. `cancel_requested` is server state
-                # a report may not set, so it cannot survive that — and reading
-                # False off a record that is seconds old is not "the ✕ was not
-                # pressed", it is us having no idea. Said out loud rather than
-                # silently believed, because the alternative reading of this
-                # line is a lost cancel and nothing anywhere would show it.
+            if cancel is None:
+                # **The row is GONE, so rebuild it now rather than at the next
+                # scheduled tick.** The write cadence is a heartbeat, never the
+                # mechanism for the row's survival: waiting `_QUEUE_TICK_S` to
+                # notice would leave the row absent for ten seconds, and
+                # `fused.watchJob` gives up after five consecutive misses —
+                # about 3.5s — so the page would be told a transcription that is
+                # merely QUEUED and about to succeed had stopped reporting.
+                # Detection costs nothing: this poll has just read the list the
+                # answer is in.
+                #
+                # `cancel_requested` cannot come back with it — it is server
+                # state no report may set — so a ✕ pressed in the window before
+                # the eviction is genuinely lost. Said out loud once rather than
+                # silently believed, because reading False off a record we just
+                # created is not an observation.
                 #
                 # NOT treated as a cancel: eviction under capacity pressure is
-                # the ANTICIPATED case for a queue (a folder of recordings is
-                # what produces more than `MAX_JOBS` rows), so aborting on it
-                # would fail the feature's main scenario to guard a sub-second
-                # window. The ✕ works again the moment the row is back, which
-                # the full restatement above is what guarantees.
-                logger.warning(
-                    "transcription row %s was evicted while queued and rebuilt; "
-                    "a cancel requested just before that is not recoverable", job)
-                # Once per wait: with sixty queued recordings the sweep evicts
-                # and each tick rebuilds, so a warning per rebuild would be a
-                # log full of the normal case.
-                warned = True
+                # the ANTICIPATED case here (a folder of recordings is what
+                # produces more than `MAX_JOBS` rows), so aborting on it would
+                # fail the feature's main scenario to guard a one-poll window.
+                if not warned:
+                    logger.warning(
+                        "transcription row %s was evicted while queued; rebuilt, "
+                        "but a cancel requested just before that is lost", job)
+                    warned = True  # once per wait; the sweep may do this often
+                _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+                next_tick = time.monotonic() + _QUEUE_TICK_S
+                continue
             if time.monotonic() < next_tick:
                 continue
-            # Re-stated rather than left to go stale. The bar does not move —
-            # there is nothing to say but "still waiting" — and that is exactly
-            # what a heartbeat is (AI-5h). The FULL payload every time; see
-            # `_transcribe_row` for why a partial one is not a row.
+            # The idle heartbeat, and only that. The bar does not move — there
+            # is nothing to say but "still waiting" — which is exactly what a
+            # heartbeat is (AI-5h). Deliberately slower than the running row so
+            # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
             _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
-            identity = _row_identity(job)
             next_tick = time.monotonic() + _QUEUE_TICK_S
     if _cancel_requested(job):
         _TRANSCRIBE_LOCK.release()

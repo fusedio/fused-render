@@ -13,6 +13,7 @@ that does not run.
 """
 import json
 import os
+import re
 import sys
 import textwrap
 import threading
@@ -1491,25 +1492,29 @@ def test_a_queued_transcription_says_QUEUED_rather_than_going_stale(monkeypatch)
         second.join(10)
 
 
-def test_a_queued_row_EVICTED_by_the_cap_reopens_on_the_next_tick(monkeypatch):
-    """A queued row is the first thing the job manager throws away, and a row
-    that cannot come back takes the ✕ with it.
+def test_an_EVICTED_queued_row_is_rebuilt_on_DETECTION_not_on_the_next_tick(monkeypatch):
+    """A queued row is thrown away by the cap, and it has to come back FAST.
 
     `jobs._sweep` drops rows over `MAX_JOBS` sorted by `(running, updated_at)`,
-    so the least recently updated running row goes first — and queueing is
-    exactly what produces more than 64 rows, since it is what a user pointing
-    at a folder of recordings is doing. Once evicted, a row can only be
-    REOPENED by a report carrying a `title`; without one `upsert` raises and
-    `_report` swallows it, so the row stays gone, `_cancel_requested` reads
-    False forever, and `watch()` resolves null — the page is told a
-    transcription that finishes fine minutes later has failed.
+    and queueing is exactly what produces more than 64 rows. Two ways this
+    used to break: a rebuild carrying only a `title` came back as a different
+    row (no ✕, no unit), and — once the write cadence was slowed so the cap
+    sheds queued rows before the active decode's — a rebuild that waited for
+    the next scheduled tick left the row absent for ten seconds against a
+    watcher that gives up after ~3.5s, so the page was told a queued
+    transcription had stopped reporting.
+
+    So the write cadence is a heartbeat and the POLL is what guarantees the
+    row: it has just read the list, so it knows the row is gone and restates it
+    at once. `_QUEUE_TICK_S` is set far beyond this test's patience here —
+    nothing but detection can make it pass.
     """
     release = threading.Event()
     first_in_flight = threading.Event()
     monkeypatch.setattr(supervisor, "ready_worker", lambda capability, model=None: object())
     monkeypatch.setattr(supervisor, "_worker_request",
                         _blocking_worker_request(release, first_in_flight))
-    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 0.05)
+    monkeypatch.setattr(supervisor, "_QUEUE_TICK_S", 30.0)
     monkeypatch.setattr(supervisor, "_QUEUE_POLL_S", 0.02)
 
     job = supervisor.TRANSCRIBE_JOB_PREFIX + "two"
@@ -1540,11 +1545,15 @@ def test_a_queued_row_EVICTED_by_the_cap_reopens_on_the_next_tick(monkeypatch):
             jobs._jobs.pop(job, None)
         assert _row_now(job) is None
 
-        deadline = time.monotonic() + 5
+        evicted_at = time.monotonic()
+        deadline = evicted_at + 2
         while time.monotonic() < deadline and _row_now(job) is None:
-            time.sleep(0.02)
+            time.sleep(0.01)
         reopened = _row_now(job)
         assert reopened is not None, "an evicted queue row never came back"
+        # Within a poll, not within a tick — the tick is 30s here, so this
+        # latency is the property under test and not incidental.
+        assert time.monotonic() - evicted_at < 1.0
         # THE SAME row, not merely a row with the same id. A rebuild that
         # restated only the title came back with `cancellable` defaulted to
         # False, so the manager hid the ✕ and the user still could not stop a
@@ -1608,6 +1617,50 @@ def test_the_WAIT_FOR_A_COLD_MODEL_can_rebuild_an_evicted_row(
     assert rebuilt["title"] == os.path.basename(recording)
     assert rebuilt["cancellable"] is True and rebuilt["unit"] == "s"
     _wait_job(job, timeout=40)
+
+
+def _watcher_giveup_window_s():
+    """How long `fused.watchJob` tolerates a missing row, read from the bridge.
+
+    Two numbers in `runtime.js`: the poll interval and the number of
+    consecutive misses that resolve the promise with null. Read rather than
+    restated, for the same reason `HEARTBEAT_S` is — this is a relationship
+    between the supervisor and the page, and a copy here would go stale in the
+    direction that looks fine.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    watch = source[source.index("async watch(onUpdate, intervalMs)"):]
+    watch = watch[:watch.index("stop()")]
+    interval_ms = int(re.search(r"intervalMs \|\| (\d+)", watch).group(1))
+    misses = int(re.search(r"\+\+missing >= (\d+)", watch).group(1))
+    return misses * interval_ms / 1000.0
+
+
+def test_a_queued_row_is_never_absent_for_longer_than_the_WATCHER_TOLERATES():
+    """The guarantee this queue has to meet, derived rather than chosen.
+
+    Any `list_jobs()` call runs `_sweep` and can drop the row, and the page's
+    `watchJob` resolves with null after five consecutive misses (~3.5s) — at
+    which point `fused.ai.transcribe()` rejects "no longer being reported" for
+    a transcription that is merely queued and will succeed. So the property is
+    **maximum row-absence < the watcher's give-up window**.
+
+    Absence is bounded by the POLL, not by the write cadence, because the poll
+    rebuilds the row the moment it finds it missing. That is what lets the
+    write cadence be slow (so the cap sheds queued rows before the active
+    decode's) without the row ever being gone long enough to matter. An earlier
+    cut tied survival to the write cadence and bought a 10s absence against a
+    3.5s window.
+    """
+    window = _watcher_giveup_window_s()
+    assert window > 0
+    # Halved for margin: a rebuild costs a report, the page's poll is not phase
+    # aligned with ours, and both are wall-clock on a loaded machine.
+    assert supervisor._QUEUE_POLL_S < window / 2, (
+        f"a queued row can be absent for {supervisor._QUEUE_POLL_S}s against a "
+        f"{window}s give-up window")
 
 
 def test_the_queue_cadence_stays_below_the_worker_heartbeat():
