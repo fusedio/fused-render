@@ -272,6 +272,9 @@
    max-width below. */
 .files-home-inner.home-wide {
   max-width: none;
+  /* Tighter than the explorer home's 36px: the search bar is the first thing
+     on the front door, so it sits closer to the top. */
+  padding-top: 16px;
 }
 
 .home-wide .files-search-wrap {
