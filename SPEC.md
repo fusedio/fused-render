@@ -5300,7 +5300,14 @@ stop it short of quitting the app.
   where the unbounded risk is (`fused.trackJob()` can mint rows a page never
   finishes); finished server rows stay evictable; and the age sweep still drops
   a running row whose reporter has gone silent, so a crashed worker cannot pin
-  one for the session.
+  one for the session. **The cap is measured against the rows it can actually
+  shed**, not against the whole list: counting exempt rows while refusing to
+  evict them bounds nothing and merely moves which row pays — over the cap the
+  only candidate left was whatever had JUST finished, so it was deleted on the
+  next read and a watcher never saw the outcome. A success survives that through
+  its artefact; a failure or a cancel has none, so the page reported "no longer
+  being reported" instead of the reason. It also silently shortened this
+  bullet's own retention promise to zero under pressure.
 - **BG-7** **Dismiss is for rows nobody is reporting on** — finished, or
   `stalled`. A live row is refused (409): the only honest way to make it go away
   is to stop the work, and a dismiss that hid a live download would restore
