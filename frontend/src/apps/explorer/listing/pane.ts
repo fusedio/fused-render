@@ -1,7 +1,7 @@
 // The preview pane (right-hand split): the usePreviewPane hook that owns the
 // pane's width and its divider drag.
 //
-// **NO CONDITIONAL LAYOUT LOGIC LIVES HERE ANY MORE** (D281, the owner's "remove
+// **NO CONDITIONAL LAYOUT LOGIC LIVES HERE ANY MORE** (D282, the owner's "remove
 // any complicated breakpoint logic"). Two generations of that are gone. First a
 // user-facing on/off — a toggle button, a `?preview=true|false` URL param that
 // rode along on directory navigation, and a `pane=0` viewstate key so a folder
@@ -60,7 +60,7 @@ import { companionFrac, dragPaneFrac } from "@apps/explorer/listing/pane-math";
 // its params instead of clearing the map.
 purgeViewStateParams("panew", "pane");
 
-// The split container's measured width — back with D282, for ONE question: is this
+// The split container's measured width — back with D283, for ONE question: is this
 // container small (`companionFrac`, 720px and under → the companion takes half
 // instead of a third). Measured on the CONTAINER and never read off
 // `window.innerWidth`, because the same Listing renders full-window, inside a
@@ -72,7 +72,7 @@ purgeViewStateParams("panew", "pane");
 // element is the container that is always rendered — never the pane itself — so the
 // pane's own width cannot feed back into the measurement and oscillate.
 //
-// *D281 deleted this, and it deleted `useSplitIsWide` with it — the 700px verdict
+// *D282 deleted this, and it deleted `useSplitIsWide` with it — the 700px verdict
 // that decided whether there was a pane at all, plus the 30/50/70 tiers. Neither
 // comes back: what returns is the number, read for one boolean.*
 export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
@@ -113,7 +113,7 @@ export function usePreviewPane(enabled = true) {
   // measurement of it.
   const splitRef = useRef<HTMLDivElement>(null);
   // `on` is exactly the caller's own question — is this a Listing that has a pane at
-  // all — and no width enters into it. That is the half D281 settled and D282 does
+  // all — and no width enters into it. That is the half D282 settled and D283 does
   // not reopen: the measurement below decides the pane's SHARE, never its existence.
   const on = enabled;
   const width = useSplitWidth(splitRef);

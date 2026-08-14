@@ -25,9 +25,9 @@ const PANE_MIN_W = 220;
 const LIST_MIN_W = 60;
 
 // **THE PANE'S WIDTH: the companion share of its container** — 30%, or 50% at
-// 720px and under (D282 amending D281). The same function the file view's sidebar
+// 720px and under (D283 amending D282). The same function the file view's sidebar
 // uses, imported from there so the two cannot drift apart again; the reasoning,
-// including why D281's argument for deleting the small step was wrong, is on
+// including why D282's argument for deleting the small step was wrong, is on
 // `companionFrac`.
 //
 // It is a function of the CONTAINER's width and of nothing else — never the
@@ -44,7 +44,7 @@ const LIST_MIN_W = 60;
 //   * `useSplitIsWide` in pane.ts, the gate's second consumer (Preview's browse
 //     chip), which asked the measurement for a verdict nothing needs now.
 //
-// **The container MEASUREMENT is back, and only it** (D282): `useSplitWidth` returns
+// **The container MEASUREMENT is back, and only it** (D283): `useSplitWidth` returns
 // so the small step above can be asked of the container rather than of the window.
 // One boolean's worth of responsiveness — small or not — where there used to be a
 // visibility gate and three tiers reading the same number. The pane's PRESENCE is

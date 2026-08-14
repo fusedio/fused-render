@@ -109,8 +109,8 @@ describe("paneSideList", () => {
   });
 });
 
-// A SELECTED FOLDER HAS NO `preview` (D280). A folder is not a thing the pane can
-// preview: rendering the page it holds is what the owner asked us to stop (D279),
+// A SELECTED FOLDER HAS NO `preview` (D281). A folder is not a thing the pane can
+// preview: rendering the page it holds is what the owner asked us to stop (D280),
 // and the alternative — the embedded listing peek — is the listing they are
 // already looking at on the left. So for a directory row the pill offers the
 // COMPANIONS, and `claude` (the chat about that folder) is what the pane lands on.
@@ -144,7 +144,7 @@ describe("paneSideList — a previewed FOLDER row", () => {
   // while `lib/dir-mode` is still resolving them (a stat plus a per-gate
   // condition.py fork), so "no companion offered" is the same shape as
   // mount-backed — and answering `preview` there made the pill read "Preview" while
-  // the row's own default mode, `claude` since D279, rendered a chat inside it.
+  // the row's own default mode, `claude` since D280, rendered a chat inside it.
   // Then the probe landed, the side flipped to `claude`, the key changed and
   // `agent.py` was spawned a SECOND time — the very cost pane-settle.ts exists to
   // stop. So an undecided folder row offers NOTHING and the pane holds a skeleton.
@@ -241,7 +241,7 @@ describe("paneSideMenu", () => {
     ]);
   });
 
-  test("a previewed FOLDER row draws no Preview row at all (D280)", () => {
+  test("a previewed FOLDER row draws no Preview row at all (D281)", () => {
     // The menu must not offer what the pane cannot be: `preview` is off the list
     // for a directory row, so the row goes with it. A disabled row would be worse
     // than useless here — it is the pane's identity, so it carries no reason, and

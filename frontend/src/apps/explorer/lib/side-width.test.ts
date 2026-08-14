@@ -7,7 +7,7 @@ import {
 } from "@apps/explorer/lib/side-width";
 import { PANE_DEFAULT_FRAC } from "@apps/explorer/listing/pane-math";
 
-// ONE SHARE FOR BOTH COMPANION COLUMNS (D281): a file's sidebar and a folder's
+// ONE SHARE FOR BOTH COMPANION COLUMNS (D282): a file's sidebar and a folder's
 // preview pane are the same concept, so they take the same 30% — and the number
 // lives in one place, because two literals are how they drifted apart (the pane
 // was on 50%). The small-container 50% step that used to sit beside this is gone
@@ -27,7 +27,7 @@ describe("defaultSideWidth", () => {
   });
 
   it("opens at 50% of a small container — 720 counts as small", () => {
-    // D282 restored this step, and the boundary is inclusive (`<=`), matching CSS
+    // D283 restored this step, and the boundary is inclusive (`<=`), matching CSS
     // `(max-width: 720px)`. The assertion this replaces claimed the 280px FLOOR
     // reached the same answer without a step, which was simply false: 280 of 720
     // is 39%, not 50%.

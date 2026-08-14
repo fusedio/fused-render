@@ -29,19 +29,19 @@ export interface PaneModeInput {
 // ranks it, and is dropped only for a FILE (no slot for a listing of a file).
 //
 // **EVERY folder reaches this module, and what it gets back leads with `claude`**
-// — the registry's own order for the universal `/` key (D279). Two earlier answers
+// — the registry's own order for the universal `/` key (D280). Two earlier answers
 // are gone. This once hoisted an APP entry to the lead, a folder's own app being
 // what that folder IS, with a pane-only `_app` sentinel standing in wherever the
 // registry's `app` mode was absent or gate-denied; both went with the app concept
 // (D264). Then D269 kept app folders away from here entirely, because the pane
 // resolved such a folder to its entry PAGE before asking for a mode list, so what
-// arrived was an html FILE like any other — **that retarget is deleted** (D279:
+// arrived was an html FILE like any other — **that retarget is deleted** (D280:
 // selecting a row must not run the folder's app), so a folder arrives as a folder
 // and this list is the FOLDER's modes.
 //
 // The pane does not render that lead directly for a folder row, and this module is
 // not where that is decided: a selected folder has no `preview` side at all
-// (pane-side's paneSideList, D280), so the pill lands on the chat. This list still
+// (pane-side's paneSideList, D281), so the pill lands on the chat. This list still
 // answers for the `preview` FALLBACK a folder gets when neither companion is
 // offered, where the gates have dropped `claude` and `_listing` is what remains.
 //
@@ -73,9 +73,9 @@ export function paneModeList(input: PaneModeInput): string[] {
 // **And for a FOLDER it is more than a layout question.** The chat template fills
 // its own pane by resolving the folder's ENTRY PAGE and rendering it
 // (templates/shared/app_entry.py). Since `claude` leads the universal directory
-// key (D279), a selected folder's pane defaults to this template — so without the
+// key (D280), a selected folder's pane defaults to this template — so without the
 // flag the folder's app page would be back on screen, nested one level deeper,
-// running the same Python for the same mere selection that D279 exists to stop.
+// running the same Python for the same mere selection that D280 exists to stop.
 // The template reads the flag BEFORE it looks an entry page up, so the flag is
 // the whole cure and not a cosmetic one.
 //

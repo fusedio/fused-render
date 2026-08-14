@@ -9,7 +9,7 @@
 // out of a folder you had dragged, into a sibling you had not, and the pane
 // snapped between your width and the default every time. The file preview's own
 // `_side` sidebar had always used a single width and never had this problem. Now
-// the listing pane doesn't either — and as of D281 the two even share the same
+// the listing pane doesn't either — and as of D282 the two even share the same
 // default share, 30%.
 //
 // MEMORY ONLY, DELIBERATELY — this is not a missing feature:
@@ -17,7 +17,7 @@
 //     history.pushState (platform/lib/router) and never reloads the document.
 //     Folder → folder, folder → file, Back and Forward all keep the width.
 //   • a REFRESH clears it, and the pane goes back to the plain 30% default
-//     (D281 — it used to go back to following the container's width through
+//     (D282 — it used to go back to following the container's width through
 //     `defaultPaneFrac`'s breakpoints, which is the machinery that decision
 //     deleted). That reset is still the escape hatch: a dragged width otherwise
 //     holds for the whole session, and the way back has to be something a user can

@@ -68,7 +68,7 @@ function offeredSets(): Array<{ where: string; modes: string[] }> {
 // word, and only one of them ever had it:
 //
 //   * the pane's own `_side` pill — `Preview | Claude | Git` — where a selected
-//     folder row now offers the companions alone (D280, pane-side.test.ts covers
+//     folder row now offers the companions alone (D281, pane-side.test.ts covers
 //     it, including that a hand-typed `?_side=preview` resolves onward instead of
 //     resurrecting it);
 //   * every list of TEMPLATE modes: the full-screen topbar menu, the panel/tab

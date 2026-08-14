@@ -19,23 +19,23 @@
 export const MIN_W = 280;
 export const CONTENT_MIN_W = 320;
 
-// **THE COMPANION COLUMN'S SHARE — one rule, both surfaces** (D282, amending
-// D281/D280): **30% normally, 50% in a container of 720px or less.** The file
+// **THE COMPANION COLUMN'S SHARE — one rule, both surfaces** (D283, amending
+// D282/D281): **30% normally, 50% in a container of 720px or less.** The file
 // view's sidebar and the listing's preview pane read the same function, which is
 // why it lives here and `listing/pane-math.ts` imports it rather than spelling its
-// own. The owner's words were "they are the same concept now" — after D279/D280 a
+// own. The owner's words were "they are the same concept now" — after D280/D281 a
 // folder's pane is the same companion column a file gets — and two literals are
 // exactly how they came to differ (the pane was on 50%, tiering to 70%).
 //
 // **The small-screen step is BACK, and the argument that removed it was wrong.**
-// D281 deleted it claiming "the FLOOR below already says so", i.e. that at 720px
+// D282 deleted it claiming "the FLOOR below already says so", i.e. that at 720px
 // the 280px floor reached the same answer a 50% step would. **It does not: 280 of
 // 720 is 39%, not 50%** — the floor stops a column being unusably narrow, it does
 // not give a cramped layout the half it wants. The owner reported the gap from the
 // case that shows it, a small browser window, where a 30% companion is a column you
 // cannot read beside content that has little to show at that width either.
 //
-// **This is one step, not the tier ladder that went with it.** What D281 deleted
+// **This is one step, not the tier ladder that went with it.** What D282 deleted
 // and must stay deleted: the 30/50/70% ladder on 1000px/1440px breakpoints, the
 // constants behind it, `defaultPaneFrac`, and — separately — the 700px
 // `shouldShowPane` gate. **This changes the pane's SHARE and never whether it

@@ -9,7 +9,7 @@
 //            FOLDERS alike — the selection is stat'ed to discover its template
 //            modes and its DEFAULT embeds as the normal /render iframe (which
 //            mode that is, is listing/pane-modes.ts's call). **A SELECTED FOLDER
-//            IS PREVIEWED AS A FOLDER** (D279): its own modes, led by `claude`
+//            IS PREVIEWED AS A FOLDER** (D280): its own modes, led by `claude`
 //            (the chat about it) with the `_listing` sentinel behind — the latter
 //            mounting the real shell Listing component (embedded — no URL writes,
 //            no nested pane, no global keyboard). It used to resolve a folder
@@ -131,7 +131,7 @@ export default function ListingPreviewPane({
   // its branch below), so no fetch is started for it.
   const self = !!row?.self;
   // A FOLDER the user selected — not the self target, which is a folder too. The
-  // pill drops its `preview` row for one (pane-side's paneSideMenu, D280), the
+  // pill drops its `preview` row for one (pane-side's paneSideMenu, D281), the
   // same question Listing asked to resolve `side` in the first place, so the menu
   // it draws cannot disagree with the side it is on.
   const rowIsDir = !!row && !row.self && row.isDir;
@@ -141,7 +141,7 @@ export default function ListingPreviewPane({
   // selection change, since Claude stays mounted across one.
   const previewing = side === "preview";
 
-  // --- A SELECTED FOLDER IS PREVIEWED AS A FOLDER (D279, deleting D269's pane
+  // --- A SELECTED FOLDER IS PREVIEWED AS A FOLDER (D280, deleting D269's pane
   // half) ---------------------------------------------------------------------
   //
   // There is no retarget here, and there must not be one. D269 resolved a folder
@@ -154,7 +154,7 @@ export default function ListingPreviewPane({
   //
   // So the pane stats the SELECTED ROW itself, folder or file, and a folder
   // resolves to the FOLDER's mode list — `claude` first, then the `_listing`
-  // sentinel (registry.json's universal `/` key, D279). Nothing about the page it
+  // sentinel (registry.json's universal `/` key, D280). Nothing about the page it
   // may contain enters into it; the page is one row of the embedded listing, one
   // click away, exactly as it is in the listing on the left.
   //
@@ -217,12 +217,12 @@ export default function ListingPreviewPane({
   // (paneSideMenu), rather than dropped — a menu that shrinks to one row hides
   // itself, which once left a mount-backed folder's pane header a lone chevron.
   //
-  // **The list is no longer row-independent, and that is a real cost** (D280): a
+  // **The list is no longer row-independent, and that is a real cost** (D281): a
   // selected FOLDER row has no `preview`, so the pill is three rows over a file and
   // two over a folder, and it changes shape as the user arrows from one onto the
   // other. It used to hold perfectly still — "nothing about the selected row enters
   // into it" was the claim here — and the reason it no longer can is that `preview`
-  // for a folder meant either running that folder's app (D279) or a listing of a
+  // for a folder meant either running that folder's app (D280) or a listing of a
   // folder beside the listing it was selected in. A control that is on offer,
   // selected, and wrong is worse than one that changes width.
   //
@@ -400,7 +400,7 @@ export default function ListingPreviewPane({
   // The subject is the SELECTED ROW, always. `view` used to be able to differ
   // from `row` — an app folder was retargeted to its entry page, so the mode
   // list, the embed URL, the expand target and the header title were all the
-  // page's — and that indirection is gone with the retarget (D279). The name
+  // page's — and that indirection is gone with the retarget (D280). The name
   // stays because everything below reads it, and keeping it makes the one thing
   // it means explicit: what the pane is showing, which is now always what the
   // user selected.
@@ -523,7 +523,7 @@ export default function ListingPreviewPane({
   // rather than being passed some other way for the same reason `_file` does —
   // the page is a document, and its URL is the only thing it is handed.
   //
-  // A row mode can be `claude` — it is a FOLDER's default (D279) — and that one
+  // A row mode can be `claude` — it is a FOLDER's default (D280) — and that one
   // needs its own pane taken away exactly as the companion above does, or the
   // chat template resolves the folder's entry page and renders the app inside
   // this column. paneChatOnly is the single rule both ask.

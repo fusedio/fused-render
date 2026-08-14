@@ -43,7 +43,7 @@ export function rememberSelection(fsPath: string, sel: Selection): void {
 }
 
 // What the selection becomes when the LEAD's row is NOT among the rendered rows
-// (D278). The reconcile in useListingSelection owns WHEN this is asked — it has
+// (D279). The reconcile in useListingSelection owns WHEN this is asked — it has
 // already waited out a still-loading listing and a pending rename target — and
 // this owns the answer.
 //
@@ -63,7 +63,7 @@ export function rememberSelection(fsPath: string, sel: Selection): void {
 //     no slot to re-anchor to, because the selection never had one — the old
 //     clamp read the -1 as "row zero" and selected the folder's first row, which
 //     is a file nobody named and a preview iframe nobody asked for. That is
-//     precisely the guess D277 removed from the folder open, arriving by another
+//     precisely the guess D278 removed from the folder open, arriving by another
 //     door: a link that misses is a link that missed, not a request for row one.
 //
 // An EMPTY row list is empty either way — there is no neighbour to fall back to,
@@ -79,7 +79,7 @@ export function selectionAfterVanish(rows: string[], lastIndex: number): Selecti
 //
 // Its only caller now is the SEARCH auto-select below ("the top hit"). It was
 // written for the folder auto-select — the row a freshly opened folder previewed
-// — which D277 deleted: opening a folder now selects nothing at all (FS-16).
+// — which D278 deleted: opening a folder now selects nothing at all (FS-16).
 export function firstEntryPath(
   rows: string[],
   byPath: ReadonlyMap<string, unknown>,
@@ -95,7 +95,7 @@ export function firstEntryPath(
 //
 // A query is itself a request to look at something, so landing on the top hit
 // gives the pane content and Enter a target. THIS IS THE ONLY AUTO-SELECTION
-// LEFT: opening a folder selects nothing (FS-16/D277, see Listing). It is also a
+// LEFT: opening a folder selects nothing (FS-16/D278, see Listing). It is also a
 // different shape from that one was, because search results are not a folder. A
 // folder's rows settle once per navigation, so that was a single shot. Results
 // re-rank on every keystroke, on every stream flush and on every slice the scan

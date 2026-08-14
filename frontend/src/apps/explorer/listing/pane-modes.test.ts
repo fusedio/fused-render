@@ -11,7 +11,7 @@ import {
 } from "./pane-modes";
 
 // The universal `/` directory key as the built-in registry ships it (SPEC
-// PT-13): **`claude` first** (D279) with `_listing` behind it, and every peer
+// PT-13): **`claude` first** (D280) with `_listing` behind it, and every peer
 // except the `_listing` sentinel condition.py-gated.
 function dirTemplates(modes: string[] = ["claude", "_listing", "git", "graph"]): TemplateEntry[] {
   return modes.map((mode) => ({
@@ -40,7 +40,7 @@ const verdicts = (allowed: string[], denied: string[] = []): Record<string, bool
 // gone with the picker.
 describe("paneModeList — the selected target", () => {
   test("a selected subfolder defaults to CLAUDE, the registry's lead", () => {
-    // D279: the pane reads the list for its lead (`activePaneMode` with no
+    // D280: the pane reads the list for its lead (`activePaneMode` with no
     // override), so the registry's order IS the pane's default, and a folder now
     // opens the chat about itself rather than running anything of the folder's.
     const modes = paneModeList({
@@ -53,7 +53,7 @@ describe("paneModeList — the selected target", () => {
   });
 
   test("a folder whose claude gate says NO falls back to the listing", () => {
-    // The deliberate answer to "what if the default is denied" (D279): the next
+    // The deliberate answer to "what if the default is denied" (D280): the next
     // mode in the registry's order, which is the unconditional `_listing`
     // sentinel — the embedded peek. It renders no template and runs no Python,
     // so the denial can never fall through to something heavier than the default.
@@ -69,7 +69,7 @@ describe("paneModeList — the selected target", () => {
   test("a folder holding a lone page is still just a folder", () => {
     // It used to lead with a pane-only `_app` sentinel rendering that page in
     // place (D264 deleted that), and then with the page itself through a retarget
-    // (D269, deleted by D279). A folder's modes are the FOLDER's, and the page it
+    // (D269, deleted by D280). A folder's modes are the FOLDER's, and the page it
     // holds is one row of the listing behind them.
     const modes = paneModeList({
       templates: dirTemplates(["claude", "_listing"]),
@@ -123,7 +123,7 @@ describe("paneModeList — gate visibility is the shared policy", () => {
 });
 
 // A SELECTED FOLDER IS PREVIEWED AS A FOLDER — never as the page it holds
-// (D279, deleting D269's pane half). The pane used to resolve a folder with a
+// (D280, deleting D269's pane half). The pane used to resolve a folder with a
 // top-level `.html` to that page and preview it as a FILE, which meant selecting
 // a row in the listing RAN the folder's app: its template's Python, its buttons,
 // its network calls, for a folder the user had merely highlighted.

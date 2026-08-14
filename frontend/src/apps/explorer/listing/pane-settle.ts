@@ -14,7 +14,7 @@
 //
 // That cost used to be opt-in: a folder row previewed as its embedded listing,
 // which is a shell component and runs nothing, and the chat only mounted if the
-// user asked for it. Making `claude` a folder's default (D279/D280) is what turned
+// user asked for it. Making `claude` a folder's default (D280/D281) is what turned
 // arrow-key browsing into subprocess spawning, so the debounce ships with it
 // rather than after it.
 //
