@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tutorial — custom templates</title>
+<style>
+  :root {
+    --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
+    --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
+    --yellow:#E5FF44;
+    --code-bg:#0f0f10;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:44px 30px 70px 224px; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; }
+
+  /* tutorial nav rail (shared across the 4 pages; body padding reserves it) */
+  .tnav { position:fixed; top:46px; left:24px; width:176px; }
+  .tnav .tlab { margin:0 0 8px; padding-left:12px; font-size:10.5px; text-transform:uppercase;
+                letter-spacing:.7px; color:var(--mut); font-weight:700; }
+  .tnav a { display:block; margin:2px 0; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+            font-size:12.5px; color:var(--dim); text-decoration:none; }
+  .tnav a:hover { color:var(--text); background:var(--panel); }
+  .tnav a.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                        background:var(--yellow); margin-right:8px; vertical-align:1px; }
+  .tnav a.gone { display:none; }
+  .tnav a.sub { margin:0; padding:4px 12px 4px 27px; border:0; font-size:11.5px; color:var(--mut); }
+  .tnav a.sub:hover { color:var(--text); background:none; }
+  .tnav a.sub .sn { color:var(--yellow); margin-right:6px; font-weight:700; }
+  h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
+  .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
+  .tag b { color:var(--text); font-weight:600; }
+  .tag .y { color:var(--yellow); font-weight:600; }
+  code, .mono { font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       margin:42px 0 6px; font-weight:700; }
+  h2 .n { color:var(--yellow); margin-right:7px; }
+  .h2sub { color:var(--dim); font-size:13.5px; margin:0 0 16px; max-width:660px; }
+  .h2sub code { color:var(--text); font-size:12.5px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 20px; }
+  pre { margin:0; background:var(--code-bg); border:1px solid var(--border); border-radius:9px;
+        padding:13px 15px; font-size:12px; overflow-x:auto; color:#d0d0d4; }
+  pre .c { color:var(--mut); } pre .f { color:var(--yellow); }
+  a { color:var(--dim); }
+  a:hover { color:var(--text); }
+  .status { color:var(--mut); font-size:12px; min-height:16px; }
+
+  .frame { position:relative; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+           background:var(--panel); }
+  .frame iframe { display:block; width:100%; border:0; background:var(--panel); }
+  .frame.tall iframe { height:560px; }
+  .framebar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+              padding:9px 14px; border-bottom:1px solid var(--border); background:var(--panel2); }
+  .framebar .cap { color:var(--dim); font-size:12px; }
+  .framebar .cap b { color:var(--text); }
+  .framebar a { font-size:12px; color:var(--yellow); text-decoration:none; white-space:nowrap; }
+  .framebar a:hover { text-decoration:underline; }
+
+  .pair { display:grid; grid-template-columns:1fr 1.2fr; gap:12px; }
+  .pair h5 { margin:0 0 7px; font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); }
+
+  .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
+  .step { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .step .num { width:22px; height:22px; border-radius:7px; background:var(--panel2); border:1px solid var(--border);
+               display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700;
+               color:var(--yellow); margin-bottom:10px; }
+  .step h4 { margin:0 0 5px; font-size:13.5px; }
+  .step p { margin:0; color:var(--dim); font-size:12px; }
+  .step p code { color:var(--text); font-size:11px; }
+
+  table.keys { border-collapse:collapse; width:100%; font-size:12.5px; }
+  table.keys td { padding:7px 10px; border-top:1px solid var(--border); color:var(--dim); }
+  table.keys tr:first-child td { border-top:0; }
+  table.keys td:first-child { font-family:"SF Mono",ui-monospace,Menlo,monospace;
+                              color:var(--yellow); white-space:nowrap; font-size:12px; }
+
+  figure.shot { margin:16px 0 0; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+                background:var(--panel); }
+  figure.shot img { display:block; width:100%; }
+  figure.shot figcaption { padding:9px 14px; border-top:1px solid var(--border); background:var(--panel2);
+                           color:var(--dim); font-size:12px; }
+
+  .rule { border-color:var(--yellow); }
+  .rule b { color:var(--yellow); }
+
+  .outro { border-top:1px solid var(--border); margin-top:46px; padding-top:18px;
+           color:var(--dim); font-size:13.5px; max-width:660px; }
+  .outro b { color:var(--text); }
+  .outro code { color:var(--yellow); font-size:12.5px; }
+
+  @media (max-width:760px){
+    .pair, .steps { grid-template-columns:1fr; }
+    body { padding:28px 18px 70px; }
+    .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
+    .tnav .tlab { display:none; }
+    .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
+    .tnav a.sub { display:none; }
+  }
+</style>
+</head>
+<body>
+<nav class="tnav" id="tnav">
+  <p class="tlab">Tutorials</p>
+  <a data-page="index.html">Using Fused</a>
+  <a data-page="claude.html">Claude Code</a>
+  <a data-page="annotations.html">Annotating pages</a>
+  <a data-page="templates.html" class="cur">Custom templates</a>
+</nav>
+<div class="wrap">
+  <h1>Tutorial — custom templates</h1>
+  <p class="tag">Every preview you've seen in Fused — the CSV table, the map, the Claude chat — is a <span class="y">template</span>: a folder with an HTML page and optional Python, exactly the pattern your own pages use. Which means you can replace any of them, or add your own.</p>
+
+  <!-- ---------- 1 · THE MANAGEMENT UI, LIVE ---------- -->
+  <h2><span class="n">1</span>The management UI, live</h2>
+  <p class="h2sub">Templates are managed at <code>/view/_templates</code> (also in the sidebar footer). Here it is, embedded — two tabs: <b>File bindings</b> maps extensions to templates, <b>Library</b> holds the templates themselves.</p>
+  <div class="frame tall">
+    <div class="framebar">
+      <span class="cap"><b>Templates management</b> — bindings on one tab, the library on the other</span>
+      <a href="/view/_templates" target="_blank" rel="noopener">open in the app ↗</a>
+    </div>
+    <iframe src="/view/_templates" title="Templates management, embedded live"></iframe>
+  </div>
+
+  <!-- ---------- 2 · ANATOMY ---------- -->
+  <h2><span class="n">2</span>Anatomy of a template</h2>
+  <p class="h2sub">A template is a folder. One file is required; everything else is optional.</p>
+  <div class="pair">
+    <div>
+      <h5>the folder</h5>
+      <pre>my_template/
+├─ template.html   <span class="c"># required — the view</span>
+├─ icon.svg        <span class="c"># mode-switcher icon</span>
+├─ condition.py    <span class="c"># gate: offer only when true</span>
+└─ helpers.py      <span class="c"># any python the view calls</span></pre>
+    </div>
+    <div>
+      <h5>where folders live</h5>
+      <pre><span class="f">~/.fused-render/templates/</span>          <span class="c"># yours</span>
+<span class="f">~/.fused-render/.core-templates/</span>    <span class="c"># built-ins (managed,</span>
+                                    <span class="c"># refreshed on upgrade)</span></pre>
+      <div class="status" style="margin-top:10px">The page gets the file it's previewing as a <code>_file</code> param and uses the same <code>fused</code> global as your own pages — <code>fused.runPython("./helpers.py", …)</code> and all.</div>
+    </div>
+  </div>
+
+  <!-- ---------- 3 · OVERRIDE A BUILT-IN ---------- -->
+  <h2><span class="n">3</span>Override a built-in</h2>
+  <p class="h2sub">Don't like the stock CSV view? Shadow it. A user template with the same name as a core one wins, everywhere that name is bound.</p>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><h4>Find it in the Library</h4>
+      <p>The Library tab groups core and user templates. Export the core one you want to change as a zip.</p></div>
+    <div class="step"><div class="num">2</div><h4>Recreate it under your dir</h4>
+      <p>Import the zip (or use <b>New template</b>) so a template with the <em>same name</em> lands in <code>~/.fused-render/templates/</code>.</p></div>
+    <div class="step"><div class="num">3</div><h4>Edit — it just wins</h4>
+      <p>Name-shadowing does the rest: every file type bound to that name now renders with your version. Delete your copy to fall back to core.</p></div>
+  </div>
+
+  <!-- ---------- 4 · BIND AN EXTENSION ---------- -->
+  <h2><span class="n">4</span>Bind an extension</h2>
+  <p class="h2sub">The <b>File bindings</b> tab is a table of key → ordered template list; the first entry is the default view, the rest appear in the mode switcher. Click a row to edit — chips drag to reorder — or add a new key. Keys come in four shapes:</p>
+  <div class="card" style="padding:8px 10px">
+    <table class="keys">
+      <tr><td>.csv</td><td>plain extension — the common case</td></tr>
+      <tr><td>.geo.parquet</td><td>compound extension — more specific, wins over <code style="color:var(--dim)">.parquet</code></td></tr>
+      <tr><td>.*.json</td><td>only compound json files (<code style="color:var(--dim)">a.b.json</code>), not every <code style="color:var(--dim)">.json</code></td></tr>
+      <tr><td>.zarr/</td><td>trailing slash — matches <em>directories</em> named like the key</td></tr>
+    </table>
+  </div>
+  <p class="h2sub" style="margin-top:12px">Your binding for a key <em>fully replaces</em> the core list for that key — it doesn't merge. The row editor's <b>Reset to core</b> undoes your override; <b>Disable for type</b> empties the list so the type falls back to the raw default.</p>
+
+  <!-- ---------- 5 · NEW TEMPLATE + CLAUDE ---------- -->
+  <h2><span class="n">5</span>New template, built by Claude</h2>
+  <p class="h2sub">The Library's <b>New template</b> button scaffolds a working starter — and ships authoring skills in its <code>.claude/skills/</code>. Click <b>Open in Claude</b> on the success screen and a Terminal opens with Claude Code sitting in the new folder, ready to build the view for you. That workflow is covered in the <a id="claudeTutLink"><code>claude.html</code></a> guide.</p>
+  <p class="h2sub">Sharing goes both ways: <b>Export</b> zips any of your templates; <b>Import</b> is a two-step wizard that can read a bundled <code>recommendation.json</code> and offer the author's suggested bindings as step two.</p>
+  <figure class="shot" id="shotImport">
+    <img id="shotImportImg" alt="Import wizard, step 2: recommended bindings">
+    <figcaption>Import wizard, step 2 — the template's recommended file bindings, yours to accept or trim.</figcaption>
+  </figure>
+
+  <!-- ---------- 6 · PRECEDENCE, IN ONE LINE ---------- -->
+  <h2><span class="n">6</span>Precedence, in one line</h2>
+  <div class="card rule">
+    <b>User beats core, first chip wins.</b>
+    <div class="status" style="margin-top:6px">A user template shadows a core one of the same name; a user binding replaces the core list for that key; the first template in a binding is the default view.</div>
+  </div>
+
+  <!-- ---------- OUTRO ---------- -->
+  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>index.html</code></a> overview — or open <a href="/view/_templates" target="_blank" rel="noopener">Templates</a> for real and make the CSV view yours.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---- locate ourselves & our siblings (same scheme as index.html) ------------
+// Served at /render?path=<abs path of this file>; the other tutorial pages
+// live in THIS dir.
+const ownPath = new URLSearchParams(window.location.search).get("path");
+const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
+const page = rel => ownDir ? ownDir + "/" + rel : null;
+// Per-segment encoding, matching the shell's own URL scheme for fs paths.
+const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+const viewUrl = p => "/view/" + encPath(p);
+
+// Nav rail: each entry points at a page in this folder; clicking navigates the
+// WHOLE shell (target=_top keeps its chrome). Hide entries that don't exist.
+document.querySelectorAll("#tnav a[data-page]").forEach(a => {
+  const p = page(a.dataset.page);
+  if (!p) { a.classList.add("gone"); return; }
+  fused.stat(p).then(() => {
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => a.classList.add("gone"));
+});
+
+// Under the open page's entry, list this page's sections (the numbered h2s)
+// as in-page jump links.
+let navAnchor = document.querySelector("#tnav a.cur");
+document.querySelectorAll(".wrap h2").forEach((h, i) => {
+  if (!h.id) h.id = "s" + (i + 1);
+  const num = h.querySelector(".n");
+  const title = Array.from(h.childNodes)
+    .filter(n => n.nodeType === Node.TEXT_NODE)
+    .map(n => n.textContent).join("").trim();
+  const a = document.createElement("a");
+  a.className = "sub";
+  a.href = "#" + h.id;
+  a.innerHTML = (num ? '<span class="sn">' + num.textContent + '</span>' : "") + title;
+  a.addEventListener("click", e => {
+    e.preventDefault();
+    h.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  navAnchor.after(a);
+  navAnchor = a;
+});
+
+// Cross-links to the other tutorial pages in this folder (stat-guarded;
+// _top so the whole shell navigates, same as the nav rail).
+function linkTo(aId, rel){
+  const p = page(rel);
+  if (!p) return;
+  fused.stat(p).then(() => {
+    const a = $(aId);
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => {});
+}
+linkTo("outroSeries", "index.html");
+linkTo("claudeTutLink", "claude.html");
+
+// Screenshot slot: image lives in ./assets/ and may not exist yet — a 404
+// hides the whole figure so the page ships clean without it.
+const img = $("shotImportImg");
+img.onerror = () => { $("shotImport").style.display = "none"; };
+img.src = fused.rawUrl("assets/import_wizard.png");
+</script>
+</body>
+</html>

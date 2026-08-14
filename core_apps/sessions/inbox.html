@@ -1,0 +1,1038 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8">
+<title>Session Inbox</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #131417; --panel: #1b1d21; --text: #e8eaed; --muted: #9aa0a6;
+    --line: #2a2d33; --accent: #E5FF44; --hover: #26282c; --on-accent: #10131a;
+    --badge-inbox: #E5FF44; --badge-in_progress: #4f8ef7;
+    --badge-done: #3fb950; --badge-archived: #6a7381;
+    --gray-bg: #454545;  --gray-tx: #d4d4d4;  --blue-bg: #1f3a52;   --blue-tx: #7fb6e6;
+    --green-bg: #243d30; --green-tx: #84c4a0; --orange-bg: #4a3526; --orange-tx: #d9a679;
+    --red-bg: #4a2a28;   --red-tx: #e58a80;   --yellow-bg: #463d25; --yellow-tx: #d9bd6e;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff; --panel: #f4f5f7; --text: #1f2023; --muted: #61656c;
+    --line: #d8dade; --accent: #5f7300; --hover: #e5e6e8; --on-accent: #ffffff;
+    --badge-inbox: #5f7300; --badge-in_progress: #2b6fdb;
+    --badge-done: #1a7f37; --badge-archived: #8a93a3;
+    --gray-bg: #e3e2e0;  --gray-tx: #32302c;  --blue-bg: #d3e5ef;   --blue-tx: #183347;
+    --green-bg: #dbeddb; --green-tx: #1c3829; --orange-bg: #faebdd; --orange-tx: #49290e;
+    --red-bg: #ffe2dd;   --red-tx: #5d1715;   --yellow-bg: #fdecc8; --yellow-tx: #402c1b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.45 -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); display: flex; height: 100vh; }
+
+  #sidebar { width: 230px; flex: none; border-right: 1px solid var(--line);
+             background: var(--panel); padding: 12px 8px; overflow-y: auto; }
+  #sidebar h1 { font-size: 14px; margin: 4px 8px 12px; }
+  .navitem { display: flex; justify-content: space-between; align-items: center; gap: 6px;
+             padding: 5px 8px; border-radius: 6px; cursor: pointer; color: var(--text); }
+  .navitem span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .navitem:hover { background: var(--hover); }
+  .navitem.active { background: var(--hover); font-weight: 600; }
+  .navitem .count { color: var(--muted); font-size: 11px; flex: none; }
+  .nav-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+             background: var(--accent); margin-right: 6px; vertical-align: 1px;
+             animation: navpulse 1.6s ease-in-out infinite; }
+  @keyframes navpulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  .navhead { margin: 28px 8px 4px; font-size: 10px; text-transform: uppercase;
+             letter-spacing: .08em; color: var(--muted); }
+  #tip { position: fixed; z-index: 100; background: var(--panel); color: var(--text);
+         border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
+         font-size: 11.5px; pointer-events: none; white-space: nowrap;
+         box-shadow: 0 4px 14px rgba(0,0,0,.3); display: none; }
+
+  #main { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; }
+  #topbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex: none; }
+  #topbar h2 { font-size: 16px; margin: 0; flex: 1; }
+  .title-filter { display: inline-flex; align-items: center; gap: 5px; }
+  .title-clear { background: none; border: none; cursor: pointer; padding: 1px 4px;
+                 border-radius: 4px; color: var(--muted); font-size: 11px; line-height: 1; }
+  .title-clear:hover { background: var(--hover); color: var(--text); }
+  #search { background: var(--panel); border: 1px solid var(--line); color: var(--text);
+            border-radius: 6px; padding: 5px 9px; width: 220px; }
+  #sel-all-wrap { display: flex; align-items: center; padding: 2px; }
+  #sel-all, .c-sel { accent-color: var(--accent); width: 14px; height: 14px;
+            cursor: pointer; margin: 0; flex: none; }
+  .c-sel { align-self: center; }
+  #archive-sel { background: var(--panel); border: 1px solid var(--line);
+            color: var(--text); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+            font: inherit; font-size: 12px; }
+  #archive-sel:hover { background: var(--hover); }
+  .row.selected { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #layout-toggle { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  #layout-toggle button { background: var(--panel); color: var(--muted); border: 0;
+            padding: 5px 12px; cursor: pointer; font: inherit; font-size: 12px;
+            display: inline-flex; align-items: center; gap: 6px; }
+  #layout-toggle svg { width: 13px; height: 13px; display: block; }
+  #layout-toggle button.active { background: var(--hover); color: var(--text); font-weight: 600; }
+
+  /* list layout */
+  .row { border: 1px solid var(--line); background: var(--panel); border-radius: 8px;
+         padding: 10px 12px; margin-bottom: 8px; }
+  .row-top { display: flex; gap: 10px; align-items: baseline; }
+  .row-name { font-weight: 700; flex: 1; overflow: hidden; text-overflow: ellipsis;
+              white-space: nowrap; cursor: pointer; }
+  .row.read .row-name, .card.read .card-name { font-weight: 400; color: var(--muted); }
+  .unread-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+                background: var(--accent); margin-right: 7px; vertical-align: 1px;
+                flex: none; }
+  .row-name:hover { color: var(--accent); }
+  .row-time { color: var(--muted); font-size: 11px; flex: none; }
+  .row-time .running, .card-meta .running { color: var(--badge-done); font-weight: 600; }
+  .row-meta { color: var(--muted); font-size: 11px; margin-top: 2px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-controls { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .row { cursor: pointer; }
+  .row-note { color: var(--muted); font-size: 11.5px; font-style: italic;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 10px;
+           color: #fff; flex: none; }
+  .badge-inbox { color: var(--on-accent); }
+  select, input.note { background: var(--bg); border: 1px solid var(--line);
+           color: var(--text); border-radius: 6px; padding: 3px 6px; font-size: 12px; }
+  input.note { flex: 1; min-width: 120px; }
+  #empty { color: var(--muted); padding: 40px; text-align: center; }
+
+  /* Notion-style tag chips */
+  .tag-chip { flex: none; display: inline-flex; align-items: center; height: 19px;
+              font-size: 11px; line-height: 120%; padding: 0 7px; border-radius: 3px;
+              white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+  .tc-gray   { background: var(--gray-bg);   color: var(--gray-tx); }
+  .tc-blue   { background: var(--blue-bg);   color: var(--blue-tx); }
+  .tc-green  { background: var(--green-bg);  color: var(--green-tx); }
+  .tc-orange { background: var(--orange-bg); color: var(--orange-tx); }
+  .tc-red    { background: var(--red-bg);    color: var(--red-tx); }
+  .tc-yellow { background: var(--yellow-bg); color: var(--yellow-tx); }
+  .tag-chips-wrap { display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+              min-height: 25px; min-width: 130px; max-width: 320px; padding: 2px 6px;
+              border-radius: 5px; cursor: pointer; }
+  .tag-chips-wrap:hover { background: var(--hover); }
+  .tag-chips-wrap .empty-hint { color: var(--muted); font-size: 11px; }
+  .tag-chips-wrap.editing { background: var(--hover); box-shadow: 0 0 0 1px var(--line);
+              cursor: text; }
+  .tag-chip .x { display: inline-flex; align-items: center; margin-left: 5px;
+              margin-right: -2px; opacity: .55; cursor: pointer; }
+  .tag-chip .x:hover { opacity: 1; }
+  .tag-chip .x svg { width: 8px; height: 8px; display: block; }
+  .tag-input { flex: 1; min-width: 70px; border: none; background: none; outline: none;
+              font: inherit; font-size: 12px; color: var(--text); padding: 1px 0; }
+  .tag-input::placeholder { color: var(--muted); }
+  .tag-suggest { position: absolute; z-index: 70; background: var(--panel);
+              border: 1px solid var(--line); border-radius: 8px;
+              box-shadow: 0 6px 20px rgba(0,0,0,.25); padding: 5px; min-width: 170px;
+              max-height: 220px; overflow-y: auto; }
+  .tag-suggest .menu-label { padding: 3px 8px 5px; color: var(--muted); font-size: 10.5px; }
+  .tag-suggest-item { display: flex; align-items: center; width: 100%; padding: 4px 8px;
+              border: none; background: none; border-radius: 5px; cursor: pointer;
+              font: inherit; text-align: left; color: var(--text); }
+  .tag-suggest-item:hover, .tag-suggest-item.sel { background: var(--hover); }
+  .tag-suggest-item .create { color: var(--muted); font-size: 12px; margin-right: 6px; }
+  .card .tag-chips-wrap { min-width: 0; padding: 2px 0; margin-top: 3px; }
+  .card.selected { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #select-box { position: fixed; border: 1px solid var(--accent);
+                background: color-mix(in srgb, var(--accent) 15%, transparent);
+                z-index: 40; pointer-events: none; }
+
+  /* ---- side peek panel ---- */
+  #peek-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0;
+                  pointer-events: none; transition: opacity 180ms ease; z-index: 50; }
+  #peek-overlay.open { opacity: 1; pointer-events: auto; }
+  #peek { position: fixed; top: 0; right: 0; height: 100%; width: min(680px, 94vw);
+          background: var(--bg); box-shadow: -3px 0 30px rgba(0,0,0,.45);
+          transform: translateX(100%); transition: transform 240ms cubic-bezier(.32,.72,.3,1);
+          z-index: 51; display: flex; flex-direction: column; }
+  #peek.open { transform: translateX(0); }
+  .peek-top { display: flex; align-items: center; gap: 6px; padding: 9px 12px; flex: none;
+              border-bottom: 1px solid var(--line); }
+  .peek-btn { background: none; border: none; color: var(--muted); cursor: pointer;
+              border-radius: 5px; padding: 4px 8px; font: inherit; font-size: 12px; }
+  .peek-btn:hover { background: var(--hover); color: var(--text); }
+  .peek-body { flex: 1; overflow-y: auto; padding: 16px 22px; }
+  .peek-title { font-size: 17px; font-weight: 700; margin: 0 0 4px; line-height: 1.35; }
+  .peek-meta { color: var(--muted); font-size: 11.5px; margin-bottom: 12px; }
+  .peek-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+                   margin-bottom: 6px; }
+  .peek-divider { height: 1px; background: var(--line); margin: 14px 0; }
+  .turn { margin-bottom: 12px; }
+  .turn-head { font-size: 10.5px; font-weight: 600; color: var(--muted);
+               text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px; }
+  .turn-user .turn-head { color: var(--accent); }
+  .turn-time { font-weight: 400; color: var(--muted); margin-left: 7px; }
+  .turn-text { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+  .turn-user .turn-text { background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 8px 10px; }
+  .turn-tools { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .group-head { font-size: 12px; font-weight: 600; color: var(--muted);
+                margin: 14px 2px 6px; }
+  .group-head:first-child { margin-top: 0; }
+  .group-head .count { font-weight: 400; margin-left: 6px; }
+
+  /* kanban layout */
+  #board { display: flex; gap: 10px; align-items: flex-start; flex: 1; min-height: 0;
+           overflow-x: auto; }
+  .col { width: 250px; flex: none; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 10px; display: flex; flex-direction: column; max-height: 100%; }
+  .col-head { display: flex; justify-content: space-between; align-items: center;
+              padding: 9px 12px; border-bottom: 1px solid var(--line); font-weight: 600;
+              font-size: 12px; flex: none; }
+  .col-head .count { color: var(--muted); font-weight: 400; font-size: 11px; }
+  .col-head .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+                   margin-right: 6px; }
+  .col-cards { padding: 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 7px; }
+  .col.dragover { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+          padding: 8px 10px; cursor: grab; }
+  .card.dragging { opacity: .4; }
+  .card-name { font-weight: 600; font-size: 12px; line-height: 1.35; cursor: pointer;
+               display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+               overflow: hidden; }
+  .card-name:hover { color: var(--accent); }
+  .card-meta { color: var(--muted); font-size: 10.5px; margin-top: 4px;
+               display: flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+  .card-proj { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .card-meta .sep { flex: none; }
+  .card-meta .row-time { flex: none; margin-left: auto; }
+  .card-note { color: var(--muted); font-size: 11px; margin-top: 3px; font-style: italic;
+               overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+  <div id="sidebar">
+    <h1>📥 Session Inbox</h1>
+    <div id="nav-status"></div>
+    <div class="navhead">Projects</div>
+    <div id="nav-projects"></div>
+    <div class="navhead">Tags</div>
+    <div id="nav-tags"></div>
+  </div>
+  <div id="main">
+    <div id="topbar">
+      <label id="sel-all-wrap" title="Select all"><input type="checkbox" id="sel-all"></label>
+      <h2 id="view-title">Inbox</h2>
+      <button id="archive-sel" hidden>Archive selected</button>
+      <div id="layout-toggle">
+        <button data-layout="list"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 3.5h10M2 7h10M2 10.5h10"/></svg>List</button>
+        <button data-layout="board"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="2" width="4.4" height="10" rx="1"/><rect x="8.1" y="2" width="4.4" height="7" rx="1"/></svg>Board</button>
+      </div>
+      <input id="search" placeholder="Search…">
+    </div>
+    <div id="content"><div id="empty">Loading…</div></div>
+  </div>
+
+  <div id="peek-overlay"></div>
+  <div id="peek">
+    <div class="peek-top">
+      <button class="peek-btn" id="peek-close" title="Close">✕</button>
+      <span style="flex:1"></span>
+      <button class="peek-btn" id="peek-analyze" title="Review this session with a fresh Claude run">Analyze session</button>
+      <button class="peek-btn" id="peek-continue" title="Copy a terminal command that resumes this session">Continue with Claude ⧉</button>
+      <button class="peek-btn" id="peek-open-dir" title="Open the folder this session worked in, in Fused Explorer">Open in explorer</button>
+    </div>
+    <div class="peek-body" id="peek-body"></div>
+  </div>
+
+<script>
+const STATUSES = ["in_progress", "done", "archived"];
+const STATUS_LABELS = {
+  in_progress: "In Progress", done: "Done", archived: "Archive",
+  unread: "Inbox", all: "All Sessions",
+};
+
+let DATA = null;
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+  ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+// middle-truncate long paths: keep the start and the telling tail
+function midTrunc(s, max) {
+  if (s.length <= max) return s;
+  const head = Math.ceil((max - 1) * 0.4), tail = Math.floor((max - 1) * 0.6);
+  return s.slice(0, head) + "…" + s.slice(-tail);
+}
+
+const curView = () => fused.params.get("view") || "unread";
+const curProject = () => fused.params.get("project") || "";
+const curSearch = () => fused.params.get("search") || "";
+const curLayout = () => fused.params.get("layout") || "list";
+const curTag = () => fused.params.get("tag") || "";
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + "m ago";
+  if (s < 86400) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+
+// same rule as inbox.py's _is_running: fresh activity mtime within 45s = running now
+function isRunning(mtimeIso) {
+  return !!mtimeIso && Date.now() - new Date(mtimeIso).getTime() < 45000;
+}
+function lastActive(s) {
+  // last edited = latest of last message timestamp and activity mtime
+  // (parse: the two use different ISO offset formats, so strings don't compare)
+  return (Date.parse(s.mtime) || 0) > (Date.parse(s.endedAt) || 0) ? s.mtime : s.endedAt;
+}
+function timeLabel(s) {
+  return isRunning(s.mtime)
+    ? `<span class="running">● running</span>` : esc(ago(lastActive(s)));
+}
+
+// The full scan re-parses every transcript end to end (inbox.py → sessions.py),
+// so it is the expensive call on this page and everything below rations it.
+const RELOAD_COOLDOWN_MS = 30000;
+let lastLoad = 0;
+
+async function load() {
+  lastLoad = Date.now();
+  DATA = await fused.runPython("./inbox.py", {});
+  DATA.sessions.sort((a, b) => (Date.parse(lastActive(b)) || 0) - (Date.parse(lastActive(a)) || 0));
+  // Stamp again: the scan itself takes seconds on a large store, and the
+  // cooldown is about how often we START one, not when the last one landed.
+  lastLoad = Date.now();
+  render();
+  autoFlow();
+}
+
+// A full scan, unless one ran recently. Every caller that reaches for `load()`
+// on an *event* (tab focus, a session that appeared) goes through here.
+function reload() {
+  if (Date.now() - lastLoad < RELOAD_COOLDOWN_MS) return Promise.resolve();
+  return load();
+}
+
+// running session → In Progress; a session this page saw running that has now
+// stopped → Done + unread, so finished work surfaces in the Inbox as news
+const RUNNING = new Set();
+let PROJECTS_EXPANDED = false;
+function autoFlow() {
+  const started = [], finished = [];
+  for (const s of DATA.sessions) {
+    if (isRunning(s.mtime)) {
+      RUNNING.add(s.sessionId);
+      if (s.status !== "in_progress") started.push(s.sessionId);
+    } else if (RUNNING.has(s.sessionId)) {
+      RUNNING.delete(s.sessionId);
+      if (s.status === "in_progress") finished.push(s.sessionId);
+    }
+  }
+  if (started.length) saveMany(started, {status: "in_progress"});
+  if (finished.length) saveMany(finished, {status: "done", read: ""});
+}
+
+// cheap poll (mtime only, no parsing): keeps "running" dots and times live and
+// pulls in sessions started after page load
+async function pollStatus() {
+  if (document.hidden || !DATA) return;
+  try {
+    const res = await fused.runPython("./sessions/sessions.py",
+      {mode: "status"}, {key: "status"});
+    // Index DATA once. The old shape searched DATA.sessions per polled id,
+    // which is O(sessions × transcripts) of array scanning every tick.
+    const known = new Map(DATA.sessions.map((s) => [s.sessionId, s]));
+    // An id the scan didn't return is NOT by itself evidence of a new session:
+    // the two scans disagree by construction. `mode="status"` lists every
+    // *.jsonl on disk, while the summarizing scan drops transcripts with no
+    // timestamped entry (an empty or just-created file, a truncated one) and
+    // then clamps what survives to `limit`. Those ids are permanently absent,
+    // so "absent ⇒ reload" made the page re-parse every transcript on disk
+    // every 5s, forever — the whole reason this poll was expensive.
+    //
+    // What a genuinely new session actually looks like is ACTIVE, and an
+    // active transcript necessarily has a fresh timestamped entry, so the scan
+    // will return it. Gating on that fixes the loop without missing anything.
+    let appeared = false;
+    for (const {sessionId, mtime} of res.statuses) {
+      const s = known.get(sessionId);
+      if (s) s.mtime = mtime;
+      else if (isRunning(mtime)) appeared = true;
+    }
+    // Still rationed: a store with more running sessions than `limit` would
+    // otherwise re-arm this on every tick.
+    if (appeared) { await reload(); return; }
+    // update times/dots in place — no re-render, so open editors are untouched
+    document.querySelectorAll(".row-time[data-id]").forEach((el) => {
+      const s = known.get(el.dataset.id);
+      if (s) el.innerHTML = timeLabel(s);
+    });
+    updateInboxDot();
+    autoFlow();
+  } catch (e) { /* transient poll failure — next tick retries */ }
+}
+
+// Self-rescheduling rather than setInterval: a full scan outlasts the period on
+// a large store, so a fixed interval stacked polls on top of a load that was
+// still running. The period also follows the work — an inbox with nothing
+// running has no dot to keep alive and no time label that changes by the
+// second, so paying a subprocess every 5s to learn that is pure waste.
+const ACTIVE_POLL_MS = 5000;
+const IDLE_POLL_MS = 30000;
+let pollTimer = null;
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  const active = !!DATA && DATA.sessions.some((s) => isRunning(s.mtime));
+  pollTimer = setTimeout(async () => {
+    await pollStatus();
+    schedulePoll();
+  }, active ? ACTIVE_POLL_MS : IDLE_POLL_MS);
+}
+
+// Coming back to the window refreshes, but through the cooldown: flipping tabs
+// is not new information, and this used to launch a full scan every time.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  reload();
+  schedulePoll();  // an idle-period timer shouldn't hold a just-focused page
+});
+
+// background updates (status poll, autoFlow saves) must not rebuild the DOM
+// out from under an open tag/note editor — defer the render until blur
+function editorOpen() {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest(".tag-chips-wrap, .tag-suggest, .c-note"));
+}
+let renderPending = false;
+document.addEventListener("focusout", () => {
+  setTimeout(() => {
+    if (renderPending && !editorOpen()) { renderPending = false; render(); }
+  }, 0);
+});
+
+function render() {
+  if (!DATA) return;
+  if (editorOpen()) { renderPending = true; return; }
+  // keep the selection meaningful: drop ids no longer visible in this view
+  const visible = new Set(filteredRows().map((s) => s.sessionId));
+  for (const id of [...SELECTED]) if (!visible.has(id)) SELECTED.delete(id);
+  renderNav();
+  const board = curLayout() === "board";
+  document.querySelectorAll("#layout-toggle button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.layout === curLayout()));
+  board ? renderBoard() : renderList();
+  updateSelectionUI();
+  renderPeek();
+}
+
+// ---------- bulk selection ----------
+function updateSelectionUI() {
+  const visible = filteredRows().map((s) => s.sessionId);
+  const all = visible.length > 0 && visible.every((id) => SELECTED.has(id));
+  const selAll = $("sel-all");
+  selAll.checked = all;
+  selAll.indeterminate = !all && SELECTED.size > 0;
+  const btn = $("archive-sel");
+  btn.hidden = SELECTED.size === 0;
+  btn.textContent = `Archive ${SELECTED.size} selected`;
+}
+
+$("sel-all").onchange = (e) => {
+  SELECTED.clear();
+  if (e.target.checked) filteredRows().forEach((s) => SELECTED.add(s.sessionId));
+  render();
+};
+
+$("archive-sel").onclick = () => {
+  const ids = [...SELECTED];
+  SELECTED.clear();
+  saveMany(ids, {status: "archived"});
+};
+
+function filteredRows(status) {
+  const view = curView(), project = curProject(), tag = curTag(), q = curSearch().toLowerCase();
+  let rows = DATA.sessions;
+  if (project) rows = rows.filter((s) => s.triageProject === project);
+  if (tag) rows = rows.filter((s) => s.tags.includes(tag));
+  if (status) rows = rows.filter((s) => s.status === status);
+  // Inbox = everything not yet archived; read state only affects styling,
+  // and the sidebar count stays the unread number (like mail)
+  else if (!project && !tag && view === "unread")
+    rows = rows.filter((s) => s.status !== "archived");
+  else if (!project && !tag && view !== "all") rows = rows.filter((s) => s.status === view);
+  if (q) rows = rows.filter((s) =>
+    (s.name + " " + s.triageProject + " " + s.note + " " + s.tags.join(" "))
+      .toLowerCase().includes(q));
+  return rows;
+}
+
+function renderNav() {
+  const view = curView(), project = curProject(), tag = curTag();
+  $("nav-status").innerHTML = ["unread", ...STATUSES, "all"].map((s) => {
+    const count = s === "all" ? DATA.sessions.length
+      : s === "unread" ? DATA.unreadCount : DATA.statusCounts[s] || 0;
+    const active = !project && !tag && view === s;
+    const dot = s === "unread" ? `<span class="nav-dot" id="inbox-dot"></span>` : "";
+    return `<div class="navitem ${active ? "active" : ""}" data-view="${s}">
+      <span>${dot}${STATUS_LABELS[s]}</span><span class="count">${count}</span></div>`;
+  }).join("");
+  updateInboxDot();
+
+  // projects ordered by most recent session activity; collapsed to 5 by default
+  const lastByProject = {};
+  for (const s of DATA.sessions) {
+    // parse: mtime ("+00:00") and endedAt ("Z") formats don't compare as strings
+    const t = Date.parse(lastActive(s)) || 0;
+    if (t > (lastByProject[s.triageProject] || 0)) lastByProject[s.triageProject] = t;
+  }
+  const projects = Object.keys(DATA.projectCounts).sort(
+    (a, b) => (lastByProject[b] || 0) - (lastByProject[a] || 0));
+  const lastFolder = (p) => p === "~" ? "~" : (p.split("/").filter(Boolean).pop() || p);
+  const shown = PROJECTS_EXPANDED ? projects : projects.slice(0, 5);
+  // the active filter must stay visible even when it falls outside the top 5
+  if (project && !shown.includes(project)) shown.push(project);
+  $("nav-projects").innerHTML = shown.map((p) =>
+    `<div class="navitem ${project === p ? "active" : ""}" data-project="${esc(p)}" data-tip="${esc(p)}">
+      <span>${esc(lastFolder(p))}</span><span class="count">${DATA.projectCounts[p]}</span></div>`
+  ).join("") + (projects.length > 5 ? `
+    <div class="navitem" id="projects-more" style="color:var(--muted)">
+      <span>${PROJECTS_EXPANDED ? "Show less" : `Show ${projects.length - 5} more…`}</span></div>` : "");
+  const more = $("projects-more");
+  if (more) more.onclick = () => { PROJECTS_EXPANDED = !PROJECTS_EXPANDED; render(); };
+
+  const tags = Object.keys(DATA.tagCounts).sort();
+  $("nav-tags").innerHTML = tags.map((t) =>
+    `<div class="navitem ${tag === t ? "active" : ""}" data-tag="${esc(t)}" title="${esc(t)}">
+      <span><span class="tag-chip ${tagColor(t)}">${esc(t)}</span></span>
+      <span class="count">${DATA.tagCounts[t]}</span></div>`
+  ).join("") || `<div class="navitem" style="color:var(--muted)">none yet</div>`;
+
+  document.querySelectorAll(".navitem[data-view]").forEach((el) =>
+    el.onclick = () => {
+      fused.params.set("project", ""); fused.params.set("tag", "");
+      fused.params.set("view", el.dataset.view);
+    });
+  document.querySelectorAll(".navitem[data-project]").forEach((el) =>
+    el.onclick = () => {
+      const p = el.dataset.project === curProject() ? "" : el.dataset.project;
+      fused.params.set("project", p);
+    });
+  document.querySelectorAll(".navitem[data-tag]").forEach((el) =>
+    el.onclick = () => {
+      const t = el.dataset.tag === curTag() ? "" : el.dataset.tag;
+      fused.params.set("tag", t);
+    });
+}
+
+// active project/tag filters render with an ✕ that clears them
+function renderTitle() {
+  const project = curProject(), tag = curTag(), view = curView();
+  const el = $("view-title");
+  const chip = (label, param) =>
+    `<span class="title-filter">${esc(label)}<button class="title-clear" data-param="${param}" title="Clear filter">✕</button></span>`;
+  const parts = [];
+  if (project) parts.push(chip(project, "project"));
+  if (tag) parts.push(
+    `<span class="title-filter"><span class="tag-chip ${tagColor(tag)}">${esc(tag)}</span><button class="title-clear" data-param="tag" title="Clear filter">✕</button></span>`);
+  if (!parts.length) parts.push(esc(STATUS_LABELS[view] || view));
+  el.innerHTML = parts.join(" ");
+  el.querySelectorAll(".title-clear").forEach((b) =>
+    b.onclick = () => fused.params.set(b.dataset.param, ""));
+}
+
+// ---------- list ----------
+function rowHtml(s) {
+  return `
+    <div class="row ${s.read ? "read" : ""} ${SELECTED.has(s.sessionId) ? "selected" : ""}" data-id="${s.sessionId}">
+      <div class="row-top">
+        <input type="checkbox" class="c-sel" ${SELECTED.has(s.sessionId) ? "checked" : ""}>
+        ${s.read ? "" : `<span class="unread-dot"></span>`}
+        <span class="badge badge-${s.status}" style="background:var(--badge-${s.status})">${STATUS_LABELS[s.status]}</span>
+        <span class="row-name" title="Open session">${esc(s.name)}</span>
+        <span class="row-time" data-id="${s.sessionId}">${timeLabel(s)}</span>
+      </div>
+      <div class="row-meta" title="${esc(s.triageProject)}">${esc(midTrunc(s.triageProject, 44))} · ${s.userMessages} msgs · ${s.toolCalls} tool calls</div>
+      <div class="row-controls">
+        <select class="c-status">
+          ${STATUSES.map((st) =>
+            `<option value="${st}" ${st === s.status ? "selected" : ""}>${STATUS_LABELS[st]}</option>`).join("")}
+        </select>
+        <span class="c-tags-slot"></span>
+        ${s.note ? `<span class="row-note">${esc(s.note)}</span>` : ""}
+      </div>
+    </div>`;
+}
+
+function renderList() {
+  renderTitle();
+  $("search").value = curSearch();
+  const rows = filteredRows();
+  if (!rows.length) { $("content").innerHTML = `<div id="empty">Nothing here 🎉</div>`; return; }
+
+  $("content").innerHTML = rows.map(rowHtml).join("");
+
+  document.querySelectorAll(".row").forEach((row) => {
+    const id = row.dataset.id;
+    const s = DATA.sessions.find((x) => x.sessionId === id);
+    row.querySelector(".c-status").onchange = (e) => save(id, {status: e.target.value});
+    row.querySelector(".c-sel").onchange = (e) => {
+      if (e.target.checked) SELECTED.add(id); else SELECTED.delete(id);
+      row.classList.toggle("selected", e.target.checked);
+      updateSelectionUI();
+    };
+    row.querySelector(".c-tags-slot").replaceWith(tagChipsWrap(s));
+    // whole row opens the peek, except the interactive controls
+    row.onclick = (e) => {
+      if (e.target.closest("select, input, .tag-chips-wrap, .tag-suggest")) return;
+      openSession(id);
+    };
+  });
+}
+
+// ---------- kanban board ----------
+function renderBoard() {
+  renderTitle();
+  $("search").value = curSearch();
+
+  $("content").innerHTML = `<div id="board">` + STATUSES.map((st) => {
+    const rows = filteredRows(st);
+    return `<div class="col" data-status="${st}">
+      <div class="col-head">
+        <span><span class="dot" style="background:var(--badge-${st})"></span>${STATUS_LABELS[st]}</span>
+        <span class="count">${rows.length}</span>
+      </div>
+      <div class="col-cards">${rows.map((s) => `
+        <div class="card ${s.read ? "read" : ""}" draggable="true" data-id="${s.sessionId}">
+          <div class="card-name" title="Open session">${s.read ? "" : `<span class="unread-dot"></span>`}${esc(s.name)}</div>
+          <div class="card-meta"><span class="card-proj" title="${esc(s.triageProject)}">${esc(midTrunc(s.triageProject, 23))}</span><span class="row-time" data-id="${s.sessionId}">${timeLabel(s)}</span></div>
+          <span class="c-tags-slot"></span>
+          ${s.note ? `<div class="card-note">${esc(s.note)}</div>` : ""}
+        </div>`).join("")}
+      </div>
+    </div>`;
+  }).join("") + `</div>`;
+
+  document.querySelectorAll(".card").forEach((card) => {
+    const s = DATA.sessions.find((x) => x.sessionId === card.dataset.id);
+    card.classList.toggle("selected", SELECTED.has(card.dataset.id));
+    card.onclick = (e) => {
+      if (e.target.closest("select, input, .tag-chips-wrap, .tag-suggest")) return;
+      openSession(card.dataset.id);
+    };
+    card.querySelector(".c-tags-slot").replaceWith(tagChipsWrap(s));
+    card.addEventListener("dragstart", (e) => {
+      // dragging a selected card carries the whole selection
+      const ids = SELECTED.has(card.dataset.id) && SELECTED.size > 1
+        ? [...SELECTED] : [card.dataset.id];
+      e.dataTransfer.setData("text/plain", ids.join(","));
+      e.dataTransfer.effectAllowed = "move";
+      ids.forEach((id) => document.querySelector(`.card[data-id="${id}"]`)
+        ?.classList.add("dragging"));
+    });
+    card.addEventListener("dragend", () =>
+      document.querySelectorAll(".card.dragging").forEach((c) => c.classList.remove("dragging")));
+  });
+
+  document.querySelectorAll(".col").forEach((col) => {
+    col.addEventListener("dragover", (e) => { e.preventDefault(); col.classList.add("dragover"); });
+    col.addEventListener("dragleave", () => col.classList.remove("dragover"));
+    col.addEventListener("drop", (e) => {
+      e.preventDefault();
+      col.classList.remove("dragover");
+      const ids = (e.dataTransfer.getData("text/plain") || "").split(",").filter(Boolean);
+      if (ids.length) {
+        SELECTED.clear();
+        saveMany(ids, {status: col.dataset.status});
+      }
+    });
+  });
+
+  wireRubberBand();
+}
+
+// ---------- board rubber-band multi-select ----------
+const SELECTED = new Set();
+
+function wireRubberBand() {
+  const board = document.getElementById("board");
+  if (!board) return;
+  board.addEventListener("mousedown", (e) => {
+    // only start on empty space, with the primary button
+    if (e.button !== 0) return;
+    if (e.target.closest(".card, select, input, .tag-chips-wrap, .col-head")) return;
+    e.preventDefault();
+    SELECTED.clear();
+    const startX = e.clientX, startY = e.clientY;
+    const box = document.createElement("div");
+    box.id = "select-box";
+    document.body.appendChild(box);
+    const cards = [...document.querySelectorAll(".card")];
+
+    function update(ev) {
+      const x1 = Math.min(startX, ev.clientX), x2 = Math.max(startX, ev.clientX);
+      const y1 = Math.min(startY, ev.clientY), y2 = Math.max(startY, ev.clientY);
+      Object.assign(box.style, {left: x1 + "px", top: y1 + "px",
+        width: (x2 - x1) + "px", height: (y2 - y1) + "px"});
+      cards.forEach((card) => {
+        const r = card.getBoundingClientRect();
+        const hit = r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1;
+        card.classList.toggle("selected", hit);
+        if (hit) SELECTED.add(card.dataset.id); else SELECTED.delete(card.dataset.id);
+      });
+    }
+    function stop() {
+      updateSelectionUI();
+      box.remove();
+      window.removeEventListener("mousemove", update);
+      window.removeEventListener("mouseup", stop);
+    }
+    window.addEventListener("mousemove", update);
+    window.addEventListener("mouseup", stop);
+  });
+}
+
+// ---------- Notion-style tag chips ----------
+const TAG_COLORS = ["tc-gray", "tc-blue", "tc-green", "tc-orange", "tc-red", "tc-yellow"];
+function tagColor(tag) {
+  let h = 0;
+  for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) >>> 0;
+  return TAG_COLORS[h % TAG_COLORS.length];
+}
+function mkChip(tag) {
+  const chip = document.createElement("span");
+  chip.className = "tag-chip " + tagColor(tag);
+  chip.textContent = tag;
+  return chip;
+}
+
+// read-mode chips area; click to edit in place
+function tagChipsWrap(s) {
+  const wrap = document.createElement("div");
+  wrap.className = "tag-chips-wrap";
+  if (s.tags.length) s.tags.forEach((t) => wrap.appendChild(mkChip(t)));
+  else {
+    const hint = document.createElement("span");
+    hint.className = "empty-hint";
+    hint.textContent = "Add tags…";
+    wrap.appendChild(hint);
+  }
+  wrap.addEventListener("click", (e) => { e.stopPropagation(); startTagEdit(wrap, s); });
+  return wrap;
+}
+
+function startTagEdit(anchor, s) {
+  const tags = [...s.tags];
+  const wrap = document.createElement("div");
+  wrap.className = "tag-chips-wrap editing";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tag-input";
+  wrap.appendChild(input);
+  anchor.replaceWith(wrap);
+  let done = false;
+
+  const vocab = Object.keys(DATA.tagCounts).sort();
+  let suggest = null, selIdx = -1, matches = [];
+
+  function closeSuggest() {
+    if (suggest) { suggest.remove(); suggest = null; }
+    selIdx = -1; matches = [];
+  }
+  function pick(tag) {
+    if (!tags.includes(tag)) tags.push(tag);
+    input.value = "";
+    drawChips();
+    closeSuggest();
+    input.focus();
+  }
+  function suggestCount() {
+    const q = input.value.trim().toLowerCase();
+    const exact = matches.some((v) => v.toLowerCase() === q);
+    return matches.length + (q && !exact ? 1 : 0);
+  }
+  function updateSuggest() {
+    const q = input.value.trim().toLowerCase();
+    matches = vocab.filter((v) =>
+      !tags.includes(v) && (!q || v.toLowerCase().includes(q))).slice(0, 8);
+    const exact = matches.some((v) => v.toLowerCase() === q);
+    if (!matches.length && !q) { closeSuggest(); return; }
+    if (!suggest) {
+      suggest = document.createElement("div");
+      suggest.className = "tag-suggest";
+      document.body.appendChild(suggest);
+    }
+    suggest.innerHTML = '<div class="menu-label">Select or create</div>';
+    matches.forEach((tag, i) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "tag-suggest-item" + (i === selIdx ? " sel" : "");
+      item.appendChild(mkChip(tag));
+      item.addEventListener("mousedown", (e) => { e.preventDefault(); pick(tag); });
+      suggest.appendChild(item);
+    });
+    if (q && !exact) {
+      const create = document.createElement("button");
+      create.type = "button";
+      create.className = "tag-suggest-item" + (selIdx === matches.length ? " sel" : "");
+      const lbl = document.createElement("span");
+      lbl.className = "create"; lbl.textContent = "Create";
+      create.appendChild(lbl);
+      create.appendChild(mkChip(input.value.trim()));
+      create.addEventListener("mousedown", (e) => { e.preventDefault(); pick(input.value.trim()); });
+      suggest.appendChild(create);
+    }
+    const r = wrap.getBoundingClientRect();
+    suggest.style.top = (r.bottom + window.scrollY + 4) + "px";
+    suggest.style.left = (r.left + window.scrollX) + "px";
+    suggest.style.minWidth = Math.max(170, r.width * 0.6) + "px";
+  }
+  function drawChips() {
+    wrap.querySelectorAll(".tag-chip").forEach((c) => c.remove());
+    tags.forEach((tag, i) => {
+      const chip = mkChip(tag);
+      const x = document.createElement("span");
+      x.className = "x";
+      x.innerHTML = '<svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1.5 1.5 8.5 8.5M8.5 1.5 1.5 8.5"/></svg>';
+      x.addEventListener("mousedown", (e) => {
+        e.preventDefault(); e.stopPropagation();  // keep input focused
+        tags.splice(i, 1);
+        drawChips();
+      });
+      chip.appendChild(x);
+      wrap.insertBefore(chip, input);
+    });
+    input.placeholder = tags.length ? "" : "Add tags…";
+  }
+  function addFromInput() {
+    input.value.split(",").map((x) => x.trim()).filter(Boolean).forEach((tag) => {
+      if (!tags.includes(tag)) tags.push(tag);
+    });
+    input.value = "";
+    drawChips();
+  }
+  function commit() {
+    if (done) return; done = true;
+    closeSuggest();
+    addFromInput();
+    const v = tags.join(", ");
+    if (v !== s.tags.join(", ")) save(s.sessionId, {tags: v});
+    else render();
+  }
+
+  input.addEventListener("input", () => { selIdx = -1; updateSuggest(); });
+  input.addEventListener("blur", () => setTimeout(commit, 0));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" && suggest) {
+      e.preventDefault(); selIdx = (selIdx + 1) % suggestCount(); updateSuggest();
+    } else if (e.key === "ArrowUp" && suggest) {
+      e.preventDefault(); selIdx = (selIdx - 1 + suggestCount()) % suggestCount(); updateSuggest();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (selIdx >= 0 && selIdx < matches.length) pick(matches[selIdx]);
+      else if (selIdx === matches.length && input.value.trim()) pick(input.value.trim());
+      else if (input.value.trim()) pick(input.value.trim());
+      else input.blur();
+    } else if (e.key === ",") {
+      e.preventDefault(); addFromInput(); closeSuggest();
+    } else if (e.key === "Backspace" && input.value === "" && tags.length) {
+      tags.pop(); drawChips(); updateSuggest();
+    } else if (e.key === "Escape") {
+      done = true; closeSuggest(); render();
+    }
+  });
+
+  drawChips();
+  updateSuggest();
+  input.focus();
+}
+
+function openSession(id) {
+  const s = DATA.sessions.find((x) => x.sessionId === id);
+  if (s && !s.read) save(id, {read: "1"});  // opening marks it read, like mail
+  fused.params.set("peek", id);
+}
+
+// ---------- side peek ----------
+const DETAIL_CACHE = {};
+
+function renderPeek() {
+  const id = fused.params.get("peek") || "";
+  const open = !!id;
+  $("peek-overlay").classList.toggle("open", open);
+  $("peek").classList.toggle("open", open);
+  if (!open) return;
+  const s = DATA.sessions.find((x) => x.sessionId === id);
+  if (!s) { $("peek-body").innerHTML = `<div id="empty">Session not found</div>`; return; }
+
+  // copy a paste-ready terminal command to the clipboard, with button feedback
+  const q = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
+  const copyCmd = (btnId, cmd) => async () => {
+    try { await navigator.clipboard.writeText(cmd); } catch (e) {
+      window.prompt("Copy this command:", cmd); return;
+    }
+    const btn = $(btnId);
+    const orig = btn.textContent;
+    btn.textContent = "Copied ✓";
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  };
+
+  const cwd = s.cwd || s.project || "";
+  const cdPrefix = cwd ? `cd ${q(cwd)} && ` : "";
+  $("peek-continue").onclick = copyCmd("peek-continue",
+    `${cdPrefix}claude --resume ${id}`);
+
+  // open the session's working directory in Fused Explorer — same /view/
+  // codec the shell's router uses (segment-wise encode of the abs path).
+  // Navigates the TOP window: the inbox is an iframe inside the shell, and
+  // "open in explorer" means leaving the inbox for the explorer.
+  const openDirBtn = $("peek-open-dir");
+  openDirBtn.style.display = cwd ? "" : "none";
+  openDirBtn.onclick = () => {
+    const norm = /^[A-Za-z]:[\\/]/.test(cwd) ? cwd.replace(/\\/g, "/") : cwd;
+    const encoded = norm.replace(/^\/+/, "").split("/")
+      .filter(Boolean).map(encodeURIComponent).join("/");
+    window.open("/explorer/view/" + encoded, "_top");
+  };
+
+  // launch a new detached Claude session that analyzes this one — it appears
+  // in the inbox as its own session, so it's tracked there like any other
+  $("peek-analyze").onclick = async () => {
+    const btn = $("peek-analyze");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    try {
+      const r = await fused.runPython("./analyze.py", {session: id, cwd}, {key: null});
+      btn.textContent = r.ok ? "Started ✓ — watch the inbox" : "Failed: " + r.error;
+    } catch (e) {
+      btn.textContent = "Failed: " + e.message;
+    }
+    setTimeout(() => { btn.textContent = "Analyze session"; btn.disabled = false; }, 2500);
+  };
+
+  const body = $("peek-body");
+  body.innerHTML = `
+    <h2 class="peek-title">${esc(s.name)}</h2>
+    <div class="peek-meta" title="${esc(s.triageProject)}">${esc(midTrunc(s.triageProject, 50))} · ${s.userMessages} msgs ·
+      ${s.toolCalls} tool calls · <span class="row-time" data-id="${s.sessionId}">${timeLabel(s)}</span></div>
+    <div class="peek-controls">
+      <select class="c-status">
+        ${STATUSES.map((st) =>
+          `<option value="${st}" ${st === s.status ? "selected" : ""}>${STATUS_LABELS[st]}</option>`).join("")}
+      </select>
+      <span class="c-tags-slot"></span>
+      <input class="c-note note" placeholder="note…" value="${esc(s.note)}">
+    </div>
+    <div class="peek-divider"></div>
+    <div id="peek-turns">Loading transcript…</div>`;
+
+  body.querySelector(".c-status").onchange = (e) => save(id, {status: e.target.value});
+  body.querySelector(".c-tags-slot").replaceWith(tagChipsWrap(s));
+  body.querySelector(".c-note").onchange = (e) => save(id, {note: e.target.value});
+
+  // "11:42 AM" for today, "Aug 5, 11:42 AM" otherwise
+  const turnTime = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d)) return "";
+    const time = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+    return d.toDateString() === new Date().toDateString()
+      ? time : d.toLocaleDateString([], {month: "short", day: "numeric"}) + ", " + time;
+  };
+  const drawTurns = (detail) => {
+    const el = body.querySelector("#peek-turns");
+    if (!el) return;  // peek moved on
+    if (!detail.found) { el.textContent = "Transcript not found."; return; }
+    el.innerHTML = detail.turns.map((t) => `
+      <div class="turn turn-${t.role}">
+        <div class="turn-head">${t.role === "user" ? "You" : "Claude"}${
+          t.timestamp ? `<span class="turn-time">${esc(turnTime(t.timestamp))}</span>` : ""}</div>
+        ${t.text ? `<div class="turn-text">${esc(t.text)}</div>` : ""}
+        ${t.toolCalls.length ? `<div class="turn-tools">🔧 ${t.toolCalls.length} tool call${
+          t.toolCalls.length > 1 ? "s" : ""}: ${esc(t.toolCalls.map((c) => c.name).join(", "))}</div>` : ""}
+      </div>`).join("");
+  };
+
+  if (DETAIL_CACHE[id]) drawTurns(DETAIL_CACHE[id]);
+  else fused.runPython("./sessions/detail.py", {session: id}, {key: "detail"})
+    .then((d) => { DETAIL_CACHE[id] = d; drawTurns(d); })
+    .catch((err) => {
+      const el = body.querySelector("#peek-turns");
+      if (el) el.textContent = "Failed to load transcript: " + err.message;
+    });
+}
+
+// pulsing dot on the sidebar Inbox entry while any untriaged session is active
+function updateInboxDot() {
+  const dot = document.getElementById("inbox-dot");
+  if (!dot) return;
+  const active = DATA.sessions.some((s) => isRunning(s.mtime));
+  dot.style.display = active ? "" : "none";
+}
+
+function closePeek() { fused.params.set("peek", ""); }
+$("peek-close").onclick = closePeek;
+$("peek-overlay").onclick = closePeek;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && fused.params.get("peek")) closePeek();
+});
+
+// ---------- saving ----------
+function applyLocal(id, patch) {
+  const s = DATA.sessions.find((x) => x.sessionId === id);
+  if (!s) return false;
+  if (patch.status !== undefined) s.status = patch.status;
+  if (patch.read !== undefined) s.read = !!patch.read;
+  if (patch.read !== undefined || patch.status !== undefined)
+    DATA.unreadCount = DATA.sessions.filter(
+      (x) => !x.read && x.status !== "archived").length;
+  if (patch.note !== undefined) s.note = patch.note.trim();
+  if (patch.tags !== undefined) {
+    s.tags = patch.tags.split(",").map((x) => x.trim()).filter(Boolean);
+    DATA.tagCounts = {};
+    for (const x of DATA.sessions)
+      for (const t of x.tags) DATA.tagCounts[t] = (DATA.tagCounts[t] || 0) + 1;
+  }
+  return true;
+}
+
+async function saveMany(ids, patch) {
+  const applied = ids.filter((id) => applyLocal(id, patch));
+  recount();
+  render();
+  await Promise.all(applied.map((id) =>
+    fused.runPython("./set_triage.py",
+      {session: id, patch: JSON.stringify(patch)}, {key: null})));
+}
+
+const save = (id, patch) => saveMany([id], patch);
+
+function recount() {
+  DATA.statusCounts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
+  for (const s of DATA.sessions) DATA.statusCounts[s.status]++;
+}
+
+document.querySelectorAll("#layout-toggle button").forEach((b) =>
+  b.onclick = () => fused.params.set("layout", b.dataset.layout));
+
+let searchTimer;
+$("search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => fused.params.set("search", $("search").value), 200);
+});
+
+// instant tooltip for [data-tip] elements — no native title delay
+const TIP = document.createElement("div");
+TIP.id = "tip";
+document.body.appendChild(TIP);
+document.addEventListener("mouseover", (e) => {
+  const el = e.target.closest && e.target.closest("[data-tip]");
+  if (!el) { TIP.style.display = "none"; return; }
+  TIP.textContent = el.dataset.tip;
+  TIP.style.display = "block";
+  const r = el.getBoundingClientRect();
+  TIP.style.left = Math.min(r.right + 6, window.innerWidth - TIP.offsetWidth - 8) + "px";
+  TIP.style.top = Math.min(r.top, window.innerHeight - TIP.offsetHeight - 8) + "px";
+});
+
+fused.params.onChange(render);
+load().then(schedulePoll, schedulePoll);
+</script>
+</body>
+</html>

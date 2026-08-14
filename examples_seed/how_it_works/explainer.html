@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>How Fused Render works</title>
+<style>
+  :root {
+    /* Fused brand: dark grey + white, one yellow accent */
+    --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
+    --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
+    --yellow:#E5FF44;
+    --html:#ffffff;   /* the page side  → white  */
+    --py:#E5FF44;     /* the python side → yellow */
+    --code-bg:#0f0f10;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; }
+  h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
+  .tag { color:var(--dim); font-size:15.5px; margin:0 0 30px; max-width:640px; }
+  .tag b { color:var(--text); font-weight:600; }
+  .tag .y { color:var(--yellow); font-weight:600; }
+  code, .mono { font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       margin:36px 0 6px; font-weight:700; }
+  .h2sub { color:var(--dim); font-size:13.5px; margin:0 0 16px; }
+
+  /* ---------- flow diagram (the hero) ---------- */
+  .flow { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:26px 26px 20px; }
+  .row { display:grid; grid-template-columns:1fr 156px 1fr; align-items:center; }
+  .side { border-radius:12px; padding:18px 20px; border:1px solid var(--border); background:var(--panel2);
+          min-height:118px; display:flex; flex-direction:column; position:relative; }
+  .side.html { border-top:3px solid var(--html); }
+  .side.py   { border-top:3px solid var(--py); transition:box-shadow .25s, border-color .25s; }
+  .side.py.busy { box-shadow:0 0 0 1px var(--py), 0 0 26px -4px var(--py); }
+  .side h3 { margin:0 0 6px; font-size:16px; display:flex; align-items:center; gap:9px; }
+  .side h3 .dot { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+  .side .what { color:var(--text); font-size:13.5px; font-weight:600; }
+  .side .eg { color:var(--dim); font-size:12.5px; margin-top:2px; }
+  .side .loc { color:var(--mut); font-size:11.5px; margin-top:auto; padding-top:10px; transition:opacity .2s; }
+  /* absolutely positioned so swapping in "running…" never changes the box height */
+  .side .busytag { color:var(--py); font-size:12px; font-weight:600; opacity:0;
+                   transition:opacity .2s; position:absolute; left:20px; bottom:18px; }
+  .side.py.busy .busytag { opacity:1; animation:blink 1s ease-in-out infinite; }
+  .side.py.busy .loc { opacity:0; }
+  @keyframes blink { 0%,100%{opacity:.35} 50%{opacity:1} }
+
+  .conn { display:flex; flex-direction:column; gap:22px; padding:0 16px; }
+  .arrow { display:flex; flex-direction:column; align-items:center; }
+  .arrow .lbl { font-size:11px; color:var(--dim); margin-bottom:6px; white-space:nowrap; }
+  .track { position:relative; width:100%; height:2px; border-radius:2px; }
+  .track.fwd { background:linear-gradient(90deg,rgba(255,255,255,.35),var(--py)); }
+  .track.back { background:linear-gradient(90deg,var(--py),rgba(255,255,255,.35)); }
+  .track .head { position:absolute; top:50%; width:0; height:0;
+                 border-top:5px solid transparent; border-bottom:5px solid transparent;
+                 transform:translateY(-50%); }
+  .track.fwd .head { right:-6px; border-left:8px solid var(--py); }
+  .track.back .head { left:-6px; border-right:8px solid var(--html); }
+  .pulse { position:absolute; top:50%; width:9px; height:9px; border-radius:50%;
+           transform:translate(-50%,-50%); opacity:0; box-shadow:0 0 9px 2px currentColor; }
+  .track.fwd .pulse, .track.back .pulse { color:var(--py); background:var(--py); }
+  @keyframes fwd { 0%{left:0;opacity:0} 12%{opacity:1} 88%{opacity:1} 100%{left:100%;opacity:0} }
+  @keyframes back{ 0%{left:100%;opacity:0} 12%{opacity:1} 88%{opacity:1} 100%{left:0;opacity:0} }
+  .pulse.run-fwd { animation:fwd .9s ease-in-out; }
+  .pulse.run-back{ animation:back .9s ease-in-out; }
+  .bridge { text-align:center; color:var(--mut); font-size:12px; margin-top:16px; }
+  .bridge code { color:var(--yellow); }
+
+  /* ---------- live demo ---------- */
+  .demo { display:grid; grid-template-columns:230px 1fr; gap:16px; align-items:stretch; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 20px; }
+  .card h4 { margin:0 0 4px; font-size:14px; }
+  .card .hint { color:var(--dim); font-size:12px; margin:0 0 16px; }
+  .ctrl { margin-bottom:18px; }
+  .ctrl label { display:flex; justify-content:space-between; font-size:13px; margin-bottom:7px; }
+  .ctrl label b { color:var(--yellow); font-variant-numeric:tabular-nums; }
+  input[type=range]{ width:100%; accent-color:var(--yellow); }
+  .chartwrap { display:flex; flex-direction:column; height:100%; }
+  .chart { display:flex; align-items:flex-end; gap:3px; height:180px; flex:1; }
+  .chart .b { flex:1; background:#3a3a3d; border-radius:2px 2px 0 0; min-height:2px;
+              transition:height .3s ease, background .3s ease; }
+  .chart .b.peak { background:var(--yellow); }
+  .status { color:var(--mut); font-size:12px; margin-top:12px; min-height:16px; }
+  .status .y { color:var(--yellow); }
+
+  /* mode toggle */
+  .modehdr { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .modes { display:inline-flex; background:var(--panel2); border:1px solid var(--border);
+           border-radius:9px; padding:3px; gap:2px; }
+  .modes button { appearance:none; border:0; background:transparent; color:var(--dim); cursor:pointer;
+                  font:600 12px/1 -apple-system,BlinkMacSystemFont,sans-serif; padding:7px 13px;
+                  border-radius:6px; transition:background .15s, color .15s; }
+  .modes button:hover { color:var(--text); }
+  .modes button.on { background:var(--yellow); color:#141414; }
+
+  /* ---------- expandable details ---------- */
+  details { border-top:1px solid var(--border); margin-top:14px; padding-top:12px; }
+  .peek { margin-top:16px; }
+  summary { cursor:pointer; font-size:12.5px; color:var(--dim); list-style:none;
+            display:flex; align-items:center; gap:8px; user-select:none; }
+  summary::-webkit-details-marker { display:none; }
+  summary .tw { transition:transform .15s; color:var(--mut); font-size:9px; }
+  details[open] summary .tw { transform:rotate(90deg); }
+  summary b { color:var(--text); font-weight:600; }
+  .body { padding:12px 0 2px; }
+  pre { margin:0; background:var(--code-bg); border:1px solid var(--border); border-radius:9px;
+        padding:13px 15px; font-size:12px; overflow-x:auto; color:#d0d0d4;
+        transition:box-shadow .2s, border-color .2s; position:relative; }
+  pre.running { border-color:var(--py); box-shadow:0 0 0 1px var(--py), 0 0 20px -4px var(--py); }
+  pre.running::before { content:"● running"; position:absolute; top:9px; right:13px; font-size:10px;
+        color:var(--py); font-weight:700; animation:blink 1s ease-in-out infinite; }
+  pre .k { color:#c7c7cc; } pre .s { color:#e4e4e7; } pre .f { color:var(--yellow); } pre .c { color:var(--mut); }
+  .url { font-size:12px; color:var(--dim); word-break:break-all; margin-top:8px; }
+  .url b { color:var(--yellow); }
+  ul.rules { margin:12px 0 0; padding-left:18px; color:var(--dim); font-size:12.5px; }
+  ul.rules li { margin:5px 0; }
+  ul.rules code { color:var(--text); }
+  @media (max-width:760px){ .row,.demo{ grid-template-columns:1fr; } .conn{ flex-direction:row; padding:16px 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>How Fused Render works</h1>
+  <p class="tag">A project is just a <b>web page</b> and a <b>Python file</b> in a folder. The page is what you <b>see</b>; Python does the <b>work</b> — on your own machine. One line connects them: <span class="y mono">fused.runPython()</span>.</p>
+
+  <!-- FLOW DIAGRAM -->
+  <div class="flow">
+    <div class="row">
+      <div class="side html">
+        <h3><span class="dot" style="background:var(--html)"></span>The page</h3>
+        <div class="what">What you see</div>
+        <div class="eg">Sliders, maps, charts — the interface.</div>
+        <div class="loc">runs in the browser</div>
+      </div>
+
+      <div class="conn">
+        <div class="arrow">
+          <div class="lbl">your inputs →</div>
+          <div class="track fwd"><span class="head"></span><span class="pulse" id="pf"></span></div>
+        </div>
+        <div class="arrow">
+          <div class="lbl">← the result</div>
+          <div class="track back"><span class="head"></span><span class="pulse" id="pb"></span></div>
+        </div>
+      </div>
+
+      <div class="side py" id="pyPanel">
+        <h3><span class="dot" style="background:var(--py)"></span>The Python</h3>
+        <div class="what">What does the work</div>
+        <div class="eg">pandas, DuckDB, your files &amp; APIs.</div>
+        <div class="loc" id="pyver">runs on your machine</div>
+        <div class="busytag">⚙︎ running…</div>
+      </div>
+    </div>
+    <div class="bridge">The page hands inputs to Python and gets JSON back — that whole arrow is one call to <code>fused.runPython()</code>.</div>
+  </div>
+
+  <!-- LIVE DEMO -->
+  <div class="modehdr">
+    <div>
+      <h2>See it happen</h2>
+      <p class="h2sub" id="h2sub">Move a slider. Your input goes to Python, Python recomputes the curve, and the result is drawn here — for real.</p>
+    </div>
+    <div class="modes">
+      <button data-mode="explainer">Explainer</button>
+      <button data-mode="realtime">Realtime</button>
+    </div>
+  </div>
+  <div class="demo">
+    <div class="card">
+      <h4>You control</h4>
+      <p class="hint">These become Python's inputs.</p>
+      <div class="ctrl"><label>Peak position <b id="vPeak">30</b></label>
+        <input type="range" id="peak" min="0" max="100" step="1"></div>
+      <div class="ctrl"><label>Spread <b id="vSpread">15</b></label>
+        <input type="range" id="spread" min="4" max="40" step="1"></div>
+    </div>
+
+    <div class="card">
+      <div class="chartwrap">
+        <h4 style="margin-bottom:12px">Python draws this</h4>
+        <div class="chart" id="chart"></div>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- optional detail, collapsed by default -->
+  <div class="peek">
+    <details>
+      <summary><span class="tw">▶</span><b>Peek under the hood</b> — the call, the data, and the Python</summary>
+      <div class="body">
+        <div style="color:var(--dim);font-size:12px;margin-bottom:6px">The exact call the page just made:</div>
+        <pre id="call"></pre>
+        <div class="url" id="url"></div>
+
+        <div style="color:var(--dim);font-size:12px;margin:16px 0 6px">The whole <code>demo.py</code> — one function, plain Python:</div>
+        <pre id="pySrc"><span class="k">def</span> <span class="f">main</span>(peak: float, spread: float, bars: int = 28):
+    <span class="k">import</span> math
+    values = []
+    <span class="k">for</span> i <span class="k">in</span> range(bars):
+        x = i / (bars - 1) * 100
+        values.append(math.exp(-((x - peak)**2) / (2 * spread**2)))
+    <span class="k">return</span> {<span class="s">"values"</span>: values}   <span class="c"># plain JSON back to the page</span></pre>
+        <ul class="rules">
+          <li>One function named <code>main()</code> — no decorator, no server, no registration.</li>
+          <li>Inputs are type-annotated, so URL values arrive as real numbers.</li>
+          <li>Returns plain JSON — the page draws whatever comes back.</li>
+        </ul>
+      </div>
+    </details>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const P = fused.params;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function pulse(el, cls){ el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); }
+const mode = () => P.get("mode") === "realtime" ? "realtime" : "explainer";
+
+function renderChart(data){
+  $("pyver").textContent = "Python " + data.python;
+  $("chart").innerHTML = data.values
+    .map((v,i) => '<div class="b'+(i===data.peak_bar?' peak':'')+'" style="height:'+(v*100)+'%"></div>').join("");
+}
+
+let seq = 0;
+async function draw(){
+  const peak   = P.get("peak")   || "30";
+  const spread = P.get("spread") || "15";
+  const rt = mode() === "realtime";
+
+  // reflect state into controls, the code snippet, and the mode buttons
+  $("peak").value=peak; $("spread").value=spread;
+  $("vPeak").textContent=peak; $("vSpread").textContent=spread;
+  document.querySelectorAll(".modes button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode()));
+  $("h2sub").textContent = rt
+    ? "Realtime: effects off. Drag a slider — this is the true speed of the round-trip on your machine."
+    : "Move a slider. Your input goes to Python, Python recomputes the curve, and the result is drawn here — for real.";
+  $("url").innerHTML = "?<b>peak</b>="+peak+"&<b>spread</b>="+spread;
+  $("call").innerHTML =
+    '<span class="k">const</span> data = <span class="k">await</span> fused.<span class="f">runPython</span>(<span class="s">"./demo.py"</span>, {\n' +
+    '  peak: <span class="s">"'+peak+'"</span>, spread: <span class="s">"'+spread+'"</span>\n});';
+
+  const my = ++seq;
+  try {
+    if (rt) {
+      // Realtime: no artificial delays, no pulse/glow — just call and draw as fast as Python returns.
+      $("pyPanel").classList.remove("busy"); $("pySrc").classList.remove("running");
+      $("status").innerHTML = "running…";
+      const t0 = performance.now();
+      const data = await fused.runPython("./demo.py", {peak, spread});
+      if (my !== seq) return;
+      renderChart(data);
+      $("status").innerHTML = '<span class="y">✓</span> real round-trip in '+Math.round(performance.now()-t0)+' ms · peak at x='+data.peak_x;
+      return;
+    }
+
+    // Explainer: paced so the three phases read clearly on a screen-share.
+    pulse($("pf"), "run-fwd");                       // 1 · inputs travel to Python
+    $("status").innerHTML = "sending your inputs to Python…";
+    await sleep(900);
+    if (my !== seq) return;
+
+    $("pyPanel").classList.add("busy");              // 2 · Python runs
+    $("pySrc").classList.add("running");
+    $("status").innerHTML = "Python is computing…";
+    const [data] = await Promise.all([
+      fused.runPython("./demo.py", {peak, spread}),
+      sleep(900),
+    ]);
+    $("pyPanel").classList.remove("busy");
+    $("pySrc").classList.remove("running");
+    if (my !== seq) return;
+
+    pulse($("pb"), "run-back");                       // 3 · result travels back
+    $("status").innerHTML = "returning result to the page…";
+    await sleep(900);                                 // wait for the ball to land on "The page"
+    if (my !== seq) return;
+    renderChart(data);                                // …only then draw
+    $("status").innerHTML = '<span class="y">✓</span> Python returned '+data.values.length+' numbers · peak at x='+data.peak_x;
+  } catch(e){
+    $("pyPanel").classList.remove("busy");
+    $("pySrc").classList.remove("running");
+    $("status").textContent = "error: " + e.message;
+  }
+}
+
+["peak","spread"].forEach(id =>
+  $(id).addEventListener("input", e => P.set(id, String(e.target.value))));
+document.querySelectorAll(".modes button").forEach(b =>
+  b.addEventListener("click", () => P.set("mode", b.dataset.mode)));
+P.onChange(draw);
+draw();
+</script>
+</body>
+</html>

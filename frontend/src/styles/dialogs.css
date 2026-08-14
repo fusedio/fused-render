@@ -1,0 +1,35 @@
+/* ---- File-operation dialogs (components/FsDialogs.tsx) -------------------- */
+/* Reuses .deploy-overlay/.deploy-dialog/.deploy-body; these tune the compact
+   prompt/confirm shape (narrower than the deploy modal) and its controls. */
+.fs-dialog {
+  width: min(420px, 100%);
+}
+
+.fs-dialog-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.fs-dialog-input:focus {
+  outline: none;
+  border-color: var(--fg-muted);
+}
+
+.fs-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Override .deploy-body button's align-self:flex-start so the action row's
+   buttons sit on one line, right-aligned. */
+.fs-dialog-actions button {
+  align-self: auto;
+}
+

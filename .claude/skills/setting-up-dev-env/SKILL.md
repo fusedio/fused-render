@@ -1,0 +1,50 @@
+---
+name: setting-up-dev-env
+description: Use when setting up a fused-render checkout or git worktree for the first time — before running pytest, the dev server, or any daemon — so tests and the server actually work instead of silently failing on missing deps or an unbuilt React shell.
+---
+
+# Setting Up the Dev Env
+
+## Overview
+
+Every fresh checkout/worktree needs a **3.12 venv** and a **built React shell** — both are gitignored, so they don't carry into a worktree. Without them, `pytest`/`python` silently run against the wrong interpreter or fail on missing deps, and every server test dies with `RuntimeError: React shell not built`.
+
+## Running the Dev Server
+
+Use `scripts/dev.sh` — never launch `python -m fused_render.cli` (or uvicorn) directly. It does almost all the setup for you: bootstraps a repo-local `.venv` (with `[fused,bundled]`) if missing, `npm install`s the frontend, builds `shell-dist/`, then runs `vite build --watch` + the server with Python auto-reload and per-worktree port/state isolation.
+
+```bash
+scripts/dev.sh                 # defaults
+scripts/dev.sh --port 9000     # extra args pass through to the server
+```
+
+## Setup for Tests
+
+`dev.sh` covers the server, but its auto-venv has `[fused,bundled]` only — **not the `dev` extra** (pytest/xdist). And tests need a built `shell-dist/` or `create_app()` refuses to start. So the venv install is the one manual step:
+
+```bash
+uv venv --python 3.12 .venv                                         # pinned: matches what dev.sh and all three installers use
+uv pip install --python .venv/bin/python -e ".[dev,bundled,fused]"  # dev extra now includes pytest-xdist
+uv pip install --python .venv/bin/python pip                        # uv venv doesn't seed pip; test_deploy.py needs it
+```
+
+For `shell-dist/`: if you've run `scripts/dev.sh`, it's already built. If you'll *only* run tests and never start the server, build it once directly (repo uses npm, per `package-lock.json`):
+
+```bash
+cd frontend && npm install && npm run build && cd ..
+```
+
+Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m pytest -q` (~1170 pass).
+
+## Reference
+
+| Item | Why |
+|------|-----|
+| Python 3.12 | **pinned, not a default** (D214): the server passes its own interpreter to `uv sync` as the base for every project venv, so this version decides which wheels those venvs can resolve. A 3.14 venv made project venvs cp314, and a folder declaring `tensorflow` (no cp314 wheels) was an unresolvable dead end. 3.12 is what all three installers already ship, so a dev checkout matches the shipped app. `scripts/dev.sh` enforces it and rebuilds a `.venv` that is on anything else |
+| `dev` extra | pytest + httpx (backs TestClient) |
+| `bundled` extra | duckdb, rasterio, zarr, pandas, geopandas… (templates + daemons) |
+| `fused` extra | compute-engine wheel for `/api/run` |
+| frontend build | `create_app()` refuses to start without `shell-dist/` |
+| seeded `pip` | `uv venv` makes a pip-less venv; `test_deploy.py`'s install/one-click-installable tests exercise the *real* `_pip_available()` against this interpreter, so they fail without it |
+
+Parallel tests: the suite is xdist-safe (process isolation), so `pytest -n auto` works (~4.5x faster). Process-based only — `os.chdir` + `importlib.reload` would race under a threaded runner.

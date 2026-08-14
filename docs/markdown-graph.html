@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Markdown v2 — read/write notes with wikilinks and a graph</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --warn: #ffb454;
+    --ghost: #6b7076;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --fg: #1f2023;
+      --fg-muted: #61656c;
+      --border: #d8dade;
+      --bg: #ffffff;
+      --bg-alt: #f4f5f7;
+      --accent: #5f7300;
+      --warn: #a35b00;
+      --ghost: #a3a7ad;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  main { max-width: 54rem; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 1.9rem; margin: 0 0 .2em; line-height: 1.2; }
+  .sub { color: var(--fg-muted); margin: 0 0 2.5em; }
+  h2 {
+    font-size: 1.15rem;
+    margin: 2.6em 0 .8em;
+    padding-bottom: .35em;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 { font-size: .95rem; margin: 1.8em 0 .5em; }
+  code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 86%;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: .1em .35em;
+  }
+  pre {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 100%; }
+  table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; font-size: 14px; }
+  th, td { border: 1px solid var(--border); padding: 7px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-alt); font-weight: 600; }
+  ul, ol { padding-left: 1.4em; }
+  li { margin: .3em 0; }
+  a { color: var(--accent); }
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--bg-alt);
+    padding: 10px 16px;
+    margin: 1.4em 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .note.warn { border-left-color: var(--warn); }
+  .note strong { display: block; margin-bottom: .2em; }
+  .k { color: var(--fg-muted); }
+  .cols { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin: 1.4em 0; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; background: var(--bg-alt); }
+  .card h3 { margin-top: 0; }
+  .card p { margin: 0; font-size: 14px; color: var(--fg-muted); }
+  .steps { counter-reset: s; list-style: none; padding: 0; }
+  .steps li { counter-increment: s; position: relative; padding-left: 2.2em; margin: .9em 0; }
+  .steps li::before {
+    content: counter(s);
+    position: absolute; left: 0; top: .1em;
+    width: 1.6em; height: 1.6em; border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 600;
+    background: var(--accent); color: var(--bg);
+  }
+  figure { margin: 1.6em 0; }
+  figcaption { color: var(--fg-muted); font-size: 13px; margin-top: .5em; }
+  .diagram { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; line-height: 1.45; white-space: pre; }
+  .tag { display: inline-block; font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+         border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; color: var(--fg-muted); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Markdown v2</h1>
+<p class="sub">One template that reads, writes, links and graphs <code>.md</code> — replacing <code>templates/markdown/</code>. Read/write behaviour follows Obsidian.</p>
+
+<p>Today <code>markdown/template.html</code> does one thing: <code>marked.parse(await fused.readFile(file))</code> into a div. No editing, no <code>[[wikilinks]]</code>, no backlinks, no graph. This describes the replacement — the same view, plus an editor and a link layer, plus a folder-level graph built from the same index.</p>
+
+<div class="note">
+  <strong>Status — what was built (2026-07-28), and how it diverged from this
+  plan.</strong>
+  Everything below shipped, with one deliberate change of shape: the template is
+  <strong>one Live Preview surface</strong>, not three view modes. The
+  Reading/Source switcher described further down was built and then removed, and
+  with it <code>marked</code>, the whole rendered-HTML pipeline, the
+  <code>view</code> param and <code>⌘E</code>. The persistent toolbar is gone
+  too; backlinks moved off a footer into a right sidebar shared with the graph,
+  behind one small toggle. <code>code</code> is untouched and still registered
+  for <code>.md</code>. The contract is <code>SPEC.md</code> §32
+  (MD-1..MD-22); the decisions are D153..D159.
+  <br /><br />
+  <strong>Follow-ups since (D159).</strong> The decoration set is a
+  <code>StateField</code>, not a <code>ViewPlugin</code> — CM refuses a
+  plugin-provided replacement that spans a line break, and the table widget does,
+  so scrolling a note containing a table threw mid-update and left unpainted
+  regions on screen. There <em>is</em> a read-only/editing <strong>mode</strong>
+  after all (MD-1a), but only as the two CM facets the unwritable-file path
+  already used, in the <code>edit</code> param, with no second pipeline and no
+  change of appearance: the reading view is still "these decorations over a
+  locked buffer". The note view's scan root now climbs to a vault marker rather
+  than being the note's own folder (see Scope, below). On a path with no scan —
+  a mount, a refusal, a failure — wikilinks render <strong>inert</strong> rather
+  than as ghosts, because "we never looked" is not "it is not there" (MD-11a).
+  The side panel is resizable, the graph layout is about twice as open and fits
+  itself to the canvas, and both palettes are now Obsidian's own neutral scale
+  with fused's accent kept for links.
+  <br /><br />
+  <strong>Why one surface</strong> rather than copying Obsidian's split: in
+  Obsidian, Reading and Editing are leaves of a single
+  <code>MarkdownView</code>, so <code>⌘E</code> keeps the editor instance — and
+  with it the caret and the undo history. Here a mode is a <em>template swap</em>,
+  so the same toggle costs more and buys less. A read-only file gives the reading
+  view for free: identical decorations over a locked buffer.
+  <br /><br />
+  <strong>Deliberately not built</strong>, each recorded in MD-18b/MD-12 rather
+  than left implied: the frontmatter properties table (the block is dimmed
+  instead); inline note embeds (an embedded note renders as a link — no second
+  parse, no recursion); inline markup <em>inside a table cell</em>, which a
+  decoration cannot reach because it cannot span into a widget's DOM;
+  <em>paste or drop an image</em>, because <code>fused.writeFile</code> takes
+  UTF-8 text only and a binary attachment write needs a runtime change first;
+  <code>.fused-graph.json</code> tuning and gitignore-awareness of the walk;
+  sticky default-mode settings (view state is in <code>fused.params</code>,
+  which is shareable but not sticky); and step 5's watch-registry subscription —
+  see the two divergences below.
+</div>
+
+<h2>Three surfaces, one template</h2>
+
+<div class="cols">
+  <div class="card">
+    <h3>Note view <span class="tag">.md</span></h3>
+    <p>A Live Preview editor that <strong>opens read-only</strong> — one click on the corner padlock unlocks it, and the choice rides in the URL. Markup rendered in place, resolved <code>[[wikilinks]]</code>, no mode switcher. The default mode for <code>.md</code>.</p>
+  </div>
+  <div class="card">
+    <h3>Local graph <span class="tag">.md</span></h3>
+    <p>Neighborhood of the open note — BFS to depth <var>N</var>. In the right sidebar under the backlinks, toggled, depth in the URL.</p>
+  </div>
+  <div class="card">
+    <h3>Vault graph <span class="tag">/</span></h3>
+    <p>Every note under the current folder. A directory template, registered next to <code>_listing</code> and <code>preview</code>.</p>
+  </div>
+</div>
+
+<p>Registry changes are small:</p>
+<pre><code>".md":       ["markdown", "code", "reader", "annotate"]   <span class="k">// markdown now = read+write+links</span>
+"/":         ["_listing", "graph", "zarr_aoi"] <span class="k">// new folder mode, gated</span></code></pre>
+
+<p>The folder mode gets a <code>condition.py</code> (SPEC CT-12) so it only offers itself where a notes <em>vault</em> is — as built, where <code>index.md</code> exists (<code>Index.md</code> probed alongside it, for a case-sensitive filesystem), since telling "this is a vault" from anything else needs the listing this rule forbids. The first cut probed a wider list of "entry-point" notes (<code>README.md</code>, <code>Home.md</code>, <code>notes.md</code>, …) and that was wrong in one direction that matters: <code>README.md</code> is in essentially every code repository, so the mode was offered on every checkout on the disk. The remaining cost is one-directional and is discoverability, not capability: a vault with no <code>index.md</code> is not <em>offered</em> the mode, while <code>_mode=graph</code> still reaches it by hand and the local graph panel in the note view is untouched. That gate must <strong>never</strong> list or walk the directory — same rule <code>zarr_aoi/condition.py</code> documents. Cheap bounded probes only (two <code>os.path.isfile</code> checks), fail closed.</p>
+
+<h2>Reading and writing — Obsidian parity</h2>
+
+<p>Read/write behaviour follows Obsidian explicitly. That is a reachable target rather than an aspiration, because Obsidian's editor <em>is</em> CodeMirror 6 — and <code>templates/vendor/codemirror.bundle.js</code> is CodeMirror 6, built from <code>scripts/vendor-codemirror/entry.js</code>, with <code>Decoration</code>/<code>StateField</code>/<code>StateEffect</code>/<code>RangeSet</code> already exported for annotate mode. Live Preview is a decoration set over a CM6 document, not a WYSIWYG DOM; the mechanism we already ship is the mechanism Obsidian uses.</p>
+
+<h3>One view mode <span class="k">— as built; see the status note above</span></h3>
+
+<p><strong>Live Preview only.</strong> An editable CM6 document where markup is replaced by rendered widgets — <em>except</em> on the lines the selection touches, where the raw source is revealed so it can be edited. Headings size up with <code>#</code> hidden; bold/italic/strike/inline-code lose their markers and keep their styling; code fences keep their markers and gain the embedded language's highlighting; blockquotes, bullets, rules, pipe tables, images, links, wikilinks, embeds, ghosts and tags all render.</p>
+
+<p>What a range <em>is</em> comes from <code>syntaxTree</code>, so no block parser is duplicated in JS. Wikilinks and tags are not in the grammar, so they are matched by regex and then checked against the tree — which is where MD-3's code-masking rule holds on this side.</p>
+
+<table>
+  <tr><th>Interaction</th><th>Behaviour</th></tr>
+  <tr><td>Click a link</td><td>Follows it — the widget is opaque, so the caret does not land in it.</td></tr>
+  <tr><td>Click an image, table or tag</td><td>Puts the caret inside: the source appears, which is how the content is edited.</td></tr>
+  <tr><td>Click a checkbox</td><td>Toggles and writes back. It stays a control even under the caret, as in Obsidian.</td></tr>
+  <tr><td>Read-only file</td><td>Same decorations over a locked buffer — this is the reading view.</td></tr>
+  <tr><td>Read-only <em>mode</em></td><td>The identical mechanism, and now the state a note <em>opens</em> in (MD-1a): the same two facets, the same decorations. With no caret nothing reveals, so the note reads as fully rendered. An unwritable file cannot be toggled out of it.</td></tr>
+</table>
+
+<p>Frontmatter is the one place the grammar cannot be trusted: it has no frontmatter rule, and <code>---\ntitle: x\n---</code> parses as a <code>HorizontalRule</code> followed by a <code>SetextHeading2</code>, so YAML rendered as a rule plus a large heading. The block is found by a line scan, dimmed, and every tree decoration inside it suppressed.</p>
+
+<p>Because this layer's correctness lives entirely in what the grammar calls each range, it is covered by <strong>running it</strong>: <code>scripts/vendor-codemirror/live-preview-probe.mjs</code> executes the real builder against the real grammar headlessly, and <code>tests/test_markdown_live_preview.py</code> asserts over the decoration set it produces. Two real bugs — the frontmatter case above, and <code>Link</code>/<code>Image</code> nodes wrapping wikilink brackets, which silently rendered <em>no</em> wikilinks — were found that way after the source read correctly.</p>
+
+<h3>Saving — Obsidian's model, not ours</h3>
+
+<p>Obsidian has no save button, no dirty indicator, and no save prompt. It autosaves on an idle timer (~2 s), on focus loss, on switching file or tab, and on quit; <code>⌘S</code> merely forces the flush early. We adopt exactly that through <code>fused.writeFile(file, text)</code>. Dropping our own dirty-dot/save-button idea is the point — the absence of save ceremony <em>is</em> the behaviour being copied.</p>
+
+<div class="note warn">
+  <strong>One deliberate deviation: conflicts.</strong>
+  Obsidian assumes it is the only writer in the vault — a clean buffer silently reloads when the file changes on disk, and otherwise the editor's copy wins. fused-render sits on shared and mount-backed paths where that assumption doesn't hold. So: clean buffer → silent reload, exactly as Obsidian. Dirty buffer <em>and</em> <code>mtime</code> moved → a banner offering reload-or-keep, instead of last-write-wins. Everything else about saving is unchanged.
+</div>
+
+<p>Two more places Obsidian has nothing to copy, because it has no mount layer:</p>
+<ul>
+  <li><strong>Read-only detection reads the shell's persisted <code>read_only</code> flag</strong>, not <code>os.access</code>. On an rclone mount with <code>CacheMode=full</code> a doomed write succeeds locally and only 403s later on async upload — so the editor opens disabled rather than apologising afterwards.</li>
+  <li><strong>Watch-driven reload</strong> was the plan for the silent-reload-when-clean rule. <em>As built it is event-driven instead:</em> the view calls <code>fused.autoReload(false)</code> and re-stats on focus / visibility change, plus at the next save through the <code>expectedMtime</code> lock. A stat ticker was rejected outright — polling is exactly the traffic that killed a mount in the <code>fs/events</code> stat-storm incident, and branching on mount-ness inside the template would break the rule that templates stay mount-agnostic. The cost is that an external change is noticed a moment later rather than instantly; the rule itself (clean → silent reload, dirty → banner) is unchanged. This also stands in for step 5 of the order of work.</li>
+</ul>
+
+<h3>Editing behaviours to match</h3>
+
+<p>These are what make Obsidian feel like Obsidian, and each is a small CM6 keymap or input handler:</p>
+
+<ul>
+  <li><strong>Smart lists</strong> — <code>Enter</code> continues <code>- </code>, <code>1. </code>, <code>- [ ] </code> and renumbers; <code>Enter</code> on an empty item ends the list; <code>Tab</code>/<code>⇧Tab</code> indent and outdent list items.</li>
+  <li><strong>Auto-continue blockquotes</strong> (<code>&gt; </code>) and auto-pair brackets, quotes and backticks; typing a pair character with a selection wraps it.</li>
+  <li><strong>Formatting keys</strong> — <code>⌘B</code> bold, <code>⌘I</code> italic, <code>⌘K</code> link, <code>⌘⏎</code> toggle checkbox. All toggles, so pressing again unwraps.</li>
+  <li><strong>Paste a URL over a selection</strong> → <code>[selection](url)</code>.</li>
+  <li><strong>Paste or drop an image</strong> → write the file via <code>fused.writeFile</code> and insert <code>![[name.png]]</code>. Obsidian's attachment-location setting (vault root / same folder / a named subfolder) maps onto <code>.fused-graph.json</code>; default is same folder.</li>
+  <li><strong>Cursor and scroll position remembered per file</strong>; undo history per open tab.</li>
+  <li><strong>Frontmatter</strong> renders as a properties table in Live Preview, raw in Source.</li>
+</ul>
+
+<h3>Link authoring</h3>
+
+<p>The autocomplete popup is the feature that makes wikilinks usable, so it's part of read/write rather than part of the graph:</p>
+
+<ul>
+  <li><code>[[</code> → fuzzy list of notes · <code>[[#</code> → headings in this note · <code>[[note#</code> → headings in that note · <code>![[</code> → embeds · <code>#</code> → tags. <code>⏎</code>/<code>Tab</code> accepts, <code>Esc</code> dismisses.</li>
+  <li>Candidates come from the index — the same rows the graph reads, so the popup is free once the index exists.</li>
+  <li><strong>New link format</strong> matches Obsidian's setting: shortest path when possible / relative / absolute — and defaults to shortest, consistent with resolution.</li>
+  <li><strong>Use <code>[[Wikilinks]]</code></strong> toggle: off means new links are inserted as ordinary markdown links with relative paths. Both forms are always <em>read</em>.</li>
+  <li><strong>Clicking an unresolved link creates the note</strong> — Obsidian's behaviour, and only possible because this template writes.</li>
+</ul>
+
+<p>Two Obsidian behaviours are explicitly out of the template's reach and belong to the shell: <strong>rename updates inbound links</strong> (needs a hook on the explorer's rename, plus a multi-file write), and vault-wide search / quick-switcher. Worth doing, later, elsewhere.</p>
+
+<h3>Vendoring additions</h3>
+
+<p>One rebuild of <code>scripts/vendor-codemirror/</code> with these added to <code>entry.js</code>: <code>@codemirror/lang-markdown</code> (with GFM), <code>WidgetType</code>, <code>ViewPlugin</code>, <code>MatchDecorator</code>, <code>keymap</code> from <code>@codemirror/view</code>; <code>EditorSelection</code>, <code>RangeSetBuilder</code> from <code>@codemirror/state</code>; <code>syntaxTree</code> from <code>@codemirror/language</code>; <code>autocompletion</code> from <code>@codemirror/autocomplete</code>. Anything not re-exported gets tree-shaken, per the note in that file.</p>
+
+<div class="note">
+  <strong>The write path is what makes the graph live.</strong>
+  Each autosave re-parses exactly that note, updates one index row, and re-assembles the graph in memory. That's the whole incremental story — no rebuild — and it's also how the <code>[[</code> popup stays current.
+</div>
+
+<h2>Links</h2>
+
+<p>Parsed from the source before <code>marked</code> sees it, so both surfaces agree on what a link is:</p>
+
+<table>
+  <tr><th>Syntax</th><th>Meaning</th></tr>
+  <tr><td><code>[[Note]]</code></td><td>Link, resolved by name</td></tr>
+  <tr><td><code>[[Note|label]]</code></td><td>Link with display text</td></tr>
+  <tr><td><code>[[Note#Heading]]</code></td><td>Link to a heading anchor</td></tr>
+  <tr><td><code>![[image.png]]</code></td><td>Embed — resolved through <code>fused.rawUrl()</code></td></tr>
+  <tr><td><code>#tag</code></td><td>Tag node (outside code fences)</td></tr>
+  <tr><td><code>](./rel.md)</code></td><td>Ordinary markdown links count as edges too</td></tr>
+</table>
+
+<p><strong>Resolution: shortest path that's unambiguous.</strong> As built, the tiers are tried longest-context-first — sibling folder, then vault root, then path suffix, then bare basename, case-insensitively with the extension optional — and a tie at any tier resolves to <em>nothing</em> rather than to the nearest file, which is where this deliberately differs from Obsidian: picking one of two <code>Design.md</code>s would make the graph assert an edge the author never wrote. Unresolved targets become dim <em>ghost</em> nodes in the graph and dashed links in the text — clicking one offers to create the file, which is only possible because this template can write.</p>
+
+<div class="note warn">
+  <strong>Resolve at read time, never at index time.</strong>
+  Renaming <code>Foo.md</code> silently changes what every other note's <code>[[Foo]]</code> points at. So the index stores <em>raw</em> link targets and resolution happens during assembly. Caching resolved edges is the one mistake that makes incremental updates wrong instead of merely slow.
+</div>
+
+<h2>The index</h2>
+
+<p>Nothing is recomputed from scratch on open. Three tiers:</p>
+
+<figure>
+<div class="diagram">  files on disk
+       │  walk (bounded)  ──────────── stat only for unchanged files
+       ▼
+  ┌─────────────────────────────────────────────┐
+  │  per-file rows  (sqlite, on disk)           │   tier 1 — the index
+  │  path · mtime_ns · size · out_links[]       │   invalidate a row when
+  │  tags[] · headings[] · title · parser_ver   │   (mtime_ns, size) differs
+  └─────────────────────────────────────────────┘
+       │  resolve + assemble  (ms for thousands of nodes)
+       ▼
+  ┌─────────────────────────────────────────────┐
+  │  nodes + edges                              │   tier 2 — never cached
+  └─────────────────────────────────────────────┘
+       │  memo per (root, server process)
+       ▼   reopening the tab costs nothing          tier 3</div>
+<figcaption>Per-file parses are cached; the graph itself is not. This is essentially how Obsidian's metadata cache works.</figcaption>
+</figure>
+
+<p><strong>Where it lives:</strong> <code>~/.fused-render/graph/&lt;sha256 of realpath(root)&gt;.sqlite</code> — under <code>home_dir()</code>, so <code>FUSED_RENDER_HOME</code> overrides work, and resolved on each call like <code>USER_TEMPLATES_DIR</code>. Home dir rather than an in-folder sidecar: no repo pollution, nothing to gitignore. The absolute root path is stored inside the DB so a moved folder or hash collision is detectable.</p>
+
+<p><strong>Cost profile:</strong></p>
+<ul>
+  <li><em>Cold</em> — one walk plus <var>N</var> small reads (skip files over ~256 KB; they're not notes).</li>
+  <li><em>Warm</em> — one stat-only walk plus reads for changed files, typically zero.</li>
+  <li><em>Deletions</em> — free: assembly only uses rows whose path appeared in the current walk.</li>
+  <li><em>Parser change</em> — bump <code>parser_version</code> to invalidate everything at once.</li>
+</ul>
+
+<h2>Scope: the folder for the folder graph, a vault marker for a note</h2>
+
+<p>The <strong>folder graph</strong> is scoped by the folder you're standing in. That matches the explorer (you're always in a directory), needs no setup, and mirrors Obsidian's vault. An index file as the <em>primary</em> mechanism would need manual creation, go stale on the next new note, and restate what the links already say.</p>
+
+<p>What folder scope alone doesn't answer is <em>which</em> folder — and for the <strong>note view</strong> the answer "the note's own folder" turned out to be wrong, not merely imprecise. It was what shipped first, and on a vault where <code>docs/note.md</code> links <code>../spec/overview.md</code> it meant: both links ghosted, backlinks empty, one note in the graph. Every link leaving the folder looked broken and every link arriving from outside it was invisible.</p>
+
+<p>So the default now <strong>climbs</strong> from the note's directory to the nearest ancestor carrying a vault-root marker — <code>.obsidian/</code>, <code>.fused-graph.json</code>, or <code>.git</code> (a directory in a clone, a <em>file</em> in a worktree, so both are probed) — and falls back to the note's own directory when there is none. Never <code>$HOME</code>, never <code>/</code>. An explicit <code>root</code> param still wins. Three properties make the climb safe rather than merely convenient: it is bounded (8 levels, and the filesystem root ends it anyway); it <strong>never enumerates</strong> — fixed <code>isdir</code>/<code>isfile</code> probes per level, the same CT-12 rule as the folder gate, and doubly binding here because the ascent is choosing the scope of a walk; and it never enters a <strong>mount-backed</strong> path, so a local note living under a mounted folder is scanned where it is instead of being answered <code>mount_unsupported</code>. A failed mount import means "cannot tell", which reads as "do not climb".</p>
+
+<p>A wider root makes the <code>truncated</code> cap matter more, not less, so the "only the first N notes were scanned" notice stays surfaced in the sidebar. <code>.fused-graph.json</code> counts as a marker but its <em>contents</em> are still unread: the tuning it was designed to carry (root override, include/exclude globs, colour groups, default depth) remains unbuilt, as does gitignore-awareness of the walk.</p>
+
+<h2>Mounts: out of scope for the graph</h2>
+
+<p>The recursive walk is the expensive part, and a recursive walk over a remote mount is precisely the shape that wedges it (kernel NFS listing on a flat million-key prefix). Rather than bound that risk, the graph simply <strong>does not support remote mount paths at all</strong>:</p>
+
+<ul>
+  <li><strong>The folder mode's gate returns <code>False</code> for any mount-backed path</strong>, so the graph is never offered there.</li>
+  <li><strong><code>graph.py</code> refuses a mount-backed root outright</strong> — a clear "not supported on remote mounts" result, never a partial walk. Belt and braces: the gate is the UX, this is the guarantee.</li>
+  <li>No walk of any kind touches a mount path, so the wedge is structurally impossible rather than merely unlikely.</li>
+  <li>Hard caps still apply on local roots (file count, per-file bytes), and dropped files are reported rather than silently truncated.</li>
+</ul>
+
+<p>Reading and writing a single <code>.md</code> file on a mount stays fully supported — that's one bounded read and one bounded write, which is what every template already does. Relative markdown links still navigate, because the page resolves those against the note's own folder and needs no scan for it. Only the recursive graph is local-only.</p>
+
+<p><strong>And a refused scan must not be reported as an answer.</strong> This was got wrong first time round and is worth stating: with no scan the page holds no resolution map, and it rendered <em>every</em> wikilink as a dim ghost titled "Unresolved — click to create this note". That asserts the target doesn't exist when nothing ever looked — and offers to create a note that may be sitting right beside the open one. Three states, not two: <em>scanned and unresolved</em> is a ghost (dashed, click-to-create); <em>not scanned</em> is <strong>inert</strong> — no ghost styling, no create-on-click, and a title saying targets aren't resolved here. The sidebar does the same thing rather than hiding an empty backlinks list, because an empty list also reads as an answer, and it says it in <code>graph.py</code>'s own words so a mount refusal, a note outside its root and a crashed scan each read as themselves.</p>
+
+<h2>Rendering the graph</h2>
+
+<p><em>As built: hand-rolled, and shared.</em> The sim and every interaction rule live in <code>templates/shared/graph-canvas.js</code>, served from the existing <code>/template-shared/</code> mount and driven by both graph surfaces — extracted the moment the second one appeared, so they cannot drift into two versions. Nothing was vendored. The original choice was open: either vendor <code>d3-force</code> (~15 KB) or hand-roll an O(n²) sim; both are fine to ~1500 nodes on a Canvas 2D surface. Behaviour worth copying from Obsidian: node radius ∝ degree, labels fading past a zoom threshold, hover highlighting the neighbourhood, drag-to-pin, ghost nodes dimmed, and the settling layout <strong>fitted to the canvas</strong>. Clicking a node navigates to that note. Graph state — depth, filters, focus — goes through <code>fused.params</code>, so a graph view is URL-shareable, which Obsidian's isn't. (The <em>panel width</em> deliberately does not: that is a personal preference, so it lives in <code>localStorage</code>, and a shared link should not carry someone else's window furniture.)</p>
+
+<p>Spacing is set for the <strong>label</strong>, not the node — a label is drawn above its node, and an 11px one is 60–100px wide, so the original ~80px equilibrium put every label on top of its neighbour. Roughly doubled. It is <em>not</em> scaled per surface: once the layout is fitted to the canvas, scaling it uniformly changes nothing on screen, so what differs between a 320px sidebar and a full window is the zoom. Two bounds keep the folder surface honest, where the same sim can be handed hundreds of notes — nodes seeded on a disc sized to the node count rather than all on one small ring, and a per-step speed ceiling, without which the first few frames threw a 600-note graph several thousand pixels apart and it cooled before it could recover. All of that was measured by running the sim headlessly and counting label collisions at the resulting zoom, not judged by eye.</p>
+
+<h2>Order of work</h2>
+
+<ol class="steps">
+  <li><strong>Link layer in the existing template.</strong> Parse <code>[[…]]</code>, resolve, render a backlinks footer. Small, useful on its own, and it forces the resolution semantics to be settled before anything depends on them.</li>
+  <li><strong>Editing, Obsidian-style.</strong> Rebuild the CM6 bundle with the markdown grammar, then Source mode → Obsidian's autosave/reload semantics → the editor keymap and input handlers → Live Preview decorations last, since it's the largest piece and everything else works without it. At this point <code>markdown</code> supersedes <code>code</code> for notes.</li>
+  <li><strong>The index.</strong> <code>graph.py</code> — walk, parse, cache rows, assemble on request. Reachable from the template via <code>fused.runPython()</code>.</li>
+  <li><strong>The graph views.</strong> Local panel first (bounded, no walk beyond depth <var>N</var>), then the folder-level mode with its gate. Local paths only — mount-backed roots are refused, per above.</li>
+  <li><strong>Live updates.</strong> Subscribe the root to the existing watch registry; re-parse one file per change.</li>
+</ol>
+
+<p>Steps 1–2 ship the read/write replacement. Steps 3–5 add the graph on top of an index the editor is already maintaining.</p>
+
+</main>
+</body>
+</html>

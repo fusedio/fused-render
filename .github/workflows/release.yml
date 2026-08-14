@@ -1,0 +1,476 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (created at the current commit if it doesn't exist yet)"
+        required: true
+      platforms:
+        description: "Which OS builds to run"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
+          - linux
+
+jobs:
+  # Creates the GitHub Release every OS build job uploads into, so the
+  # builds run in parallel instead of serializing behind the DMG job.
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # previous-tag lookup needs all tags
+
+      - name: Resolve release tag
+        id: resolve
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # A dispatch can name an existing tag pointing at a different
+          # commit — never publish artifacts that don't match the tagged source.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            TAG_SHA="$(git rev-parse "$TAG^{commit}")"
+            RUN_SHA="$(git rev-parse "${{ github.sha }}^{commit}")"
+            if [ "$TAG_SHA" != "$RUN_SHA" ]; then
+              echo "::error::tag $TAG points at $TAG_SHA but this run builds $RUN_SHA — refusing to publish mismatched artifacts"
+              exit 1
+            fi
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, reusing it."
+            exit 0
+          fi
+          # GitHub's own previous-tag auto-detection has proven unreliable
+          # here — pin it explicitly (empty on the very first release).
+          PREV_TAG="$(git tag --sort=-v:refname | grep -v "^${TAG}$" | head -n1 || true)"
+          gh release create "$TAG" --target "${{ github.sha }}" \
+            --title "FusedRender $TAG" \
+            --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"}
+
+  build-sign-notarize-release:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
+    runs-on: macos-14
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
+      dmg_url: ${{ steps.artifacts.outputs.dmg_url }}
+      wheel_url: ${{ steps.artifacts.outputs.wheel_url }}
+    permissions:
+      contents: write # needed to attach the DMG to a GitHub Release
+      id-token: write # needed to assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
+      NOTARY_PROFILE: ci-notary
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      # CloudFront distribution fronting the fused-render bucket (provisioned in
+      # Fused's infrastructure config). Flip to render.fused.io once its alias +
+      # cert have applied — release-note and latest.json links pick it up here.
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+    steps:
+      - uses: actions/checkout@v5
+
+      # build_dmg.sh's own version check needs `str | None` syntax (py>=3.10);
+      # macOS runners' default `python3` can resolve to an older CLT/system
+      # python that chokes on this (hit locally with Xcode's bundled 3.9).
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
+      # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
+      # no other way to build a script venv there (D176). The Linux and Windows
+      # build scripts already require uv on the host the same way; macOS runners
+      # do not have it preinstalled, so the build fails loudly without this.
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Import signing cert + notary credentials into ephemeral keychain
+        env:
+          CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/codesign-cert.p12"
+          echo "$CODESIGN_CERT_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 14400 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          # Without this, codesign blocks on a keychain-access UI prompt that
+          # can never be answered in CI (see docs/signing.md's CI notes).
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # notarytool profiles live in a keychain too; store into the same
+          # ephemeral one so it's gone with the runner, nothing persists.
+          # App Store Connect API key: no personal Apple ID tied to CI, and
+          # unlike an app-specific password it doesn't expire.
+          API_KEY_PATH="$RUNNER_TEMP/notary-api-key.p8"
+          printf '%s' "$NOTARY_API_KEY_P8" > "$API_KEY_PATH"
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --key "$API_KEY_PATH" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER_ID" \
+            --keychain "$KEYCHAIN_PATH"
+          rm -f "$API_KEY_PATH"
+
+          rm -f "$CERT_PATH"
+
+      - name: Build, sign, notarize, staple DMG
+        env:
+          FUSED_RENDER_CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
+          FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+        run: bash scripts/build_dmg.sh
+
+      - name: Delete ephemeral keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderRelease
+          aws-region: us-west-2
+
+      - name: Upload DMG + wheel to S3
+        id: artifacts
+        run: |
+          set -euo pipefail
+          # Not `brew install awscli`: GH's macos-14 image doesn't have the
+          # `aws/tap` cask pre-trusted, and Homebrew's tap-trust gate fails
+          # the install outright. Apple's own .pkg installer sidesteps
+          # Homebrew (and its taps) entirely.
+          if ! command -v aws >/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "$RUNNER_TEMP/AWSCLIV2.pkg"
+            sudo installer -pkg "$RUNNER_TEMP/AWSCLIV2.pkg" -target /
+          fi
+          DMG_PATH="$(ls dist/*.dmg)"
+          DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
+          WHL_PATH="$(ls dist/*.whl)"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "DMG_SHA256=$DMG_SHA256" >> "$GITHUB_ENV"
+          echo "WHL_PATH=$WHL_PATH" >> "$GITHUB_ENV"
+          # Consumed by the download-page step; served via CloudFront.
+          echo "DMG_URL=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_ENV"
+          echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
+          aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
+          aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
+          # Exposed as job outputs for the split-out bump-homebrew job and the
+          # publish-download-page job (which needs every platform's URL at
+          # once to write a single merged manifest). Written only after the
+          # uploads above succeed: publish-download-page runs under
+          # always() and would otherwise be able to pick up a dmg_url/
+          # wheel_url for a file that never actually made it to S3.
+          echo "version=$(basename "$DMG_PATH" .dmg | sed 's/^FusedRender-//')" >> "$GITHUB_OUTPUT"
+          echo "dmg_sha256=$DMG_SHA256" >> "$GITHUB_OUTPUT"
+          echo "dmg_url=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")" >> "$GITHUB_OUTPUT"
+          echo "wheel_url=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Invalidate CloudFront
+        # The root download page (index.html/latest.json/og-image.png) is
+        # published once, after every platform build, by the
+        # publish-download-page job below — not here, so its manifest can
+        # carry the Windows/Linux links too instead of racing those jobs to
+        # read-modify-write the same S3 object.
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/fused-render-dmgs/*" "/fused-render-wheels/*"
+
+      - name: Upload DMG + wheel to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
+
+  build-windows-release:
+    # See docs/PYTHON_SUPERVISOR_SPEC.md "Software updates".
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'windows'
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      installer_url: ${{ steps.artifacts.outputs.installer_url }}
+    permissions:
+      contents: write # attach the installer to the GitHub Release
+      id-token: write # assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+      WINDOWS_PREFIX: fused-render-windows
+    steps:
+      - uses: actions/checkout@v5
+
+      # Dropped from the windows-2025 runner image
+      # (actions/runner-images#11644); the build script finds ISCC.exe where
+      # choco installs it.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build_windows_installer.ps1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseWindows
+          aws-region: us-west-2
+
+      - name: Sign manifest, publish installer, attach to release
+        id: artifacts
+        shell: bash
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          INSTALLER="$(ls dist/FusedRenderPy-*-setup.exe)"
+          # Version from the built artifact, not the tag — same rule as the DMG.
+          VERSION="$(basename "$INSTALLER" | sed -E 's/^FusedRenderPy-(.*)-setup\.exe$/\1/')"
+          BASE_URL="https://${CDN_DOMAIN}/${WINDOWS_PREFIX}"
+          aws s3 cp "$INSTALLER" "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/$(basename "$INSTALLER")"
+          # Exposed as job outputs for the publish-download-page job, right
+          # after the one command that makes installer_url actually true —
+          # not after the update-manifest/CloudFront/release steps below,
+          # which are unrelated to whether this URL is live (an unrelated
+          # failure there must not withhold an otherwise-good link).
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "installer_url=${BASE_URL}/$(basename "$INSTALLER")" >> "$GITHUB_OUTPUT"
+          # --no-project --with cryptography: the script's only third-party
+          # import. Resolving the whole project here buys nothing and can fail
+          # for reasons unrelated to signing a manifest (see the same flag on
+          # the registry script in scripts/build_windows_installer.ps1).
+          uv run --no-project --with cryptography \
+            scripts/windows/generate_update_manifest.py \
+            "$VERSION" "$INSTALLER" "$BASE_URL" dist/latest.json
+          # no-cache: the updater polls this fixed name; a stale CDN copy
+          # would mask a release.
+          aws s3 cp dist/latest.json "s3://${S3_BUCKET}/${WINDOWS_PREFIX}/latest.json" \
+            --cache-control no-cache
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/${WINDOWS_PREFIX}/*"
+          gh release upload "$RELEASE_TAG" "$INSTALLER" --clobber
+
+  build-linux-release:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'linux'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.artifacts.outputs.version }}
+      appimage_url: ${{ steps.artifacts.outputs.appimage_url }}
+    permissions:
+      contents: write # attach the AppImage to the GitHub Release
+      id-token: write # assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+      LINUX_PREFIX: fused-render-linux
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      # desktop-file-utils provides desktop-file-validate, which appimagetool
+      # runs against the bundled .desktop file — same prerequisite the CI smoke
+      # installs. node (the wheel build's hatch hook runs npm) is preinstalled
+      # on ubuntu-latest; uv provides the relocatable CPython the script bundles.
+      - name: Install desktop-file-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
+
+      - name: Build the AppImage
+        run: bash scripts/build_linux_appimage.sh
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseLinux
+          aws-region: us-west-2
+
+      - name: Publish AppImage + attach to release
+        id: artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APPIMAGE="$(ls dist/FusedRender-*-x86_64.AppImage)"
+          # Version from the built artifact, not the tag — same rule as the DMG.
+          VERSION="$(basename "$APPIMAGE" | sed -E 's/^FusedRender-(.*)-x86_64\.AppImage$/\1/')"
+          echo "Publishing FusedRender $VERSION Linux AppImage"
+          aws s3 cp "$APPIMAGE" "s3://${S3_BUCKET}/${LINUX_PREFIX}/$(basename "$APPIMAGE")"
+          # Exposed as job outputs for the publish-download-page job, right
+          # after the one command that makes appimage_url actually true —
+          # not after the CloudFront/release steps below, which are
+          # unrelated to whether this URL is live (an unrelated failure
+          # there must not withhold an otherwise-good link).
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "appimage_url=https://${CDN_DOMAIN}/${LINUX_PREFIX}/$(basename "$APPIMAGE")" >> "$GITHUB_OUTPUT"
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/${LINUX_PREFIX}/*"
+          # No latest.json manifest: Linux has no auto-updater yet — the
+          # supervisor _linux backend exposes no `update` module (unlike _win32).
+          gh release upload "$RELEASE_TAG" "$APPIMAGE" --clobber
+
+  publish-download-page:
+    # Runs once, after all three OS builds, so the manifest can carry every
+    # platform's link at the same time — a single writer avoids the three
+    # platform jobs racing to read-modify-write the same S3 object.
+    # `!cancelled()` (rather than a hard `needs` success check) so a
+    # workflow_dispatch that only rebuilds one platform, or a platform build
+    # that fails, still publishes a manifest — merged against the live one
+    # via EXISTING_MANIFEST_PATH so untouched/failed platforms keep whatever
+    # link is already live instead of losing it. Deliberately NOT always():
+    # that also runs on a manually cancelled run, which could rewrite the
+    # live page from only whichever platform jobs happened to finish first.
+    needs: [prepare-release, build-sign-notarize-release, build-windows-release, build-linux-release]
+    if: ${{ !cancelled() && needs.prepare-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # needed for actions/checkout
+      id-token: write # needed to assume the AWS role via OIDC
+    env:
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseDownloadPage
+          aws-region: us-west-2
+
+      - name: Publish download page + version manifest
+        env:
+          VERSION: >-
+            ${{ needs.build-sign-notarize-release.outputs.version ||
+            needs.build-windows-release.outputs.version ||
+            needs.build-linux-release.outputs.version }}
+          DMG_URL: ${{ needs.build-sign-notarize-release.outputs.dmg_url }}
+          DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
+          WHL_URL: ${{ needs.build-sign-notarize-release.outputs.wheel_url }}
+          WINDOWS_URL: ${{ needs.build-windows-release.outputs.installer_url }}
+          LINUX_URL: ${{ needs.build-linux-release.outputs.appimage_url }}
+        run: |
+          set -euo pipefail
+          # Only a genuine "no object yet" (404 - first-ever publish) is safe
+          # to treat as an empty merge base. Any other failure here (an IAM
+          # regression, a network blip, ...) must NOT fall through to an empty
+          # base — that would silently republish a manifest missing every
+          # platform this run didn't touch, exactly what the merge exists to
+          # prevent. So a non-404 failure hard-exits, failing the job instead
+          # of publishing a bad manifest.
+          if aws s3 cp "s3://${S3_BUCKET}/latest.json" "$RUNNER_TEMP/existing-latest.json" 2>"$RUNNER_TEMP/s3-get.err"; then
+            :
+          elif grep -q "(404)" "$RUNNER_TEMP/s3-get.err"; then
+            echo "no existing latest.json yet (first publish) — starting from an empty manifest"
+          else
+            cat "$RUNNER_TEMP/s3-get.err" >&2
+            echo "::error::failed to fetch the live latest.json for merging (not a 404) — refusing to publish a manifest that could blank out other platforms' links"
+            exit 1
+          fi
+          EXISTING_MANIFEST_PATH="$RUNNER_TEMP/existing-latest.json" \
+            python3 scripts/download_page/write_manifest.py > "$RUNNER_TEMP/latest.json"
+          cat "$RUNNER_TEMP/latest.json"
+          # Order matters: everything index.html depends on (assets, about.html)
+          # must land before index.html itself — the && chain short-circuits, so
+          # a failed dependency upload leaves the OLD page live instead of
+          # publishing a new page with missing images/links.
+          if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
+               --content-type "application/json" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
+               --content-type "image/png" --cache-control "max-age=86400" \
+             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+               --content-type "image/jpeg" --cache-control "max-age=86400" \
+             && aws s3 cp scripts/download_page/about.html "s3://${S3_BUCKET}/about.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
+             && aws s3 cp scripts/download_page/index.html "s3://${S3_BUCKET}/index.html" \
+               --content-type "text/html; charset=utf-8" --cache-control "max-age=300"; then
+            echo "download page + latest.json published"
+            aws cloudfront create-invalidation \
+              --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+              --paths "/index.html" "/about.html" "/latest.json" "/og-image.png" "/assets/*" "/"
+          else
+            echo "::error::download page/manifest upload failed — see the aws s3 cp/sync output above for which key was denied"
+            exit 1
+          fi
+
+  bump-homebrew:
+    # Separate job so a tap-push failure can't fail the DMG job after the
+    # Release already published.
+    needs: build-sign-notarize-release
+    runs-on: ubuntu-latest
+    permissions: {} # uses the tap PAT only; no GITHUB_TOKEN scopes needed
+    steps:
+      - name: Bump homebrew-tap cask
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          # From the DMG that was actually built+hashed, not the git tag.
+          VERSION: ${{ needs.build-sign-notarize-release.outputs.version }}
+          DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/fusedio/homebrew-tap.git" /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+          sed -i \
+            -e "s/^  version \".*\"/  version \"${VERSION}\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"${DMG_SHA256}\"/" \
+            Casks/fused-render.rb
+          git config user.name "fused-render-ci"
+          git config user.email "ci@fused.io"
+          git add Casks/fused-render.rb
+          git commit -m "fused-render ${VERSION}"
+          git push origin main

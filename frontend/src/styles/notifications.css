@@ -1,0 +1,476 @@
+/* ---- Notification stack (fixed, bottom-right) ---------------------------- */
+/* The one surface every notification shares: transient toasts with the
+   server-health card at its foot (NotificationHost). Nothing inside positions
+   itself — the column owns placement and stacking, which is the whole point of
+   folding the old bottom-centre toast host and the separately-pinned server
+   card into it. pointer-events: none on the column so its empty region never
+   swallows clicks on the view beneath; each entry takes them back. */
+.notif-host {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.notif-host > * {
+  pointer-events: auto;
+}
+
+/* ---- Transient toast ----------------------------------------------------- */
+/* Default is the error variant (red border); .toast-info is the neutral
+   confirmation variant (e.g. "Path copied"). Capped at the column's width so
+   the stack reads as one system rather than a ragged pile. */
+/* One row of the stack. The card fades/slides; the SLOT is what collapses its
+   height (grid row 1fr → 0fr, plus a negative bottom margin that eats the
+   column's 8px gap), so dismissing a toast makes the ones below it glide up
+   instead of snapping. lib/toast keeps a dismissed toast in the queue for
+   TOAST_EXIT_MS — the same --dur-med these transitions run for. */
+.toast-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  max-width: 100%;
+  transition:
+    grid-template-rows var(--dur-med) var(--ease-out),
+    margin-bottom var(--dur-med) var(--ease-out);
+}
+
+.toast-slot > .toast {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.toast-slot.leaving {
+  grid-template-rows: 0fr;
+  margin-bottom: -8px; /* cancels .notif-host's gap as the row closes */
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  padding: 8px 10px 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.toast.toast-leaving {
+  /* A toast dismissed inside its own enter window would otherwise keep being
+     driven by the animation above, which wins over a transition. */
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
+}
+
+.toast-info {
+  border-color: var(--border);
+}
+
+/* Wraps instead of ellipsising to one line. These messages are sentences —
+   "no mount covers s3://<bucket> — add one from the Mounts page in the
+   sidebar" — and a single-line clip cuts exactly the half that says what to
+   do, which was already true at the old 520px and is worse in a 360px column.
+   Clamped so a pathological message still can't own the screen. */
+.toast-msg {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-height: 1.45;
+}
+
+.toast-close {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast-close:hover {
+  color: var(--fg);
+}
+
+/* Manual action inside a toast (e.g. the mount-health "Reconnect"). */
+.toast-action {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+
+.toast-action:hover {
+  border-color: var(--fg-muted);
+}
+
+/* ---- Download manager (SPEC §36) ----------------------------------------- */
+/* One card listing every long-running operation any page reported. Sits between
+   the toasts and the server card — see NotificationHost for why the column is
+   ordered by lifetime. Like the server card it positions nothing; .notif-host
+   owns placement. Deliberately the same plate as a toast (--bg-alt, 8px radius,
+   the same shadow) so the corner reads as one surface rather than three
+   competing widgets. */
+.dl-host {
+  /* A fixed comfortable width rather than shrink-to-fit: the column is a flex
+     box that sizes to its widest child, so a card left to its content width
+     jumps every time a row's title or byte count changes length — and at that
+     width "1.21 / 7.54 GB" and its percentage crowd the title into an
+     ellipsis. Capped to the viewport for the same reason .notif-host is. */
+  width: min(340px, calc(100vw - 32px));
+  max-width: 100%;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+  overflow: hidden;
+}
+
+.dl-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+/* The whole summary is the collapse target, not a lone chevron: the header is
+   already a row-height hit area and a 12px glyph is not. */
+.dl-toggle {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dl-chevron {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1;
+  transition: transform var(--dur-med) var(--ease-out);
+}
+
+.dl-chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+
+.dl-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.dl-clear {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dl-clear:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+/* Scrolls rather than growing without bound: the registry caps live records
+   well above what fits a 360px column, and a card taller than the viewport
+   would push its own header off-screen. */
+.dl-rows {
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.dl-row {
+  padding: 8px 10px;
+}
+
+.dl-row + .dl-row {
+  border-top: 1px solid var(--border);
+}
+
+/* A reporter that went away: dimmed, because the numbers below are the last
+   ones anybody sent and may be minutes old. The row is still shown — the work
+   itself is very likely still running. */
+.dl-row.is-stalled {
+  opacity: 0.62;
+}
+
+.dl-row-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.dl-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.dl-amount,
+.dl-pct {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
+}
+
+.dl-x {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.dl-x:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.dl-x:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A row with no bar (a failure that never reported a total) would otherwise
+   carry both the head's bottom margin and the status's top margin. */
+.dl-row-head + .dl-status {
+  margin-top: 0;
+}
+
+.dl-status {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  /* Clamped, not clipped to one line: the two longest things that land here are
+     an error message and the stalled explanation, and one line cuts exactly the
+     half that says what happened. */
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  word-break: break-word;
+}
+
+/* The header's own bar, shown while collapsed, spans the card edge to edge. */
+.dl-host > .dl-bar {
+  border-radius: 0;
+}
+
+.dl-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(var(--fg-muted-rgb), 0.22);
+  overflow: hidden;
+}
+
+.dl-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width var(--dur-med) var(--ease-out);
+}
+
+.dl-bar.is-done .dl-bar-fill {
+  background: var(--success);
+}
+
+.dl-bar.is-error .dl-bar-fill {
+  background: var(--error);
+}
+
+.dl-bar.is-stalled .dl-bar-fill {
+  background: var(--warning);
+}
+
+/* Indeterminate: a narrow fill that TRAVELS, for work that is genuinely alive
+   with no percentage to report (a `uv sync` behind captured output, a model
+   load). The alternative — parking a real bar at an invented number — is what
+   makes a live job read as frozen; same decision as the install loader's D213
+   sweep. `transition` is off here or the jump to 30% animates as if it were
+   progress. */
+.dl-bar-fill.is-indeterminate {
+  width: 30%;
+  transition: none;
+  animation: dl-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes dl-sweep {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(410%);
+  }
+}
+
+/* ---- Server-status card (foot of the notification stack) ----------------- */
+/* Shown by ServerStatusBanner after two failed /api/config probes; the green
+   -reconnected variant auto-dismisses. Placement and stacking belong to
+   .notif-host — this only describes the card. */
+.server-status {
+  max-width: 100%;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: server-status-in 0.15s ease-out;
+}
+
+@keyframes server-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.server-status-title {
+  font-weight: 600;
+  color: var(--error);
+  margin-bottom: 4px;
+}
+
+.server-status-body {
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.server-status-retry,
+.server-status-launch {
+  margin-top: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.server-status-retry:hover,
+.server-status-launch:hover {
+  border-color: var(--fg-muted);
+}
+
+/* The "Start fused-render" fused-render://launch link (D128): an anchor
+   dressed as the sibling button; inline-block so padding/margin apply. */
+.server-status-launch {
+  display: inline-block;
+  margin-right: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.server-status-reconnected {
+  border-color: var(--success);
+  color: var(--fg);
+}
+
+.tab-add {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tab-add:hover {
+  color: var(--fg);
+}
+
+.tabs-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tabs-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+/* First paint of a lazily-mounted tab (and of an imperative src rewrite from
+   the tab bar's mode menu) fades in rather than snapping from an unpainted
+   frame; views/Tabs.tsx adds `.is-loaded` on the iframe's own load event.
+   Inactive tabs stay hidden with `display: none` (TM-5) — an iframe must be
+   layout-hidden, not merely transparent — so this opacity is only ever the
+   load fade, never the tab-visibility mechanism. */
+.tabs-body iframe.tab-frame {
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.tabs-body iframe.tab-frame.is-loaded {
+  opacity: 1;
+}
+
+/* React mount point (frontend/index.html) — transparent to the flex layout
+   above: #app stays the layout root exactly as in the vanilla shell. */
+#root {
+  display: contents;
+}
+

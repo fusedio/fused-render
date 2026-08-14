@@ -1,0 +1,2477 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Annotate</title>
+<style>
+  /* Appearance (SPEC §30/AP-9, D134). This view had no palette at all — every
+     colour was a literal in a rule, which is exactly the shape light mode
+     cannot repaint — so the dark block below is those literals lifted out
+     unchanged, value for value, and the light block is the new twin.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (fused_render/static/runtime.js); dark stays the CSS default.
+
+     Note the stage itself is an iframe rendering the file's ordinary view —
+     that document opts in (or not) on its own terms; only the chrome, pins and
+     sidebar here are ours to theme. */
+  :root {
+    color-scheme: dark;
+    --bg: #131417;
+    --surface: #1b1d21;
+    --surface-2: #24262b;      /* sidebar skeleton bar */
+    --line: #2a2d33;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --accent: #E5FF44;
+    --on-accent: #10131a;      /* pin/label glyph on an --accent fill */
+    --error: #ff6b6b;
+    --warn: #ffb64d;           /* the budget note in the top bar */
+    --pin-ring: #131417;       /* the pin's outline against the framed page */
+    --skel-shine: #2a2d33;
+    --skel-shine-2: #33373f;
+    --shadow-pin: rgba(0, 0, 0, 0.4);
+    --shadow-pin-active: rgba(0, 0, 0, 0.5);
+    --shadow-pop: rgba(0, 0, 0, 0.5);
+    --scrim: rgba(0, 0, 0, 0.55);   /* the revert confirm sheet's backdrop */
+    --ghost-ring: rgba(0, 0, 0, 0.35);
+    /* Accent washes. The pin/ghost/selection fills sit over an ARBITRARY
+       framed document, so they are stated as explicit rgba rather than riding
+       a --tint triple: what is underneath is not ours to assume. */
+    --accent-wash: rgba(229, 255, 68, 0.08);
+    --accent-wash-strong: rgba(229, 255, 68, 0.18);
+    --accent-glow: rgba(229, 255, 68, 0.35);
+    /* Fill behind the revert sheet's irreversible-loss warning. */
+    --error-wash: rgba(255, 107, 107, 0.12);
+    /* Highlight-API tints. Read through getComputedStyle and injected INTO the
+       framed document (the API paints there), so these are the one pair that
+       cannot ride var() at the point of use — see the load handler. */
+    --hl-sel: rgba(229, 255, 68, 0.28);
+    --hl-active: rgba(229, 255, 68, 0.55);
+    --hl-active-fg: #10131a;
+  }
+  /* The brand lime is invisible on white, so light mode uses shell.css's
+     same-hue deep olive: readable as text, visible as a hairline, and dark
+     enough that the pin glyph flips to white. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-2: #eceef0;
+    --line: #d8dade;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --accent: #5f7300;
+    --on-accent: #ffffff;
+    --error: #c62828;
+    --warn: #8f6a10;
+    --pin-ring: #ffffff;
+    --skel-shine: #dfe2e7;
+    --skel-shine-2: #d3d7dd;
+    --shadow-pin: rgba(0, 0, 0, 0.18);
+    --shadow-pin-active: rgba(0, 0, 0, 0.22);
+    --shadow-pop: rgba(0, 0, 0, 0.18);
+    --scrim: rgba(32, 33, 36, 0.4);
+    --ghost-ring: rgba(255, 255, 255, 0.7);
+    --accent-wash: rgba(95, 115, 0, 0.10);
+    --accent-wash-strong: rgba(95, 115, 0, 0.20);
+    --accent-glow: rgba(95, 115, 0, 0.30);
+    --error-wash: rgba(198, 40, 40, 0.08);
+    /* The active tint composites to a mid olive over a light page, so the
+       label on it goes DARK here rather than white. */
+    --hl-sel: rgba(95, 115, 0, 0.22);
+    --hl-active: rgba(95, 115, 0, 0.55);
+    --hl-active-fg: #1f2023;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  #bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--fg-muted);
+  }
+  #bar select {
+    font: inherit;
+    padding: 3px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  #main { flex: 1 1 auto; display: flex; min-height: 0; }
+  /* Stage: the file's ordinary view rendered live in a same-origin iframe;
+     the pin layer sits over it in stage coordinates. */
+  #stage { position: relative; flex: 1 1 auto; min-width: 0; }
+  #page { width: 100%; height: 100%; border: none; display: block; }
+  /* Boot skeleton: covers the stage until the framed view's own load event
+     fires (stat() pick + the target template's first paint). Annotate frames
+     arbitrary file types (image/table/code/pdf/…), so the placeholder is a
+     single shimmering page-shaped rect rather than content-specific rows. */
+  #stageskel {
+    position: absolute; inset: 16px;
+    border-radius: 8px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    overflow: hidden;
+    pointer-events: none;
+  }
+  #stageskel::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(100deg, var(--surface) 30%, var(--skel-shine) 50%, var(--surface) 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  /* Sidebar boot skeleton: comment-card-shaped shimmer bars shown in #list
+     until the first render() call swaps in real cards (or the empty state). */
+  .skelcard { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .skelbar {
+    height: 10px; border-radius: 4px;
+    background: linear-gradient(100deg, var(--surface-2) 30%, var(--skel-shine-2) 50%, var(--surface-2) 70%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .skelbar + .skelbar { margin-top: 8px; }
+  /* The outcome of a revert, at the top of the STAGE — which is where the eye is
+     when a centered modal closes under it. #histnote is an 11px muted line at the
+     bottom of the sidebar, and with History collapsed it was the ONLY signal that
+     the one destructive action in this view had happened at all. This is in
+     ADDITION to that note, never instead of it: the carry slot and the reload path
+     both read it. */
+  #toast {
+    position: absolute; z-index: 20;
+    top: 12px; left: 50%; transform: translateX(-50%);
+    max-width: 80%;
+    padding: 8px 14px; border-radius: 999px;
+    font-size: 12px;
+    color: var(--fg); background: var(--surface);
+    border: 1px solid var(--accent);
+    box-shadow: 0 6px 20px var(--shadow-pop);
+    pointer-events: none;    /* it sits over the framed view — never in its way */
+  }
+  #pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .pin {
+    position: absolute; pointer-events: auto;
+    transform: translate(-50%, -50%);
+    width: 22px; height: 22px;
+    border-radius: 50% 50% 50% 2px;
+    background: var(--accent); color: var(--on-accent);
+    border: 1.5px solid var(--pin-ring);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; cursor: pointer;
+    box-shadow: 0 1px 4px var(--shadow-pin); user-select: none;
+  }
+  .pin.resolved { opacity: 0.55; }
+  .pin.active {
+    transform: translate(-50%, -50%) scale(1.35);
+    box-shadow: 0 0 0 3px var(--accent-glow), 0 1px 6px var(--shadow-pin-active);
+    z-index: 5;
+  }
+  #hl {
+    position: absolute; pointer-events: none; display: none;
+    border: 1.5px solid var(--accent);
+    background: var(--accent-wash);
+    border-radius: 3px;
+  }
+  /* Point ghost: hover affordance on pixel surfaces (image/video/PDF page
+     canvas) — a small ring at the cursor instead of a whole-element box, so
+     "this comment lands on a POINT" is legible before the click. */
+  #ghost {
+    position: absolute; pointer-events: none; display: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid var(--accent);
+    background: var(--accent-wash-strong);
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 1.5px var(--ghost-ring);
+  }
+  #ghost::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    width: 3px; height: 3px; border-radius: 50%;
+    background: var(--accent); transform: translate(-50%, -50%);
+  }
+  /* Composer popover, stage coordinates. */
+  #pop {
+    position: absolute; display: none; z-index: 10;
+    width: 280px; padding: 10px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 8px 28px var(--shadow-pop);
+  }
+  #pop textarea {
+    width: 100%; min-height: 56px; resize: vertical;
+    font: inherit; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 9px; outline: none;
+  }
+  #pop textarea:focus { border-color: var(--accent); }
+  #pop .hint { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
+  /* Comments sidebar — this template owns it entirely. */
+  #side {
+    flex: 0 0 300px;
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+    display: flex; flex-direction: column;
+  }
+  #side h1 {
+    margin: 0; padding: 12px 16px;
+    font-size: 14px; font-weight: 600;
+    border-bottom: 1px solid var(--line);
+  }
+  #list { flex: 1 1 auto; overflow-y: auto; }
+  .card {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+  }
+  .card:hover { background: var(--bg); }
+  .card .when { color: var(--fg-muted); font-size: 11px; margin-bottom: 4px; display: flex; gap: 8px; align-items: center; }
+  .card .body { white-space: pre-wrap; word-break: break-word; }
+  .card .acts { margin-top: 8px; display: flex; gap: 6px; }
+  .card button {
+    font: inherit; font-size: 11px; cursor: pointer;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
+  }
+  .card button:hover { border-color: var(--accent); }
+  .card.resolved { opacity: 0.6; }
+  /* Already handed to Claude — excluded from the next send, but not settled, so
+     it dims less than a resolved card. The "sent ↗" chip carries the meaning. */
+  .card.sent { opacity: 0.8; }
+  /* RESOLVED WINS. The two flags are independent, so a card can carry both, and
+     with only the two rules above the equal-specificity tie went to whichever
+     was written second — a resolved card then rendered at the weaker 0.8 and a
+     harmless CSS reorder silently flipped which state you were looking at.
+     Resolved is the terminal state, so it takes the stronger dim, and the
+     compound selector encodes that in SPECIFICITY rather than declaration
+     order. Matching rule in render(): a resolved card shows no "sent ↗" chip —
+     one state, one signal — and Reopen clears `sent` anyway, so the chip can
+     never come back stale. */
+  .card.resolved.sent { opacity: 0.6; }
+  .card.active { background: var(--bg); border-left: 3px solid var(--accent); padding-left: 13px; }
+  .card .lbl {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 3px;
+    border-radius: 50% 50% 50% 2px;
+    background: var(--accent); color: var(--on-accent);
+    font-size: 11px; font-weight: 700;
+  }
+  #empty { padding: 40px 20px; color: var(--fg-muted); text-align: center; }
+  #sidefoot {
+    flex: 0 0 auto;
+    padding: 10px 16px;
+    border-top: 1px solid var(--line);
+  }
+  #sidefoot button {
+    width: 100%;
+    font: inherit; font-weight: 600; cursor: pointer;
+    color: var(--on-accent); background: var(--accent);
+    border: none; border-radius: 8px; padding: 8px 0;
+  }
+  #sidefoot button:hover { filter: brightness(1.06); }
+  #sidefoot button:disabled { opacity: 0.4; cursor: default; }
+  /* Version history + revert (SPEC §34). Its own footer block rather than a
+     section of #sidefoot, because that one is display:none'd wherever the file
+     has no claude mode (Send to Claude would go nowhere) and reverting has
+     nothing to do with whether a chat view exists. */
+  #histfoot {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--line);
+    padding: 8px 16px 10px;
+  }
+  #revertbtn {
+    width: 100%;
+    font: inherit; cursor: pointer;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 0;
+  }
+  #revertbtn:hover:enabled { border-color: var(--accent); }
+  #revertbtn:disabled { opacity: 0.4; cursor: default; }
+  #histtoggle {
+    font: inherit; font-size: 11px; cursor: pointer;
+    margin-top: 8px; padding: 0;
+    color: var(--fg-muted); background: none; border: none;
+  }
+  #histtoggle:hover { color: var(--fg); }
+  #histlist { max-height: 30vh; overflow-y: auto; margin-top: 4px; }
+  .hrow {
+    display: flex; gap: 8px; align-items: baseline;
+    /* The transparent border reserves the accent stripe's width on every row, so
+       marking the target below shifts nothing. */
+    padding: 4px 6px 4px 4px; border-left: 2px solid transparent;
+    border-radius: 6px; cursor: pointer;
+    font-size: 11px;
+  }
+  .hrow:hover { background: var(--bg); }
+  .hrow .hdot { color: var(--fg-muted); }
+  /* The one row a plain "Revert last change" would pick, expressed as ROW
+     treatment rather than a third dot glyph. Three markers in one column read as
+     noise — and the two facts are unrelated: the dot says "you are here" (where
+     disk sits), the stripe says "this is what the button does". Putting them in
+     different visual channels is what makes each legible. The stripe also only
+     reinforces: the row already carries its delta and its action on the right.
+     `--accent-wash` rather than a new token — it is already in both palette
+     blocks, and inventing a second accent tint for one row would be two names
+     for one colour. */
+  .hrow.next { border-left-color: var(--accent); background: var(--accent-wash); }
+  /* Where disk sits in the chain — one shape family, two colours, one meaning.
+     Without it the list gives no clue why the target is the row it is: the rule
+     is positional, not "the newest that differs" (SPEC §34/FH-3). */
+  .hrow.here .hdot, .hrow.here .hwhen { color: var(--fg); }
+  .hrow .hv { font-weight: 600; min-width: 22px; }
+  .hrow .hwhen { color: var(--fg-muted); flex: 1 1 auto; }
+  .hrow .hd { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .hrow .hplus { color: var(--accent); }
+  .hrow .hminus { color: var(--error); }
+  /* A version identical to disk is inert — but the CURRENT position is one of
+     those, and dimming "you are here" fights the whole point of marking it. */
+  .hrow.same { cursor: default; }
+  .hrow.same:not(.here) { opacity: 0.5; }
+  #histnote { color: var(--fg-muted); font-size: 11px; margin-top: 6px; }
+  #histnote.error { color: var(--error); }
+  /* Confirm sheet. A restore is the one destructive action in this view — the
+     bytes on disk are frequently in NO checkpoint (SPEC §34/FH-2), so this is
+     never a plain button press. */
+  #confirm {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    align-items: center; justify-content: center;
+    background: var(--scrim);
+  }
+  #confirm.open { display: flex; }
+  #confirmbox {
+    width: 420px; max-width: 90vw;
+    background: var(--surface); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+    box-shadow: 0 12px 40px var(--shadow-pop);
+  }
+  #confirmbox h2 { margin: 0 0 8px; font-size: 14px; }
+  #confirmbox dl {
+    margin: 10px 0; display: grid; grid-template-columns: auto 1fr;
+    gap: 3px 12px; font-size: 12px;
+  }
+  #confirmbox dt { color: var(--fg-muted); }
+  #confirmbox dd { margin: 0; font-variant-numeric: tabular-nums; }
+  /* The diff. The `<dl>` above answers how MUCH changes; this answers WHAT, which
+     on the one destructive action in this view is the question actually being
+     confirmed. Capped height rather than a growing sheet: a modal that outgrows
+     the viewport puts its own buttons off screen. */
+  #confirmdiff {
+    margin: 10px 0 0; padding: 8px 10px;
+    max-height: 40vh; overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; line-height: 1.5;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  }
+  /* The SAME accent/error pair the history rows use for their +/− counts
+     (`.hplus`/`.hminus`): one meaning, one colour, and inventing a second green
+     and a second red for added/removed would be two names for each. */
+  #confirmdiff .cdplus { color: var(--accent); }
+  #confirmdiff .cdminus { color: var(--error); }
+  /* Hunk headers, the two file names, and the "no diff"/"view cut" sentences are
+     all scaffolding around the change, so they recede to the muted tone rather
+     than competing with the lines that matter. */
+  #confirmdiff .cdhunk, #confirmdiff .cdfile, #confirmdiff .cdnote {
+    color: var(--fg-muted);
+  }
+  /* Same affordance as #histtoggle, deliberately — one disclosure idiom in this
+     view, so a triangle plus muted 11px text means the same thing in both. */
+  #confirmdifftoggle {
+    font: inherit; font-size: 11px; cursor: pointer;
+    margin-top: 10px; padding: 0;
+    color: var(--fg-muted); background: none; border: none;
+  }
+  #confirmdifftoggle:hover { color: var(--fg); }
+  /* Wider ONLY when there are diff lines to show, so a sheet with nothing but the
+     counts does not grow for nothing. Applied while the diff is still behind its
+     disclosure too: sizing the box on the open/closed state would reflow the whole
+     sheet under the cursor on the very click that opens it. */
+  #confirmbox.wide { width: 640px; }
+  /* The sole thing standing between a click and unrecoverable loss (the
+     tick-to-confirm that used to back it up was removed as friction), so in the
+     irreversible case it carries real weight rather than being a footnote. */
+  #confirmwarn {
+    margin: 10px 0 0; padding: 8px 10px; font-size: 12px;
+    border: 1px solid var(--error); border-radius: 8px; color: var(--error);
+  }
+  #confirmwarn.hard {
+    border-width: 2px; font-weight: 600;
+    background: var(--error-wash);
+  }
+  /* A revert that FAILED reports inside the sheet, because the user is still
+     looking at the thing they clicked. It used to close first and leave the reason
+     in the sidebar note, which is both 11px and somewhere else. Shares
+     #confirmwarn's shape — same box, same error tone — since both say "this did
+     not / will not go well", and never the `hard` escalation, which is reserved
+     for content that is about to be destroyed. */
+  #confirmerr {
+    margin: 10px 0 0; padding: 8px 10px; font-size: 12px;
+    border: 1px solid var(--error); border-radius: 8px; color: var(--error);
+  }
+  #confirmacts { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
+  #confirmacts button {
+    font: inherit; cursor: pointer; border-radius: 8px; padding: 6px 12px;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  }
+  #confirmacts #confirmgo {
+    font-weight: 600; color: var(--on-accent);
+    background: var(--accent); border-color: var(--accent);
+  }
+  /* Only ever the in-flight state: the confirm button is otherwise enabled
+     unconditionally (the tick-to-confirm was removed as friction), so a dimmed
+     button in this sheet means exactly "the write is running". */
+  #confirmacts button:disabled { opacity: 0.5; cursor: default; }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span>Annotating</span>
+    <select id="viewsel" title="Which view to annotate"></select>
+    <span id="budgetnote" style="color:var(--warn)"></span>
+    <span style="margin-left:auto">comments live in the URL — share it to share the review</span>
+    <span id="ro" hidden></span>
+  </div>
+  <div id="main">
+    <div id="stage">
+      <iframe id="page"></iframe>
+      <div id="stageskel"></div>
+      <div id="toast" hidden></div>
+      <div id="hl"></div>
+      <div id="ghost"></div>
+      <div id="pins"></div>
+      <div id="pop">
+        <textarea placeholder="Add a comment…"></textarea>
+        <div class="hint">Enter to save · Shift+Enter for newline · Esc to cancel</div>
+      </div>
+    </div>
+    <div id="side">
+      <h1>Comments</h1>
+      <div id="list">
+        <div class="skelcard"><div class="skelbar" style="width:30%"></div><div class="skelbar" style="width:85%"></div><div class="skelbar" style="width:55%"></div></div>
+        <div class="skelcard"><div class="skelbar" style="width:22%"></div><div class="skelbar" style="width:70%"></div></div>
+        <div class="skelcard"><div class="skelbar" style="width:35%"></div><div class="skelbar" style="width:92%"></div><div class="skelbar" style="width:40%"></div></div>
+      </div>
+      <div id="histfoot" hidden>
+        <button id="revertbtn" disabled>⤺ Revert last change</button>
+        <button id="histtoggle" hidden>▸ History</button>
+        <div id="histlist" hidden></div>
+        <div id="histnote"></div>
+      </div>
+      <div id="sidefoot">
+        <button id="toclaude">Send to Claude</button>
+      </div>
+    </div>
+  </div>
+  <div id="confirm">
+    <div id="confirmbox" role="dialog" aria-modal="true">
+      <h2 id="confirmtitle">Revert this file?</h2>
+      <div id="confirmsub"></div>
+      <dl id="confirmfacts"></dl>
+      <button id="confirmdifftoggle" hidden></button>
+      <pre id="confirmdiff" hidden></pre>
+      <p id="confirmwarn" hidden></p>
+      <p id="confirmerr" hidden></p>
+      <div id="confirmacts">
+        <button id="confirmno">Cancel</button>
+        <button id="confirmgo">Revert</button>
+      </div>
+    </div>
+  </div>
+  <script src="/template-shared/ro-badge.js"></script>
+  <script>
+    // =========================================================================
+    // Annotate — a VIEW TEMPLATE of its own (same pattern as templates/claude/):
+    // registry-bound mode, self-contained template.html, nothing injected into
+    // other views and nothing shipped in the shell. It renders the file's
+    // ordinary view in a same-origin iframe and implements the entire
+    // annotation experience itself — hover highlight, pins, composer, sidebar.
+    //
+    // Storage: `comments` template param (ordinary visible param, synced to
+    // the shell URL by the runtime — bookmarkable/shareable) — JSON array of
+    //   { id, content, createdAt, resolved?, anchorPath }
+    // anchorPath = tag:nth-of-type chain inside the framed document. The path
+    // model works for ANY view (everything the iframe shows is DOM); the
+    // `view` param picks WHICH of the file's modes is being annotated, and
+    // anchors are per-view (a code-view path means nothing in table view, so
+    // pins simply don't resolve there — cards mark them "other view").
+    //
+    // ⚠️ CURRENTLY UNREACHABLE, and the Send-to-Claude leg is doubly so. This
+    // mode is bound to ZERO registry keys (D235 took its bindings away), so the
+    // shell never offers it; and its handoff navigates the shell to
+    // `_mode=claude`, which resolves to the one surviving chat template — a
+    // template that never grew the receiving half (claudeComments /
+    // claudeReturn), so the comments it hands over are simply dropped. The
+    // navigation lands somewhere real; the payload goes nowhere.
+    // The code is left standing rather than stripped because the
+    // anchor model and the review UI are the parts worth keeping if this comes
+    // back; what must not happen is a reader assuming the handoff works.
+    // =========================================================================
+    const file = fused.params.get("_file");
+    const frame = document.getElementById("page");
+    const stage = document.getElementById("stage");
+    const pinsEl = document.getElementById("pins");
+    const hl = document.getElementById("hl");
+    const ghost = document.getElementById("ghost");
+    const pop = document.getElementById("pop");
+    const ta = pop.querySelector("textarea");
+    const list = document.getElementById("list");
+    const viewSel = document.getElementById("viewsel");
+
+    // This template's own registry name (folder name from its /render URL) —
+    // excluded from the view picker: annotating the annotate view recurses.
+    const OWN_NAME = (() => {
+      const p = (new URLSearchParams(location.search).get("path") || "").replace(/\\/g, "/").split("/");
+      return p.length >= 2 ? p[p.length - 2] : "annotate";
+    })();
+
+    // --- Highlight-API tints (SPEC §30/AP-9) ---------------------------------
+    // The CSS Custom Highlight API paints inside the FRAMED document, so its
+    // styles have to be injected there — and that document is not ours and has
+    // none of our tokens. So the two tints are resolved off our own <html> and
+    // written as literal values, then rewritten whenever `data-theme` flips.
+    // One observer for the life of the page: the frame reloads on every view
+    // switch, and re-observing per load would stack observers.
+    let hlStyleEl = null;
+    function paintHighlightStyles(el) {
+      hlStyleEl = el || hlStyleEl;
+      if (!hlStyleEl) return;
+      const css = getComputedStyle(document.documentElement);
+      const token = (name) => css.getPropertyValue(name).trim();
+      hlStyleEl.textContent =
+        "::highlight(fa_sel){background-color:" + token("--hl-sel") + "}" +
+        "::highlight(fa_active){background-color:" + token("--hl-active") +
+        ";color:" + token("--hl-active-fg") + "}";
+    }
+    function watchTheme(apply) {
+      new MutationObserver(apply).observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+    }
+    watchTheme(() => paintHighlightStyles(null));
+
+    let activeView = null; // {mode, path} currently framed
+    let defaultViewMode = null; // views[0] — home for unstamped comments
+
+    if (!file) {
+      document.body.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+      throw new Error("no _file");
+    }
+
+    // Sidecar writability probe: commenting always works (the URL is the live
+    // store), but when the history log (home_dir()/sidecar/<mapped path>.json,
+    // D83-reversal) can't be written, say so instead of losing history
+    // silently. Probe failure itself stays silent — same best-effort posture
+    // as the record call below.
+    fused.runPython("./annotate.py", { action: "status", file }, { key: null }).then(async (st) => {
+      if (st && st.writable === false) {
+        const sidecarName = (await window._fusedSidecarPath(file)).split("/").pop();
+        fusedRoBadge.update(document.getElementById("ro"), "History not saved",
+          "The file's sidecar (" + sidecarName + ") isn't " +
+          "writable, so this review lives only in this URL and won't be " +
+          "recorded to comment history.");
+      }
+    }).catch(() => {});
+
+    // --- data ---------------------------------------------------------------
+    // Legacy import: the removed built-in stored comments in the RESERVED
+    // `_comments` shell param, which fused.params doesn't expose. If this
+    // page has no `comments` param but the shell URL carries `_comments`,
+    // convert once (same-origin parent): content/timestamps/status/view map
+    // directly; anchorId/anchorPath carry over (selection anchors have no
+    // native equivalent — they surface as detached, content preserved).
+    // The shell URL's `_layout=(…)` span (panel/tab mode) contains literal
+    // `&`, so it must be excised via a balanced-paren scan before the rest is
+    // handed to URLSearchParams — same rule as runtime.js splitSearch.
+    function withoutLayoutSpan(search) {
+      const s = (search || "").replace(/^\?/, "");
+      const m = /(^|&)_layout=\(/.exec(s);
+      if (!m) return s;
+      const start = m.index + m[1].length;
+      let i = start + "_layout=(".length;
+      let depth = 1;
+      while (i < s.length && depth > 0) {
+        if (s[i] === "(") depth++;
+        else if (s[i] === ")") depth--;
+        i++;
+      }
+      return (s.slice(0, m.index) + s.slice(i)).replace(/^&|&$/g, "");
+    }
+    function legacyComments() {
+      try {
+        const raw = new URLSearchParams(withoutLayoutSpan(window.parent.location.search)).get("_comments");
+        if (!raw) return null;
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) return null;
+        return arr.map((t) => {
+          // The native schema has no reply threads — fold legacy replies into
+          // the content so nothing is silently dropped on the first save.
+          let content = typeof t.content === "string" ? t.content : "";
+          if (Array.isArray(t.replies)) {
+            for (const r of t.replies) {
+              if (r && typeof r.content === "string" && r.content) {
+                content += "\n↳ " + r.content;
+              }
+            }
+          }
+          return {
+            id: typeof t.id === "string" ? t.id : crypto.randomUUID(),
+            content,
+            createdAt: Number(t.createdAt) || Date.now(),
+            resolved: t.status === "resolved" || undefined,
+            anchorPath: typeof t.anchorPath === "string" ? t.anchorPath : undefined,
+            anchorId: typeof t.anchorId === "string" ? t.anchorId : undefined,
+            // Free pins (document coords, no element anchor) carry over too.
+            x: typeof t.x === "number" ? t.x : undefined,
+            y: typeof t.y === "number" ? t.y : undefined,
+            // Pixel + timestamp refinements survive the import.
+            iu: typeof t.iu === "number" ? t.iu : undefined,
+            iv: typeof t.iv === "number" ? t.iv : undefined,
+            t: typeof t.t === "number" ? t.t : undefined,
+            // Unstamped legacy threads infer their view from anchor shape
+            // (selection ↔ editor, everything else ↔ preview) — leaving view
+            // unset would resolve them against WHATEVER view is framed.
+            view:
+              typeof t.mode === "string"
+                ? t.mode
+                : t.selFrom && t.selTo
+                  ? "code"
+                  : "_render",
+          };
+        });
+      } catch (e) {
+        return null;
+      }
+    }
+    function load() {
+      try {
+        const raw = fused.params.get("comments");
+        if (raw) {
+          const arr = JSON.parse(raw);
+          return Array.isArray(arr) ? arr : [];
+        }
+        return legacyComments() || [];
+      } catch (e) {
+        return [];
+      }
+    }
+    // A comment is handed to Claude ONCE: `sent: 1` (see the Send to Claude
+    // handler) marks the ones a previous handoff carried, `resolved` marks the
+    // settled ones, and only the remainder rides the next send. The flag is
+    // deliberately the shortest truthy value that survives JSON — the URL store
+    // has a hard byte BUDGET below, so a timestamp string would buy nothing the
+    // sidecar's own `updated_at` doesn't already record.
+    const sendable = (arr) => arr.filter((c) => !c.resolved && !c.sent);
+    // The URL is the store, so it has a budget (~6 KB, matching the removed
+    // overlay): over it, evict the oldest RESOLVED thread first, then the oldest
+    // SENT one — a sent comment is already in the chat transcript, so it is the
+    // next-cheapest thing to lose, while an OPEN, UNSENT comment exists nowhere
+    // else and is never dropped silently; if still over, keep the write (a long
+    // URL beats lost data) and say so in the bar.
+    const BUDGET = 6000;
+    // Measure what actually lands on the URL — the encoded form (quotes and
+    // braces percent-encode, roughly tripling), not the raw JSON.
+    const urlSize = (arr) => encodeURIComponent(JSON.stringify(arr)).length;
+    // Oldest evictable comment, resolved tier before sent tier, or null when
+    // every remaining comment is open and unsent. `keep` is a Set of ids that
+    // are off-limits whatever their flags: the save that STAMPS `sent` is also
+    // the save that could evict on it, and a comment being handed to Claude
+    // right now must never be the victim. The stamp itself is what pushes the
+    // list over budget, so the payload IS the whole sent tier — one click would
+    // drop a live comment out of the review the user is in the middle of
+    // sending, and the "removed" note explaining it goes into a bar the
+    // navigation destroys milliseconds later. (Not annihilation: the same save
+    // mirrors every comment into the `<file>.json` log below, where absence
+    // never deletes, so an evicted comment is still recoverable through the
+    // history view. It leaves the LIVE store — the rail, the pins, the shared
+    // URL — which for a comment being sent right now is loss enough.) When that
+    // leaves nothing evictable we take the over-budget write: a long URL beats
+    // dropping a comment from the live review to make room for a flag, and the
+    // send proceeds either way.
+    function evictTarget(arr, keep) {
+      const pool0 = keep ? arr.filter((c) => !keep.has(c.id)) : arr;
+      for (const tier of [(c) => c.resolved, (c) => c.sent && !c.resolved]) {
+        const pool = pool0.filter(tier);
+        if (pool.length) return pool.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+      }
+      return null;
+    }
+    function save(arr, deletedIds, keep) {
+      let dropped = 0;
+      while (urlSize(arr) > BUDGET) {
+        const oldest = evictTarget(arr, keep);
+        if (!oldest) break;
+        arr = arr.filter((c) => c.id !== oldest.id);
+        dropped++;
+      }
+      const over = urlSize(arr) > BUDGET;
+      const note = document.getElementById("budgetnote");
+      note.textContent = dropped
+        ? `${dropped} oldest resolved/sent comment${dropped === 1 ? "" : "s"} removed — URL size limit`
+        : over
+          ? "comment list exceeds the URL budget — resolve or delete some"
+          : "";
+      // Always a string — the runtime's set() rejects non-strings (there is
+      // no delete API), so an emptied list persists as "[]".
+      fused.params.set("comments", JSON.stringify(arr));
+      // Mirror the review into the target file's `<file>.json` sidecar as a
+      // write-only history log (upsert-by-id; absence never deletes) — the same
+      // sidecar the claude chat (agent.py) and bookmark history use. An
+      // explicit delete rides the SAME call as deleted_ids, so upsert and
+      // tombstone land in one atomic sidecar write (a separate delete call
+      // could race this record and lose the tombstone). The URL stays the sole
+      // live store; this is pure history, so it is fire-and-forget: a failed
+      // record must never block or throw into the review UI.
+      fused.runPython("./annotate.py", {
+        action: "record", comments: arr, file,
+        deleted_ids: deletedIds && deletedIds.length ? deletedIds : undefined,
+        // key:null — two quick saves must both land; default per-file cancellation
+        // (D114) would let the newer record abort the older and silently drop a
+        // history write (this call is fire-and-forget, so no error would surface).
+      }, { key: null }).catch(() => {});
+      render();
+      // The list as PERSISTED (post-eviction) — the Send to Claude handler needs
+      // it to write `comments` into its own top-URL navigation, because set()
+      // above may only have written the coalesced overlay (D99) and not yet the
+      // real history entry the handler reads back.
+      return arr;
+    }
+
+    // --- anchors (tag:nth-of-type path inside the framed doc) ---------------
+    function pathOf(el, doc) {
+      const segs = [];
+      let node = el;
+      while (node && node !== doc.body && node.nodeType === 1) {
+        let n = 1, sib = node.previousElementSibling;
+        while (sib) { if (sib.tagName === node.tagName) n++; sib = sib.previousElementSibling; }
+        segs.unshift(node.tagName.toLowerCase() + ":nth-of-type(" + n + ")");
+        node = node.parentElement;
+      }
+      return node === doc.body ? segs.join(">") : null;
+    }
+    // Container element of an anchor (id > structural path) — used both as
+    // the anchor itself and as the search scope for quote ranges.
+    function containerOf(c, doc) {
+      if (c.anchorId && doc) {
+        const el = doc.getElementById(c.anchorId);
+        if (el) return el;
+      }
+      return resolvePath(c.anchorPath, doc);
+    }
+
+    // Text-selection anchors (quote model, AN-42 lineage): the qn-th
+    // occurrence of the quote inside the container, as a live Range.
+    function textRangeFor(c, doc) {
+      const el = containerOf(c, doc);
+      if (!el || !c.quote) return null;
+      const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      let full = "";
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        nodes.push({ node: n, start: full.length });
+        full += n.nodeValue;
+      }
+      let idx = -1;
+      for (let occ = 0; occ <= (c.qn || 0); occ++) {
+        idx = full.indexOf(c.quote, idx + 1);
+        if (idx === -1) return null;
+      }
+      const end = idx + c.quote.length;
+      const locate = (off, isEnd) => {
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          if (off > nodes[i].start || (!isEnd && off === nodes[i].start) || i === 0) {
+            return { node: nodes[i].node, off: Math.min(off - nodes[i].start, nodes[i].node.nodeValue.length) };
+          }
+        }
+        return null;
+      };
+      const a = locate(idx, false), b = locate(end, true);
+      if (!a || !b) return null;
+      const range = doc.createRange();
+      try { range.setStart(a.node, a.off); range.setEnd(b.node, b.off); } catch (e) { return null; }
+      return range;
+    }
+
+    // CM selection anchors: the visible slice of lines line..lineEnd.
+    function cmRangeFor(c, doc) {
+      const recs = cmVisibleLines(doc).filter((r) => r.line >= c.line && r.line <= (c.lineEnd || c.line));
+      if (!recs.length) return null;
+      const range = doc.createRange();
+      try {
+        range.setStartBefore(recs[0].el.firstChild || recs[0].el);
+        range.setEndAfter(recs[recs.length - 1].el.lastChild || recs[recs.length - 1].el);
+      } catch (e) { return null; }
+      return range;
+    }
+
+    // A comment's live Range, when it is range-shaped (text or CM selection).
+    function rangeFor(c, doc) {
+      if (!doc) return null;
+      if (c.line != null && c.quote) return isCmDoc(doc) ? cmRangeFor(c, doc) : null;
+      if (c.quote && c.line == null) return textRangeFor(c, doc);
+      return null;
+    }
+    const isRangeAnchor = (c) => !!c.quote;
+
+    // Off-page anchor resolvers. Paged views (table, xlsx, capped PDF) render
+    // stable element ids that encode an absolute address (__fr_r<row>_c<col>,
+    // __fr_s<sheet>_r<row>_c<col>, __fr_page_<n>); when such an id isn't
+    // mounted right now it's merely on another page/sheet — navigable, not
+    // detached. ALL of that knowledge lives here, in the annotate template:
+    // the views themselves carry no annotation code, just the ids. reveal()
+    // writes the ordinary offset/sheet params — the same shell-URL params the
+    // paged view already watches, so it reloads itself onto the right page.
+    const PAGE_LIMIT = 100; // stock table/xlsx page size
+    const pageOf = (row) => String(Math.floor(row / PAGE_LIMIT) * PAGE_LIMIT);
+    const sheetName = (doc, idx) => {
+      const opts = doc ? doc.querySelectorAll("#sheet option") : null;
+      return opts && opts[idx] ? opts[idx].value : null;
+    };
+    const ID_RESOLVERS = [
+      { // PDF page canvas past the render cap: nameable but not navigable.
+        re: /^__fr_page_(\d+)$/,
+        label: (m) => "page " + m[1],
+        reveal: null,
+      },
+      { // xlsx cell: sheet index + absolute row.
+        re: /^__fr_s(\d+)_r(\d+)_c(\d+)$/,
+        label(m, doc) {
+          const row = "row " + (parseInt(m[2], 10) + 1).toLocaleString();
+          const name = sheetName(doc, parseInt(m[1], 10));
+          return name ? name + " · " + row : row;
+        },
+        reveal(m, doc) {
+          // Offset first, sheet second — mirrors the sheet selector's own
+          // ordering (each set fires onChange; the last decides the load).
+          fused.params.set("offset", pageOf(parseInt(m[2], 10)));
+          const name = sheetName(doc, parseInt(m[1], 10));
+          if (name) fused.params.set("sheet", name);
+        },
+      },
+      { // table cell: absolute row.
+        re: /^__fr_r(\d+)_c(\d+)$/,
+        label: (m) => "row " + (parseInt(m[1], 10) + 1).toLocaleString(),
+        reveal: (m) => fused.params.set("offset", pageOf(parseInt(m[1], 10))),
+      },
+    ];
+    function resolverMatch(anchorId) {
+      for (const r of ID_RESOLVERS) {
+        const m = r.re.exec(anchorId);
+        if (m) return { r, m };
+      }
+      return null;
+    }
+
+    function resolveAnchor(c, doc) {
+      // Code-line anchors resolve through the gutter (virtualized editor).
+      if (c.line != null && doc && isCmDoc(doc)) return cmResolve(doc, c.line);
+      // Element-id anchors (legacy imports carry them) win over paths.
+      if (c.anchorId && doc) {
+        const el = doc.getElementById(c.anchorId);
+        if (el) return el;
+      }
+      return resolvePath(c.anchorPath, doc);
+    }
+    function resolvePath(path, doc) {
+      if (!path || !doc || !doc.body) return null;
+      let node = doc.body;
+      for (const seg of path.split(">")) {
+        const m = /^([a-z0-9-]+):nth-of-type\((\d+)\)$/i.exec(seg);
+        if (!m) return null;
+        let count = 0, found = null;
+        for (const child of node.children) {
+          if (child.tagName === m[1].toUpperCase() && ++count === parseInt(m[2], 10)) { found = child; break; }
+        }
+        if (!found) return null;
+        node = found;
+      }
+      return node === doc.body ? null : node;
+    }
+
+    // --- pixel surfaces (AN-24 lineage): a click on an image/video/canvas
+    // records iu/iv — fractions of the PAINTED content box — so the pin marks
+    // the exact spot, stable across resizes. object-fit contain/cover aware.
+    function intrinsic(el) {
+      if (!el || !el.tagName) return null;
+      if (el.tagName === "IMG" && el.naturalWidth > 0) return { w: el.naturalWidth, h: el.naturalHeight };
+      if (el.tagName === "VIDEO" && el.videoWidth > 0) return { w: el.videoWidth, h: el.videoHeight };
+      if (el.tagName === "CANVAS" && el.width > 0) return { w: el.width, h: el.height };
+      return null;
+    }
+    function contentBox(el) {
+      const r = el.getBoundingClientRect();
+      const nat = intrinsic(el);
+      if (!nat || !r.width || !r.height) return r;
+      const fit = (el.ownerDocument.defaultView.getComputedStyle(el).objectFit || "fill");
+      if (fit !== "contain" && fit !== "cover" && fit !== "scale-down") return r;
+      let s = fit === "cover" ? Math.max(r.width / nat.w, r.height / nat.h) : Math.min(r.width / nat.w, r.height / nat.h);
+      if (fit === "scale-down") s = Math.min(s, 1);
+      const w = nat.w * s, h = nat.h * s;
+      return { left: r.left + (r.width - w) / 2, top: r.top + (r.height - h) / 2, width: w, height: h };
+    }
+
+    // --- code view (CM6): structural paths are useless inside a virtualized
+    // editor (lines mount/unmount on scroll), so code anchors store the LINE
+    // NUMBER (read from the gutter) + the line's text as a quote. Resolution
+    // finds the visible .cm-line for that gutter number; a scrolled-away line
+    // simply has no pin until it scrolls back in (never "detached").
+    // Pair gutter numbers to .cm-line nodes by VERTICAL POSITION, not index —
+    // the lineNumbers gutter carries a measuring spacer whose text is also
+    // numeric, so index pairing drifts by one.
+    function cmVisibleLines(doc) {
+      const out = [];
+      const lines = [...doc.querySelectorAll(".cm-content .cm-line")];
+      const gutters = [...doc.querySelectorAll(".cm-lineNumbers .cm-gutterElement")];
+      for (const line of lines) {
+        const r = line.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        const g = gutters.find((x) => {
+          const gr = x.getBoundingClientRect();
+          return gr.height > 0 && mid >= gr.top && mid <= gr.bottom && /^\d+$/.test(x.textContent.trim());
+        });
+        if (g) out.push({ line: parseInt(g.textContent, 10), el: line });
+      }
+      return out;
+    }
+    function cmLineAt(doc, clientY) {
+      for (const rec of cmVisibleLines(doc)) {
+        const r = rec.el.getBoundingClientRect();
+        if (clientY >= r.top && clientY <= r.bottom) return rec;
+      }
+      return null;
+    }
+    function cmResolve(doc, lineNo) {
+      for (const rec of cmVisibleLines(doc)) {
+        if (rec.line === lineNo) return rec.el;
+      }
+      return null;
+    }
+    // The line-number strategy is available only where the lineNumbers gutter is
+    // actually LAID OUT — it is the sole source of the line number, and
+    // cmVisibleLines only pairs a gutter element that has real height, so the
+    // test has to be the same one. `.cm-editor` alone was the probe and it was
+    // wrong for the markdown notes view: that view ships basicSetup (so
+    // `.cm-lineNumbers` exists in the DOM, and merely querying for it proves
+    // nothing) but hides `.cm-gutters` outright, being prose (MD-18a). Every
+    // gesture there took a path where cmVisibleLines() is permanently empty —
+    // clicks swallowed by the `!hit` bail after preventDefault, selections
+    // dropped, stored comments never painted, nothing logged. A gutterless
+    // editor falls through to the ordinary structural/quote anchors instead —
+    // the right model for prose anyway, since quotes survive the remounting
+    // .cm-line divs that make structural paths unreliable in a viewport.
+    const isCmDoc = (doc) => {
+      if (!doc.querySelector(".cm-editor")) return false;
+      const gutter = doc.querySelector(".cm-lineNumbers");
+      return !!gutter && gutter.getBoundingClientRect().height > 0;
+    };
+
+    // Stage coords of an element inside the iframe = iframe offset + element
+    // viewport rect within the frame (rects already account for frame scroll).
+    function stagePoint(el, c) {
+      const fr = frame.getBoundingClientRect();
+      const st = stage.getBoundingClientRect();
+      // Pixel-anchored (iu/iv): pin at the exact stored fraction of the
+      // painted content box instead of the element's top-right corner.
+      if (c && c.iu != null && c.iv != null && intrinsic(el)) {
+        const b = contentBox(el);
+        return { x: fr.left - st.left + b.left + c.iu * b.width, y: fr.top - st.top + b.top + c.iv * b.height };
+      }
+      const r = el.getBoundingClientRect();
+      return { x: fr.left - st.left + r.right, y: fr.top - st.top + r.top };
+    }
+    function stageRect(el) {
+      const fr = frame.getBoundingClientRect();
+      const st = stage.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      return { left: fr.left - st.left + r.left, top: fr.top - st.top + r.top, width: r.width, height: r.height };
+    }
+
+    // --- pins + sidebar ------------------------------------------------------
+    // Comment labels: A, B, C … by creation order — the pin and its sidebar
+    // card wear the same letter, so "which comment is which" reads instantly.
+    function labelFor(i) {
+      let s = "";
+      i = i + 1;
+      while (i > 0) { s = String.fromCharCode(65 + ((i - 1) % 26)) + s; i = Math.floor((i - 1) / 26); }
+      return s;
+    }
+    let activeId = null; // the comment lit up on both sides (pin ⇄ card)
+    function setActive(id) {
+      activeId = id;
+      render();
+      const card = list.querySelector(`[data-id="${id}"]`);
+      if (card) card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+
+    function render() {
+      if (!activeView) return; // still booting — no framed view to resolve against
+      const doc = frame.contentDocument;
+      const frameWin = frame.contentWindow;
+      const comments = load();
+      pinsEl.innerHTML = "";
+      list.innerHTML = "";
+      if (!comments.length) {
+        list.innerHTML = `<div id="empty">No comments yet.<br>Click or select anything on the page.</div>`;
+      }
+      const selRanges = [];
+      const activeRanges = [];
+      const byCreation = comments.slice().sort((a, b) => a.createdAt - b.createdAt);
+      const labels = new Map(byCreation.map((c, i) => [c.id, labelFor(i)]));
+      for (const c of comments) {
+        const label = labels.get(c.id);
+        // Anchors are per-view: only resolve/pin comments made on the view
+        // that's currently framed; others are listed with their view's tag.
+        // A missing stamp (hand-edited URL) belongs to the DEFAULT view — a
+        // wildcard would resolve against whatever happens to be framed.
+        const ownView = (c.view || defaultViewMode) === activeView.mode;
+        const range = ownView && doc && isRangeAnchor(c) ? rangeFor(c, doc) : null;
+        const el = ownView && doc && !isRangeAnchor(c) ? resolveAnchor(c, doc) : null;
+        if (range) {
+          selRanges.push(range);
+          if (c.id === activeId) activeRanges.push(range);
+        }
+        // Free pins (legacy imports): document coords inside the framed page
+        // → stage coords via frame offset minus the frame's own scroll.
+        let free = null;
+        if (!el && !range && ownView && doc && typeof c.x === "number" && typeof c.y === "number") {
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          free = {
+            x: fr.left - st.left + c.x - (frameWin ? frameWin.scrollX : 0),
+            y: fr.top - st.top + c.y - (frameWin ? frameWin.scrollY : 0),
+          };
+        }
+        if (el || free || range) {
+          let p;
+          if (range) {
+            const rects = range.getClientRects();
+            const last = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+            const fr = frame.getBoundingClientRect();
+            const st = stage.getBoundingClientRect();
+            p = { x: fr.left - st.left + last.right, y: fr.top - st.top + last.top + last.height / 2 };
+          } else {
+            p = el ? stagePoint(el, c) : free;
+          }
+          // Anchor scrolled out of the framed viewport: no pin this frame —
+          // clamping instead would pile stale pins along the stage edge. The
+          // card stays in the sidebar; scrolling back re-renders the pin.
+          if (p.y >= 0 && p.y <= stage.clientHeight && p.x >= 0) {
+            const pin = document.createElement("div");
+            pin.className = "pin" + (c.resolved ? " resolved" : "") + (c.id === activeId ? " active" : "");
+            pin.style.left = Math.min(stage.clientWidth - 14, Math.max(14, p.x)) + "px";
+            pin.style.top = Math.max(14, p.y) + "px";
+            pin.textContent = c.resolved ? "✓" : label;
+            pin.title = label + " — " + c.content;
+            pin.onclick = () => setActive(c.id);
+            pinsEl.appendChild(pin);
+          }
+        }
+        const resolvedHere = el || free || range;
+        const chip = (t) => `<span style="color:var(--fg-muted);border:1px solid var(--line);border-radius:4px;padding:0 5px">${t}</span>`;
+        // Off-page, not broken: a recognized paged-view id (see ID_RESOLVERS)
+        // whose row/page just isn't mounted right now.
+        const off = !resolvedHere && ownView && c.anchorId ? resolverMatch(c.anchorId) : null;
+        const tag = !ownView
+          ? chip(c.view === "_render" ? "preview" : c.view)
+          : resolvedHere
+            ? c.t != null
+              ? chip(Math.floor(c.t / 60) + ":" + String(Math.floor(c.t % 60)).padStart(2, "0"))
+              : ""
+            : c.line != null && doc && isCmDoc(doc)
+              ? chip("line " + c.line) // scrolled out of the virtualized viewport, not broken
+              : off
+                ? chip(off.r.label(off.m, doc) || "off-page")
+                : "<span style='color:var(--error)'>detached</span>";
+        const card = document.createElement("div");
+        card.className = "card" + (c.resolved ? " resolved" : "") + (c.sent ? " sent" : "") + (c.id === activeId ? " active" : "");
+        card.setAttribute("data-id", c.id);
+        // A sent comment is excluded from the NEXT handoff (see `sendable`), so
+        // say so on the card — otherwise "Send to Claude" silently ignoring it
+        // reads as the button being broken. Reopen clears the flag.
+        // Not on a resolved card: resolved is the terminal state and already
+        // explains the exclusion (and owns the stronger dim, see .card.resolved
+        // .sent), so stacking a second "why this is skipped" chip on it is
+        // noise. The handoff still shows in the file's history log either way.
+        const sentTag = c.sent && !c.resolved ? chip("sent ↗") : "";
+        card.innerHTML = `
+          <div class="when"><span class="lbl">${label}</span> ${new Date(c.createdAt).toLocaleString()} ${tag}${sentTag}</div>
+          <div class="body"></div>
+          <div class="acts">
+            <button data-a="resolve">${c.resolved ? "Reopen" : "Resolve"}</button>
+            <button data-a="delete">Delete</button>
+          </div>`;
+        card.querySelector(".body").textContent = c.content;
+        card.onclick = (e) => {
+          if (e.target.closest("button")) return;
+          if (!ownView && c.view) {
+            switchView(c.view); // jump to its view
+          } else {
+            activeId = c.id; // light up the pin/range before scrolling to it
+            reveal(c);
+            render();
+          }
+        };
+        card.querySelector('[data-a="resolve"]').onclick = () => {
+          c.resolved = !c.resolved;
+          // Reopen also un-sends: reopening says "this isn't done", and the only
+          // way to hand the same comment to Claude again is to clear the flag
+          // that excludes it. (Resolving does NOT set `sent` — the two flags are
+          // independent reasons to skip a comment.) `delete` rather than
+          // `sent = 0`, so the key leaves the URL entirely and the sidecar's
+          // None-guard merge (annotate.py) doesn't carry a falsy value forward.
+          if (!c.resolved) delete c.sent;
+          save(comments);
+        };
+        card.querySelector('[data-a="delete"]').onclick = () => {
+          // Local delete is just absence from the URL array; the id also rides
+          // save()'s record call as a deleted_id, so the sidecar log stamps its
+          // tombstone in the SAME write (a separate delete call could race the
+          // record and lose it) and history shows it struck-through. Absence
+          // alone never deletes there (per-URL subsets) — deleted_ids is the
+          // one signal that says "deleted on purpose", and the stamp is
+          // permanent: a stale URL re-recording the id can't undo the delete.
+          save(comments.filter((x) => x.id !== c.id), [c.id]);
+        };
+        list.appendChild(card);
+      }
+      paintHighlights(selRanges, activeRanges);
+    }
+
+    // Selection tints paint via the framed window's Custom Highlight API —
+    // zero DOM mutation of the viewed page. Styles are injected into the
+    // framed head once per load (see frame load handler).
+    function paintHighlights(selRanges, activeRanges) {
+      const w = frame.contentWindow;
+      if (!w || !w.Highlight || !w.CSS || !w.CSS.highlights) return;
+      const set = (name, ranges) => {
+        if (ranges.length) w.CSS.highlights.set(name, new w.Highlight(...ranges));
+        else w.CSS.highlights.delete(name);
+      };
+      set("fa_sel", selRanges);
+      set("fa_active", activeRanges);
+    }
+
+    function reveal(c) {
+      const doc = frame.contentDocument;
+      // Range anchors (text/code selections): scroll the range into view —
+      // the active-highlight tint (painted by render) marks the exact span.
+      if (isRangeAnchor(c) && doc) {
+        const range = rangeFor(c, doc);
+        if (range) {
+          const host = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+          if (host) host.scrollIntoView({ block: "center", behavior: "smooth" });
+          return;
+        }
+        // CM selection whose lines are scrolled out: jump the scroller there.
+        if (c.line != null && isCmDoc(doc)) {
+          const scroller = doc.querySelector(".cm-scroller");
+          const anyLine = doc.querySelector(".cm-content .cm-line");
+          if (scroller && anyLine) {
+            const lh = anyLine.getBoundingClientRect().height || 18;
+            scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
+          }
+        }
+        return;
+      }
+      const el = doc ? resolveAnchor(c, doc) : null;
+      // Video: land on the exact commented moment, paused.
+      if (el && el.tagName === "VIDEO" && c.t != null) {
+        el.pause();
+        el.currentTime = c.t;
+      }
+      if (!el) {
+        // Off-screen code line: scroll the editor's scroller to it (line
+        // height estimated from any visible line) — the MutationObserver
+        // re-renders and the pin appears once the line mounts.
+        if (c.line != null && doc && isCmDoc(doc)) {
+          const scroller = doc.querySelector(".cm-scroller");
+          const anyLine = doc.querySelector(".cm-content .cm-line");
+          if (scroller && anyLine) {
+            const lh = anyLine.getBoundingClientRect().height || 18;
+            scroller.scrollTo({ top: Math.max(0, (c.line - 1) * lh - scroller.clientHeight / 2), behavior: "smooth" });
+          }
+          return;
+        }
+        // Off-page element anchor (paged table / capped PDF): navigate the
+        // framed view to it via its ordinary params — the MutationObserver
+        // re-renders the pin once the right page mounts.
+        if (c.anchorId) {
+          const off = resolverMatch(c.anchorId);
+          if (off) {
+            if (off.r.reveal) off.r.reveal(off.m, doc);
+            return;
+          }
+        }
+        // Free pin: center its stored document coords in the framed view.
+        if (doc && typeof c.y === "number" && frame.contentWindow) {
+          frame.contentWindow.scrollTo({
+            top: Math.max(0, c.y - frame.clientHeight / 2),
+            behavior: "smooth",
+          });
+        }
+        return;
+      }
+      // Pixel-anchored surface (image / video / PDF page canvas): center the
+      // PIN's spot, not the element — a page canvas is taller than the
+      // viewport, so element-centering can leave the commented spot offscreen.
+      if (c.iu != null && c.iv != null && intrinsic(el) && frame.contentWindow) {
+        const w = frame.contentWindow;
+        const b = contentBox(el);
+        w.scrollTo({
+          top: Math.max(0, w.scrollY + b.top + c.iv * b.height - frame.clientHeight / 2),
+          behavior: "smooth",
+        });
+        return;
+      }
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      setTimeout(() => {
+        const r = stageRect(el);
+        hl.style.display = "block";
+        hl.style.left = r.left + "px";
+        hl.style.top = r.top + "px";
+        hl.style.width = r.width + "px";
+        hl.style.height = r.height + "px";
+        setTimeout(() => (hl.style.display = "none"), 1200);
+      }, 350);
+    }
+
+    // history → annotate deep link: focus the comment named by the `comment`
+    // param (id-only, mirroring the claude session_id resume contract — the id
+    // is the whole contract and is never cleared after use). Runs once per
+    // page-load, after the initial render, so the card/pin exist to light up.
+    let deepLinkDone = false;
+    async function focusFromParam() {
+      if (deepLinkDone) return;
+      deepLinkDone = true;
+      const wanted = fused.params.get("comment");
+      if (!wanted) return;
+      let comments = load();
+      let c = comments.find((x) => x.id === wanted);
+      if (!c) {
+        // Not in the live URL store: one-shot FULL-STATE hydration from the
+        // sidecar. The id arrived from the timeline, so the sidecar's
+        // upsert-by-id log is the authoritative history. Import EVERY live log
+        // entry (those without a `deleted_at` tombstone), stripping the server
+        // stamps. A tombstoned wanted id gets no special pass — deleted stays
+        // deleted (owner call 2026-07-10); hydrate the live set, skip the
+        // focus. Merge into the live array, live entries winning by id; save
+        // once (re-records — a harmless upsert no-op). If the wanted id isn't
+        // logged at all, import nothing and skip silently.
+        try {
+          const sidecar = JSON.parse(await fused.readFile(await window._fusedSidecarPath(file)));
+          const log = Array.isArray(sidecar.comments) ? sidecar.comments : [];
+          const wantedEntry = log.find((x) => x && x.id === wanted);
+          if (wantedEntry && !wantedEntry.deleted_at) {
+            const strip = ({ recorded_at, updated_at, deleted_at, ...rest }) => rest;
+            const byId = new Map();
+            for (const e of log) {
+              if (e && typeof e.id === "string" && !e.deleted_at) byId.set(e.id, strip(e));
+            }
+            for (const live of comments) byId.set(live.id, live); // live wins by id
+            save([...byId.values()]); // re-records to the sidecar — a harmless upsert no-op
+            // Re-read what actually persisted: save() evicts oldest RESOLVED
+            // comments when the URL budget overflows, so the wanted id may not
+            // have survived — focusing a card that isn't rendered lights nothing.
+            comments = load();
+            c = comments.find((x) => x.id === wanted);
+          }
+        } catch (e) {
+          // sidecar unreadable / unparseable / id missing: no focus, no error UI.
+        }
+      }
+      if (!c) return;
+      // Same cross-view behavior as a card click: jump to the comment's own
+      // view first (that reloads the template — the param survives, so this
+      // resolver re-runs there and lands the focus), else light it up here.
+      const ownView = (c.view || defaultViewMode) === activeView.mode;
+      if (!ownView && c.view) {
+        // A refused/failed switch (unsaved-edits flush) means the reload this
+        // focus is staked on never comes — re-arm the one-shot guard so the
+        // next frame load (e.g. the user switching views by hand) retries.
+        if (!(await switchView(c.view))) deepLinkDone = false;
+      } else {
+        setActive(c.id);
+        reveal(c);
+      }
+    }
+
+    // Switching the annotated view reloads this template — an editor framed
+    // inside with unsaved edits must be flushed FIRST (same contract as the
+    // shell's own mode switch); refuse the switch when it can't be made safe.
+    let switchingView = false;
+    // Resolves true only when the switch actually landed (the `view` param was
+    // written); false on refusal/failure so a caller staking work on the
+    // reload (the deep-link resolver) knows it never comes.
+    async function switchView(mode) {
+      if (switchingView || (activeView && mode === activeView.mode)) return false;
+      switchingView = true;
+      try {
+        const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
+        if (typeof inner === "function") {
+          const res = await Promise.race([
+            inner(),
+            new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+          ]);
+          if (res && res.ok === false) {
+            if (activeView) viewSel.value = activeView.mode; // snap the picker back
+            return false;
+          }
+        }
+        fused.params.set("view", mode); // inside the lock — param write is part of the switch
+        return true;
+      } catch (e) {
+        // Flush rejected / frame torn down: the switch did NOT happen — the
+        // picker must not claim otherwise.
+        if (activeView) viewSel.value = activeView.mode;
+        return false;
+      } finally {
+        switchingView = false;
+      }
+    }
+
+    // --- create flow ---------------------------------------------------------
+    let draftAnchor = null; // { anchorId? , anchorPath? }
+    function openComposer(x, y, anchor) {
+      draftAnchor = anchor;
+      pop.style.display = "block";
+      pop.style.left = Math.min(stage.clientWidth - 292, Math.max(0, x + 10)) + "px";
+      pop.style.top = Math.min(stage.clientHeight - 130, Math.max(0, y + 10)) + "px";
+      ta.value = "";
+      ta.focus();
+    }
+    function closeComposer() {
+      pop.style.display = "none";
+      draftAnchor = null;
+    }
+    ta.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeComposer();
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const content = ta.value.trim();
+        if (content && draftAnchor) {
+          const comments = load();
+          comments.push({
+            id: crypto.randomUUID(),
+            content,
+            createdAt: Date.now(),
+            ...draftAnchor, // anchorId/anchorPath/line/lineEnd/quote/qn/iu/iv/t
+            view: activeView ? activeView.mode : undefined,
+          });
+          save(comments);
+        }
+        closeComposer();
+      }
+    });
+
+    // The stage cover, used on BOOT and on every reload. It was a one-shot boot
+    // skeleton that `remove()`d itself on the first load — so the post-revert
+    // reload had no skeleton to show, and the pins/highlight overlays sat in stage
+    // coordinates over an empty document until the next `load` fired. The node is
+    // therefore kept and toggled: one cover, two occasions, no second placeholder.
+    //
+    // The overlays go with it because they are the misleading half. A pin drawn at
+    // a coordinate from the OLD document is not a stale pin, it is a pin pointing
+    // at nothing, and `render()` is the only thing that can re-resolve it.
+    function coverStage() {
+      const stageskel = document.getElementById("stageskel");
+      if (stageskel) stageskel.hidden = false;
+      pinsEl.hidden = true;
+      // `display`, not `hidden`, for these two: the hover handlers drive them
+      // through `style.display` and an inline style would win over the attribute.
+      hl.style.display = "none";
+      ghost.style.display = "none";
+    }
+    function uncoverStage() {
+      const stageskel = document.getElementById("stageskel");
+      if (stageskel) stageskel.hidden = true;
+      pinsEl.hidden = false;
+    }
+    // The framed document's mutation observer, held so a reload can DISCONNECT the
+    // previous one. This handler re-runs on every load, and an observer left
+    // watching a discarded document is both a leak and a source of renders driven
+    // by a document nothing is looking at.
+    let frameObserver = null;
+
+    // Wire the framed document once it loads: hover highlight + click-to-comment.
+    frame.addEventListener("load", () => {
+      const doc = frame.contentDocument;
+      // No document to wire (torn-down or cross-origin frame): the cover stays up
+      // rather than being lifted off nothing, because there is no `render()` coming
+      // to put the pins back where they belong.
+      if (!doc) return;
+      // Highlight-API tint styles for selection anchors, injected into the
+      // framed page (the API paints there, so the styles must live there).
+      // That page is somebody else's document and does not have our tokens, so
+      // the values are RESOLVED here and re-resolved whenever the appearance
+      // changes — the AP-9 shape for a colour sampled outside CSS.
+      const hlStyle = doc.createElement("style");
+      paintHighlightStyles(hlStyle);
+      (doc.head || doc.documentElement).appendChild(hlStyle);
+      // An event target can be a TEXT node (Safari, SVG oddities) — anchor
+      // math needs its owning element.
+      const elementOf = (t) => (t && t.nodeType === 1 ? t : t && t.parentElement);
+      // Interactive controls are passthrough (see the click handler): no hover
+      // ghost over them either, so the cursor doesn't promise a comment there.
+      const INTERACTIVE = "button, a[href], input, select, textarea, summary, [role=button]";
+      doc.addEventListener("mousemove", (e) => {
+        const el = elementOf(e.target);
+        if (!el || el === doc.body || el === doc.documentElement || el.closest(INTERACTIVE)) {
+          hl.style.display = "none";
+          ghost.style.display = "none";
+          return;
+        }
+        // Pixel surface (image/video/PDF page canvas): the comment targets a
+        // POINT, so a full-element box reads as "commenting on this whole
+        // thing" — show a point ghost at the cursor instead.
+        if (el.tagName === "VIDEO" || intrinsic(el)) {
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          hl.style.display = "none";
+          ghost.style.display = "block";
+          ghost.style.left = fr.left - st.left + e.clientX + "px";
+          ghost.style.top = fr.top - st.top + e.clientY + "px";
+          return;
+        }
+        ghost.style.display = "none";
+        const r = stageRect(el);
+        hl.style.display = "block";
+        hl.style.left = r.left + "px";
+        hl.style.top = r.top + "px";
+        hl.style.width = r.width + "px";
+        hl.style.height = r.height + "px";
+      });
+      // Drag-selecting TEXT is a first-class anchor (markdown prose, code
+      // ranges): the selection becomes a quote-anchored comment with a real
+      // highlight, instead of a whole-element pin.
+      doc.addEventListener("mouseup", () => {
+        setTimeout(() => {
+          const sel = doc.getSelection();
+          if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+          const text = sel.toString();
+          if (!text.trim()) return;
+          const selRange = sel.getRangeAt(0);
+          let anchor = null;
+          if (isCmDoc(doc)) {
+            // Editor: line-span anchor (structural offsets are useless in a
+            // virtualized viewport; the gutter names the lines).
+            const rects = selRange.getClientRects();
+            if (!rects.length) return;
+            const start = cmLineAt(doc, rects[0].top + rects[0].height / 2);
+            const end = cmLineAt(doc, rects[rects.length - 1].top + rects[rects.length - 1].height / 2);
+            if (!start) return;
+            anchor = { line: start.line, lineEnd: end && end.line !== start.line ? end.line : undefined, quote: text.slice(0, 120) };
+          } else {
+            let cont = selRange.commonAncestorContainer;
+            if (cont.nodeType !== 1) cont = cont.parentElement;
+            if (!cont) return;
+            // Inside a gutterless editor (the markdown notes view) the natural
+            // container is a `.cm-line` div, whose nth-of-type index shifts as
+            // lines mount/unmount on scroll — a path that drifts onto the wrong
+            // line. Hoist to `.cm-content`, which is structurally stable, and
+            // let the quote+qn do the locating within it. Off-screen text isn't
+            // in the DOM, so such a quote simply has no pin until it scrolls
+            // back in — the same "not detached" behaviour code anchors have.
+            const content = cont.closest ? cont.closest(".cm-content") : null;
+            if (content) cont = content;
+            const base = cont.id ? { anchorId: cont.id } : { anchorPath: pathOf(cont, doc) };
+            if (!base.anchorId && !base.anchorPath) return;
+            // Occurrence index: how many times the quote appears before the
+            // selection inside the container.
+            const capped = text.slice(0, 120);
+            let qn = 0;
+            try {
+              const pre = doc.createRange();
+              pre.selectNodeContents(containerOf(base, doc) || cont);
+              pre.setEnd(selRange.startContainer, selRange.startOffset);
+              const before = pre.toString();
+              for (let at = before.indexOf(capped); at !== -1; at = before.indexOf(capped, at + 1)) qn++;
+            } catch (err) {}
+            anchor = { ...base, quote: capped, qn: qn || undefined };
+          }
+          const rects = selRange.getClientRects();
+          const last = rects.length ? rects[rects.length - 1] : selRange.getBoundingClientRect();
+          const fr = frame.getBoundingClientRect();
+          const st = stage.getBoundingClientRect();
+          sel.removeAllRanges(); // composer takes over; render paints the tint
+          openComposer(fr.left - st.left + last.right, fr.top - st.top + last.bottom, anchor);
+        }, 0);
+      });
+
+      doc.addEventListener("click", (e) => {
+        // A drag-selection's trailing click must not also open an element
+        // draft — the mouseup handler above owns selection gestures.
+        const s = doc.getSelection();
+        if (s && !s.isCollapsed) { e.preventDefault(); e.stopPropagation(); return; }
+        const el = elementOf(e.target);
+        if (!el) return;
+        // Native interactive controls keep working (a table's pagination
+        // buttons, links, form fields): their clicks pass through untouched
+        // instead of drafting a comment — same rationale as the video control
+        // strip below.
+        if (el.closest(INTERACTIVE)) return;
+        let anchor = null;
+        // Video: keep the native controls usable — clicks in the bottom
+        // control strip pass through untouched; frame clicks capture the
+        // pixel (iu/iv) AND the moment (t), pausing on the frame under
+        // discussion.
+        if (el.tagName === "VIDEO") {
+          const r = el.getBoundingClientRect();
+          if (e.clientY > r.bottom - 44) return; // control strip — don't swallow
+          e.preventDefault();
+          e.stopPropagation();
+          const b = contentBox(el);
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+          if (b.width > 0) {
+            anchor.iu = Math.round(Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * 1000) / 1000;
+            anchor.iv = Math.round(Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+          if (isFinite(el.currentTime)) anchor.t = Math.round(el.currentTime * 10) / 10;
+          el.pause();
+        } else if (intrinsic(el)) {
+          // Image/canvas: exact pixel via content-box fractions.
+          e.preventDefault();
+          e.stopPropagation();
+          const b = contentBox(el);
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+          if (b.width > 0) {
+            anchor.iu = Math.round(Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * 1000) / 1000;
+            anchor.iv = Math.round(Math.min(1, Math.max(0, (e.clientY - b.top) / b.height)) * 1000) / 1000;
+          }
+        } else if (isCmDoc(doc)) {
+          // Code editor: line-number anchor via the gutter (structural paths
+          // are meaningless in a virtualized viewport).
+          e.preventDefault();
+          e.stopPropagation();
+          const hit = cmLineAt(doc, e.clientY);
+          if (!hit) return;
+          anchor = { line: hit.line };
+        } else {
+          e.preventDefault();
+          e.stopPropagation();
+          // Element ids are stabler anchors than structural paths — prefer them.
+          anchor = el.id ? { anchorId: el.id } : { anchorPath: pathOf(el, doc) };
+        }
+        if (!anchor || (!anchor.anchorId && !anchor.anchorPath && anchor.line == null)) return;
+        const fr = frame.getBoundingClientRect();
+        const st = stage.getBoundingClientRect();
+        openComposer(fr.left - st.left + e.clientX, fr.top - st.top + e.clientY, anchor);
+      }, true);
+      // Capture-phase scroll catches nested scrolling containers (a code
+      // editor's scroller, a table wrapper), not just the document. Scroll
+      // and mutation storms coalesce to one render per frame — an editor
+      // mutates on every keystroke, and unthrottled full rebuilds jank.
+      let renderQueued = false;
+      const queueRender = () => {
+        if (renderQueued) return;
+        renderQueued = true;
+        requestAnimationFrame(() => {
+          renderQueued = false;
+          render();
+        });
+      };
+      doc.addEventListener("scroll", queueRender, { capture: true, passive: true });
+      // Async views (tables, editors) build their DOM after load — re-resolve
+      // anchors when the framed document mutates. The previous one is disconnected
+      // first: this handler runs again on every reload (the post-revert refresh
+      // being the one that made it a real accumulation, not a theoretical one).
+      if (frameObserver) frameObserver.disconnect();
+      frameObserver = new MutationObserver(queueRender);
+      frameObserver.observe(doc.body || doc.documentElement, { childList: true, subtree: true });
+      render();
+      // Only now: `render()` is what re-resolves every anchor against THIS
+      // document, so it is the first moment the pin layer means anything.
+      uncoverStage();
+      focusFromParam(); // consume a `comment` deep link once the frame is wired
+    });
+    // Send to Claude: hand the NEW comments to the claude chat mode. Copies the
+    // comments that are neither resolved nor already `sent` (see `sendable`)
+    // verbatim into a `claudeComments` param and flips the BROWSER URL
+    // (window.top — the address bar, not this iframe) to _mode=claude.
+    // `comments` stays untouched apart from the `sent` stamp, so switching back
+    // to annotate shows the same review. The framed editor is flushed first
+    // (same contract as every other mode switch), and the `_layout=(…)` span —
+    // whose `&` is literal — is excised before URLSearchParams touches the
+    // query, then reattached last, byte-for-byte.
+    //
+    // ⚠️ DELIBERATE STANDARD-BREAK (it used to be mirrored by
+    // clearTopClaudeComments in templates/claude/template.html, the receiving
+    // half of this handoff; that template is deleted, so this write now has no
+    // reader — see the note at the top of the file): it writes window.top's URL directly
+    // instead of going through fused.params. `_mode` is a RESERVED param name —
+    // fused.params.set THROWS on it (runtime.js isReserved) — and in a pane the
+    // param boundary (D72) puts the shell URL out of fused.params' reach
+    // anyway, so a top-level URL write is the only way to switch mode. The
+    // handoff params (`claudeComments`, `claudeReturn`) ride the same write.
+    document.getElementById("toclaude").addEventListener("click", async () => {
+      // Nothing new to hand over: say so in the bar (the same inline note the
+      // budget uses) and stay put — navigating to a chat with an empty
+      // attachment list would look like the review had been sent.
+      const all = load();
+      const payload = sendable(all);
+      if (!payload.length) {
+        document.getElementById("budgetnote").textContent =
+          all.length ? "nothing new to send — reopen a comment to send it again" : "no comments to send";
+        return;
+      }
+      const flush = window.__fusedFlushEdits;
+      try {
+        const res = await Promise.race([
+          flush(),
+          new Promise((r) => setTimeout(() => r({ ok: false }), 10000)),
+        ]);
+        if (res && res.ok === false) return; // unsaved buffer — don't discard
+      } catch (e) {
+        return;
+      }
+      // Serialize the wire form BEFORE stamping: `sent` is an internal
+      // lifecycle flag of the URL store, and formatComments (claude template)
+      // hands the agent the raw JSON with every field intact — it has no
+      // business reading, explaining or reasoning about our bookkeeping.
+      const wire = JSON.stringify(payload);
+      // Stamp and persist BEFORE navigating: save() is what writes the `comments`
+      // URL param (and, via the verbatim field merge in annotate.py, the
+      // `<file>.json` sidecar), and this frame is about to be torn down by the
+      // mode switch — a stamp applied after the navigation would never land.
+      // The payload's ids are handed to save() as off-limits for eviction: the
+      // stamp is what can push the list over BUDGET, and the comments being sent
+      // are then the entire sent tier (see evictTarget).
+      for (const c of payload) c.sent = 1;
+      const persisted = save(all, undefined, new Set(payload.map((c) => c.id)));
+      const top = window.top.location;
+      const full = (top.search || "").replace(/^\?/, "");
+      const rest = withoutLayoutSpan(top.search);
+      // Recover the raw span (the part withoutLayoutSpan removed).
+      const m = /(^|&)_layout=\(/.exec(full);
+      let span = null;
+      if (m) {
+        const start = m.index + m[1].length;
+        let i = start + "_layout=(".length, depth = 1;
+        while (i < full.length && depth > 0) {
+          if (full[i] === "(") depth++;
+          else if (full[i] === ")") depth--;
+          i++;
+        }
+        span = full.slice(start, i);
+      }
+      const params = new URLSearchParams(rest);
+      // D99 staleness sweep. `rest` is a RAW read of window.top's search, but
+      // fused.params.set COALESCES its history write — so ANY param this page
+      // owns may still sit at its pre-click value in that string, and writing it
+      // back verbatim silently reverts it: the `sent` stamps (re-sending the
+      // whole review next visit), and `offset`/`sheet` written by a reveal
+      // within the coalescing window (returning to page 1 of a table/pdf).
+      // fused.params.getAll() reads through the pending overlay, so it is the
+      // live truth. Only keys the top URL ALREADY carries are touched — this
+      // must not push a pane-local param onto the shell URL.
+      const live = fused.params.getAll();
+      for (const k of [...params.keys()]) {
+        if (typeof live[k] === "string") params.set(k, live[k]);
+      }
+      params.set("_mode", "claude");
+      params.set("claudeComments", wire);
+      // The review as save() actually PERSISTED it (post-eviction) — narrower
+      // than the sweep above, which cannot know that save may have dropped a
+      // comment, and correct even if `comments` was absent from the top URL.
+      params.set("comments", JSON.stringify(persisted));
+      // Return ticket: the chat has nothing else that would ever bring the user
+      // back (it turns auto-reload off and lives entirely inside its own frame),
+      // so the run that carries these comments navigates the shell back to this
+      // mode when it finishes. The value names the mode to return to, so the
+      // chat needs no knowledge of who sent it. `view` rides along explicitly —
+      // it is the annotate param that picks WHICH sibling view is framed, and
+      // re-asserting it here means the round trip can't land on the default
+      // view if the shell hadn't synced it yet.
+      params.set("claudeReturn", "annotate");
+      const view = fused.params.get("view");
+      if (view) params.set("view", view);
+      let search = params.toString();
+      if (span) search += (search ? "&" : "") + span;
+      window.top.location.href = top.pathname + (search ? "?" + search : "");
+    });
+
+    // --- version history + revert (SPEC §34) ---------------------------------
+    // Backed by Claude Code's OWN file-history store, not git: it answers "what
+    // did this file look like before the agent touched it", which is the
+    // question a reviewer sitting in this view actually asks, and it has an
+    // answer in a directory that is not a repository. All the store knowledge
+    // lives in ../shared/file_history.py behind annotate.py's three actions; the
+    // only rules encoded HERE are presentational, plus the one that matters:
+    // a restore never lands without a confirm sheet that states what it costs.
+    const histFoot = document.getElementById("histfoot");
+    const revertBtn = document.getElementById("revertbtn");
+    const histToggle = document.getElementById("histtoggle");
+    const histList = document.getElementById("histlist");
+    const histNote = document.getElementById("histnote");
+    const confirmEl = document.getElementById("confirm");
+
+    let timeline = null;    // last `history` payload
+    let histOpen = false;
+    // Transcript enrichment (the "file did not exist" checkpoints) is the
+    // expensive half — those .jsonl files reach 5 MB+ — so it is paid for
+    // exactly once, when the panel is first expanded, never on boot.
+    let enriched = false;
+    let busy = false;
+
+    function ago(sec) {
+      if (!sec) return "";
+      const d = Math.max(0, Date.now() / 1000 - sec);
+      if (d < 90) return "just now";
+      if (d < 3600) return Math.round(d / 60) + "m ago";
+      if (d < 86400) return Math.round(d / 3600) + "h ago";
+      if (d < 172800) return "yesterday";
+      if (d < 86400 * 30) return Math.round(d / 86400) + "d ago";
+      return new Date(sec * 1000).toLocaleDateString();
+    }
+
+    // The +N/−M a row shows is what RESTORING it would do to the file as it is
+    // now — lines it introduces, lines it takes away. `exact:false` means the
+    // helper refused to diff (too big, or not text) and only net counts are
+    // honest, so it says so with a tilde rather than implying a real diff.
+    function deltaNodes(v) {
+      const frag = document.createDocumentFragment();
+      if (!v.existed) {
+        const s = document.createElement("span");
+        s.className = "hminus";
+        s.textContent = "did not exist";
+        frag.appendChild(s);
+        return frag;
+      }
+      if (v.added == null || v.removed == null) {
+        frag.appendChild(document.createTextNode("binary"));
+        return frag;
+      }
+      if (!v.differs) {
+        frag.appendChild(document.createTextNode("on disk now"));
+        return frag;
+      }
+      const plus = document.createElement("span");
+      plus.className = "hplus";
+      plus.textContent = (v.exact ? "" : "~") + "+" + v.added;
+      const minus = document.createElement("span");
+      minus.className = "hminus";
+      minus.textContent = "−" + v.removed;
+      frag.appendChild(plus);
+      frag.appendChild(document.createTextNode(" "));
+      frag.appendChild(minus);
+      return frag;
+    }
+
+    // TWO dot states, not three. `◉`/`●`/`○` over three colours put three
+    // competing markers in one column, and at 11px the first two are barely
+    // distinguishable — while carrying unrelated meanings. So the dot answers
+    // exactly one question ("where is disk now") and the revert target moves to
+    // row treatment (`.next`: accent stripe + wash). Pure function of the two
+    // ids so it can be driven directly under node.
+    function rowMarks(v, positionId, targetId) {
+      const here = v.id === positionId;
+      return {
+        dot: here ? "●" : "○",
+        cls: "hrow" + (v.id === targetId ? " next" : "") +
+          (here ? " here" : "") + (v.differs ? "" : " same"),
+      };
+    }
+
+    // --- panel state that must survive a reload -----------------------------
+    // A successful revert changes the target on disk, so the shell's own
+    // fs-event watch reloads the whole preview — which used to collapse the
+    // panel and throw the outcome away, leaving the user staring at a fresh
+    // boot state wondering whether anything happened.
+    //
+    // sessionStorage keyed by the target path, NOT a URL param, and the reason is
+    // this template's own contract: `comments` lives in the URL precisely so the
+    // review can be shared ("share it to share the review"), and the same
+    // argument that kept pane geometry out of the URL in D185 applies here —
+    // whether a disclosure widget is open is a workspace habit, not a fact about
+    // the view worth reproducing in someone else's browser. The outcome message
+    // is even less shareable: it is a transient result of one click, and a
+    // bookmark carrying "Reverted to v2" forever would be a lie the moment it
+    // was opened.
+    const HIST_KEY = "fusedAnnotateHist:" + file;
+    function histState() {
+      try {
+        const o = JSON.parse(sessionStorage.getItem(HIST_KEY) || "null");
+        return o && typeof o === "object" ? o : {};
+      } catch (e) {
+        return {}; // private mode, quota, corrupt value — just don't persist
+      }
+    }
+    function saveHistState(patch) {
+      try {
+        sessionStorage.setItem(HIST_KEY,
+          JSON.stringify(Object.assign(histState(), patch)));
+      } catch (e) { /* see above — persistence is a nicety, never a dependency */ }
+    }
+    // The CARRY SLOT: at most one outcome message, alive only for the gap between
+    // a revert and whatever repaints the panel next — this page's own refresh, or
+    // a fresh boot if the shell tore the page down first.
+    //
+    // Restructured rather than given a fourth guard, because this mechanism has
+    // now produced three separate bugs (write-order, the count/enrich jump, and
+    // lifetime) and the lifetime was the one that was not expressible: writes were
+    // scattered and clears happened in one place. Now there are exactly three
+    // operations and the rule reads off them — ONE writer, and both readers CLEAR:
+    //
+    //   carryOutcome(text)     the only writer, called once, before the refresh
+    //   takeCarriedOutcome()   boot: read-and-clear
+    //   dropCarriedOutcome()   in-page: spent, because it was displayed here
+    //
+    // Nothing writes after a read, so a torn-down page cannot resurrect a message
+    // a later boot already consumed, and an outcome cannot outlive the one write
+    // it describes and reappear as fresh news the next time the file is opened.
+    // Only a SUCCESSFUL revert is carried: a failure changed nothing on disk, so
+    // there is no reload to bridge and no reason to greet a later visit with it.
+    function carryOutcome(text) {
+      saveHistState({ open: histOpen, note: text });
+    }
+    function takeCarriedOutcome() {
+      const s = histState();
+      if (!s.note) return null;
+      dropCarriedOutcome();
+      return { text: s.note, error: false };
+    }
+    function dropCarriedOutcome() {
+      saveHistState({ note: "" });
+    }
+
+    function setNote(text, isError) {
+      histNote.className = isError ? "error" : "";
+      histNote.textContent = text;
+    }
+    //: How long the stage toast stays up. Long enough to read a sentence, short
+    //: enough that it is gone before it stops being news.
+    const TOAST_MS = 4000;
+    let toastTimer = 0;
+    // A brief confirmation at the top of the stage, where the eye is when the
+    // centered sheet closes under it. TRANSIENT on purpose: it reports the outcome
+    // of one click, and a banner still sitting over the framed view minutes later
+    // would be reporting history — #histnote is the durable copy, and it is still
+    // written on every path.
+    function showToast(text) {
+      const el = document.getElementById("toast");
+      el.textContent = text;
+      el.hidden = false;
+      clearTimeout(toastTimer);  // a second revert restarts the window, not two
+      toastTimer = setTimeout(() => { el.hidden = true; }, TOAST_MS);
+    }
+    // One composer for both the in-page path and the post-reload path. `reloadErr`
+    // is the M1 lesson generalized: a refresh that failed has already written its
+    // own error here, and reporting plain success over it hides that the list
+    // being shown is stale.
+    function reportOutcome(text, isError, reloadErr) {
+      if (reloadErr) setNote(text + " The timeline could not be reloaded — "
+        + reloadErr, true);
+      else setNote(text, isError);
+    }
+
+    function renderHistory() {
+      if (!timeline) return;
+      // No store at all means Claude Code has never run here — that is not an
+      // empty state worth a panel, it is "this feature does not apply", so the
+      // block stays out of the sidebar entirely. A store that exists but holds
+      // nothing for THIS file does get a line of text, because there the
+      // absence is a fact about the file and worth saying.
+      histFoot.hidden = !timeline.available;
+      revertBtn.hidden = !timeline.versions.length;
+      const target = timeline.revert;
+      // `at_earliest` is a terminal state, not a failure: the walk has reached
+      // the start of the chain and there is nothing older. The button goes dead
+      // and the note says why, because the alternative — falling back to
+      // something NEWER — is exactly what made the old rule oscillate.
+      //
+      // But ONLY an enriched timeline may claim it. The boot timeline skips the
+      // transcripts (they reach 5 MB+), so it cannot see the did-not-exist
+      // boundary and reports at_earliest one step early — and believing it
+      // disabled the button on a file whose remaining step back was a delete
+      // that `revert_plan`, which always enriches, would have offered. Found by
+      // pressing the button four times in the running app. So while unenriched,
+      // a missing target leaves the button LIVE and the click asks the plan,
+      // which is the authority.
+      // ONE condition, because the payload already carries the one answer:
+      // `revert` is published only when the automatic action may actually be
+      // offered (writable, no blocking skips, not terminal), so the button and
+      // the striped row below can no longer disagree with what the plan will do.
+      // Three findings came from this being several conditions the view had to
+      // keep in step with the plan by hand — a read-only target, an unconfirmed
+      // terminal state, and a blocking skip WITH a live target, which struck a
+      // row as "this is what Revert does" over a plan that always refused.
+      revertBtn.disabled = busy || timeline.offer === false;
+      histToggle.hidden = !timeline.versions.length;
+      histList.hidden = !histOpen;
+      histList.textContent = "";
+      let rows = 0;
+      if (histOpen) {
+        for (const v of timeline.versions) {
+          rows++;
+          const row = document.createElement("div");
+          const marks = rowMarks(v, timeline.position, target);
+          const here = v.id === timeline.position;
+          row.className = marks.cls;
+          const dot = document.createElement("span");
+          dot.className = "hdot";
+          dot.textContent = marks.dot;
+          if (here) row.title = "what is on disk now";
+          const num = document.createElement("span");
+          num.className = "hv";
+          // A did-not-exist checkpoint IS a numbered version of the chain — in a
+          // real store it is `version: 1`, the creation boundary — so it wears
+          // its number like every row below it and "did not exist" (right-hand
+          // column) explains what restoring it does. The dash is kept only for a
+          // record that carried no usable number: "v0" would invent a version
+          // the store never wrote.
+          num.textContent = v.version >= 1 ? "v" + v.version : "—";
+          const when = document.createElement("span");
+          when.className = "hwhen";
+          // A content version's time is its backup file's mtime; a
+          // did-not-exist row's is the transcript record's own timestamp, never
+          // a neighbouring row's. When that stamp could not be parsed the
+          // helper reports 0 and BOTH the label and the tooltip fall silent —
+          // "1970" would be a confident lie about when the file was created.
+          when.textContent = v.mtime ? ago(v.mtime) : "time unknown";
+          // Sessions are why two rows can both say v2 (SPEC §34/FH-3), so the
+          // session's short id is the only thing that disambiguates them.
+          when.title = (v.mtime
+            ? new Date(v.mtime * 1000).toLocaleString() + " · "
+            : "") + "session " + v.session;
+          const d = document.createElement("span");
+          d.className = "hd";
+          d.appendChild(deltaNodes(v));
+          row.append(dot, num, when, d);
+          // A version identical to what is on disk is not an action: restoring
+          // it would write the same bytes back, so the row is inert. So is EVERY
+          // row when the target cannot be written: the main button already went
+          // dead, and leaving the rows live meant a read-only file still opened
+          // a destructive confirm sheet that could only fail server-side.
+          if (v.differs && timeline.writable !== false) {
+            row.onclick = () => askRevert(v.id);
+          } else {
+            row.style.cursor = "default";
+          }
+          histList.appendChild(row);
+        }
+      }
+      // The count is the number of rows ACTUALLY RENDERED, and it only appears
+      // once the enriched timeline has landed. Both halves matter: reading it
+      // off `versions.length` while collapsed made the label say "(2)" and the
+      // expanded list show 3 rows, because the did-not-exist checkpoint only
+      // exists after enrichment — a number that contradicts the list it labels
+      // is worse than no number, and a number that jumps on expand reads as a
+      // bug even when both values are correct for their moment.
+      histToggle.textContent = histOpen
+        ? "▾ History (" + rows + ")"
+        : "▸ History";
+      // `offer_reason` is the same sentence the plan would refuse with, so the
+      // reason a disabled button is disabled is already on screen — no press
+      // required to find out. Writability comes through the same channel.
+      // Through setNote like every other write to this element. renderHistory is
+      // the BASELINE painter and setNote/reportOutcome are the overrides, but
+      // "one function touches this node" is the invariant that stopped four
+      // ordering bugs, so it should not have an exception carved into it.
+      setNote(timeline.note || timeline.offer_reason || "", false);
+    }
+
+    // Every history/revert failure arrives as an `{error}` DICT rather than a
+    // rejection (annotate.py wraps them for exactly this reason): "no versions
+    // for this file" must never be a red traceback overlay. A rejection can
+    // still happen — the run itself failing — so both paths land in the note.
+    async function callHistory(params) {
+      try {
+        const out = await fused.runPython("./annotate.py",
+          Object.assign({ file }, params), { key: null });
+        if (out && out.error) return { error: out.error };
+        return out || { error: "no response" };
+      } catch (err) {
+        return { error: err.message || String(err) };
+      }
+    }
+
+    // Returns "" on success and the error string otherwise, so a CALLER can
+    // decide what to say. Returning nothing was the same write-order bug as
+    // below, one path over: the post-revert reload set histNote to its error and
+    // the success message then overwrote it, so a revert that landed but whose
+    // timeline could not be re-read reported unqualified success.
+    async function loadHistory(enrich) {
+      const out = await callHistory({ action: "history", enrich: !!enrich });
+      if (out.error) {
+        histFoot.hidden = false;
+        // Repaint from the LAST GOOD timeline before reporting, so every label
+        // and every row matches what is on screen. Skipping this is what let a
+        // failed enrich leave an expanded label over an empty list.
+        if (timeline) renderHistory();
+        setNote(out.error, true);
+        revertBtn.disabled = true;
+        return out.error;
+      }
+      if (enrich) enriched = true;
+      timeline = out;
+      renderHistory();
+      return "";
+    }
+
+    histToggle.addEventListener("click", async () => {
+      // The flip happens AFTER the fetch, never before. Flipping first and then
+      // awaiting left an open "▾" label above an empty list whenever the enrich
+      // failed — the same optimistic-then-await trap as M1, and the third place
+      // in this panel to have it. `loadHistory` now always repaints, so its
+      // error path resyncs this label to the state that is actually on screen.
+      if (!histOpen && !enriched) {
+        histToggle.textContent = "▾ History…";
+        if (await loadHistory(true)) return; // painted + resynced by loadHistory
+      }
+      histOpen = !histOpen;
+      saveHistState({ open: histOpen });
+      renderHistory();
+    });
+
+    let pending = null; // the plan awaiting confirmation
+    function closeConfirm() {
+      // A revert IN FLIGHT owns this sheet, and every close path goes through here
+      // — the Cancel button, the backdrop click and Escape. `busy` is set for
+      // exactly the window between the click and the call returning, and closing
+      // inside it would null `pending` from under the handler that is still reading
+      // it, while taking the only "something is happening" signal off screen.
+      if (busy) return;
+      confirmEl.classList.remove("open");
+      pending = null;
+      document.getElementById("confirmerr").hidden = true;
+    }
+    document.getElementById("confirmno").addEventListener("click", closeConfirm);
+    confirmEl.addEventListener("click", (e) => {
+      if (e.target === confirmEl) closeConfirm();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && confirmEl.classList.contains("open")) closeConfirm();
+    });
+
+    // Diffs at or under this many changed lines open EXPANDED. 40 is about the
+    // tallest thing that still reads as a glance inside a modal; past it the sheet
+    // becomes a scrolling review surface, and what is being confirmed is a click,
+    // not a review — so the big ones wait behind a disclosure that says how much
+    // there is.
+    const DIFF_OPEN_LINES = 40;
+    let diffChanged = 0; // for the toggle's label, which outlives one render
+
+    // The confirm sheet's diff, built as NODES with classes — the same rule
+    // `deltaNodes` follows and for a sharper reason here: these lines are file
+    // content off the user's disk, and this template routinely annotates HTML.
+    // Text nodes keep a checkpointed `<script>` inert; `innerHTML` would run it
+    // inside this page, which holds the revert controls.
+    function renderConfirmDiff(diff) {
+      const pre = document.getElementById("confirmdiff");
+      const toggle = document.getElementById("confirmdifftoggle");
+      const box = document.getElementById("confirmbox");
+      pre.textContent = "";
+      toggle.hidden = true;
+      // `reason` is file_history's one channel for every "no diff here" — over the
+      // byte cap, binary either side, a version that vanished between the scan and
+      // the read, a version holding exactly what is on disk. It renders WHERE the
+      // diff would have been, because a sheet that silently omits the diff it
+      // normally shows reads as the diff being empty.
+      // A MISSING `diff` is the other case this branch covers, and it is not the
+      // same thing: a refused plan (`ok: false`) carries no diff key at all, so
+      // there is nothing to say and the box stays out of the sheet entirely.
+      if (!diff || diff.reason) {
+        if (diff && diff.reason) {
+          const why = document.createElement("div");
+          why.className = "cdnote";
+          why.textContent = diff.reason;
+          pre.appendChild(why);
+        }
+        pre.hidden = !pre.children.length;
+        box.classList.remove("wide");
+        return;
+      }
+      diff.lines.forEach((ln, i) => {
+        const row = document.createElement("div");
+        // The two file names are lines 0 and 1 BY POSITION, never by prefix: a
+        // removed content line reading `--` arrives as `---` and would otherwise
+        // be painted as a header instead of as the removal it is.
+        row.className = i < 2 ? "cdfile"
+          : ln.startsWith("@@") ? "cdhunk"
+          : ln.startsWith("+") ? "cdplus"
+          : ln.startsWith("-") ? "cdminus" : "";
+        row.textContent = ln;
+        pre.appendChild(row);
+      });
+      if (diff.truncated) {
+        // The cut is stated with the FULL count beside it. Trailing off with no
+        // note would present a prefix of the change as the whole of it — the same
+        // thing the byte cap refuses to do one layer down.
+        const cut = document.createElement("div");
+        cut.className = "cdnote";
+        cut.textContent = "… only the first " + diff.lines.length +
+          " lines are shown — " + diff.changed + " lines change in total.";
+        pre.appendChild(cut);
+      }
+      diffChanged = diff.changed;
+      box.classList.add("wide");
+      setDiffDisclosure(diff.changed <= DIFF_OPEN_LINES);
+      toggle.hidden = diff.changed <= DIFF_OPEN_LINES;
+    }
+
+    function setDiffDisclosure(open) {
+      const pre = document.getElementById("confirmdiff");
+      const toggle = document.getElementById("confirmdifftoggle");
+      pre.hidden = !open;
+      toggle.textContent = open
+        ? "▾ Hide diff"
+        : "▸ Show " + diffChanged + " changed lines";
+    }
+    document.getElementById("confirmdifftoggle").addEventListener("click", () => {
+      setDiffDisclosure(document.getElementById("confirmdiff").hidden);
+    });
+
+    // `versionId === null` means "the last change", resolved by the POSITIONAL
+    // rule (SPEC §34/FH-3): where disk sits in the chain, then one step back.
+    // No `enrich` is passed — deliberately. It used to be `enrich: enriched`,
+    // which made the same button perform a restore before History was expanded
+    // and a delete after; the plan and the write now always enrich, so only the
+    // panel's own display is affected by the disclosure widget.
+    async function askRevert(versionId) {
+      if (busy) return;
+      const plan = await callHistory({
+        action: "revert_plan", version_id: versionId,
+      });
+      if (plan.error || plan.ok === false) {
+        // A refusal is almost always a stable STATE (read-only target, terminal
+        // chain, an unreadable version), so settle the panel into it — enriched,
+        // because that is the only scan allowed to make a terminality claim —
+        // instead of leaving a live button that will refuse identically on every
+        // press. Composed through the shared reporter so a failed refresh cannot
+        // hide behind the refusal.
+        const reloadErr = await loadHistory(true);
+        reportOutcome(plan.error || "Nothing to revert.", true, reloadErr);
+        return;
+      }
+      // `writable` is a FIELD on a successful plan, not an error — so without
+      // this the sheet opened on a read-only target and the user confirmed a
+      // destructive act that could only fail server-side. Checked HERE rather
+      // than only on the click affordances: this closes the class, the way the
+      // bridge does for the confirm token, instead of one entry point.
+      if (plan.writable === false) {
+        renderHistory();
+        setNote("This file cannot be reverted: " +
+          (plan.writable_reason || "it is not writable") + ".", true);
+        return;
+      }
+      pending = plan;
+      // A previous failure's message must not greet the next target: this sheet is
+      // one node reused for every plan.
+      document.getElementById("confirmerr").hidden = true;
+      const del = plan.action === "delete";
+      document.getElementById("confirmtitle").textContent =
+        del ? "Delete this file?" : "Revert this file?";
+      const sub = document.getElementById("confirmsub");
+      // `_epoch` reports 0 for a transcript stamp it could not parse, and
+      // "1/1/1970" on a destructive confirm is a confident lie — the row list
+      // already refuses to tell it, so the sheet must too.
+      const when = plan.mtime
+        ? " from " + new Date(plan.mtime * 1000).toLocaleString()
+        : " (recorded at an unknown time)";
+      sub.textContent = del
+        ? "The file did not exist at this checkpoint — Claude created it" +
+          when + ". Reverting past that point DELETES it."
+        : "Restoring Claude's checkpoint v" + plan.version + when + ".";
+      const facts = document.getElementById("confirmfacts");
+      facts.textContent = "";
+      const rows = [
+        ["On disk now", plan.current.exists
+          ? plan.current.size + " bytes" +
+            (plan.current.lines == null ? "" : " · " + plan.current.lines + " lines")
+          : "(file does not exist)"],
+        [del ? "After delete" : "After revert", del
+          ? "(file removed)"
+          : plan.target.size + " bytes" +
+            (plan.target.lines == null ? "" : " · " + plan.target.lines + " lines")],
+        ["Line change", plan.added == null
+          ? "unknown (not text)"
+          : (plan.exact ? "" : "~") + "+" + plan.added + " / −" + plan.removed],
+      ];
+      for (const [k, v] of rows) {
+        const dt = document.createElement("dt");
+        dt.textContent = k;
+        const dd = document.createElement("dd");
+        dd.textContent = v;
+        facts.append(dt, dd);
+      }
+      // Between the counts and the hazard, because that is the reading order the
+      // sheet asks for: how much changes, what changes, what it costs.
+      renderConfirmDiff(plan.diff);
+      // The sharp hazard, stated plainly — and the SHEET NOW KNOWS whether a
+      // copy will actually be kept, rather than hedging. `plan.stash` is the
+      // same predicate the write itself runs, so the two cannot disagree. The
+      // hedge was the bug: "a copy is kept unless too large or not text" made
+      // the one genuinely unrecoverable case (content in no checkpoint AND no
+      // stash) read exactly like the safe one, and the user found out in the
+      // past tense, beside "Reverted to v3."
+      const irreversible = !!plan.unique_current && plan.stash === false;
+      const warn = document.getElementById("confirmwarn");
+      warn.hidden = !plan.unique_current;
+      warn.textContent = !plan.unique_current ? "" : (irreversible
+        ? "What is on disk now matches no checkpoint, and NO copy of it will " +
+          "be kept — " + (plan.stash_note || "the sidecar backstop is " +
+          "unavailable") + ". This content will be gone permanently and " +
+          "cannot be recovered from anywhere."
+        : "What is on disk now matches no checkpoint, so this overwrites " +
+          "content that exists nowhere else. A copy will be kept in the " +
+          "file's .json sidecar (revertStash). Unsaved edits in the framed " +
+          "view are not on disk and are not part of this comparison.");
+      // No tick-to-confirm: the owner removed it as friction, so the warning
+      // above plus this button's own wording are the entire signal. The button
+      // is therefore enabled unconditionally, and the irreversible case says
+      // "permanently" on the button itself so the label is not merely "Revert"
+      // for an action that cannot be undone.
+      warn.classList.toggle("hard", irreversible);
+      const go = document.getElementById("confirmgo");
+      go.textContent = irreversible
+        ? (del ? "Delete permanently" : "Overwrite permanently")
+        : (del ? "Delete" : "Revert");
+      confirmEl.classList.add("open");
+      document.getElementById("confirmno").focus();
+    }
+
+    document.getElementById("confirmgo").addEventListener("click", async () => {
+      if (!pending || busy) return;
+      const plan = pending;
+      // The sheet STAYS OPEN for the round trip. It used to close first, so a
+      // multi-hundred-ms Python call — a stash write, an os.replace, a full
+      // re-enumeration of the store — ran with nothing on screen changing, and the
+      // click read as having done nothing at all. `busy` does double duty: it dims
+      // the controls here, and `closeConfirm` refuses while it is set, so Cancel,
+      // Escape and the backdrop cannot pull the sheet (and `pending` with it) out
+      // from under the call this handler is still awaiting.
+      busy = true;
+      revertBtn.disabled = true;
+      const go = document.getElementById("confirmgo");
+      const no = document.getElementById("confirmno");
+      const err = document.getElementById("confirmerr");
+      // The label is restored rather than recomputed: `askRevert` chose between
+      // four wordings (delete/revert × permanent or not), and rebuilding that
+      // decision here is how the two drift apart.
+      const goLabel = go.textContent;
+      go.disabled = no.disabled = true;
+      go.textContent = plan.action === "delete" ? "Deleting…" : "Reverting…";
+      err.hidden = true;
+      // The plan's own id is echoed back — this action never picks a target —
+      // and `confirm_unique` is the token the bridge demands before it will
+      // destroy content that is in no checkpoint. Both are enforced in
+      // annotate.py, not only here, so a second caller cannot inherit an
+      // unguarded write.
+      const out = await callHistory({
+        action: "revert", version_id: plan.id,
+        confirm_unique: !!plan.unique_current,
+      });
+      busy = false;
+      go.disabled = no.disabled = false;
+      go.textContent = goLabel;
+      if (out.error || out.ok === false) {
+        // renderHistory() REWRITES histNote from the timeline's own note, so it
+        // has to run BEFORE the message lands — the other order set the text and
+        // then wiped it, which turned every failed revert into a silent no-op
+        // (found by clicking Revert in the running app and watching nothing
+        // happen and nothing be said).
+        renderHistory();
+        setNote(out.error || "Revert failed.", true);
+        // ...and the sheet stays OPEN with the reason in it. The note alone was
+        // 11px, muted, at the bottom of the sidebar, and reached only by looking
+        // away from the centered modal that had just vanished — so the reason a
+        // destructive click was refused landed nowhere near the click. Nothing
+        // changed on disk, so there is nothing to reload and no state to settle:
+        // the same sheet, the same target, one more fact.
+        err.textContent = out.error || "Revert failed.";
+        err.hidden = false;
+        return;
+      }
+      // Success: the target no longer exists in the form the sheet described, so
+      // the sheet has nothing left to say. Closed HERE rather than before the
+      // call — that ordering is the whole of the first fix above.
+      closeConfirm();
+      // Reload the framed view: it read the file at load, and a code editor is
+      // holding a buffer that is now stale — leaving it would let its next save
+      // write the pre-revert content straight back over the restore. Only the
+      // frame, not this page — the frame's own load handler is per-document and
+      // re-runs cleanly. (The shell may still reload the whole preview off its
+      // own fs-event watch, since the target just changed on disk; that resets
+      // the panel to its collapsed boot state, which is why the outcome is also
+      // legible from the framed view itself rather than only from the note.)
+      //
+      // Covered across the reload. The framed document goes blank the instant this
+      // fires and stays blank until its `load` handler runs `render()`, and the boot
+      // skeleton had `remove()`d itself on the FIRST load — so the second time there
+      // was no placeholder and the pins sat in stage coordinates over an empty page,
+      // pointing at nothing.
+      coverStage();
+      try {
+        frame.contentWindow.location.reload();
+      } catch (e) {
+        frame.src = frame.src; // torn-down frame — force it through the src
+      }
+      const outcome = (out.action === "delete"
+        ? "File deleted."
+        : "Reverted to " + plan.id.split("@")[1] + ".") +
+        (out.stashed
+          ? " Previous content kept in the .json sidecar."
+          : " " + (out.stash_note || "No copy of the previous content was kept."));
+      // Handed to the carry slot BEFORE the refresh, because the shell's
+      // fs-event watch is already racing us: the target changed on disk, and the
+      // whole preview can be torn down and rebooted at any moment from here on.
+      // Written first, the outcome survives that; written after, it is lost
+      // exactly when the reload is fastest.
+      carryOutcome(outcome);
+      // The fresh timeline rides back on the SAME response (computed after the
+      // write, in annotate.py, from the module the bridge already holds), so the row
+      // list stops showing the PRE-revert position for the length of a second round
+      // trip — which is exactly the window in which the user is looking at it to see
+      // whether the revert worked. It is always enriched there, hence the flag.
+      //
+      // `loadHistory` stays as the fallback for a field that is absent (an older
+      // bridge) or a timeline computation that failed, and it keeps its own error
+      // reporting: `reportOutcome(..., reloadErr)` is what says the panel on screen
+      // is stale, and that sentence must not go missing just because the usual path
+      // no longer needs a second call.
+      let reloadErr = "";
+      if (out.timeline) {
+        timeline = out.timeline;
+        enriched = true;
+        renderHistory();
+      } else {
+        // The refresh must observe the POST-revert file, which it does because the
+        // write completed before `callHistory` resolved — so the position marker
+        // now points at the version just restored.
+        //
+        // `true`, not `enriched`: this stands in for a payload the bridge always
+        // enriches, and `enriched` is the DISCLOSURE state — false whenever the panel
+        // has not been expanded, which is the common case. An unenriched timeline
+        // cannot see the did-not-exist boundary and so reports `at_earliest` a step
+        // early (the same FH-3 trap the boot path documents), and the moment right
+        // after a destructive write is the worst one to paint a panel that is a step
+        // short of the truth. Whether a widget was open has no business deciding that.
+        reloadErr = await loadHistory(true);
+      }
+      // loadHistory may itself have failed and written an error here. Reporting
+      // plain success over it is the SAME write-order bug as the failure branch
+      // above — fixed as a class, not as one instance: the outcome is real and
+      // must be said, but it cannot erase the fact that the panel is now stale.
+      reportOutcome(outcome, false, reloadErr);
+      // ...and said once more where the eye actually is. #histnote is the durable
+      // copy (and carries the stale-panel qualification above); this is the one the
+      // user does not have to look away from the modal they just dismissed to find.
+      showToast(outcome);
+      // Displayed here, so the carry slot is spent — and nothing writes to it
+      // after this point. That ordering is the whole lifetime rule: the reload
+      // never arriving (an unwatched mount-backed file, the user navigating away,
+      // the race simply lost) used to leave the note behind for the NEXT open of
+      // the file to show as fresh news, and a failing refresh on a dying page
+      // used to write it back after a newer boot had already consumed it.
+      dropCarriedOutcome();
+    });
+
+    revertBtn.addEventListener("click", () => askRevert(null));
+
+    // Boot. Without enrichment normally — filesystem-only enumeration, so this is
+    // a directory listing and a few small reads, not a transcript parse — but an
+    // EXPANDED panel restores expanded, and an expanded panel must be enriched or
+    // its row count would disagree with the list it labels.
+    //
+    // This is also the far side of a revert: the shell reboots the whole preview
+    // off its fs-event watch, and before this the panel came back collapsed with
+    // the outcome gone, so a successful revert looked like nothing had happened.
+    (async () => {
+      const saved = histState();
+      histOpen = !!saved.open;
+      const carried = takeCarriedOutcome();
+      const reloadErr = await loadHistory(histOpen);
+      // Applied AFTER loadHistory, which rewrites this element from the
+      // timeline's own note — the same ordering trap as everywhere else in this
+      // panel, and composed through the same reporter so a failed refresh cannot
+      // be hidden behind a carried success message.
+      if (carried) reportOutcome(carried.text, false, reloadErr);
+    })();
+
+    window.addEventListener("resize", () => render());
+
+    // Remount-safety relay: the shell flushes __fusedFlushEdits on the TOP
+    // preview iframe before a mode switch — but in annotate mode the live
+    // editor (if the framed view is the code template) sits one iframe
+    // deeper. Delegate so leaving annotate can't discard unsaved edits.
+    window.__fusedFlushEdits = async () => {
+      try {
+        const inner = frame.contentWindow && frame.contentWindow.__fusedFlushEdits;
+        if (typeof inner === "function") return await inner();
+      } catch (e) {
+        /* cross-origin or torn-down frame — nothing to flush */
+      }
+      return { ok: true };
+    };
+    fused.params.onChange(() => {
+      // A view change reframes the stage; a comments change just re-renders.
+      const v = fused.params.get("view") || "";
+      if (activeView && v && v !== activeView.mode) location.reload();
+      else render();
+    });
+
+    // --- boot: pick which of the file's views to annotate --------------------
+    (async () => {
+      let stat;
+      try {
+        stat = await fused.stat(file);
+      } catch (e) {
+        document.body.innerHTML = `<div id="status" class="error">Cannot stat file.</div>`;
+        return;
+      }
+      // Send to Claude only where the `claude` mode actually exists for this
+      // file type — elsewhere the click would just fall back to the default
+      // view and the review would appear to vanish. The chat view itself is
+      // not an annotation surface, so it's excluded from the picker too.
+      //
+      // This test no longer measures what the button needs (D237). `claude` is
+      // bound to every authored-file key again — it is the SURVIVING chat, the
+      // former `claude_split`, renamed — so stat does report it and the button
+      // is SHOWN, while the handoff's receiving half (`claudeComments` /
+      // `claudeReturn`) was never built into that template: the click navigates
+      // somewhere real and the review is dropped on arrival. The whole mode is
+      // unreachable anyway — `annotate` holds zero registry keys since D235 —
+      // which is why this is recorded here rather than repaired. Repairing it
+      // means one of two things, and both are decisions: teach the chat to
+      // receive a handoff, or test for a mode that *can* receive one instead of
+      // for a mode that merely exists.
+      const all = stat.templates || [];
+      if (!all.some((t) => t.mode === "claude")) {
+        document.getElementById("sidefoot").style.display = "none";
+      }
+      const views = all.filter((t) => t.mode !== OWN_NAME && t.mode !== "claude");
+      if (!views.length) {
+        document.body.innerHTML = `<div id="status" class="error">No annotatable view for this file.</div>`;
+        return;
+      }
+      defaultViewMode = views[0].mode;
+      const saved = fused.params.get("view");
+      activeView = views.find((v) => v.mode === saved) || views[0];
+      viewSel.innerHTML = views
+        .map((v) => `<option value="${v.mode}"${v.mode === activeView.mode ? " selected" : ""}>${v.mode === "_render" ? "preview" : v.mode}</option>`)
+        .join("");
+      viewSel.hidden = views.length <= 1;
+      viewSel.addEventListener("change", () => switchView(viewSel.value));
+      frame.src =
+        activeView.mode === "_render"
+          ? "/render?path=" + encodeURIComponent(file)
+          : "/render?path=" + encodeURIComponent(activeView.path) + "&_file=" + encodeURIComponent(file);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1915 @@
+<!DOCTYPE html>
+<html lang="en" data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Log Studio</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #101318;
+    --panel: #151920;
+    --panel-2: #1a1f27;
+    --rail: #12161c;
+    --input: #11151a;
+    --hover: #151a21;
+    --detail: #12171e;
+    --context: #0f1318;
+    --line: #2a303a;
+    --line-soft: #202630;
+    --text: #dce2ea;
+    --strong: #f2f5f8;
+    --muted: #8993a3;
+    --faint: #5d6877;
+    --accent: #55b8d2;
+    --accent-dim: rgba(85, 184, 210, 0.13);
+    --danger: #f06464;
+    --warn: #e6b450;
+    --info: #63b3ed;
+    --debug: #9b8afb;
+    --trace: #718096;
+    --fatal: #ed64a6;
+    --grid: #252c35;
+    --axis: #687281;
+    /* Component colours that used to be literals. Tokenised so light mode can
+       answer for them: a filled teal button, a floating tooltip and the
+       truncation notice each need their own value on a light ground, not the
+       dark one showing through. */
+    --submit: #287e97;
+    --submit-hover: #3190aa;
+    --submit-border: #318da7;
+    --submit-text: #ffffff;
+    --tooltip-bg: rgba(13, 16, 21, 0.96);
+    --tooltip-border: #404957;
+    --tooltip-text: #dbe1e8;
+    --tooltip-shadow: rgba(0, 0, 0, 0.35);
+    --notice-bg: rgba(230, 180, 80, 0.08);
+    --notice-border: #665322;
+    --notice-text: #d9bf7b;
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --panel-2: #eef1f5;
+    --rail: #f2f4f7;
+    --input: #ffffff;
+    --hover: #edf2f6;
+    --detail: #f4f6f8;
+    --context: #ffffff;
+    --line: #cfd5dd;
+    --line-soft: #e1e5ea;
+    --text: #202733;
+    --strong: #101722;
+    --muted: #5f6b7a;
+    --faint: #7b8795;
+    --accent: #147d99;
+    --accent-dim: rgba(20, 125, 153, 0.11);
+    --grid: #dce1e7;
+    --axis: #687586;
+    /* Level accents: the dark palette's values are pale (they are chosen
+       against #101318) and unreadable on #f7f8fa, so light mode takes the
+       darker end of the same hue rather than inheriting. */
+    --danger: #c53030;
+    --fatal: #b83280;
+    --info: #2b6cb0;
+    --warn: #b7791f;
+    --debug: #6b46c1;
+    --trace: #4a5568;
+    --submit: #147d99;
+    --submit-hover: #10697f;
+    --submit-border: #11748d;
+    --submit-text: #ffffff;
+    --tooltip-bg: #ffffff;
+    --tooltip-border: #cfd5dd;
+    --tooltip-text: #202733;
+    --tooltip-shadow: rgba(16, 23, 34, 0.16);
+    --notice-bg: rgba(183, 121, 31, 0.10);
+    --notice-border: #e0c48a;
+    --notice-text: #7a5a12;
+  }
+
+  * { box-sizing: border-box; }
+
+  /* The UA's `[hidden] { display: none }` loses to any class rule that sets
+     `display`, and nearly every box below sets one — so `el.hidden = true` was
+     silently a no-op on the grid/flex ones. That is how Raw view showed the raw
+     text UNDER a field table that was supposed to be gone, and how the pager
+     keeps 47px of empty chrome when the code asks it to leave. Global and
+     !important so an element added later inherits the fix instead of needing
+     its own override (which is what `.hist-skel[hidden]` used to be). */
+  [hidden] { display: none !important; }
+
+  html, body { min-height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  button, input { font: inherit; }
+
+  button { color: inherit; }
+
+  button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
+  .app {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  /* Collapsed hides the rail outright. It kept a 44px strip while the theme
+     toggle lived in its header row and had nowhere else to be; with the theme
+     now coming from the shell (AP-9) that control is gone, and a strip holding
+     only a logo is width the log could be using. The Collapse button in the
+     query header is always visible, so nothing becomes unreachable.
+     (`focus-mode`, which hid the rail AND the histogram together, went with the
+     Focus button: one collapse control, one thing collapsed.) */
+  .app.facets-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .app.facets-collapsed .facets { display: none; }
+
+  .facets {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+    border-right: 1px solid var(--line);
+    background: var(--rail);
+  }
+
+  .brand {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--line);
+    color: var(--strong);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+
+  .brand-label { flex: 1; white-space: nowrap; }
+
+  /* First control in the header, so "hide the rail" reads left-to-right with the
+     rail it hides rather than sitting at the end of the filter controls. */
+  .rail-collapse { flex: 0 0 auto; }
+
+  .brand-mark {
+    width: 17px;
+    height: 17px;
+    display: grid;
+    align-content: center;
+    gap: 2px;
+  }
+
+  .brand-mark i {
+    display: block;
+    height: 2px;
+    background: var(--accent);
+  }
+
+  .brand-mark i:nth-child(2) { width: 70%; }
+  .brand-mark i:nth-child(3) { width: 88%; }
+
+  .file-kind { width: 26px; flex: 0 0 26px; color: var(--faint); font: 9px ui-monospace, monospace; }
+
+  .facet-section {
+    padding: 17px 13px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+
+  .facet-title {
+    margin: 0 0 11px;
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+  }
+
+  .file-name {
+    overflow: hidden;
+    color: var(--strong);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .file-path {
+    margin-top: 4px;
+    overflow-wrap: anywhere;
+    color: var(--faint);
+    font-size: 11px;
+    line-height: 1.45;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 7px 9px;
+    margin: 13px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .facts dt, .facts dd { margin: 0; }
+  .facts dd { color: var(--text); text-align: right; }
+
+  .level-list { display: grid; gap: 3px; }
+
+  .level-option {
+    width: 100%;
+    min-height: 29px;
+    display: grid;
+    grid-template-columns: 15px 8px 1fr auto;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 5px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .level-option:hover { background: var(--panel-2); }
+
+  .check {
+    width: 14px;
+    height: 14px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--muted);
+    border-radius: 2px;
+    color: var(--input);
+    font-size: 10px;
+    font-weight: 900;
+  }
+
+  .level-option.active .check {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+
+  .level-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--level-color);
+  }
+
+  .level-count {
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .workspace { min-width: 0; }
+
+  .query-header {
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+
+  .query-form {
+    min-width: 180px;
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+  }
+
+  .query-prefix {
+    display: grid;
+    place-items: center;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-right: 0;
+    border-radius: 3px 0 0 3px;
+    background: var(--input);
+    color: var(--accent);
+    font: 600 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  #query {
+    width: 100%;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--input);
+    color: var(--strong);
+    font: 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  #query::placeholder { color: var(--faint); }
+
+  .button {
+    min-height: 32px;
+    padding: 0 11px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--panel-2);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .button:hover:not(:disabled) { border-color: var(--muted); background: var(--hover); }
+  .button:disabled { opacity: 0.38; cursor: default; }
+
+  .query-submit {
+    border-left: 0;
+    border-radius: 0 3px 3px 0;
+    border-color: var(--submit-border);
+    background: var(--submit);
+    color: var(--submit-text);
+    font-weight: 600;
+  }
+
+  .query-submit:hover { background: var(--submit-hover); }
+
+  .tail-button[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  #rail-collapse[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+    color: var(--accent);
+  }
+
+  /* Lit only while the tail is actually running. It used to be `background:
+     currentColor` unconditionally, so the button wore a filled "live" dot while
+     tail was OFF — the one part of the control that reads as state at a glance
+     said the opposite of the truth, and the pressed styling above (a border and
+     background tint) is far too quiet to correct that impression. Off is a
+     hollow ring; on is filled and pulsing, so "is it live" is answerable without
+     comparing two shades of blue. */
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    display: inline-block;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px currentColor;
+    opacity: .55;
+  }
+
+  .tail-button[aria-pressed="true"] .live-dot {
+    background: currentColor;
+    box-shadow: none;
+    opacity: 1;
+    animation: live-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tail-button[aria-pressed="true"] .live-dot { animation: none; }
+  }
+
+  .canvas-panel {
+    height: 174px;
+    display: grid;
+    grid-template-rows: 31px minmax(0, 1fr);
+    border-bottom: 1px solid var(--line);
+    background: var(--rail);
+  }
+
+  .canvas-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 13px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .canvas-head strong { color: var(--text); font-weight: 600; }
+  #hist-summary { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  .canvas-wrap {
+    min-height: 0;
+    position: relative;
+    padding: 0 8px 5px;
+  }
+
+  #histogram {
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  #hist-tooltip {
+    position: absolute;
+    z-index: 3;
+    display: none;
+    max-width: 220px;
+    padding: 6px 8px;
+    border: 1px solid var(--tooltip-border);
+    border-radius: 3px;
+    background: var(--tooltip-bg);
+    color: var(--tooltip-text);
+    font-size: 11px;
+    line-height: 1.45;
+    pointer-events: none;
+    box-shadow: 0 5px 18px var(--tooltip-shadow);
+  }
+
+  .view-bar {
+    height: 42px;
+    display: flex;
+    align-items: end;
+    gap: 4px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .tab {
+    height: 41px;
+    padding: 0 12px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+
+  .tab:hover { color: var(--text); }
+  .tab.active { border-bottom-color: var(--accent); color: var(--strong); }
+
+  #result-summary {
+    align-self: center;
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .notice {
+    margin: 10px 12px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--notice-border);
+    border-radius: 3px;
+    background: var(--notice-bg);
+    color: var(--notice-text);
+    font-size: 11px;
+  }
+
+  .status {
+    min-height: 220px;
+    display: grid;
+    place-content: center;
+    gap: 10px;
+    padding: 30px;
+    color: var(--muted);
+    text-align: center;
+  }
+
+  .status.error { color: var(--danger); }
+
+  .skel-bar {
+    display: inline-block;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--line-soft) 25%, var(--panel-2) 50%, var(--line-soft) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+
+  .skel-row, .skel-row:hover { background: var(--bg); cursor: default; }
+  .skel-row .log-cell { display: flex; align-items: center; }
+
+  .skel-level, .skel-level:hover { background: transparent; cursor: default; }
+
+  dd.skel-dd { display: flex; justify-content: flex-end; }
+
+  .hist-skel {
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--line-soft) 25%, var(--panel-2) 50%, var(--line-soft) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  .log-list { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  .log-row {
+    display: grid;
+    grid-template-columns: 25px 154px 58px 82px minmax(0, 1fr);
+    min-height: 31px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--bg);
+    cursor: pointer;
+  }
+
+  .log-row:hover { background: var(--hover); }
+  .log-row.expanded { background: var(--panel-2); }
+
+  .log-cell {
+    min-width: 0;
+    padding: 7px 8px;
+    border-right: 1px solid var(--line-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .expand-mark { color: var(--faint); text-align: center; }
+  .timestamp { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .offset { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+  .message { color: var(--text); }
+
+  .level {
+    color: var(--level-color);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.035em;
+  }
+
+  .line-detail {
+    display: none;
+    grid-column: 1 / -1;
+    padding: 10px 12px 12px 33px;
+    border-top: 1px solid var(--line);
+    background: var(--detail);
+  }
+
+  .log-row.expanded .line-detail { display: block; }
+
+  .line-detail pre {
+    margin: 0 0 10px;
+    color: var(--text);
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .detail-actions { display: flex; align-items: center; gap: 10px; }
+  .context-button { min-height: 27px; font-size: 11px; }
+  .detail-meta { color: var(--faint); font-size: 10px; }
+
+  /* Structured detail: a two-column field list, not a table element, so a
+     nested object's rows align with their parent's instead of starting a new
+     grid. `--depth` indents the key; the value column stays flush left so a
+     column of values is scannable however deep the nesting goes. */
+  .field-table {
+    display: grid;
+    grid-template-columns: minmax(120px, 220px) minmax(0, 1fr);
+    margin: 0 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--context);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .field-row { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; }
+  .field-row + .field-row { border-top: 1px solid var(--line-soft); }
+  .field-row:hover { background: var(--hover); }
+
+  .field-key {
+    padding: 4px 8px 4px calc(8px + var(--depth, 0) * 12px);
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+
+  .field-value, .field-null, .field-boolean, .field-number, .field-nested, .field-empty {
+    padding: 4px 8px;
+    overflow-wrap: anywhere;
+  }
+
+  .field-value { color: var(--text); cursor: pointer; }
+  .field-value:hover { color: var(--accent); text-decoration: underline; }
+  .field-null, .field-empty { color: var(--faint); font-style: italic; }
+  .field-boolean { color: var(--warn); }
+  .field-number { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .field-nested { color: var(--faint); }
+
+  /* A traceback or an output tail: its newlines are the content, so it spans
+     both columns as a block rather than being crushed into a value cell. */
+  .field-block {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 6px 8px 8px 20px;
+    border-top: 1px solid var(--line-soft);
+    color: var(--text);
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 320px;
+    overflow: auto;
+  }
+
+  .context-lines {
+    display: grid;
+    margin-top: 10px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--context);
+  }
+
+  .context-line {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 10px;
+    padding: 4px 7px;
+    color: var(--muted);
+    font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .context-line.target { background: var(--accent-dim); color: var(--strong); }
+  .context-line + .context-line { border-top: 1px solid var(--line-soft); }
+  .context-offset { color: var(--faint); text-align: right; }
+
+  .patterns { padding: 0 12px 30px; }
+
+  .pattern-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr) minmax(120px, 0.45fr);
+    gap: 14px;
+    align-items: start;
+    padding: 12px 8px;
+    border: 0;
+    border-bottom: 1px solid var(--line-soft);
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .pattern-row:hover { background: var(--hover); }
+  .pattern-count { color: var(--strong); font: 600 17px ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .pattern-body { min-width: 0; }
+  .pattern-text { color: var(--text); font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+  .pattern-query { margin-top: 5px; color: var(--accent); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+  .pattern-sample { color: var(--faint); font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
+
+  .pager {
+    min-height: 47px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .page-position {
+    margin-left: auto;
+    color: var(--muted);
+    font: 11px ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+
+  @media (max-width: 780px) {
+    .app { display: block; }
+    .facets { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+    .brand { height: 42px; }
+    .facets-inner { display: grid; grid-template-columns: 1fr 1.35fr; }
+    .facet-section { padding: 11px 13px; border-bottom: 0; }
+    .level-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .facts { display: none; }
+    .file-path { display: none; }
+    .query-header { position: static; flex-wrap: wrap; }
+    .query-form { flex-basis: 100%; order: -1; }
+    .canvas-panel { height: 146px; }
+    .log-row { grid-template-columns: 22px 126px 54px minmax(0, 1fr); }
+    .log-row > .offset { display: none; }
+    .pattern-row { grid-template-columns: 55px minmax(0, 1fr); }
+    .pattern-sample { display: none; }
+  }
+
+  @media (max-width: 480px) {
+    .facets-inner { grid-template-columns: 1fr; }
+    .facet-section:first-child { border-bottom: 1px solid var(--line-soft); }
+    .level-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .level-option { grid-template-columns: 14px 7px 1fr; }
+    .level-count { display: none; }
+    .query-header > .button { flex: 1; }
+    .canvas-head { padding: 0 8px; }
+    .log-row { grid-template-columns: 22px 102px 51px minmax(0, 1fr); }
+    .log-cell { padding-left: 5px; padding-right: 5px; }
+    #result-summary { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <aside class="facets">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="brand-label">LOG STUDIO</span>
+      </div>
+      <div class="facets-inner" id="facets-inner">
+        <section class="facet-section" id="file-overview">
+          <h2 class="facet-title">Active file</h2>
+          <div class="file-name"><span class="skel-bar" style="width:70%;height:12px"></span></div>
+          <div class="file-path"><span class="skel-bar" style="width:94%;height:10px"></span></div>
+          <dl class="facts">
+            <dt><span class="skel-bar" style="width:30px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:46px;height:9px"></span></dd>
+            <dt><span class="skel-bar" style="width:34px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:40px;height:9px"></span></dd>
+            <dt><span class="skel-bar" style="width:28px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:64px;height:9px"></span></dd>
+            <dt><span class="skel-bar" style="width:26px;height:9px"></span></dt><dd class="skel-dd"><span class="skel-bar" style="width:64px;height:9px"></span></dd>
+          </dl>
+        </section>
+        <section class="facet-section">
+          <h2 class="facet-title">Level</h2>
+          <div class="level-list" id="level-list">
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:60%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:44%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:52%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+            <div class="level-option skel-level"><span class="check"></span><span class="level-dot" style="background:var(--line-soft)"></span><span class="skel-bar" style="width:36%;height:9px"></span><span class="skel-bar" style="width:20px;height:9px"></span></div>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="query-header">
+        <button class="button rail-collapse" id="rail-collapse" type="button" aria-pressed="false"
+                aria-controls="facets-inner" title="Hide the file rail">Collapse</button>
+        <form class="query-form" id="query-form">
+          <span class="query-prefix">q</span>
+          <input id="query" type="search" autocomplete="off" spellcheck="false" placeholder="Search text, fields, or /regex/" aria-label="Log query" />
+          <button class="button query-submit" type="submit">Search</button>
+        </form>
+        <button class="button" id="clear-range" type="button">Clear time</button>
+        <button class="button tail-button" id="tail-toggle" type="button" aria-pressed="false"><span class="live-dot"></span>Tail</button>
+      </header>
+
+      <section class="canvas-panel" aria-label="Log volume histogram">
+        <div class="canvas-head">
+          <strong>Event distribution</strong>
+          <span id="time-window">Full file range</span>
+          <span id="hist-summary"></span>
+        </div>
+        <div class="canvas-wrap" id="canvas-wrap">
+          <canvas id="histogram"></canvas>
+          <div class="hist-skel" id="hist-skel" aria-hidden="true"></div>
+          <div id="hist-tooltip"></div>
+        </div>
+      </section>
+
+      <nav class="view-bar" aria-label="Result view">
+        <button class="tab active" id="lines-tab" type="button">Lines</button>
+        <button class="tab" id="patterns-tab" type="button">Patterns</button>
+        <span id="result-summary"></span>
+      </nav>
+
+      <div id="notice-area"></div>
+      <section id="results" aria-live="polite">
+        <div class="log-list">
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:88%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:62%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:95%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:48%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:79%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:91%;height:10px"></span></span></div>
+          <div class="log-row skel-row"><span class="log-cell"></span><span class="log-cell"><span class="skel-bar" style="width:74%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:46%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:60%;height:10px"></span></span><span class="log-cell"><span class="skel-bar" style="width:55%;height:10px"></span></span></div>
+        </div>
+      </section>
+      <footer class="pager" id="pager" hidden>
+        <button class="button" id="prev-page" type="button">Previous</button>
+        <button class="button" id="next-page" type="button">Next</button>
+        <span class="page-position" id="page-position"></span>
+      </footer>
+    </main>
+  </div>
+
+<script>
+  const PAGE_LIMIT = 200;
+  const LEVEL_ORDER = ["FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE", "OTHER"];
+  const LEVEL_COLORS = {
+    FATAL: "#ed64a6",
+    ERROR: "#f06464",
+    WARN: "#e6b450",
+    INFO: "#63b3ed",
+    DEBUG: "#9b8afb",
+    TRACE: "#718096",
+    OTHER: "#8993a3",
+    UNKNOWN: "#8993a3"
+  };
+
+  const fileOverview = document.getElementById("file-overview");
+  const app = document.querySelector(".app");
+  const levelList = document.getElementById("level-list");
+  const queryForm = document.getElementById("query-form");
+  const queryInput = document.getElementById("query");
+  const clearRange = document.getElementById("clear-range");
+  const tailToggle = document.getElementById("tail-toggle");
+  const railCollapse = document.getElementById("rail-collapse");
+  const linesTab = document.getElementById("lines-tab");
+  const patternsTab = document.getElementById("patterns-tab");
+  const resultSummary = document.getElementById("result-summary");
+  const noticeArea = document.getElementById("notice-area");
+  const results = document.getElementById("results");
+  const pager = document.getElementById("pager");
+  const prevPage = document.getElementById("prev-page");
+  const nextPage = document.getElementById("next-page");
+  const pagePosition = document.getElementById("page-position");
+  const canvas = document.getElementById("histogram");
+  const canvasWrap = document.getElementById("canvas-wrap");
+  const histSkel = document.getElementById("hist-skel");
+  const histTooltip = document.getElementById("hist-tooltip");
+  const histSummary = document.getElementById("hist-summary");
+  const timeWindow = document.getElementById("time-window");
+  const ctx = canvas.getContext("2d");
+
+  const IS_WINDOWS = /^win/i.test(navigator.platform);
+
+  let generation = 0;
+  let overviewData = null;
+  let overviewFile = "";
+  let pageData = null;
+  let chartData = null;
+  let histogramData = null;
+  let brush = null;
+  let tailTimer = null;
+  let tailPolling = false;
+  let loadTimer = null;
+  let lastTailState = null;
+  let dataReadyKey = "";
+  let loadingDataKey = "";
+  let tailEndOffset = 0;
+  let tailPageOffset = 0;
+  let fileWatchTimer = null;
+  let watchedFile = "";
+  let watchedSignature = "";
+  const pathAliases = new Map();
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function number(value, fallback = 0) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+
+  function skelBar(width, height = "10px") {
+    return `<span class="skel-bar" style="width:${width};height:${height}"></span>`;
+  }
+
+  const RESULT_SKELETON_WIDTHS = [88, 62, 95, 48, 79, 60, 91, 55];
+
+  function resultsSkeleton() {
+    return `<div class="log-list">${RESULT_SKELETON_WIDTHS.map((width) => `
+        <div class="log-row skel-row">
+          <span class="log-cell"></span>
+          <span class="log-cell">${skelBar("74%")}</span>
+          <span class="log-cell">${skelBar("46%")}</span>
+          <span class="log-cell">${skelBar("60%")}</span>
+          <span class="log-cell">${skelBar(`${width}%`)}</span>
+        </div>`).join("")}</div>`;
+  }
+
+  function currentState() {
+    const rawPage = fused.params.get("page") || "0";
+    const target = fused.params.get("_file") || "";
+    const file = fused.params.get("file") || target;
+    return {
+      file,
+      q: fused.params.get("q") || "",
+      level: fused.params.get("level") || "",
+      levels: (fused.params.get("level") || "").split(",").map((item) => item.trim().toUpperCase()).filter(Boolean),
+      from: fused.params.get("from") || "",
+      to: fused.params.get("to") || "",
+      page: String(Math.max(0, number(rawPage, 0))),
+      back: (fused.params.get("back") || "").split(",").filter((value) => /^\d+$/.test(value)),
+      view: fused.params.get("view") === "patterns" ? "patterns" : "lines",
+      tail: !["", "0"].includes(fused.params.get("tail") || ""),
+      facets: fused.params.get("facets") !== "0"
+    };
+  }
+
+  function setParams(values) {
+    for (const [key, value] of Object.entries(values)) {
+      const next = String(value);
+      if ((fused.params.get(key) || "") !== next) fused.params.set(key, next);
+    }
+  }
+
+  function basename(path) {
+    const parts = String(path).split(/[\\/]/);
+    return parts[parts.length - 1] || path;
+  }
+
+  function samePath(left, right) {
+    let a = pathKey(left);
+    let b = pathKey(right);
+    if (IS_WINDOWS) {
+      a = a.toLowerCase();
+      b = b.toLowerCase();
+    }
+    a = pathAliases.get(a) || a;
+    b = pathAliases.get(b) || b;
+    return a === b;
+  }
+
+  function pathKey(path) {
+    return String(path).replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/\.\//g, "/").replace(/\/$/, "");
+  }
+
+  function rememberPath(alias, canonical) {
+    let key = pathKey(alias);
+    let value = pathKey(canonical);
+    if (IS_WINDOWS) {
+      key = key.toLowerCase();
+      value = value.toLowerCase();
+    }
+    pathAliases.set(key, value);
+  }
+
+  function dataKey(state) {
+    return JSON.stringify([state.file, state.q, state.level, state.from, state.to, state.page, state.view, state.tail]);
+  }
+
+  function formatCount(value) {
+    return number(value).toLocaleString();
+  }
+
+  function formatBytes(value) {
+    let amount = number(value);
+    if (amount < 1024) return `${amount.toLocaleString()} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let unit = -1;
+    do { amount /= 1024; unit += 1; } while (amount >= 1024 && unit < units.length - 1);
+    return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${units[unit]}`;
+  }
+
+  function epochDate(value) {
+    const n = number(value, NaN);
+    if (!Number.isFinite(n)) return null;
+    return new Date(Math.abs(n) < 100000000000 ? n * 1000 : n);
+  }
+
+  function formatEpoch(value, includeDate = true) {
+    const date = epochDate(value);
+    if (!date || Number.isNaN(date.getTime())) return String(value || "-");
+    const options = includeDate
+      ? { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }
+      : { hour: "2-digit", minute: "2-digit", second: "2-digit" };
+    return new Intl.DateTimeFormat(undefined, options).format(date);
+  }
+
+  function levelName(value) {
+    return String(value || "UNKNOWN").toUpperCase();
+  }
+
+  function levelColor(level) {
+    return LEVEL_COLORS[levelName(level)] || LEVEL_COLORS.UNKNOWN;
+  }
+
+  function errorMessage(error) {
+    if (!error) return "Unknown reader error";
+    return error.message || error.detail || String(error);
+  }
+
+  async function runReader(op, state, extra = {}) {
+    return fused.runPython("./reader.py", {
+      op,
+      file: state.file,
+      q: state.q,
+      level: state.level,
+      from: state.from,
+      to: state.to,
+      ...extra
+      // key:null — reader.py serves the 2s tail poll loop alongside view loads;
+      // default per-file cancellation would leave a superseded poll pending, so
+      // its finally never clears `tailPolling` and tailing stops forever (D114).
+    }, { key: null });
+  }
+
+  function overviewLevels(data) {
+    const source = data.levels || data.level_counts || (data.facets && data.facets.level) || {};
+    const entries = Array.isArray(source)
+      ? source.map((item) => [item.level || item.key || "UNKNOWN", item.count || item.value || 0])
+      : Object.entries(source);
+    return entries
+      .map(([level, count]) => [levelName(level), number(count)])
+      .sort((a, b) => {
+        const ai = LEVEL_ORDER.indexOf(a[0]);
+        const bi = LEVEL_ORDER.indexOf(b[0]);
+        return (ai < 0 ? 100 : ai) - (bi < 0 ? 100 : bi) || b[1] - a[1];
+      });
+  }
+
+  // The levels this file offers as filters — the ONE answer, used by both the
+  // facet list and its click handler.
+  //
+  // They used to compute it separately, and that is exactly how deselecting a
+  // level brought the absent ones back: the list filtered zero-count levels
+  // out, the handler still worked from all seven, so unchecking WARN wrote
+  // every OTHER level into the URL — including the five the file has none of —
+  // and the list then kept them because "selected" survives the count filter.
+  // The reader seeds its count map with every level it knows (`_counts()` —
+  // right for histogram buckets, which need a zero to stack), so "which levels
+  // exist" is a question with one right answer and two former callers.
+  //
+  // A SELECTED level at zero survives on purpose: it is reachable (a narrowed
+  // window, a rotated file, a hand-edited URL), and hiding its chip would
+  // remove the only control that undoes an active constraint.
+  function facetLevels(data, selectedLevels) {
+    const selected = new Set(selectedLevels || []);
+    return overviewLevels(data).filter(
+      ([level, count]) => count > 0 || selected.has(level));
+  }
+
+  function overviewRange(data) {
+    const range = data.time_range || data.range || {};
+    return {
+      min: data.from ?? data.min_time ?? data.first_timestamp ?? range.from ?? range.min ?? "",
+      max: data.to ?? data.max_time ?? data.last_timestamp ?? range.to ?? range.max ?? ""
+    };
+  }
+
+  function renderOverview(data, state) {
+    const range = overviewRange(data);
+    const size = data.size ?? data.file_size ?? data.bytes ?? 0;
+    const lines = data.lines ?? data.line_count ?? data.total_lines ?? 0;
+    fileOverview.innerHTML = `
+      <h2 class="facet-title">Active file</h2>
+      <div class="file-name" title="${escapeHtml(state.file)}">${escapeHtml(basename(state.file))}</div>
+      <div class="file-path">${escapeHtml(state.file)}</div>
+      <dl class="facts">
+        <dt>Size</dt><dd>${escapeHtml(formatBytes(size))}</dd>
+        <dt>Lines</dt><dd>${escapeHtml(formatCount(lines))}</dd>
+        <dt>First</dt><dd>${escapeHtml(range.min ? formatEpoch(range.min, false) : "-")}</dd>
+        <dt>Last</dt><dd>${escapeHtml(range.max ? formatEpoch(range.max, false) : "-")}</dd>
+      </dl>`;
+
+    // Only levels the file actually contains (facetLevels — the same resolver
+    // the click handler below uses; see its comment for why sharing it is
+    // load-bearing rather than tidy).
+    const entries = facetLevels(data, state.levels);
+    const available = entries.map(([level]) => level);
+    const active = state.levels.length ? new Set(state.levels) : new Set(available);
+    levelList.innerHTML = entries.length ? entries.map(([level, count]) => `
+      <button class="level-option ${active.has(level) ? "active" : ""}" type="button" data-level="${escapeHtml(level)}" style="--level-color:${levelColor(level)}" aria-pressed="${active.has(level)}">
+        <span class="check">${active.has(level) ? "x" : ""}</span>
+        <span class="level-dot"></span>
+        <span>${escapeHtml(level)}</span>
+        <span class="level-count">${escapeHtml(formatCount(count))}</span>
+      </button>`).join("") : `<span class="file-path">No level data</span>`;
+  }
+
+  function normalizeBuckets(data) {
+    let source = data && (data.buckets || data.bins || data.histogram || data.points || []);
+    if (!Array.isArray(source) && source && Array.isArray(source.buckets)) source = source.buckets;
+    if (!Array.isArray(source)) return [];
+    return source.map((bucket, index) => {
+      const countsSource = bucket.levels || bucket.counts || bucket.by_level || {};
+      const counts = {};
+      if (Array.isArray(countsSource)) {
+        for (const item of countsSource) counts[levelName(item.level || item.key)] = number(item.count || item.value);
+      } else {
+        for (const [level, count] of Object.entries(countsSource)) counts[levelName(level)] = number(count);
+      }
+      if (!Object.keys(counts).length) counts.UNKNOWN = number(bucket.count ?? bucket.value ?? bucket.total);
+      return {
+        start: number(bucket.start ?? bucket.from ?? bucket.time ?? bucket.timestamp ?? index),
+        end: number(bucket.end ?? bucket.to ?? bucket.time_end ?? bucket.timestamp ?? index + 1),
+        counts
+      };
+    }).filter((bucket) => Number.isFinite(bucket.start) && Number.isFinite(bucket.end));
+  }
+
+  function selectedHistogramLevels(buckets) {
+    const found = new Set();
+    for (const bucket of buckets) for (const level of Object.keys(bucket.counts)) found.add(level);
+    return [...found].sort((a, b) => {
+      const ai = LEVEL_ORDER.indexOf(a);
+      const bi = LEVEL_ORDER.indexOf(b);
+      return (ai < 0 ? 100 : ai) - (bi < 0 ? 100 : bi);
+    });
+  }
+
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawHistogram();
+  }
+
+  function chartBounds() {
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    return { left: 38, right: Math.max(39, width - 8), top: 6, bottom: Math.max(7, height - 20), width, height };
+  }
+
+  function xForTime(value, bounds, min, max) {
+    return bounds.left + ((value - min) / Math.max(1, max - min)) * (bounds.right - bounds.left);
+  }
+
+  function timeForX(value, bounds, min, max) {
+    const ratio = Math.max(0, Math.min(1, (value - bounds.left) / Math.max(1, bounds.right - bounds.left)));
+    return min + ratio * (max - min);
+  }
+
+  function drawHistogram() {
+    const bounds = chartBounds();
+    ctx.clearRect(0, 0, bounds.width, bounds.height);
+    const styles = getComputedStyle(document.documentElement);
+    ctx.fillStyle = styles.getPropertyValue("--rail").trim();
+    ctx.fillRect(0, 0, bounds.width, bounds.height);
+
+    const buckets = chartData ? chartData.buckets : [];
+    if (!buckets.length) {
+      ctx.fillStyle = styles.getPropertyValue("--axis").trim();
+      ctx.font = "11px ui-sans-serif, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("No timestamped events in this selection", bounds.width / 2, bounds.height / 2);
+      return;
+    }
+
+    const min = chartData.min;
+    const max = chartData.max;
+    const levels = selectedHistogramLevels(buckets).reverse();
+    const totals = buckets.map((bucket) => Object.values(bucket.counts).reduce((sum, count) => sum + count, 0));
+    const peak = Math.max(1, ...totals);
+
+    ctx.strokeStyle = styles.getPropertyValue("--grid").trim();
+    ctx.lineWidth = 1;
+    ctx.fillStyle = styles.getPropertyValue("--axis").trim();
+    ctx.font = "10px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    for (let i = 0; i <= 2; i += 1) {
+      const y = bounds.bottom - ((bounds.bottom - bounds.top) * i) / 2;
+      ctx.beginPath();
+      ctx.moveTo(bounds.left, y + 0.5);
+      ctx.lineTo(bounds.right, y + 0.5);
+      ctx.stroke();
+      ctx.fillText(formatCount(Math.round((peak * i) / 2)), bounds.left - 5, y + 3);
+    }
+
+    const slot = (bounds.right - bounds.left) / buckets.length;
+    const barWidth = Math.max(1, slot - Math.min(2, slot * 0.16));
+    buckets.forEach((bucket, index) => {
+      let y = bounds.bottom;
+      for (const level of levels) {
+        const count = number(bucket.counts[level]);
+        if (!count) continue;
+        const height = Math.max(1, (count / peak) * (bounds.bottom - bounds.top));
+        y -= height;
+        ctx.fillStyle = levelColor(level);
+        ctx.fillRect(bounds.left + index * slot + (slot - barWidth) / 2, y, barWidth, height);
+      }
+    });
+
+    const state = currentState();
+    const selectionFrom = number(state.from, NaN);
+    const selectionTo = number(state.to, NaN);
+    if (Number.isFinite(selectionFrom) && Number.isFinite(selectionTo)) {
+      const x1 = xForTime(selectionFrom, bounds, min, max);
+      const x2 = xForTime(selectionTo, bounds, min, max);
+      ctx.fillStyle = "rgba(85,184,210,0.10)";
+      ctx.fillRect(Math.min(x1, x2), bounds.top, Math.abs(x2 - x1), bounds.bottom - bounds.top);
+      ctx.strokeStyle = styles.getPropertyValue("--accent").trim();
+      ctx.strokeRect(Math.min(x1, x2) + 0.5, bounds.top + 0.5, Math.abs(x2 - x1), bounds.bottom - bounds.top - 1);
+    }
+
+    if (brush) {
+      const x1 = Math.max(bounds.left, Math.min(bounds.right, brush.start));
+      const x2 = Math.max(bounds.left, Math.min(bounds.right, brush.current));
+      ctx.fillStyle = "rgba(85,184,210,0.18)";
+      ctx.fillRect(Math.min(x1, x2), bounds.top, Math.abs(x2 - x1), bounds.bottom - bounds.top);
+      ctx.strokeStyle = styles.getPropertyValue("--accent").trim();
+      ctx.strokeRect(Math.min(x1, x2) + 0.5, bounds.top + 0.5, Math.abs(x2 - x1), bounds.bottom - bounds.top - 1);
+    }
+
+    ctx.fillStyle = styles.getPropertyValue("--axis").trim();
+    ctx.textAlign = "left";
+    ctx.fillText(formatEpoch(min, false), bounds.left, bounds.height - 5);
+    ctx.textAlign = "right";
+    ctx.fillText(formatEpoch(max, false), bounds.right, bounds.height - 5);
+  }
+
+  function renderHistogram(data, state) {
+    histSkel.hidden = true;
+    const buckets = normalizeBuckets(data);
+    const overviewRangeValue = overviewRange(overviewData || {});
+    const min = buckets.length ? Math.min(...buckets.map((bucket) => bucket.start)) : number(overviewRangeValue.min);
+    const max = buckets.length ? Math.max(...buckets.map((bucket) => bucket.end)) : number(overviewRangeValue.max, min + 1);
+    chartData = { buckets, min, max: max > min ? max : min + 1 };
+    const total = buckets.reduce((sum, bucket) => sum + Object.values(bucket.counts).reduce((inner, count) => inner + count, 0), 0);
+    histSummary.textContent = `${formatCount(total)} events`;
+    timeWindow.textContent = state.from && state.to
+      ? `${formatEpoch(state.from)} to ${formatEpoch(state.to)}`
+      : "Full file range";
+    resizeCanvas();
+  }
+
+  function linesFrom(data) {
+    if (Array.isArray(data)) return data;
+    return data.lines || data.rows || data.results || data.items || [];
+  }
+
+  function lineFields(line, index) {
+    const raw = line.message ?? line.text ?? line.line ?? line.raw ?? "";
+    return {
+      timestamp: line.timestamp ?? line.time ?? line.ts ?? "",
+      level: levelName(line.level ?? line.severity),
+      offset: number(line.offset ?? line.byte_offset ?? line.start ?? index),
+      raw: typeof raw === "string" ? raw : JSON.stringify(raw)
+    };
+  }
+
+  function renderLines(data, state) {
+    pageData = data;
+    const lines = linesFrom(data);
+    if (state.tail) {
+      tailEndOffset = number(data.next_offset ?? data.end_offset, tailEndOffset);
+      if (lines.length) tailPageOffset = number(lines[0].offset ?? lines[0].byte_offset, tailPageOffset);
+    }
+    const total = data.total ?? data.total_matches ?? data.matched ?? data.count ?? (histogramData && histogramData.matching_count);
+    resultSummary.textContent = total == null ? `${formatCount(lines.length)} lines on page` : `${formatCount(total)} matching lines`;
+    pager.hidden = state.tail;
+
+    const previous = data.prev_offset ?? data.previous_offset ?? data.prev_page ?? state.back[state.back.length - 1];
+    const next = data.next_offset ?? data.next_page;
+    prevPage.dataset.offset = String(Math.max(0, number(previous, 0)));
+    prevPage.dataset.back = state.back.slice(0, -1).join(",");
+    prevPage.disabled = number(state.page) <= 0 && previous == null;
+    prevPage.textContent = previous == null ? "First" : "Previous";
+    nextPage.dataset.offset = next == null ? "" : String(Math.max(0, number(next)));
+    nextPage.disabled = next == null || data.has_more === false;
+    pagePosition.textContent = `byte ${number(state.page).toLocaleString()}${data.end_offset != null ? ` - ${number(data.end_offset).toLocaleString()}` : ""}`;
+
+    if (!lines.length) {
+      results.innerHTML = `<div class="status"><strong>No matching lines</strong><span>Adjust the query, levels, or time range.</span></div>`;
+      return;
+    }
+
+    reconcileLines(lines);
+  }
+
+  // The identity of a rendered log line: its byte offset in the file, plus its
+  // text. The offset alone is what makes a line a line — but logs.py ROTATES,
+  // and after a rotation byte 0 is a different line entirely, so the text has to
+  // be part of the key or a rotation would silently keep the old rows. Two lines
+  // that match on this key are byte-identical, which is why a matched row needs
+  // no update at all: reuse here means "leave that DOM alone".
+  function lineKey(fields) {
+    return fields.offset + " " + fields.raw;
+  }
+
+  // ---- structured detail ---------------------------------------------------
+  // A structured log line is a JSON object, and showing it as one long escaped
+  // string is the worst of both worlds: too wide to read, and the field you
+  // want is somewhere in the middle. The expanded row renders the object as
+  // fields instead — nested objects indented under their key, multi-line
+  // strings (a traceback, a stdout tail) kept as blocks so their newlines
+  // survive, and scalars clickable to filter the log by that value.
+  //
+  // A plain-text line still gets the raw <pre> it always got: this is an
+  // addition for lines that ARE structured, never a reinterpretation of lines
+  // that are not.
+
+  // Leading text + trailing JSON object, e.g.
+  // `2026-07-27 10:11:12 INFO {"event": "run", ...}`. Returns the parsed object
+  // and whatever preceded it (never dropped — it is shown as its own field).
+  function parseStructured(raw) {
+    const text = String(raw == null ? "" : raw).trim();
+    if (!text) return null;
+    const brace = text.indexOf("{");
+    if (brace < 0 || !text.endsWith("}")) return null;
+    try {
+      const value = JSON.parse(text.slice(brace));
+      // Arrays and scalars are not field sets; only an object earns this view.
+      if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+      return { value, prefix: text.slice(0, brace).trim() };
+    } catch {
+      return null;
+    }
+  }
+
+  // Multi-line, or long enough that a table cell would be unreadable.
+  function isBlockText(value) {
+    return typeof value === "string" && (value.includes("\n") || value.length > 160);
+  }
+
+  function scalarHtml(value) {
+    if (value === null) return '<span class="field-null">null</span>';
+    const type = typeof value;
+    if (type === "boolean" || type === "number") {
+      return `<span class="field-${type}">${escapeHtml(String(value))}</span>`;
+    }
+    // Clickable to filter: the same [data-query] contract the patterns view
+    // uses, so the delegated handler already routes it (and, being handled
+    // before the row toggle, a click here does not collapse the row).
+    const text = String(value);
+    return `<span class="field-value" data-query="${escapeHtml(text)}"` +
+      ` title="Filter the log by this value">${escapeHtml(text)}</span>`;
+  }
+
+  function fieldRows(value, depth) {
+    if (depth > 6) {
+      return `<div class="field-row"><span class="field-key"></span>${scalarHtml("\u2026")}</div>`;
+    }
+    const entries = Array.isArray(value)
+      ? value.map((item, index) => [String(index), item])
+      : Object.entries(value);
+    if (!entries.length) {
+      return `<div class="field-row"><span class="field-key"></span>` +
+        `<span class="field-empty">${Array.isArray(value) ? "empty list" : "no fields"}</span></div>`;
+    }
+    return entries.map(([key, item]) => {
+      const label = `<span class="field-key" style="--depth:${depth}">${escapeHtml(key)}</span>`;
+      if (item && typeof item === "object") {
+        const count = Array.isArray(item) ? `${item.length} item(s)` : `${Object.keys(item).length} field(s)`;
+        return `<div class="field-row">${label}<span class="field-nested">${count}</span></div>` +
+          fieldRows(item, depth + 1);
+      }
+      if (isBlockText(item)) {
+        return `<div class="field-row">${label}<span class="field-nested">${item.length} chars</span></div>` +
+          `<pre class="field-block">${escapeHtml(item)}</pre>`;
+      }
+      return `<div class="field-row">${label}${scalarHtml(item)}</div>`;
+    }).join("");
+  }
+
+  function structuredHtml(parsed) {
+    // The text before the JSON is part of the line, so it is shown rather than
+    // silently discarded — as a field, marked as not being one.
+    const prefix = parsed.prefix
+      ? `<div class="field-row"><span class="field-key" style="--depth:0">(line prefix)</span>` +
+        `${scalarHtml(parsed.prefix)}</div>`
+      : "";
+    return `<div class="field-table">${prefix}${fieldRows(parsed.value, 0)}</div>`;
+  }
+
+  function lineRow(fields) {
+    const row = document.createElement("article");
+    row.className = "log-row";
+    row.dataset.key = lineKey(fields);
+    row.dataset.offset = String(fields.offset);
+    row.style.setProperty("--level-color", levelColor(fields.level));
+    const parsed = parseStructured(fields.raw);
+    // Structured by default when the line is structured — that is the reason
+    // this exists — with the raw text one click away and never removed.
+    const detailBody = parsed
+      ? `<div class="detail-body" data-view="structured">${structuredHtml(parsed)}` +
+        `<pre class="detail-raw" hidden>${escapeHtml(fields.raw)}</pre></div>`
+      : `<div class="detail-body" data-view="raw"><pre class="detail-raw">${escapeHtml(fields.raw)}</pre></div>`;
+    const viewToggle = parsed
+      ? `<button class="button context-button" type="button" data-detail-view="raw">Raw JSON</button>`
+      : "";
+    row.innerHTML = `
+      <span class="log-cell expand-mark">+</span>
+      <time class="log-cell timestamp">${escapeHtml(fields.timestamp)}</time>
+      <span class="log-cell level">${escapeHtml(fields.level)}</span>
+      <span class="log-cell offset">${escapeHtml(fields.offset.toLocaleString())}</span>
+      <span class="log-cell message">${escapeHtml(fields.raw)}</span>
+      <div class="line-detail">
+        ${detailBody}
+        <div class="detail-actions">
+          <button class="button context-button" type="button" data-context="${escapeHtml(fields.offset)}">Show context</button>
+          ${viewToggle}
+          <span class="detail-meta">byte ${escapeHtml(fields.offset.toLocaleString())}${fields.timestamp ? ` / ${escapeHtml(fields.timestamp)}` : ""}</span>
+        </div>
+        <div class="context-lines" hidden></div>
+      </div>`;
+    return row;
+  }
+
+  // Update the list IN PLACE, keeping every row the new page still contains.
+  //
+  // This used to be one `results.innerHTML = ...`, which is fine for a paged
+  // read and wrong for a tail: the poll runs every 2 s, so rebuilding the list
+  // threw away the DOM the user was working in four times a sentence — scroll
+  // position, which rows were expanded, any context block they had fetched, and
+  // any text selection. Tailing a live log was therefore the one mode in which
+  // you could not read or copy a line, which is the opposite of what Tail is
+  // for. The rows themselves were keyed by ARRAY INDEX, which renumbers the
+  // moment a line arrives, so nothing could be matched up across a poll even in
+  // principle.
+  //
+  // Same rule the shell's Recents list follows (SPEC RC-6): rows are keyed by
+  // identity, a row the page still has keeps its element, and the only movement
+  // is genuinely new content arriving.
+  function reconcileLines(lines) {
+    let list = results.querySelector(".log-list");
+    if (!list) {
+      // Coming from a status card, an error, or the skeleton — nothing to keep.
+      results.innerHTML = '<div class="log-list"></div>';
+      list = results.querySelector(".log-list");
+    }
+
+    const scroll = scroller();
+    const wasPinned = atBottom(scroll);
+    const before = scroll.scrollHeight;
+
+    const keep = new Map();
+    for (const row of Array.from(list.children)) {
+      const key = row.dataset.key;
+      if (key === undefined) row.remove();          // skeleton rows
+      else keep.set(key, row);
+    }
+
+    // Walk the desired order once, moving each row into place. insertBefore on a
+    // node already in position is a no-op for the user (no re-parse, no lost
+    // selection), so a poll that only appended costs exactly the appends.
+    let cursor = list.firstChild;
+    for (let i = 0; i < lines.length; i++) {
+      const fields = lineFields(lines[i], i);
+      const key = lineKey(fields);
+      const existing = keep.get(key);
+      if (existing) {
+        keep.delete(key);
+        if (existing === cursor) {
+          cursor = cursor.nextSibling;
+          continue;
+        }
+        list.insertBefore(existing, cursor);
+      } else {
+        list.insertBefore(lineRow(fields), cursor);
+      }
+    }
+    // Whatever the new page no longer contains — the lines that scrolled out of
+    // the tail window.
+    for (const row of keep.values()) row.remove();
+
+    // A tail appends at the bottom and drops from the top, so the page height
+    // changes under the viewport. Pinned to the bottom, stay pinned (that is
+    // what following means); parked mid-history, hold the same content still
+    // rather than letting it slide by the height difference.
+    if (wasPinned) scroll.scrollTop = scroll.scrollHeight;
+    else scroll.scrollTop += scroll.scrollHeight - before;
+  }
+
+  // The document is the scroll container here: `.app` is a grid that grows, and
+  // only the file rail scrolls on its own.
+  function scroller() {
+    return document.scrollingElement || document.documentElement;
+  }
+
+  // Within a line's height of the end — "following", as opposed to having
+  // deliberately scrolled back to read something.
+  const STICK_SLOP_PX = 24;
+
+  function atBottom(el) {
+    return el.scrollHeight - el.clientHeight - el.scrollTop <= STICK_SLOP_PX;
+  }
+
+  function patternsFrom(data) {
+    if (Array.isArray(data)) return data;
+    return data.patterns || data.results || data.items || [];
+  }
+
+  function renderPatterns(data) {
+    if (data.available === false) {
+      resultSummary.textContent = "Patterns unavailable";
+      pager.hidden = true;
+      results.innerHTML = `<div class="status"><strong>Pattern mining is not installed</strong><span>${escapeHtml(data.message || "Install drain3 to enable clustering.")}</span></div>`;
+      return;
+    }
+    const patterns = patternsFrom(data).slice().sort((a, b) => number(b.count) - number(a.count));
+    const total = data.total ?? data.total_matches ?? patterns.reduce((sum, item) => sum + number(item.count), 0);
+    resultSummary.textContent = `${formatCount(patterns.length)} patterns / ${formatCount(total)} lines`;
+    pager.hidden = true;
+    pageData = null;
+
+    if (!patterns.length) {
+      results.innerHTML = `<div class="status"><strong>No patterns found</strong><span>There are no repeated structures in this selection.</span></div>`;
+      return;
+    }
+
+    results.innerHTML = `<div class="patterns">${patterns.map((item) => {
+      const pattern = item.pattern ?? item.template ?? item.text ?? "";
+      const query = item.query ?? item.filter ?? pattern;
+      const sample = item.sample ?? item.example ?? "";
+      return `
+        <button class="pattern-row" type="button" data-query="${escapeHtml(query)}">
+          <span class="pattern-count">${escapeHtml(formatCount(item.count))}</span>
+          <span class="pattern-body">
+            <span class="pattern-text">${escapeHtml(pattern)}</span>
+            <span class="pattern-query">filter: ${escapeHtml(query)}</span>
+          </span>
+          <span class="pattern-sample">${escapeHtml(sample)}</span>
+        </button>`;
+    }).join("")}</div>`;
+  }
+
+  function renderNotices(...payloads) {
+    const truncated = payloads.find((data) => data && (data.truncated || data.is_truncated));
+    const clipped = payloads.reduce((count, data) => count + number(data && data.clipped_lines), 0);
+    if (!truncated && !clipped) {
+      noticeArea.innerHTML = "";
+      return;
+    }
+    if (truncated) {
+      const detail = truncated.truncation_reason || truncated.warning || "The reader capped this result set. Counts and patterns may be partial.";
+      noticeArea.innerHTML = `<div class="notice"><strong>Truncated result.</strong> ${escapeHtml(detail)}</div>`;
+      return;
+    }
+    noticeArea.innerHTML = `<div class="notice"><strong>Long lines clipped.</strong> ${formatCount(clipped)} scanned lines exceeded 64 KB.</div>`;
+  }
+
+  function renderState(state) {
+    app.classList.toggle("facets-collapsed", !state.facets);
+    queryInput.value = state.q;
+    clearRange.disabled = !state.from && !state.to;
+    tailToggle.setAttribute("aria-pressed", String(state.tail));
+    railCollapse.setAttribute("aria-pressed", String(!state.facets));
+    railCollapse.textContent = state.facets ? "Collapse" : "Expand";
+    railCollapse.title = state.facets ? "Hide the file rail" : "Show the file rail";
+    const original = fused.params.get("_file") || "";
+    fused.autoReload(!state.tail && (!original || samePath(original, state.file)));
+    linesTab.classList.toggle("active", state.view === "lines");
+    patternsTab.classList.toggle("active", state.view === "patterns");
+  }
+
+  function setLoading(state) {
+    renderState(state);
+    resultSummary.textContent = "Loading...";
+    noticeArea.innerHTML = "";
+    pager.hidden = true;
+    histSkel.hidden = false;
+    results.innerHTML = resultsSkeleton();
+  }
+
+  function setError(error) {
+    const type = error && error.type ? `<strong>${escapeHtml(error.type)}</strong><br>` : "";
+    resultSummary.textContent = "Reader failed";
+    pager.hidden = true;
+    histSkel.hidden = true;
+    results.innerHTML = `<div class="status error">${type}<span>${escapeHtml(errorMessage(error))}</span></div>`;
+  }
+
+  async function pollTail() {
+    const state = currentState();
+    if (!state.tail || state.view !== "lines" || tailPolling) return;
+    const request = generation;
+    tailPolling = true;
+    try {
+      const content = await runReader("page", state, { page: state.page, limit: String(PAGE_LIMIT), tail: "1" });
+      if (request === generation && currentState().tail) {
+        renderLines(content, state);
+        renderNotices(content);
+      }
+    } catch (error) {
+      if (request === generation) setError(error);
+    } finally {
+      tailPolling = false;
+    }
+  }
+
+  function syncTailTimer(state) {
+    if (tailTimer) clearInterval(tailTimer);
+    tailTimer = null;
+    if (state.tail && state.view === "lines") tailTimer = setInterval(pollTail, 2000);
+  }
+
+  function stopFileWatcher() {
+    if (fileWatchTimer) clearInterval(fileWatchTimer);
+    fileWatchTimer = null;
+    watchedFile = "";
+    watchedSignature = "";
+  }
+
+  function syncFileWatcher(state) {
+    stopFileWatcher();
+    if (state.tail || !overviewData) return;
+    const path = overviewData.path || state.file;
+    watchedFile = path;
+    watchedSignature = `${overviewData.mtime}:${overviewData.size}`;
+    let checking = false;
+    fileWatchTimer = setInterval(async () => {
+      if (checking || watchedFile !== path) return;
+      checking = true;
+      try {
+        const stat = await fused.stat(path);
+        const signature = `${stat.mtime}:${stat.size}`;
+        if (watchedFile === path && signature !== watchedSignature) {
+          watchedSignature = signature;
+          overviewData = null;
+          overviewFile = "";
+          dataReadyKey = "";
+          loadingDataKey = "";
+          generation += 1;
+          scheduleLoad();
+        }
+      } catch (error) {
+        if (watchedFile === path) {
+          stopFileWatcher();
+          overviewData = null;
+          overviewFile = "";
+          dataReadyKey = "";
+          loadingDataKey = "";
+          generation += 1;
+          setError({ message: `Active file is unavailable: ${errorMessage(error)}` });
+        }
+      } finally {
+        checking = false;
+      }
+    }, 2000);
+  }
+
+  async function load() {
+    const state = currentState();
+    if (!state.file) {
+      renderState(state);
+      fileOverview.innerHTML = "";
+      levelList.innerHTML = "";
+      resultSummary.textContent = "No file open";
+      noticeArea.innerHTML = "";
+      pager.hidden = true;
+      histSkel.hidden = true;
+      results.innerHTML = `<div class="status"><strong>No log file open</strong><span>Open a <code>.log</code> file from the file explorer to view it here.</span></div>`;
+      return;
+    }
+    const nextDataKey = dataKey(state);
+    if (state.tail) stopFileWatcher();
+    if (lastTailState === true && !state.tail) {
+      overviewData = null;
+      overviewFile = "";
+      dataReadyKey = "";
+      loadingDataKey = "";
+    }
+    lastTailState = state.tail;
+    renderState(state);
+    if (loadingDataKey === nextDataKey) return;
+    if (dataReadyKey === nextDataKey && overviewData && overviewFile === state.file) {
+      renderOverview(overviewData, state);
+      syncTailTimer(state);
+      syncFileWatcher(state);
+      return;
+    }
+
+    const request = ++generation;
+    loadingDataKey = nextDataKey;
+    if (overviewFile && overviewFile !== state.file) stopFileWatcher();
+    if (tailTimer) clearInterval(tailTimer);
+    tailTimer = null;
+    setLoading(state);
+
+    try {
+      let overview = overviewData;
+      if (!overviewData || overviewFile !== state.file) {
+        overview = await runReader("overview", state);
+        if (request !== generation) return;
+        rememberPath(state.file, overview.path);
+        overviewData = overview;
+        overviewFile = state.file;
+      }
+      renderOverview(overview, state);
+
+      const histogramPromise = runReader("histogram", state);
+      const contentPromise = state.view === "patterns"
+        ? runReader("patterns", state)
+        : runReader("page", state, { page: state.page, limit: String(PAGE_LIMIT), tail: state.tail ? "1" : "0" });
+      const [histogram, content] = await Promise.all([histogramPromise, contentPromise]);
+      if (request !== generation) return;
+
+      histogramData = histogram;
+      renderHistogram(histogram, state);
+      if (state.view === "patterns") renderPatterns(content);
+      else renderLines(content, state);
+      renderNotices(overview, histogram, content);
+      dataReadyKey = nextDataKey;
+      loadingDataKey = "";
+      syncTailTimer(state);
+      syncFileWatcher(state);
+    } catch (error) {
+      if (request !== generation) return;
+      loadingDataKey = "";
+      setError(error);
+    }
+  }
+
+  queryForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    setParams({ page: "0", back: "", q: queryInput.value.trim() });
+  });
+
+  clearRange.addEventListener("click", () => setParams({ from: "", to: "", page: "0", back: "" }));
+
+  railCollapse.addEventListener("click", () => setParams({ facets: currentState().facets ? "0" : "1" }));
+  // runtime.js owns `data-theme` now (the `data-fused-theme` opt-in above), so
+  // nothing here resolves or applies a theme. The charts still have to know:
+  // they read the palette through getComputedStyle at DRAW time, so a theme
+  // change repaints correctly only if something redraws them. Observing the
+  // attribute rather than re-listening to storage/matchMedia keeps that true
+  // whoever changes it, and leaves exactly one resolver in the codebase.
+  new MutationObserver(() => {
+    if (chartData) requestAnimationFrame(resizeCanvas);
+  }).observe(document.documentElement, { attributeFilter: ["data-theme"] });
+
+  tailToggle.addEventListener("click", () => {
+    const state = currentState();
+    const size = overviewData && (overviewData.size ?? overviewData.file_size ?? overviewData.bytes);
+    const turningOn = !state.tail;
+    if (turningOn) {
+      tailEndOffset = number(size);
+      tailPageOffset = Math.max(0, tailEndOffset - 65536);
+    }
+    // Tail only polls in the lines view (pollTail/syncTailTimer both guard on
+    // it), so turning tail on from Patterns must switch back to lines or the
+    // button reads as pressed while nothing updates and autoReload sits off.
+    setParams({ page: tailPageOffset, back: "", tail: turningOn ? "1" : "0", view: turningOn ? "lines" : state.view });
+  });
+
+  // No-op while already on lines: `page` is part of dataKey, so resetting it
+  // on a redundant click would abandon the current offset (including a
+  // tail-established end-of-file position) and force a full reload for a
+  // click that looks like it did nothing.
+  linesTab.addEventListener("click", () => {
+    if (currentState().view === "lines") return;
+    setParams({ view: "lines", page: "0", back: "" });
+  });
+  patternsTab.addEventListener("click", () => setParams({ view: "patterns", page: "0", back: "", tail: "0" }));
+
+  levelList.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-level]");
+    if (!button || !overviewData) return;
+    const level = button.dataset.level;
+    const state = currentState();
+    // facetLevels, NOT overviewLevels: `available` decides what gets written to
+    // the URL when a level is unchecked, so an entry here that the list does
+    // not show becomes a selected-but-absent level and reappears.
+    const available = facetLevels(overviewData, state.levels).map(([name]) => name);
+    const selected = new Set(state.levels.length ? state.levels : available);
+    if (selected.has(level)) selected.delete(level);
+    else selected.add(level);
+    const next = available.filter((name) => selected.has(name));
+    setParams({ level: next.length === available.length ? "" : next.join(","), page: "0", back: "" });
+  });
+
+  results.addEventListener("click", async (event) => {
+    // Structured <-> raw, per row. Rows persist across polls now, so this
+    // stays put until the record leaves the window.
+    const viewButton = event.target.closest("[data-detail-view]");
+    if (viewButton) {
+      event.stopPropagation();
+      const body = viewButton.closest(".line-detail").querySelector(".detail-body");
+      const toRaw = viewButton.dataset.detailView === "raw";
+      body.dataset.view = toRaw ? "raw" : "structured";
+      // Both by CLASS, never by position. A block-text field renders as its own
+      // <pre class="field-block"> inside the table, so `querySelector("pre")`
+      // returned that one on any record with a traceback — hiding the table and
+      // un-hiding a node inside it, which left the panel blank and made the
+      // button look inert. `.detail-raw` names the one node this means.
+      body.querySelector(".field-table").hidden = toRaw;
+      body.querySelector(".detail-raw").hidden = !toRaw;
+      viewButton.dataset.detailView = toRaw ? "structured" : "raw";
+      viewButton.textContent = toRaw ? "Fields" : "Raw JSON";
+      return;
+    }
+    const contextButton = event.target.closest("[data-context]");
+    if (contextButton) {
+      event.stopPropagation();
+      const row = contextButton.closest(".log-row");
+      const target = row.querySelector(".context-lines");
+      row.classList.add("expanded");
+      row.querySelector(".expand-mark").textContent = "-";
+      contextButton.disabled = true;
+      contextButton.textContent = "Loading context...";
+      try {
+        const data = await runReader("context", currentState(), { page: contextButton.dataset.context, context: "5" });
+        target.innerHTML = data.lines.map((line) => `
+          <div class="context-line ${line.target ? "target" : ""}">
+            <span class="context-offset">${escapeHtml(number(line.offset).toLocaleString())}</span>
+            <span>${escapeHtml(line.text)}</span>
+          </div>`).join("");
+        target.hidden = false;
+        contextButton.textContent = "Refresh context";
+      } catch (error) {
+        target.innerHTML = `<div class="context-line"><span></span><span>${escapeHtml(errorMessage(error))}</span></div>`;
+        target.hidden = false;
+        contextButton.textContent = "Retry context";
+      } finally {
+        contextButton.disabled = false;
+      }
+      return;
+    }
+    const pattern = event.target.closest("[data-query]");
+    if (pattern) {
+      setParams({ q: pattern.dataset.query, page: "0", back: "", view: "lines" });
+      return;
+    }
+    const row = event.target.closest(".log-row");
+    if (row) {
+      row.classList.toggle("expanded");
+      row.querySelector(".expand-mark").textContent = row.classList.contains("expanded") ? "-" : "+";
+    }
+  });
+
+  prevPage.addEventListener("click", () => setParams({ page: prevPage.dataset.offset || "0", back: prevPage.dataset.back || "" }));
+  nextPage.addEventListener("click", () => {
+    if (!nextPage.dataset.offset) return;
+    const state = currentState();
+    setParams({ page: nextPage.dataset.offset, back: [...state.back, state.page].slice(-50).join(",") });
+  });
+
+  function canvasX(event) {
+    return event.clientX - canvas.getBoundingClientRect().left;
+  }
+
+  canvas.addEventListener("pointerdown", (event) => {
+    if (!chartData || !chartData.buckets.length) return;
+    brush = { start: canvasX(event), current: canvasX(event), pointerId: event.pointerId };
+    canvas.setPointerCapture(event.pointerId);
+    histTooltip.style.display = "none";
+    drawHistogram();
+  });
+
+  canvas.addEventListener("pointermove", (event) => {
+    if (!chartData || !chartData.buckets.length) return;
+    const x = canvasX(event);
+    if (brush && brush.pointerId === event.pointerId) {
+      brush.current = x;
+      drawHistogram();
+      return;
+    }
+
+    const bounds = chartBounds();
+    if (x < bounds.left || x > bounds.right) {
+      histTooltip.style.display = "none";
+      return;
+    }
+    const index = Math.min(chartData.buckets.length - 1, Math.floor(((x - bounds.left) / (bounds.right - bounds.left)) * chartData.buckets.length));
+    const bucket = chartData.buckets[index];
+    const counts = Object.entries(bucket.counts).filter(([, count]) => number(count) > 0);
+    histTooltip.innerHTML = `<strong>${escapeHtml(formatEpoch(bucket.start))}</strong><br>${counts.map(([level, count]) => `${escapeHtml(level)} ${escapeHtml(formatCount(count))}`).join(" / ")}`;
+    histTooltip.style.display = "block";
+    histTooltip.style.left = `${Math.min(canvasWrap.clientWidth - histTooltip.offsetWidth - 6, Math.max(6, x + 10))}px`;
+    histTooltip.style.top = `${Math.max(4, event.clientY - canvasWrap.getBoundingClientRect().top - histTooltip.offsetHeight - 8)}px`;
+  });
+
+  canvas.addEventListener("pointerleave", () => {
+    if (!brush) histTooltip.style.display = "none";
+  });
+
+  canvas.addEventListener("pointerup", (event) => {
+    if (!brush || brush.pointerId !== event.pointerId || !chartData) return;
+    const completed = brush;
+    brush = null;
+    drawHistogram();
+    if (Math.abs(completed.current - completed.start) < 5) return;
+    const bounds = chartBounds();
+    const from = timeForX(Math.min(completed.start, completed.current), bounds, chartData.min, chartData.max);
+    const to = timeForX(Math.max(completed.start, completed.current), bounds, chartData.min, chartData.max);
+    setParams({ from: String(Math.round(from)), to: String(Math.round(to)), page: "0", back: "", tail: "0" });
+  });
+
+  canvas.addEventListener("pointercancel", () => {
+    brush = null;
+    drawHistogram();
+  });
+
+  const resizeObserver = new ResizeObserver(resizeCanvas);
+  resizeObserver.observe(canvasWrap);
+
+  function scheduleLoad() {
+    if (loadTimer) clearTimeout(loadTimer);
+    loadTimer = setTimeout(load, 0);
+  }
+
+  fused.params.onChange(scheduleLoad);
+  load();
+</script>
+</body>
+</html>

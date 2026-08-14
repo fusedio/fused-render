@@ -1,0 +1,23 @@
+{
+  "format": "dxf",
+  "supported": true,
+  "acadver": "AC1027",
+  "version_name": "AutoCAD 2013",
+  "insunits": 6,
+  "units_name": "Meters",
+  "extmin": null,
+  "extmax": null,
+  "layers": [
+    {
+      "name": "0",
+      "color": 7
+    },
+    {
+      "name": "Defpoints",
+      "color": 7
+    }
+  ],
+  "layer_count": 2,
+  "entity_counts": {},
+  "entity_total": 0
+}

@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Code editor</title>
+<script src="/template-assets/codemirror.bundle.js"></script>
+<script src="/template-shared/ro-badge.js"></script>
+<style>
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --skel-base: #1c1f24;
+    --skel-shine: #2a2f36;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --skel-base: #e9ebee;
+    --skel-shine: #dcdfe4;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  /* Top bar mirrors the other templates' #bar (parquet/pdf): filename left,
+     status + Save right. Sans-serif to match the shell chrome. */
+  #bar {
+    display: none;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+  }
+  #filename {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #bar .grow { flex: 1 1 auto; }
+  #status-text { color: var(--fg-muted); }
+  #status-text.error { color: var(--error); }
+  #conflict {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    color: var(--error);
+  }
+  #bar button {
+    font: inherit;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  #bar button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  #root {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .cm-editor { height: 100%; font-size: 13px; }
+  .cm-scroller { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  #status {
+    padding: 24px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg-muted);
+  }
+  #status.error { color: var(--error); }
+  #status a { color: var(--accent); }
+  /* Initial-load placeholder: shimmering line bars shaped like a code buffer
+     (gutter + variable-width, variably-indented line) instead of bare text.
+     Swapped out wholesale by root.innerHTML = "" once load() lands (or by an
+     error/status message on the failure paths above). */
+  #skel-code {
+    height: 100%;
+    padding: 12px 0;
+    overflow: hidden;
+  }
+  .skel-line {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 13px;
+    padding: 0 16px;
+    margin-bottom: 6px;
+  }
+  .skel-gutter, .skel-bar {
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  .skel-gutter { flex: 0 0 14px; height: 9px; opacity: 0.5; }
+  .skel-bar { height: 9px; }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <span id="filename"></span>
+    <span class="grow"></span>
+    <span id="conflict">
+      File changed on disk
+      <button id="reload">Reload</button>
+      <button id="overwrite">Overwrite</button>
+    </span>
+    <span id="ro" hidden></span>
+    <span id="status-text">Saved</span>
+    <button id="save" disabled>Save</button>
+  </div>
+  <div id="root"><div id="skel-code" aria-hidden="true">
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:28%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:52%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:38%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:64%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:46%; margin-left:40px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:70%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:20%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:58%"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:33%; margin-left:20px"></span></div>
+    <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:15%"></span></div>
+  </div></div>
+  <script>
+    fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
+
+    const MAX_BYTES = 2 * 1024 * 1024;
+
+    const barEl = document.getElementById("bar");
+    const filenameEl = document.getElementById("filename");
+    const statusTextEl = document.getElementById("status-text");
+    const conflictEl = document.getElementById("conflict");
+    const saveBtn = document.getElementById("save");
+    const reloadBtn = document.getElementById("reload");
+    const overwriteBtn = document.getElementById("overwrite");
+    const root = document.getElementById("root");
+
+    let view = null;
+    let file = null;
+    let mtime = null;   // last known on-disk mtime; the optimistic-lock token
+    let writable = true; // stat.writable — false locks the buffer read-only
+    let dirty = false;
+    let saveTimer = null;  // pending autosave debounce (AS-1)
+    let saving = false;    // a save() write is in flight
+    let themeObserver = null; // watches <html data-theme> (SPEC §30)
+    let themedDark = true;    // theme the live view is currently configured for
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // Extension → CodeMirror language extension. Values are either a language
+    // function to call or a ready extension (the legacy StreamLanguage modes).
+    function languageFor(ext) {
+      switch (ext) {
+        case "py": return CM.python();
+        case "js": return CM.javascript();
+        case "ts": return CM.javascript({ typescript: true });
+        case "json": return CM.json();
+        case "yaml":
+        case "yml": return CM.yaml();
+        case "html":
+        case "htm": return CM.html();
+        case "css": return CM.css();
+        case "sh": return CM.shellLang;
+        case "toml": return CM.tomlLang;
+        default: return null; // unknown → plain text, no highlighting
+      }
+    }
+
+    function setDirty(d) {
+      dirty = d;
+      saveBtn.disabled = !d;
+      if (conflictEl.style.display !== "flex") {
+        statusTextEl.textContent = d ? "Modified" : "Saved";
+        statusTextEl.classList.remove("error");
+      }
+    }
+
+    function showConflict() {
+      conflictEl.style.display = "flex";
+      statusTextEl.textContent = "";
+      saveBtn.disabled = false;
+    }
+
+    function hideConflict() {
+      conflictEl.style.display = "none";
+    }
+
+    // Autosave 250 ms after the last edit (AS-1). Suspends while a conflict banner
+    // is up (AS-2 — never auto-overwrite); reschedules rather than stacking a
+    // second write if a save is already in flight.
+    function autosave() {
+      if (!dirty) return;
+      if (conflictEl.style.display === "flex") return;
+      if (saving) {
+        saveTimer = setTimeout(autosave, 250);
+        return;
+      }
+      save();
+    }
+
+    // Single-flight save: concurrent callers (autosave timer, Save button,
+    // Cmd+S, __fusedFlushEdits) must never issue two writeFile calls for the
+    // same buffer — later callers wait out the in-flight write, then re-check
+    // dirty (the finished write usually cleared it).
+    let savePromise = null;
+
+    async function save() {
+      clearTimeout(saveTimer); // manual Save / Cmd+S cancels a pending autosave (AS-1)
+      while (saving && savePromise) await savePromise;
+      if (!view || !dirty) return;
+      savePromise = doSave();
+      await savePromise;
+    }
+
+    async function doSave() {
+      // Snapshot the doc we are writing. CM's Text is immutable, so a plain
+      // reference compare after the await detects edits that landed while the
+      // write was in flight — those must NOT be masked by setDirty(false), or
+      // "Saved" lies and the 250ms autosave (which checks dirty) skips them.
+      const docState = view.state.doc;
+      const doc = docState.toString();
+      saveBtn.disabled = true;
+      statusTextEl.textContent = "Saving…";
+      statusTextEl.classList.remove("error");
+      saving = true;
+      try {
+        const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
+        mtime = st.mtime;
+        hideConflict();
+        if (view.state.doc === docState) {
+          setDirty(false);
+        } else {
+          // Newer edits arrived during the write: stay dirty, re-arm autosave.
+          setDirty(true);
+          saveTimer = setTimeout(autosave, 250);
+        }
+      } catch (err) {
+        if (err.type === "conflict") {
+          showConflict();
+        } else {
+          statusTextEl.textContent = "Save failed: " + (err.message || "");
+          statusTextEl.classList.add("error");
+          saveBtn.disabled = false;
+        }
+      } finally {
+        saving = false;
+      }
+    }
+
+    // Reload discards local edits and re-arms the lock from disk.
+    async function reloadFromDisk() {
+      try {
+        const st = await fused.stat(file);
+        if ((st.writable !== false) !== writable) {
+          // Writability flipped on disk (e.g. chmod while the conflict banner
+          // was up). The read-only facets live in the view's extensions, so
+          // rebuild the editor from scratch — reload discards local edits
+          // anyway, and load() re-reads the file and re-applies the lock/badge.
+          // The banner stays up until the rebuild lands: its visibility is
+          // what holds off queued autosaves (AS-2), and a failed load() must
+          // keep the Reload/Overwrite escape hatch on screen.
+          clearTimeout(saveTimer);
+          if (await load()) hideConflict();
+          return;
+        }
+        const text = await fused.readFile(file);
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+        mtime = st.mtime;
+        hideConflict();
+        setDirty(false); // after dispatch, whose docChanged had flipped us dirty
+      } catch (err) {
+        statusTextEl.textContent = "Reload failed: " + (err.message || "");
+        statusTextEl.classList.add("error");
+      }
+    }
+
+    // Overwrite forces the write with no lock, then re-arms from the response.
+    async function overwrite() {
+      const doc = view.state.doc.toString();
+      try {
+        const st = await fused.writeFile(file, doc);
+        mtime = st.mtime;
+        hideConflict();
+        setDirty(false);
+      } catch (err) {
+        statusTextEl.textContent = "Save failed: " + (err.message || "");
+        statusTextEl.classList.add("error");
+      }
+    }
+
+    async function load() {
+      file = fused.params.get("_file");
+      if (!file) {
+        root.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return false;
+      }
+      const rawUrl = fused.rawUrl(file);
+      let text;
+      try {
+        const stat = await fused.stat(file);
+        if (stat.size !== null && stat.size !== undefined && stat.size > MAX_BYTES) {
+          root.innerHTML = `<div id="status">File is too large to edit inline (${stat.size.toLocaleString()} bytes).
+            <a href="${rawUrl}" target="_blank" rel="noopener">Open raw</a></div>`;
+          return false;
+        }
+        text = await fused.readFile(file);
+        mtime = stat.mtime;
+        writable = stat.writable !== false; // absent field (older server) → editable
+      } catch (err) {
+        root.innerHTML = `<div id="status" class="error">Failed to load file: ${escapeHtml(err.message)}</div>`;
+        return false;
+      }
+
+      const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
+      // The editor surface follows the shell's appearance (SPEC §30). oneDark
+      // is the only theme in the vendored bundle, so light mode simply leaves
+      // it out and basicSetup's own default (light) highlight style applies.
+      const wantsDark = () => document.documentElement.getAttribute("data-theme") !== "light";
+      const extensions = [
+        CM.basicSetup,
+        ...(wantsDark() ? [CM.oneDark] : []),
+        // docChanged fires on any user edit → mark the buffer modified.
+        CM.EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            setDirty(true);
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(autosave, 250);
+          }
+        }),
+      ];
+      const lang = languageFor(ext);
+      if (lang) extensions.push(lang);
+      // Read-only file: lock the buffer, so dirty can never flip and no save
+      // path (autosave, Cmd+S, flush hook) ever fires. The server refuses the
+      // write anyway (403 readonly); this makes the UI honest up front. Both
+      // facets: editable=false locks the DOM (caret, typing), readOnly=true
+      // rejects the transactions synthesized input can still smuggle past it.
+      if (!writable) {
+        extensions.push(CM.EditorView.editable.of(false));
+        extensions.push(CM.EditorState.readOnly.of(true));
+      }
+
+      root.innerHTML = "";
+      view = new CM.EditorView({ doc: text, extensions, parent: root });
+      // A live appearance change (the shell's menu, or the OS flipping while
+      // the setting is System) reconfigures the RUNNING view — rebuilding it
+      // would throw away unsaved edits, the caret and the scroll position.
+      // The runtime writes `data-theme` on <html>, so that attribute is the
+      // signal. Best-effort: a reconfigure that somehow fails leaves the
+      // editor exactly as it is rather than breaking it.
+      themeObserver?.disconnect();
+      themeObserver = new MutationObserver(() => {
+        const next = wantsDark();
+        if (next === themedDark) return;
+        themedDark = next;
+        try {
+          view.dispatch({
+            effects: CM.StateEffect.reconfigure.of(
+              extensions.filter((e) => e !== CM.oneDark).concat(next ? [CM.oneDark] : [])
+            ),
+          });
+        } catch (err) {
+          /* keep the current editor theme — cosmetic only */
+        }
+      });
+      themedDark = wantsDark();
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+      filenameEl.textContent = file.split("/").pop();
+      barEl.style.display = "flex";
+      setDirty(false);
+      if (!writable) {
+        saveBtn.hidden = true;
+        statusTextEl.textContent = "";
+        fusedRoBadge.update(document.getElementById("ro"), "Read-only",
+          "The file's permissions don't allow writing, so it can't be edited here.");
+      } else {
+        // A rebuild (reloadFromDisk after a chmod +w) must undo the lock UI.
+        saveBtn.hidden = false;
+        fusedRoBadge.update(document.getElementById("ro"), "", "");
+      }
+      return true;
+    }
+
+    saveBtn.addEventListener("click", save);
+    reloadBtn.addEventListener("click", reloadFromDisk);
+    overwriteBtn.addEventListener("click", overwrite);
+
+    // CM's own save keymap isn't bundled (keymap isn't exported), so bind
+    // Cmd/Ctrl+S at the window instead and swallow the browser's Save dialog.
+    window.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        save();
+      }
+    });
+
+    window.addEventListener("beforeunload", (e) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    });
+
+    // Flush hook for the shell: anything that remounts this iframe (a mode
+    // switch) would silently discard edits newer than the last autosave (or a
+    // conflict-suspended buffer). A caller invokes this first and refuses the
+    // remount on {ok:false} (save failure / unresolved conflict).
+    window.__fusedFlushEdits = async () => {
+      if (!view || !dirty) return { ok: true };
+      if (conflictEl.style.display === "flex") return { ok: false };
+      await save();
+      return { ok: !dirty && conflictEl.style.display !== "flex" };
+    };
+
+    load();
+  </script>
+</body>
+</html>

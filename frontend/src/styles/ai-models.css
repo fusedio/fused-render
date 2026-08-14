@@ -1,0 +1,549 @@
+/* AI Models (/ai-models, shell/AiModels.tsx) — the Hugging Face cache
+   inventory and its delete controls.
+
+   The page chrome and the cards themselves come from claude-config.css,
+   imported just above: .cc-mdgrid/.cc-mdcard (the MD Files card), .cc-iconbtn
+   for the actions, .cc-pill, .cc-heading. What lives here is only what those
+   have no answer for — the size figure that is the whole point of the page, the
+   "Explore" link, the revision drawer a card opens, and the Discover tab. */
+
+/* Cards keep their natural height: with the grid's default `stretch`, opening
+   one card's revision drawer stretched whatever card shared its row into a
+   matching column of empty space. */
+.am-grid {
+  align-items: start;
+}
+
+/* The two destinations named in the page's captions: the cache directory this
+   machine fills (Local) and the host this page queries (Discover). One rule,
+   because they are the same idea on either tab — the caption states WHERE, and
+   where should be reachable rather than copied out by hand.
+
+   Underlined only on hover: each sits in a line of plain facts ("8 cached ·
+   43 GB total", "Search results are read-only…") and a permanently underlined
+   run of text would read as the whole caption being a link rather than as one
+   word in it being one. The path wraps, because a hub path under a long
+   username is longer than the page head. */
+.am-cache-dir,
+.am-hub-host {
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.am-cache-dir:hover,
+.am-hub-host:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.am-cache-dir:focus-visible,
+.am-hub-host:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.am-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A repo id is a path-shaped string with no spaces. .cc-mdcard-name ellipsizes
+   on one line, which is right for a filename and wrong for `org/name`: the org
+   is the half that gets cut. Wrap inside it instead and let the card grow. */
+.am-card-name {
+  color: inherit;
+  text-decoration: none;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.am-card-name:hover {
+  text-decoration: underline;
+}
+
+.am-card-name:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Pushed to the card's right edge, tabular so the figures line up down a
+   column of cards even though each card sizes itself. */
+.am-card-size {
+  margin-left: auto;
+  padding-left: 8px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* "Explore" is the local door — the model card view — and it wears .cc-iconbtn
+   like the ✕ beside it, so the card's actions read as one row of controls
+   rather than a word and some buttons. Still an <a>, because it navigates and
+   middle-click and copy-link have to keep working; this only restores the
+   dimensions and the hover the class expects on a <button>. */
+.am-card-explore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The DESTRUCTIVE actions are quiet until the card is hovered or one of them is
+   focused: a grid of ✕ buttons reads as a page about deleting, and this one is
+   about looking. "Explore" is exempt — it is the card's other destination, and
+   an affordance you have to hover to discover is one most people never find. */
+.am-card .cc-mdcard-actions .cc-iconbtn:not(.am-card-explore) {
+  opacity: 0;
+}
+
+.am-card:hover .cc-mdcard-actions .cc-iconbtn,
+.am-card:focus-within .cc-mdcard-actions .cc-iconbtn {
+  opacity: 1;
+}
+
+/* -- what the model is for -------------------------------------------------- */
+/* One line above the facts: the task, the parameter count, the library. The
+   task carries the emphasis because it is the answer to "what IS this" that a
+   repo id only hints at. */
+
+.am-card-what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Sentence case, not Title Case: `capitalize` would render the Hub's
+   "text-to-image" as "Text To Image". inline-block is what makes ::first-letter
+   apply to a span at all. */
+.am-card-task {
+  display: inline-block;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.am-card-task::first-letter {
+  text-transform: uppercase;
+}
+
+.am-card-params {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The stored weight width — the difference between a 7GB download and a 24GB
+   one of the same model, so it reads as a property, not an aside. */
+.am-card-quant {
+  padding: 1px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.am-card-library::before {
+  /* A separator that belongs to the optional item, so the line has no dangling
+     middot when the library is unknown. */
+  content: "·";
+  margin-right: 10px;
+}
+
+/* -- revision drawer -------------------------------------------------------- */
+
+.am-drawer,
+.am-drawer-note {
+  font-size: 12px;
+}
+
+.am-drawer-note {
+  color: var(--fg-muted);
+}
+
+.am-rev {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+
+.am-rev-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.am-rev-commit {
+  font-weight: 500;
+}
+
+.am-rev-meta,
+.am-rev-size {
+  color: var(--fg-muted);
+}
+
+.am-rev-size {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A drawer row's ✕ follows the drawer row it belongs to, not the whole card. */
+.am-rev .cc-iconbtn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+
+.am-rev:hover .cc-iconbtn,
+.am-rev .cc-iconbtn:focus-visible {
+  opacity: 1;
+}
+
+/* -- Local / Discover, and the Discover tab itself --------------------------
+   Cards on both tabs are the same .cc-mdcard/.am-card — one model should not
+   look like two different things depending on which tab found it — so what
+   lives here is the tab strip, the query controls, and the two badges that only
+   mean something for a Hub result.
+
+   The strip is the ONLY thing in the page head (D256): with Prune and Refresh
+   gone, the toggle sits in the same place in every state instead of sliding as
+   buttons appear and disappear beside it. */
+.am-tabs {
+  display: inline-flex;
+  margin-right: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.am-tab {
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.am-tab + .am-tab {
+  border-left: 1px solid var(--border);
+}
+
+.am-tab:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.am-tab.active {
+  color: var(--fg);
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+.am-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The empty Local tab carries a control as well as a sentence (HF-8): it is a
+   door to Discover, not a dead end. .cc-empty centres the text; the paragraph
+   only needs its default margins dropped so the button sits under the line
+   rather than a blank line below it. */
+.am-empty p {
+  margin: 0 0 12px;
+}
+
+.am-hub-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.am-hub-search {
+  flex: 1 1 260px;
+  min-width: 180px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.am-hub-select {
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.am-hub-search:focus-visible,
+.am-hub-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.am-hub-note {
+  margin: 0 0 14px;
+}
+
+/* A refetch in flight dims the results that are still on screen rather than
+   replacing them with a spinner: the old answer is still the best one we have
+   until the new one lands, and swapping it for empty space makes typing feel
+   like the page is breaking. */
+.am-hub-stale {
+  opacity: 0.55;
+  transition: opacity 120ms ease-out;
+}
+
+.am-hub-state {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+/* The one thing a browser tab on huggingface.co cannot tell you. */
+.am-hub-here {
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--bg);
+  background: var(--accent);
+}
+
+.am-hub-partial {
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+
+.am-hub-gated {
+  color: var(--fg-muted);
+}
+
+/* -- what a model is doing right now (SPEC §40) ------------------------------
+   The runtime row sits between what a model IS and the meta line, because it is
+   the answer to a different question — not "what did I download" but "what is
+   this costing me at this moment". Absent when the answer is "nothing", so a
+   grid of cards is not a grid of identical chips. */
+.am-card-runtime {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The busy dot, and only the busy dot. "Loaded" used to be a 7px bullet here
+   too, and it was the wrong instrument: in a grid of a dozen cards a small
+   quiet dot is not findable by sweeping, which is the only way anyone reads a
+   grid. That state is now .am-card-loaded + .am-loaded-badge below. */
+.am-runtime-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  animation: am-pulse 1.4s ease-in-out infinite;
+}
+
+.am-runtime-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes am-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-runtime-dot { animation: none; }
+}
+
+.am-card-runtime-ready { color: var(--fg); }
+.am-card-runtime-error { color: var(--error); }
+
+.am-runtime-mem {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* When the memory figure is the whole row (a loaded model, whose STATE the
+   badge already carries), it leads rather than being pushed to the far edge by
+   an absent label. */
+.am-runtime-mem-lead {
+  margin-left: 0;
+}
+
+/* -- loaded, said loudly -----------------------------------------------------
+   The user's complaint, verbatim: "Loaded bullet on a model is too subtle (not
+   bright enough) to indicate it is running". Two changes, because the grid is
+   read two ways — swept, and then read.
+
+   Swept: the CARD changes. A green rail down its left edge and a wash over the
+   whole surface, so a loaded model is findable among a dozen without reading a
+   word of any of them.
+
+   Read: a filled BADGE beside the name, in the same green as the sidebar's live
+   dot (--success-bright). One colour means "running" across this app rather
+   than one colour per surface. */
+.am-card-loaded {
+  border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
+  background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
+  box-shadow: inset 3px 0 0 var(--success-bright);
+}
+
+.am-loaded-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-radius: 999px;
+  /* The .am-hub-here pattern: a filled pill whose text is the PAGE background,
+     which stays readable in both themes without a second token — dark text on
+     the bright green above, white on the darker green below. */
+  color: var(--bg);
+  background: var(--success-bright);
+}
+
+/* Bytes only: a download knows its total, so it gets a real bar. Loading
+   weights into memory does NOT, and an invented percentage there is what makes
+   live work read as frozen — so that state shows text and a pulse, no bar. */
+.am-runtime-bar {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.am-runtime-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 200ms linear;
+}
+
+/* Load / Unload. A word, not an icon: this is the one control on the page that
+   spends MEMORY rather than disk, and an unlabelled glyph for "put 8GB of
+   weights in RAM" is a guess the user should not have to make. Always visible
+   for the same reason. */
+.am-card-power {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.am-card-power:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.am-card-power:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.am-card-power-on {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.am-card-power:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* -- Suggested (the curated shortlist, SPEC §40) ------------------------------
+   Above the search box and only when nothing is typed: a handful someone has
+   chosen is the answer to "what should I even get", which is the question you
+   have before you know what to search for. */
+.am-suggested {
+  margin: 0 0 18px;
+}
+
+.am-suggested-head {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.am-suggested-group + .am-suggested-group {
+  margin-top: 14px;
+}
+
+.am-suggested-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
+.am-suggested-cap::first-letter {
+  text-transform: uppercase;
+}
+
+/* Why a capability cannot run here. Shown, never hidden — a missing feature
+   with no explanation is a bug report. */
+.am-suggested-why {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.am-suggest-note {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The checkmark is the whole reason this list is here rather than in a doc:
+   "you already have this one" is what turns a shortlist into a decision. */
+.am-suggest-have {
+  padding: 1px 7px;
+  font-size: 11px;
+  border-radius: 999px;
+  color: var(--bg);
+  background: var(--accent);
+  white-space: nowrap;
+}

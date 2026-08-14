@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fused Render</title>
+  <!-- Pre-paint theme bootstrap (SPEC §30, D134). Inline and ahead of every
+       stylesheet/script on purpose: the resolved appearance must be on <html>
+       BEFORE the first paint, or a light-mode user sees a dark flash while the
+       preference is read. Duplicates lib/theme.ts's key + resolution rule
+       because nothing importable exists this early; tests/test_theme.py pins
+       the two spellings together. Falls back to dark (today's look) whenever
+       storage or matchMedia is unavailable — but they get SEPARATE try blocks,
+       mirroring resolvedTheme() in static/runtime.js: sharing one meant a
+       throwing localStorage (private mode) skipped the OS check and pinned
+       dark on a light-mode desktop. -->
+  <script>
+    (function () {
+      var pref = null;
+      try {
+        pref = localStorage.getItem("fused-render:theme");
+      } catch (e) {
+        /* private mode / blocked storage — fall through to the OS preference */
+      }
+      var theme;
+      if (pref === "light" || pref === "dark") {
+        theme = pref;
+      } else {
+        try {
+          theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } catch (e) {
+          theme = "dark"; /* no matchMedia — keep today's appearance */
+        }
+      }
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <!-- First-paint placeholder. main.tsx mounts React only after /api/config
+       resolves, which on a cold start (or a slow local server) left the body
+       completely empty — an unexplained blank window. This paints a centred
+       pulsing mark immediately and is replaced wholesale the moment React
+       renders into #root.
+
+       Styles are inline and the colours are literals, unavoidably: shell.css
+       arrives with the module bundle, i.e. strictly after this has to paint.
+       The two values are the --bg/--fg-muted pair from each palette in
+       shell.css and are keyed off the same `data-theme` the bootstrap above
+       just stamped, so the placeholder can't flash the wrong appearance.
+       Honours prefers-reduced-motion like everything in shell.css does. -->
+  <style>
+    /* On <html>, not just <body>: the canvas takes its colour from the root
+       element until <body> is parsed, so a rule on body alone leaves the
+       browser's white base painting the first frames of every load — the
+       white flash a preview iframe showed on each navigation. `color-scheme`
+       is here for the same reason, one step earlier still: it is what the
+       browser's own default surfaces (and any document that never sets a
+       background) resolve against. */
+    html { color-scheme: dark; background: #131417; }
+    html[data-theme="light"] { color-scheme: light; background: #ffffff; }
+    body { margin: 0; background: inherit; }
+    #boot {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font: 600 15px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      letter-spacing: 0.04em;
+      color: #9aa0a6;
+      animation: boot-pulse 1.4s ease-in-out infinite;
+    }
+    html[data-theme="light"] #boot { color: #61656c; }
+    @keyframes boot-pulse { 50% { opacity: 0.45; } }
+    @media (prefers-reduced-motion: reduce) {
+      #boot { animation: none; opacity: 0.7; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"><div id="boot">fused</div></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

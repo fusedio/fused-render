@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# Dev loop: shell watch-build + python server, one command (D54 workflow).
+#
+#   scripts/dev.sh [fused-render args…]     e.g. scripts/dev.sh --port 9000
+#
+# Pipeline: npm install (if needed) -> one gated build (tsc + vite, so type
+# errors surface before anything starts) -> `vite build --watch` in the
+# background -> fused-render server in the foreground, supervised by
+# watchfiles for Python auto-reload. Ctrl-C stops everything.
+#
+# Two independent reload paths:
+#   * Frontend: `vite build --watch` rebuilds into fused_render/static/
+#     shell-dist/ on every shell edit; the server reads files per-request with
+#     Cache-Control: no-cache, so a browser refresh picks up the new bundle —
+#     no server restart needed. (The watch skips the tsc gate for speed; run
+#     `npm run typecheck` or a full `npm run build` before committing.)
+#   * Python: edits to fused_render/**/*.py restart the server automatically.
+#     watchfiles supervises `python -m fused_render.cli`, watching only *.py
+#     under fused_render/ (the vite shell-dist output is .html/.js/.css and is
+#     ignored, so frontend rebuilds never restart the server). On each restart
+#     watchfiles gracefully stops the old process (SIGINT + wait for exit)
+#     before relaunching, so the port guard in cli.py is respected.
+#
+# Under the reloader the server runs with --no-browser (so a save doesn't spawn
+# a new tab); dev.sh opens the browser once, after the port comes up.
+#
+# Knobs:
+#   * --no-browser (passed through): dev.sh won't open a tab either.
+#   * FUSED_RENDER_NO_RELOAD=1: disable Python auto-reload; run the server once
+#     exactly as before (server opens its own browser tab).
+# watchfiles is auto-installed into the venv if missing; if the install fails,
+# dev.sh falls back to the original single-launch behavior.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FRONTEND="$REPO_ROOT/frontend"
+
+# Read core templates straight from the repo, skipping the stage-into-home copy
+# (~/.fused-render/.core-templates). Without this the server serves the last
+# version-staged snapshot, so template edits wouldn't show until a version bump
+# or a manual wipe. Respect an already-set value so the caller can override.
+export FUSED_RENDER_CORE_TEMPLATES="${FUSED_RENDER_CORE_TEMPLATES:-$REPO_ROOT/fused_render/templates}"
+
+# Stage the builtin-mount zips (learn.zip, sessions.zip, community.zip) so a
+# dev server gets the Learn/Sessions/Community sub-apps just like the packaged
+# app. The packaged builds create these at DMG/installer time (build_dmg.sh
+# step 4e and its Windows mirror); a dev checkout only has the loose content
+# dirs, so without this the builtin mounts never resolve a zip and the sidebar
+# entries hide. The staging itself lives in scripts/stage_builtin_zips.sh
+# (gitignored .dev-zips/ output, same exclusions as the packaged zips) because
+# TWO callers need it: this startup pass, and dev_server_run.sh before every
+# watchfiles server restart — which is what makes a core_apps/ edit land in a
+# fresh zip that the restarting server force-remounts (the mount serves a zip
+# SNAPSHOT, never the live dir; the core_apps poll loop below turns any edit
+# into such a restart). Respect an already-set env var so a caller can point a
+# mount at their own zip (stage_builtin_zips.sh skips those too).
+DEV_ZIPS="$REPO_ROOT/.dev-zips"
+bash "$REPO_ROOT/scripts/stage_builtin_zips.sh"
+for pair in learn:FUSED_RENDER_LEARN_ZIP sessions:FUSED_RENDER_SESSIONS_ZIP \
+            community:FUSED_RENDER_COMMUNITY_ZIP; do
+  name="${pair%%:*}" var="${pair#*:}"
+  if [[ -z "${!var:-}" && -f "$DEV_ZIPS/$name.zip" ]]; then
+    export "$var=$DEV_ZIPS/$name.zip"
+    echo "==> staged builtin zip: $name.zip"
+  fi
+done
+
+# Keep the rclone rcd daemon (and its mounts + warm VFS cache) alive across the
+# watchfiles server restarts that fire on every .py edit — without this the
+# daemon dies with the server (production teardown) and each restart pays the
+# re-mount + cache re-warm cost. Production leaves this unset. Respect an
+# already-set value so the caller can override (including to "0" to force the
+# production dies-with-server behavior).
+export FUSED_RENDER_RCLONE_PERSIST="${FUSED_RENDER_RCLONE_PERSIST:-1}"
+
+# Isolate each branch/worktree onto its own port + state dir. Without this every
+# dev.sh run (main checkout and every worktree) defaults to the baseline port
+# 1777 and clobbers the same ~/.fused-render state, so a server left running in
+# one worktree collides with — or gets served stale to — another. Deriving the
+# ref from the current branch gives each branch a deterministic port of its own
+# (see fused_render/_branch.py). main/master and detached HEAD sanitize to the
+# baseline, so this is a no-op there. Respect an already-set value so the caller
+# can override (including to "" to force baseline).
+#
+# NOTE: on main/master this mirrors baseline (port 1777 + the shared
+# ~/.fused-render state), which is exactly what the installed macOS desktop app
+# uses. Running dev.sh on main alongside the installed app therefore collides:
+# the port bind fails loudly (see cli.py _check_port_free) and, more subtly,
+# both read/write the same baseline state dir. Work on a feature branch (or pass
+# FUSED_RENDER_BRANCH / --port) to run dev fully isolated from the desktop app.
+if [[ -z "${FUSED_RENDER_BRANCH+x}" ]]; then
+  export FUSED_RENDER_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+
+# Python: active venv first, then the repo-local .venv. With neither, bootstrap
+# a repo-local .venv (with the `dev` + `fused` + `bundled` extras) so a fresh
+# worktree is self-contained. Without this the fallback was bare `python3` on
+# PATH, whose fused_render resolves to whatever global/editable install happens
+# to be there (often the main checkout's) and whose site-packages lack the sci
+# deps the map/geotiff/zarr daemons need — a fresh worktree would silently run
+# the wrong code or fail at daemon spawn. `-e` keeps the install pointed at this
+# worktree's source. Uses uv when present (fast, no ensurepip dance), else
+# stdlib venv+pip.
+#
+# `dev` is in the list even though this script only ever *runs* the server, not
+# the suite: it carries the platform bindings the server itself needs to light
+# up its OS-facing features (on macOS, the pyobjc that the clipboard bridge
+# reads NSPasteboard through). Leaving it out is how the Finder-paste bridge
+# came to report `supported: false` on every dev machine while the tests that
+# would have caught it skipped for the same missing dependency.
+
+# The interpreter version a dev venv is built on (D214), and NOT merely a
+# preference: the server hands its own interpreter to `fused`'s venv builder as the
+# base for every PEP 723 script venv, so this version decides which wheels those
+# venvs can resolve. A bare `uv venv` takes uv's default, which is the newest
+# CPython it knows about — and a .venv built on 3.14 made every script venv cp314,
+# so a script declaring tensorflow (no cp314 wheels) hit an unresolvable dead end
+# that no rebuild could repair. 3.12 is what all three packaged builds already
+# ship, so a dev checkout on it behaves like the shipped app rather than like a
+# machine nobody tests on.
+DEV_PYTHON_VERSION="3.12"
+
+# Is the venv at $1 on DEV_PYTHON_VERSION? Asked of the venv's OWN interpreter
+# rather than inferred from a `lib/python3.x` directory name, because that is the
+# interpreter the server will actually run under.
+venv_is_pinned_version() {
+  local found
+  found="$("$1/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
+  [[ "$found" == "$DEV_PYTHON_VERSION" ]]
+}
+
+# Install the pinned dependency set into $1 (a venv dir). Runs from REPO_ROOT
+# with the `.[extras]` form: uv rejects an absolute path carrying extras (parses
+# it as a PEP508 requirement). Shared by the bootstrap and the staleness resync
+# below so the two can never drift on which extras a dev venv carries.
+install_python_deps() {
+  if command -v uv >/dev/null 2>&1; then
+    (cd "$REPO_ROOT" && uv pip install --python "$1/bin/python" -e ".[dev,fused,bundled]")
+  else
+    (cd "$REPO_ROOT" && "$1/bin/python" -m pip install -e ".[dev,fused,bundled]")
+  fi
+}
+
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  PY="$VIRTUAL_ENV/bin/python"
+  VENV_DIR="$VIRTUAL_ENV"
+  # WARN, never rebuild. An activated venv is the developer's explicit choice and
+  # may hold work this script knows nothing about; destroying it to enforce a pin
+  # would be a far worse surprise than running on the wrong version. The server
+  # still copes — it resolves a uv-managed 3.12 for script venvs (D214) — so this
+  # is a heads-up about a download, not a broken setup.
+  if ! venv_is_pinned_version "$VIRTUAL_ENV"; then
+    echo "==> NOTE: the active venv is not Python $DEV_PYTHON_VERSION." >&2
+    echo "    PEP 723 script venvs are pinned to $DEV_PYTHON_VERSION, so the server will" >&2
+    echo "    resolve a uv-managed $DEV_PYTHON_VERSION for them and download one on first" >&2
+    echo "    use if this machine has none. Deactivate to use $REPO_ROOT/.venv," >&2
+    echo "    or rebuild this venv on $DEV_PYTHON_VERSION, to avoid that." >&2
+  fi
+elif [[ -x "$REPO_ROOT/.venv/bin/python" ]] && venv_is_pinned_version "$REPO_ROOT/.venv"; then
+  PY="$REPO_ROOT/.venv/bin/python"
+  VENV_DIR="$REPO_ROOT/.venv"
+else
+  # A wrong-version .venv is REBUILT rather than adopted, and that is the half of
+  # this change that actually reaches existing checkouts: the branch above used to
+  # adopt `.venv` on existence alone, so pinning the creation below would have
+  # fixed nothing on any machine that already had one — including the machine the
+  # tensorflow report came from. Safe to delete because the directory is
+  # gitignored and its entire contents are what `install_python_deps` puts there;
+  # same reasoning as the dependency resync further down, which already rewrites
+  # it unasked.
+  if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    echo "==> $REPO_ROOT/.venv is not Python $DEV_PYTHON_VERSION — rebuilding it"
+    rm -rf "$REPO_ROOT/.venv"
+  else
+    echo "==> no venv found — creating $REPO_ROOT/.venv with the [dev,fused,bundled] extras"
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    # --python: a bare `uv venv` takes uv's newest known CPython, which is how a
+    # 3.14 dev venv came to exist in the first place. uv downloads a managed
+    # interpreter here if the machine has none.
+    uv venv --python "$DEV_PYTHON_VERSION" "$REPO_ROOT/.venv"
+  else
+    # No uv, so no interpreter downloads: the pinned python has to already be here.
+    # Failing loudly beats silently building on `python3` — that is the exact
+    # substitution this whole change exists to undo.
+    BASE_PY="$(command -v "python$DEV_PYTHON_VERSION" || true)"
+    if [[ -z "$BASE_PY" ]]; then
+      echo "FATAL: need Python $DEV_PYTHON_VERSION to create $REPO_ROOT/.venv, and neither" >&2
+      echo "       uv nor python$DEV_PYTHON_VERSION is on PATH." >&2
+      echo "       Install uv (https://docs.astral.sh/uv/) — it will fetch $DEV_PYTHON_VERSION" >&2
+      echo "       itself — or install python$DEV_PYTHON_VERSION and re-run." >&2
+      exit 1
+    fi
+    "$BASE_PY" -m venv "$REPO_ROOT/.venv"
+    "$REPO_ROOT/.venv/bin/python" -m pip install --upgrade pip
+  fi
+  install_python_deps "$REPO_ROOT/.venv"
+  PY="$REPO_ROOT/.venv/bin/python"
+  VENV_DIR="$REPO_ROOT/.venv"
+  # Stamp here too, or the freshly-bootstrapped venv would immediately look
+  # unstamped to the resync below and install the same set a second time.
+  touch "$REPO_ROOT/.venv/.fused-render-deps"
+fi
+
+# Resync the venv when pyproject.toml has moved on since the last install — the
+# Python half of the `package-lock.json -nt node_modules/.package-lock.json`
+# check below, and load-bearing for the same reason. Before this, the venv was
+# adopted on *existence* alone, so bumping a pin re-synced nothing on any
+# machine that already had a .venv: `.venv` sat on `fused` 2.9.3.post3 while
+# pyproject pinned post13, and post3's local compute backend spawns its runner
+# with `cwd=` + the default close_fds — a fork(), which trips PROJ's
+# pthread_atfork handler and SIGSEGVs before exec. Every /api/run died with a
+# bare `Runner exited with code -11` and no traceback, in code that had not
+# changed; worktrees ranged across post3/post7/post10/post13 purely by setup
+# date. The `import fused_render` guard below cannot see this — it passes
+# happily against a stale dependency set.
+#
+# A missing stamp reads as stale (`-nt` is true when the target is absent), so
+# venvs predating this check — and any venv restored, copied, or half-built
+# without one — self-heal on the next run instead of needing a manual install.
+# The stamp is only touched AFTER a successful install; with `set -e` a failed
+# resync aborts dev.sh, so a broken sync can never be recorded as a good one.
+DEPS_STAMP="$VENV_DIR/.fused-render-deps"
+if [[ ! -e "$DEPS_STAMP" ]]; then
+  echo "==> syncing python deps into $VENV_DIR (no install stamp yet)"
+  install_python_deps "$VENV_DIR"
+  touch "$DEPS_STAMP"
+elif [[ "$REPO_ROOT/pyproject.toml" -nt "$DEPS_STAMP" ]]; then
+  echo "==> syncing python deps into $VENV_DIR (pyproject.toml changed since last install)"
+  install_python_deps "$VENV_DIR"
+  touch "$DEPS_STAMP"
+fi
+
+command -v npm >/dev/null || { echo "npm not found — the dev loop needs Node 22"; exit 1; }
+"$PY" -c "import fused_render" 2>/dev/null || {
+  echo "fused_render not importable from $PY — run: pip install -e \".[dev,fused,bundled]\""
+  exit 1
+}
+
+# Header-less scripts (no pyproject.toml — every core_apps/ helper, e.g.
+# community.py) run on "the app's own interpreter" under the fused engine, and
+# engine.py resolves that by probing candidates. In a dev checkout the probe
+# can reject everything (sys.executable nuances, PATH pythons without the
+# bundled set) and every builtin sub-app's runPython dies with "could not
+# resolve a usable Python interpreter". The dev venv IS the app interpreter
+# here — it carries [bundled] — so point the escape hatch at it. Respect an
+# already-set value.
+export FUSED_RENDER_APP_PYTHON="${FUSED_RENDER_APP_PYTHON:-$PY}"
+
+# Install deps when they're missing OR stale. `node_modules/.package-lock.json`
+# is npm's own record of the last install; if the real package-lock.json is
+# newer than it (a dependency bump, or a branch switch that changed the lock),
+# node_modules no longer matches the manifest and the build fails on a missing
+# module — reinstall to reconcile. `-nt` also fires when the marker is absent
+# entirely (never installed, or a non-npm install left no marker), so a
+# markerless node_modules self-heals on the next run.
+if [[ ! -d "$FRONTEND/node_modules" ]]; then
+  echo "==> npm install (first run)"
+  (cd "$FRONTEND" && npm install --no-audit --no-fund)
+elif [[ "$FRONTEND/package-lock.json" -nt "$FRONTEND/node_modules/.package-lock.json" ]]; then
+  echo "==> npm install (package-lock.json changed since last install)"
+  (cd "$FRONTEND" && npm install --no-audit --no-fund)
+fi
+
+echo "==> initial shell build (tsc + vite)"
+(cd "$FRONTEND" && npm run build)
+
+# `vite build --watch` empties fused_render/static/shell-dist/ before its first
+# rebuild — so the bundle the initial build just produced vanishes for a beat.
+# The server's startup check (create_app) fails hard if shell-dist is missing,
+# so it must not launch during that gap. Delete the index first, then wait for
+# the watch to re-emit it: its reappearance unambiguously means the watch's
+# first build finished (checking before deletion would pass instantly on the
+# initial build's copy and still race the empty). Bounded so a genuinely broken
+# build surfaces instead of hanging forever.
+DIST_INDEX="$REPO_ROOT/fused_render/static/shell-dist/index.html"
+rm -f "$DIST_INDEX"
+
+echo "==> starting vite watch + fused-render server (Ctrl-C stops both)"
+(cd "$FRONTEND" && npm run watch) &
+WATCH_PID=$!
+# OPENER_PID is the one-shot browser opener (set below, reload path only). The
+# trap references it lazily so it's harmless while still unset.
+OPENER_PID=""
+trap 'kill "$WATCH_PID" 2>/dev/null || true; [[ -n "$OPENER_PID" ]] && kill "$OPENER_PID" 2>/dev/null || true' EXIT INT TERM
+
+echo "==> waiting for the vite watch to emit the shell bundle"
+for _ in $(seq 1 60); do
+  [[ -f "$DIST_INDEX" ]] && break
+  sleep 0.5
+done
+[[ -f "$DIST_INDEX" ]] || { echo "shell bundle never appeared at $DIST_INDEX — check the vite watch output above"; exit 1; }
+
+# Python auto-reload via watchfiles (opt out with FUSED_RENDER_NO_RELOAD).
+# Restarts the server on any fused_render/**/*.py edit. watchfiles stops the old
+# process (SIGINT + wait) before relaunching, so cli.py's port guard is honored.
+RELOAD=1
+[[ -n "${FUSED_RENDER_NO_RELOAD:-}" ]] && RELOAD=0
+
+if [[ "$RELOAD" -eq 1 ]]; then
+  # Ensure watchfiles is importable from this venv; install it if not. Match the
+  # venv-bootstrap style above (uv when present, else pip). Any failure is
+  # non-fatal — we fall back to the plain single launch below.
+  if ! "$PY" -c 'import watchfiles' 2>/dev/null; then
+    echo "==> installing watchfiles into the venv (for Python auto-reload)"
+    if command -v uv >/dev/null 2>&1; then
+      uv pip install --python "$PY" watchfiles || true
+    else
+      "$PY" -m pip install watchfiles || true
+    fi
+  fi
+  if ! "$PY" -c 'import watchfiles' 2>/dev/null; then
+    echo "==> WARNING: watchfiles unavailable — falling back to a single launch (no Python auto-reload)"
+    RELOAD=0
+  fi
+fi
+
+if [[ "$RELOAD" -eq 1 ]]; then
+  # Decide whether to open a browser tab, and on which port. The server runs
+  # with --no-browser under the reloader, so dev.sh opens the tab exactly once.
+  NO_BROWSER=0
+  PORT=""
+  want_port=0
+  for a in "$@"; do
+    if [[ "$want_port" -eq 1 ]]; then PORT="$a"; want_port=0; continue; fi
+    case "$a" in
+      --no-browser) NO_BROWSER=1 ;;
+      --port=*)     PORT="${a#--port=}" ;;
+      --port)       want_port=1 ;;
+    esac
+  done
+  # No explicit --port: fall back to the per-branch default the server derives.
+  if [[ -z "$PORT" ]]; then
+    PORT="$("$PY" -c 'from fused_render._branch import branch_port; print(branch_port())' 2>/dev/null || true)"
+  fi
+
+  # One-shot opener: wait for the port to accept a connection, then open the tab.
+  if [[ "$NO_BROWSER" -eq 0 && -n "$PORT" ]]; then
+    (
+      ready=0
+      for _ in $(seq 1 120); do
+        if "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', $PORT))==0 else 1)" 2>/dev/null; then
+          ready=1
+          break
+        fi
+        sleep 0.5
+      done
+      # Only open if the server actually came up — otherwise (e.g. the port
+      # guard SystemExited on a stale server) we'd pop a dead tab after timeout.
+      if [[ "$ready" -eq 1 ]]; then
+        # Match cli.py's first-run onboarding: open the seeded showcase landing
+        # page on a brand-new install, else the root. ensure_fused_dir_and_landing
+        # is idempotent (cli.py calls it too) and returns (fused_dir, landing);
+        # landing is a "/view/…" path on first run, else None → fall back to root.
+        LANDING="$("$PY" -c 'from fused_render.shell.seed import ensure_fused_dir_and_landing; _, l = ensure_fused_dir_and_landing(); print(l or "")' 2>/dev/null || true)"
+        if [[ -n "$LANDING" ]]; then URL="http://127.0.0.1:$PORT$LANDING"; else URL="http://127.0.0.1:$PORT/"; fi
+        # Open via Python's webbrowser (cross-platform, matches cli.py); a shell
+        # open/xdg-open/start chain misses Windows/git-bash (start is a cmd
+        # builtin, not a binary on PATH). Pass the URL through argv, not
+        # interpolated into the -c source: a landing path with an apostrophe
+        # (e.g. a home dir containing ') would otherwise break the string literal.
+        "$PY" -c "import sys, webbrowser; webbrowser.open(sys.argv[1])" "$URL" >/dev/null 2>&1 || true
+      fi
+    ) &
+    OPENER_PID=$!
+  fi
+
+  # watchfiles wants the target as a single shell-command string, then the watch
+  # paths. printf %q quotes $PY and each passthrough arg so paths/args with
+  # spaces survive. --filter python watches only *.py under the whole
+  # fused_render/ tree, so vite's shell-dist output (.html/.js/.css) never
+  # triggers a restart. Editing a template UDF (fused_render/templates/**/*.py)
+  # triggers a harmless extra server restart; we don't exclude templates/
+  # because watchfiles' --ignore-paths matches by bare prefix (filters.py:
+  # startswith), so it would also hide the imported sibling templates_api.py.
+  #
+  # --no-browser goes AFTER the passthrough args: cli.py's main() injects a
+  # default `serve` only when argv[0] isn't already a subcommand, so a leading
+  # `serve` (e.g. `dev.sh serve --port N`) must stay argv[0]. Prepending
+  # --no-browser would shift it and trigger a duplicate-`serve` parse error.
+  # core_apps content watcher: watchfiles' python filter only reacts to *.py,
+  # but builtin sub-app edits are mostly .html/.md/.svg. Poll for ANY newer
+  # file under core_apps/ and poke a gitignored .py trigger inside the watched
+  # tree — watchfiles sees a .py change, restarts the server through
+  # dev_server_run.sh, which re-stages the zips first. Net effect: save a file
+  # under core_apps/, the server restarts on fresh zips, a browser refresh
+  # shows the edit. ~2s poll; core_apps is tiny.
+  CORE_TRIGGER="$REPO_ROOT/core_apps/.dev-reload-trigger.py"
+  touch "$CORE_TRIGGER"
+  (
+    # *.py excluded: watchfiles' python filter already restarts on those (and
+    # the restart re-stages zips via dev_server_run.sh) — poking the trigger
+    # too would queue a SECOND restart for the same edit. Also skip junk that
+    # staging never packages anyway (.DS_Store, editor swaps, *.html.json
+    # sidecars) so it can't force pointless restarts.
+    while sleep 2; do
+      if [[ -n "$(find "$REPO_ROOT/core_apps" -type f \
+                    ! -name "*.py" ! -name ".DS_Store" ! -name "*~" \
+                    ! -name "*.swp" ! -name "*.swx" ! -name "*.json.tmp" \
+                    ! -name "*.html.json" ! -name "*.md.json" ! -name "*.py.json" \
+                    ! -name "*.txt.json" ! -name "*.markdown.json" \
+                    ! -path "*/__pycache__/*" \
+                    -newer "$CORE_TRIGGER" -print -quit 2>/dev/null)" ]]; then
+        touch "$CORE_TRIGGER"
+      fi
+    done
+  ) &
+  CORE_WATCH_PID=$!
+  trap 'kill "$WATCH_PID" "$CORE_WATCH_PID" 2>/dev/null || true; [[ -n "$OPENER_PID" ]] && kill "$OPENER_PID" 2>/dev/null || true' EXIT INT TERM
+
+  # The restart target is dev_server_run.sh (re-stage builtin zips, then exec
+  # the server) so every restart mounts current core_apps content — not the
+  # snapshot from dev.sh launch time.
+  CMD="bash $(printf '%q' "$REPO_ROOT/scripts/dev_server_run.sh") $(printf '%q' "$PY")"
+  for a in "$@"; do CMD+=" $(printf '%q' "$a")"; done
+  CMD+=" --no-browser"
+  "$PY" -m watchfiles --filter python "$CMD" "$REPO_ROOT/fused_render" "$REPO_ROOT/core_apps"
+else
+  # Original single-launch behavior: the server opens its own browser tab.
+  "$PY" -m fused_render.cli "$@"
+fi

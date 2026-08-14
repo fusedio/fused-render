@@ -1,0 +1,420 @@
+/* -- Apps hub (/apps) -------------------------------------------------------
+   Chrome-free page like Home: scrolling column, centered inner. Tiles reuse
+   .home-app / .home-apps; the page adds its own header, search, and tag
+   chips. All colors via tokens so both themes hold. */
+.apps-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.apps-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 36px 28px 72px;
+}
+
+.apps-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.apps-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 240px;
+  max-width: 340px;
+  padding: 0 12px;
+  height: 34px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-muted);
+}
+
+.apps-search:focus-within {
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.apps-search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 13px;
+  color: var(--fg);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.apps-search input::placeholder {
+  color: var(--fg-muted);
+}
+
+.apps-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.apps-tag-chip {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.apps-tag-chip:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+.apps-tag-chip.is-active {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.apps-count {
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Sort: a small segmented control next to the search box. Neutral fill on the
+   active segment (accent stays reserved for focus/selection). */
+.apps-sort {
+  display: inline-flex;
+  padding: 2px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.apps-sort-btn {
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.apps-sort-btn:hover {
+  color: var(--fg);
+}
+
+.apps-sort-btn.is-active {
+  color: var(--bg);
+  background: var(--fg);
+}
+
+/* -- Preview cards ------------------------------------------------------------
+   Big cards whose thumbnail IS the app: entry HTML in a lazily-loaded iframe
+   rendered at 4x the box and scaled down (see AppPreviewCard.tsx), with a
+   transparent shield on top so the preview never swallows a click. Grid
+   auto-fills; each card is roughly 340px wide with a 16:10 thumbnail. */
+.apps-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 18px;
+}
+
+/* An <a>, like .home-recent — see the note there. */
+.app-pcard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+}
+
+.app-pcard:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+  box-shadow: 0 4px 18px var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.app-pcard-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.app-pcard-thumb iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: none;
+  background: var(--bg-panel);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+/* The authored `preview.png`, in the same 16/10 box the live iframe fills.
+   `cover` rather than `contain`: a thumbnail crops, it does not letterbox — a
+   screenshot at the wrong aspect ratio should still fill the card. Community
+   catalog cards reuse it for their cached preview.png. */
+.app-pcard-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--bg-panel);
+}
+
+/* Overlay while an uncloned community app fetches its files before preview. */
+.app-pcard-cloning {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.app-pcard-shield {
+  position: absolute;
+  inset: 0;
+}
+
+.app-pcard-monogram {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 44px;
+  font-weight: 700;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.app-pcard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 14px 12px;
+  min-width: 0;
+}
+
+.app-pcard-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-pcard-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.app-pcard-tag {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.app-pcard-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-pcard-ago {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* -- Claude artifacts (/claude-artifacts) -------------------------------------
+   shell/ClaudeArtifacts.tsx reuses this file's card, not the other way round:
+   its grid IS .apps-cards and its cards ARE .app-pcard, thumbnail trick and
+   shield included. Only the three things an artifact card has that an app card
+   does not live here — the emoji identity, a description line, and a SECOND
+   destination (the published claude.ai page) alongside the primary one.
+ *
+ * It therefore has to sit AFTER .app-pcard*, which is why the section is in this
+ * file at the bottom rather than beside the page's own cc- chrome in
+ * claude-config.css: that stylesheet is imported BEFORE this one (see
+ * shell.css), so its rules could not override the card's. */
+
+/* Positioned so the title link's stretched ::after has a containing block — and
+   the inherited `overflow: hidden` then clips that overlay to exactly the card's
+   rounded box, which is the area it is meant to cover. */
+.ca-card {
+  position: relative;
+}
+
+/* Preview on top, text below — the reverse of the app card, because an artifact
+   is a PAGE and the page is what identifies it. So the thumb's hairline moves to
+   the edge it now shares with the body. */
+.ca-card .ca-card-thumb {
+  border-top: none;
+  border-bottom: 1px solid var(--border);
+}
+
+/* No live render (md, or the file is gone): a tinted tile instead of a blank
+   box. Neutral, not accent — accent stays reserved for focus/selection. */
+.ca-card-thumb-tinted {
+  background: color-mix(in srgb, var(--fg-muted) 8%, var(--bg));
+}
+
+.ca-card-glyph {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 52px;
+  line-height: 1;
+}
+
+/* Faded when the file is gone, so the tile reads as an absence at a glance —
+   before the "file removed" line underneath it has been read. */
+.ca-card-thumb-gone .ca-card-glyph {
+  opacity: 0.45;
+}
+
+/* Said quietly at the bottom of the tile: the card still works (its link goes to
+   the published page), so this is a note, not an error. */
+.ca-card-gone {
+  position: absolute;
+  bottom: 8px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.ca-card-body {
+  gap: 6px;
+}
+
+.ca-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ca-card-favicon {
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* The card's primary link. Its ::after is stretched over the whole card so every
+   browser gesture that works on an anchor works anywhere on the card — the
+   property AppPreviewCard gets by BEING an anchor, which this card cannot be
+   (it holds a second link, and anchors do not nest). z-index lifts it over the
+   thumbnail's pointer-events shield, which is a plain positioned span. */
+.ca-card-title {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ca-card-title::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.ca-card-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ca-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.ca-card-ago {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Above the stretched overlay (z-index 2 > 1) so it keeps its own click without
+   any event-bubbling trickery — it is not inside the primary link at all. */
+.ca-card-remote {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ca-card-remote:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+/* The empty state's second line: what an artifact IS, for the very likely reader
+   who has never published one and would otherwise read "none found" as a fault. */
+.ca-empty-sub {
+  max-width: 46ch;
+  margin: 8px auto 0;
+  font-size: 12px;
+  line-height: 1.5;
+}

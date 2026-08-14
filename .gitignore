@@ -1,0 +1,58 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+# pip-managed project (pip install -e ".[dev]"); a uv.lock is only ever a
+# stray artifact of running uv here, never committed.
+uv.lock
+# EXCEPT a core template's own lock, which is project SOURCE (SPEC PY-16): each
+# template folder declares its environment in a pyproject.toml, and shipping the
+# resolved lock beside it is what stops a released build resolving against PyPI
+# the first time anyone renders that template. Committed, and shipped in the
+# wheel — hatchling excludes gitignored files, so without this negation the lock
+# would silently not be packaged.
+!fused_render/templates/*/uv.lock
+build/
+dist/
+*.egg-info/
+.DS_Store
+scripts/vendor-codemirror/node_modules/
+scripts/vendor-sci/node_modules/
+scripts/vendor-three/node_modules/
+.claude/worktrees/
+frontend/node_modules/
+fused_render/static/shell-dist/
+# The package-level skills/ (the user-level skill sync's wheel source, D185)
+# is a build-time copy of the canonical repo skills/ (D106, same pattern as
+# shell-dist); never committed, shipped via `artifacts`.
+fused_render/skills/
+fused_render/_baked_branch.py
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+# Runtime sidecar written next to an opened file: the server writes `<file>.json`
+# beside ANY file you open, whatever its extension (bookmark/session/comment
+# state — e.g. learn/index.html.json, ARCHITECTURE.md.json). It is per-machine
+# state and never source: a committed one hijacks the default view for everyone,
+# because an empty-query open restores its `lastSession` (ARCHITECTURE.md.json
+# was committed by accident and pinned the doc to one machine's git-mode
+# session). The rule was `*.html.json` only, so every other extension slipped
+# through. Listed per extension rather than as a `*.*.json` wildcard, which would
+# also swallow genuine configs (tsconfig.build.json, settings.local.json, …) —
+# add extensions here as they come up; nothing tracked has ever matched these.
+*.html.json
+*.md.json
+*.markdown.json
+*.py.json
+*.txt.json
+
+# cmux browser/screenshot captures — local scratch, never committed
+cmux-assets/
+
+# dev.sh's staged builtin-mount zips (learn.zip / sessions.zip) — build
+# artifacts, freshly rebuilt on every dev.sh run, never committed
+.dev-zips/
+# dev.sh's core_apps reload poke (scripts/dev.sh core_apps watcher)
+core_apps/.dev-reload-trigger.py
+docs/superpowers/plans/

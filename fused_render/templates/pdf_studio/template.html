@@ -1,0 +1,2263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF Studio</title>
+<link rel="modulepreload" href="/template-assets/pdfjs.bundle.mjs">
+<link rel="modulepreload" href="/template-assets/pdfjs.worker.bundle.mjs">
+<style>
+  /* ---- Light Airtable-flavored design system (shared with latex/docs) ---- */
+  :root {
+    --blue: #166ee1; --blue-2: #2d7ff9; --blue-soft: #e8f0fe; --blue-ink: #0f5bc4;
+    --canvas: #f7f8fa; --chrome: #ffffff; --hair: #e0e3e8; --hair-2: #eceef1;
+    --ink: #1d2025; --ink-2: #4c5560; --ink-3: #8a929e;
+    --danger: #d64b4b; --danger-soft: #fdecec; --ok: #1a9c67; --amber: #d98218;
+    --radius: 6px; --radius-lg: 10px;
+    --shadow-1: 0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.08);
+    --shadow-2: 0 6px 24px rgba(15,23,42,.16);
+    --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font); color: var(--ink); background: var(--canvas);
+    font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; cursor: pointer; }
+  .hidden { display: none !important; }
+  .spacer { flex: 1 1 auto; }
+  svg { pointer-events: none; }
+
+  /* ---- top bar ---- */
+  #topbar {
+    display: flex; align-items: center; gap: 10px; padding: 7px 12px; flex: 0 0 auto;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); z-index: 30;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; }
+  .brand .mark { width: 22px; height: 22px; border-radius: 5px; background: var(--blue);
+    color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 800; font-family: var(--mono); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; background: var(--chrome); color: var(--ink);
+    border: 1px solid var(--hair); border-radius: var(--radius); padding: 6px 11px; font-weight: 500; }
+  .btn:hover { background: var(--hair-2); }
+  .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); font-weight: 600; }
+  .btn.primary:hover { background: var(--blue-ink); }
+  .btn.ghost { border-color: transparent; background: transparent; }
+  .btn.ghost:hover { background: var(--hair-2); }
+  .btn svg { width: 15px; height: 15px; }
+  #docName { font-weight: 600; font-size: 13.5px; max-width: 26vw; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  #docPages { color: var(--ink-3); font-size: 12px; white-space: nowrap; }
+
+  #status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
+    color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  #status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); }
+  #status.ok .dot { background: var(--ok); } #status.ok { color: var(--ok); }
+  #status.err .dot { background: var(--danger); } #status.err { color: var(--danger); }
+  #status.warn .dot { background: var(--amber); } #status.warn { color: var(--amber); }
+  #status.busy .dot { background: var(--amber); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  .seg { display: inline-flex; background: var(--hair-2); border-radius: var(--radius); padding: 2px; gap: 2px; }
+  .seg button { border: none; background: transparent; color: var(--ink-2); border-radius: 4px;
+    padding: 5px 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+  .seg button.on { background: #fff; color: var(--blue); box-shadow: var(--shadow-1); }
+  .seg button svg { width: 15px; height: 15px; }
+
+  /* ---- menubar ---- */
+  #menubar { display: flex; padding: 0 8px; user-select: none; background: var(--chrome);
+    border-bottom: 1px solid var(--hair); flex: 0 0 auto; z-index: 25; }
+  .menu { position: relative; padding: 5px 10px; border-radius: 5px; margin: 3px 1px; color: var(--ink-2); font-weight: 500; }
+  .menu:hover, .menu.open { background: var(--hair-2); color: var(--ink); }
+  .dropdown { display: none; position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid var(--hair);
+    border-radius: var(--radius); box-shadow: var(--shadow-2); padding: 5px; min-width: 220px; z-index: 60; }
+  .menu.open .dropdown { display: block; }
+  .mi { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 5px; color: var(--ink);
+    font-weight: 400; white-space: nowrap; }
+  .mi:hover { background: var(--hair-2); }
+  .mi .kbd { margin-left: auto; color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
+  .mi.off { opacity: .4; pointer-events: none; }
+  .dropdown .divider { height: 1px; background: var(--hair-2); margin: 5px 4px; }
+  body.mode-view #menubar { display: none; }
+
+  /* ---- workspace ---- */
+  #main { flex: 1 1 auto; min-height: 0; display: flex; }
+  #side { flex: 0 0 224px; min-width: 0; overflow-y: auto; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 12px 8px; display: flex; flex-direction: column; gap: 16px; }
+  body.panel-off #side { display: none; }
+  #side h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--ink-3);
+    padding: 0 6px; display: flex; align-items: center; }
+  #side h4 .add { margin-left: auto; border: none; background: none; color: var(--ink-3); font-size: 15px;
+    line-height: 1; padding: 0 4px; border-radius: 4px; }
+  #side h4 .add:hover { background: var(--hair-2); color: var(--blue); }
+  #side h4 .sec-toggle { display: flex; align-items: center; gap: 4px; border: none; background: none;
+    font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; padding: 0; }
+  #side h4 .sec-toggle:hover { color: var(--ink); }
+  #side h4 .caret { width: 11px; height: 11px; flex: 0 0 auto; transition: transform .15s; }
+  body.recent-off #side h4 .caret { transform: rotate(-90deg); }
+  body.recent-off #docList { display: none; }
+
+  .doc-row { display: flex; align-items: center; gap: 7px; width: 100%; border: none; background: none;
+    color: var(--ink-2); padding: 5px 6px; border-radius: 5px; font-size: 12.5px; cursor: pointer; position: relative; }
+  .doc-row:hover { background: var(--hair-2); color: var(--ink); }
+  .doc-row.on { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+  .doc-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .doc-row .meta { color: var(--ink-3); font-size: 11px; flex: 0 0 auto; }
+  .doc-row .ops { display: none; position: absolute; right: 4px; background: #fff; border-radius: 5px;
+    box-shadow: var(--shadow-1); padding: 1px; }
+  .doc-row:hover .ops { display: inline-flex; }
+  .doc-row:hover .meta { visibility: hidden; }
+  .ops button { border: none; background: none; padding: 3px 5px; border-radius: 4px; color: var(--ink-2);
+    display: inline-flex; }
+  .ops button:hover { background: var(--hair-2); color: var(--ink); }
+  .ops button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .ops svg { width: 13px; height: 13px; }
+  .side-empty { color: var(--ink-3); padding: 4px 6px; font-size: 12px; }
+
+  /* thumbnail rail */
+  #thumbs { display: flex; flex-direction: column; gap: 10px; padding: 0 6px; }
+  .thumb { position: relative; cursor: pointer; border-radius: 4px; }
+  .thumb canvas { display: block; width: 100%; background: #fff; border: 1px solid var(--hair);
+    border-radius: 4px; box-shadow: var(--shadow-1); }
+  .thumb.on canvas { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .thumb .pn { position: absolute; left: 6px; bottom: 6px; background: rgba(29,32,37,.72); color: #fff;
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px; }
+  .qa { position: absolute; top: 6px; right: 6px; display: inline-flex; gap: 1px; background: #fff;
+    border-radius: 6px; box-shadow: var(--shadow-2); padding: 2px; opacity: 0; transition: opacity .12s; z-index: 5; }
+  .thumb:hover .qa, .pdf-page:hover .qa { opacity: 1; }
+  .qa button { border: none; background: none; padding: 4px 5px; border-radius: 4px; color: var(--ink-2); display: inline-flex; }
+  .qa button:hover { background: var(--hair-2); color: var(--ink); }
+  .qa button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+  .qa svg { width: 14px; height: 14px; }
+  body.mode-view .qa { display: none; }
+
+  /* pages */
+  #canvasWrap { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 24px; }
+  #pages { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+  .pdf-page { position: relative; background: #fff; box-shadow: 0 2px 10px rgba(15,23,42,.14); }
+  .pdf-page canvas { display: block; }
+  .pdf-page .overlay { position: absolute; inset: 0; }
+  body.mode-view .overlay { display: none; }
+  .pdf-page .textLayer { position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial;
+    transform-origin: 0 0; forced-color-adjust: none; caret-color: CanvasText; }
+  .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; }
+  .textLayer ::selection { background: rgba(45,127,249,.28); }
+  body.mode-edit .textLayer { display: none; }
+  .tspan { position: absolute; cursor: text; border-radius: 2px; }
+  .tspan:hover { outline: 1.5px solid var(--blue-2); background: rgba(45,127,249,.08); }
+  .tedit { position: absolute; z-index: 10; border: 1.5px solid var(--blue); border-radius: 3px; background: #fff;
+    box-shadow: var(--shadow-2); font-family: var(--font); color: var(--ink); padding: 0 2px; min-width: 60px; }
+  .tedit:focus { outline: none; }
+  #pagesNote { color: var(--ink-3); text-align: center; font-size: 12px; padding: 6px; }
+
+  /* ---- modal ---- */
+  .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,.35); display: grid; place-items: center; z-index: 100; }
+  .modal { background: #fff; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); padding: 20px; width: 400px; max-width: 94vw; }
+  .modal.wide { width: 560px; }
+  .modal h3 { margin: 0 0 12px; font-size: 16px; }
+  .modal p { margin: 0 0 10px; color: var(--ink-2); line-height: 1.45; }
+  .modal label { display: block; font-size: 12px; color: var(--ink-2); font-weight: 600; margin: 10px 0 4px; }
+  .modal input[type=text], .modal input[type=password], .modal select { width: 100%; padding: 8px 10px; border: 1px solid var(--hair); border-radius: var(--radius); font: inherit; }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .modal .radio { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--hair);
+    border-radius: var(--radius); margin-top: 6px; cursor: pointer; }
+  .modal .radio:hover { border-color: var(--blue); }
+  .modal .radio small { color: var(--ink-3); display: block; margin-top: 2px; }
+  .modal .checklist { max-height: 220px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; margin-top: 6px; }
+  .modal .checklist label { display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 8px; border-radius: 4px; font-weight: 400; cursor: pointer; }
+  .modal .checklist label:hover { background: var(--hair-2); }
+
+  /* file browser */
+  .modal input.fb-path { font-family: var(--mono); font-size: 12px; margin-bottom: 8px; }
+  .fb-crumbs { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; font-size: 12px;
+    background: var(--hair-2); border-radius: var(--radius); padding: 5px 8px; margin-bottom: 10px; }
+  .fb-crumbs button { border: none; background: none; color: var(--blue-ink); padding: 2px 4px; border-radius: 4px; font: inherit; }
+  .fb-crumbs button:hover { background: #fff; }
+  .fb-crumbs .sep { color: var(--ink-3); }
+  .fb-list { height: 280px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; }
+  .fb-row { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: none; background: none;
+    color: var(--ink); padding: 6px 8px; border-radius: 5px; font-size: 13px; }
+  .fb-row:hover { background: var(--blue-soft); }
+  .fb-row .ico { width: 17px; flex: 0 0 auto; display: inline-flex; color: var(--ink-3); }
+  .fb-row .ico svg { width: 16px; height: 16px; }
+  .fb-row.dir .ico { color: var(--blue); }
+  .fb-row.dir .nm { font-weight: 600; }
+  .fb-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fb-row .sz { color: var(--ink-3); font-size: 11px; }
+  .fb-empty { color: var(--ink-3); font-size: 12.5px; padding: 20px; text-align: center; }
+
+  /* destination picker + operation results */
+  .destrow { display: flex; gap: 6px; margin-top: 6px; }
+  .destrow input { flex: 1 1 auto; min-width: 0; }
+  .modal .hint { color: var(--ink-3); font-size: 12px; margin: 10px 0 0; line-height: 1.45; }
+  .filelist { max-height: 220px; overflow-y: auto; border: 1px solid var(--hair); border-radius: var(--radius); padding: 4px; margin-top: 6px; }
+  .file-row { display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 5px; font-size: 13px; }
+  .file-row:hover { background: var(--hair-2); }
+  .file-row .ico { width: 17px; flex: 0 0 auto; display: inline-flex; color: var(--ink-3); }
+  .file-row .ico svg { width: 16px; height: 16px; }
+  .file-row .nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .sz { color: var(--ink-3); font-size: 11px; }
+  .file-row .dl { border: none; background: none; padding: 3px 5px; border-radius: 4px; color: var(--ink-2); display: inline-flex; }
+  .file-row .dl:hover { background: var(--blue-soft); color: var(--blue-ink); }
+  .file-row .dl svg { width: 14px; height: 14px; }
+
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff;
+    padding: 9px 16px; border-radius: 8px; font-size: 13px; box-shadow: var(--shadow-2); z-index: 200; display: none; max-width: 70vw; }
+  #toast.err { background: var(--danger); }
+  #boot { position: fixed; inset: 0; display: grid; place-items: center; color: var(--ink-3); font-size: 14px;
+    background: var(--canvas); z-index: 300; text-align: center; line-height: 1.7; }
+  /* boot skeleton: absolutely positioned so it fills #boot without disturbing the
+     grid/place-items centering that the plain-text engine-missing / failure states rely on */
+  #boot .boot-skel { position: absolute; inset: 0; display: flex; flex-direction: column; text-align: left; }
+  #boot .boot-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 7px 12px;
+    background: var(--chrome); border-bottom: 1px solid var(--hair); }
+  #boot .boot-body { flex: 1 1 auto; min-height: 0; display: flex; }
+  #boot .boot-side { flex: 0 0 224px; background: var(--chrome); border-right: 1px solid var(--hair);
+    padding: 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+  #boot .boot-canvas { flex: 1 1 auto; display: flex; justify-content: center; padding-top: 40px; overflow: hidden; }
+  #boot .boot-page { width: min(560px, 60vw); aspect-ratio: 8.5 / 11; border-radius: 3px;
+    box-shadow: 0 2px 10px rgba(15,23,42,.14); }
+  #boot .boot-msg { align-self: end; margin-bottom: 30px; background: rgba(255,255,255,.9); color: var(--ink-2);
+    padding: 7px 16px; border-radius: 999px; box-shadow: var(--shadow-1); font-size: 13px; }
+  /* ---- shimmer skeleton (boot screen + doc/page loading placeholders) ---- */
+  @keyframes skelShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .skel-shimmer {
+    background: linear-gradient(90deg, var(--hair-2) 25%, #f6f7f9 50%, var(--hair-2) 75%) !important;
+    background-size: 200% 100%; animation: skelShimmer 1.3s ease-in-out infinite;
+  }
+  .thumb.skel-thumb { border-radius: 4px; cursor: default; }
+  #banner { background: #fff7e8; border-bottom: 1px solid #f2dfb8; color: #8a6116; padding: 7px 14px;
+    font-size: 12.5px; flex: 0 0 auto; }
+
+  /* ---- tools home (ihatepdf-style card grid over the viewer) ---- */
+  #main { position: relative; }
+  /* Tools is a full-#main overlay, so it must sit above the inspector drawer
+     (a flex child at z-index 22) or the drawer paints over the card grid. */
+  #toolsHome { position: absolute; inset: 0; overflow-y: auto; background: var(--canvas); z-index: 24;
+    padding: 26px 34px 40px; }
+  #toolsHome .th-head { display: flex; align-items: baseline; gap: 12px; max-width: 1060px; margin: 0 auto 4px; }
+  #toolsHome h2 { margin: 0; font-size: 19px; }
+  #toolsHome .th-head p { margin: 0; color: var(--ink-3); font-size: 12.5px; }
+  #toolsHome h5 { max-width: 1060px; margin: 22px auto 8px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .8px; color: var(--ink-3); }
+  .tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px;
+    max-width: 1060px; margin: 0 auto; }
+  .tool-card { display: flex; align-items: flex-start; gap: 11px; text-align: left; background: var(--chrome);
+    border: 1px solid var(--hair); border-radius: var(--radius-lg); padding: 13px 14px; cursor: pointer; }
+  .tool-card:hover { border-color: var(--blue); box-shadow: var(--shadow-1); }
+  .tool-card .ic { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center;
+    background: var(--blue-soft); color: var(--blue-ink); }
+  .tool-card .ic svg { width: 17px; height: 17px; }
+  .tool-card[data-tone=green] .ic { background: #e5f6ee; color: var(--ok); }
+  .tool-card[data-tone=red] .ic { background: var(--danger-soft); color: var(--danger); }
+  .tool-card[data-tone=amber] .ic { background: #fdf3e2; color: var(--amber); }
+  .tool-card b { display: block; font-size: 13px; margin-bottom: 2px; }
+  .tool-card small { color: var(--ink-3); line-height: 1.4; display: block; }
+  #toolsClose { margin-left: auto; }
+
+  /* ---- inspector drawer ---- */
+  /* a flex sibling of the canvas, not an overlay like #toolsHome — the page
+     stays readable next to the report */
+  #inspector { flex: 0 0 436px; min-width: 0; z-index: 22;
+    background: var(--chrome); border-left: 1px solid var(--hair); display: flex; flex-direction: column; }
+  body:not(.inspect-on) #inspector { display: none; }
+  .ins-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 12px 9px; }
+  .ins-head h3 { margin: 0; font-size: 14px; }
+  .ins-head .eng { color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
+  .ins-tabs { flex: 0 0 auto; display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--hair); }
+  .ins-tab { border: none; background: none; padding: 7px 9px; font-weight: 600; font-size: 12px;
+    color: var(--ink-3); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .ins-tab:hover { color: var(--ink); }
+  .ins-tab.on { color: var(--blue); border-bottom-color: var(--blue); }
+  .ins-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 13px; }
+  .ins-note { color: var(--ink-3); padding: 22px 6px; text-align: center; line-height: 1.6; }
+  .ins-body h6 { margin: 18px 0 7px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px;
+    color: var(--ink-3); }
+  .ins-body h6:first-child { margin-top: 0; }
+
+  .verdict { border: 1px solid var(--hair); border-radius: var(--radius-lg); padding: 12px 13px; }
+  .verdict .top { display: flex; align-items: center; gap: 8px; }
+  .vbadge { font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    background: var(--blue-soft); color: var(--blue-ink); }
+  .vbadge[data-t=Scanned], .vbadge[data-t=ImageBased] { background: #fdf3e2; color: #8a6116; }
+  .vbadge[data-t=Mixed] { background: #eef0f3; color: var(--ink-2); }
+  .vbadge[data-t=TextBased] { background: #e5f6ee; color: #12704a; }
+  .verdict .conf { margin-left: auto; color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .cbar { height: 4px; border-radius: 3px; background: var(--hair-2); margin: 9px 0 8px; overflow: hidden; }
+  .cbar span { display: block; height: 100%; background: var(--blue); }
+  .verdict p { margin: 0; color: var(--ink-2); line-height: 1.5; font-size: 12.5px; }
+  .verdict p.cross { margin-top: 9px; color: var(--ink-3); font-size: 12px; }
+  .verdict code { font-family: var(--mono); font-size: 11.5px; background: var(--hair-2);
+    border-radius: 3px; padding: 1px 5px; }
+  .verdict .row { margin-top: 11px; }
+
+  .kv { display: grid; grid-template-columns: 122px 1fr; gap: 3px 10px; font-size: 12.5px; }
+  .kv dt { color: var(--ink-3); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 7px; }
+  .stat { border: 1px solid var(--hair); border-radius: var(--radius); padding: 7px 9px; }
+  .stat b { display: block; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .stat small { color: var(--ink-3); font-size: 11px; }
+
+  .itable { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .itable th { text-align: right; color: var(--ink-3); font-weight: 600; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .5px; padding: 0 5px 5px; border-bottom: 1px solid var(--hair); }
+  .itable th:first-child, .itable td:first-child { text-align: left; }
+  .itable td { text-align: right; padding: 5px; border-bottom: 1px solid var(--hair-2); }
+  .itable tbody tr { cursor: pointer; }
+  .itable tbody tr:hover { background: var(--blue-soft); }
+  .itable tbody tr.on td { background: var(--blue-soft); }
+  .pill { display: inline-block; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px;
+    background: var(--hair-2); color: var(--ink-2); }
+  .pill.text { background: #e5f6ee; color: #12704a; }
+  .pill.image { background: #fdf3e2; color: #8a6116; }
+  .pill.empty { background: var(--danger-soft); color: var(--danger); }
+  .pill.warn { background: #fdf3e2; color: #8a6116; }
+
+  .risk { border-radius: var(--radius-lg); padding: 11px 13px; }
+  .risk h4 { margin: 0 0 3px; font-size: 13.5px; }
+  .risk p { margin: 0; font-size: 12.5px; line-height: 1.5; }
+  .risk[data-r=clean] { background: #e5f6ee; color: #12704a; }
+  .risk[data-r=notable] { background: #fdf3e2; color: #8a6116; }
+  .risk[data-r=risky] { background: var(--danger-soft); color: #9b2c2c; }
+  .risk[data-r=unreadable] { background: #eef0f3; color: var(--ink-2); }
+  .checks { display: flex; flex-direction: column; gap: 1px; }
+  .check { display: flex; gap: 8px; align-items: baseline; padding: 6px 4px; border-bottom: 1px solid var(--hair-2);
+    font-size: 12.5px; }
+  .check .mk { flex: 0 0 15px; font-weight: 700; text-align: center; }
+  .check[data-s=pass] .mk { color: var(--ok); }
+  .check[data-s=info] .mk { color: var(--ink-3); }
+  .check[data-s=warn] .mk { color: var(--amber); }
+  .check[data-s=fail] .mk { color: var(--danger); }
+  .check .nm { flex: 0 0 132px; font-weight: 600; }
+  .check .nt { flex: 1 1 auto; color: var(--ink-2); }
+  .finding { border: 1px solid var(--hair); border-left-width: 3px; border-radius: var(--radius);
+    padding: 8px 10px; margin-bottom: 6px; font-size: 12.5px; }
+  .finding[data-l=danger] { border-left-color: var(--danger); }
+  .finding[data-l=warn] { border-left-color: var(--amber); }
+  .finding b { font-family: var(--mono); font-size: 11.5px; }
+  .finding .where { color: var(--ink-3); font-size: 11px; }
+  .finding code { display: block; margin-top: 5px; font-family: var(--mono); font-size: 11px;
+    background: var(--hair-2); border-radius: 4px; padding: 5px 7px; max-height: 90px; overflow: auto;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  .mdout { font-family: var(--mono); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap;
+    overflow-wrap: anywhere; background: var(--hair-2); border-radius: var(--radius); padding: 10px;
+    margin: 9px 0 0; }
+  .ins-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .ins-actions input { width: 88px; padding: 5px 7px; border: 1px solid var(--hair); border-radius: var(--radius);
+    font: inherit; font-size: 12px; }
+  .thumb .ocr { position: absolute; right: 6px; bottom: 6px; background: var(--amber); color: #fff;
+    font-size: 9.5px; font-weight: 700; padding: 1px 5px; border-radius: 7px; letter-spacing: .3px; }
+
+  /* ---- scanner ---- */
+  .scan-wrap { position: relative; background: #111; border-radius: var(--radius); overflow: hidden; margin-top: 6px; }
+  .scan-wrap video { display: block; width: 100%; max-height: 320px; object-fit: contain; }
+  .scan-strip { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 2px; min-height: 20px; }
+  .scan-strip .cap { position: relative; flex: 0 0 auto; }
+  .scan-strip img { height: 74px; border: 1px solid var(--hair); border-radius: 4px; display: block; }
+  .scan-strip .rm { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%;
+    border: none; background: var(--danger); color: #fff; font-size: 11px; line-height: 1; padding: 0; }
+</style>
+<script src="/template-shared/ro-badge.js"></script>
+</head>
+<body class="mode-view">
+<div id="boot">
+  <div class="boot-skel" aria-hidden="true">
+    <div class="boot-topbar">
+      <span class="skel-shimmer" style="width:78px;height:16px;border-radius:5px"></span>
+      <span class="skel-shimmer" style="width:130px;height:11px;border-radius:4px"></span>
+    </div>
+    <div class="boot-body">
+      <div class="boot-side">
+        <span class="skel-shimmer" style="width:60%;height:9px;border-radius:3px"></span>
+        <span class="skel-shimmer" style="width:80%;height:9px;border-radius:3px"></span>
+        <span class="skel-shimmer" style="width:45%;height:9px;border-radius:3px"></span>
+        <span class="skel-shimmer" style="width:70%;height:9px;border-radius:3px;margin-top:14px"></span>
+        <span class="skel-shimmer" style="width:50%;height:9px;border-radius:3px"></span>
+      </div>
+      <div class="boot-canvas"><div class="boot-page skel-shimmer"></div></div>
+    </div>
+  </div>
+  <div class="boot-msg">Loading PDF Studio…</div>
+</div>
+
+<div id="topbar">
+  <div class="brand"><span class="mark">PDF</span><span>PDF Studio</span></div>
+  <span id="docName"></span>
+  <span id="ro" hidden></span>
+  <span id="docPages"></span>
+  <div class="spacer"></div>
+  <div id="status"><span class="dot"></span><span class="txt">idle</span></div>
+  <button class="btn" id="inspectBtn" title="Inspect this PDF (Ctrl+I)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.3-4.3"/><path d="M8.5 11h5M11 8.5v5"/></svg>
+    Inspect
+  </button>
+  <button class="btn" id="toolsBtn" title="All tools">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+    Tools
+  </button>
+  <div class="seg" id="modeSeg">
+    <button data-mode="edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg> Edit</button>
+    <button data-mode="view" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg> View</button>
+  </div>
+  <button class="btn primary" id="exportBtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+    Export
+  </button>
+</div>
+
+<div id="menubar">
+  <div class="menu" data-menu>File<div class="dropdown">
+    <div class="mi" data-act="addPdf">Add PDF… <span class="kbd">Ctrl+O</span></div>
+    <div class="mi" data-act="importUrl">Add from URL…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="save" id="miSave">Save <span class="kbd">Ctrl+S</span></div>
+    <div class="mi" data-act="revert">Revert to saved</div>
+    <div class="mi" data-act="saveAs">Save a copy… <span class="kbd">Ctrl+Shift+S</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="export">Export… <span class="kbd">PDF · PNG · TXT</span></div>
+  </div></div>
+  <div class="menu" data-menu>Edit<div class="dropdown">
+    <div class="mi" data-act="undo" id="miUndo">Undo <span class="kbd">Ctrl+Z</span></div>
+    <div class="mi" data-act="redo" id="miRedo">Redo <span class="kbd">Ctrl+Y</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="editTextHint">Edit text — click any line on a page</div>
+  </div></div>
+  <div class="menu" data-menu>Page<div class="dropdown">
+    <div class="mi" data-act="rotateL">Rotate left</div>
+    <div class="mi" data-act="rotateR">Rotate right</div>
+    <div class="mi" data-act="rotate180">Rotate 180°</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="deletePage">Delete page</div>
+    <div class="mi" data-act="extractPages">Extract pages…</div>
+    <div class="mi" data-act="insertBlank">Insert blank page after</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="moveUp">Move page up</div>
+    <div class="mi" data-act="moveDown">Move page down</div>
+  </div></div>
+  <div class="menu" data-menu>Document<div class="dropdown">
+    <div class="mi" data-act="merge">Merge PDFs…</div>
+    <div class="mi" data-act="split">Split…</div>
+    <div class="mi" data-act="compress">Compress…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="protect">Protect with password…</div>
+    <div class="mi" data-act="removePassword">Remove password…</div>
+    <div class="mi" data-act="ocr">Make searchable (OCR)…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="inspect">Inspect document <span class="kbd">Ctrl+I</span></div>
+    <div class="mi" data-act="securityScan">Security scan</div>
+  </div></div>
+  <div class="menu" data-menu>Convert<div class="dropdown">
+    <div class="mi" data-act="toWord">PDF to Word…</div>
+    <div class="mi" data-act="toPng">PDF to PNG…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="fromWord">Word to PDF…</div>
+    <div class="mi" data-act="fromExcel">Excel to PDF…</div>
+    <div class="mi" data-act="imagesToPdf">Images to PDF…</div>
+    <div class="divider"></div>
+    <div class="mi" data-act="scan">Scan document…</div>
+  </div></div>
+  <div class="menu" data-menu>View<div class="dropdown">
+    <div class="mi" data-act="togglePanel">Toggle side panel <span class="kbd">Ctrl+\</span></div>
+    <div class="divider"></div>
+    <div class="mi" data-act="zoomIn">Zoom in</div>
+    <div class="mi" data-act="zoomOut">Zoom out</div>
+    <div class="mi" data-act="zoom100">Actual size</div>
+  </div></div>
+</div>
+
+<div id="banner" class="hidden"></div>
+
+<div id="main">
+  <div id="side">
+    <div>
+      <h4><button class="sec-toggle" id="recentToggle" title="Show/hide recent"><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>Recent</button><button class="add" id="importBtn" title="Add a PDF">＋</button></h4>
+      <div id="docList"></div>
+    </div>
+    <div>
+      <h4>Pages</h4>
+      <div id="thumbs"></div>
+    </div>
+  </div>
+  <div id="canvasWrap"><div id="pages"></div><div id="pagesNote" class="hidden"></div></div>
+  <div id="inspector">
+    <div class="ins-head">
+      <h3>Inspection</h3>
+      <span class="eng" id="insEngine"></span>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="insRescan" title="Scan again">↻</button>
+      <button class="btn ghost" id="insClose" title="Close">✕</button>
+    </div>
+    <div class="ins-tabs" id="insTabs">
+      <button class="ins-tab on" data-tab="overview">Overview</button>
+      <button class="ins-tab" data-tab="pages">Pages</button>
+      <button class="ins-tab" data-tab="fonts">Fonts</button>
+      <button class="ins-tab" data-tab="security">Security</button>
+      <button class="ins-tab" data-tab="markdown">Markdown</button>
+    </div>
+    <div class="ins-body" id="insBody"></div>
+  </div>
+  <div id="toolsHome" class="hidden">
+    <div class="th-head"><h2>Tools</h2><p>Everything runs locally — files never leave this machine.</p>
+      <button class="btn" id="toolsClose">Back to document</button></div>
+    <h5>Organize</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="merge"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 7 4 12l4 5"/><path d="m16 7 4 5-4 5"/><path d="M4 12h16"/></svg></span><span><b>Merge PDFs</b><small>Combine documents into one file, in the order you pick.</small></span></button>
+      <button class="tool-card" data-tool="split"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18"/><path d="M5 8h4M5 16h4M15 8h4M15 16h4"/></svg></span><span><b>Split PDF</b><small>One file per page, or by page ranges.</small></span></button>
+      <button class="tool-card" data-tool="extractPages"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg></span><span><b>Extract pages</b><small>Copy chosen pages into a new PDF.</small></span></button>
+      <button class="tool-card" data-tool="compress" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v7m0 0 3-3m-3 3L9 7"/><path d="M12 21v-7m0 0 3 3m-3-3-3 3"/><path d="M4 12h16"/></svg></span><span><b>Compress PDF</b><small>Lossless repack, or aggressive image downsampling.</small></span></button>
+    </div>
+    <h5>Inspect</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="inspect"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.3-4.3"/><path d="M8.5 11h5M11 8.5v5"/></svg></span><span><b>Inspect PDF</b><small>Classify text vs scanned, page by page, and find what needs OCR.</small></span></button>
+      <button class="tool-card" data-tool="securityScan" data-tone="red"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l8 3v6c0 5-3.4 8-8 9-4.6-1-8-4-8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></span><span><b>Security scan</b><small>Scripts, launch actions, attachments and hidden revisions.</small></span></button>
+      <button class="tool-card" data-tool="toMarkdown"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 15V9l2.5 3L12 9v6M16 9v6M14 13l2 2 2-2"/></svg></span><span><b>PDF to Markdown</b><small>Headings, lists, tables and links as clean Markdown.</small></span></button>
+    </div>
+    <h5>Convert</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="toWord"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="m8.5 13 1.2 5 1.8-4 1.8 4 1.2-5"/></svg></span><span><b>PDF to Word</b><small>Editable .docx from the document text.</small></span></button>
+      <button class="tool-card" data-tool="toPng"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-4-4-8 8"/></svg></span><span><b>PDF to PNG</b><small>One image per page, also JPG or plain text.</small></span></button>
+      <button class="tool-card" data-tool="fromWord" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 15h8M8 18h5"/></svg></span><span><b>Word to PDF</b><small>Convert a .docx into a PDF.</small></span></button>
+      <button class="tool-card" data-tool="fromExcel" data-tone="green"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg></span><span><b>Excel to PDF</b><small>Render workbook sheets as PDF tables.</small></span></button>
+      <button class="tool-card" data-tool="imagesToPdf"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 7V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-2"/></svg></span><span><b>Images to PDF</b><small>Bundle JPG/PNG images into one PDF.</small></span></button>
+    </div>
+    <h5>Secure</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="protect" data-tone="red"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span><b>Protect PDF</b><small>AES-256 password-encrypt a copy of this document.</small></span></button>
+      <button class="tool-card" data-tool="removePassword" data-tone="red"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.2-2.4"/></svg></span><span><b>Remove password</b><small>Save an unlocked copy of a protected PDF.</small></span></button>
+    </div>
+    <h5>Scan &amp; OCR</h5>
+    <div class="tool-grid">
+      <button class="tool-card" data-tool="scan" data-tone="amber"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span><span><b>Scan document</b><small>Capture pages with the camera and save them as a PDF.</small></span></button>
+      <button class="tool-card" data-tool="ocr" data-tone="amber"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M8 12h8M8 9h5M8 15h6"/></svg></span><span><b>Searchable PDF (OCR)</b><small>Add a text layer to scanned pages so they can be searched and copied.</small></span></button>
+    </div>
+  </div>
+</div>
+
+<div id="modalHost"></div>
+<div id="toast"></div>
+
+<script type="module">
+import * as pdfjs from "/template-assets/pdfjs.bundle.mjs";
+pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs";
+
+const PY = "./pdf.py";
+const MAX_PAGES = 100;
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  docs: [], doc: "", work: "", info: null, mtime: 0, dirty: false,
+  pdf: null, curPage: 1, zoom: 100,
+  undoDepth: 0, redoDepth: 0,
+  writable: true,     // fs writability of the ORIGINAL (open_doc verdict)
+  spans: {},          // pageNo -> {mtime, spans}
+  editing: null,      // the floating text input, if any
+  inspect: null,      // the last inspection report, dropped on every mutation
+  insTab: "overview",
+  md: null,           // last markdown conversion {spec, markdown, chars, pages}
+};
+
+// ---------- plumbing ----------
+// Backend calls that cannot change which document is open or what is in it.
+// Listing the harmless reads rather than the mutations is deliberate: a mutation
+// added later invalidates an in-flight inspection by default, instead of being
+// silently missed the way per-call-site guards kept being.
+const INSPECT_SAFE = new Set(["health", "list_library", "listdir", "page_text",
+                              "inspect", "to_markdown", "save_markdown", "export"]);
+let inspectGen = 0;
+
+function py(params) {
+  const clean = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (v === null || v === undefined) continue;
+    clean[k] = typeof v === "string" ? v : (typeof v === "number" || typeof v === "boolean") ? v : String(v);
+  }
+  // Invalidate at the moment the request is made, not when its result lands:
+  // switching documents takes a round trip, and until state.doc catches up an
+  // in-flight scan would still look current.
+  if (params.action && !INSPECT_SAFE.has(params.action)) insVoid();
+  // key:null — every pdf.py action (save/undo/export/read) shares this helper;
+  // default per-file cancellation would abort in-flight saves/edits (D114).
+  return fused.runPython(PY, clean, { key: null });
+}
+let toastTimer = 0;
+function toast(msg, err = false) {
+  const t = $("toast");
+  t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.style.display = "none"; }, err ? 6000 : 3200);
+}
+function setStatus(txt, cls = "") {
+  const s = $("status");
+  s.className = cls; s.querySelector(".txt").textContent = txt || "idle";
+}
+const idleStatus = () => setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+const fmtSize = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+
+// ---------- modal helpers ----------
+function modal(html) {
+  const bg = document.createElement("div");
+  bg.className = "modal-bg";
+  bg.innerHTML = `<div class="modal">${html}</div>`;
+  $("modalHost").appendChild(bg);
+  bg.addEventListener("mousedown", (e) => { if (e.target === bg) close(null); });
+  function onKey(e) {
+    if (e.key === "Escape" && bg === $("modalHost").lastElementChild) { e.stopPropagation(); close(null); }
+  }
+  document.addEventListener("keydown", onKey, true);
+  let resolve;
+  const done = new Promise((r) => { resolve = r; });
+  function close(v) { document.removeEventListener("keydown", onKey, true); bg.remove(); resolve(v); }
+  return { el: bg.firstElementChild, done, close };
+}
+
+function dialog({ title, message = "", label = "", value = "", okText = "OK", danger = false, input = true, password = false }) {
+  const m = modal(`
+    <h3></h3>${message ? "<p></p>" : ""}
+    ${input ? `<input type="${password ? "password" : "text"}" id="dlgInput" placeholder="${label.replace(/"/g, "&quot;")}">` : ""}
+    <div class="row">
+      <button class="btn" data-x="cancel">Cancel</button>
+      <button class="btn primary" data-x="ok" ${danger ? 'style="background:var(--danger);border-color:var(--danger)"' : ""}></button>
+    </div>`);
+  m.el.querySelector("h3").textContent = title;
+  if (message) m.el.querySelector("p").textContent = message;
+  m.el.querySelector("[data-x=ok]").textContent = okText;
+  const inp = m.el.querySelector("#dlgInput");
+  if (inp) { inp.value = value; inp.focus(); inp.select(); }
+  m.el.addEventListener("click", (e) => {
+    const x = e.target.closest("[data-x]");
+    if (!x) return;
+    m.close(x.dataset.x === "ok" ? (inp ? inp.value.trim() : true) : null);
+  });
+  m.el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") m.close(inp ? inp.value.trim() : true);
+    if (e.key === "Escape") m.close(null);
+  });
+  return m.done;
+}
+
+const cleanPath = (s) => (s || "").trim().replace(/^["']+|["']+$/g, "").replace(/\\/g, "/");
+const docDir = () => state.doc.split("/").slice(0, -1).join("/");
+
+function browseModal({ title, okText = "Open", pickDir = false, dirOnly = false, filename = "", start = "", exts = ".pdf" }) {
+  const extRe = new RegExp(`(${exts.split(",").map((e) => e.trim().replace(".", "\\.")).join("|")})$`, "i");
+  const m = modal(`
+    <h3></h3>
+    <input type="text" id="fbPath" class="fb-path" placeholder="Paste a full path and press Enter" spellcheck="false" autocomplete="off">
+    <div class="fb-crumbs" id="fbCrumbs"></div>
+    <div class="fb-list" id="fbList"></div>
+    ${pickDir ? `<label>File name</label><input type="text" id="fbName">` : ""}
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    ${pickDir || dirOnly ? `<button class="btn primary" data-x="ok"></button>` : ""}</div>`);
+  m.el.classList.add("wide");
+  m.el.querySelector("h3").textContent = title;
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  const pathInp = m.el.querySelector("#fbPath");
+  const nameInp = m.el.querySelector("#fbName");
+  let cur = "";
+  if (pickDir) {
+    nameInp.value = filename;
+    const finish = () => {
+      const n = cleanPath(nameInp.value);
+      if (!n) return;
+      if (/^([A-Za-z]:)?\//.test(n))
+        m.close({ dir: n.split("/").slice(0, -1).join("/") || "/", name: n.split("/").pop() });
+      else m.close({ dir: cur, name: n });
+    };
+    const ok = m.el.querySelector("[data-x=ok]");
+    ok.textContent = okText;
+    ok.onclick = finish;
+    nameInp.addEventListener("keydown", (e) => { if (e.key === "Enter") finish(); });
+  } else if (dirOnly) {
+    const ok = m.el.querySelector("[data-x=ok]");
+    ok.textContent = okText;
+    ok.onclick = () => m.close(cur);
+  }
+  async function show(path) {
+    if (/^[A-Za-z]:$/.test(path)) path += "/";
+    // src (origin only) lets the worker route a mount-backed dir via
+    // /api/fs/list instead of a kernel scan that could drop the mount.
+    const res = await py({ action: "listdir", path, exts,
+      src: `${location.origin}/api/fs/raw?path=${encodeURIComponent(path || "")}` });
+    if (res.error) { toast(res.error, true); return; }
+    cur = res.path;
+    pathInp.value = res.path;
+    const crumbs = m.el.querySelector("#fbCrumbs");
+    crumbs.innerHTML = "";
+    const rooted = res.path.startsWith("/");
+    const parts = res.path.split("/").filter(Boolean);
+    parts.forEach((p, i) => {
+      const upto = (rooted ? "/" : "") + parts.slice(0, i + 1).join("/");
+      const b = document.createElement("button");
+      b.textContent = p;
+      b.onclick = () => show(upto);
+      if (i) crumbs.insertAdjacentHTML("beforeend", `<span class="sep">/</span>`);
+      crumbs.appendChild(b);
+    });
+    const list = m.el.querySelector("#fbList");
+    list.innerHTML = "";
+    if (res.parent && res.parent !== res.path) {
+      const up = document.createElement("button");
+      up.className = "fb-row dir";
+      up.innerHTML = `<span class="ico">${icoDir}</span><span class="nm">..</span>`;
+      up.onclick = () => show(res.parent);
+      list.appendChild(up);
+    }
+    for (const d of res.dirs) {
+      const b = document.createElement("button");
+      b.className = "fb-row dir";
+      b.innerHTML = `<span class="ico">${icoDir}</span><span class="nm"></span>`;
+      b.querySelector(".nm").textContent = d;
+      b.onclick = () => show(res.path + "/" + d);
+      list.appendChild(b);
+    }
+    for (const f of res.files) {
+      const b = document.createElement("button");
+      b.className = "fb-row";
+      b.innerHTML = `<span class="ico">${icoFile}</span><span class="nm"></span><span class="sz">${fmtSize(f.size)}</span>`;
+      b.querySelector(".nm").textContent = f.name;
+      b.onclick = dirOnly ? null
+        : pickDir ? () => { nameInp.value = f.name; }
+        : () => m.close(res.path + "/" + f.name);
+      list.appendChild(b);
+    }
+    if (!res.dirs.length && !res.files.length)
+      list.innerHTML = `<div class="fb-empty">No folders or ${exts.replace(/\./g, "").toUpperCase()} files here.</div>`;
+  }
+  pathInp.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    let p = cleanPath(pathInp.value);
+    if (!p) return;
+    if (extRe.test(p)) {
+      if (!pickDir && !dirOnly) return m.close(p);
+      if (nameInp) nameInp.value = p.split("/").pop();
+      p = p.split("/").slice(0, -1).join("/") || "/";
+    }
+    show(p);
+  });
+  show(start || (state.doc ? docDir() : "~"))
+    .then(() => { pathInp.focus(); pathInp.select(); });
+  return m.done;
+}
+
+function destRow(m, id, value, onFile) {
+  const inp = m.el.querySelector("#" + id);
+  inp.value = value;
+  let lastDir = value;
+  const absorb = () => {
+    let p = cleanPath(inp.value);
+    const last = p.split("/").pop();
+    if (onFile && /\.(pdf|png|jpe?g|txt)$/i.test(last)) {
+      p = p.includes("/") ? p.split("/").slice(0, -1).join("/") || "/" : lastDir;
+      inp.value = p;
+      onFile(last);
+    }
+    lastDir = cleanPath(inp.value) || lastDir;
+  };
+  inp.addEventListener("change", absorb);
+  m.el.querySelector("#" + id + "Btn").onclick = async () => {
+    const dir = await browseModal({ title: "Choose a folder", okText: "Select folder",
+      dirOnly: true, start: cleanPath(inp.value) || "~" });
+    if (dir) { inp.value = dir; lastDir = dir; }
+  };
+  return () => { absorb(); return cleanPath(inp.value); };
+}
+
+async function resultModal({ title, note = "", files = [], dir = "" }) {
+  const m = modal(`
+    <h3></h3>${note ? "<p></p>" : ""}
+    ${files.length ? `<div class="filelist"></div>` : ""}
+    <div class="row">
+      ${dir ? `<button class="btn" data-x="reveal">Open folder</button>` : ""}
+      <button class="btn primary" data-x="ok">Done</button>
+    </div>`);
+  m.el.querySelector("h3").textContent = title;
+  if (note) m.el.querySelector("p").textContent = note;
+  const list = m.el.querySelector(".filelist");
+  for (const f of files) {
+    const row = document.createElement("div");
+    row.className = "file-row";
+    row.innerHTML = `<span class="ico">${icoFile}</span><span class="nm"></span>
+      <span class="sz">${fmtSize(f.size)}</span>
+      <button class="dl" title="Download">${icoDown}</button>`;
+    row.querySelector(".nm").textContent = f.name;
+    row.title = f.path;
+    row.querySelector(".dl").onclick = () => download(f.path);
+    list.appendChild(row);
+  }
+  const rev = m.el.querySelector("[data-x=reveal]");
+  if (rev) rev.onclick = () => py({ action: "reveal", path: dir }).catch((e) => toast(e?.message || String(e), true));
+  m.el.querySelector("[data-x=ok]").onclick = () => m.close(true);
+  m.el.querySelector("[data-x=ok]").focus();
+  return m.done;
+}
+
+// ---------- pdf rendering ----------
+async function loadPdfBytes() {
+  const resp = await fetch(fused.rawUrl(state.work) + "&v=" + state.mtime);
+  if (!resp.ok) throw new Error(`could not read file (HTTP ${resp.status})`);
+  return resp.arrayBuffer();
+}
+
+function pageWidth() {
+  const avail = $("canvasWrap").clientWidth - 48;
+  return Math.min(860, Math.max(320, avail)) * state.zoom / 100;
+}
+
+// Bumped per render so stale in-flight page/thumb loops cancel themselves.
+let renderGen = 0;
+
+async function renderPage(pdf, n, gen) {
+  const page = await pdf.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const scale = pageWidth() / base.width;
+  const vp = page.getViewport({ scale });
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (gen !== renderGen) return;
+  const wrap = document.createElement("div");
+  wrap.className = "pdf-page";
+  wrap.id = `__fr_page_${n}`;
+  wrap.dataset.page = n;
+  wrap.dataset.scale = scale;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width * dpr);
+  canvas.height = Math.floor(vp.height * dpr);
+  canvas.style.width = vp.width + "px";
+  canvas.style.height = vp.height + "px";
+  wrap.appendChild(canvas);
+  wrap.style.setProperty("--scale-factor", scale);
+  const textLayer = document.createElement("div");
+  textLayer.className = "textLayer";
+  wrap.appendChild(textLayer);
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  wrap.appendChild(overlay);
+  wrap.insertAdjacentHTML("beforeend", `<div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Extract this page" data-qa="extract">${icoExtract}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`);
+  $("pages").appendChild(wrap);
+  pageWatcher.observe(wrap);
+  await page.render({
+    canvasContext: canvas.getContext("2d"), viewport: vp,
+    transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
+  }).promise;
+  await new pdfjs.TextLayer({
+    textContentSource: page.streamTextContent(), container: textLayer, viewport: vp,
+  }).render();
+}
+
+async function renderThumb(pdf, n, gen) {
+  const page = await pdf.getPage(n);
+  const base = page.getViewport({ scale: 1 });
+  const vp = page.getViewport({ scale: 132 / base.width });
+  if (gen !== renderGen) return;
+  const div = document.createElement("div");
+  div.className = "thumb" + (n === state.curPage ? " on" : "");
+  div.dataset.page = n;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.floor(vp.width);
+  canvas.height = Math.floor(vp.height);
+  div.appendChild(canvas);
+  div.insertAdjacentHTML("beforeend", `<span class="pn">${n}</span><div class="qa">
+    <button title="Rotate left" data-qa="rotL">${icoRotL}</button>
+    <button title="Rotate right" data-qa="rotR">${icoRotR}</button>
+    <button title="Delete page" data-qa="del" class="danger">${icoTrash}</button>
+  </div>`);
+  $("thumbs").appendChild(div);
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+}
+
+// Shimmering placeholders shown for the gap between "doc/zoom switch requested"
+// and "first real page/thumb landed" — shaped/positioned like the real content
+// they stand in for, instead of leaving #pages/#thumbs blank.
+function skelPageEl() {
+  const w = pageWidth();
+  const div = document.createElement("div");
+  div.className = "pdf-page skel-shimmer";
+  div.style.width = w + "px";
+  div.style.height = Math.round(w * 1.294) + "px"; // ~US-letter aspect, real size lands after load
+  return div;
+}
+function skelThumbEl() {
+  const div = document.createElement("div");
+  div.className = "thumb skel-thumb skel-shimmer";
+  div.style.height = Math.round(132 * 1.294) + "px";
+  return div;
+}
+function showThumbSkeleton(count = 4) {
+  const wrap = $("thumbs");
+  wrap.innerHTML = "";
+  for (let i = 0; i < Math.min(count, 6); i++) wrap.appendChild(skelThumbEl());
+}
+function showRenderSkeleton() {
+  const wrap = $("pages");
+  wrap.innerHTML = "";
+  wrap.appendChild(skelPageEl());
+  showThumbSkeleton();
+}
+
+// Resolves once page 1 is on screen; the remaining pages and the thumbnail
+// rail keep rendering in the background.
+async function renderAll() {
+  cancelEdit();
+  state.spans = {};
+  const gen = ++renderGen;
+  if (state.pdf) { state.pdf.destroy(); state.pdf = null; }
+  showRenderSkeleton();
+  let data, pdf;
+  try {
+    data = await loadPdfBytes();
+    pdf = await pdfjs.getDocument({ data }).promise;
+  } catch (err) {
+    // Only wipe the skeleton if this call is still the current one — a
+    // superseded request's skeleton belongs to whatever newer renderAll()
+    // already repainted #pages/#thumbs. Callers already try/catch renderAll()
+    // and toast the error; this just stops the placeholder from shimmering
+    // forever with nothing behind it.
+    if (gen === renderGen) { $("pages").innerHTML = ""; $("thumbs").innerHTML = ""; }
+    throw err;
+  }
+  if (gen !== renderGen) { pdf.destroy(); return; }
+  state.pdf = pdf;
+  const shown = Math.min(pdf.numPages, MAX_PAGES);
+  const note = $("pagesNote");
+  note.classList.toggle("hidden", pdf.numPages <= MAX_PAGES);
+  if (pdf.numPages > MAX_PAGES)
+    note.textContent = `Showing ${shown} of ${pdf.numPages} pages`;
+  $("docPages").textContent = `${pdf.numPages} ${pdf.numPages === 1 ? "page" : "pages"}`;
+  $("pages").innerHTML = "";
+  showThumbSkeleton(shown); // keep the thumb rail shimmering (sized to the real count) until thumbs start landing
+  watchPages();
+  try {
+    await renderPage(pdf, 1, gen);
+  } catch (err) {
+    // Page 1 failing means the background loop below (which is the only
+    // thing that ever clears the thumb skeleton) never starts — clear it
+    // here so it doesn't shimmer forever, then rethrow to the caller's
+    // existing try/catch + toast.
+    if (gen === renderGen) $("thumbs").innerHTML = "";
+    throw err;
+  }
+  if (document.body.classList.contains("mode-edit")) primeOverlays();
+  (async () => {
+    for (let n = 2; n <= shown; n++) {
+      if (gen !== renderGen) return;
+      await renderPage(pdf, n, gen);
+    }
+    $("thumbs").innerHTML = "";
+    for (let n = 1; n <= shown; n++) {
+      if (gen !== renderGen) return;
+      await renderThumb(pdf, n, gen);
+    }
+    applyOcrBadges();
+  })().catch((err) => {
+    if (err?.name === "RenderingCancelledException") return;
+    if (gen === renderGen) toast(err?.message || String(err), true);
+  });
+}
+
+let pageWatcher = null;
+function watchPages() {
+  if (pageWatcher) pageWatcher.disconnect();
+  pageWatcher = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      setCurPage(+e.target.dataset.page, false);
+      if (document.body.classList.contains("mode-edit")) buildOverlay(+e.target.dataset.page).catch(() => {});
+    }
+  }, { root: $("canvasWrap"), threshold: 0.25 });
+  document.querySelectorAll(".pdf-page").forEach((p) => pageWatcher.observe(p));
+}
+
+function setCurPage(n, scroll = true) {
+  state.curPage = n;
+  document.querySelectorAll(".thumb").forEach((t) => t.classList.toggle("on", +t.dataset.page === n));
+  if (scroll) document.getElementById(`__fr_page_${n}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function primeOverlays() {
+  document.querySelectorAll(".pdf-page").forEach((p) => {
+    const r = p.getBoundingClientRect();
+    if (r.bottom > 0 && r.top < innerHeight) buildOverlay(+p.dataset.page).catch(() => {});
+  });
+}
+
+// ---------- text edit overlay ----------
+async function buildOverlay(n) {
+  const wrap = document.getElementById(`__fr_page_${n}`);
+  if (!wrap || wrap.dataset.overlayFor === String(state.mtime)) return;
+  wrap.dataset.overlayFor = state.mtime;
+  let pt = state.spans[n];
+  if (!pt || pt.mtime !== state.mtime) {
+    pt = await py({ action: "page_text", doc: state.doc, page: n });
+    state.spans[n] = pt;
+  }
+  const overlay = wrap.querySelector(".overlay");
+  overlay.innerHTML = "";
+  const s = +wrap.dataset.scale;
+  pt.spans.forEach((sp, i) => {
+    const d = document.createElement("div");
+    d.className = "tspan";
+    d.dataset.i = i;
+    d.style.left = sp.bbox[0] * s + "px";
+    d.style.top = sp.bbox[1] * s + "px";
+    d.style.width = (sp.bbox[2] - sp.bbox[0]) * s + "px";
+    d.style.height = (sp.bbox[3] - sp.bbox[1]) * s + "px";
+    overlay.appendChild(d);
+  });
+}
+
+function cancelEdit() {
+  if (state.editing) { state.editing.remove(); state.editing = null; }
+}
+
+function startEdit(wrap, span) {
+  cancelEdit();
+  const s = +wrap.dataset.scale;
+  const pageNo = +wrap.dataset.page;
+  const pt = state.spans[pageNo];
+  if (pt.rotation !== 0) { toast("Rotate this page to 0° before editing its text"); return; }
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.className = "tedit";
+  inp.value = span.text;
+  inp.style.left = span.bbox[0] * s - 3 + "px";
+  inp.style.top = span.bbox[1] * s - 3 + "px";
+  inp.style.width = Math.max(80, (span.bbox[2] - span.bbox[0]) * s + 30) + "px";
+  inp.style.height = (span.bbox[3] - span.bbox[1]) * s + 6 + "px";
+  inp.style.fontSize = span.size * s + "px";
+  if (span.flags & 16) inp.style.fontWeight = "700";
+  if (span.flags & 2) inp.style.fontStyle = "italic";
+  if (span.flags & 8) inp.style.fontFamily = "var(--mono)";
+  wrap.appendChild(inp);
+  inp.focus(); inp.select();
+  state.editing = inp;
+  inp.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") cancelEdit();
+    if (e.key === "Enter") {
+      const val = inp.value;
+      cancelEdit();
+      if (val !== span.text) act("commitEdit", { pageNo, span, val });
+    }
+  });
+  inp.addEventListener("blur", () => setTimeout(cancelEdit, 120));
+}
+
+// ---------- data flows ----------
+async function applyMut(res) {
+  state.mtime = res.mtime;
+  state.info = res.doc;
+  state.work = res.doc.work;
+  state.dirty = !!res.dirty;
+  state.undoDepth = res.undo_depth; state.redoDepth = res.redo_depth;
+  updateUndoUi();
+  dropInspect();
+  await renderAll();
+  refreshLib().catch(() => {});
+}
+
+async function mutate(action, params = {}) {
+  setStatus("working…", "busy");
+  const res = await py({ action, doc: state.doc, expected_mtime: String(state.mtime), ...params });
+  if (res.conflict) {
+    toast("File changed on disk — reloaded the latest version", true);
+    await openDoc(state.doc);
+    setStatus("reloaded", "err");
+    return null;
+  }
+  await applyMut(res);
+  setStatus("unsaved changes", "warn");
+  return res;
+}
+
+function updateUndoUi() {
+  $("miUndo").classList.toggle("off", !state.undoDepth);
+  $("miRedo").classList.toggle("off", !state.redoDepth);
+}
+
+async function refreshLib() {
+  const res = await py({ action: "list_library" });
+  state.docs = res.docs;
+  renderDocList();
+}
+
+function renderDocList() {
+  const list = $("docList");
+  list.innerHTML = "";
+  if (!state.docs.length) {
+    list.innerHTML = `<div class="side-empty">No PDFs yet — use ＋ to add one.</div>`;
+    return;
+  }
+  for (const d of state.docs) {
+    const row = document.createElement("div");
+    row.className = "doc-row" + (d.path === state.doc ? " on" : "");
+    const meta = d.missing ? `<span class="meta" style="color:var(--danger)">missing</span>`
+      : `<span class="meta">${d.page_count ?? "?"}p · ${fmtSize(d.size)}</span>`;
+    // Writability is only known for the open doc (open_doc's verdict). Hide
+    // rename for a read-only original; remove-from-list never touches the file.
+    const ro = d.path === state.doc && !state.writable;
+    row.innerHTML = `<span class="nm"></span>${meta}
+      <span class="ops">
+        ${ro ? "" : `<button title="Rename" data-op="rename">${icoPen}</button>`}
+        <button title="Remove from list" data-op="remove" class="danger">${icoTrash}</button>
+      </span>`;
+    row.title = d.path;
+    row.querySelector(".nm").textContent = d.name;
+    row.addEventListener("click", (e) => {
+      const op = e.target.closest("[data-op]");
+      if (op) { act(op.dataset.op === "rename" ? "renameDoc" : "removeDoc", d); return; }
+      if (d.path !== state.doc) act("openDoc", d.path);
+    });
+    list.appendChild(row);
+  }
+}
+
+async function openDoc(path) {
+  cancelEdit();
+  const info = await py({ action: "open_doc", doc: path });
+  if (info.encrypted) {
+    const pw = await dialog({ title: "Password-protected PDF", password: true,
+      message: `${info.name} is encrypted. Enter its password to save an unlocked copy next to it and open that.`,
+      label: "Password", okText: "Unlock" });
+    if (!pw) throw new Error("this PDF is password-protected");
+    setStatus("unlocking…", "busy");
+    const res = await py({ action: "unlock", doc: path, password: pw });
+    await refreshLib();
+    toast(`Unlocked copy saved as ${res.name}`);
+    return openDoc(res.path);
+  }
+  state.doc = info.path; state.work = info.work; state.info = info; state.mtime = info.mtime;
+  state.docs = info.docs; state.dirty = !!info.dirty;
+  state.curPage = 1; state.spans = {};
+  state.undoDepth = info.undo_depth; state.redoDepth = info.redo_depth;
+  dropInspect();
+  setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+  $("docName").textContent = info.name;
+  // Read-only original (§13.5): viewing and working-copy edits (rotate, text,
+  // undo/redo, revert, export, save-a-copy) stay fully allowed — only writes
+  // back to the original (Save, Rename) are blocked.
+  state.writable = info.writable !== false;
+  fusedRoBadge.update($("ro"), info.readonly_message || "", info.readonly_tooltip || "");
+  $("miSave").classList.toggle("off", !state.writable);
+  $("banner").classList.toggle("hidden", info.has_text);
+  if (!info.has_text) $("banner").textContent =
+    "This PDF has no text layer (likely scanned) — page operations work, text editing won't find anything to edit.";
+  fused.params.set("doc", info.path);
+  updateUndoUi();
+  renderDocList();
+  await renderAll();
+}
+
+function clearOpenDoc() {
+  cancelEdit();
+  dropInspect();
+  renderGen++;
+  state.doc = ""; state.pdf?.destroy(); state.pdf = null;
+  $("pages").innerHTML = ""; $("thumbs").innerHTML = "";
+  $("docName").textContent = ""; $("docPages").textContent = "";
+  fused.params.set("doc", "");
+  renderDocList();
+}
+
+// ---------- downloads ----------
+function download(path) {
+  const a = document.createElement("a");
+  a.href = fused.rawUrl(path);
+  a.download = path.split("/").pop();
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ---------- actions ----------
+const needDoc = () => { if (!state.doc) throw new Error("open a PDF first"); };
+
+const acts = {
+  openDoc: (path) => openDoc(path),
+
+  addPdf: async () => {
+    const src = await browseModal({ title: "Add a PDF" });
+    if (!src) return;
+    const res = await py({ action: "add_to_library", src });
+    await refreshLib();
+    await openDoc(res.path);
+    toast(`Added ${res.name}`);
+  },
+  importUrl: async () => {
+    const url = await dialog({ title: "Add from URL", label: "https://…/file.pdf", okText: "Add" });
+    if (!url) return;
+    setStatus("downloading…", "busy");
+    const res = await py({ action: "import_url", url });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("added", "ok");
+  },
+  renameDoc: async (d) => {
+    if (d.path === state.doc && !state.writable)
+      return toast("The file is read-only — it can't be renamed", true);
+    const name = await dialog({ title: "Rename PDF", value: d.name, okText: "Rename" });
+    if (!name || name === d.name) return;
+    const res = await py({ action: "rename_doc", doc: d.path, name });
+    if (state.doc === d.path) { state.doc = res.path; fused.params.set("doc", res.path); $("docName").textContent = res.name; }
+    await refreshLib();
+  },
+  removeDoc: async (d) => {
+    const ok = await dialog({
+      title: `Remove ${d.name}?`, input: false, danger: true, okText: "Remove",
+      message: "The PDF is removed from this list — the file on disk is kept.",
+    });
+    if (!ok) return;
+    await py({ action: "remove_from_library", doc: d.path });
+    await refreshLib();
+    if (state.doc === d.path) {
+      // Clear the removed doc first so a failed open of the next one (missing/
+      // encrypted) leaves an empty viewer, not the just-removed file.
+      clearOpenDoc();
+      if (state.docs.length) await openDoc(state.docs[0].path);
+    }
+  },
+  save: async () => {
+    needDoc();
+    if (!state.writable)  // also covers the Ctrl+S path (keydown → act("save"))
+      return toast("The file is read-only — edits can't be saved back to it. Use Save a copy.", true);
+    let res = await py({ action: "save", doc: state.doc });
+    if (res.conflict) {
+      const ok = await dialog({ title: "Overwrite changed file?", input: false, danger: true, okText: "Overwrite",
+        message: "The file on disk changed after you opened it. Saving replaces those changes with yours." });
+      if (!ok) return;
+      res = await py({ action: "save", doc: state.doc, force: 1 });
+    }
+    state.dirty = false;
+    setStatus("saved", "ok");
+    if (!res.unchanged) toast(`Saved to ${res.file}`);
+  },
+  revert: async () => {
+    needDoc();
+    if (!state.dirty) return toast("No unsaved changes");
+    const ok = await dialog({ title: "Revert to saved?", input: false, danger: true, okText: "Revert",
+      message: "Unsaved changes to this document are discarded." });
+    if (!ok) return;
+    const res = await py({ action: "revert", doc: state.doc });
+    await applyMut(res);
+    setStatus("reverted", "ok");
+  },
+  saveAs: async () => {
+    needDoc();
+    const picked = await browseModal({ title: "Save a copy", okText: "Save",
+      pickDir: true, filename: state.info.name, start: "~" });
+    if (!picked) return;
+    const res = await py({ action: "save_as", doc: state.doc, directory: picked.dir, name: picked.name });
+    toast(`Saved to ${res.file}`);
+  },
+
+  undo: async () => {
+    needDoc();
+    if (!state.undoDepth) return;
+    const res = await py({ action: "undo", doc: state.doc });
+    await applyMut(res);
+    setStatus("undone — unsaved", "warn");
+  },
+  redo: async () => {
+    needDoc();
+    if (!state.redoDepth) return;
+    const res = await py({ action: "redo", doc: state.doc });
+    await applyMut(res);
+    setStatus("redone — unsaved", "warn");
+  },
+  editTextHint: () => toast("Click any line of text on a page to edit it in place"),
+  commitEdit: async ({ pageNo, span, val }) => {
+    setStatus("editing…", "busy");
+    const res = await mutate("edit_text", {
+      page: pageNo, bbox: JSON.stringify(span.bbox), origin: JSON.stringify(span.origin),
+      old_text: span.text, new_text: val, font: span.font, size: String(span.size),
+      flags: span.flags, color: JSON.stringify(span.color),
+    });
+    if (res && res.used_size < span.size) toast(`Text shrunk to ${res.used_size}pt to fit the line`);
+  },
+
+  rotateL: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: -90 }),
+  rotateR: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 90 }),
+  rotate180: (n) => mutate("rotate_pages", { pages: String(n || state.curPage), degrees: 180 }),
+  deletePage: async (n) => {
+    needDoc();
+    const res = await mutate("delete_pages", { pages: String(n || state.curPage) });
+    if (res) toast(`Page ${n || state.curPage} deleted — Ctrl+Z to undo`);
+  },
+  insertBlank: () => mutate("insert_blank", { at: state.curPage + 1 }),
+  moveUp: async () => {
+    needDoc();
+    const n = state.curPage, total = state.info.page_count;
+    if (n <= 1) return;
+    const order = [...Array(total)].map((_, i) => i + 1);
+    [order[n - 2], order[n - 1]] = [order[n - 1], order[n - 2]];
+    await mutate("reorder_pages", { order: order.join(",") });
+    setCurPage(n - 1);
+  },
+  moveDown: async () => {
+    needDoc();
+    const n = state.curPage, total = state.info.page_count;
+    if (n >= total) return;
+    const order = [...Array(total)].map((_, i) => i + 1);
+    [order[n - 1], order[n]] = [order[n], order[n - 1]];
+    await mutate("reorder_pages", { order: order.join(",") });
+    setCurPage(n + 1);
+  },
+  extractPages: async (n) => {
+    needDoc();
+    const pages = await dialog({ title: "Extract pages", label: "e.g. 2 or 1,3-5",
+      value: String(n || state.curPage), okText: "Extract",
+      message: "The pages are copied into a new PDF next to this one." });
+    if (!pages) return;
+    const res = await py({ action: "extract_pages", doc: state.doc, pages });
+    await resultModal({ title: "Pages extracted",
+      note: `Pages ${pages} were copied into a new PDF in ${res.dir}. The original document is unchanged.`,
+      files: [res], dir: res.dir });
+  },
+
+  merge: async () => {
+    needDoc();
+    const picked = await mergeModal();
+    if (!picked) return;
+    setStatus("merging…", "busy");
+    const res = await py({ action: "merge",
+      sources: JSON.stringify(picked.sources), name: picked.name, directory: picked.dir });
+    await py({ action: "add_to_library", src: res.path });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("merged", "ok");
+    toast(`Created ${res.name} in ${res.dir}`);
+  },
+  split: async () => {
+    needDoc();
+    const opt = await splitModal();
+    if (!opt) return;
+    setStatus("splitting…", "busy");
+    const res = await py({ action: "split", doc: state.doc, mode: opt.mode,
+      ranges: opt.ranges, prefix: opt.prefix, directory: opt.dir });
+    setStatus("done", "ok");
+    await resultModal({ title: "Split complete",
+      note: `${state.info.name} was split into ${res.files.length} file${res.files.length === 1 ? "" : "s"} in ${res.dir}. The original document is unchanged.`,
+      files: res.files, dir: res.dir });
+  },
+  compress: async () => {
+    needDoc();
+    const level = await compressModal();
+    if (!level) return;
+    setStatus("compressing…", "busy");
+    let res;
+    try {
+      res = await mutate("compress", { level });
+    } catch (err) {
+      // Not a failure — the file was simply already smaller than a recompress.
+      if (/already optimized/.test(err?.message || "")) {
+        setStatus(state.dirty ? "unsaved changes" : "", state.dirty ? "warn" : "");
+        toast(err.message);
+        return;
+      }
+      throw err;
+    }
+    if (!res) return;
+    const pct = Math.round((1 - res.after / res.before) * 100);
+    await resultModal({ title: "Compression complete",
+      note: `${state.info.name}: ${fmtSize(res.before)} → ${fmtSize(res.after)}`
+        + (pct > 0 ? ` — ${pct}% smaller.` : " — no size reduction.")
+        + " The change is not saved yet: press Ctrl+S to keep it, or Ctrl+Z to undo." });
+  },
+
+  export: async (kind) => {
+    needDoc();
+    const opt = await exportModal(typeof kind === "string" ? kind : "");
+    if (!opt) return;
+    setStatus("exporting…", "busy");
+    const res = await py({ action: "export", doc: state.doc, kind: opt.kind,
+      pages: opt.pages, name: opt.name, directory: opt.dir });
+    setStatus("exported", "ok");
+    await resultModal({ title: "Export complete",
+      note: `${res.files.length} file${res.files.length === 1 ? "" : "s"} saved to ${res.dir}.`,
+      files: res.files, dir: res.dir });
+  },
+  toPng: () => acts.export("png"),
+
+  protect: async () => {
+    needDoc();
+    const pw = await dialog({ title: "Protect with password", password: true,
+      message: "An AES-256 encrypted copy is saved next to the document — the original stays as it is.",
+      label: "Password", okText: "Protect" });
+    if (!pw) return;
+    setStatus("encrypting…", "busy");
+    const res = await py({ action: "protect", doc: state.doc, password: pw });
+    setStatus("protected", "ok");
+    await resultModal({ title: "Protected copy created",
+      note: `${res.name} needs the password to open. Keep the password safe — there is no way to recover it.`,
+      files: [res], dir: res.dir });
+  },
+  removePassword: async () => {
+    const src = await browseModal({ title: "Choose the password-protected PDF" });
+    if (!src) return;
+    // openDoc prompts for the password and saves the unlocked copy.
+    await openDoc(src);
+  },
+  ocr: async () => {
+    needDoc();
+    const firstRun = !(state.health?.ocr_langs || []).length;
+    const ok = await dialog({ title: "Make searchable (OCR)", input: false, okText: "Run OCR",
+      message: "Pages without a text layer are OCR'd (English) into a searchable copy saved next to the document."
+        + (firstRun ? " First run downloads the language model (~4 MB) once." : "") });
+    if (!ok) return;
+    setStatus("running OCR…", "busy");
+    const res = await py({ action: "ocr", doc: state.doc });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("OCR done", "ok");
+    toast(`${res.name}: ${res.ocr_pages} page${res.ocr_pages === 1 ? "" : "s"} OCR'd, ${res.copied_pages} already had text`);
+  },
+  toWord: async () => {
+    needDoc();
+    const pages = await dialog({ title: "PDF to Word", value: "all", okText: "Convert",
+      label: "all or 1,3-5",
+      message: "The document text becomes an editable .docx next to the PDF. Word reflows the paragraphs — exact layout is not preserved." });
+    if (!pages) return;
+    setStatus("converting…", "busy");
+    const res = await py({ action: "pdf_to_word", doc: state.doc, pages });
+    setStatus("converted", "ok");
+    await resultModal({ title: "Word document created", files: [res], dir: res.dir });
+  },
+  fromWord: async () => {
+    const src = await browseModal({ title: "Choose a Word document", exts: ".docx" });
+    if (!src) return;
+    setStatus("converting…", "busy");
+    const res = await py({ action: "word_to_pdf", src });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("converted", "ok");
+    toast(`Created ${res.name}${res.via === "libreoffice" ? "" : " (text-level conversion — install LibreOffice for full fidelity)"}`);
+  },
+  fromExcel: async () => {
+    const src = await browseModal({ title: "Choose an Excel workbook", exts: ".xlsx,.xlsm" });
+    if (!src) return;
+    setStatus("converting…", "busy");
+    const res = await py({ action: "excel_to_pdf", src });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("converted", "ok");
+    toast(`Created ${res.name}`);
+  },
+  imagesToPdf: async () => {
+    const picked = await imagesModal();
+    if (!picked) return;
+    setStatus("building…", "busy");
+    const res = await py({ action: "images_to_pdf", sources: JSON.stringify(picked.sources),
+      name: picked.name, directory: picked.dir });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("created", "ok");
+    toast(`Created ${res.name}`);
+  },
+  scan: async () => {
+    const caps = await scanModal();
+    if (!caps || !caps.length) return;
+    const picked = await browseModal({ title: "Save the scan", okText: "Save",
+      pickDir: true, filename: "scan.pdf", start: "~" });
+    if (!picked) return;
+    setStatus("saving scan…", "busy");
+    const res = await py({ action: "save_scan", images_b64: JSON.stringify(caps),
+      name: picked.name, directory: picked.dir });
+    await refreshLib();
+    await openDoc(res.path);
+    setStatus("saved", "ok");
+    toast(`Saved ${res.name} (${caps.length} page${caps.length === 1 ? "" : "s"})`);
+  },
+  tools: () => showTools($("toolsHome").classList.contains("hidden")),
+
+  inspect: () => runInspect(),
+  securityScan: () => runInspect("security"),
+  rescan: () => { state.inspect = null; state.md = null; return runInspect(); },
+  toMarkdown: async () => {
+    await runInspect("markdown");
+    if (!state.md) await acts.mdConvert();
+  },
+  mdConvert: async () => {
+    needDoc();
+    const spec = $("mdPages")?.value.trim() || "all";
+    await insWork("converting to Markdown…",
+      () => py({ action: "to_markdown", doc: state.doc, pages: spec }),
+      (res) => { state.md = { spec, ...res }; });
+  },
+  mdCopy: async () => {
+    await navigator.clipboard.writeText(state.md.markdown);
+    toast("Markdown copied");
+  },
+  mdSave: async () => {
+    const picked = await browseModal({ title: "Save Markdown", okText: "Save", pickDir: true,
+      filename: state.info.name.replace(/\.pdf$/i, "") + ".md", start: docDir(), exts: ".md" });
+    if (!picked) return;
+    const res = await py({ action: "save_markdown", doc: state.doc, pages: state.md.spec,
+      text: state.md.markdown,
+      directory: picked.dir, name: picked.name });
+    await resultModal({ title: "Markdown saved", files: [res], dir: res.dir });
+  },
+
+  togglePanel: () => {
+    document.body.classList.toggle("panel-off");
+    fused.params.set("panel", document.body.classList.contains("panel-off") ? "0" : "1");
+  },
+  toggleRecent: () => {
+    document.body.classList.toggle("recent-off");
+    fused.params.set("recent", document.body.classList.contains("recent-off") ? "0" : "1");
+  },
+  zoomIn: () => setZoom(state.zoom + 15),
+  zoomOut: () => setZoom(state.zoom - 15),
+  zoom100: () => setZoom(100),
+};
+
+async function act(name, arg) {
+  try {
+    await acts[name]?.(arg);
+  } catch (err) {
+    // A superseded pdf.js render (fast rotate/zoom, hidden pane) is not a
+    // user-facing failure — the newer render already owns the canvas.
+    if (err?.name === "RenderingCancelledException") return;
+    console.error(err);
+    setStatus("error", "err");
+    toast(err?.message || String(err), true);
+  }
+}
+
+function setZoom(z) {
+  state.zoom = Math.min(300, Math.max(40, z));
+  fused.params.set("zoom", String(state.zoom));
+  return renderAll();
+}
+
+// ---------- specialized modals ----------
+async function mergeModal() {
+  const m = modal(`<h3>Merge PDFs</h3>
+    <p>Pick the documents to combine, in order. The current document is included first.</p>
+    <div class="checklist" id="mgList"></div>
+    <button class="btn ghost" id="mgBrowse" style="margin-top:8px">＋ Add a PDF from disk…</button>
+    <label>Output name</label><input type="text" id="mgName" value="merged">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="mgDir" spellcheck="false"><button class="btn" id="mgDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Merge</button></div>`);
+  const getDir = destRow(m, "mgDir", docDir(),
+    (f) => { m.el.querySelector("#mgName").value = f.replace(/\.pdf$/i, ""); });
+  const chosen = [state.doc];
+  const list = m.el.querySelector("#mgList");
+  function addRow(path, name, checked) {
+    const lab = document.createElement("label");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = checked; cb.dataset.path = path;
+    cb.disabled = path === state.doc;
+    const span = document.createElement("span");
+    span.textContent = name;
+    lab.append(cb, span);
+    list.appendChild(lab);
+  }
+  addRow(state.doc, state.doc.split("/").pop() + " (current)", true);
+  for (const d of state.docs) if (d.path !== state.doc && !d.missing) addRow(d.path, d.name, false);
+  m.el.querySelector("#mgBrowse").onclick = async () => {
+    const src = await browseModal({ title: "Add a PDF to the merge" });
+    if (src) addRow(src, src.split("/").pop(), true);
+  };
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    const sources = [...list.querySelectorAll("input:checked")].map((c) => c.dataset.path);
+    if (sources.length < 2) { toast("Pick at least two PDFs"); return; }
+    const dir = getDir();
+    m.close({ sources, name: m.el.querySelector("#mgName").value.trim() || "merged", dir });
+  };
+  return m.done;
+}
+
+async function splitModal() {
+  const stem = state.info.name.replace(/\.pdf$/i, "");
+  const total = state.info.page_count;
+  const m = modal(`<h3>Split document</h3>
+    <label class="radio"><input type="radio" name="sm" value="each" checked>
+      <span>One PDF per page<small>${total} files</small></span></label>
+    <label class="radio"><input type="radio" name="sm" value="ranges">
+      <span>By ranges<small>Semicolon-separated, e.g. 1-3;4-6</small></span></label>
+    <input type="text" id="spRanges" placeholder="1-3;4-6" style="margin-top:6px" disabled>
+    <label>Filename prefix</label><input type="text" id="spPrefix" value="${stem.replace(/"/g, "&quot;")}">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="spDir" spellcheck="false"><button class="btn" id="spDirBtn">Browse…</button></div>
+    <p class="hint" id="spPreview"></p>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Split</button></div>`);
+  const ranges = m.el.querySelector("#spRanges");
+  const prefixInp = m.el.querySelector("#spPrefix");
+  const preview = m.el.querySelector("#spPreview");
+  const getDir = destRow(m, "spDir", docDir(),
+    (f) => { prefixInp.value = f.replace(/\.pdf$/i, ""); updatePreview(); });
+  function labels() {
+    if (m.el.querySelector("[name=sm]:checked").value === "each")
+      return [...Array(total)].map((_, i) => `p${i + 1}`);
+    return ranges.value.split(";").map((t) => t.trim()).filter(Boolean).map((t) => {
+      const r = t.match(/^(\d+)\s*-\s*(\d+)$/);
+      return r ? `p${r[1]}-${r[2]}` : `p${t}`;
+    });
+  }
+  function updatePreview() {
+    const ls = labels();
+    if (!ls.length) { preview.textContent = "Enter ranges like 1-3;4-6 — each range becomes its own PDF."; return; }
+    const prefix = prefixInp.value.trim() || stem;
+    const names = ls.slice(0, 3).map((l) => `${prefix}-${l}.pdf`).join(", ");
+    preview.textContent = `Creates ${ls.length} new PDF${ls.length === 1 ? "" : "s"}: ${names}${ls.length > 3 ? ", …" : ""}. The original document is not modified.`;
+  }
+  m.el.querySelectorAll("[name=sm]").forEach((r) => r.addEventListener("change", () => {
+    ranges.disabled = m.el.querySelector("[name=sm]:checked").value !== "ranges";
+    if (!ranges.disabled) ranges.focus();
+    updatePreview();
+  }));
+  ranges.addEventListener("input", updatePreview);
+  prefixInp.addEventListener("input", updatePreview);
+  updatePreview();
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    const dir = getDir();
+    m.close({
+      mode: m.el.querySelector("[name=sm]:checked").value,
+      ranges: ranges.value.trim(),
+      prefix: prefixInp.value.trim(),
+      dir,
+    });
+  };
+  return m.done;
+}
+
+async function compressModal() {
+  const m = modal(`<h3>Compress</h3>
+    <label class="radio"><input type="radio" name="cl" value="lossless" checked>
+      <span>Lossless<small>Recompress streams and pack objects (qpdf). Always safe.</small></span></label>
+    <label class="radio"><input type="radio" name="cl" value="aggressive">
+      <span>Aggressive<small>Also downsample images to 150 dpi and subset fonts. Smaller, lossy.</small></span></label>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Compress</button></div>`);
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () =>
+    m.close(m.el.querySelector("[name=cl]:checked").value);
+  return m.done;
+}
+
+async function exportModal(presetKind = "") {
+  const m = modal(`<h3>Export</h3>
+    <label>Format</label>
+    <select id="exKind">
+      <option value="pdf">PDF (page subset)</option>
+      <option value="png">PNG images (one per page)</option>
+      <option value="jpg">JPG images (one per page)</option>
+      <option value="txt">Plain text</option>
+    </select>
+    <label>Pages</label><input type="text" id="exPages" value="all" placeholder="all or 1,3-5">
+    <label>Name</label><input type="text" id="exName" value="${state.info.name.replace(/\.pdf$/i, "").replace(/"/g, "&quot;")}">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="exDir" spellcheck="false"><button class="btn" id="exDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Export</button></div>`);
+  const nameInp = m.el.querySelector("#exName");
+  if (presetKind) m.el.querySelector("#exKind").value = presetKind;
+  const getDir = destRow(m, "exDir", docDir(),
+    (f) => { nameInp.value = f.replace(/\.[a-z0-9]+$/i, ""); });
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    const dir = getDir();
+    m.close({
+      kind: m.el.querySelector("#exKind").value,
+      pages: m.el.querySelector("#exPages").value.trim() || "all",
+      name: nameInp.value.trim(),
+      dir,
+    });
+  };
+  return m.done;
+}
+
+async function imagesModal() {
+  const m = modal(`<h3>Images to PDF</h3>
+    <p>Pick images in the order they should appear — one page per image.</p>
+    <div class="checklist" id="imList"><div class="fb-empty">No images yet.</div></div>
+    <button class="btn ghost" id="imBrowse" style="margin-top:8px">＋ Add an image…</button>
+    <label>Output name</label><input type="text" id="imName" value="images">
+    <label>Save to</label>
+    <div class="destrow"><input type="text" id="imDir" spellcheck="false"><button class="btn" id="imDirBtn">Browse…</button></div>
+    <div class="row"><button class="btn" data-x="cancel">Cancel</button>
+    <button class="btn primary" data-x="ok">Create PDF</button></div>`);
+  const getDir = destRow(m, "imDir", state.doc ? docDir() : "~");
+  const list = m.el.querySelector("#imList");
+  const sources = [];
+  function render() {
+    list.innerHTML = sources.length ? "" : `<div class="fb-empty">No images yet.</div>`;
+    sources.forEach((p, i) => {
+      const lab = document.createElement("label");
+      const span = document.createElement("span");
+      span.textContent = `${i + 1}. ${p.split("/").pop()}`;
+      const rm = document.createElement("button");
+      rm.className = "btn ghost"; rm.textContent = "✕"; rm.style.marginLeft = "auto";
+      rm.onclick = (e) => { e.preventDefault(); sources.splice(i, 1); render(); };
+      lab.append(span, rm);
+      list.appendChild(lab);
+    });
+  }
+  m.el.querySelector("#imBrowse").onclick = async () => {
+    const src = await browseModal({ title: "Add an image", exts: ".png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" });
+    if (src) { sources.push(src); render(); }
+  };
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    if (!sources.length) { toast("Add at least one image"); return; }
+    m.close({ sources, name: m.el.querySelector("#imName").value.trim() || "images", dir: getDir() });
+  };
+  return m.done;
+}
+
+async function scanModal() {
+  const m = modal(`<h3>Scan document</h3>
+    <div class="scan-wrap"><video id="scVideo" autoplay playsinline muted></video></div>
+    <div class="scan-strip" id="scStrip"></div>
+    <div class="row">
+      <button class="btn" data-x="cancel">Cancel</button>
+      <button class="btn" id="scCap">Capture page</button>
+      <button class="btn primary" data-x="ok">Save as PDF…</button></div>`);
+  m.el.classList.add("wide");
+  const video = m.el.querySelector("#scVideo");
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 2560 }, height: { ideal: 1440 }, facingMode: "environment" },
+      audio: false,
+    });
+  } catch (err) {
+    m.close(null);
+    throw new Error(`camera unavailable: ${err?.message || err}`);
+  }
+  video.srcObject = stream;
+  const caps = [];
+  const strip = m.el.querySelector("#scStrip");
+  function render() {
+    strip.innerHTML = "";
+    caps.forEach((c, i) => {
+      const d = document.createElement("div");
+      d.className = "cap";
+      d.innerHTML = `<img alt="page ${i + 1}"><button class="rm" title="Remove">✕</button>`;
+      d.querySelector("img").src = c;
+      d.querySelector(".rm").onclick = () => { caps.splice(i, 1); render(); };
+      strip.appendChild(d);
+    });
+  }
+  m.el.querySelector("#scCap").onclick = () => {
+    if (!video.videoWidth) return toast("Camera is still starting…");
+    const cv = document.createElement("canvas");
+    cv.width = video.videoWidth; cv.height = video.videoHeight;
+    cv.getContext("2d").drawImage(video, 0, 0);
+    caps.push(cv.toDataURL("image/jpeg", 0.87));
+    render();
+  };
+  const stop = () => stream.getTracks().forEach((t) => t.stop());
+  m.el.querySelector("[data-x=cancel]").onclick = () => m.close(null);
+  m.el.querySelector("[data-x=ok]").onclick = () => {
+    if (!caps.length) { toast("Capture at least one page"); return; }
+    m.close(caps);
+  };
+  m.done.then(stop, stop);
+  return m.done;
+}
+
+// ---------- tools home ----------
+function showTools(on) {
+  $("toolsHome").classList.toggle("hidden", !on);
+}
+
+// ---------- inspector ----------
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = (n) => (n || 0).toLocaleString();
+const plural = (n, one, many) => `${num(n)} ${n === 1 ? one : many}`;
+
+// PDF dates look like D:20210930065945-04'00'. Metadata is untrusted input, so
+// an unparseable value is escaped like any other string out of the file.
+function pdfDate(s) {
+  const m = /^D?:?(\d{4})(\d\d)(\d\d)(\d\d)?(\d\d)?/.exec(s || "");
+  if (!m) return esc(s || "—");
+  const [, y, mo, d, h, mi] = m;
+  return `${y}-${mo}-${d}` + (h ? ` ${h}:${mi || "00"}` : "");
+}
+
+const INS_TABS = ["overview", "pages", "fonts", "security", "markdown"];
+
+function insOpen(on) {
+  document.body.classList.toggle("inspect-on", on);
+  fused.params.set("inspect", on ? "1" : "0");
+}
+
+function insToggle() {
+  if (document.body.classList.contains("inspect-on")) insOpen(false);
+  else act("inspect");
+}
+
+function insSetTab(name) {
+  state.insTab = name;
+  document.querySelectorAll(".ins-tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  fused.params.set("itab", name);
+}
+
+// Every request the drawer makes goes through here, which owns both things a
+// per-call-site guard kept getting wrong. Whether the answer still applies: each
+// request describes one document at one revision and py() does not supersede, so
+// the generation is read when the request is made and re-checked when it lands —
+// a failure included, since it is just as moot once discarded and would
+// otherwise toast an error about a document the user has already left. And the
+// busy state: whatever becomes of the request, the last one out repaints from
+// whatever is true by then, so no outcome can leave "Scanning…" on screen.
+// Returns whether the answer was committed.
+// Labels the drawer sets, so the status pill is only restored by the drawer when
+// the drawer is what put it there. They must be distinct from every other
+// operation's label — "converting…" alone collided with Convert to Word, and a
+// discarded scan then cleared the pill while the Word conversion was still going.
+const INS_STATUS = ["inspecting…", "converting to Markdown…"];
+let insBusy = 0;
+async function insWork(label, run, commit) {
+  const forDoc = state.doc, gen = inspectGen;
+  const live = () => gen === inspectGen && forDoc === state.doc;
+  insBusy++;
+  setStatus(label, "busy");
+  try {
+    const value = await run();
+    if (!live()) return false;
+    commit(value);
+    return true;
+  } catch (err) {
+    if (live()) throw err;
+    return false;
+  } finally {
+    insBusy--;
+    // Repaint on every settle, not only when the last one lands: a scan that
+    // finished while a slower convert was still running had committed its report
+    // and then left the drawer showing "Scanning…" for it.
+    if (document.body.classList.contains("inspect-on")) renderInspect();
+    if (!insBusy && INS_STATUS.includes($("status").querySelector(".txt").textContent))
+      idleStatus();
+  }
+}
+
+async function runInspect(tab) {
+  needDoc();
+  insOpen(true);
+  if (tab) insSetTab(tab);
+  if (!state.inspect) {
+    $("insBody").innerHTML = `<div class="ins-note">Scanning ${esc(state.info.name)} —
+      ${plural(state.info.page_count, "page", "pages")}…</div>`;
+    const done = await insWork("inspecting…", () => py({ action: "inspect", doc: state.doc }),
+      (report) => { state.inspect = report; applyOcrBadges(); });
+    if (!done) return;
+  }
+  const h = state.health || {};
+  $("insEngine").textContent = [`pymupdf ${h.pymupdf}`, `pikepdf ${h.pikepdf}`,
+    h.pdf_inspector ? `pdf-inspector ${h.pdf_inspector}` : ""].filter(Boolean).join(" · ");
+  renderInspect();
+}
+
+// One place decides what a generation bump means. Every request already in
+// flight becomes void, so the drawer repaints at the bump — not when the void
+// answer eventually arrives, which for a long scan is a minute of "Scanning…"
+// for a result that is going to be thrown away. `clear` additionally drops the
+// report itself, for the mutations that make it wrong rather than merely moot.
+function insVoid(clear = false) {
+  inspectGen++;
+  if (clear) { state.inspect = null; state.md = null; }
+  if ((clear || insBusy) && document.body.classList.contains("inspect-on")) renderInspect();
+}
+
+function dropInspect() {
+  insVoid(true);
+}
+
+function applyOcrBadges() {
+  const need = new Set(state.inspect?.verdict.pages_needing_ocr || []);
+  document.querySelectorAll("#thumbs .thumb[data-page]").forEach((t) => {
+    const badge = t.querySelector(".ocr");
+    if (need.has(+t.dataset.page)) {
+      if (!badge) t.insertAdjacentHTML("beforeend", `<span class="ocr">OCR</span>`);
+    } else if (badge) badge.remove();
+  });
+}
+
+function renderInspect() {
+  const body = $("insBody");
+  if (!state.doc) {
+    body.innerHTML = `<div class="ins-note">Open a PDF to inspect it.</div>`;
+    return;
+  }
+  const r = state.inspect;
+  if (!r) {
+    body.innerHTML = `<div class="ins-note">This document hasn't been scanned yet.<br>
+      <button class="btn primary" data-ins="scan" style="margin-top:11px">Scan this document</button></div>`;
+  } else {
+    body.innerHTML = ({ pages: insPages, fonts: insFonts, security: insSecurity,
+      markdown: insMarkdown }[state.insTab] || insOverview)(r);
+  }
+  body.querySelectorAll("tbody tr[data-page]").forEach((tr) => {
+    tr.onclick = () => setCurPage(+tr.dataset.page);
+  });
+  body.querySelectorAll("[data-ins]").forEach((b) => {
+    b.onclick = () => act({ scan: "inspect", ocr: "ocr", md: "mdConvert",
+      mdcopy: "mdCopy", mdsave: "mdSave" }[b.dataset.ins]);
+  });
+}
+
+// pdf-inspector is a cross-check, not a dependency — the verdict above stands
+// on its own, so a missing or broken one is a note, never an error state.
+function crossCheck(v, rust) {
+  if (!rust.installed) {
+    return `Verdict from pymupdf, using firecrawl/pdf-inspector's thresholds.
+      Optional: <code>${esc(rust.hint || "pip install pdf-inspector")}</code>
+      to cross-check against that library itself.`;
+  }
+  if (rust.error) {
+    return `pdf-inspector is installed but could not read this file
+      (${esc(rust.error)}). The verdict above is unaffected.`;
+  }
+  return `pdf-inspector ${esc(rust.version)}
+    ${rust.type === v.type ? "agrees" : `reads it as ${esc(rust.type)}`}
+    (${Math.round(rust.confidence * 100)}%, ${rust.ms} ms)${
+      rust.encoding_issues ? " · flags encoding issues" : ""}`;
+}
+
+function insOverview(r) {
+  const v = r.verdict, d = r.doc, t = r.text, rust = r.rust;
+  const pct = Math.round(v.confidence * 100);
+  const stat = (n, label) => `<div class="stat"><b>${num(n)}</b><small>${label}</small></div>`;
+  return `
+    <div class="verdict">
+      <div class="top">
+        <span class="vbadge" data-t="${v.type}">${esc(v.label)}</span>
+        <span class="conf">${pct}% confidence</span>
+      </div>
+      <div class="cbar"><span style="width:${pct}%"></span></div>
+      <p>${num(v.pages_with_text)} of ${plural(v.page_count, "page", "pages")}
+        ${v.pages_with_text === 1 ? "has" : "have"} extractable
+        text${v.sampled ? ` (sampled from ${num(d.page_count)})` : ""}.
+        ${v.ocr_recommended
+          ? `OCR would help on ${plural(v.pages_needing_ocr.length, "page", "pages")}:
+             ${v.pages_needing_ocr.slice(0, 12).join(", ")}${v.pages_needing_ocr.length > 12 ? "…" : ""}.`
+          : "Every page reads back as text — no OCR needed."}</p>
+      ${v.ocr_recommended ? `<div class="row">
+        <button class="btn primary" data-ins="ocr">Make searchable (OCR)</button></div>` : ""}
+      <p class="cross">${crossCheck(v, rust)}</p>
+    </div>
+
+    <h6>Content${v.sampled ? ` — across the ${num(v.page_count)} pages scanned` : ""}</h6>
+    <div class="stats">
+      ${stat(t.chars, "characters")}
+      ${stat(t.tables, "tables" + (r.tables_capped ? "*" : ""))}
+      ${stat(t.links, "web links")}
+      ${stat(r.fonts.length, "fonts")}
+      ${stat(d.attachments, "attachments")}
+      ${stat(d.outline_items, "bookmarks")}
+    </div>
+    ${r.tables_capped ? `<p class="hint" style="margin-top:6px">* tables counted on
+      ${num(r.pages.filter((p) => p.tables_scanned).length)} of the
+      ${v.sampled ? "sampled" : "document's"} pages.</p>` : ""}
+    ${t.column_pages.length ? `<p class="hint" style="margin-top:6px">Multi-column layout on
+      ${plural(t.column_pages.length, "page", "pages")} — reading order follows the columns.</p>` : ""}
+
+    <h6>Document</h6>
+    <dl class="kv">
+      <dt>Format</dt><dd>${esc(d.pdf_version || "—")}${d.linearized ? " · linearized" : ""}${d.tagged ? " · tagged" : ""}</dd>
+      <dt>Pages</dt><dd>${num(d.page_count)}</dd>
+      <dt>Size</dt><dd>${fmtSize(d.size)} · ${num(d.objects)} objects</dd>
+      <dt>Title</dt><dd>${esc(d.title || "—")}</dd>
+      <dt>Author</dt><dd>${esc(d.author || "—")}</dd>
+      <dt>Producer</dt><dd>${esc(d.producer || "—")}</dd>
+      <dt>Creator</dt><dd>${esc(d.creator || "—")}</dd>
+      <dt>Created</dt><dd>${pdfDate(d.created)}</dd>
+      <dt>Modified</dt><dd>${pdfDate(d.modified)}</dd>
+      <dt>Features</dt><dd>${[d.form ? "form fields" : "", d.layers ? "layers" : "",
+        d.attachments ? "attachments" : ""].filter(Boolean).join(", ") || "none"}</dd>
+    </dl>
+
+    ${t.issues.length ? `<h6>Text quality</h6>
+      ${t.issues.map((i) => `<div class="check" data-s="warn"><span class="mk">!</span>
+        <span class="nt">${esc(i)}</span></div>`).join("")}` : ""}`;
+}
+
+function insPages(r) {
+  const need = new Set(r.verdict.pages_needing_ocr);
+  const tone = (p) => p.has_text ? "text" : (p.images ? "image" : "empty");
+  const kind = (p) => p.has_text ? (p.images ? "text + image" : "text") : tone(p);
+  const rows = r.pages.map((p) => `
+    <tr data-page="${p.n}"${p.n === state.curPage ? ' class="on"' : ""}>
+      <td>${p.n}</td>
+      <td><span class="pill ${tone(p)}">${kind(p)}</span></td>
+      <td>${num(p.chars)}</td>
+      <td>${p.images ? Math.round(p.image_cover * 100) + "%" : "—"}</td>
+      <td>${p.tables_scanned ? (p.tables || "—") : "·"}</td>
+      <td>${need.has(p.n) ? `<span class="pill warn">OCR</span>` : ""}</td>
+    </tr>`).join("");
+  const reasons = Object.entries(r.verdict.reasons).slice(0, 12);
+  return `
+    <h6>Per page${r.verdict.sampled ? ` — ${num(r.pages.length)} sampled of ${num(r.doc.page_count)}` : ""}</h6>
+    <table class="itable">
+      <thead><tr><th>Page</th><th>Content</th><th>Chars</th><th>Image</th><th>Tables</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="hint">Click a row to jump to that page.</p>
+    ${reasons.length ? `<h6>Why those pages need OCR</h6>
+      ${reasons.map(([n, why]) => `<div class="check" data-s="warn"><span class="mk">!</span>
+        <span class="nm">Page ${esc(n)}</span><span class="nt">${esc(why.join("; "))}</span></div>`).join("")}` : ""}`;
+}
+
+function insFonts(r) {
+  if (!r.fonts.length) return `<div class="ins-note">This document embeds no fonts — there is no text to draw.</div>`;
+  const rows = r.fonts.map((f) => `
+    <tr>
+      <td>${esc(f.name)}${f.subset ? ` <span class="pill">subset</span>` : ""}</td>
+      <td>${esc(f.type)}</td>
+      <td>${esc(f.encoding)}</td>
+      <td>${f.embedded ? "yes" : "no"}</td>
+      <td>${f.undecodable ? `<span class="pill warn">no map</span>` : (f.tounicode ? "yes" : "—")}</td>
+      <td>${num(f.page_count)}</td>
+    </tr>`).join("");
+  const broken = r.fonts.filter((f) => f.undecodable);
+  return `
+    <h6>Fonts</h6>
+    <table class="itable">
+      <thead><tr><th>Name</th><th>Type</th><th>Encoding</th><th>Embedded</th><th>ToUnicode</th><th>Pages</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    ${broken.length ? `<h6>Encoding problems</h6>
+      <div class="check" data-s="warn"><span class="mk">!</span><span class="nt">
+      ${plural(broken.length, "font", "fonts")} use an Identity CID encoding with no ToUnicode map
+      (${esc(broken.slice(0, 3).map((f) => f.name).join(", "))}${broken.length > 3 ? "…" : ""}).
+      Text drawn in them copies out as gibberish — OCR is the reliable way to read those pages.
+      </span></div>` : `<p class="hint">Every font maps back to Unicode, so extracted text is trustworthy.</p>`}`;
+}
+
+const RISK_COPY = {
+  clean: ["No active content", "Nothing in this file runs, opens other programs, or reaches out on its own."],
+  notable: ["Worth a look", "Nothing here executes, but the file carries content you may want to know about."],
+  risky: ["Contains active content", "This file can run code or open other files. Only continue if you trust where it came from."],
+  unreadable: ["Could not be scanned", "This file's internal structure is damaged enough that it could not be read — which is itself a reason to be careful with it."],
+};
+
+function insSecurity(r) {
+  const s = r.security;
+  const [title, note] = RISK_COPY[s.risk];
+  const mark = { pass: "✓", info: "i", warn: "!", fail: "✕" };
+  if (s.risk === "unreadable") {
+    return `<div class="risk" data-r="unreadable"><h4>${title}</h4><p>${note}</p></div>
+      <h6>What the scanner hit</h6><div class="finding" data-l="warn"><code>${esc(s.error)}</code></div>
+      <p class="hint">The rest of this report (pages, fonts, text) still applies — only the
+        structural scan stopped.</p>`;
+  }
+  return `
+    <div class="risk" data-r="${s.risk}"><h4>${title}</h4><p>${note}</p></div>
+    <h6>Checks</h6>
+    <div class="checks">${s.checks.map((c) => `
+      <div class="check" data-s="${c.state}">
+        <span class="mk">${mark[c.state]}</span>
+        <span class="nm">${esc(c.name)}</span>
+        <span class="nt">${esc(c.note)}</span>
+      </div>`).join("")}</div>
+    ${s.findings.length ? `<h6>Findings${s.findings_total > s.findings.length
+      ? ` — first ${num(s.findings.length)} of ${num(s.findings_total)}` : ""}</h6>
+      ${s.findings.map((f) => `
+        <div class="finding" data-l="${f.level}">
+          <b>${esc(f.kind)}</b> — ${esc(f.what)}
+          <div class="where">${esc(f.where)}</div>
+          ${f.detail ? `<code>${esc(f.detail)}</code>` : ""}
+        </div>`).join("")}` : ""}
+    ${s.urls.length ? `<h6>Link targets</h6>
+      <table class="itable"><tbody>${s.urls.slice(0, 40).map((u) => `
+        <tr><td style="text-align:left;overflow-wrap:anywhere">${esc(u.url)}</td>
+        <td>${u.count}×</td></tr>`).join("")}</tbody></table>` : ""}
+    <p class="hint">This scan reads the file's structure only — nothing in the PDF is executed. It does not
+      verify digital signatures or check links against a reputation service.</p>`;
+}
+
+function insMarkdown(r) {
+  const md = state.md;
+  return `
+    <h6>Markdown</h6>
+    <div class="ins-actions">
+      <span style="color:var(--ink-3);font-size:12px">Pages</span>
+      <input id="mdPages" value="${esc(md?.spec || "all")}" placeholder="all or 1,3-5">
+      <button class="btn primary" data-ins="md">Convert</button>
+      ${md ? `<button class="btn" data-ins="mdcopy">Copy</button>
+              <button class="btn" data-ins="mdsave">Save .md</button>` : ""}
+    </div>
+    ${md
+      ? `<p class="hint" style="margin-top:8px">${num(md.chars)} characters from
+         ${plural(md.pages, "page", "pages")}. Headings come from relative font size; tables and
+         column order are detected from the page layout.</p>
+         <pre class="mdout">${esc(md.markdown)}</pre>`
+      : `<p class="hint" style="margin-top:8px">Converts the document text to Markdown — headings, lists,
+         code blocks, tables and links. ${r.verdict.ocr_recommended
+           ? "Pages without a text layer will come out empty; run OCR first." : ""}</p>`}`;
+}
+
+// ---------- icons ----------
+const icoRotL = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8v5h5"/><path d="M3 13a9 9 0 1 0 3-7.7L3 8"/></svg>`;
+const icoRotR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v5h-5"/><path d="M21 13a9 9 0 1 1-3-7.7L21 8"/></svg>`;
+const icoTrash = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>`;
+const icoExtract = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="m9 15 3 3 3-3"/></svg>`;
+const icoPen = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`;
+const icoDir = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>`;
+const icoFile = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>`;
+const icoDown = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`;
+
+// ---------- global wiring ----------
+document.querySelectorAll(".menu[data-menu]").forEach((menu) => {
+  menu.addEventListener("click", () => menu.classList.toggle("open"));
+  menu.addEventListener("mouseenter", () => {
+    if (document.querySelector(".menu.open") && !menu.classList.contains("open")) {
+      document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+      menu.classList.add("open");
+    }
+  });
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".menu")) document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+  const mi = e.target.closest(".mi[data-act]");
+  if (mi) {
+    document.querySelectorAll(".menu.open").forEach((x) => x.classList.remove("open"));
+    act(mi.dataset.act);
+  }
+});
+
+$("modeSeg").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mode]");
+  if (!b) return;
+  setMode(b.dataset.mode);
+});
+function setMode(mode) {
+  document.body.classList.toggle("mode-view", mode === "view");
+  document.body.classList.toggle("mode-edit", mode !== "view");
+  document.querySelectorAll("#modeSeg [data-mode]").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  fused.params.set("mode", mode);
+  if (mode === "edit" && state.pdf) primeOverlays();
+}
+
+$("exportBtn").addEventListener("click", () => act("export"));
+$("importBtn").addEventListener("click", () => act("addPdf"));
+$("recentToggle").addEventListener("click", () => act("toggleRecent"));
+$("toolsBtn").addEventListener("click", () => act("tools"));
+$("toolsClose").addEventListener("click", () => showTools(false));
+$("inspectBtn").addEventListener("click", insToggle);
+$("insClose").addEventListener("click", () => insOpen(false));
+$("insRescan").addEventListener("click", () => act("rescan"));
+$("insTabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-tab]");
+  if (!b) return;
+  insSetTab(b.dataset.tab);
+  renderInspect();
+});
+$("toolsHome").addEventListener("click", (e) => {
+  const card = e.target.closest("[data-tool]");
+  if (!card) return;
+  showTools(false);
+  act(card.dataset.tool);
+});
+
+$("pages").addEventListener("click", (e) => {
+  const wrap = e.target.closest(".pdf-page");
+  if (!wrap) return;
+  const qa = e.target.closest("[data-qa]");
+  const n = +wrap.dataset.page;
+  if (qa) {
+    setCurPage(n, false);
+    act({ rotL: "rotateL", rotR: "rotateR", extract: "extractPages", del: "deletePage" }[qa.dataset.qa], n);
+    return;
+  }
+  if (!document.body.classList.contains("mode-edit")) return;
+  const ts = e.target.closest(".tspan");
+  if (ts) {
+    const pt = state.spans[n];
+    startEdit(wrap, pt.spans[+ts.dataset.i]);
+  }
+});
+
+$("thumbs").addEventListener("click", (e) => {
+  const t = e.target.closest(".thumb");
+  if (!t || !t.dataset.page) return; // skeleton placeholders reuse .thumb for sizing but carry no page number
+  const n = +t.dataset.page;
+  const qa = e.target.closest("[data-qa]");
+  if (qa) {
+    setCurPage(n, false);
+    act({ rotL: "rotateL", rotR: "rotateR", del: "deletePage" }[qa.dataset.qa], n);
+    return;
+  }
+  setCurPage(n);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (state.editing || e.target.closest(".modal")) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); act("undo"); }
+  else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); act("redo"); }
+  else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); act(e.shiftKey ? "saveAs" : "save"); }
+  else if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); act("addPdf"); }
+  else if (mod && e.key.toLowerCase() === "i") { e.preventDefault(); insToggle(); }
+  else if (mod && e.key === "\\") { e.preventDefault(); act("togglePanel"); }
+});
+
+// ---------- boot ----------
+async function bootDoc(path) {
+  if (!state.docs.some((d) => d.path === path)) {
+    await py({ action: "add_to_library", src: path });
+    await refreshLib();
+  }
+  await openDoc(path);
+}
+
+async function boot() {
+  try {
+    const libP = refreshLib();
+    let health;
+    try { health = await py({ action: "health" }); }
+    catch { health = await py({ action: "health" }); }   // one retry: engine warm-up
+    state.health = health;
+    if (!health.ok) {
+      libP.catch(() => {});
+      $("boot").innerHTML = "";
+      const msg = document.createElement("div");
+      msg.innerHTML = `<b>PDF Studio needs its Python engines.</b><br>
+        Install into the server environment:<br>
+        <code style="font-family:var(--mono);background:#fff;padding:2px 8px;border-radius:4px;border:1px solid var(--hair)">uv pip install pymupdf pikepdf</code><br>
+        The packaged app ships both, so this only happens in a source checkout.`;
+      $("boot").appendChild(msg);
+      return;
+    }
+    state.zoom = +(fused.params.get("zoom") || 100) || 100;
+    if (fused.params.get("panel") === "0") document.body.classList.add("panel-off");
+    if (fused.params.get("recent") === "0") document.body.classList.add("recent-off");
+    await libP;
+    setMode(fused.params.get("mode") === "edit" ? "edit" : "view");
+    const tab = fused.params.get("itab");
+    if (INS_TABS.includes(tab)) insSetTab(tab);
+    $("boot").remove();
+  } catch (err) {
+    console.error(err);
+    $("boot").textContent = `PDF Studio failed to start: ${err?.message || err}`;
+    return;
+  }
+  // A bookmarked ?inspect=1 reopens the drawer on the document it was taken on.
+  const reopen = () => { if (fused.params.get("inspect") === "1") act("inspect"); };
+  const wanted = fused.params.get("doc") || fused.params.get("_file") || "";
+  if (wanted && wanted.toLowerCase().endsWith(".pdf")) {
+    try { await bootDoc(wanted); return reopen(); }
+    catch (err) { console.error(err); toast(`Could not open ${wanted.split("/").pop()}: ${err?.message || err}`, true); }
+  }
+  if (state.docs.length) {
+    try { await openDoc(state.docs[0].path); return reopen(); }
+    catch (err) { console.error(err); }
+  }
+  showTools(true);  // nothing to show — land on the tools grid
+}
+boot();
+</script>
+</body>
+</html>

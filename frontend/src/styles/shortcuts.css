@@ -1,0 +1,98 @@
+/* ---- Keyboard cheat sheet (ShortcutsOverlay) ----------------------------- */
+/* Two columns of grouped shortcut rows, collapsing to one on a narrow dialog.
+   auto-fit + minmax means the collapse is driven by available width, so it also
+   works when the dialog is clamped by a small viewport rather than a media
+   query on the page. */
+.shortcuts-dialog {
+  max-width: calc(100vw - 32px);
+}
+
+.shortcuts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px 28px;
+}
+
+.shortcuts-group-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.shortcuts-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shortcuts-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+
+/* --row-bg-hover, not --bg-alt: the key pills are already --bg-alt filled, so
+   an --bg-alt row wash would make them vanish on hover. */
+.shortcuts-row:hover {
+  background: var(--row-bg-hover);
+}
+
+.shortcuts-label {
+  color: var(--fg);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.shortcuts-keys {
+  margin: 0;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.shortcuts-key-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.shortcuts-key-join {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+/* Reuses .templates-key-pill for the fill/border/radius; only the min-width
+   (so a bare "C" pill isn't narrower than the ⌘ beside it) is new. */
+.shortcuts-kbd {
+  min-width: 20px;
+  text-align: center;
+  color: var(--fg);
+}
+
+@media (max-width: 560px) {
+  .shortcuts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Quiet disclosure for always-on boilerplate (e.g. the deploy public-link
+   note) so it doesn't compete with the primary action. */
+.deploy-disclosure > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.deploy-disclosure > *:not(summary) {
+  margin-top: 6px;
+}
+

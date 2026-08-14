@@ -1,0 +1,617 @@
+{
+  ".parquet": [
+    "duckdb",
+    "structure",
+    "h3",
+    "claude",
+    "geometry_editor",
+    "history"
+  ],
+  ".csv": [
+    "duckdb",
+    "excel",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".tsv": [
+    "duckdb",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".xlsx": [
+    "xlsx",
+    "excel",
+    "reader"
+  ],
+  ".xlsm": [
+    "xlsx",
+    "excel",
+    "reader"
+  ],
+  ".pptx": [
+    "slides"
+  ],
+  ".*.json": [
+    "tree",
+    "code"
+  ],
+  ".json": [
+    "tree",
+    "code",
+    "duckdb",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".jsonl": [
+    "code",
+    "duckdb",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".ipynb": [
+    "notebook",
+    "claude",
+    "history"
+  ],
+  ".calls.jsonl": [
+    "log_studio",
+    "code"
+  ],
+  ".docx": [
+    "docs",
+    "reader"
+  ],
+  ".odt": [
+    "docs",
+    "reader"
+  ],
+  ".ndjson": [
+    "code",
+    "duckdb",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".csv.gz": [
+    "duckdb",
+    "tar"
+  ],
+  ".csv.zst": [
+    "duckdb",
+    "tar"
+  ],
+  ".tsv.gz": [
+    "duckdb",
+    "tar"
+  ],
+  ".tsv.zst": [
+    "duckdb",
+    "tar"
+  ],
+  ".json.gz": [
+    "duckdb",
+    "tar"
+  ],
+  ".json.zst": [
+    "duckdb",
+    "tar"
+  ],
+  ".jsonl.gz": [
+    "duckdb",
+    "tar"
+  ],
+  ".jsonl.zst": [
+    "duckdb",
+    "tar"
+  ],
+  ".ndjson.gz": [
+    "duckdb",
+    "tar"
+  ],
+  ".ndjson.zst": [
+    "duckdb",
+    "tar"
+  ],
+  ".geojson": [
+    "vector",
+    "map",
+    "tree",
+    "code",
+    "claude",
+    "geometry_editor",
+    "history"
+  ],
+  ".md": [
+    "markdown",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".markdown": [
+    "markdown",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".tex": [
+    "latex",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".ltx": [
+    "latex",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".latex": [
+    "latex",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".svg": [
+    "image",
+    "code",
+    "claude",
+    "history"
+  ],
+  ".png": [
+    "image",
+    "photos",
+    "pano",
+    "claude",
+    "history"
+  ],
+  ".jpg": [
+    "image",
+    "photos",
+    "pano",
+    "claude",
+    "history"
+  ],
+  ".jpeg": [
+    "image",
+    "photos",
+    "pano",
+    "claude",
+    "history"
+  ],
+  ".gif": [
+    "image",
+    "photos"
+  ],
+  ".webp": [
+    "image",
+    "photos",
+    "pano"
+  ],
+  ".bmp": [
+    "photos"
+  ],
+  ".avif": [
+    "photos"
+  ],
+  ".heic": [
+    "photos"
+  ],
+  ".heif": [
+    "photos"
+  ],
+  ".dng": [
+    "photos"
+  ],
+  ".pdf": [
+    "pdf",
+    "pdf_studio",
+    "reader"
+  ],
+  ".mp4": [
+    "media"
+  ],
+  ".mov": [
+    "media"
+  ],
+  ".m4v": [
+    "media"
+  ],
+  ".webm": [
+    "media"
+  ],
+  ".mp3": [
+    "media"
+  ],
+  ".wav": [
+    "media"
+  ],
+  ".m4a": [
+    "media"
+  ],
+  ".ogg": [
+    "media"
+  ],
+  ".flac": [
+    "media"
+  ],
+  ".py": [
+    "code",
+    "api",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".js": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".ts": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".tsx": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".jsx": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".cjs": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".mjs": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".cts": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".mts": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".sh": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".zsh": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".fish": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".ps1": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".csh": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".zsh-theme": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".vim": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".yaml": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".yml": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".toml": [
+    "canvas",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".ini": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".cfg": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".conf": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".tf": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".hcl": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".css": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".txt": [
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".log": [
+    "log_studio",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".html": [
+    "_render",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".htm": [
+    "_render",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ],
+  ".tif": [
+    "geotiff",
+    "pyramid",
+    "map"
+  ],
+  ".tiff": [
+    "geotiff",
+    "pyramid",
+    "map"
+  ],
+  ".nc": [
+    "netcdf"
+  ],
+  ".nc4": [
+    "netcdf"
+  ],
+  ".cdf": [
+    "netcdf"
+  ],
+  "/": [
+    "_listing",
+    "claude",
+    "git",
+    "graph",
+    "zarr_aoi",
+    "model_card",
+    "history"
+  ],
+  ".zarr/": [
+    "zarr_aoi",
+    "_listing"
+  ],
+  ".shp": [
+    "vector",
+    "map",
+    "geometry_editor"
+  ],
+  ".kml": [
+    "vector",
+    "map",
+    "geometry_editor"
+  ],
+  ".kmz": [
+    "vector",
+    "geometry_editor"
+  ],
+  ".gpx": [
+    "vector",
+    "geometry_editor"
+  ],
+  ".gpkg": [
+    "vector",
+    "map",
+    "geometry_editor"
+  ],
+  ".fgb": [
+    "vector",
+    "map",
+    "geometry_editor"
+  ],
+  ".pmtiles": [
+    "pmtiles",
+    "map"
+  ],
+  ".las": [
+    "las"
+  ],
+  ".laz": [
+    "las"
+  ],
+  ".usd": [
+    "usd"
+  ],
+  ".usda": [
+    "usd"
+  ],
+  ".usdc": [
+    "usd"
+  ],
+  ".usdz": [
+    "usd"
+  ],
+  ".ply": [
+    "usd"
+  ],
+  ".splat": [
+    "usd"
+  ],
+  ".ksplat": [
+    "usd"
+  ],
+  ".obj": [
+    "usd"
+  ],
+  ".stl": [
+    "usd"
+  ],
+  ".glb": [
+    "glb",
+    "usd"
+  ],
+  ".gltf": [
+    "glb",
+    "usd",
+    "code"
+  ],
+  ".dxf": [
+    "autocad_viewer",
+    "code"
+  ],
+  ".dwg": [
+    "autocad_viewer"
+  ],
+  ".zip": [
+    "zip"
+  ],
+  ".jar": [
+    "zip"
+  ],
+  ".whl": [
+    "zip"
+  ],
+  ".egg": [
+    "zip"
+  ],
+  ".bundle": [
+    "bundle"
+  ],
+  ".tar": [
+    "tar"
+  ],
+  ".tgz": [
+    "tar"
+  ],
+  ".tbz2": [
+    "tar"
+  ],
+  ".txz": [
+    "tar"
+  ],
+  ".gz": [
+    "tar"
+  ],
+  ".bz2": [
+    "tar"
+  ],
+  ".xz": [
+    "tar"
+  ],
+  ".sqlite": [
+    "sqlite"
+  ],
+  ".sqlite3": [
+    "sqlite"
+  ],
+  ".db": [
+    "sqlite"
+  ],
+  ".duckdb": [
+    "duckdb"
+  ],
+  ".ddb": [
+    "duckdb"
+  ],
+  ".twb": [
+    "tableau",
+    "code"
+  ],
+  ".twbx": [
+    "tableau",
+    "zip"
+  ],
+  ".tds": [
+    "tableau",
+    "code"
+  ],
+  ".tdsx": [
+    "tableau",
+    "zip"
+  ],
+  ".hyper": [
+    "tableau"
+  ],
+  ".plist": [
+    "plist",
+    "code",
+    "claude",
+    "reader",
+    "history"
+  ]
+}

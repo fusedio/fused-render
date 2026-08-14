@@ -1,0 +1,179 @@
+// Shared types and tuning constants for the directory listing view.
+// See Listing.tsx for the top-level architecture notes.
+import type { FsEntry, WalkEntry } from "@platform/lib/api";
+
+// A right-clicked row, normalized so both listing rows (name relative to the
+// listed folder) and search-result rows (a `rel` path into a subtree) drive the
+// same menu. `parentDir` is the containing folder; `path` is the entry itself.
+export interface RowCtx {
+  path: string;
+  name: string;
+  isDir: boolean;
+  parentDir: string;
+}
+
+// One open modal: a text prompt (New File/Folder, Rename) or a confirm (Delete).
+export type DialogState =
+  | {
+      kind: "prompt";
+      title: string;
+      initial: string;
+      confirmLabel: string;
+      selectStem?: boolean;
+      onConfirm: (value: string) => void;
+    }
+  | {
+      kind: "confirm";
+      title: string;
+      message: React.ReactNode;
+      confirmLabel: string;
+      danger?: boolean;
+      onConfirm: () => void;
+    };
+
+export const SORT_KEYS = { name: "Name", size: "Size", mtime: "Modified" };
+export type SortKey = keyof typeof SORT_KEYS;
+export type SortOrder = "asc" | "desc";
+
+// Columns the listing table renders. Search mode shows the matched PATH alone:
+// a hit's row is already a full rel path, and it needs every pixel the table
+// has. Status, banner and sentinel rows span the table, so their colSpan must
+// follow the mode — a hardcoded 3 under a one-column head declares two columns
+// nothing else mentions, and table-layout:fixed hands them width (the dead
+// strip in listing/column-shedding).
+export function columnCount(searching: boolean): number {
+  return searching ? 1 : 3;
+}
+
+// Search-result rows rendered per "page". Fuzzy-scoring can match thousands
+// of entries in a large tree; mounting them all as <tr>s at once is what jams
+// the main thread (scoring itself is comparatively cheap). Scrolling to the
+// bottom reveals the next page (see the sentinel row in Listing.tsx); the full
+// ranked list always exists in memory for the count text.
+export const PAGE_SIZE = 250;
+
+// Search results rendered at most, however many matched. Ranking still runs
+// over the whole corpus; past the first hundred a fuzzy rank has stopped
+// telling the user anything they can act on, and the useful move is a better
+// query rather than more scrolling — so the list stops here and the counter
+// says how much it is not showing (listing/result-cap).
+export const SEARCH_RESULT_CAP = 100;
+
+// Above this many rendered rows the FLIP reorder animation is dropped. Measuring
+// every row's offsetTop on each commit is one forced layout, but the per-row
+// transform (a compositing layer each) is not free — on a listing this long the
+// glide costs more than the snap it replaces.
+export const FLIP_MAX_ROWS = 600;
+
+// Minimum gap between commits of the RENDERED search ranking while a walk
+// streams (see the throttle in useWalkSearch). Longer than STREAM_FLUSH_MS on
+// purpose: that one bounds how often results are re-scored, this one bounds how
+// often the rows on screen are allowed to move.
+export const RERANK_COMMIT_MS = 280;
+
+// How long a row that just appeared in the folder keeps its tint. Long enough to
+// catch the eye if you weren't looking at that part of the list, short enough
+// that it doesn't become part of the row's normal appearance.
+export const ROW_NEW_MS = 1500;
+
+// Debounce for mirroring the query into the URL. Safari rate-limits
+// history.replaceState (~100 calls / 30s, then it THROWS); per-keystroke
+// sync trips that on fast typing. State stays immediate — only the URL lags.
+export const URL_SYNC_MS = 200;
+
+// Minimum gap between streaming state flushes. Network chunks can arrive many
+// times per second on localhost; committing (and re-scoring) on every one
+// saturates the main thread and starves interaction. The first batch still
+// flushes immediately (lastFlush starts at 0), so first paint isn't delayed.
+export const STREAM_FLUSH_MS = 200;
+
+// How long the index gets to answer before the live walk is started alongside
+// it (listing/source-race). Short: it is a budget, not a timeout — the index
+// usually answers well inside it, and when it does not, the walk is already
+// streaming rows by the time the index arrives. Long enough that the common
+// fast answer does not pay for a second request the user will never see.
+export const INDEX_RACE_MS = 150;
+
+// How still the query must be before a BIG corpus is re-scored. The index
+// answers a covered folder instantly and whole (up to MAX_CORPUS entries), so
+// unlike a streamed walk there is no ramp-up: the first keystroke already has
+// the full corpus to scan, and every keystroke after it would re-scan the lot.
+// Only the scan waits — the input echoes `query` immediately, as always.
+export const SCAN_DEBOUNCE_MS = 150;
+
+// Corpora at or below this size skip the debounce entirely: the scan is a few
+// milliseconds, and the first keystroke of a fresh search has to feel instant.
+// It is also the append threshold, so a stream flush (a few thousand entries)
+// is always scored straight away.
+export const SCAN_IMMEDIATE_MAX = 20_000;
+
+// Entries scored per slice before yielding to the event loop. Small enough
+// that a slice fits comfortably in a frame on a slow machine, large enough
+// that the per-slice overhead stays noise.
+export const SCAN_SLICE = 20_000;
+
+export type ListingState =
+  | { status: "loading" }
+  // `truncated`: the directory has more entries than the server cap, so this
+  // listing is a partial page. `cursor`: an opaque continuation token to fetch
+  // the next page (non-null only on the resumable S3-direct route); null means
+  // "no more can be fetched" — the banner then just states the listing is
+  // partial without a Load more button.
+  | { status: "ok"; entries: FsEntry[]; truncated: boolean; cursor: string | null }
+  | { status: "error"; message: string };
+
+// Streamed walk state. `entries` is one append-only array shared across the
+// streaming updates (each batch pushes into it); every update still creates a
+// NEW state object, so React re-renders and memos keyed on the walk recompute
+// against the grown array. `count` is the running total (doubles as the
+// version stamp that makes successive streaming states distinguishable).
+// Non-idle states are tagged with the `refresh` generation they were fetched
+// for; `validWalk` in useWalkSearch treats a stale tag as idle, so a dir-watch
+// bump invalidates the cache synchronously WITHOUT itself triggering a
+// re-fetch (fetching is driven by `walkReq` — see useWalkSearch). The
+// component remounts per folder (keyed on fsPath in App), so no path tagging
+// is needed.
+//
+// `key` names the CONTENT this corpus is: same key ⇒ same entries, whoever
+// asked and however many times. It is not the same claim as `forRefresh`,
+// which only says which generation the fetch was tagged with — a retry inside
+// one generation builds a brand-new array holding the same rows, and the index
+// and the live walk can each answer for one generation (listing/useWalkSearch
+// races them). Two things read it: the corpus hold (listing/corpus-hold) and
+// the incremental scorer's resume check (listing/useRankedScan), both of which
+// need "is this the same corpus?" and cannot get that from array identity.
+export type WalkState =
+  | { status: "idle" }
+  | { status: "streaming"; entries: WalkEntry[]; count: number; key: string; forRefresh: number }
+  | {
+      status: "ok";
+      entries: WalkEntry[];
+      truncated: boolean;
+      total: number;
+      key: string;
+      forRefresh: number;
+    }
+  | { status: "error"; message: string; key: string; forRefresh: number };
+
+export const IDLE_WALK: WalkState = { status: "idle" };
+
+// Ranking: longest consecutive matched run first (a contiguous substring hit
+// always beats a scattered subsequence one), then higher fuzzy score, then
+// fewer path segments (shallower = closer to hand), then alphabetical for a
+// stable order. Hits keep their score fields so partial result sets can be
+// merged and re-sorted incrementally as the walk streams in.
+export interface SearchHit {
+  entry: WalkEntry;
+  positions: number[];
+  score: number;
+  longestRun: number;
+  // 1 = the query is a substring of this entry's own NAME, 2 = the name matched
+  // only fuzzily, 3 = only ancestor directories matched. Lower wins. Ranked
+  // above `score` because scoring runs over the whole rel path, so a matching
+  // ancestor directory donates its score to every descendant (see search.ts).
+  tier: 1 | 2 | 3;
+  // Path depth, precomputed at score time. The rank comparator runs n·log n
+  // times over a hit list that can be the whole corpus, so it must not derive
+  // anything per comparison (see search.ts).
+  depth: number;
+}

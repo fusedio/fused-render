@@ -1,0 +1,509 @@
+/* ---- Home view (/view/_home) --------------------------------------------- */
+/* The front door. Direction: "workbench, not dashboard" — the hero is the
+   product's one magic verb (describe an app → Claude builds it) rendered as a
+   faux prompt bar with the page's single accent moment (a blinking caret).
+   Below it, three registers with deliberately different visual weights so the
+   eye ranks them without reading: apps are named rows with tinted monograms
+   (the hero content), templates are a quiet mono chip rail (one destination,
+   many labels), files is a single wide doorway. Section headings are mono
+   eyebrows on a hairline rule — the shell's code voice, not display chrome.
+   Every colour is a palette token or derived from one via color-mix, so light
+   mode repaints for free. */
+.home-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.home-inner {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 40px 28px 72px;
+}
+
+/* Hero card: bordered panel with a faint accent wash drifting out of the top
+   corner — the page's one decorative moment; everything inside stays on
+   tokens so both themes hold. */
+.home-hero {
+  position: relative;
+  overflow: hidden;
+  padding: 36px 36px 34px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  margin-bottom: 22px;
+}
+
+.home-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 130% at 100% 0%,
+    color-mix(in srgb, var(--accent) 12%, transparent),
+    transparent 55%
+  );
+}
+
+.home-hero > * {
+  position: relative;
+}
+
+/* Fused mark + headline, one centered row above the composer (the "App"
+   wordmark between them is gone). The PNG bakes generous padding into the
+   canvas, so the rendered height runs larger than the visible mark. */
+.home-hero-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  /* Row gap keeps a wrapped tagline off the logo row; the column gap is the
+     mark-to-tagline spacing — tightened from the 18px the wordmark needed, so
+     the mark reads as attached to the headline rather than adrift left of it.
+     Small because the PNG's own baked-in canvas padding is doing most of the
+     spacing already. */
+  gap: 4px 2px;
+  margin: 0 0 18px;
+  text-align: center;
+}
+
+.home-hero-logo {
+  display: block;
+  height: 48px;
+}
+
+/* Theme pair: dark mark is the :root default; the light one takes over under
+   [data-theme="light"] (stamped on <html> by the pre-paint bootstrap). */
+.home-hero-logo-light,
+:root[data-theme="light"] .home-hero-logo-dark {
+  display: none;
+}
+
+:root[data-theme="light"] .home-hero-logo-light {
+  display: block;
+}
+
+/* The headline itself now that the wordmark is gone: title-sized, muted, with
+   the accent span carrying the only colour. */
+.home-hero-tagline {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--fg-muted);
+}
+
+.home-hero-accent {
+  color: var(--accent);
+}
+
+/* Inside the subtle grey tagline the accent words go quiet too — one step
+   brighter than the muted body so they still read as the emphasis. */
+.home-hero-tagline .home-hero-accent {
+  color: var(--fg);
+}
+
+/* The hero's prompt composer — the claude.ai/v0 "what do you want to build?"
+   box. One bordered surface holding the textarea (borderless inside it) and a
+   footer bar with the keyboard hint and the round send button. */
+.home-composer-wrap {
+  width: 100%;
+  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-composer {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--fg) 5%, transparent);
+  transition: border-color 120ms ease;
+}
+
+.home-composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.home-composer.is-busy {
+  opacity: 0.75;
+}
+
+.home-composer .home-composer-input,
+.home-composer .home-composer-input:focus {
+  display: block;
+  width: 100%;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  resize: none;
+  padding: 14px 16px 6px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.home-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px 10px 16px;
+}
+
+.home-composer-hint {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.home-composer-hint kbd {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-alt);
+}
+
+.home-composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  /* Neutral filled, like .btn-primary — accent stays for focus/selection. */
+  background: var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.home-composer-send:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.home-composer-send:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Starter-idea chips under the composer — click fills the box, never submits. */
+.home-composer-samples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.home-composer-sample {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.home-composer-sample:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.home-composer-sample:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.home-composer-sample-glyph {
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+/* Icon-only round chip that advances to the next batch of ideas. */
+.home-composer-shuffle {
+  padding: 5px 8px;
+}
+
+/* Doorways: equal cards, one per entry point (3, or 4 once the learn mount
+   is ready). Glyph square repaints from the inline per-card hue (file-icon
+   palette). auto-fit keeps the row full either way. 150px (not a rounder
+   180px) is deliberate: it's the largest track width that still lets all
+   four cards fit on one row all the way down to the 761px single-column
+   breakpoint below, inside .home-inner's padding — anything bigger strands
+   the 4th card onto its own row at common tablet widths (e.g. 768px). */
+.home-doors {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .home-doors {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-door {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 24px 22px 22px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.home-door:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.home-door-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  margin-bottom: 6px;
+}
+
+.home-door-title {
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.home-door-desc {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.home-door-arrow {
+  position: absolute;
+  top: 18px;
+  right: 16px;
+  color: var(--fg-muted);
+  opacity: 0;
+}
+
+.home-door:hover .home-door-arrow {
+  opacity: 1;
+}
+
+/* Section rule: mono label + count, hairline filling the middle. */
+.home-section {
+  margin-top: 36px;
+}
+
+.home-rule {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.home-rule-label {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.home-rule-line {
+  flex: 1 1 auto;
+  align-self: center;
+  height: 1px;
+  background: var(--border);
+}
+
+.home-rule-action {
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.home-rule-action:hover {
+  color: var(--fg);
+}
+
+/* Apps: two-column named rows. Rows, not tiles — names are the content, and a
+   row reads at a glance where a centered tile makes every app look identical.
+   The monogram square carries a deterministic hue from the file-icon palette
+   (set inline as `color`), washed to a fill via color-mix so it repaints in
+   light mode. */
+/* Recent: a plain single-column list — name, tag pill, last-used stamp. */
+.home-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* An <a> so middle-click / Cmd-click / "Open in new tab" work on it (appEntry).
+   `text-decoration: none` is what an anchor needs and a button did not; the
+   colour was already pinned, so a link never paints as one here. */
+.home-recent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: none;
+  color: var(--fg);
+  text-decoration: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-recent:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.home-recent-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-recent .home-app-tag {
+  margin-left: 0;
+}
+
+.home-recent-when {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.home-apps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 14px;
+}
+
+@media (max-width: 760px) {
+  .home-apps {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* An <a>, like .home-recent — see the note there. */
+.home-app {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 10px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  background: none;
+  color: var(--fg);
+  text-decoration: none;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.home-app:hover {
+  background: rgba(var(--tint), 0.05);
+}
+
+.home-app-monogram {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 700;
+  border-radius: 8px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+}
+
+.home-app-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.home-app-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-app-sub {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The app's tag (its parent folder name) — a quiet mono pill, right-aligned,
+   never competing with the title for attention. */
+.home-app-tag {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 7px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Loading / empty voices. */
+.home-loading {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.home-empty {
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 18px 0;
+}
+

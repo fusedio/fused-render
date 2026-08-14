@@ -1,0 +1,1110 @@
+/* ---- Preferences page (SPEC §20) ------------------------------------------ */
+
+/* Bottom-left entry: pinned to the sidebar's bottom edge, muted until hover. */
+/* Footer: Templates, Mounts, and Preferences as three equal columns, each a
+   centered icon over a small muted label. Deliberately understated (D80) —
+   the label just disambiguates the icons. Fused account (D125) no longer
+   gets its own column — its signed-in dot moved onto Preferences — which is
+   what keeps this back down to a single row instead of the 2×2 grid a 4th
+   entry needed. */
+.sidebar-footer {
+  margin-top: auto;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+}
+
+.sidebar-footer .prefs-link {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.sidebar-footer .prefs-link .icon {
+  margin: 0;
+  display: flex;
+}
+
+.sidebar-footer .prefs-label {
+  font-size: 10.5px;
+  line-height: 1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer .prefs-link:hover,
+.sidebar-footer .prefs-link.active {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+
+/* Shell-ctx settings list (super-app step 2): Templates / Mounts /
+   Preferences as regular sidebar rows pinned to the bottom edge — the same
+   list treatment as the sub-app list at the top. */
+.sidebar-settings {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+/* File-explorer homepage (/explorer): hero + bookmark/recents card grids.
+   The hero reuses the /apps .home-hero chassis; it carries no brand row —
+   just the search composer — and .files-hero adjusts what differs. */
+.files-home {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Mirrors .apps-inner exactly (same max-width WITH the padding inside it) so
+   the two homepages' heroes render at identical width. */
+.files-home-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 36px 28px 72px;
+}
+
+/* Doubled selector: home.css loads after this file, so plain .files-hero
+   would lose to .home-hero's own card styles at equal specificity. The
+   explorer hero sits flat on the page — no fill, border, or accent wash —
+   but keeps .home-hero's padding/size so the layout doesn't shift. */
+.home-hero.files-hero {
+  text-align: center;
+  background: none;
+  border-color: transparent;
+  /* With the card invisible and no brand row above the box, its padding reads
+     as dead air on both sides of the one control here. */
+  padding-top: 18px;
+  padding-bottom: 10px;
+  margin-bottom: 0;
+}
+
+.home-hero.files-hero::before {
+  content: none;
+}
+
+/* Browse files — the one action in the tab strip (see .fh-tabs), pushed to its
+   right edge. Quiet on purpose: an outlined pill, no accent fill, so it sits
+   beside the tabs as a peer instead of shouting over them. */
+.files-hero-cta {
+  margin: 0 0 6px auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.files-hero-cta:hover {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+/* The home search bar and the result list under it (see FilesHome). One
+   column: the bar, then the results panel attached to its bottom edge. It is
+   deliberately NOT the /apps chat composer any more — no footer bar, no send
+   button, no multiline — because this box answers while you type and a
+   submit affordance would describe a contract it no longer has. */
+.files-search-wrap {
+  text-align: left;
+}
+
+/* One row: magnifier · input · Clear. A flex row rather than an absolutely
+   positioned overlay, so the input simply gets the space that is left. */
+.files-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--fg) 5%, transparent);
+  transition: border-color 120ms ease;
+}
+
+.files-search:focus-within {
+  border-color: var(--fg-muted);
+}
+
+.files-search-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+
+/* Doubled-up :focus to beat the global input styles (border/ring), which would
+   otherwise draw a second box inside the bar. */
+.files-search-input,
+.files-search-input:focus {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 12px 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.4;
+  color: inherit;
+}
+
+/* WebKit's own clear button would sit beside the Clear pill saying the same
+   thing, and it cannot be styled to match. */
+.files-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.files-search-clear {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.files-search-clear:hover {
+  color: var(--fg);
+}
+
+/* The results panel: attached to the bar, not a separate card floating below
+   it — hence the small gap and no border of its own. */
+.fh-panel {
+  margin-top: 10px;
+}
+
+/* The line above the list: match count and the keys that drive it, or why
+   there is no count (index still building, a failure, a scan in flight). */
+.fh-result-note {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The "indexing…" caveat, rendered at the end of that same line rather than as
+   a banner of its own: it is a footnote on the count next to it, and an index
+   is always a little behind the filesystem, so a louder treatment would cry
+   wolf permanently. Same two messages as the listing's search chip
+   (listing/index-caveat) — one claim, one wording, two boxes. */
+.fh-index-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 1px 7px 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--fg-muted);
+  vertical-align: baseline;
+}
+
+.fh-index-spinner {
+  width: 9px;
+  height: 9px;
+  flex: none;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--fg-muted);
+  border-radius: 50%;
+  animation: fh-index-spin 0.6s linear infinite;
+}
+
+@keyframes fh-index-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Rows ranked against a corpus a generation behind, matching the listing's
+   .listing-behind — light on purpose, because this state can hold for as long
+   as the box is open and rows nobody can read are worse than rows a few
+   minutes old. The chip above says why in words. */
+.fh-results.is-stale {
+  opacity: 0.86;
+}
+
+.fh-result-note kbd {
+  font: inherit;
+  padding: 0 4px;
+  margin: 0 1px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+}
+
+.fh-section {
+  margin-top: 30px;
+}
+
+.fh-empty {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--fg-muted);
+}
+
+/* Search results: a flat scannable list (relevance order), not the launcher
+   card grid — icon, name, path, then size/date pushed to the right edge. */
+.fh-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fh-results li + li {
+  border-top: 1px solid var(--border);
+}
+
+/* Rows are <a> for files and a <button> for the AI action, so the box model is
+   stated here rather than inherited from either element's defaults. */
+.fh-result {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  text-align: left;
+  text-decoration: none;
+  color: inherit;
+  background: none;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Hover and the keyboard highlight are ONE treatment: the pointer moves the
+   highlight (onMouseMove in FilesHome), so two different tints would claim
+   there are two selections. */
+.fh-result:hover,
+.fh-result.is-active {
+  background: var(--bg-alt);
+}
+
+/* The active row also gets an accent edge — the tint alone is too quiet to
+   follow with the arrow keys while reading down the list. */
+.fh-result.is-active {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.fh-result-icon {
+  flex: none;
+  display: inline-flex;
+}
+
+.fh-result-name {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fh-result-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.fh-result-meta {
+  flex: none;
+  display: inline-flex;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fh-result-date {
+  min-width: 88px;
+  text-align: right;
+}
+
+/* -- the AI action row -------------------------------------------------------
+   The last row in the list is not a file: it costs a model call and a wait, so
+   it reads as an action — accent glyph, accent label, a faint accent wash — and
+   never like the hits above it. On a zero-hit query it is the only row, and
+   FilesHome pre-selects it. */
+.fh-ai-row {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.fh-ai-row:hover,
+.fh-ai-row.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.fh-ai-row .fh-result-name {
+  color: var(--accent);
+}
+
+.fh-ai-glyph {
+  color: var(--accent);
+}
+
+.fh-ai-row:disabled {
+  cursor: default;
+}
+
+.fh-ai-row .fh-result-meta kbd {
+  font: inherit;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+/* The AI badge on the spec echo above AI results — the results on screen came
+   from a model, and the line that says how it read the query says so too. */
+.fh-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  vertical-align: middle;
+}
+
+.fh-ai-badge svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* The "Understood as: …" echo line above AI search results. */
+.fh-search-summary {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+/* Bookmarks/Recents tab strip atop the launcher grid — plain text tabs, the
+   accent underline is the only thing marking the active one. The Browse pill
+   shares the row, aligned to its far right and to the tabs' baseline. */
+.fh-tabs {
+  display: flex;
+  align-items: flex-end;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fh-tablist {
+  display: flex;
+  gap: 4px;
+}
+
+.fh-tab {
+  padding: 0 2px 10px;
+  margin-right: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.fh-tab:hover {
+  color: var(--fg);
+}
+
+.fh-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+/* Icon tile + name-over-path text block, shared by the bookmark card heads. */
+.fh-card-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--accent);
+}
+
+.fh-card-emoji {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.fh-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fh-card-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fh-card-path {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- Bookmark preview cards (BookmarkCards.tsx) -------------------------------
+   Bookmarks get a bigger card than the flat recents launcher: header row
+   (reusing the .fh-card-icon/-text pieces) over a live body. A file bookmark's
+   body is the file itself in a scaled embed iframe (the .app-pcard trick); a
+   folder bookmark's body is a fanned stack of its first entries with the first
+   file child peeking out underneath. */
+.fhb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.fhb-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  /* The card carries the padding and the body well brings its own radius, so
+     the body reads as an inset floating panel (the ref design) rather than a
+     full-bleed border-top split. */
+  padding: 6px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.fhb-card:hover {
+  border-color: color-mix(in srgb, var(--fg) 16%, var(--border));
+  box-shadow: 0 8px 24px var(--shadow-sm);
+  transform: translateY(-2px);
+}
+
+.fhb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px 11px;
+  min-width: 0;
+}
+
+/* Header pieces sized up inside the preview cards only — the flat launcher
+   rows keep the shared .fh-card-* base look. */
+.fhb-card .fh-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.fhb-card .fh-card-name {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.fhb-card-head .bookmark-missing-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* File body: the live preview filling the card bottom. */
+.fhb-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 16 / 10;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fhb-preview {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+}
+
+.fhb-preview iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: none;
+  background: var(--bg-panel);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+/* The authored `preview.png`, filling the same box the scaled iframe does.
+   `cover` rather than `contain`: a thumbnail crops instead of letterboxing. */
+.fhb-shot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--bg-panel);
+}
+
+/* Keeps every pointer event on the card link, never inside the preview. */
+.fhb-shield {
+  position: absolute;
+  inset: 0;
+}
+
+/* Folder body: inset well holding the sheet stack. Every entry is one SHEET
+   — a rounded card whose title row is all that shows, its body sliding down
+   behind the sheet in front of it (extra bottom padding pulled back by the
+   same negative margin). The front sheet is the full card: title row plus
+   the preview inside the same rounded unit — the ref design's stacked pages,
+   not bars floating over a separate panel. */
+.fhb-stack {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  aspect-ratio: 16 / 10;
+  padding: 10px 10px 0;
+  /* The base --bg (a step darker than the card's --bg-alt) so the sheets —
+     lifted toward --fg below — read clearly against the well they sit in. */
+  background: var(--bg);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fhb-sheet {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 0 0 auto;
+  /* A step below .fh-card-path (11.5px) — the sheet labels must read smaller
+     than the card's own path line. */
+  font-size: 10px;
+  /* Lifted a step above --bg-panel so the sheets separate from the stack's
+     --bg well; separation is carried by shadow, the hairline only stops
+     same-value surfaces from fusing. */
+  background: color-mix(in srgb, var(--fg) 7%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--fg) 13%, var(--bg-panel));
+  border-radius: 12px;
+  box-shadow: 0 1px 2px var(--shadow-sm), 0 4px 12px var(--shadow-sm);
+  transition: margin 0.18s ease;
+}
+
+.fhb-sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 11px;
+}
+
+/* Depth cascade: the front sheet (d0) is full width and holds the body; each
+   step back is centered and narrower, its card body tucked behind the sheet
+   in front — the peek strip pulled back under the next sheet by the negative
+   margin, so what peeks out reads as a page edge, not a closed pill. */
+.fhb-sheet-d0 {
+  flex: 1 1 auto;
+  min-height: 0;
+  z-index: 3;
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
+}
+
+.fhb-sheet-d1 {
+  margin: 0 10px -20px;
+  z-index: 2;
+}
+
+.fhb-sheet-d2 {
+  margin: 0 20px -20px;
+  z-index: 1;
+}
+
+/* Back-sheet title rows sit tighter than the front sheet's — at rest the
+   stack should read as slim page edges, not a column of full-height bars. */
+.fhb-sheet-d1 .fhb-sheet-row,
+.fhb-sheet-d2 .fhb-sheet-row {
+  padding: 4px 11px;
+}
+
+/* Back sheets are open pages, not closed pills: square bottom corners and no
+   bottom hairline, so the edge the hover fan reveals reads as a page
+   continuing down behind the sheet in front — never a pill's bottom radius. */
+.fhb-sheet-d1,
+.fhb-sheet-d2 {
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+}
+
+/* The back sheet's page body: a blank strip a step off the sheet's own fill,
+   fully tucked away at rest (peek height equals the -20px overlap) — the
+   hover fan slides a 4px page edge out. */
+.fhb-sheet-peek {
+  position: relative;
+  flex: 0 0 auto;
+  height: 20px;
+  /* A clear step lighter than the sheet's own fill so the page body reads
+     apart from the title row when the hover fan reveals it. */
+  background: color-mix(in srgb, var(--fg) 24%, var(--bg-panel));
+  overflow: hidden;
+}
+
+/* In light theme the card lifts to plain white and the dark-theme "darker
+   well, lighter sheets" collapses (--bg and --bg-panel are both white);
+   invert it — white card, grey wells (--bg-alt, the file thumb included),
+   plain white sheets. */
+:root[data-theme="light"] .fhb-card {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .fhb-stack,
+:root[data-theme="light"] .fhb-thumb {
+  background: var(--bg-alt);
+}
+
+:root[data-theme="light"] .fhb-sheet {
+  background: var(--bg);
+  border-color: color-mix(in srgb, var(--fg) 6%, var(--bg-alt));
+}
+
+:root[data-theme="light"] .fhb-sheet-peek {
+  background: color-mix(in srgb, var(--fg) 14%, var(--bg));
+}
+
+/* Hovering the card slides the back sheets out a little — more of each page
+   edge shows, the ref design's "contents fan". */
+.fhb-card:hover .fhb-sheet-d1,
+.fhb-card:hover .fhb-sheet-d2 {
+  margin-bottom: -16px;
+}
+
+.fhb-sheet-icon {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+
+.fhb-sheet-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.fhb-sheet-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The peeked view INSIDE the front sheet, right under its title row — one
+   card, no seam; the sheet's overflow clip rounds the top corners and the
+   well's bottom edge cuts it off. (Front sheet only — a back sheet's strip
+   keeps the base absolute-fill .fhb-preview inside its .fhb-sheet-peek.) */
+.fhb-sheet-d0 .fhb-preview {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 60px;
+  background: var(--bg-panel);
+  z-index: 0;
+}
+
+/* The front sheet's no-preview body: the folder's item count where the
+   peeked view would be. */
+.fhb-sheet-note {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60px;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Placeholder body: missing target, stat in flight, or an empty folder. */
+.fhb-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 16 / 10;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.04);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.fhb-stack .fhb-note {
+  flex: 1 1 auto;
+  aspect-ratio: auto;
+  border-top: none;
+  background: none;
+}
+
+/* The MAX_CARDS fold's "Show more": a quiet pill centered under the grid. */
+.fhb-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 14px auto 0;
+  padding: 5px 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.fhb-more:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
+}
+
+/* driver.js popover — dark theme overrides scoped under .driver-popover. */
+.driver-popover {
+  background: var(--bg-popover);
+  color: var(--tour-fg);
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px var(--shadow-lg);
+}
+
+.driver-popover-title {
+  color: var(--tour-fg);
+}
+
+.driver-popover-description {
+  color: var(--tour-desc);
+}
+
+.driver-popover-progress-text {
+  color: var(--tour-dim);
+}
+
+/* Arrow triangle: driver.js colors it via one border side. Tint every side to
+   the popover bg so whichever side is shown matches the dark theme. */
+.driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: var(--bg-popover);
+}
+.driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: var(--bg-popover);
+}
+
+.driver-popover .driver-popover-close-btn {
+  color: var(--tour-dim);
+}
+
+.driver-popover .driver-popover-close-btn:hover {
+  color: var(--tour-fg);
+}
+
+.driver-popover .driver-popover-navigation-btns button {
+  background: transparent;
+  color: var(--tour-desc);
+  border: 1px solid rgba(var(--tint), 0.12);
+  border-radius: 6px;
+  text-shadow: none;
+}
+
+.driver-popover .driver-popover-navigation-btns button:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--tour-fg);
+}
+
+/* Primary next / done button on the accent token, dark text. */
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.driver-popover .driver-popover-navigation-btns button.driver-popover-next-btn:hover {
+  background: var(--tour-next-hover);
+  color: var(--bg);
+}
+
+.prefs-page {
+  padding: 18px 22px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  /* Full-width scroll container so the scrollbar sits at the window edge, not
+     inset at the 760px content boundary. The content column is capped by the
+     child rule below (previously max-width lived here, which made the narrow
+     760px box itself the scroller — a mid-page scrollbar). */
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+/* Cap the settings/mounts content column while the scroller stays full-width.
+   Left-aligned (no auto margin), matching the previous look. */
+.prefs-page > * {
+  max-width: 760px;
+  width: 100%;
+}
+
+/* Render preferences / Fused account tabs (D125) — same look as the
+   Templates page's bindings/library tabs. */
+.prefs-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 9px 4px;
+  margin-right: 20px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.prefs-tab:hover {
+  color: var(--fg);
+}
+
+.prefs-tab.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+.prefs-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.prefs-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.prefs-section h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.prefs-section p {
+  margin: 0;
+}
+
+.prefs-section code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12px;
+  /* `anywhere`, not `word-break: break-all`: both stop a long path or client ID
+     from overflowing, but break-all also split short tokens that would have fit
+     on the next line — "env_auth" rendered as "en / v_auth" mid-sentence in the
+     detected-credentials panel. */
+  overflow-wrap: anywhere;
+}
+
+.prefs-section button {
+  font: inherit;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.prefs-section button:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+}
+
+.prefs-section button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* A row of sibling actions. The generic `.prefs-section button` rule pins each
+   button to flex-start, which stacks them vertically when a section has more
+   than one; this puts them side by side without touching that default. */
+.prefs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Free-text list editor (the index's skip rules). Monospace because every line
+   is a path or glob, where a mistaken space matters. */
+.prefs-textarea {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+/* Safety net for unmigrated selects only — .field-control selects carry their
+   own canonical skin + custom chevron. */
+.prefs-section select:not(.field-control) {
+  font: inherit;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+/* ---- the index Query panel (shell/Indexing.tsx) ------------------------- */
+
+/* A statement is wider than a skip rule and wrapping one mid-identifier is
+   unreadable, so this box does not wrap — it scrolls, like an editor. */
+.index-query-input {
+  width: 100%;
+  box-sizing: border-box;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
+/* The SQL a question compiled to. Shown above the results so the user can see
+   what actually ran, and read-only text rather than a second editable box —
+   editing it means putting it in the box above and re-running. */
+.index-query-sql {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 6px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  /* A compiled statement can be one long line; it scrolls rather than reflowing
+     the panel, which is the same trade the input above makes. */
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* The result table scrolls INSIDE this box, in both axes: the column set is
+   whatever the query selected, so neither its width nor its height can be
+   predicted, and letting it size the panel would push the rest of Preferences
+   sideways. */
+.index-query-results {
+  margin-top: 10px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.index-query-results table {
+  border-collapse: collapse;
+  /* Not 100%: a wide result should overflow into the scroll above rather than
+     squeezing every column to fit. */
+  width: max-content;
+  min-width: 100%;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.index-query-results th,
+.index-query-results td {
+  padding: 4px 10px;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.index-query-results th {
+  /* Sticky, so the column names survive scrolling a few hundred rows. The
+     background is opaque on purpose — rows scroll underneath it. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+.index-query-results tr:last-child td {
+  border-bottom: none;
+}
+

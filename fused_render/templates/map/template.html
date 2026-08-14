@@ -1,0 +1,2236 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Map Viewer</title>
+<style>
+  /* ---- Felt-inspired light theme ---------------------------------------- */
+  :root {
+    color-scheme: light;
+    --bg: #f3f4f6;
+    --panel: #ffffff;
+    --panel-2: #f5f6f8;
+    --panel-3: #eceef1;
+    --border: #e5e7eb;
+    --border-2: #d1d5db;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --faint: #9ca3af;
+    --accent: #ff3e00;
+    --accent-soft: #ff3e0018;
+    --good: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --r: 12px;
+    --shadow: 0 4px 16px rgba(0,0,0,.12);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: var(--font); font-size: 13.5px; color: var(--text);
+    background: var(--bg); -webkit-font-smoothing: antialiased;
+  }
+  #app { display: flex; height: 100%; }
+  button { font-family: inherit; cursor: pointer; }
+  input { font-family: inherit; }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb:hover { background: #b9bec7; }
+
+  /* ---------------- floating left panel ---------------- */
+  #panel {
+    position: absolute; top: 12px; left: 12px; z-index: 7; width: 300px;
+    max-height: calc(100% - 24px); display: flex; flex-direction: column;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 9px; padding: 11px 12px;
+    border-bottom: 1px solid var(--border); flex: none;
+  }
+  .panel-head .logo {
+    width: 22px; height: 22px; border-radius: 6px; flex: none;
+    background: linear-gradient(135deg, var(--accent), #ff7a4d);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .panel-head .title { font-weight: 640; font-size: 14px; letter-spacing: -.01em; flex: 1; }
+  .panel-head .title small { color: var(--faint); font-weight: 500; }
+  .ph-btn { background: transparent; border: 0; color: var(--faint); display: flex; padding: 3px; border-radius: 6px; }
+  .ph-btn:hover { color: var(--text); background: var(--panel-2); }
+
+  .panel-scroll { overflow-y: auto; min-height: 0; flex: 1; }
+  .sec-head {
+    display: flex; align-items: center; gap: 7px; padding: 10px 12px 6px;
+    font-size: 11px; font-weight: 640; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); user-select: none;
+  }
+  .sec-head .chev { display: flex; color: var(--faint); transition: transform .15s; }
+  .sec-head .sec-sub { margin-left: auto; font-family: var(--mono); font-size: 10.5px; font-weight: 500;
+    text-transform: none; letter-spacing: 0; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+  #layercards { padding: 4px 10px 10px; }
+  .lp-empty { color: var(--faint); font-size: 12px; padding: 14px 6px 16px; line-height: 1.6; text-align: center; }
+
+  .lc {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    margin-bottom: 6px; cursor: pointer; transition: border-color .12s, box-shadow .12s;
+  }
+  .lc:hover { border-color: var(--border-2); }
+  .lc.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .lc.bad-tint { background: #fef2f2; border-color: #fecaca; }
+  .lc.warn-tint { background: #fffbeb; border-color: #fde68a; }
+  .lc-h { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
+  .lc-swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; border: 1px solid rgba(0,0,0,.10); }
+  .lc-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 560; }
+  .lc.off .lc-nm, .lc.off .lc-swatch { opacity: .4; }
+  .lc-badge { font-size: 9.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; flex: none; }
+  .lc-badge:empty { display: none; }
+  .lc-eye, .lc-dots { background: transparent; border: 0; color: var(--muted); display: flex; padding: 2px; border-radius: 5px; flex: none; opacity: 0; transition: opacity .12s; }
+  .lc:hover .lc-eye, .lc:hover .lc-dots, .lc-eye.off { opacity: 1; }
+  .lc-eye:hover, .lc-dots:hover { color: var(--text); background: var(--panel-2); }
+  .lc-eye.off { color: var(--faint); }
+  .lc-msg { font-size: 11px; color: var(--muted); padding: 0 10px 8px 32px; line-height: 1.45; word-break: break-word; }
+  .lc-progress { display: flex; align-items: center; gap: 8px; }
+  .lc-progress span { flex: 1; min-width: 0; }
+  .lc-progress button { border: 0; background: transparent; color: var(--accent); font: inherit; padding: 0; cursor: pointer; white-space: nowrap; }
+  .lc .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; flex: none; animation: spin .7s linear infinite; }
+
+  #lmenu {
+    position: fixed; z-index: 40; min-width: 156px; padding: 4px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: var(--shadow);
+  }
+  #lmenu button {
+    display: block; width: 100%; text-align: left; background: none; border: 0;
+    padding: 7px 10px; border-radius: 6px; font-size: 12.5px; color: var(--text);
+  }
+  #lmenu button:hover { background: var(--panel-2); }
+  #lmenu button.danger:hover { background: #fef2f2; color: var(--bad); }
+
+  .side-tools { padding: 0 12px 8px; display: flex; flex-direction: column; gap: 7px; }
+  .field {
+    display: flex; align-items: center; gap: 7px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 9px; padding: 0 9px;
+    transition: border-color .15s;
+  }
+  .field:focus-within { border-color: var(--accent); }
+  .field svg { color: var(--faint); flex: none; }
+  .field input {
+    flex: 1; min-width: 0; background: transparent; border: 0; outline: 0;
+    color: var(--text); padding: 8px 0; font-size: 13px;
+  }
+  .field input::placeholder { color: var(--faint); }
+  .field .mini {
+    background: transparent; border: 0; color: var(--faint); padding: 3px;
+    border-radius: 5px; display: flex;
+  }
+  .field .mini:hover { color: var(--text); background: var(--panel-3); }
+
+  .source-actions { border-top: 1px solid var(--border); padding: 2px 12px 10px; display: grid; gap: 8px; }
+  .browse-button {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 8px 10px; border: 1px solid var(--border-2); border-radius: 9px;
+    background: var(--panel); color: var(--text); font-size: 12.5px; font-weight: 560;
+  }
+  .browse-button:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .import-add { border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--accent);
+    padding: 4px 0 4px 8px; font-size: 11.5px; font-weight: 650; }
+
+  .file {
+    display: flex; align-items: center; gap: 9px; padding: 6px 8px;
+    border-radius: 8px; cursor: pointer; user-select: none;
+    border: 1px solid transparent; transition: background .12s;
+  }
+  .file:hover { background: var(--panel-2); }
+  .file.selected { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .file.loading { opacity: .6; }
+  .file .ic { width: 20px; height: 20px; flex: none; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+  .file.selected .ic { color: var(--accent); }
+  .file .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .file .kd { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .04em; }
+  .file .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .file .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  .file.parent { color: var(--muted); }
+  .file.parent .nm { font-family: var(--mono); letter-spacing: .08em; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-note { color: var(--faint); font-size: 12px; padding: 14px 12px; line-height: 1.6; text-align: center; }
+
+  /* system-style file browser modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
+    padding: 24px; background: rgba(17,24,39,.48); backdrop-filter: blur(2px);
+  }
+  .file-dialog {
+    width: min(920px, 96vw); height: min(680px, 88vh); min-height: 430px;
+    display: grid; grid-template-rows: auto auto minmax(0,1fr) auto;
+    overflow: hidden; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; box-shadow: 0 24px 70px rgba(0,0,0,.28);
+  }
+  .fb-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px;
+    border-bottom: 1px solid var(--border); }
+  .fb-title { flex: 1; font-size: 15px; font-weight: 670; }
+  .fb-close { border: 0; border-radius: 7px; background: transparent; color: var(--muted);
+    width: 30px; height: 30px; font-size: 20px; line-height: 1; }
+  .fb-close:hover { background: var(--panel-2); color: var(--text); }
+  .fb-toolbar { display: grid; grid-template-columns: auto auto minmax(0,1fr) auto auto;
+    align-items: center; gap: 7px; padding: 9px 12px; border-bottom: 1px solid var(--border);
+    background: var(--panel-2); }
+  .fb-tool, .fb-go {
+    height: 32px; border: 1px solid var(--border); border-radius: 7px;
+    background: var(--panel); color: var(--muted); padding: 0 9px;
+  }
+  .fb-tool:hover, .fb-go:hover { color: var(--text); border-color: var(--border-2); }
+  .fb-tool:disabled { opacity: .4; cursor: default; }
+  #fb-path { min-width: 0; height: 32px; border: 1px solid var(--border-2); border-radius: 7px;
+    background: var(--panel); color: var(--text); padding: 0 10px; outline: 0;
+    font: 11.5px var(--mono); }
+  #fb-path:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .fb-main { min-height: 0; display: grid; grid-template-columns: 168px minmax(0,1fr); }
+  .fb-places { overflow-y: auto; padding: 10px 8px; border-right: 1px solid var(--border);
+    background: var(--panel-2); }
+  .fb-place { width: 100%; display: flex; align-items: center; gap: 8px; border: 0;
+    border-radius: 7px; padding: 7px 9px; background: transparent; color: var(--text);
+    text-align: left; font-size: 12.5px; }
+  .fb-place:hover, .fb-place.on { background: var(--panel); }
+  .fb-browser { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0,1fr); }
+  .fb-search-wrap { padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  #fb-search { width: 100%; height: 32px; border: 1px solid var(--border); border-radius: 8px;
+    padding: 0 10px; background: var(--panel-2); color: var(--text); outline: 0; }
+  #fb-search:focus { border-color: var(--accent); background: var(--panel); }
+  #fb-error { min-height: 0; padding: 0 12px; color: var(--bad); font-size: 11.5px; }
+  #fb-list { overflow: auto; padding: 6px 8px 12px; }
+  #fb-list .file { min-height: 34px; }
+  #fb-list .file.disabled { opacity: .48; cursor: default; }
+  #fb-list .file.disabled:hover { background: transparent; }
+  #fb-list .file.folder .kd { font-size: 15px; }
+  .fb-footer { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 8px;
+    align-items: center; padding: 11px 14px; border-top: 1px solid var(--border);
+    background: var(--panel-2); }
+  #fb-selection { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--muted); font: 11.5px var(--mono); }
+  .fb-action { min-width: 82px; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border-2);
+    background: var(--panel); color: var(--text); }
+  .fb-action.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .fb-action:disabled { opacity: .45; cursor: default; }
+  @media (max-width: 650px) {
+    .modal-backdrop { padding: 8px; }
+    .file-dialog { width: 100%; height: 94vh; }
+    .fb-main { grid-template-columns: 112px minmax(0,1fr); }
+    .fb-toolbar { grid-template-columns: auto auto minmax(0,1fr) auto; }
+    #fb-refresh { display: none; }
+  }
+
+  /* basemap switch */
+  #basemaprow { border-top: 1px solid var(--border); padding: 10px 12px; flex: none; }
+  .seg { display: flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; padding: 2px; gap: 2px; }
+  .seg button { flex: 1; background: transparent; border: 0; color: var(--muted); padding: 5px 4px; font-size: 11.5px; border-radius: 7px; }
+  .seg button.on { background: var(--panel); color: var(--text); font-weight: 560; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
+
+  /* show-panel button (when panel hidden) */
+  #btn-panel {
+    position: absolute; top: 12px; left: 12px; z-index: 6;
+    width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--panel); box-shadow: var(--shadow); color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #btn-panel:hover { color: var(--text); }
+
+  /* ---------------- map ---------------- */
+  #mapwrap { position: relative; flex: 1; min-width: 0; background: #e5e7eb; }
+  #map { position: absolute; inset: 0; }
+  #map canvas { outline: none; }
+  .maplibregl-ctrl-attrib { font-size: 10px !important; }
+
+  /* floating right controls */
+  #ctrls {
+    position: absolute; top: 12px; right: 12px; z-index: 6;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .fab {
+    width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--panel); box-shadow: 0 2px 8px rgba(0,0,0,.10); color: var(--muted);
+    display: flex; align-items: center; justify-content: center; transition: all .14s;
+  }
+  .fab:hover { color: var(--text); border-color: var(--border-2); }
+  .fab.on { color: var(--accent); border-color: #ff3e0055; background: var(--accent-soft); }
+
+  /* geocode box */
+  #geobox {
+    position: absolute; top: 12px; right: 62px; z-index: 8; width: 320px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  #geobox .field { border: 0; border-radius: 0; border-bottom: 1px solid var(--border); background: var(--panel); }
+  #georesults { max-height: 280px; overflow-y: auto; }
+  .geores { padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--panel-2); }
+  .geores:hover { background: var(--panel-2); }
+  .geores .g1 { font-size: 13px; }
+  .geores .g2 { font-size: 11.5px; color: var(--muted); }
+  .geores.none { color: var(--faint); cursor: default; }
+
+  /* style controls */
+  .ctl { margin-top: 11px; }
+  .ctl-lbl { font-size: 11px; color: var(--muted); margin-bottom: 5px; display: flex; justify-content: space-between; }
+  .ctl-lbl b { color: var(--text); font-weight: 560; font-family: var(--mono); font-size: 10.5px; }
+  .ctl-action { width:100%; border:1px solid var(--border); border-radius:8px; padding:7px 9px; background:var(--panel-2); color:var(--text); font-size:11.5px; text-align:left; }
+  .ctl-action:hover { border-color:var(--accent); }
+  .row { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { -webkit-appearance: none; width: 100%; height: 4px; background: var(--panel-3); border-radius: 3px; outline: none; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  input[type=color] { -webkit-appearance: none; width: 30px; height: 26px; border: 1px solid var(--border-2); border-radius: 6px; background: none; padding: 0; cursor: pointer; }
+  input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+  input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+  select {
+    width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--border-2);
+    border-radius: 7px; padding: 6px 8px; font-size: 12px; outline: none;
+  }
+  .num { width: 70px; background: var(--panel); color: var(--text); border: 1px solid var(--border-2); border-radius: 6px; padding: 5px 7px; font-size: 11.5px; font-family: var(--mono); }
+  .stat { font-size: 11px; color: var(--muted); line-height: 1.7; margin-top: 8px; font-family: var(--mono); white-space: pre-wrap; }
+  .warnline { font-size: 11px; color: var(--warn); margin-top: 8px; line-height: 1.5; }
+
+  .legend { margin-top: 10px; }
+  .legend .bar { height: 10px; border-radius: 5px; }
+  .legend .ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+  .swatchrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .swatch { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+  .swatch i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .catlist { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; max-height: 260px; overflow-y: auto; }
+  .catrow { display: flex; align-items: center; gap: 7px; }
+  .catrow input[type=color] { width: 22px; height: 22px; flex: none; }
+  .catrow input[type=text] {
+    flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 7px; font-size: 11.5px; color: var(--text); background: var(--panel-2);
+  }
+  .catrow .catcount { flex: none; font-size: 10px; color: var(--faint); font-family: var(--mono); }
+
+  /* right-docked style panel */
+  #stylepanel {
+    flex: none; width: 320px; min-width: 0; background: var(--panel);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    min-height: 0; position: relative;
+  }
+  #stylepanel.hidden { display: none !important; }
+  .sp-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .sp-head .sp-nm { font-weight: 620; font-size: 13px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-head .x, .cp-head .x { background: transparent; border: 0; color: var(--faint); font-size: 18px; line-height: 1; }
+  .sp-head .x:hover, .cp-head .x:hover { color: var(--text); }
+  .sp-body { flex: 1; overflow-y: auto; min-height: 0; padding: 4px 14px 16px; }
+  .sp-empty { color: var(--faint); text-align: center; padding: 24px 14px; font-size: 12.5px; line-height: 1.6; }
+
+  /* right-docked code editor */
+  #codepanel {
+    flex: none; width: 460px; min-width: 0; background: var(--panel);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    min-height: 0; position: relative;
+  }
+  #codepanel.hidden { display: none !important; }
+  .cp-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+  .cp-head .fn { font-family: var(--mono); font-size: 12px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cp-head .lang { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); border: 1px solid var(--border-2); border-radius: 5px; padding: 1px 5px; }
+  .cp-head .lang:empty { display: none; }
+  .cp-body { flex: 1; overflow: auto; min-height: 0; }
+  .cp-empty, .cp-note { color: var(--faint); padding: 22px 16px; font-size: 12.5px; line-height: 1.6; }
+  .cp-note { color: var(--muted); font-family: var(--mono); white-space: pre-wrap; word-break: break-all; }
+  .cp-code { display: flex; min-width: min-content; }
+  .cp-code .gutter { flex: none; text-align: right; padding: 12px 8px 12px 12px; color: var(--faint); font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre; user-select: none; border-right: 1px solid var(--border); background: var(--panel); position: sticky; left: 0; }
+  .cp-code pre { margin: 0; }
+  .cp-code code { font-family: var(--mono); font-size: 12px; line-height: 1.55; display: block; padding: 12px 14px; tab-size: 4; background: transparent; color: var(--text); }
+  /* light highlight.js palette (replaces the dark vendor theme) */
+  .hljs { background: transparent; color: var(--text); }
+  .hljs-comment, .hljs-quote { color: #9ca3af; font-style: italic; }
+  .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section { color: #7c3aed; }
+  .hljs-string, .hljs-regexp, .hljs-addition { color: #15803d; }
+  .hljs-number, .hljs-symbol, .hljs-bullet { color: #b45309; }
+  .hljs-title, .hljs-name, .hljs-function .hljs-title { color: #2563eb; }
+  .hljs-built_in, .hljs-type, .hljs-class .hljs-title { color: #0e7490; }
+  .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: #b91c1c; }
+  .hljs-meta, .hljs-deletion { color: #6b7280; }
+  /* drag handle to resize a right-anchored panel */
+  .resizer { position: absolute; top: 0; left: -3px; width: 8px; height: 100%; cursor: col-resize; z-index: 8; }
+  .resizer:hover { background: linear-gradient(90deg, transparent, #ff3e0033); }
+
+  /* attribution + coords + toast */
+  #attr {
+    position: absolute; left: 12px; bottom: 10px; z-index: 5; font-size: 11px; color: var(--faint);
+    background: rgba(255,255,255,.75); padding: 3px 9px; border-radius: 6px; pointer-events: none;
+  }
+  #attr b { color: var(--muted); }
+  #coordpill {
+    position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 5;
+    background: rgba(255,255,255,.85); border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 11px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+    pointer-events: none; white-space: nowrap;
+  }
+  #toast {
+    position: absolute; left: 50%; bottom: 48px; transform: translateX(-50%); z-index: 20;
+    max-width: 560px; background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent); border-radius: 10px; padding: 11px 14px;
+    box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.5;
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+  #toast.warn { border-left-color: var(--warn); }
+  #toast.bad { border-left-color: var(--bad); }
+  #toast .tx { flex: 1; }
+  #toast .tx b { display: block; margin-bottom: 2px; }
+  #toast .tclose { background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; }
+  .hidden { display: none !important; }
+  .mono { font-family: var(--mono); }
+  #boot-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; z-index: 30; }
+
+  #dropzone {
+    position: absolute; inset: 10px; z-index: 40; display: flex; align-items: center; justify-content: center;
+    border: 2px dashed var(--accent); border-radius: var(--r); background: rgba(255,62,0,.08);
+    color: var(--accent); font-size: 15px; font-weight: 600; pointer-events: none;
+  }
+  #dropzone.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <main id="mapwrap">
+    <div id="map"></div>
+    <div id="boot-msg">initializing…</div>
+    <div id="dropzone" class="hidden">Drop files to add as layers</div>
+
+    <button id="btn-panel" class="hidden" title="Show panel">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5"/></svg>
+    </button>
+
+    <div id="panel">
+      <div class="panel-head">
+        <span class="logo">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>
+        </span>
+        <span class="title">Map viewer <small>· fused</small></span>
+        <button class="ph-btn" id="btn-hide-panel" title="Hide panel">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>
+        </button>
+      </div>
+      <div class="panel-scroll">
+        <div class="sec" id="layersec">
+          <div class="sec-head"><span>Layers</span></div>
+          <div id="layercards"></div>
+        </div>
+        <div class="sec" id="sourcesec">
+          <div class="sec-head"><span>Data</span></div>
+          <div class="source-actions">
+            <button class="browse-button" id="btn-browse-files">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+              Browse files…
+            </button>
+            <div class="field">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              <input id="importpath" placeholder="Add any file path or URL…" spellcheck="false" />
+              <button class="import-add" id="btn-importpath">Add</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="basemaprow">
+        <div class="ctl-lbl" style="margin-bottom:6px;">Basemap</div>
+        <div class="seg" id="basemap-seg">
+          <button data-b="light" class="on">Light</button>
+          <button data-b="dark">Dark</button>
+          <button data-b="sat">Satellite</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="ctrls">
+      <button class="fab" id="btn-search" title="Search place / address">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      </button>
+      <button class="fab" id="btn-full" title="Toggle fullscreen">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+      </button>
+      <button class="fab" id="btn-style" title="Style selected layer">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2"/><circle cx="17.5" cy="12.5" r="2"/><circle cx="8.5" cy="7.5" r="2"/><circle cx="6.5" cy="14.5" r="2"/><path d="M12 22a10 10 0 1 1 10-10c0 2-1.5 3-3 3h-2a2 2 0 0 0-2 2c0 1 .5 1.5.5 2.5A2.5 2.5 0 0 1 12 22z"/></svg>
+      </button>
+      <button class="fab" id="btn-code" title="View source of selected file">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>
+      </button>
+    </div>
+
+    <div id="geobox" class="hidden">
+      <div class="field">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="geoinput" placeholder="Search address or place…" spellcheck="false" autocomplete="off" />
+      </div>
+      <div id="georesults"></div>
+    </div>
+
+    <div id="attr">Made with <b>fused-render</b> · © OpenStreetMap © CARTO</div>
+    <div id="coordpill"><span id="coords">—</span></div>
+    <div id="toast" class="hidden"></div>
+  </main>
+
+  <div id="file-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="fb-title">
+    <div class="file-dialog">
+      <div class="fb-head">
+        <span class="fb-title" id="fb-title">Open data file</span>
+        <button class="fb-close" id="fb-close" aria-label="Close file browser">×</button>
+      </div>
+      <div class="fb-toolbar">
+        <button class="fb-tool" id="fb-back" title="Back" aria-label="Back">←</button>
+        <button class="fb-tool" id="fb-up" title="Parent folder" aria-label="Parent folder">↑</button>
+        <input id="fb-path" spellcheck="false" aria-label="File or directory path" />
+        <button class="fb-go" id="fb-go">Go</button>
+        <button class="fb-tool" id="fb-refresh" title="Refresh" aria-label="Refresh">↻</button>
+      </div>
+      <div class="fb-main">
+        <nav class="fb-places" id="fb-places" aria-label="Locations"></nav>
+        <div class="fb-browser">
+          <div class="fb-search-wrap">
+            <input id="fb-search" placeholder="Search this folder" spellcheck="false" />
+          </div>
+          <div id="fb-error"></div>
+          <div id="fb-list" role="listbox" aria-label="Files and folders"></div>
+        </div>
+      </div>
+      <div class="fb-footer">
+        <div id="fb-selection">Select a supported data file.</div>
+        <button class="fb-action" id="fb-cancel">Cancel</button>
+        <button class="fb-action primary" id="fb-open" disabled>Open</button>
+      </div>
+    </div>
+  </div>
+
+  <aside id="stylepanel" class="hidden">
+    <div class="resizer" id="sp-resizer"></div>
+    <div class="sp-head">
+      <span class="sp-nm" id="sp-nm">Style</span>
+      <span class="lc-badge" id="sp-kind"></span>
+      <button class="x" id="sp-close">×</button>
+    </div>
+    <div class="sp-body" id="sp-body"><div class="sp-empty">Select a layer to style it.</div></div>
+  </aside>
+
+  <aside id="codepanel" class="hidden">
+    <div class="resizer" id="cp-resizer"></div>
+    <div class="cp-head">
+      <span class="fn" id="cp-fn">—</span>
+      <span class="lang" id="cp-lang"></span>
+      <button class="x" id="cp-close">×</button>
+    </div>
+    <div class="cp-body" id="cp-body"><div class="cp-empty">Select a file on the left, then this shows its source.</div></div>
+  </aside>
+</div>
+
+<script>
+"use strict";
+(async function boot() {
+if (typeof fused === "undefined") {
+  document.getElementById("boot-msg").textContent =
+    "Open this HTML file inside fused-render to use the Map Viewer template.";
+  return;
+}
+
+/* ---- browser libraries ------------------------------------------------- */
+const loadScript = url => new Promise((ok, bad) => {
+  const s = document.createElement("script"); s.src = url;
+  s.onload = ok; s.onerror = () => bad(new Error("failed to load " + url));
+  document.head.appendChild(s);
+});
+const loadCss = url => new Promise((ok, bad) => {
+  const l = document.createElement("link"); l.rel = "stylesheet"; l.href = url;
+  l.onload = ok; l.onerror = () => bad(new Error("failed to load " + url));
+  document.head.appendChild(l);
+});
+await loadCss("https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css");
+await loadScript("https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js");
+await loadScript("https://unpkg.com/deck.gl@9/dist.min.js");
+loadScript("https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js").catch(() => {});
+
+const qs = id => document.getElementById(id);
+const P = fused.params;
+const esc = value => String(value ?? "").replace(/[&<>"']/g, character => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[
+    character
+  ]
+));
+
+/* ---- colormaps (for legends + vector color-by) ------------------------ */
+const CMAPS = {
+  viridis: [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]],
+  plasma:  [[13,8,135],[126,3,168],[204,71,120],[248,149,64],[240,249,33]],
+  magma:   [[0,0,4],[81,18,124],[183,55,121],[252,137,97],[252,253,191]],
+  inferno: [[0,0,4],[87,16,110],[188,55,84],[249,142,9],[252,255,164]],
+  cividis: [[0,32,76],[62,86,114],[124,123,120],[188,166,99],[255,234,70]],
+  turbo:   [[48,18,59],[42,160,215],[103,241,105],[249,182,45],[122,4,3]],
+  terrain: [[51,51,153],[0,181,153],[86,204,102],[221,204,120],[150,110,80],[240,240,240]],
+  greys:   [[240,240,240],[20,20,20]],
+};
+function cmapColor(name, t) {
+  const stops = CMAPS[name] || CMAPS.viridis;
+  t = Math.max(0, Math.min(1, t));
+  const f = t * (stops.length - 1), i = Math.floor(f), r = f - i;
+  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
+  return [Math.round(a[0]+(b[0]-a[0])*r), Math.round(a[1]+(b[1]-a[1])*r), Math.round(a[2]+(b[2]-a[2])*r)];
+}
+function cmapGradient(name) {
+  const stops = CMAPS[name] || CMAPS.viridis;
+  return "linear-gradient(90deg," + stops.map((c,i) =>
+    `rgb(${c[0]},${c[1]},${c[2]}) ${Math.round(i/(stops.length-1)*100)}%`).join(",") + ")";
+}
+const CATEGORICAL = [[255,99,71],[70,193,216],[255,193,7],[126,211,33],[171,71,188],[255,138,101],[41,182,246],[141,110,99],[236,64,122],[102,187,106]];
+const rgbToHex = c => "#" + c.slice(0,3).map(x => x.toString(16).padStart(2,"0")).join("");
+const hexToRgb = h => { const n = parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; };
+
+/* ---- basemaps --------------------------------------------------------- */
+function rasterStyle(tiles, attribution, maxzoom) {
+  return { version: 8, sources: { base: { type: "raster", tiles, tileSize: 256, attribution, maxzoom } },
+           layers: [{ id: "base", type: "raster", source: "base" }] };
+}
+const BASEMAPS = {
+  dark:  rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
+  light: rasterStyle(["a","b","c","d"].map(s=>`https://${s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png`), "© OpenStreetMap © CARTO", 20),
+  sat:   rasterStyle(["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], "Esri, Maxar, Earthstar Geographics", 18),
+};
+
+/* ---- map -------------------------------------------------------------- */
+const startCam = (P.get("cam") || "37.7749,-122.4194,11").split(",").map(Number);
+let baseName = ["dark","light","sat"].includes(P.get("base")) ? P.get("base") : "light";
+// map.isStyleLoaded() requires every source's tiles to be fully loaded, not
+// just the style itself — waiting on it to add/remove a single layer means a
+// big raster/vector layer still streaming tiles blocks touching ANY layer.
+// addLayer/removeLayer only actually need the style's initial load done, so
+// track that lighter, one-shot condition ourselves via "style.load".
+let styleReady = false;
+const map = new maplibregl.Map({
+  container: "map", style: BASEMAPS[baseName],
+  center: [startCam[1] || -122.4194, startCam[0] || 37.7749], zoom: startCam[2] || 11,
+  attributionControl: false,
+});
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+map.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-right");
+qs("boot-msg").classList.add("hidden");
+
+const overlay = new deck.MapboxOverlay({
+  interleaved: false, layers: [],
+  getTooltip: ({ object, layer, index }) => {
+    if (!layer || !layer.id.startsWith("v_")) return null;
+    const L = state.layers.get(layer.id.slice(2));
+    if (L && L.binary && index != null && index >= 0) {
+      const b = L.binary, lon = b.positions[index*2], lat = b.positions[index*2+1];
+      let t = `#${index}\n${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+      for (const col in b.colCache) {
+        const cc = b.colCache[col];
+        const v = cc.meta.dtype === "u8" ? cc.meta.categories[cc.arr[index]] : cc.arr[index];
+        t += `\n${col}: ${typeof v === "number" ? (+v).toFixed(3) : v}`;
+      }
+      return { text: t };
+    }
+    if (object && object.properties) {
+      const p = object.properties;
+      const rows = Object.keys(p).slice(0, 8).map(k => `${k}: ${p[k]}`).join("\n");
+      return rows ? { text: rows } : null;
+    }
+    return null;
+  },
+});
+map.addControl(overlay);
+
+/* Pre-warm the render daemon so the first file click is fast (fire & forget). */
+fused.runPython("./map_render.py", { warmup: "1" }).catch(() => {});
+
+/* ---- state ------------------------------------------------------------ */
+const state = { layers: new Map(), selected: null, dir: P.get("dir") || "", entries: [] };
+const sourceArgs = target => ({
+  source_origin: location.origin,
+  source_url: /^https?:\/\//i.test(target)
+    ? target
+    : `${location.origin}/api/fs/raw?path=${encodeURIComponent(target)}&pooled=1`,
+});
+
+/* =======================================================================
+   FILE BROWSER
+   ===================================================================== */
+const KIND_ICON = {
+  python: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>',
+  raster: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15l5-5 4 4 3-3 6 6"/><circle cx="8.5" cy="8.5" r="1.5"/></svg>',
+  vector: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/></svg>',
+  table:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18"/></svg>',
+  pmtiles:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg>',
+  dir:    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  other:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>',
+};
+
+const QUOTE_PAIRS = { '"': '"', "'": "'", "“": "”", "‘": "’" };
+function normalizeTarget(value) {
+  let target = String(value || "").trim();
+  while (target.length >= 2 && QUOTE_PAIRS[target[0]] === target[target.length - 1]) {
+    target = target.slice(1, -1).trim();
+  }
+  return target;
+}
+const isRemoteTarget = value => /^(https?|s3):\/\//i.test(value) || /^\/vsi/i.test(value);
+const formatBytes = value => {
+  if (!Number.isFinite(value)) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value, unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
+};
+
+const browserState = {
+  dir: "", parent: "", entries: [], roots: [], selected: null,
+  history: [], historyIndex: -1,
+};
+
+function renderBrowserNavigation() {
+  qs("fb-path").value = browserState.dir || "";
+  qs("fb-back").disabled = browserState.historyIndex <= 0;
+  qs("fb-up").disabled = !browserState.parent || browserState.parent === browserState.dir;
+}
+
+function renderBrowserPlaces() {
+  const box = qs("fb-places");
+  box.innerHTML = "";
+  for (const location of browserState.roots) {
+    const button = document.createElement("button");
+    button.className = "fb-place" + (location.path === browserState.dir ? " on" : "");
+    button.type = "button";
+    const icon = document.createElement("span");
+    icon.innerHTML = location.kind === "home" ? "⌂" : location.kind === "drive" ? "▣" : "◫";
+    const name = document.createElement("span");
+    name.textContent = location.name;
+    button.append(icon, name);
+    button.onclick = () => browseTo(location.path);
+    box.appendChild(button);
+  }
+}
+
+function selectBrowserEntry(entry) {
+  if (!entry || entry.kind === "dir" || !entry.selectable) return;
+  browserState.selected = entry;
+  qs("fb-selection").textContent = entry.path;
+  qs("fb-open").disabled = false;
+  renderBrowserEntries();
+}
+
+async function openBrowserSelection() {
+  const entry = browserState.selected;
+  if (!entry || !entry.selectable) return;
+  closeFileBrowser();
+  await loadTarget(entry.path, entry.name);
+}
+
+function renderBrowserEntries() {
+  if (qs("file-modal").classList.contains("hidden")) return;
+  const box = qs("fb-list");
+  const filter = qs("fb-search").value.trim().toLowerCase();
+  box.innerHTML = "";
+  const items = browserState.entries.filter(entry =>
+    !filter || entry.name.toLowerCase().includes(filter)
+  );
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-note";
+    empty.textContent = filter ? "No matching files or folders." : "This folder is empty.";
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const entry of items) {
+    const layer = state.layers.get(entry.path);
+    const row = document.createElement("div");
+    const selected = browserState.selected && browserState.selected.path === entry.path;
+    row.className = "file" + (entry.kind === "dir" ? " folder" : "") +
+      (!entry.selectable && entry.kind !== "dir" ? " disabled" : "") +
+      (selected ? " selected" : "") + (layer && layer.loading ? " loading" : "");
+    row.setAttribute("role", "option");
+    row.tabIndex = 0;
+    row.title = entry.path;
+
+    const icon = document.createElement("span");
+    icon.className = "ic";
+    icon.innerHTML = KIND_ICON[entry.kind] || KIND_ICON.other;
+    const name = document.createElement("span");
+    name.className = "nm";
+    name.textContent = entry.name;
+    const detail = document.createElement("span");
+    if (layer && layer.loading) detail.className = "spin";
+    else if (layer && layer.descriptor) {
+      detail.className = "dot";
+      detail.style.background = statusColor(layer.descriptor);
+    } else {
+      detail.className = "kd";
+      detail.textContent = entry.kind === "dir" ? "›" : entry.selectable ? formatBytes(entry.size) : entry.ext || "file";
+    }
+    row.append(icon, name, detail);
+
+    const activate = () => {
+      if (entry.kind === "dir") browseTo(entry.path);
+      else if (entry.selectable) selectBrowserEntry(entry);
+    };
+    row.onclick = () => { if (entry.kind !== "dir") selectBrowserEntry(entry); };
+    row.ondblclick = activate;
+    row.onkeydown = event => {
+      if (event.key === "Enter") { event.preventDefault(); activate(); }
+    };
+    box.appendChild(row);
+  }
+}
+
+async function browseTo(rawPath, addHistory = true) {
+  const requested = normalizeTarget(rawPath);
+  if (isRemoteTarget(requested)) {
+    closeFileBrowser();
+    await loadTarget(requested);
+    return true;
+  }
+  qs("fb-error").textContent = "";
+  try {
+    const result = await fused.runPython("./discover.py", {
+      dir: requested,
+      src: location.origin,
+    });
+    browserState.roots = result.roots || browserState.roots;
+    if (result.error) {
+      qs("fb-error").textContent = result.error;
+      renderBrowserPlaces();
+      return false;
+    }
+    browserState.dir = result.dir;
+    browserState.parent = result.parent;
+    browserState.entries = result.entries || [];
+    browserState.selected = null;
+    state.dir = result.dir;
+    state.parent = result.parent;
+    state.entries = result.entries || [];
+    P.set("dir", result.dir);
+    qs("fb-search").value = "";
+    qs("fb-selection").textContent = "Select a supported data file.";
+    qs("fb-open").disabled = true;
+
+    if (addHistory) {
+      const current = browserState.history[browserState.historyIndex];
+      if (current !== result.dir) {
+        browserState.history = browserState.history.slice(0, browserState.historyIndex + 1);
+        browserState.history.push(result.dir);
+        browserState.historyIndex = browserState.history.length - 1;
+      }
+    }
+    renderBrowserNavigation();
+    renderBrowserPlaces();
+    renderBrowserEntries();
+
+    if (result.selected) {
+      const selectedKind = result.selected_kind || "other";
+      if (selectedKind === "other") {
+        qs("fb-error").textContent = "This file type is not supported by Map Viewer.";
+        return false;
+      }
+      closeFileBrowser();
+      await loadTarget(result.selected);
+    }
+    return true;
+  } catch (error) {
+    qs("fb-error").textContent = `Could not browse this location: ${error.message}`;
+    return false;
+  }
+}
+
+async function openFileBrowser() {
+  qs("file-modal").classList.remove("hidden");
+  const startingPath = state.dir || P.get("dir") || "";
+  await browseTo(startingPath, browserState.history.length === 0);
+  qs("fb-path").focus();
+  qs("fb-path").select();
+}
+
+function closeFileBrowser() {
+  qs("file-modal").classList.add("hidden");
+  browserState.selected = null;
+}
+
+function renderFileList() {
+  renderBrowserEntries();
+}
+
+async function addTargetValue(value) {
+  const target = normalizeTarget(value);
+  if (!target) return;
+  await loadTarget(target);
+}
+function statusColor(d) {
+  return d.status === "ok" ? "var(--good)" : d.status === "not_georeferenced" ? "var(--warn)" : "var(--bad)";
+}
+
+/* =======================================================================
+   LAYER LOAD / RENDER
+   ===================================================================== */
+// File row click = load it as a layer (or select it if already loaded).
+async function selectFile(entry) {
+  const key = entry.path;
+  const L = state.layers.get(key);
+  if (L && L.loading) return;
+  if (L && L.descriptor) { selectLayer(key); return; }
+  await loadTarget(key, entry.name);
+}
+
+// Select a layer: highlight it, fit the map to it, drive the style dock + code viewer.
+function selectLayer(key) {
+  state.selected = key;
+  const L = state.layers.get(key);
+  if (L && L.descriptor && L.descriptor.status === "ok") fitTo(L.descriptor.bounds);
+  renderFileList(); renderLayerCards(); renderStyleDock();
+  refreshCode();
+}
+
+async function loadTarget(target, name) {
+  target = normalizeTarget(target);
+  if (!target) return;
+  name = name || target.split(/[\\/]/).pop();
+  const L = state.layers.get(target) || { target, name, visible: true, opacity: 1, style: {}, geojson: null };
+  if (!L.defaultColor) L.defaultColor = CATEGORICAL[state.layers.size % CATEGORICAL.length];
+  L.loading = true; L.name = name;
+  state.layers.set(target, L);
+  renderFileList(); renderLayerCards();
+  try {
+    const desc = await fused.runPython("./map_render.py", {
+      target, colormap: (L.style && L.style.colormap) || "viridis",
+      rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
+      render_mode: (L.style && L.style.render_mode) || "",
+      category_colors: JSON.stringify((L.style && L.style.category_colors) || {}),
+      ...sourceArgs(target),
+    });
+    L.loading = false; L.descriptor = desc;
+    if (desc.status !== "ok") {
+      L.visible = false;
+      state.selected = target;   // still let the user read its code / message
+      const kind = desc.status === "not_georeferenced" ? "warn" : "bad";
+      toast(kind, desc.status === "not_georeferenced" ? "Not georeferenced" : "Couldn't render " + name,
+            desc.message || (desc.error && desc.error.message) || "unknown error");
+      renderAll(); refreshCode(); return;
+    }
+    const touched = L.style && L.style._touched;
+    L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    if (desc.kind === "vector_geojson") {
+      L.geojson = await (await fetch(fused.rawUrl(desc.data.geojson_path))).json();
+      computeColorByStats(L);
+    } else if (desc.kind === "vector_points_binary") {
+      const buf = await (await fetch(fused.rawUrl(desc.data.points_path))).arrayBuffer();
+      L.binary = { count: desc.data.count, columns: desc.data.columns,
+                   positions: new Float32Array(buf), colCache: {} };
+      L._cb = null; L._colorBuf = null;
+    }
+    L.visible = true;
+    state.selected = target;
+    persistOpen();
+    renderAll();
+    monitorOptimization(L);
+    fitTo(desc.bounds);
+    refreshCode();
+  } catch (e) {
+    L.loading = false;
+    L.descriptor = { status: "error", message: e.message, error: { traceback: e.traceback } };
+    L.visible = false;
+    toast("bad", "Error running " + name, (e.type ? e.type + ": " : "") + e.message);
+    renderAll();
+  }
+}
+
+function monitorOptimization(L) {
+  const d = L && L.descriptor;
+  if (!d || d.kind !== "raster_tiles" || !d.data.job_url || L._jobMonitor) return;
+  const status = (d.optimization || {}).status;
+  if (!["queued", "running"].includes(status)) return;
+  L._jobMonitor = true;
+  (async () => {
+    let previewReady = Boolean((d.optimization || {}).preview_ready);
+    try {
+      while (state.layers.get(L.target) === L) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const response = await fetch(d.data.job_url, { cache: "no-store" });
+        if (!response.ok) throw new Error("optimization status HTTP " + response.status);
+        const job = await response.json();
+        d.optimization = job;
+        if (Array.isArray(job.rescale) && job.rescale.length) {
+          if (!(L.style && L.style._touched) && L.style.render_mode !== "rgb") {
+            L.style.rescale = job.rescale[0];
+          }
+          if (d.stats) {
+            d.stats.band_stats = job.rescale.map((range, index) => ({
+              index: index + 1, p2: range[0], p98: range[1],
+            }));
+          }
+        }
+        renderLayerCards();
+        if (job.preview_ready && !previewReady) {
+          previewReady = true;
+          L.tileRevision = (L.tileRevision || 0) + 1;
+          rebuildRasterTiles();
+          renderStyleDock();
+          toast("ok", "Low-zoom preview ready", "The raster is now visible at coarse zooms.");
+        }
+        if (job.status === "ready") {
+          L.tileRevision = (L.tileRevision || 0) + 1;
+          rebuildRasterTiles();
+          renderStyleDock();
+          toast("ok", "Raster optimized", "The local overview pyramid is ready.");
+          return;
+        }
+        if (job.status === "available") {
+          renderStyleDock();
+          return;
+        }
+        if (job.status === "error") {
+          d.warnings = [...(d.warnings || []), "Optimization failed: " + (job.message || "unknown error")];
+          renderStyleDock();
+          return;
+        }
+      }
+    } catch (error) {
+      d.warnings = [...(d.warnings || []), "Couldn't monitor optimization: " + error.message];
+    } finally {
+      L._jobMonitor = false;
+    }
+  })();
+}
+
+function fitTo(bounds) {
+  if (!bounds) return;
+  const [w, s, e, n] = bounds;
+  if (![w, s, e, n].every(Number.isFinite)) return;
+  if (w === e && s === n) { map.flyTo({ center: [w, s], zoom: Math.max(map.getZoom(), 13) }); return; }
+  map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
+}
+
+function computeColorByStats(L) {
+  const col = L.style.color_by;
+  if (!col || !L.geojson) { L._cb = null; return; }
+  let mn = Infinity, mx = -Infinity, numeric = true; const cats = new Set();
+  for (const f of L.geojson.features) {
+    const v = f.properties ? f.properties[col] : undefined;
+    if (v === undefined || v === null) continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && typeof v !== "string") { mn = Math.min(mn, n); mx = Math.max(mx, n); }
+    else { numeric = false; cats.add(String(v)); }
+  }
+  if (numeric && Number.isFinite(mn)) L._cb = { numeric: true, min: mn, max: mx };
+  else L._cb = { numeric: false, cats: [...cats].slice(0, 24) };
+}
+
+/* ---- deck layers ------------------------------------------------------ */
+// state.layers insertion order = z-order, bottom → top.
+function rebuildDeck() {
+  const layers = [];
+  for (const [key, L] of state.layers) {
+    if (!L.visible || !L.descriptor || L.descriptor.status !== "ok") continue;
+    const d = L.descriptor;
+    if (d.kind === "raster_image" && d.data.image_path) {
+      layers.push(new deck.BitmapLayer({
+        id: "r_" + key, image: fused.rawUrl(d.data.image_path),
+        bounds: d.bounds, opacity: L.opacity, _imageCoordinateSystem: undefined,
+      }));
+    } else if (d.kind === "vector_geojson" && L.geojson) {
+      layers.push(makeGeoJsonLayer(key, L));
+    } else if (d.kind === "vector_points_binary" && L.binary) {
+      layers.push(makePointsBinaryLayer(key, L));
+    }
+  }
+  overlay.setProps({ layers });
+}
+
+let rasterSourceIds = new Set();
+function rasterIdsFromSafe(safe) {
+  return {
+    source: "mv-r-src-" + safe,
+    layer: "mv-r-layer-" + safe,
+    boundsSource: "mv-r-bounds-src-" + safe,
+    boundsLayer: "mv-r-bounds-layer-" + safe,
+  };
+}
+function rasterIds(L) {
+  const safe = String(L.descriptor.data.source_id || L.descriptor.id).replace(/[^a-zA-Z0-9_-]/g, "_");
+  return rasterIdsFromSafe(safe);
+}
+
+function removeRasterSource(sourceId) {
+  const safe = sourceId.slice("mv-r-src-".length);
+  const ids = rasterIdsFromSafe(safe);
+  if (map.getLayer(ids.boundsLayer)) map.removeLayer(ids.boundsLayer);
+  if (map.getLayer(ids.layer)) map.removeLayer(ids.layer);
+  if (map.getSource(ids.boundsSource)) map.removeSource(ids.boundsSource);
+  if (map.getSource(ids.source)) map.removeSource(ids.source);
+}
+
+function boundsFeature(bounds) {
+  const [west, south, east, north] = bounds;
+  return {
+    type: "Feature",
+    properties: {},
+    geometry: {
+      type: "Polygon",
+      coordinates: [[
+        [west, south], [east, south], [east, north],
+        [west, north], [west, south],
+      ]],
+    },
+  };
+}
+
+function rebuildRasterTiles() {
+  // Only false for the brief window between a basemap switch and its
+  // "style.load" — which already re-runs this once ready, so just bail.
+  if (!styleReady) return;
+  const wanted = new Map();
+  for (const L of state.layers.values()) {
+    const d = L.descriptor;
+    if (L.visible && d && d.status === "ok" && d.kind === "raster_tiles") {
+      const ids = rasterIds(L);
+      wanted.set(ids.source, { L, ids });
+    }
+  }
+
+  const styleSources = Object.keys((map.getStyle() && map.getStyle().sources) || {})
+    .filter(id => id.startsWith("mv-r-src-"));
+  for (const sourceId of new Set([...rasterSourceIds, ...styleSources])) {
+    if (wanted.has(sourceId)) continue;
+    removeRasterSource(sourceId);
+  }
+
+  for (const [sourceId, { L, ids }] of wanted) {
+    const d = L.descriptor;
+    const revision = L.tileRevision || 0;
+    const tileUrl = d.data.tile_url + (d.data.tile_url.includes("?") ? "&" : "?") + "rev=" + revision;
+    if (map.getSource(sourceId) && L._tileUrl !== tileUrl) {
+      if (map.getLayer(ids.layer)) map.removeLayer(ids.layer);
+      map.removeSource(sourceId);
+    }
+    if (!map.getSource(sourceId)) {
+      map.addSource(sourceId, {
+        type: "raster", tiles: [tileUrl], tileSize: 256,
+        minzoom: 0, maxzoom: d.maxzoom ?? 22,
+        bounds: d.bounds,
+      });
+      L._tileUrl = tileUrl;
+    }
+    if (!map.getLayer(ids.layer)) {
+      map.addLayer({
+        id: ids.layer, type: "raster", source: sourceId,
+        paint: { "raster-opacity": L.opacity ?? 1, "raster-fade-duration": 0 },
+      });
+    } else {
+      map.setPaintProperty(ids.layer, "raster-opacity", L.opacity ?? 1);
+    }
+    if (!map.getSource(ids.boundsSource)) {
+      map.addSource(ids.boundsSource, {
+        type: "geojson",
+        data: boundsFeature(d.bounds),
+      });
+    }
+    if (!map.getLayer(ids.boundsLayer)) {
+      map.addLayer({
+        id: ids.boundsLayer,
+        type: "line",
+        source: ids.boundsSource,
+        paint: {
+          "line-color": "#f97316",
+          "line-width": 2,
+          "line-opacity": 0.9,
+          "line-dasharray": [2, 2],
+        },
+      });
+    }
+  }
+  rasterSourceIds = new Set(wanted.keys());
+}
+
+function rasterLayerForSource(sourceId) {
+  if (!sourceId || !sourceId.startsWith("mv-r-src-")) return null;
+  for (const L of state.layers.values()) {
+    const d = L.descriptor;
+    if (d && d.kind === "raster_tiles" && rasterIds(L).source === sourceId) {
+      return L;
+    }
+  }
+  return null;
+}
+
+let vectorSourceIds = new Set();
+function vectorIdsFromSafe(safe) {
+  return {
+    source: "mv-v-src-" + safe,
+    fill: "mv-v-fill-" + safe,
+    line: "mv-v-line-" + safe,
+    point: "mv-v-point-" + safe,
+    boundsSource: "mv-v-bounds-src-" + safe,
+    boundsLayer: "mv-v-bounds-layer-" + safe,
+  };
+}
+function vectorIds(L) {
+  const safe = String(L.descriptor.data.source_id || L.descriptor.id).replace(/[^a-zA-Z0-9_-]/g, "_");
+  return vectorIdsFromSafe(safe);
+}
+function cssColor(value, fallback) {
+  const c = Array.isArray(value) ? value : fallback;
+  return `rgba(${c[0]},${c[1]},${c[2]},${(c[3] ?? 255) / 255})`;
+}
+function removeVectorSource(sourceId) {
+  const safe = sourceId.slice("mv-v-src-".length);
+  const ids = vectorIdsFromSafe(safe);
+  for (const layerId of [ids.boundsLayer, ids.point, ids.line, ids.fill]) {
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  }
+  if (map.getSource(ids.boundsSource)) map.removeSource(ids.boundsSource);
+  if (map.getSource(ids.source)) map.removeSource(ids.source);
+}
+function rebuildVectorTiles() {
+  if (!styleReady) return;
+  const wanted = new Map();
+  for (const L of state.layers.values()) {
+    const d = L.descriptor;
+    if (L.visible && d && d.status === "ok" && d.kind === "vector_tiles_mvt") {
+      const ids = vectorIds(L);
+      wanted.set(ids.source, { L, ids });
+    }
+  }
+  const styleSources = Object.keys((map.getStyle() && map.getStyle().sources) || {})
+    .filter(id => id.startsWith("mv-v-src-"));
+  for (const sourceId of new Set([...vectorSourceIds, ...styleSources])) {
+    if (!wanted.has(sourceId)) removeVectorSource(sourceId);
+  }
+
+  for (const [sourceId, { L, ids }] of wanted) {
+    const d = L.descriptor, s = L.style || {};
+    const sourceLayer = d.data.source_layer || "layer";
+    if (!map.getSource(sourceId)) {
+      map.addSource(sourceId, {
+        type: "vector",
+        tiles: [d.data.tile_url],
+        minzoom: d.minzoom ?? 0,
+        maxzoom: d.maxzoom ?? 18,
+        bounds: d.bounds,
+      });
+    }
+    const fillColor = cssColor(s.fill_color, [56, 135, 255, 90]);
+    const lineColor = cssColor(s.line_color, [90, 200, 255, 220]);
+    if (!map.getLayer(ids.fill)) {
+      map.addLayer({
+        id: ids.fill, type: "fill", source: sourceId, "source-layer": sourceLayer,
+        filter: ["==", ["geometry-type"], "Polygon"],
+        paint: { "fill-color": fillColor, "fill-opacity": L.opacity ?? 1 },
+      });
+    } else {
+      map.setPaintProperty(ids.fill, "fill-color", fillColor);
+      map.setPaintProperty(ids.fill, "fill-opacity", L.opacity ?? 1);
+    }
+    if (!map.getLayer(ids.line)) {
+      map.addLayer({
+        id: ids.line, type: "line", source: sourceId, "source-layer": sourceLayer,
+        filter: ["in", ["geometry-type"], ["literal", ["LineString", "Polygon"]]],
+        paint: {
+          "line-color": lineColor,
+          "line-width": s.line_width ?? 1.5,
+          "line-opacity": L.opacity ?? 1,
+        },
+      });
+    } else {
+      map.setPaintProperty(ids.line, "line-color", lineColor);
+      map.setPaintProperty(ids.line, "line-width", s.line_width ?? 1.5);
+      map.setPaintProperty(ids.line, "line-opacity", L.opacity ?? 1);
+    }
+    if (!map.getLayer(ids.point)) {
+      map.addLayer({
+        id: ids.point, type: "circle", source: sourceId, "source-layer": sourceLayer,
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-color": fillColor,
+          "circle-radius": s.point_radius ?? 5,
+          "circle-opacity": L.opacity ?? 1,
+        },
+      });
+    } else {
+      map.setPaintProperty(ids.point, "circle-color", fillColor);
+      map.setPaintProperty(ids.point, "circle-radius", s.point_radius ?? 5);
+      map.setPaintProperty(ids.point, "circle-opacity", L.opacity ?? 1);
+    }
+    if (!map.getSource(ids.boundsSource)) {
+      map.addSource(ids.boundsSource, {
+        type: "geojson",
+        data: boundsFeature(d.bounds),
+      });
+    }
+    if (!map.getLayer(ids.boundsLayer)) {
+      map.addLayer({
+        id: ids.boundsLayer, type: "line", source: ids.boundsSource,
+        paint: {
+          "line-color": lineColor,
+          "line-width": 1,
+          "line-opacity": 0.6,
+          "line-dasharray": [2, 2],
+        },
+      });
+    }
+  }
+  vectorSourceIds = new Set(wanted.keys());
+}
+function vectorLayerForSource(sourceId) {
+  if (!sourceId || !sourceId.startsWith("mv-v-src-")) return null;
+  for (const L of state.layers.values()) {
+    const d = L.descriptor;
+    if (d && d.kind === "vector_tiles_mvt" && vectorIds(L).source === sourceId) {
+      return L;
+    }
+  }
+  return null;
+}
+function tiledLayerForSource(sourceId) {
+  return rasterLayerForSource(sourceId) || vectorLayerForSource(sourceId);
+}
+
+map.on("sourcedataloading", event => {
+  const L = tiledLayerForSource(event.sourceId);
+  if (!L || L.tileLoading) return;
+  L.tileLoading = true;
+  L.tileError = null;
+  renderLayerCards();
+});
+map.on("sourcedata", event => {
+  const L = tiledLayerForSource(event.sourceId);
+  if (!L || (!event.isSourceLoaded && event.sourceDataType !== "idle")) return;
+  L.tileLoading = false;
+  renderLayerCards();
+});
+map.on("idle", () => {
+  let changed = false;
+  for (const L of state.layers.values()) {
+    if (!L.tileLoading) continue;
+    const d = L.descriptor;
+    if (!d || !["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) continue;
+    L.tileLoading = false;
+    changed = true;
+  }
+  if (changed) renderLayerCards();
+});
+map.on("error", event => {
+  const L = tiledLayerForSource(event.sourceId);
+  if (!L) return;
+  L.tileLoading = false;
+  L.tileError = (event.error && event.error.message) || "unknown tile error";
+  renderLayerCards();
+});
+
+function makePointsBinaryLayer(key, L) {
+  const s = L.style, b = L.binary;
+  const fill = s.fill_color || [...L.defaultColor, 220];
+  const useCB = s.color_by && b.columns[s.color_by] && L._colorBuf;
+  return new deck.ScatterplotLayer({
+    id: "v_" + key,
+    data: { length: b.count, attributes: { getPosition: { value: b.positions, size: 2 } } },
+    getFillColor: useCB ? { value: L._colorBuf, size: 4 } : fill,
+    getRadius: s.point_radius ?? 4, radiusUnits: "pixels", radiusMinPixels: 1, radiusMaxPixels: 40,
+    stroked: false, opacity: L.opacity, pickable: true,
+    updateTriggers: { getFillColor: [!!useCB, s.fill_color, s.color_by, s.colormap], getRadius: [s.point_radius] },
+  });
+}
+
+async function ensureColumn(L, col) {
+  const b = L.binary;
+  if (b.colCache[col]) return b.colCache[col];
+  const meta = b.columns[col];
+  const buf = await (await fetch(fused.rawUrl(meta.path))).arrayBuffer();
+  const arr = meta.dtype === "u8" ? new Uint8Array(buf) : new Float32Array(buf);
+  b.colCache[col] = { arr, meta };
+  return b.colCache[col];
+}
+
+async function computeBinaryColors(L) {
+  const s = L.style, b = L.binary;
+  if (!s.color_by || !b.columns[s.color_by]) { L._colorBuf = null; L._cb = null; return; }
+  const { arr, meta } = await ensureColumn(L, s.color_by);
+  const a = (s.fill_color && s.fill_color[3]) ?? 220;
+  const out = new Uint8Array(b.count * 4);
+  const name = s.colormap || "viridis";
+  if (meta.dtype === "f32") {
+    const mn = meta.min ?? 0, mx = meta.max ?? 1, rng = mx > mn ? mx - mn : 1;
+    for (let i = 0; i < b.count; i++) { const c = cmapColor(name, (arr[i] - mn) / rng); const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
+    L._cb = { numeric: true, min: mn, max: mx };
+  } else {
+    for (let i = 0; i < b.count; i++) { const c = CATEGORICAL[arr[i] % CATEGORICAL.length]; const o = i*4; out[o]=c[0]; out[o+1]=c[1]; out[o+2]=c[2]; out[o+3]=a; }
+    L._cb = { numeric: false, cats: meta.categories };
+  }
+  L._colorBuf = out;
+}
+
+function makeGeoJsonLayer(key, L) {
+  const s = L.style;
+  const fill = s.fill_color || [...L.defaultColor, 90];
+  const line = s.line_color || [...L.defaultColor, 220];
+  let getFill = fill, getLine = line;
+  if (s.color_by && L._cb) {
+    const cb = L._cb, name = s.colormap || "viridis";
+    const colorFor = (v) => {
+      if (v === undefined || v === null) return [130,130,140,180];
+      if (cb.numeric) {
+        const t = cb.max > cb.min ? (Number(v) - cb.min) / (cb.max - cb.min) : 0.5;
+        const c = cmapColor(name, t); return [c[0], c[1], c[2], fill[3] ?? 200];
+      }
+      const i = cb.cats.indexOf(String(v)); const c = CATEGORICAL[(i < 0 ? 0 : i) % CATEGORICAL.length];
+      return [c[0], c[1], c[2], fill[3] ?? 200];
+    };
+    getFill = f => colorFor(f.properties && f.properties[s.color_by]);
+    getLine = f => colorFor(f.properties && f.properties[s.color_by]);
+  }
+  return new deck.GeoJsonLayer({
+    id: "v_" + key, data: L.geojson, pickable: true,
+    stroked: true, filled: true, pointType: "circle",
+    getFillColor: getFill, getLineColor: (s.color_by && L._cb) ? getLine : line,
+    getLineWidth: s.line_width ?? 1.5, lineWidthUnits: "pixels", lineWidthMinPixels: 1,
+    getPointRadius: s.point_radius ?? 5, pointRadiusUnits: "pixels", pointRadiusMinPixels: 2,
+    opacity: L.opacity,
+    updateTriggers: {
+      getFillColor: [s.fill_color, s.color_by, s.colormap],
+      getLineColor: [s.line_color, s.color_by, s.colormap],
+      getLineWidth: [s.line_width], getPointRadius: [s.point_radius],
+    },
+  });
+}
+
+function renderAll() { renderFileList(); rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); renderLayerCards(); renderStyleDock(); }
+
+/* =======================================================================
+   LAYERS SECTION (cards in the left panel)
+   ===================================================================== */
+const EYE = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYEOFF = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.7 10.7 0 0 1 12 20C5 20 1 12 1 12a19.6 19.6 0 0 1 5.1-5.9m3.9-1.8A10.7 10.7 0 0 1 12 4c7 0 11 8 11 8a19.6 19.6 0 0 1-2.3 3.3M1 1l22 22"/></svg>';
+const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>';
+
+function kindBadge(d) {
+  return (d.kind === "raster_image" || d.kind === "raster_tiles") ? "raster"
+       : d.kind === "vector_points_binary" ? "points"
+       : d.kind === "vector_tiles_pmtiles" ? "pmtiles" : "vector";
+}
+
+function swatchStyle(L) {
+  const d = L.descriptor, s = L.style || {};
+  if (d && (d.kind === "raster_image" || d.kind === "raster_tiles")) {
+    return s.render_mode === "rgb"
+      ? "background:linear-gradient(90deg,#f87171,#4ade80,#60a5fa)"
+      : `background:${cmapGradient(s.colormap || "viridis")}`;
+  }
+  if (s.color_by) return `background:${cmapGradient(s.colormap || "viridis")}`;
+  const c = s.fill_color || s.line_color || L.defaultColor || [160, 160, 170];
+  return `background:rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function formatRasterStatus(L) {
+  const d = L.descriptor;
+  if (!d || d.kind !== "raster_tiles") return "";
+  const job = d.optimization || {};
+  const elapsed = job.started_at
+    ? Math.max(0, Math.round(Date.now() / 1000 - job.started_at))
+    : 0;
+  if (job.status === "queued") return "Overview queued";
+  if (job.status === "running") {
+    const action = job.phase === "optimize"
+      ? "Building full pyramid"
+      : job.phase === "preview_write"
+        ? "Saving low-zoom overview"
+        : "Reading source for low-zoom overview";
+    const progress = Number.isFinite(job.progress) ? ` · ${Math.round(job.progress)}%` : "";
+    return `${action}${progress}${elapsed ? ` · ${elapsed}s` : ""}`;
+  }
+  if (L.tileError) return "Visible tiles failed: " + L.tileError;
+  if (L.tileLoading) return "Loading visible tiles…";
+  if (job.status === "ready") return "Overview pyramid ready";
+  if (job.preview_ready) return "Low-zoom overview ready";
+  return "";
+}
+
+function formatVectorStatus(L) {
+  const d = L.descriptor;
+  if (!d || d.kind !== "vector_tiles_mvt") return "";
+  if (L.tileError) return "Visible tiles failed: " + L.tileError;
+  if (L.tileLoading) return "Loading visible vector tiles…";
+  return d.stats.indexed ? "Indexed vector tiles ready" : "Vector tiles ready";
+}
+
+function renderLayerCards() {
+  const box = qs("layercards");
+  const all = [...state.layers.values()];
+  if (!all.length) {
+    box.innerHTML = `<div class="lp-empty">No layers yet.<br/>Pick a file in Browse below, or paste a path to add one to the map.</div>`;
+    return;
+  }
+  box.innerHTML = "";
+  for (const L of all.reverse()) box.appendChild(layerCard(L));   // topmost card = topmost on map
+}
+
+function layerCard(L) {
+  const d = L.descriptor;
+  const card = document.createElement("div");
+  card.className = "lc" + (state.selected === L.target ? " selected" : "") + (L.visible ? "" : " off");
+  if (d && d.status === "error") card.classList.add("bad-tint");
+  if (d && d.status === "not_georeferenced") card.classList.add("warn-tint");
+
+  const h = document.createElement("div"); h.className = "lc-h";
+  if (L.loading) {
+    h.innerHTML = `<span class="spin"></span><span class="lc-nm" title="${esc(L.target)}">${esc(L.name)}</span><span class="lc-badge">loading</span>`;
+  } else if (d && d.status !== "ok") {
+    h.innerHTML =
+      `<span class="lc-swatch" style="background:${d.status === "error" ? "var(--bad)" : "var(--warn)"}"></span>` +
+      `<span class="lc-nm" title="${esc(L.target)}">${esc(L.name)}</span>` +
+      `<button class="lc-dots" title="More">${DOTS}</button>`;
+  } else {
+    h.innerHTML =
+      `<span class="lc-swatch" style="${swatchStyle(L)}"></span>` +
+      `<span class="lc-nm" title="${esc(L.target)}">${esc(L.name)}</span>` +
+      `<span class="lc-badge">${esc(kindBadge(d))}</span>` +
+      `<button class="lc-eye ${L.visible ? "" : "off"}" title="Toggle visibility">${L.visible ? EYE : EYEOFF}</button>` +
+      `<button class="lc-dots" title="More">${DOTS}</button>`;
+  }
+  card.appendChild(h);
+
+  if (d && !L.loading && d.status !== "ok") {
+    const m = document.createElement("div"); m.className = "lc-msg";
+    m.textContent = d.message || (d.error && d.error.message) || "Couldn't render this file.";
+    card.appendChild(m);
+  }
+  if (d && !L.loading && d.status === "ok" && ["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) {
+    const message = d.kind === "raster_tiles" ? formatRasterStatus(L) : formatVectorStatus(L);
+    const bounds = d.bounds || [];
+    if (message || bounds.length === 4) {
+      const status = document.createElement("div");
+      status.className = "lc-msg lc-progress";
+      const text = document.createElement("span");
+      text.textContent = message || "Raster extent ready";
+      if (bounds.length === 4) {
+        text.title = `${bounds[0].toFixed(5)}, ${bounds[1].toFixed(5)} → ${bounds[2].toFixed(5)}, ${bounds[3].toFixed(5)}`;
+      }
+      const fit = document.createElement("button");
+      fit.type = "button";
+      fit.textContent = "Fit extent";
+      fit.onclick = event => {
+        event.stopPropagation();
+        fitTo(d.bounds);
+      };
+      status.append(text, fit);
+      card.appendChild(status);
+    }
+  }
+
+  card.onclick = () => { if (!L.loading) selectLayer(L.target); };
+  const eye = h.querySelector(".lc-eye");
+  if (eye) eye.onclick = ev => { ev.stopPropagation(); L.visible = !L.visible; renderAll(); };
+  const dots = h.querySelector(".lc-dots");
+  if (dots) dots.onclick = ev => { ev.stopPropagation(); openLayerMenu(dots, L); };
+  return card;
+}
+
+let menuEl = null;
+function closeMenu() { if (menuEl) { menuEl.remove(); menuEl = null; } }
+document.addEventListener("click", closeMenu);
+
+function openLayerMenu(btn, L) {
+  closeMenu();
+  menuEl = document.createElement("div"); menuEl.id = "lmenu";
+  const items = [];
+  if (L.descriptor && L.descriptor.status === "ok") {
+    items.push(["Zoom to layer", () => fitTo(L.descriptor.bounds)]);
+    items.push(["Move up", () => moveLayer(L.target, +1)]);
+    items.push(["Move down", () => moveLayer(L.target, -1)]);
+  }
+  items.push(["View source", () => { state.selected = L.target; renderFileList(); renderLayerCards(); openCodePanel(); }]);
+  items.push(["Remove", () => removeLayer(L.target), "danger"]);
+  for (const [label, fn, cls] of items) {
+    const b = document.createElement("button");
+    b.textContent = label; if (cls) b.className = cls;
+    b.onclick = ev => { ev.stopPropagation(); closeMenu(); fn(); };
+    menuEl.appendChild(b);
+  }
+  document.body.appendChild(menuEl);
+  const r = btn.getBoundingClientRect(), mw = menuEl.offsetWidth, mh = menuEl.offsetHeight;
+  menuEl.style.left = Math.min(r.left, window.innerWidth - mw - 8) + "px";
+  menuEl.style.top = (r.bottom + mh + 8 > window.innerHeight ? r.top - mh - 4 : r.bottom + 4) + "px";
+}
+
+// Reorder within state.layers (insertion order = z-order); dir +1 = up the stack.
+function moveLayer(key, dir) {
+  const keys = [...state.layers.keys()];
+  const i = keys.indexOf(key), j = i + dir;
+  if (i < 0 || j < 0 || j >= keys.length) return;
+  [keys[i], keys[j]] = [keys[j], keys[i]];
+  const m = new Map();
+  for (const k of keys) m.set(k, state.layers.get(k));
+  state.layers = m;
+  persistOpen();
+  renderAll();
+}
+
+function removeLayer(key) {
+  state.layers.delete(key);
+  if (state.selected === key) state.selected = null;
+  persistOpen();
+  renderAll();
+  refreshCode();
+}
+
+/* =======================================================================
+   STYLE DOCK (right-docked, shows the selected layer)
+   ===================================================================== */
+function renderStyleDock() {
+  if (qs("stylepanel").classList.contains("hidden")) return;
+  const body = qs("sp-body");
+  const L = state.selected ? state.layers.get(state.selected) : null;
+  if (!L || !L.descriptor) {
+    qs("sp-nm").textContent = "Style"; qs("sp-kind").textContent = "";
+    body.innerHTML = `<div class="sp-empty">Select a layer to style it.</div>`;
+    return;
+  }
+  const d = L.descriptor;
+  qs("sp-nm").textContent = L.name; qs("sp-nm").title = L.target;
+  qs("sp-kind").textContent = d.kind ? kindBadge(d) : "";
+  body.innerHTML = "";
+  if (d.status !== "ok") {
+    body.innerHTML = `<div class="sp-empty">${esc(d.message || (d.error && d.error.message) || "This layer couldn't be rendered.")}</div>`;
+    return;
+  }
+
+  body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
+    v => { L.opacity = v/100; rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
+
+  if (d.kind === "raster_image" || d.kind === "raster_tiles") rasterControls(body, L);
+  else if (d.kind === "vector_tiles_mvt") vectorTileControls(body, L);
+  else if (d.kind === "vector_points_binary") binaryPointControls(body, L);
+  else if (d.kind === "vector_geojson") vectorControls(body, L);
+
+  // stats + warnings
+  const st = d.stats || {};
+  let statTxt = "";
+  if (d.kind === "raster_image" || d.kind === "raster_tiles") statTxt = `${st.bands}-band · ${st.width}×${st.height} · ${st.dtype}`;
+  else if (["vector_geojson", "vector_points_binary", "vector_tiles_mvt"].includes(d.kind)) statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
+  if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
+  if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
+  if (statTxt) { const s = document.createElement("div"); s.className = "stat"; s.textContent = statTxt; body.appendChild(s); }
+  (d.warnings||[]).forEach(w => { const el = document.createElement("div"); el.className="warnline"; el.textContent="⚠ "+w; body.appendChild(el); });
+}
+
+function rasterControls(body, L) {
+  const s = L.style, d = L.descriptor;
+  const categories = d.stats.categories;
+  if (categories && categories.length) {
+    body.appendChild(selectCtl("Render", ["Continuous", "Categorical"],
+      s.render_mode === "categorical" ? "Categorical" : "Continuous",
+      v => {
+        s.render_mode = v === "Categorical" ? "categorical" : "single";
+        s._touched = true; reloadRaster(L);
+      }));
+  }
+  if (s.render_mode === "categorical" && categories && categories.length) {
+    const list = document.createElement("div"); list.className = "catlist";
+    for (const cat of categories) list.appendChild(categoryRow(cat, s, L));
+    body.appendChild(list);
+  } else if (s.render_mode !== "rgb") {
+    body.appendChild(selectCtl("Colormap", Object.keys(CMAPS), s.colormap || "viridis", v => {
+      s.colormap = v; s._touched = true; reloadRaster(L);
+    }));
+    // legend
+    const st = (L.descriptor.stats.band_stats || [{}])[0];
+    const leg = document.createElement("div"); leg.className = "legend";
+    leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div>
+      <div class="ends"><span>${fmt(st.p2 ?? st.min)}</span><span>${fmt(st.p98 ?? st.max)}</span></div>`;
+    body.appendChild(leg);
+  } else {
+    const note = document.createElement("div"); note.className="stat"; note.textContent="RGB composite (bands 1–3)"; body.appendChild(note);
+  }
+  if (d.kind === "raster_tiles" && d.data.optimize_url) {
+    const job = d.optimization || {};
+    if (["available", "error"].includes(job.status)) {
+      const button = document.createElement("button");
+      button.className = "ctl-action";
+      button.textContent = job.status === "error" ? "Retry local optimization" : "Build local overview pyramid";
+      button.onclick = async () => {
+        button.disabled = true; button.textContent = "Starting…";
+        try {
+          const response = await fetch(d.data.optimize_url, { method: "POST" });
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          d.optimization = await response.json();
+          monitorOptimization(L);
+          renderStyleDock();
+        } catch (error) {
+          button.disabled = false; button.textContent = "Optimization failed — retry";
+          toast("bad", "Couldn't start optimization", error.message);
+        }
+      };
+      body.appendChild(button);
+    } else if (job.status === "queued" || job.status === "running") {
+      const note = document.createElement("div"); note.className = "stat";
+      note.textContent = formatRasterStatus(L) || "Preparing raster overview…";
+      body.appendChild(note);
+    } else if (job.status === "ready") {
+      const note = document.createElement("div"); note.className = "stat";
+      note.textContent = "Using the cached local overview pyramid.";
+      body.appendChild(note);
+    }
+  }
+}
+
+function vectorControls(body, L) {
+  const s = L.style, d = L.descriptor;
+  const gtypes = d.stats.geometry_types || [];
+  const isPoint = gtypes.some(g => g.includes("Point"));
+  const isLine = gtypes.some(g => g.includes("Line"));
+  const numCols = d.stats.numeric_columns || [];
+  const allCols = Object.keys(d.stats.columns || {});
+
+  // color-by
+  const cbOpts = ["(single color)", ...allCols];
+  body.appendChild(selectCtl("Color by", cbOpts, s.color_by || "(single color)", v => {
+    s.color_by = v === "(single color)" ? null : v; s._touched = true;
+    computeColorByStats(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
+  }));
+  if (s.color_by && L._cb) {
+    body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", v => { s.colormap=v; s._touched=true; rebuildDeck(); renderLayerCards(); renderStyleDock(); }));
+    const leg = document.createElement("div"); leg.className="legend";
+    if (L._cb.numeric) leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div><div class="ends"><span>${esc(fmt(L._cb.min))}</span><span>${esc(fmt(L._cb.max))}</span></div>`;
+    else leg.innerHTML = `<div class="swatchrow">${L._cb.cats.map((c,i)=>{const col=CATEGORICAL[i%CATEGORICAL.length];return `<span class="swatch"><i style="background:rgb(${esc(col[0])},${esc(col[1])},${esc(col[2])})"></i>${esc(c)}</span>`;}).join("")}</div>`;
+    body.appendChild(leg);
+  } else {
+    // fill + line color pickers
+    if (!isLine) {
+      body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color||L.defaultColor), hex => {
+        const a = (s.fill_color && s.fill_color[3]) ?? 90; s.fill_color = [...hexToRgb(hex), a]; s._touched=true; rebuildDeck(); renderLayerCards();
+      }));
+      body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 90, a => {
+        s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; s._touched=true; rebuildDeck(); renderLayerCards();
+      }));
+    }
+    body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color||L.defaultColor), hex => {
+      const a = (s.line_color && s.line_color[3]) ?? 220; s.line_color = [...hexToRgb(hex), a]; s._touched=true;
+      if (isPoint) { const fa=(s.fill_color&&s.fill_color[3])??220; s.fill_color=[...hexToRgb(hex),fa]; }
+      rebuildDeck(); renderLayerCards();
+    }));
+    body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
+      s.line_color = [...(s.line_color||L.defaultColor).slice(0,3), a]; s._touched=true;
+      if (isPoint) { s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; }
+      rebuildDeck(); renderLayerCards();
+    }));
+  }
+  if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width??1.5).toFixed(1), 0, 8, Math.round((s.line_width??1.5)*2),
+    v => { s.line_width = v/2; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Line width",(v/2).toFixed(1)); }));
+  if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius??5), 1, 24, s.point_radius??5,
+    v => { s.point_radius = v; s._touched=true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
+}
+
+function vectorTileControls(body, L) {
+  const s = L.style, d = L.descriptor;
+  const gtypes = d.stats.geometry_types || [];
+  const isPoint = gtypes.some(g => g.includes("Point"));
+  const isLine = gtypes.some(g => g.includes("Line"));
+  if (!isLine) {
+    body.appendChild(colorCtl("Fill", rgbToHex(s.fill_color || L.defaultColor), hex => {
+      const alpha = (s.fill_color && s.fill_color[3]) ?? 90;
+      s.fill_color = [...hexToRgb(hex), alpha]; s._touched = true;
+      rebuildVectorTiles(); renderLayerCards();
+    }));
+    body.appendChild(alphaCtl("Fill opacity", s.fill_color && s.fill_color[3], 90, a => {
+      s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; s._touched = true;
+      rebuildVectorTiles(); renderLayerCards();
+    }));
+  }
+  body.appendChild(colorCtl("Line / point", rgbToHex(s.line_color || L.defaultColor), hex => {
+    const alpha = (s.line_color && s.line_color[3]) ?? 220;
+    s.line_color = [...hexToRgb(hex), alpha]; s._touched = true;
+    if (isPoint) {
+      const fillAlpha = (s.fill_color && s.fill_color[3]) ?? 220;
+      s.fill_color = [...hexToRgb(hex), fillAlpha];
+    }
+    rebuildVectorTiles(); renderLayerCards();
+  }));
+  body.appendChild(alphaCtl("Line opacity", s.line_color && s.line_color[3], 220, a => {
+    s.line_color = [...(s.line_color || L.defaultColor).slice(0,3), a]; s._touched = true;
+    if (isPoint) { s.fill_color = [...(s.fill_color || L.defaultColor).slice(0,3), a]; }
+    rebuildVectorTiles(); renderLayerCards();
+  }));
+  if (!isPoint) body.appendChild(sliderCtl("Line width", (s.line_width ?? 1.5).toFixed(1), 0, 8, Math.round((s.line_width ?? 1.5) * 2),
+    value => { s.line_width = value / 2; s._touched = true; rebuildVectorTiles(); updateCtlLabel(body, "Line width", (value / 2).toFixed(1)); }));
+  if (isPoint) body.appendChild(sliderCtl("Point size", String(s.point_radius ?? 5), 1, 24, s.point_radius ?? 5,
+    value => { s.point_radius = value; s._touched = true; rebuildVectorTiles(); updateCtlLabel(body, "Point size", String(value)); }));
+}
+
+function binaryPointControls(body, L) {
+  const s = L.style, b = L.binary;
+  const cols = Object.keys(b.columns);
+  body.appendChild(selectCtl("Color by", ["(single color)", ...cols], s.color_by || "(single color)", async v => {
+    s.color_by = v === "(single color)" ? null : v; s._touched = true;
+    await computeBinaryColors(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
+  }));
+  if (s.color_by && L._cb) {
+    body.appendChild(selectCtl("Palette", Object.keys(CMAPS), s.colormap || "viridis", async v => {
+      s.colormap = v; s._touched = true; await computeBinaryColors(L); rebuildDeck(); renderLayerCards(); renderStyleDock();
+    }));
+    const leg = document.createElement("div"); leg.className = "legend";
+    if (L._cb.numeric) leg.innerHTML = `<div class="bar" style="background:${cmapGradient(s.colormap||'viridis')}"></div><div class="ends"><span>${esc(fmt(L._cb.min))}</span><span>${esc(fmt(L._cb.max))}</span></div>`;
+    else leg.innerHTML = `<div class="swatchrow">${(L._cb.cats||[]).slice(0,24).map((c,i)=>{const col=CATEGORICAL[i%CATEGORICAL.length];return `<span class="swatch"><i style="background:rgb(${esc(col[0])},${esc(col[1])},${esc(col[2])})"></i>${esc(c)}</span>`;}).join("")}</div>`;
+    body.appendChild(leg);
+  } else {
+    body.appendChild(colorCtl("Color", rgbToHex(s.fill_color||L.defaultColor), hex => {
+      const a = (s.fill_color && s.fill_color[3]) ?? 220; s.fill_color = [...hexToRgb(hex), a]; s._touched = true; rebuildDeck(); renderLayerCards();
+    }));
+    body.appendChild(alphaCtl("Opacity", s.fill_color && s.fill_color[3], 220, a => {
+      s.fill_color = [...(s.fill_color||L.defaultColor).slice(0,3), a]; s._touched = true; rebuildDeck(); renderLayerCards();
+    }));
+  }
+  body.appendChild(sliderCtl("Point size", String(s.point_radius??4), 1, 24, s.point_radius??4,
+    v => { s.point_radius = v; s._touched = true; rebuildDeck(); updateCtlLabel(body,"Point size",String(v)); }));
+}
+
+async function reloadRaster(L) {
+  L.loading = true; renderFileList();
+  try {
+    const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
+      rescale: L.style.rescale ? L.style.rescale.join(",") : "",
+      render_mode: L.style.render_mode || "",
+      category_colors: JSON.stringify(L.style.category_colors || {}),
+      ...sourceArgs(L.target) });
+    L.loading = false;
+    if (desc.status === "ok") {
+      const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle);
+      L.tileRevision = (L.tileRevision || 0) + 1;
+      monitorOptimization(L);
+    }
+    renderAll();
+  } catch (e) { L.loading = false; toast("bad","Re-render failed", e.message); }
+}
+
+/* ---- small control builders ------------------------------------------ */
+function ctlShell(label, valTxt) {
+  const c = document.createElement("div"); c.className = "ctl"; c.dataset.label = label;
+  const l = document.createElement("div"); l.className = "ctl-lbl";
+  l.innerHTML = `<span>${esc(label)}</span><b>${esc(valTxt||"")}</b>`; c.appendChild(l); return c;
+}
+function updateCtlLabel(body, label, val) {
+  const c = [...body.querySelectorAll(".ctl")].find(x => x.dataset.label === label);
+  if (c) c.querySelector("b").textContent = val;
+}
+function sliderCtl(label, valTxt, min, max, val, on) {
+  const c = ctlShell(label, valTxt);
+  const r = document.createElement("input"); r.type="range"; r.min=min; r.max=max; r.value=val;
+  r.oninput = e => on(Number(e.target.value)); c.appendChild(r); return c;
+}
+// Alpha-only slider: colorCtl's native <input type=color> has no alpha channel,
+// so fill/line transparency (an [r,g,b,a] byte already carried on the style)
+// needs its own control. `alpha` is 0-255; `on` receives the same range.
+function alphaCtl(label, alpha, fallback, on) {
+  const a = alpha ?? fallback;
+  const pct = Math.round(a / 255 * 100);
+  const c = sliderCtl(label, pct + "%", 0, 100, pct, v => {
+    c.querySelector(".ctl-lbl b").textContent = v + "%";
+    on(Math.round(v / 100 * 255));
+  });
+  return c;
+}
+function selectCtl(label, opts, val, on) {
+  const c = ctlShell(label, "");
+  const sel = document.createElement("select");
+  for (const o of opts) { const op=document.createElement("option"); op.value=o; op.textContent=o; if(o===val)op.selected=true; sel.appendChild(op); }
+  sel.onchange = e => on(e.target.value); c.appendChild(sel); return c;
+}
+function colorCtl(label, hex, on) {
+  const c = ctlShell(label, "");
+  const inp = document.createElement("input"); inp.type = "color"; inp.value = hex;
+  inp.oninput = e => on(e.target.value);
+  c.querySelector(".ctl-lbl b").replaceWith(inp);   // swatch sits on the label's right
+  return c;
+}
+// One row of a categorical raster's legend: a swatch (recolors the raster,
+// needs a backend re-render) plus a free-text label (cosmetic only — the
+// value it's keyed to is still what gets rendered on the map).
+function categoryRow(cat, s, L) {
+  const key = String(cat.value);
+  if (!s.category_colors) s.category_colors = {};
+  if (!s.category_labels) s.category_labels = {};
+  const row = document.createElement("div"); row.className = "catrow";
+  const swatch = document.createElement("input"); swatch.type = "color";
+  swatch.value = rgbToHex(s.category_colors[key] || cat.color);
+  // change (not input): a raster color edit re-renders on the backend, so
+  // it should commit once the picker closes rather than spam requests
+  // while the user is still dragging inside it. Store as [r,g,b,a] (via
+  // hexToRgb), the same shape category_colors already carries for the
+  // untouched entries and the same convention fill_color/line_color use.
+  swatch.onchange = e => { s.category_colors[key] = [...hexToRgb(e.target.value), 255]; s._touched = true; reloadRaster(L); };
+  const text = document.createElement("input"); text.type = "text";
+  text.value = s.category_labels[key] ?? cat.label;
+  text.oninput = e => { s.category_labels[key] = e.target.value; s._touched = true; };
+  const count = document.createElement("span"); count.className = "catcount";
+  count.textContent = cat.count != null ? cat.count.toLocaleString() : "";
+  row.append(swatch, text, count);
+  return row;
+}
+const fmt = v => v == null ? "—" : (Math.abs(v) >= 1000 || (v !== 0 && Math.abs(v) < 0.01) ? Number(v).toExponential(1) : Number(v).toFixed(2));
+
+/* =======================================================================
+   CONTROLS: panel toggle / fullscreen / geocode / docks / basemap / coords
+   ===================================================================== */
+function setPanelVisible(show) {
+  qs("panel").classList.toggle("hidden", !show);
+  qs("btn-panel").classList.toggle("hidden", show);
+}
+qs("btn-hide-panel").onclick = () => setPanelVisible(false);
+qs("btn-panel").onclick = () => setPanelVisible(true);
+
+qs("btn-full").onclick = () => {
+  const el = qs("mapwrap");
+  if (!document.fullscreenElement) el.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen();
+};
+document.addEventListener("fullscreenchange", () => {
+  qs("btn-full").classList.toggle("on", !!document.fullscreenElement);
+  setTimeout(()=>map.resize(), 120);
+});
+
+qs("btn-style").onclick = () => {
+  const p = qs("stylepanel"); const show = p.classList.contains("hidden");
+  p.classList.toggle("hidden", !show); qs("btn-style").classList.toggle("on", show);
+  setTimeout(() => map.resize(), 60);
+  if (show) renderStyleDock();
+};
+qs("sp-close").onclick = () => {
+  qs("stylepanel").classList.add("hidden"); qs("btn-style").classList.remove("on");
+  setTimeout(() => map.resize(), 60);
+};
+
+/* ---- code viewer (right-docked, collapsed by default) ---------------- */
+const TEXT_EXT = ["py","json","geojson","csv","txt","md","yaml","yml","toml","cfg","ini","js","ts","html","css","sh","sql"];
+const LANG_ALIAS = { py: "python", geojson: "json", yml: "yaml", sh: "bash", ts: "typescript" };
+
+function openCodePanel() {
+  qs("codepanel").classList.remove("hidden"); qs("btn-code").classList.add("on");
+  setTimeout(() => map.resize(), 60);
+  updateCodeViewer(state.selected);
+}
+qs("btn-code").onclick = () => {
+  if (qs("codepanel").classList.contains("hidden")) { openCodePanel(); return; }
+  qs("codepanel").classList.add("hidden"); qs("btn-code").classList.remove("on");
+  setTimeout(() => map.resize(), 60);
+};
+qs("cp-close").onclick = () => {
+  qs("codepanel").classList.add("hidden"); qs("btn-code").classList.remove("on");
+  setTimeout(() => map.resize(), 60);
+};
+
+function refreshCode() {
+  if (!qs("codepanel").classList.contains("hidden")) updateCodeViewer(state.selected);
+}
+
+async function updateCodeViewer(path) {
+  const body = qs("cp-body"), fnEl = qs("cp-fn"), langEl = qs("cp-lang");
+  if (!path) { fnEl.textContent = "—"; langEl.textContent = ""; body.innerHTML = `<div class="cp-empty">Select a file on the left, then this shows its source.</div>`; return; }
+  const name = path.split(/[\\/]/).pop();
+  fnEl.textContent = name; fnEl.title = path;
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (!TEXT_EXT.includes(ext)) {
+    langEl.textContent = ext || "data";
+    body.innerHTML = `<div class="cp-note">Binary dataset — no source to show.\n\n${esc(path)}</div>`;
+    return;
+  }
+  langEl.textContent = ext;
+  body.innerHTML = `<div class="cp-empty">Loading…</div>`;
+  try {
+    const text = await fused.readFile(path);
+    const lang = LANG_ALIAS[ext] || ext;
+    const nLines = text.split("\n").length;
+    const codeEl = document.createElement("code");
+    codeEl.className = "language-" + lang;
+    codeEl.textContent = text;
+    if (window.hljs) { try { window.hljs.highlightElement(codeEl); } catch (e) { /* fall back to plain */ } }
+    const wrap = document.createElement("div"); wrap.className = "cp-code";
+    const g = document.createElement("div"); g.className = "gutter";
+    g.textContent = Array.from({ length: nLines }, (_, i) => i + 1).join("\n");
+    const pre = document.createElement("pre"); pre.appendChild(codeEl);
+    wrap.appendChild(g); wrap.appendChild(pre);
+    body.innerHTML = ""; body.appendChild(wrap);
+  } catch (e) {
+    body.innerHTML = `<div class="cp-note">Couldn't read file:\n${esc(e.message)}</div>`;
+  }
+}
+
+/* ---- resizable right panels ------------------------------------------ */
+function makeResizable(panel, handle, rightEdgeFn, min, max) {
+  let dragging = false;
+  handle.addEventListener("pointerdown", e => {
+    dragging = true; try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+    document.body.style.cursor = "col-resize"; e.preventDefault();
+  });
+  handle.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    const w = Math.max(min, Math.min(max, rightEdgeFn() - e.clientX));
+    panel.style.width = w + "px";
+    map.resize();
+  });
+  const end = e => {
+    if (!dragging) return; dragging = false;
+    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+    document.body.style.cursor = "";
+    map.resize();
+  };
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+}
+makeResizable(qs("codepanel"), qs("cp-resizer"), () => window.innerWidth, 320, 900);
+makeResizable(qs("stylepanel"), qs("sp-resizer"), () => qs("stylepanel").getBoundingClientRect().right, 260, 560);
+
+qs("basemap-seg").querySelectorAll("button").forEach(b => {
+  b.classList.toggle("on", b.dataset.b === baseName);
+  b.onclick = () => setBasemap(b.dataset.b);
+});
+function setBasemap(name) {
+  if (!BASEMAPS[name] || name === baseName) return;
+  baseName = name; P.set("base", name);
+  qs("basemap-seg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.b === name));
+  styleReady = false;
+  map.setStyle(BASEMAPS[name]);   // overlay is a control → survives setStyle
+}
+map.on("style.load", () => {
+  styleReady = true;
+  rasterSourceIds = new Set();
+  vectorSourceIds = new Set();
+  for (const L of state.layers.values()) L._tileUrl = null;
+  rebuildRasterTiles();
+  rebuildVectorTiles();
+});
+
+/* geocode (Photon) */
+qs("btn-search").onclick = () => {
+  const g = qs("geobox"); const show = g.classList.contains("hidden");
+  g.classList.toggle("hidden", !show); qs("btn-search").classList.toggle("on", show);
+  if (show) qs("geoinput").focus();
+};
+let geoTimer = null;
+qs("geoinput").oninput = e => {
+  clearTimeout(geoTimer); const q = e.target.value.trim();
+  if (q.length < 3) { qs("georesults").innerHTML = ""; return; }
+  geoTimer = setTimeout(() => geocode(q), 320);
+};
+async function geocode(q) {
+  const box = qs("georesults");
+  box.innerHTML = `<div class="geores none">Searching…</div>`;
+  try {
+    const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`);
+    const j = await r.json();
+    const feats = j.features || [];
+    if (!feats.length) { box.innerHTML = `<div class="geores none">No matches.</div>`; return; }
+    box.innerHTML = "";
+    for (const f of feats) {
+      const p = f.properties || {}, c = f.geometry.coordinates;
+      const name = p.name || p.street || p.city || "Result";
+      const sub = [p.city, p.state, p.country].filter(Boolean).join(", ");
+      const div = document.createElement("div"); div.className = "geores";
+      div.innerHTML = `<div class="g1">${esc(name)}</div><div class="g2">${esc(sub)}</div>`;
+      div.onclick = () => {
+        if (p.extent) { const [w,nn,ee,ss] = p.extent; map.fitBounds([[w,ss],[ee,nn]], { padding: 60, maxZoom: 15, duration: 900 }); }
+        else map.flyTo({ center: [c[0], c[1]], zoom: 13, duration: 900 });
+        qs("geobox").classList.add("hidden"); qs("btn-search").classList.remove("on");
+      };
+      box.appendChild(div);
+    }
+  } catch (err) { box.innerHTML = `<div class="geores none">Geocoding failed (offline?).</div>`; }
+}
+
+/* coordinate readout + camera persist */
+map.on("mousemove", e => {
+  qs("coords").textContent = `${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`;
+});
+map.on("mouseout", () => { const c = map.getCenter(); qs("coords").textContent = `${c.lat.toFixed(4)}, ${c.lng.toFixed(4)}  z${map.getZoom().toFixed(1)}`; });
+map.on("moveend", () => { const c = map.getCenter(); P.set("cam", `${c.lat.toFixed(4)},${c.lng.toFixed(4)},${map.getZoom().toFixed(1)}`); });
+
+/* file browser + direct path wiring */
+qs("btn-browse-files").onclick = openFileBrowser;
+qs("fb-close").onclick = closeFileBrowser;
+qs("fb-cancel").onclick = closeFileBrowser;
+qs("fb-open").onclick = openBrowserSelection;
+qs("fb-go").onclick = () => browseTo(qs("fb-path").value);
+qs("fb-refresh").onclick = () => browseTo(browserState.dir, false);
+qs("fb-up").onclick = () => {
+  if (browserState.parent && browserState.parent !== browserState.dir) {
+    browseTo(browserState.parent);
+  }
+};
+qs("fb-back").onclick = async () => {
+  if (browserState.historyIndex <= 0) return;
+  const nextIndex = browserState.historyIndex - 1;
+  if (await browseTo(browserState.history[nextIndex], false)) {
+    browserState.historyIndex = nextIndex;
+    renderBrowserNavigation();
+  }
+};
+qs("fb-path").onkeydown = event => {
+  if (event.key === "Enter") browseTo(event.target.value);
+};
+qs("fb-search").oninput = renderBrowserEntries;
+qs("file-modal").onclick = event => {
+  if (event.target === qs("file-modal")) closeFileBrowser();
+};
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !qs("file-modal").classList.contains("hidden")) {
+    closeFileBrowser();
+  }
+});
+async function importDirectPath() {
+  const input = qs("importpath");
+  const target = normalizeTarget(input.value);
+  if (!target) return;
+  input.value = "";
+  await addTargetValue(target);
+}
+qs("btn-importpath").onclick = importDirectPath;
+qs("importpath").onkeydown = event => {
+  if (event.key === "Enter") importDirectPath();
+};
+
+/* ---- drag-and-drop import: drop OS files straight onto the map -------- */
+// Ad-hoc drops (no folder browsed yet) land in a temp staging dir, not the
+// user's home folder — discover.py prunes it, so a stray drop never piles
+// up in Home forever.
+let dropsDirPromise = null;
+async function resolveUploadDir() {
+  if (state.dir) return state.dir;
+  if (!dropsDirPromise) {
+    dropsDirPromise = fused.runPython("./discover.py", { action: "drops_dir" })
+      .then(result => {
+        if (result.error) throw new Error(result.error);
+        return result.dir || "";
+      })
+      .catch(error => { dropsDirPromise = null; throw error; });
+  }
+  return dropsDirPromise;
+}
+function joinPath(dir, name) {
+  const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+  return dir.replace(/[\\/]+$/, "") + sep + name;
+}
+// GIS sidecars that ride along with a primary file (shapefile members,
+// world files, PAM metadata): uploaded, but never loaded as layers.
+const SIDECAR_EXTENSIONS = [
+  ".shx", ".dbf", ".prj", ".cpg", ".sbn", ".sbx", ".shp.xml",
+  ".qix", ".qpj", ".aux.xml", ".ovr", ".tfw", ".tifw", ".wld",
+];
+function isSidecarName(name) {
+  const lower = name.toLowerCase();
+  return SIDECAR_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+// Split on the FIRST dot so files pairing on a shared basename
+// (farms.shp + farms.shx, landcover.tif + landcover.tif.aux.xml) get a
+// collision suffix inserted at the same spot and stay paired.
+function splitDroppedName(name) {
+  const dot = name.indexOf(".", 1);
+  return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+}
+// Any fused.stat failure (not just a 404) reads as "path is free" — the
+// upload right behind this will fail loudly on its own if something else
+// was actually wrong, so nothing is hidden by being optimistic (same
+// tradeoff as markdown/template.html's mediaExists/freeMediaName).
+async function pathIsFree(path) {
+  try { await fused.stat(path); return false; } catch { return true; }
+}
+async function groupDestPaths(dir, group) {
+  let candidate = group.map(file => joinPath(dir, file.name));
+  for (let i = 1; i <= 100; i++) {
+    const free = await Promise.all(candidate.map(pathIsFree));
+    if (free.every(Boolean)) break;
+    candidate = group.map(file => {
+      const [stem, rest] = splitDroppedName(file.name);
+      return joinPath(dir, `${stem} (${i})${rest}`);
+    });
+  }
+  return candidate;
+}
+async function importDroppedFiles(files) {
+  let dir = "";
+  try {
+    dir = await resolveUploadDir();
+  } catch (error) {
+    toast("bad", "Couldn't drop files", error.message);
+    return;
+  }
+  if (!dir) { toast("bad", "Couldn't drop files", "No destination folder available."); return; }
+  const groups = new Map();
+  for (const file of files) {
+    const key = splitDroppedName(file.name)[0].toLowerCase();
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(file);
+  }
+  for (const group of groups.values()) {
+    try {
+      const dests = await groupDestPaths(dir, group);
+      for (let i = 0; i < group.length; i++) await fused.uploadFile(dests[i], group[i]);
+      for (let i = 0; i < group.length; i++) {
+        if (isSidecarName(group[i].name)) continue;
+        await loadTarget(dests[i], dests[i].split(/[\\/]/).pop());
+      }
+    } catch (error) {
+      toast("bad", "Couldn't add " + group.map(file => file.name).join(", "), error.message);
+    }
+  }
+}
+const mapwrap = qs("mapwrap"), dropzone = qs("dropzone");
+let dragDepth = 0;
+mapwrap.addEventListener("dragenter", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  dragDepth++;
+  dropzone.classList.remove("hidden");
+});
+mapwrap.addEventListener("dragover", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+});
+mapwrap.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) dropzone.classList.add("hidden");
+});
+mapwrap.addEventListener("drop", async event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  dragDepth = 0;
+  dropzone.classList.add("hidden");
+  await importDroppedFiles([...event.dataTransfer.files]);
+});
+
+/* toast */
+let toastTimer = null;
+function toast(kind, title, msg) {
+  const t = qs("toast"); t.className = kind === "warn" ? "warn" : kind === "bad" ? "bad" : "";
+  t.innerHTML = `<div class="tx"><b>${esc(title)}</b>${msg ? `<span>${esc(String(msg).slice(0,300))}</span>` : ""}</div><button class="tclose">×</button>`;
+  t.classList.remove("hidden");
+  t.querySelector(".tclose").onclick = () => t.classList.add("hidden");
+  clearTimeout(toastTimer);
+  if (kind !== "bad") toastTimer = setTimeout(() => t.classList.add("hidden"), 6000);
+}
+
+/* open-layer persistence in URL (keeps z-order) */
+function persistOpen() {
+  const targets = [...state.layers.keys()].filter(k => { const L = state.layers.get(k); return L.descriptor && L.descriptor.status === "ok"; });
+  P.set("open", targets.length ? targets.map(encodeURIComponent).join("~") : "");
+}
+
+/* ---- boot ------------------------------------------------------------- */
+// `_file` is fused-render's "open this file in a view" hook — right-clicking a
+// dataset / .py in the shell and opening it with the map viewer lands here.
+const openFile = normalizeTarget(fused.params.get("_file"));
+if (openFile) {
+  await loadTarget(openFile);
+} else {
+  const openParam = P.get("open");
+  if (openParam) {
+    for (const enc of openParam.split("~")) {
+      const t = decodeURIComponent(enc);
+      await loadTarget(t);
+    }
+  } else {
+    renderAll();
+  }
+}
+
+})().catch(err => {
+  const el = document.getElementById("boot-msg");
+  if (el) { el.classList.remove("hidden"); el.textContent = "Error: " + err.message; }
+  console.error(err);
+});
+</script>
+</body>
+</html>

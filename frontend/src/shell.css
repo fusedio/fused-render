@@ -1,0 +1,37 @@
+/* shell.css is now an ordered barrel: each section lives in styles/ and
+ * import order here IS the cascade order — it must match the historical
+ * top-to-bottom order of the monolithic file. Add new sections at the
+ * position their rules would have appeared, not at the end by habit.
+ * Palette tokens live in styles/tokens.css (tests/test_theme.py). */
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/sidebar.css";
+@import "./styles/explorer.css";
+@import "./styles/preview.css";
+@import "./styles/context-menu.css";
+@import "./styles/dialogs.css";
+@import "./styles/notifications.css";
+@import "./styles/deploy.css";
+@import "./styles/fields.css";
+@import "./styles/buttons-modal.css";
+@import "./styles/shortcuts.css";
+@import "./styles/account.css";
+@import "./styles/preferences.css";
+/* Next to preferences.css: the Claude config app (/claude-config, and the
+   /claude-artifacts page that borrows its page chrome)
+   is a settings surface of the same family, and its rules layer over the
+   .btn / .field-control vocabulary imported above. */
+@import "./styles/claude-config.css";
+/* After claude-config.css because the AI Models page borrows its page chrome
+   (.cc-main / .cc-heading / .cc-pill) and only adds its own row layout. */
+@import "./styles/ai-models.css";
+@import "./styles/mounts.css";
+@import "./styles/setup-modal.css";
+@import "./styles/templates.css";
+@import "./styles/home.css";
+@import "./styles/reduced-motion.css";
+/* Last, and two pages now layer over its card: the /apps hub owns the file, and
+   /claude-artifacts reuses .apps-cards/.app-pcard with its own `ca-` section at
+   the bottom of it — which can only override the card from here, after
+   claude-config.css, where the rest of that page's chrome lives. */
+@import "./styles/apps.css";

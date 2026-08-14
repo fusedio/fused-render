@@ -1,0 +1,495 @@
+/* ---- "Add a mount" -------------------------------------------------------
+   One section, link-first. The pasted link is the way this form is actually
+   used, so it owns a row of its own and the three details it fills sit under
+   it in a grid — the previous layout put all four in one flex-wrap row, which
+   claimed they were co-equal and left the button aligned by a blank caption. */
+.mount-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mount-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Primary by SIZE AND WEIGHT, never by a bigger font: the page holds exactly
+   two text sizes (see the type-scale note below), so the hero earns its
+   prominence from a full-width 40px control and a full-contrast caption. */
+.mount-hero .field-label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.mount-hero .field-control {
+  width: 100%;
+  height: 40px;
+  padding: 0 14px;
+}
+
+.mount-hero .field-control:focus {
+  border-color: var(--accent);
+}
+
+/* Confirm-and-correct: Name | Remote | Path | Add. A real grid, so the button
+   bottom-aligns with the inputs through `align-items: end` instead of the
+   blank-caption <Field label=" "> hack — which rendered a whitespace-only
+   <label for> on the button and left it with an empty accessible name. */
+.mount-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.9fr) minmax(150px, 1.1fr) minmax(150px, 1.4fr) auto;
+  gap: 10px;
+  align-items: end;
+  border-radius: 8px;
+  outline: 2px solid transparent;
+  outline-offset: 6px;
+}
+
+.mount-grid .field-control,
+.mount-grid .field-select-wrap {
+  width: 100%;
+}
+
+/* The setup handoff, made visible. A modal closing and a dropdown quietly
+   changing value was the entire feedback for "your remote is connected"; the
+   grid now flashes once so the eye lands where the next step is. */
+.mount-grid--flash {
+  animation: mount-handoff-flash 1.8s ease-out;
+}
+
+@keyframes mount-handoff-flash {
+  0%,
+  55% {
+    outline-color: var(--accent);
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+
+/* Secondary text throughout the add section: the link's recognition status,
+   the connected-remote line, and the single explainer. */
+.mount-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.mount-note.warn {
+  color: var(--warning);
+}
+
+.mount-note.ok {
+  color: var(--success);
+}
+
+/* The provider cards, at the foot of the same section rather than under a
+   second "Add storage" heading — they are the "no link yet" branch of this
+   flow, not a separate feature. */
+.mount-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.mount-providers-head {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---- Mounts type scale ---------------------------------------------------
+   Two text sizes across the mounts page and all six setup modals, both taken
+   from the shell's existing scale rather than invented here:
+
+     13px  body — the .deploy-body/.modal-body base. Step sentences, buttons,
+           inputs, card names. Set by inheritance; rules below simply don't
+           override it.
+     12px  secondary — hints, closing notes, <summary>, inline qualifiers,
+           card status. Already the size of .field-label and .prefs-section
+           code, so a hint next to a field caption matches it.
+
+   ABSOLUTE px, never `em`. Every one of these used to be 0.8/0.85/0.9em, and
+   they nested: a 0.8em hint inside .mount-step-body (0.9em) inside
+   the 13px modal body measured 9.36px, and a .mount-link inside that hint came
+   out at 7.96px. The Drive modal rendered nine distinct sizes. `em` is what
+   made a size depend on where the element happened to sit, so the scale could
+   not be reasoned about from the rule. */
+/* Vertical rhythm, in three steps rather than 10px everywhere: 24px between
+   sections (from .prefs-page), 14px between the blocks inside one, and the
+   6-10px the blocks use internally. The page previously ran everything at the
+   shared 10px, so a section boundary and a line of hint text were spaced the
+   same and nothing grouped. */
+.mounts-page .prefs-section {
+  gap: 14px;
+}
+
+/* Page header — title + one-line intro on the left, global actions on the
+   right. Wraps on a narrow pane so the action drops below the title. */
+.mounts-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.mounts-title,
+.prefs-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.prefs-title {
+  margin-bottom: 14px;
+}
+
+.mounts-subtitle {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 54ch;
+}
+
+.mounts-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Refresh glyph in the Restart button — sized independently of the label. */
+.mounts-restart-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Callout card — the rclone-not-found notice and the recovery prompt share
+   one chassis; `.warn` tints it for the "needs a restart" case. */
+.mount-callout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.mount-callout.warn {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg-alt));
+}
+
+.mount-callout-title {
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Normal block flow (NOT flex) so the not-found callout's inline text + <code>
+   chips + link wrap as one paragraph; flex-column would stack each inline
+   child on its own line. The recovery callout's multiple <p> lines get their
+   own spacing via the adjacent-sibling margin below. */
+.mount-callout-body {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.mount-callout-body p {
+  margin: 0;
+}
+
+.mount-callout-body p + p {
+  margin-top: 3px;
+}
+
+.mount-callout-body code {
+  white-space: nowrap;
+}
+
+/* Mount cards — one bordered card per mounted/available mount. */
+.mount-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mount-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  transition: border-color 0.12s ease;
+}
+
+.mount-card:not(.mount-card--skeleton):hover {
+  border-color: var(--fg-muted);
+}
+
+/* Loading placeholder rows shown while getMounts() is in flight — a shimmer
+   sweep over an empty card, so the list area reserves its space instead of
+   the page jumping when data lands. */
+.mount-card--skeleton {
+  height: 60px;
+  position: relative;
+  overflow: hidden;
+}
+
+.mount-card--skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(var(--tint), 0.04),
+    transparent
+  );
+  animation: mount-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes mount-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.mount-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* Wrap on a narrow pane: the name block (flex:1) keeps the first row and the
+     action buttons drop to a second row rather than crushing the name. */
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+/* The name/remote block is the flexible column; never let it shrink to zero
+   (which would collapse the ellipsised remote spec to nothing). */
+.mount-card-main > .mount-card-info {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+/* Keep the action buttons together and pushed to the row's end; on wrap they
+   ride to the next line as a group. */
+.mount-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* No generic `.mount-card button` skin any more. Every button inside a card is
+   now a .btn — Open/Reconnect, Remove, and the setup panels' "Use" — and the
+   old element-scoped rule (0,1,1) silently outranked `.btn` (0,1,0) inside a
+   modal, overriding its height and padding while .btn-primary's colours still
+   won at (0,2,0). Half-skinned buttons were the visible result. */
+
+/* Remove: a LABELLED ghost button, not a bare "✕". Quiet until hovered, where
+   it turns destructive-red — the glyph it replaced gave no clue whether it
+   unmounted the folder or deleted data on the remote (it does the former).
+   Specificity ties with `.prefs-section .btn` and wins by order. */
+.mount-card .mount-remove {
+  background: none;
+  border-color: transparent;
+  color: var(--fg-muted);
+}
+
+.mount-card .mount-remove:hover:not(:disabled) {
+  color: var(--error);
+  border-color: var(--error);
+  background: rgba(var(--error-rgb), 0.12);
+}
+
+/* The mount card's mark — the same column the provider cards use, at the size
+   the row can carry. Classified server-side (see markFor in MountList.tsx). */
+.mount-card-mark {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  color: var(--fg-muted);
+}
+
+/* NOT flex: the name line carries inline qualifiers ("— read-only",
+   "— disconnected") that a flex container would each break onto their own row.
+   The dot rides inline with the text instead. */
+.mount-card-name {
+  font-weight: 600;
+}
+
+.mount-card-name .mount-dot {
+  display: inline-block;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* Health dot — color tracks state via a modifier class, off the shared
+   tokens (never a hardcoded hex) so it stays theme-correct. */
+.mount-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--fg-muted);
+}
+.mount-dot.mounted {
+  background: var(--success);
+}
+.mount-dot.disconnected,
+.mount-dot.stale {
+  background: var(--warning);
+}
+
+/* Inline qualifier after a mount name ("— read-only", "— disconnected"). */
+.mount-hint {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.mount-hint.warn {
+  color: var(--warning);
+}
+
+/* The remote spec shown under a mount name, clipped to one line. */
+.mount-remote {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Labeled form field: a small uppercase caption over a native control, so
+   the add-mount row and the custom-remote modal read as named fields rather
+   than a line of bare placeholders. */
+
+/* Live preview of the rclone spec the Add button will mount. */
+.mount-spec {
+  font-size: 12px;
+  margin: 0;
+}
+.mount-spec .warn {
+  color: var(--warning);
+}
+
+/* Empty state — a quiet dashed panel pointing at the Add-mount form. */
+.mount-empty {
+  padding: 16px 18px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+  color: var(--fg-muted);
+}
+
+/* The provider picker. A responsive grid rather than fixed columns so it
+   reflows in the narrow sidebar pane without a second breakpoint; each card is
+   a button whose whole surface is the hit target. Compact, because these cards
+   now sit at the foot of the add form rather than carrying a section of their
+   own — they must not out-shout the thing they support. */
+.mount-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+  /* Every row the same height, not just every card within a row. Grid sizes
+     rows independently by default, so a one-line row sat visibly shorter than
+     a row containing a card whose cost text wraps — the picker read as uneven
+     even though each row was internally aligned. */
+  grid-auto-rows: 1fr;
+}
+
+/* Scoped through .mount-picker purely for SPECIFICITY: `.prefs-section button`
+   (0,1,1) outranks a bare `.mount-provider` (0,1,0), so the card's padding,
+   radius and background were silently losing to the generic button skin — the
+   cards rendered with 5px of vertical padding, not the 12 declared here. */
+.mount-picker .mount-provider {
+  /* A <button> does not reliably stretch to its grid area the way a div does,
+     so the row was ragged: the cards whose cost line wraps to two lines grew
+     and the rest stayed short (measured 49/63/49px across one row). Explicit
+     height is what makes the grid's stretch actually apply — and it is also
+     what gives .mount-provider-cost's margin-top:auto something to push
+     against, since auto margins need spare space in the box to distribute. */
+  height: 100%;
+  display: flex;
+  /* Mark on the left, name over cost to its right. */
+  flex-direction: row;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  cursor: pointer;
+  font: inherit;
+}
+
+/* The mark: a fixed square, sized here rather than derived from the card's
+   height. It used to stretch to the content height, which is circular — the
+   glyphs are square, so a width taken from the stretched height feeds back
+   into the card's intrinsic size (every card inflated to 300px square when
+   that was tried with aspect-ratio). A constant size also keeps every card's
+   text starting at the same x. */
+.mount-provider-mark {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  color: var(--fg-muted);
+}
+
+.mount-provider-icon {
+  width: 100%;
+  height: 100%;
+}
+
+/* Name over cost. min-width:0 so a long provider name wraps inside the card
+   instead of forcing the grid column wider. */
+.mount-provider-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.mount-provider:hover .mount-provider-icon {
+  color: var(--accent, var(--fg));
+}
+
+.mount-provider:hover {
+  border-color: var(--accent, var(--fg-muted));
+}
+
+.mount-provider:focus-visible {
+  outline: 2px solid var(--accent, var(--fg));
+  outline-offset: 2px;
+}
+
+.mount-provider-name {
+  font-weight: 600;
+}
+
+/* The setup COST, stated up front — "one click" and "go create a Google Cloud
+   project" are very different asks and the user picks knowing which. 12px, the
+   page's one secondary size: this was the last `em` left on the page, and at
+   0.8em it rendered at 10.4px, a ninth size nothing else used. */
+.mount-provider-cost {
+  font-size: 12px;
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+

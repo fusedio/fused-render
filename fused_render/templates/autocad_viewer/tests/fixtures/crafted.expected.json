@@ -1,0 +1,39 @@
+{
+  "format": "dxf",
+  "supported": true,
+  "acadver": "AC1024",
+  "version_name": "AutoCAD 2010",
+  "insunits": 1,
+  "units_name": "Inches",
+  "extmin": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "extmax": [
+    250.5,
+    120.0,
+    0.0
+  ],
+  "layers": [
+    {
+      "name": "0",
+      "color": 7
+    },
+    {
+      "name": "GRID",
+      "color": 8
+    },
+    {
+      "name": "HIDDEN",
+      "color": 3
+    }
+  ],
+  "layer_count": 3,
+  "entity_counts": {
+    "LINE": 1,
+    "CIRCLE": 1,
+    "LWPOLYLINE": 1
+  },
+  "entity_total": 3
+}

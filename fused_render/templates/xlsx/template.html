@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Spreadsheet preview</title>
+<style>
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --error: #ff6b6b;
+    --border-cell: #24262b;
+    --skel-base: #1d1f24;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --error: #c62828;
+    --border-cell: #e6e8eb;
+    --skel-base: #eceef1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  #bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
+    position: sticky;
+    top: 0;
+  }
+  #bar button {
+    font: inherit;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  #bar button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  #sheet {
+    font: inherit;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    margin-left: auto;
+  }
+  #rowcount {
+    color: var(--fg-muted);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    padding: 5px 10px;
+    border-bottom: 1px solid var(--border-cell);
+    text-align: left;
+    white-space: nowrap;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  th {
+    background: var(--bg-alt);
+    position: sticky;
+    top: 37px;
+    font-weight: 600;
+  }
+  #status {
+    padding: 24px;
+    color: var(--fg-muted);
+  }
+  #status.error {
+    color: var(--error);
+  }
+  /* Loading skeleton: mimics the paged table shape (header + row bars) while
+     a page/sheet is in flight, instead of a blank "Loading…" wipe. */
+  .skel-bar {
+    display: inline-block;
+    height: 0.9em;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--border) 50%, var(--skel-base) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <button id="prev">&larr; Prev</button>
+    <button id="next">Next &rarr;</button>
+    <span id="rowcount"></span>
+    <select id="sheet" hidden></select>
+  </div>
+  <div id="tablewrap"></div>
+  <script>
+    const LIMIT = 100;
+    const prevBtn = document.getElementById("prev");
+    const nextBtn = document.getElementById("next");
+    const rowcountEl = document.getElementById("rowcount");
+    const sheetSel = document.getElementById("sheet");
+    const wrap = document.getElementById("tablewrap");
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function cell(v) {
+      return v === null || v === undefined ? "" : String(v);
+    }
+
+    function currentOffset() {
+      const raw = fused.params.get("offset");
+      const n = raw ? parseInt(raw, 10) : 0;
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+
+    function renderSheetSelector(sheets, active) {
+      if (!sheets || sheets.length <= 1) {
+        sheetSel.hidden = true;
+        return;
+      }
+      sheetSel.hidden = false;
+      sheetSel.innerHTML = sheets
+        .map((s) => `<option value="${escapeHtml(s)}"${s === active ? " selected" : ""}>${escapeHtml(s)}</option>`)
+        .join("");
+    }
+
+    // Skeleton table shape for the in-flight state: header + shimmering row
+    // bars. Real column count/names aren't known until reader.py responds, so
+    // this uses a generic grid sized to mirror the eventual paged table.
+    const SKEL_COLS = 6;
+    const SKEL_ROWS = 8;
+    const SKEL_WIDTHS = [88, 62, 78, 48, 84, 68, 56, 80];
+    function renderSkeleton() {
+      const head = `<tr>${Array.from({ length: SKEL_COLS })
+        .map(() => `<th><span class="skel-bar" style="width:40%"></span></th>`)
+        .join("")}</tr>`;
+      const body = Array.from({ length: SKEL_ROWS })
+        .map((_, r) => `<tr>${Array.from({ length: SKEL_COLS })
+          .map((__, c) => `<td><span class="skel-bar" style="width:${SKEL_WIDTHS[(r + c) % SKEL_WIDTHS.length]}%"></span></td>`)
+          .join("")}</tr>`)
+        .join("");
+      wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
+    function render(data, offset) {
+      renderSheetSelector(data.sheets, data.sheet);
+      const total = data.total_rows;
+      const shown = data.rows.length;
+      const from = shown === 0 ? 0 : offset + 1;
+      const to = offset + shown;
+      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`;
+      prevBtn.disabled = offset <= 0;
+      nextBtn.disabled = offset + LIMIT >= total;
+
+      const cols = data.columns;
+      const head = `<tr>${cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("")}</tr>`;
+      // Cell ids carry the sheet INDEX + ABSOLUTE data-row index, so an
+      // stable, deep-linkable address for every cell survives pagination and
+      // sheet switches. Index (not name) keeps the id unambiguous.
+      const sIdx = Math.max(0, data.sheets.indexOf(data.sheet));
+      const body = data.rows
+        .map((row, i) => `<tr>${cols.map((c, j) => `<td id="__fr_s${sIdx}_r${offset + i}_c${j}" title="${escapeHtml(cell(row[c]))}">${escapeHtml(cell(row[c]))}</td>`).join("")}</tr>`)
+        .join("");
+      wrap.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    }
+
+    let loadSeq = 0; // stale-response guard: two rapid param changes race their reloads
+    async function load() {
+      const seq = ++loadSeq;
+      const file = fused.params.get("_file");
+      const offset = currentOffset();
+      const sheet = fused.params.get("sheet") || "";
+      renderSkeleton();
+      if (!file) {
+        wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      try {
+        const data = await fused.runPython("./reader.py", {
+          file,
+          sheet,
+          offset: String(offset),
+          limit: String(LIMIT),
+        });
+        if (seq !== loadSeq) return; // a newer load superseded this one
+        render(data, offset);
+      } catch (err) {
+        if (seq !== loadSeq) return;
+        wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    prevBtn.addEventListener("click", () => {
+      fused.params.set("offset", String(Math.max(0, currentOffset() - LIMIT)));
+    });
+    nextBtn.addEventListener("click", () => {
+      fused.params.set("offset", String(currentOffset() + LIMIT));
+    });
+    sheetSel.addEventListener("change", () => {
+      // New sheet starts at the top. Reset offset first so the change lands on
+      // page 0, then switch sheet (each set fires onChange → reload).
+      fused.params.set("offset", "0");
+      fused.params.set("sheet", sheetSel.value);
+    });
+    fused.params.onChange(load);
+    load();
+  </script>
+</body>
+</html>

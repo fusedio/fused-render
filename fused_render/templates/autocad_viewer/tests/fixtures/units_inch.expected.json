@@ -1,0 +1,25 @@
+{
+  "format": "dxf",
+  "supported": true,
+  "acadver": "AC1024",
+  "version_name": "AutoCAD 2010",
+  "insunits": 1,
+  "units_name": "Inches",
+  "extmin": null,
+  "extmax": null,
+  "layers": [
+    {
+      "name": "0",
+      "color": 7
+    },
+    {
+      "name": "Defpoints",
+      "color": 7
+    }
+  ],
+  "layer_count": 2,
+  "entity_counts": {
+    "CIRCLE": 1
+  },
+  "entity_total": 1
+}

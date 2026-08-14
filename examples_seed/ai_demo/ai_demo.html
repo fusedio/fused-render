@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>AI Data Analyst</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    max-width: 860px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #e8eaed;
+    background: #131417;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #9aa0a6; font-size: 13px; margin-bottom: 18px; }
+  #controls {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 18px;
+    color: #9aa0a6;
+    font-size: 13px;
+  }
+  #controls input[type="range"] { width: 160px; }
+  .num { font-variant-numeric: tabular-nums; color: #e8eaed; }
+  .cards { display: flex; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+  .card {
+    flex: 1 1 140px;
+    padding: 12px 14px;
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    border-radius: 8px;
+  }
+  .card .label { color: #9aa0a6; font-size: 12px; margin-bottom: 4px; }
+  .card .value { font-size: 18px; font-variant-numeric: tabular-nums; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 18px;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 6px 10px;
+    border-bottom: 1px solid #2a2d33;
+    font-variant-numeric: tabular-nums;
+  }
+  th { color: #9aa0a6; font-weight: 500; }
+  td.r, th.r { text-align: right; }
+  svg { display: block; margin-bottom: 18px; }
+  #ask { display: flex; gap: 8px; margin-bottom: 10px; }
+  #question {
+    flex: 1;
+    padding: 8px 10px;
+    font: inherit;
+    color: inherit;
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    border-radius: 8px;
+  }
+  button {
+    padding: 8px 16px;
+    font: inherit;
+    color: #131417;
+    background: #e8eaed;
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button.ghost { color: #e8eaed; background: #1b1d21; border: 1px solid #2a2d33; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #answer {
+    padding: 14px;
+    min-height: 56px;
+    white-space: pre-wrap;
+    background: #1b1d21;
+    border: 1px solid #2a2d33;
+    border-radius: 8px;
+  }
+  #answer.error { color: #ff9b9b; border-color: #6b2a2a; }
+  #meta { margin-top: 8px; color: #9aa0a6; font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>AI Data Analyst</h1>
+  <div class="sub">Synthesized sales data via <code>fused.runPython</code> &middot; questions answered by <code>fused.ai</code></div>
+
+  <div id="controls">
+    <label>seed <input id="seed" type="range" min="1" max="50" step="1"></label>
+    <span class="num" id="seedVal"></span>
+    <label>days <input id="days" type="range" min="7" max="120" step="1"></label>
+    <span class="num" id="daysVal"></span>
+  </div>
+
+  <div class="cards" id="cards"></div>
+  <svg id="chart" width="812" height="160" viewBox="0 0 812 160"></svg>
+  <table id="tbl"></table>
+
+  <form id="ask">
+    <input id="question" type="text" placeholder="Ask about this data… e.g. which region should worry me?" />
+    <button id="go" type="submit">Ask AI</button>
+    <button id="summarize" type="button" class="ghost">Summarize</button>
+  </form>
+  <div id="answer">Load a dataset above, then ask the AI about it.</div>
+  <div id="meta"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n) => n.toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+    let data = null; // latest dataset; the prompt is built from its aggregates
+
+    function param(key, dflt) { return fused.params.get(key) || dflt; }
+
+    function renderCards(d) {
+      const best = Object.entries(d.by_region).sort((a, b) => b[1] - a[1])[0];
+      $("cards").innerHTML = [
+        ["Total revenue", "$" + fmt(d.total_revenue)],
+        ["Total units", fmt(d.total_units)],
+        ["Days", d.days],
+        ["Best region", best[0] + " ($" + fmt(best[1]) + ")"],
+      ].map(([label, value]) =>
+        `<div class="card"><div class="label">${label}</div><div class="value">${value}</div></div>`
+      ).join("");
+    }
+
+    function renderChart(d) {
+      const W = 812, H = 160, PAD = 6;
+      const vals = d.by_day.map((r) => r.revenue);
+      const max = Math.max(...vals) || 1;
+      const pts = vals.map((v, i) => {
+        const x = PAD + (i / Math.max(1, vals.length - 1)) * (W - 2 * PAD);
+        const y = H - PAD - (v / max) * (H - 2 * PAD);
+        return x.toFixed(1) + "," + y.toFixed(1);
+      }).join(" ");
+      $("chart").innerHTML =
+        `<rect width="${W}" height="${H}" rx="8" fill="#1b1d21" stroke="#2a2d33"/>` +
+        `<polyline points="${pts}" fill="none" stroke="#8ab4f8" stroke-width="1.5"/>`;
+    }
+
+    function renderTable(d) {
+      const regions = Object.keys(d.by_region);
+      const products = Object.keys(d.by_product);
+      let html = "<tr><th>revenue</th>" +
+        regions.map((r) => `<th class="r">${r}</th>`).join("") + "</tr>";
+      // Region x product split is not in the payload; show the two margins.
+      html += "<tr><td>all products</td>" +
+        regions.map((r) => `<td class="r">$${fmt(d.by_region[r])}</td>`).join("") + "</tr>";
+      html += "<tr><th>by product</th>" +
+        products.map((p) => `<th class="r">${p}</th>`).join("") +
+        "<th></th>".repeat(Math.max(0, regions.length - products.length)) + "</tr>";
+      html += "<tr><td>all regions</td>" +
+        products.map((p) => `<td class="r">$${fmt(d.by_product[p])}</td>`).join("") +
+        "<td></td>".repeat(Math.max(0, regions.length - products.length)) + "</tr>";
+      $("tbl").innerHTML = html;
+    }
+
+    async function draw() {
+      const seed = param("seed", "7");
+      const days = param("days", "30");
+      $("seed").value = seed; $("seedVal").textContent = seed;
+      $("days").value = days; $("daysVal").textContent = days;
+      // Slider scrubs supersede stale in-flight runs by default (keyed by the
+      // .py path) — only the value we land on is computed and drawn.
+      data = await fused.runPython("./data.py", { seed, days });
+      renderCards(data);
+      renderChart(data);
+      renderTable(data);
+    }
+
+    // Compact, aggregate-only context: full rows would waste the token budget.
+    function dataContext() {
+      return JSON.stringify({
+        period: { start: data.start, days: data.days },
+        total_revenue: data.total_revenue,
+        total_units: data.total_units,
+        revenue_by_region: data.by_region,
+        revenue_by_product: data.by_product,
+        daily_revenue: data.by_day,
+        sample_rows: data.sample_rows,
+      });
+    }
+
+    async function ask(question) {
+      if (!data) return;
+      const go = $("go"), sum = $("summarize"), answer = $("answer"), meta = $("meta");
+      go.disabled = sum.disabled = true;
+      answer.classList.remove("error");
+      answer.textContent = "Thinking…";
+      meta.textContent = "";
+      // onChunk streams the answer in as it is written — "Thinking…" stands
+      // until the first delta lands, then the text takes over.
+      let acc = "";
+      try {
+        const res = await fused.ai(
+          "Data (JSON):\n" + dataContext() + "\n\nQuestion: " + question,
+          {
+            systemPrompt:
+              "You are a data analyst. Answer ONLY from the provided JSON data — " +
+              "no outside knowledge, no speculation beyond what the numbers show. " +
+              "Be concrete: cite figures. A few sentences at most.",
+            effort: "low",
+            onChunk: (text) => { acc += text; answer.textContent = acc; },
+          }
+        );
+        answer.textContent = res.text;
+        meta.textContent = res.model +
+          (res.usage ? " · " + res.usage.output_tokens + " tokens out" : "");
+      } catch (err) {
+        answer.classList.add("error");
+        if (err.type === "ai_unavailable") {
+          answer.textContent = "AI unavailable — " + err.message;
+        } else if (err.type === "bad_request") {
+          answer.textContent = "Bad request: " + err.message;
+        } else {
+          answer.textContent = (err.type || "error") + ": " + err.message;
+        }
+      } finally {
+        go.disabled = sum.disabled = false;
+      }
+    }
+
+    $("ask").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const q = $("question").value.trim();
+      if (q) ask(q);
+    });
+    $("summarize").addEventListener("click", () =>
+      ask("Summarize this sales period: overall trend, best/worst region and product, and anything notable in the daily pattern."));
+
+    $("seed").addEventListener("input", () => fused.params.set("seed", $("seed").value));
+    $("days").addEventListener("input", () => fused.params.set("days", $("days").value));
+    fused.params.onChange(draw);
+    draw();
+  </script>
+</body>
+</html>

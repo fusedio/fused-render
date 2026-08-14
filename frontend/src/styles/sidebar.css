@@ -1,0 +1,748 @@
+/* Sidebar — the 232px basis is only the pre-hydration default; the component
+   overrides flex-basis/width inline from persisted state (drag to resize). */
+#sidebar {
+  flex: 0 0 232px;
+  width: 232px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  /* Collapsing squeezes the rows before the subtree swaps; without this the
+     squeeze pops a horizontal scrollbar for the length of the animation. */
+  overflow-x: hidden;
+  /* Collapse/expand glides instead of jumping 232px → 10px. Suppressed during a
+     resize drag (below): a transition there would make the edge chase the
+     cursor. */
+  transition:
+    flex-basis var(--dur-slow) var(--ease-out),
+    width var(--dur-slow) var(--ease-out);
+}
+
+/* Set while the resize handle is captured (Sidebar.tsx `resizing`). */
+#sidebar.sidebar-no-transition {
+  transition: none;
+}
+
+/* The collapsed strip and the expanded rows are two different subtrees, swapped
+   at the animation boundary; fading whichever one is newly mounted keeps that
+   swap from reading as a pop. Only replays on a real subtree swap — React reuses
+   these children across ordinary re-renders. */
+#sidebar > * {
+  animation: sidebar-content-in var(--dur-slow) var(--ease-out);
+}
+
+@keyframes sidebar-content-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Drag handle riding the sidebar's right border. Fixed-positioned (the
+   component sets `left` inline) so the sidebar's own overflow-y scroll can't
+   clip or move it; a 6px hit area around the 1px border line. */
+.sidebar-resize-handle {
+  position: fixed;
+  top: 0;
+  width: 6px;
+  height: 100vh;
+  cursor: col-resize;
+  /* Touch input: without this the browser claims the drag as a pan/scroll
+     and fires pointercancel mid-resize, despite pointer capture. */
+  touch-action: none;
+  z-index: 10;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.resizing {
+  background: var(--accent);
+  opacity: 0.35;
+}
+
+/* While a drag is captured, keep the cursor stable and text unselected
+   everywhere the pointer sweeps. */
+body:has(.sidebar-resize-handle.resizing) {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapse chevron in the brand row, pushed to the right edge. */
+.sidebar-collapse-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Collapsed sidebar = an icon rail: the reopen control on top (the SAME one
+   on every route — an explorer-only topbar button briefly competed with it,
+   so which control you reached for depended on where you were), then the
+   owner's section icons (SidebarRailItem). 44px holds a centred column of the
+   28px controls the bars use, self-contained — no tab protruding over
+   #content like the old 20px strip needed. */
+#sidebar.sidebar-collapsed {
+  flex: 0 0 44px;
+  width: 44px;
+  align-items: center;
+  /* Puts the expand control's centre on 24px — the line the sidebar header,
+     #breadcrumb and the app header all stand on — so the control keeps its
+     position across collapse and expand, on every route. */
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+/* 28px square, 16px glyph, .bar-ctl geometry and hover wash (explorer.css) —
+   the rail reads as a column of the same controls the bars use. */
+.sidebar-rail-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+/* Rail items come in two dialects (SidebarRailItem): <button> for "expand to
+   this section", <a> for "navigate there, stay collapsed" — one look. */
+a.sidebar-rail-btn {
+  text-decoration: none;
+}
+
+.sidebar-rail-btn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+
+/* Same current-place treatment as .sidebar-item.active, on the icon alone. */
+.sidebar-rail-btn.active {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+
+.sidebar-rail-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
+}
+
+/* Section icons sit apart from the expand control: a hairline divider says
+   "these are the sidebar's contents, that is its chrome". flex: 1 so a
+   pinBottom cluster (the shell's settings icons) can push to the bottom edge,
+   mirroring the expanded sidebar's layout. */
+.sidebar-rail-items {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Group boundary inside the rail — stands in for the expanded sidebar's
+   uppercase headings. */
+.sidebar-rail-sep {
+  width: 28px;
+  height: 1px;
+  flex-shrink: 0;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+/* The flexible gap before a pinBottom cluster. */
+.sidebar-rail-flex {
+  flex: 1 1 auto;
+}
+
+/* Phones: give the whole width to the rendered view */
+@media (max-width: 700px) {
+  #sidebar {
+    display: none;
+  }
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 16px;
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Logo + name as one Home link: inherits the brand row's type, no underline;
+   min-width: 0 so brand-title's ellipsis keeps working inside the link. */
+.sidebar-brand .brand-home-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sidebar-brand .brand-home-link:hover .brand-title {
+  color: var(--accent-soft);
+}
+
+.sidebar-brand .logo {
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Title truncates when the sidebar is dragged narrow (min 180px) so the
+   brand row never overflows; logo, version and collapse button keep their
+   size and the version stays visible beside the ellipsis. */
+.sidebar-brand .brand-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Package version after the name — smaller and muted grey. */
+.sidebar-brand .brand-version {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.sidebar-section {
+  padding: 8px;
+}
+
+/* Consecutive heading groups in the shell's app-switcher (shell/ShellSidebar):
+   the group above already ends in its own 8px padding, so drop the next one's —
+   the heading's own top padding is the separation. Scoped to this class rather
+   than `.sidebar-section + .sidebar-section` so the explorer's bookmark/recents
+   stack (which sets its own spacing) is untouched. */
+.sidebar-group + .sidebar-group {
+  padding-top: 0;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+  font-size: 13.5px;
+}
+
+.sidebar-item:hover,
+.sidebar-item.active {
+  background: rgba(var(--tint), 0.06);
+}
+
+.sidebar-item .icon {
+  opacity: 0.85;
+}
+
+/* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
+   .sidebar-item look — resets the UA button chrome so it sits in the list
+   like the <a> rows above it. */
+button.sidebar-prefs-trigger {
+  width: 100%;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  font-size: 13.5px;
+}
+
+/* The pop-up it opens: the shared .context-menu chassis, pinned by its
+   bottom edge just above the trigger (inline style), growing upward. */
+.sidebar-prefs-menu {
+  min-width: 180px;
+}
+
+.sidebar-prefs-menu .context-menu-item.active {
+  background: rgba(var(--tint), 0.08);
+}
+
+.sidebar-prefs-menu .account-signedin-dot {
+  position: static;
+  margin-left: auto;
+}
+
+.sidebar-heading {
+  padding: 10px 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.sidebar-bookmarks {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sidebar-empty {
+  padding: 6px 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
+   Rows reuse .bookmark-row/.bookmark-name/.bookmark-glyph for identical
+   metrics; heading click toggles the fold; the count pill carries the
+   collapsed signal — no chevron, matching D44's folder rows. */
+.sidebar-recents {
+  flex: 0 0 auto;
+  /* The bookmarks section above already ends in its own 8px padding — start
+     at 0 so the two sections sit one section-gap apart, not two. */
+  padding-top: 0;
+}
+
+.recents-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.recents-count {
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+  letter-spacing: normal;
+}
+
+.recent-row {
+  text-decoration: none;
+}
+
+.recent-row .recent-glyph {
+  /* The glyph slot is inert here (bookmarks use it as the icon-picker
+     button); keep the width so names align with bookmark rows. */
+  cursor: inherit;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.bookmark-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  /* Opaque equivalent of this row's background, for the hover actions' fade
+     mask (see .bookmark-actions). Kept in sync with the state rules below. */
+  --row-bg: var(--bg-alt);
+}
+
+.bookmark-row:hover {
+  background: rgba(var(--tint), 0.06);
+  --row-bg: var(--row-bg-hover); /* bg-alt composited with the white 0.06 hover layer */
+}
+
+.bookmark-row.active {
+  background: rgba(var(--accent-rgb), 0.13);
+  --row-bg: var(--row-bg-active); /* bg-alt composited with the accent 0.13 active layer */
+}
+
+.bookmark-row.active .bookmark-name {
+  color: var(--accent);
+}
+
+.bookmark-glyph {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+  width: 14px;
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+
+/* Custom emoji icons render at natural color, slightly larger than the star. */
+.bookmark-glyph.custom-icon {
+  font-size: 12px;
+}
+
+.bookmark-row.active .bookmark-glyph {
+  color: var(--accent);
+}
+
+/* Missing-file flag (target confirmed gone from disk, server GET-time check):
+   the name keeps its normal color; a small warning glyph sits between the
+   name and the (hover-only) action buttons — always visible, unlike the
+   actions, so a broken bookmark reads at a glance without hovering. */
+.bookmark-missing-badge {
+  flex: 0 0 auto;
+  color: var(--error);
+  font-size: 11px;
+  cursor: help;
+  /* a.bookmark-name::after stretches over the whole row (see below); without
+     its own stacking context this badge would sit under that overlay and
+     never receive the hover/title it needs — same reason .bookmark-glyph
+     carries position+z-index. */
+  position: relative;
+  z-index: 1;
+}
+
+.bookmark-row.dragging {
+  opacity: 0.4;
+}
+
+.bookmark-row.drag-above {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+.bookmark-row.drag-below {
+  box-shadow: 0 2px 0 0 var(--accent);
+}
+
+/* `drag-into` is a bookmark being dropped INTO this folder (tree reorder);
+   `drop-into` is FILES being dropped into the folder this bookmark points at.
+   Two gestures, one promise, so one ring — and `drop-into` is now the same
+   class the listing's own rows wear, since both are painted from the same
+   verdict by the same code (listing/row-drag.ts). */
+.bookmark-row.drag-into,
+.bookmark-row.drop-into {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* Files dragged out of the listing onto a bookmark that is NOT a folder (or
+   whose target we couldn't stat). The refused cursor is painted by the drag
+   itself (explorer.css's body.fs-drag-refused) — this only says which row said
+   no. */
+.bookmark-row.drop-reject {
+  background: rgba(var(--error-rgb), 0.1);
+}
+
+/* Folder rows: folder icon (aligned with the bookmark stars) + semibold name
+   + child-count pill pinned far right. Icon and name toggle the fold; the
+   count pill swaps out for the rename/delete actions on hover. */
+.folder-row {
+  position: relative;
+}
+
+.folder-glyph {
+  display: flex;
+  cursor: pointer;
+}
+
+.folder-row .folder-name {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.folder-count {
+  /* Overlays the always-reserved (but invisible until hover) actions area,
+     so it sits at the row's far right without shifting the name. */
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: rgba(var(--tint), 0.07);
+  border-radius: 8px;
+  padding: 3px 6px;
+  /* Hidden on hover so the action buttons can take the slot. Faded rather than
+     `display: none`d: the count and the buttons overlay the same spot, so this
+     one has to disappear — but a display flip can't ease, which made the
+     handover the sharpest pop in the sidebar. pointer-events go with the fade so
+     the invisible chip can't eat clicks meant for the buttons. */
+  opacity: 1;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.folder-row:hover .folder-count {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Indent rail: children sit inside a wrapper whose left border draws the
+   tree line, aligned under the folder icon. */
+.folder-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 20px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(var(--tint), 0.13);
+}
+
+.child-row {
+  padding-left: 8px;
+}
+
+.bookmark-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+/* Stretched-link pattern: the anchor's ::after covers the whole row so the
+   entire .bookmark-row hover affordance is also clickable (cmd-click,
+   middle-click included), not just the name text. Scoped to `a.bookmark-name`
+   so folder rows — which reuse .bookmark-name on a plain span and already
+   have their own row-level click handler — aren't affected. */
+a.bookmark-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.bookmark-actions {
+  /* Absolutely positioned (out of the flex flow) so the name occupies the full
+     row width by default instead of permanently reserving space for the icons.
+     On hover the buttons overlay the name's right end; a gradient the color of
+     the row fades the underlying text out beneath them so it stays readable and
+     nothing reflows. Same overlay trick as .folder-count. */
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  /* Revealed on hover. `visibility` alone stepped straight to visible, so the
+     cluster popped in; opacity carries the fade while visibility stays in the
+     transition list on purpose — it holds `visible` for the whole fade-out and
+     only flips at the end, which keeps the buttons out of the tab order and
+     click-inert while hidden (exactly what visibility bought us before). An
+     opacity-only reveal would have made every row's buttons a tab stop. */
+  visibility: hidden;
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    visibility var(--dur-fast) var(--ease-out);
+  gap: 2px;
+  z-index: 1;
+  padding-left: 26px;
+  background: linear-gradient(to right, transparent, var(--row-bg) 26px);
+}
+
+.bookmark-row:hover .bookmark-actions {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Bookmark hover card (params preview) */
+#bookmark-tooltip {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  max-width: 340px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--shadow-lg);
+  padding: 10px 12px;
+  font-size: 12px;
+  pointer-events: none;
+  display: none;
+}
+
+#bookmark-tooltip .tip-path {
+  color: var(--fg);
+  font-weight: 600;
+  word-break: break-all;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+#bookmark-tooltip .tip-params {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin-top: 8px;
+}
+
+#bookmark-tooltip .tip-key {
+  color: var(--fg-muted);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+#bookmark-tooltip .tip-val {
+  color: var(--fg);
+  word-break: break-all;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+#bookmark-tooltip .tip-none {
+  color: var(--fg-muted);
+  font-style: italic;
+  margin-top: 6px;
+}
+
+#bookmark-tooltip .tip-missing {
+  color: var(--error);
+  margin-top: 6px;
+}
+
+.icon-btn {
+  font: inherit;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.icon-btn:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* Save-to-disk button with no savable target (SB-8): greyed, inert, but still
+   hoverable so its explanatory title shows. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  color: var(--fg-muted);
+  background: none;
+}
+
+.bookmark-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* Icon picker popover (Notion-style): search + Remove header, categorized
+   emoji grid. Fixed-position; the component keeps it on-screen. */
+.icon-picker {
+  position: fixed;
+  z-index: 1001;
+  width: 264px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--shadow-lg);
+  padding: 8px;
+}
+
+.icon-picker-head {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.icon-picker-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.icon-picker-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.icon-picker-remove {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11.5px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.icon-picker-remove:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+
+.icon-picker-body {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.icon-picker-cat {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-muted);
+  padding: 6px 4px 3px;
+}
+
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.icon-picker-cell {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 5px 0;
+  text-align: center;
+}
+
+.icon-picker-cell:hover,
+.icon-picker-cell.active {
+  background: rgba(var(--tint), 0.09);
+}
+
+.icon-picker-cell.active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.icon-picker-empty {
+  color: var(--fg-muted);
+  font-size: 12px;
+  padding: 10px 4px;
+}
+

@@ -1,0 +1,1116 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Data preview</title>
+<style>
+  /* Appearance (SPEC §30, D134). The dark block below IS this view's
+     historical palette, value for value; the light block is the new one.
+     `data-theme` is written onto <html> by the injected runtime, which acts
+     only because this document opted in via `data-fused-theme` on <html>
+     (see fused_render/static/runtime.js) — dark stays the default for any
+     document that never gets the attribute. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --error: #ff6b6b;
+    --bg-sunken: #17181c;
+    --border-cell: #24262b;
+    --fg-soft: #c8ccd0;
+    --fg-dim: #6b7075;
+    --fg-bright: #fff;
+    --ok-fg: #eafff2;
+    --ok-bg: #1e5138;
+    --ok-border: #2f6f4f;
+    --danger-fg: #ffeaea;
+    --danger-bg: #511e1e;
+    --danger-border: #6f2f2f;
+    --caret: #7cc;
+    --focus-ring: #3b6ea5;
+    --focus-bg: #17233010;
+    --edited-bg: #3a3410;
+    --inserted-bg: #10281b;
+    --row-active-bg: #1c1f24;
+    --del-fg: #c9a;
+    --del-hover-border: #8a4;
+    --menu-border: #33363c;
+    --shadow: rgba(0, 0, 0, 0.5);
+    --loadbar: #4a9eff;
+    --skel-base: #23282e;
+    --skel-shine: #2f353d;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --error: #c62828;
+    --bg-sunken: #eceef1;
+    --border-cell: #e6e8eb;
+    --fg-soft: #3f4348;
+    --fg-dim: #7b8088;
+    --fg-bright: #000000;
+    --ok-fg: #17532f;
+    --ok-bg: #e3f5ea;
+    --ok-border: #2f7d4f;
+    --danger-fg: #8f1d1d;
+    --danger-bg: #fdeaea;
+    --danger-border: #d99a9a;
+    --caret: #1a7f8f;
+    --focus-ring: #2f6fd0;
+    --focus-bg: #e8f0fd;
+    --edited-bg: #fbf3cd;
+    --inserted-bg: #e3f5ea;
+    --row-active-bg: #eef0f3;
+    --del-fg: #9a6a2a;
+    --del-hover-border: #8a7a20;
+    --menu-border: #cfd2d8;
+    --shadow: rgba(0, 0, 0, 0.18);
+    --loadbar: #2f6fd0;
+    --skel-base: #e7e9ed;
+    --skel-shine: #dbdee4;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg);
+    /* Flex column: toolbar pinned at top full-width, table scrolls inside its
+       own pane below — so horizontal scroll never drags the toolbar sideways. */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* Status/action bar, pinned to the BOTTOM: table/read-only on the left,
+     pagination centered, row actions on the right. */
+  #bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-alt);
+    z-index: 2;
+  }
+  .bar-group { display: flex; align-items: center; gap: 8px; }
+  /* The two side groups flex-grow equally so the middle (pagination) sits dead
+     centre regardless of how much the sides hold. */
+  .bar-group.side { flex: 1 1 0; min-width: 0; }
+  .bar-group.side.right { justify-content: flex-end; }
+  /* Every control in either bar shares the same 28px pill, so the two bars
+     read as one consistent piece of chrome. */
+  #bar button, #bar select,
+  #filterbar button, #filterbar select, #filterbar input {
+    font: inherit; height: 28px; padding: 0 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--fg);
+  }
+  #bar button, #filterbar button { cursor: pointer; white-space: nowrap; }
+  /* Keep the paging group and its row count on one line, and let the table
+     selector give up width first so nothing wraps as the bar narrows. */
+  #bar .bar-page { flex: 0 0 auto; }
+  #rowcount { white-space: nowrap; }
+  #table { min-width: 0; max-width: 160px; text-overflow: ellipsis; }
+  #add { flex: 0 0 auto; }
+  /* Narrow bar: tighten spacing and collapse "+ Add row" to just "+" so the
+     action buttons never wrap onto a second line. */
+  @media (max-width: 560px) {
+    #bar { gap: 6px; padding: 8px; }
+    #add .add-label { display: none; }
+  }
+  #bar button:disabled, #filterbar button:disabled { opacity: 0.4; cursor: default; }
+  #filterbar select:disabled, #filterbar input:disabled { opacity: 0.4; }
+  /* Strip the native <select> chrome (WebKit otherwise ignores our radius &
+     padding and draws its own chevron) so selects match the styled inputs and
+     buttons: same 6px pill, same padding, one custom caret on the right. */
+  #bar select, #filterbar select {
+    appearance: none; -webkit-appearance: none;
+    padding: 0 28px 0 10px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%239aa0a6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 7px center; background-size: 14px;
+  }
+  /* Square icon buttons (paging arrows, discard, save). The #bar/#filterbar
+     scope outranks the base `#bar button { padding: 0 10px }` rule so the
+     glyph/SVG sits in a real 28px square with no leftover horizontal padding,
+     matching the round search button up top. */
+  #bar .icon-btn, #filterbar .icon-btn {
+    width: 28px; padding: 0; font-size: 15px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  /* display:inline-flex above beats the `hidden` attribute's UA display:none,
+     so a hidden Save/Discard (e.g. a read-only view) would otherwise stay
+     visible — re-hide them explicitly. */
+  #bar .icon-btn[hidden], #filterbar .icon-btn[hidden] { display: none; }
+  #save { border-color: var(--ok-border); position: relative; }
+  #save:not(:disabled) { background: var(--ok-bg); color: var(--ok-fg); }
+  /* Discard mirrors Save with a red accent — only lit while there's something
+     to throw away, dimmed grey when disabled. */
+  #discard { border-color: var(--danger-border); }
+  #discard:not(:disabled) { background: var(--danger-bg); color: var(--danger-fg); }
+  /* Dirty-count badge on the Save icon; hidden while there's nothing staged. */
+  .save-count {
+    position: absolute; top: -6px; right: -6px; min-width: 15px; height: 15px;
+    padding: 0 3px; border-radius: 8px; background: var(--ok-border); color: var(--ok-fg);
+    font-size: 10px; line-height: 15px; text-align: center;
+  }
+  .save-count[hidden] { display: none; }
+  /* Indeterminate load bar between the filter bar and the grid. A sort/filter
+     change on a remote file keeps the old grid up (no "Loading…" wipe) and then
+     awaits a multi-second row-positions scan before anything repaints — so
+     without this the UI looks frozen. The bar turns on the instant load()
+     starts and off as soon as rows or skeletons paint. Always 2px tall so
+     toggling it never shifts the layout. */
+  #loadbar { flex: 0 0 auto; height: 2px; overflow: hidden; background: transparent; }
+  #loadbar::before {
+    content: ""; display: block; height: 100%; width: 40%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, var(--loadbar), transparent);
+    transform: translateX(-100%); opacity: 0;
+  }
+  #loadbar.active::before {
+    opacity: 1;
+    animation: loadbar-slide 1.1s ease-in-out infinite;
+  }
+  @keyframes loadbar-slide {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(350%); }
+  }
+  #tablewrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  #rowcount { color: var(--fg-muted); }
+  /* .ro-badge / .ro-tip styles inject from /template-shared/ro-badge.js. */
+  /* Filter bar — a builder above the grid: one or more conditions
+     (column ▸ operator ▸ value) ANDed together and applied server-side. The
+     first row carries Add (+) and the round Apply (search) button; extra rows
+     carry Remove (−) and an "AND" label, Beekeeper-style. */
+  #filterbar {
+    flex: 0 0 auto; display: flex; align-items: flex-start; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-sunken);
+  }
+  #filterbar[hidden] { display: none; }
+  #frows { display: flex; flex: 1 1 auto; flex-direction: column; gap: 8px; min-width: 0; }
+  .frow { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .fr-conj {
+    flex: 0 0 auto; width: 34px; text-align: right;
+    color: var(--fg-muted); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  }
+  /* Column/operator/value all shrink on a narrow pane so the row never
+     overflows into the action column beside it. */
+  .fr-col { flex: 0 1 170px; min-width: 90px; }
+  .fr-op { flex: 0 1 140px; min-width: 90px; }
+  .fr-val { flex: 1 1 auto; min-width: 80px; }
+  /* Per-row add / remove: subtle fixed-width squares. */
+  .fr-add, .fr-del {
+    flex: 0 0 auto; width: 28px; padding: 0;
+    font-size: 15px; line-height: 1; text-align: center; color: var(--fg-soft);
+  }
+  /* Apply: an accent button, only on the first row. Same rounded square as
+     every other icon button so the chrome reads as one set. */
+  #filterbar .fr-apply {
+    flex: 0 0 auto; width: 28px; padding: 0; line-height: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-color: var(--ok-border); background: var(--ok-bg); color: var(--ok-fg);
+  }
+  /* Action column to the right of the condition rows: Apply, then a clear
+     icon that only appears while a sort or filter is active. */
+  #fside { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+  #filterbar .fr-clear {
+    width: 28px; padding: 0; line-height: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--fg-soft);
+  }
+  #filterbar .fr-clear[hidden] { display: none; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td {
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border-cell);
+    border-right: 1px solid var(--border-cell);
+    text-align: left;
+    white-space: nowrap;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  th {
+    background: var(--bg-alt); position: sticky; top: 0; font-weight: 600; z-index: 1;
+  }
+  /* Column type after the name — dimmer, lighter, smaller so it reads as an
+     annotation rather than part of the column name. */
+  .coltype { color: var(--fg-dim); font-weight: 400; font-size: 11px; }
+  /* Header name/type/sort — the whole label is a click target that cycles the
+     column's sort: none → asc → desc → none. */
+  .th-name {
+    display: flex; align-items: baseline; gap: 5px;
+    cursor: pointer; user-select: none;
+  }
+  .th-name:hover { color: var(--fg-bright); }
+  .th-name.locked { pointer-events: none; opacity: 0.55; }
+  .th-label { overflow: hidden; text-overflow: ellipsis; }
+  .sortcaret { color: var(--caret); font-size: 10px; }
+  td[contenteditable] { cursor: text; }
+  td[contenteditable]:focus { outline: 2px solid var(--focus-ring); outline-offset: -2px; background: var(--focus-bg); }
+  td.edited { background: var(--edited-bg); }
+  /* Explicit SQL NULL, distinct from an empty string: the cell stays empty and
+     editable, with a dim italic "(NULL)" marker drawn in via ::before (so it is
+     never real text and the first keystroke replaces it). Hidden while focused
+     so the caret sits in a truly empty cell. */
+  td.is-null { color: var(--fg-dim); }
+  td.is-null::before { content: "(NULL)"; font-style: italic; }
+  td.is-null:focus::before { content: ""; }
+  /* Column still in flight (remote per-column parallel load): shimmer bar. */
+  td.skel { color: transparent; pointer-events: none; }
+  td.load-err { color: var(--error); opacity: 0.75; }
+  td.skel::before {
+    content: "";
+    display: block;
+    height: 0.9em;
+    min-width: 3.5em;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--skel-base) 25%, var(--skel-shine) 50%, var(--skel-base) 75%);
+    background-size: 200% 100%;
+    animation: skel-shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes skel-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+  }
+  /* Subtle full-row tint for the row whose cell was last clicked/focused. Set on
+     the <tr> (not the <td>) so edited/inserted cell backgrounds still paint over it. */
+  tr.row-active { background: var(--row-active-bg); }
+  tr.deleted td { text-decoration: line-through; opacity: 0.45; }
+  tr.inserted td { background: var(--inserted-bg); }
+  .rowact { width: 1%; text-align: center; padding: 0 6px; }
+  .del-btn {
+    font: inherit; line-height: 1; padding: 2px 6px; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg); color: var(--del-fg); cursor: pointer;
+  }
+  .del-btn:hover { border-color: var(--del-hover-border); }
+  /* Right-click menu on an editable cell (currently just "Set Null"). */
+  #ctxmenu {
+    position: fixed; z-index: 30; min-width: 130px; padding: 4px;
+    background: var(--bg-alt); border: 1px solid var(--menu-border); border-radius: 8px;
+    box-shadow: 0 8px 24px var(--shadow);
+  }
+  #ctxmenu[hidden] { display: none; }
+  .ctx-item {
+    display: block; width: 100%; text-align: left; font: inherit;
+    padding: 6px 10px; border: none; border-radius: 5px;
+    background: none; color: var(--fg); cursor: pointer;
+  }
+  .ctx-item:hover { background: var(--border); }
+  #status { padding: 24px; color: var(--fg-muted); }
+  #status.error { color: var(--error); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <div id="filterbar" hidden>
+    <div id="frows"></div>
+    <div id="fside">
+      <button id="apply" class="fr-apply" title="Apply filters" aria-label="Apply filters"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.5 1a5.5 5.5 0 0 1 4.28 8.94l3.14 3.14-1.06 1.06-3.14-3.14A5.5 5.5 0 1 1 6.5 1zm0 1.5a4 4 0 1 0 0 8 4 4 0 0 0 0-8z" fill="currentColor"/></svg></button>
+      <button id="reset" class="fr-clear" title="Clear sort &amp; filters" aria-label="Clear sort and filters" hidden><svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.28 2.22 8 6.94l4.72-4.72 1.06 1.06L9.06 8l4.72 4.72-1.06 1.06L8 9.06l-4.72 4.72-1.06-1.06L6.94 8 2.22 3.28z" fill="currentColor"/></svg></button>
+    </div>
+  </div>
+  <div id="loadbar"></div>
+  <div id="tablewrap"></div>
+  <div id="bar">
+    <div class="bar-group side">
+      <select id="table" hidden></select>
+    </div>
+    <div class="bar-group bar-page">
+      <button id="prev" class="icon-btn" title="Previous page" aria-label="Previous page"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <span id="rowcount"></span>
+      <button id="next" class="icon-btn" title="Next page" aria-label="Next page"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    </div>
+    <div class="bar-group side right">
+      <span id="ro" hidden></span>
+      <button id="add" hidden title="Add row" aria-label="Add row">+<span class="add-label">&nbsp;Add row</span></button>
+      <button id="discard" class="icon-btn" hidden disabled title="Discard changes" aria-label="Discard changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.8 8a5.2 5.2 0 1 1 1.4 3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 4.4V8h3.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button id="save" class="icon-btn" hidden disabled title="Save changes" aria-label="Save changes"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.2 11.4 2.8 8l1.1-1.1 2.3 2.3 5.9-5.9L13.2 4.4z" fill="currentColor"/></svg><span class="save-count" hidden></span></button>
+    </div>
+  </div>
+  <div id="ctxmenu" hidden>
+    <button class="ctx-item" id="ctx-null">Set Null</button>
+  </div>
+  <script src="/template-shared/ro-badge.js"></script>
+  <script>
+    const LIMIT = 100;
+    const el = (id) => document.getElementById(id);
+    const prevBtn = el("prev"), nextBtn = el("next"), rowcountEl = el("rowcount");
+    const tableSel = el("table"), addBtn = el("add"), saveBtn = el("save"),
+          discardBtn = el("discard"), wrap = el("tablewrap"), resetBtn = el("reset");
+    const filterbar = el("filterbar"), frows = el("frows"), applyBtn = el("apply");
+    const ctxmenu = el("ctxmenu"), ctxNull = el("ctx-null");
+    const loadbar = el("loadbar");
+
+    // Indeterminate load indicator. On from the moment a load starts until the
+    // grid next paints rows or skeletons — this is the only signal during the
+    // serial row-positions scan a remote sort/filter runs before its first
+    // repaint (renderAll turns it off; see load()).
+    const setLoading = (on) => loadbar.classList.toggle("active", !!on);
+
+    // Server state for the current page, and the client-side staged mutations.
+    let state = null;
+    // edits: Map "<id> <col>" -> {row, column, value}. value is a string (the
+    // typed text, "" for an empty string) or null (an explicit SQL NULL).
+    // deletes: Set of id. inserts: [{ values: {col: value} }].
+    let staged = { edits: new Map(), deletes: new Set(), inserts: [] };
+    let idIndex = new Map(); // id -> row object, to compare edits against original
+
+    const escapeHtml = (s) => String(s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+    // A cell's display text. null/undefined -> ""; nested json -> compact JSON.
+    function cell(v) {
+      if (v === null || v === undefined) return "";
+      if (typeof v === "object") return JSON.stringify(v);
+      return String(v);
+    }
+
+    const editKey = (id, col) => id + " " + col;
+    const dirtyCount = () => staged.edits.size + staged.deletes.size + staged.inserts.length;
+    const isDirty = () => dirtyCount() > 0;
+
+    function currentOffset() {
+      const raw = fused.params.get("offset");
+      const n = raw ? parseInt(raw, 10) : 0;
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    }
+
+    // ---- sort / filter state, carried in the URL params so it survives reload
+    // and drives the reader query. sort is "<col>:asc|desc"; filters is a JSON
+    // array of {column, op, value?} (the top bar drives a single condition).
+    // Both are applied server-side; the reader keeps ids pinned to physical row
+    // positions so editing stays correct even while sorted/filtered.
+
+    function currentSort() {
+      const raw = fused.params.get("sort") || "";
+      const i = raw.lastIndexOf(":");
+      if (i < 0) return null;
+      const column = raw.slice(0, i), dir = raw.slice(i + 1);
+      return column && (dir === "asc" || dir === "desc") ? { column, dir } : null;
+    }
+
+    function currentFilters() {
+      try {
+        const arr = JSON.parse(fused.params.get("filters") || "[]");
+        return Array.isArray(arr) ? arr : [];
+      } catch (_) { return []; }
+    }
+
+    const NULL_OPS = new Set(["is_null", "not_null"]);
+    const isNumericType = (t) => /INT|DEC|DOUBLE|FLOAT|REAL|NUMERIC|HUGE/i.test(t || "");
+    const isTemporalType = (t) => /DATE|TIME|TIMESTAMP|INTERVAL/i.test(t || "");
+
+    // Operators offered for a column, chosen by its type: comparable columns
+    // (numbers, dates) lead with ordering ops; text leads with substring match.
+    function opsFor(t) {
+      const comparable = isNumericType(t) || isTemporalType(t);
+      const base = comparable
+        ? [["=", "="], ["!=", "≠"], [">", ">"], [">=", "≥"], ["<", "<"], ["<=", "≤"]]
+        : [["contains", "contains"], ["starts", "starts with"], ["=", "="], ["!=", "≠"]];
+      return base.concat([["is_null", "is empty"], ["not_null", "is not empty"]]);
+    }
+
+    // Cycle a column's sort on header click: none -> asc -> desc -> none.
+    function cycleSort(col) {
+      const s = currentSort();
+      const next = (!s || s.column !== col) ? col + ":asc"
+                 : s.dir === "asc" ? col + ":desc" : "";
+      fused.params.set("offset", "0");
+      fused.params.set("sort", next);
+    }
+
+    function clearSortFilters() {
+      fused.params.set("offset", "0");
+      fused.params.set("sort", "");
+      fused.params.set("filters", "");
+    }
+
+    // ---- filter bar: one or more {column, op, value?} conditions, ANDed
+    // together. Rows are edited as drafts and committed to the `filters` param
+    // on Apply (the reader ANDs them; two conditions on one column give a range).
+
+    function setFilters(filters) {
+      fused.params.set("offset", "0");
+      fused.params.set("filters", filters && filters.length ? JSON.stringify(filters) : "");
+    }
+
+    const colOptions = (cols, sel) => cols.map((c) =>
+      `<option value="${escapeHtml(c)}"${c === sel ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+
+    function opOptions(t, sel) {
+      const ops = opsFor(t);
+      const chosen = ops.some((o) => o[0] === sel) ? sel : ops[0][0];
+      return ops.map(([v, l]) =>
+        `<option value="${v}"${v === chosen ? " selected" : ""}>${escapeHtml(l)}</option>`).join("");
+    }
+
+    // One condition row. `filter` seeds it (null = a blank row). The first row
+    // has no conjunction label and carries Add; every other row shows "AND"
+    // and carries a Remove button. Apply/clear live in the #fside column.
+    function rowHtml(cols, filter, first) {
+      const col = filter && cols.includes(filter.column) ? filter.column : cols[0];
+      const nullish = filter && NULL_OPS.has(filter.op);
+      const val = filter && !nullish ? (filter.value ?? "") : "";
+      const trailing = first
+        ? `<button class="fr-add" data-act="add" title="Add filter">+</button>`
+        : `<button class="fr-del" data-act="del" title="Remove filter">−</button>`;
+      return `<div class="frow">` +
+        `<span class="fr-conj">${first ? "" : "AND"}</span>` +
+        `<select class="fr-col">${colOptions(cols, col)}</select>` +
+        `<select class="fr-op">${opOptions((state.types || {})[col], filter ? filter.op : null)}</select>` +
+        `<input class="fr-val" placeholder="Enter value…" value="${escapeHtml(val)}"${nullish ? " disabled" : ""} />` +
+        trailing +
+      `</div>`;
+    }
+
+    // A value input is disabled for the null ops (is empty / is not empty), and
+    // whenever edits are staged (the whole bar locks then).
+    function syncRowVal(row) {
+      const op = row.querySelector(".fr-op").value;
+      const valEl = row.querySelector(".fr-val");
+      const nullish = NULL_OPS.has(op);
+      if (nullish) valEl.value = "";
+      valEl.disabled = nullish || isDirty();
+    }
+
+    function relabelConj() {
+      [...frows.children].forEach((row, i) => {
+        const c = row.querySelector(".fr-conj");
+        if (c) c.textContent = i === 0 ? "" : "AND";
+      });
+    }
+
+    // Rebuild the rows from the active filter param (called on every load).
+    function renderFilterBar() {
+      const cols = state.columns || [];
+      if (!cols.length) { filterbar.hidden = true; return; }
+      filterbar.hidden = false;
+      const cur = currentFilters().filter((f) => f && cols.includes(f.column));
+      const seeds = cur.length ? cur : [null]; // always leave one row to fill
+      frows.innerHTML = seeds.map((f, i) => rowHtml(cols, f, i === 0)).join("");
+    }
+
+    function addFilterRow() {
+      if (isDirty()) return;
+      frows.insertAdjacentHTML("beforeend",
+        rowHtml(state.columns || [], null, frows.children.length === 0));
+      relabelConj();
+    }
+
+    // Collect every row into the filters array and apply. A value-op row with an
+    // empty box contributes nothing (so a half-filled extra row is harmless).
+    function applyFilter() {
+      if (isDirty()) return;
+      const filters = [];
+      frows.querySelectorAll(".frow").forEach((row) => {
+        const col = row.querySelector(".fr-col").value;
+        const op = row.querySelector(".fr-op").value;
+        const valEl = row.querySelector(".fr-val");
+        if (NULL_OPS.has(op)) filters.push({ column: col, op });
+        else if (valEl.value !== "") filters.push({ column: col, op, value: valEl.value });
+      });
+      setFilters(filters);
+    }
+
+    frows.addEventListener("change", (e) => {
+      const row = e.target.closest(".frow");
+      if (!row) return;
+      // A new column may be a different type, so rebuild its operator list.
+      if (e.target.classList.contains("fr-col")) {
+        row.querySelector(".fr-op").innerHTML = opOptions((state.types || {})[e.target.value], null);
+      }
+      syncRowVal(row);
+    });
+    frows.addEventListener("click", (e) => {
+      // Disabled buttons don't fire click, so no extra dirty-guard is needed.
+      const btn = e.target.closest("button[data-act]");
+      if (!btn || btn.disabled) return;
+      const act = btn.getAttribute("data-act");
+      if (act === "add") addFilterRow();
+      else if (act === "del") { btn.closest(".frow").remove(); relabelConj(); }
+    });
+    frows.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.target.classList.contains("fr-val")) { e.preventDefault(); applyFilter(); }
+    });
+
+    // ---- right-click "Set Null" menu ----
+    let ctxTd = null;
+    function closeCtx() { ctxmenu.hidden = true; ctxTd = null; }
+    wrap.addEventListener("contextmenu", (e) => {
+      const td = e.target.closest && e.target.closest("td[contenteditable]");
+      if (!td || !wrap.contains(td)) return; // fall through to the native menu
+      e.preventDefault();
+      ctxTd = td;
+      ctxmenu.hidden = false;
+      const w = ctxmenu.offsetWidth || 130, h = ctxmenu.offsetHeight || 36;
+      ctxmenu.style.left = Math.min(e.clientX, window.innerWidth - w - 8) + "px";
+      ctxmenu.style.top = Math.min(e.clientY, window.innerHeight - h - 8) + "px";
+    });
+    ctxNull.addEventListener("click", () => { if (ctxTd) setNull(ctxTd); closeCtx(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeCtx(); });
+    document.addEventListener("mousedown", (e) => {
+      if (!ctxmenu.hidden && !ctxmenu.contains(e.target)) closeCtx();
+    });
+    wrap.addEventListener("scroll", closeCtx);
+
+    // ---- row highlight ----
+    function highlightRow(tr) {
+      const cur = wrap.querySelector("tr.row-active");
+      if (cur && cur !== tr) cur.classList.remove("row-active");
+      if (tr) tr.classList.add("row-active");
+    }
+
+    function renderTableSelector() {
+      const tables = state.tables || [];
+      if (tables.length <= 1) { tableSel.hidden = true; return; }
+      tableSel.hidden = false;
+      tableSel.innerHTML = tables
+        .map((s) => `<option value="${escapeHtml(s)}"${s === state.table ? " selected" : ""}>${escapeHtml(s)}</option>`)
+        .join("");
+    }
+
+    // Rebuild toolbar affordances + the whole table from state + staged. Safe to
+    // call any time except mid-typing (cell input updates the DOM in place so it
+    // never yanks focus); it re-derives every row from staging, so edits persist.
+    // `fromLoad` is set only by the calls inside the load()/applyBatch path
+    // that paint a load's result; staging actions (add/remove row) call
+    // renderAll() with it unset, so they never clear a load bar for a reload
+    // that is still in flight (e.g. a sort's positions scan running while the
+    // user adds a row to the still-visible old grid).
+    function renderAll(fromLoad) {
+      const offset = currentOffset();
+      renderTableSelector();
+      const editable = !!state.editable;
+      addBtn.hidden = saveBtn.hidden = discardBtn.hidden = !editable;
+
+      // Explicit read-only badge (e.g. a SQLite view, or a JSON file): says the
+      // grid can't be edited, with a tooltip explaining why. Shown only when
+      // the reader reported a reason; rendering lives in ro-badge.js.
+      fusedRoBadge.update(document.getElementById("ro"),
+                          editable ? "" : state.readonly_message,
+                          state.readonly_tooltip);
+
+      if (!state.columns.length && !state.total_rows && !(state.tables && state.tables.length)) {
+        rowcountEl.textContent = "";
+        wrap.innerHTML = `<div id="status">Nothing to show.</div>`;
+      } else {
+        const cols = state.columns;
+        const types = state.types || {};
+        const sort = currentSort();
+        const locked = isDirty();
+        const actHead = editable ? `<th class="rowact"></th>` : "";
+        const head = `<tr>${cols.map((c) => {
+          const t = types[c];
+          const tspan = t ? ` <span class="coltype">${escapeHtml(String(t).toLowerCase())}</span>` : "";
+          const caret = sort && sort.column === c ? (sort.dir === "asc" ? "▲" : "▼") : "";
+          return `<th><div class="th-name${locked ? " locked" : ""}" data-col="${escapeHtml(c)}">` +
+              `<span class="th-label">${escapeHtml(c)}${tspan}</span>` +
+              `<span class="sortcaret">${caret}</span>` +
+            `</div></th>`;
+        }).join("")}${actHead}</tr>`;
+
+        // Remote per-column load, no rows landed yet: a placeholder grid of
+        // all-skeleton rows so the table shape paints before any data.
+        // Replaced wholesale by the first column's renderAll (applyColumn).
+        const placeholderRows = state.pending && state.pending.size && !state.rows.length
+          ? Array.from({ length: 12 }, () =>
+              `<tr>${cols.map((c) => `<td class="skel" data-col="${escapeHtml(c)}"></td>`).join("")}${editable ? '<td class="rowact"></td>' : ""}</tr>`
+            ).join("")
+          : "";
+
+        const bodyRows = state.rows.map((row, i) => {
+          const id = state.ids[i];
+          const deleted = staged.deletes.has(id);
+          const act = editable
+            ? `<td class="rowact"><button class="del-btn" data-id="${escapeHtml(id)}">${deleted ? "↺" : "✕"}</button></td>`
+            : "";
+          const cells = cols.map((c) => {
+            // Column data still in flight (remote per-column parallel load):
+            // a shimmer skeleton, filled in place by fillColumn when it lands.
+            if (state.pending && state.pending.has(c)) {
+              return `<td class="skel" data-col="${escapeHtml(c)}"></td>`;
+            }
+            // Column's batch failed: an explicit marker, not editable and not
+            // a silent blank a reader would take for real empty values.
+            if (state.failedCols && state.failedCols.has(c)) {
+              return `<td class="load-err" data-col="${escapeHtml(c)}" title="Column failed to load — reload to retry">⚠</td>`;
+            }
+            const k = editKey(id, c);
+            const edited = staged.edits.has(k);
+            const raw = edited ? staged.edits.get(k).value : row[c];
+            const isNull = raw === null || raw === undefined;
+            if (editable) {
+              const cls = [edited ? "edited" : "", isNull ? "is-null" : ""].filter(Boolean).join(" ");
+              const clsAttr = cls ? ` class="${cls}"` : "";
+              return `<td contenteditable="true" data-col="${escapeHtml(c)}"${clsAttr}>${isNull ? "" : escapeHtml(cell(raw))}</td>`;
+            }
+            const disp = isNull ? "" : cell(row[c]);
+            return `<td${isNull ? ' class="is-null"' : ""} data-col="${escapeHtml(c)}" title="${escapeHtml(disp)}">${escapeHtml(disp)}</td>`;
+          }).join("");
+          return `<tr data-id="${escapeHtml(id)}"${deleted ? ' class="deleted"' : ""}>${cells}${act}</tr>`;
+        }).join("");
+
+        const insRows = staged.inserts.map((ins, idx) => {
+          const act = `<td class="rowact"><button class="del-btn" data-ins="${idx}">✕</button></td>`;
+          const cells = cols.map((c) => {
+            const v = ins.values[c];
+            const isNull = v === null || v === undefined;
+            return `<td contenteditable="true" data-col="${escapeHtml(c)}"${isNull ? ' class="is-null"' : ""}>${isNull ? "" : escapeHtml(String(v))}</td>`;
+          }).join("");
+          return `<tr class="inserted" data-ins="${idx}">${cells}${act}</tr>`;
+        }).join("");
+
+        wrap.innerHTML = `<table><thead>${head}</thead><tbody>${placeholderRows}${bodyRows}${insRows}</tbody></table>`;
+      }
+      updateBars(offset);
+      // A load just painted rows or skeletons (or an empty state) — the
+      // shimmer/placeholders take over as the in-flight signal, so drop the
+      // load bar. Only for load-driven renders: an editing render leaves an
+      // in-flight reload's bar alone.
+      if (fromLoad) setLoading(false);
+    }
+
+    function updateBars(offset) {
+      // total_rows is null while the deferred count is still in flight — show
+      // "…" for the total and drive "next" off whether we got a full page.
+      const total = state.total_rows;
+      const known = typeof total === "number";
+      const shown = state.rows.length;
+      const from = shown === 0 ? 0 : offset + 1;
+      const to = offset + shown;
+      const dirty = isDirty();
+      // The table name is already shown in the selector — don't repeat it here.
+      rowcountEl.textContent = `rows ${from.toLocaleString()}–${to.toLocaleString()} of ${known ? total.toLocaleString() : "…"}`;
+      // Paging / switching tables would discard the current page's staged edits
+      // (they key off this page's rows), so block it until Save or Discard.
+      prevBtn.disabled = dirty || offset <= 0;
+      nextBtn.disabled = dirty || (known ? offset + LIMIT >= total : shown < LIMIT);
+      tableSel.disabled = dirty;
+      saveBtn.disabled = discardBtn.disabled = !dirty;
+      const saveCount = saveBtn.querySelector(".save-count");
+      saveCount.hidden = !dirty;
+      saveCount.textContent = String(dirtyCount());
+      saveBtn.title = dirty ? `Save (${dirtyCount()})` : "Save changes";
+      // Sort/filter reshuffle the page, which would strand this page's staged
+      // edits — so lock those controls (like paging) until Save or Discard.
+      const showClear = !!(currentSort() || currentFilters().length);
+      resetBtn.hidden = !showClear;
+      resetBtn.disabled = applyBtn.disabled = dirty;
+      wrap.querySelectorAll(".th-name").forEach((n) => n.classList.toggle("locked", dirty));
+      frows.querySelectorAll("select, button").forEach((c) => { c.disabled = dirty; });
+      frows.querySelectorAll(".frow").forEach((row) => syncRowVal(row));
+      if (dirty) closeCtx();
+    }
+
+    // ---- staging mutations (do NOT re-render the whole table) ----
+
+    // Stage one cell to `value` (a string, or null for an explicit SQL NULL),
+    // updating its edited/null styling in place.
+    function stageCell(td, value) {
+      const tr = td.closest("tr");
+      const col = td.getAttribute("data-col");
+      const isNull = value === null;
+      td.classList.toggle("is-null", isNull);
+      if (tr.hasAttribute("data-ins")) {
+        staged.inserts[+tr.getAttribute("data-ins")].values[col] = value;
+      } else {
+        const id = state.idsByAttr.get(tr.getAttribute("data-id"));
+        const orig = (idIndex.get(id) || {})[col];
+        const origIsNull = orig === null || orig === undefined;
+        const k = editKey(id, col);
+        const unchanged = isNull ? origIsNull : (!origIsNull && value === cell(orig));
+        if (unchanged) { staged.edits.delete(k); td.classList.remove("edited"); }
+        else { staged.edits.set(k, { row: id, column: col, value }); td.classList.add("edited"); }
+      }
+      updateBars(currentOffset());
+    }
+
+    function onCellInput(td) {
+      // Typing always yields a string ("" for an empty cell), never NULL — an
+      // explicit NULL is only reachable through the right-click menu.
+      stageCell(td, td.textContent);
+    }
+
+    function setNull(td) {
+      td.textContent = "";
+      stageCell(td, null);
+    }
+
+    function onDelete(btn) {
+      if (btn.hasAttribute("data-ins")) {
+        staged.inserts.splice(+btn.getAttribute("data-ins"), 1);
+        renderAll(); // indices shift — full rebuild
+        return;
+      }
+      const id = state.idsByAttr.get(btn.getAttribute("data-id"));
+      const tr = btn.closest("tr");
+      if (staged.deletes.has(id)) { staged.deletes.delete(id); tr.classList.remove("deleted"); btn.textContent = "✕"; }
+      else { staged.deletes.add(id); tr.classList.add("deleted"); btn.textContent = "↺"; }
+      updateBars(currentOffset());
+    }
+
+    wrap.addEventListener("input", (e) => {
+      const td = e.target.closest && e.target.closest("td[contenteditable]");
+      if (td && wrap.contains(td)) onCellInput(td);
+    });
+    wrap.addEventListener("click", (e) => {
+      const bodyTd = e.target.closest && e.target.closest("tbody td");
+      if (bodyTd && wrap.contains(bodyTd)) highlightRow(bodyTd.closest("tr"));
+      const btn = e.target.closest && e.target.closest(".del-btn");
+      if (btn) { onDelete(btn); return; }
+      const nameEl = e.target.closest && e.target.closest(".th-name");
+      if (nameEl && wrap.contains(nameEl) && !isDirty()) cycleSort(nameEl.getAttribute("data-col"));
+    });
+    // Focusing a cell (click or keyboard) highlights its row.
+    wrap.addEventListener("focusin", (e) => {
+      const td = e.target.closest && e.target.closest("tbody td");
+      if (td) highlightRow(td.closest("tr"));
+    });
+
+    // ---- load / save ----
+
+    let loadSeq = 0;
+    // Last schema fetched for the remote per-column path, keyed by file+table.
+    // Lets a re-load (filter/sort/page change) skip the serial schema await.
+    let schemaCache = null;
+    async function load() {
+      const seq = ++loadSeq;
+      // Signal immediately — before any await — so a remote sort/filter shows
+      // motion during its positions scan instead of a frozen grid.
+      setLoading(true);
+      const file = fused.params.get("_file");
+      const offset = currentOffset();
+      const table = fused.params.get("table") || "";
+      // A re-load of the same parquet file (page/filter/sort change) keeps
+      // the current grid on screen instead of wiping to "Loading…": with the
+      // schema cached and the DuckDB file cache warm the new rows usually land
+      // in well under a repaint-worth of time, and the wipe → skeleton → rows
+      // sequence reads as flicker. Cold and non-parquet loads keep the wipe.
+      // Dirty staging forces the wipe: discard and the post-save reload call
+      // load() with edits still in memory, and keeping the old grid would
+      // leave their edited styling on screen until the fetch lands.
+      const keepGrid = !isDirty() && schemaCache
+        && schemaCache.key === file + "\n" + table
+        && wrap.querySelector("tbody tr[data-id]");
+      if (!keepGrid) wrap.innerHTML = `<div id="status">Loading…</div>`;
+      if (!file) {
+        setLoading(false);
+        wrap.innerHTML = `<div id="status" class="error">No file selected (missing _file param).</div>`;
+        return;
+      }
+      const args = {
+        file, table, offset: String(offset), limit: String(LIMIT),
+        sort: currentSort(), filters: currentFilters(),
+      };
+      // Remote-backed file (the shell sets _remote from stat on the iframe
+      // URL — reserved "_" params don't flow through fused.params, so read it
+      // off this frame's own URL like the runtime reads _file): hand the
+      // reader the app's ranged-read URL, so parquet is scanned over HTTP
+      // instead of hammering the mounted filesystem with random reads.
+      if (new URLSearchParams(location.search).get("_remote") === "1") {
+        args.source_url = location.origin + "/api/fs/raw?path=" + encodeURIComponent(file);
+      }
+      // The filtered COUNT scans far more of the file than the 100-row page, so
+      // fetch it concurrently and fill the pager total in when it lands — the
+      // page renders without waiting for it (the pager shows "…" until then).
+      // countVal buffers the total in case the count resolves before the page
+      // has been applied to `state`.
+      let countVal, rendered = false;
+      // key:null — one grid load fans out count+schema+positions+N page batches
+      // on reader.py, all results needed; default per-file cancellation (D114)
+      // would keep only the last and leave the grid mostly empty.
+      fused.runPython("./reader.py", { ...args, mode: "count" }, { key: null })
+        .then((c) => {
+          if (seq !== loadSeq || !c || typeof c.total_rows !== "number") return;
+          countVal = c.total_rows;
+          if (rendered) { state.total_rows = countVal; updateBars(currentOffset()); }
+        })
+        .catch(() => {}); // a failed count just leaves the total "…"; the page still works
+      try {
+        // Parquet, local or mounted: fetch the schema alone (footer-only,
+        // fast), then load the columns through parallel size-batched page
+        // calls. The first one to land renders the rows with shimmer
+        // skeletons in the still-loading columns; each later arrival fills
+        // its cells in place. The batching exists for remote files (the
+        // page's cost is per-column bytes over a slow link), but local
+        // parquet shares the branch for parity: same skeletons, same
+        // per-column ⚠ on failure, same schema-cached flicker-free reloads —
+        // and on a local file the columns usually pack into one batch, so it
+        // degrades to the single page call it replaced. CSV/JSON (which
+        // can't scan column-selectively anyway) keep the single call.
+        if (/\.parquet$/i.test(file)) {
+          // Awaiting the schema is the one serial step, and it only carries
+          // new information the first time: on a re-load of the same file
+          // (filter/sort/page change) reuse the last schema and fan out
+          // immediately. schemaCache is invalidated by navigation (fresh
+          // iframe) and by the auto-reload a file change triggers.
+          let schema = schemaCache && schemaCache.key === file + "\n" + table
+            ? schemaCache.schema : null;
+          if (!schema) {
+            schema = await fused.runPython("./reader.py", { ...args, mode: "schema" }, { key: null });
+            if (seq !== loadSeq) return;
+            schemaCache = { key: file + "\n" + table, schema };
+          }
+          staged = { edits: new Map(), deletes: new Set(), inserts: [] };
+          idIndex = new Map();
+          state = { ...schema, rows: [], ids: [], pending: new Set(schema.columns), colErrors: 0, failedCols: new Set() };
+          state.idsByAttr = new Map();
+          if (countVal !== undefined) state.total_rows = countVal;
+          rendered = true;
+          renderFilterBar();
+          if (keepGrid) {
+            // Old rows stay visible and batches buffer instead of painting as
+            // they land (deferRender): a warm page change repaints exactly
+            // once, when the last batch arrives. If the load is genuinely
+            // slow, a timer (armed below, after the serial positions step)
+            // swaps in whatever has landed.
+            state.deferRender = true;
+          } else {
+            renderAll(true); // full-skeleton grid immediately — header + shimmer rows
+          }
+          // Sorted/filtered pages resolve their row positions ONCE before the
+          // batches fan out (two-phase): each batch then point-reads exactly
+          // those rows instead of re-running the sort/filter itself, and all
+          // batches provably share one row set. Pre-seeding the ids also
+          // means no batch "defines" the rows — they only fill cells in.
+          // A failed positions call falls back to per-batch windows (the
+          // tiebreaker in reader.py keeps those consistent too). Unsorted,
+          // unfiltered pages skip the extra hop: their LIMIT/OFFSET window
+          // is already deterministic and cheap.
+          let positions = null;
+          if (args.sort || args.filters.length) {
+            try {
+              const p = await fused.runPython("./reader.py", { ...args, mode: "positions" }, { key: null });
+              if (seq !== loadSeq) return;
+              if (p && Array.isArray(p.positions)) {
+                positions = p.positions;
+                state.ids = positions;
+                state.rows = positions.map(() => ({}));
+                positions.forEach((id, i) => {
+                  idIndex.set(id, state.rows[i]);
+                  state.idsByAttr.set(String(id), id);
+                });
+              }
+            } catch (_) { /* fall back to per-batch windows */ }
+          }
+          if (state.deferRender) {
+            // The break-the-hold timer arms only now: its 250ms budget was
+            // calibrated for the batch fetches, and starting it before the
+            // positions await would wipe the kept grid to the placeholder
+            // skeleton while the row set is still being resolved — before a
+            // single batch was even dispatched. Armed here, a slow tail
+            // swaps in skeleton rows (ids already seeded) rather than the
+            // empty placeholder.
+            setTimeout(() => {
+              if (seq !== loadSeq || state.rowsRendered) return;
+              state.deferRender = false;
+              if (state.ids.length) state.rowsRendered = true;
+              if (state.pending) renderAll(true);
+            }, 250);
+          }
+          for (const cols of packColumns(schema.columns, schema.col_sizes || {})) {
+            const batchArgs = { ...args, mode: "page", columns: cols };
+            if (positions) batchArgs.positions = positions;
+            fused.runPython("./reader.py", batchArgs, { key: null })
+              .then((d) => applyBatch(seq, cols, d), () => applyBatch(seq, cols, null));
+          }
+          return;
+        }
+        const data = await fused.runPython("./reader.py", { ...args, mode: "page" }, { key: null });
+        if (seq !== loadSeq) return;
+        staged = { edits: new Map(), deletes: new Set(), inserts: [] };
+        state = data;
+        // If the count already came back, apply it before the first render.
+        if (countVal !== undefined) state.total_rows = countVal;
+        // ids may be numbers; DOM attributes are strings — map string->real id.
+        idIndex = new Map();
+        state.idsByAttr = new Map();
+        (state.ids || []).forEach((id, i) => {
+          idIndex.set(id, state.rows[i]);
+          state.idsByAttr.set(String(id), id);
+        });
+        rendered = true;
+        renderFilterBar(); // rebuild condition rows from the (freshly loaded) param
+        renderAll(true);
+      } catch (err) {
+        if (seq !== loadSeq) return;
+        setLoading(false);
+        wrap.innerHTML = `<div id="status" class="error"><strong>${escapeHtml(err.type || "Error")}</strong>: ${escapeHtml(err.message || "")}</div>`;
+      }
+    }
+
+    // Pack the columns of the parallel remote-parquet load into batches: one
+    // query per batch, each batch capped at BUDGET compressed bytes so all its
+    // columns land together — cheap columns share a call (one filter scan, one
+    // dispatch) instead of each paying query overhead, while a column bigger
+    // than the budget gets its own call and shimmers alone. First-fit
+    // decreasing; a column with no size (footer query failed) rides alone,
+    // which degrades to the old one-call-per-column plan.
+    function packColumns(cols, sizes) {
+      const BUDGET = 4 * 1024 * 1024; // ~1s on the measured multi-stream link
+      const batches = [];
+      const bySize = [...cols].sort((a, b) => (sizes[b] ?? BUDGET) - (sizes[a] ?? BUDGET));
+      for (const c of bySize) {
+        const sz = sizes[c] ?? BUDGET;
+        const fit = batches.find((b) => b.bytes + sz <= BUDGET);
+        if (fit) { fit.cols.push(c); fit.bytes += sz; }
+        else batches.push({ cols: [c], bytes: sz });
+      }
+      return batches.map((b) => b.cols);
+    }
+
+    // One batch of the parallel remote-parquet load arrived (d) or failed
+    // (null). Sorted/filtered loads pre-seed the ids from the positions
+    // phase, so every batch just fills cells in by id. Otherwise (unsorted
+    // pages, or the positions call failed) the first successful batch defines
+    // the page's rows (their ids — physical file positions — key everything)
+    // and later batches merge by id. Id-keying alone only guards against
+    // attributing a value to the wrong row — batches resolving the same page
+    // to different row sets would still leave cells silently unfilled, which
+    // is why reader.py's paging SQL pins the fallback window with a
+    // file-position ORDER BY tiebreaker.
+    function applyBatch(seq, cols, d) {
+      if (seq !== loadSeq) return;
+      if (d && !state.ids.length && d.ids.length) {
+        state.ids = d.ids;
+        state.rows = d.ids.map(() => ({}));
+        d.ids.forEach((id, i) => {
+          idIndex.set(id, state.rows[i]);
+          state.idsByAttr.set(String(id), id);
+        });
+      }
+      cols.forEach((c) => state.pending.delete(c));
+      if (!d) {
+        state.colErrors++;
+        cols.forEach((c) => state.failedCols.add(c));
+      }
+      if (d && state.ids.length) {
+        d.ids.forEach((id, i) => {
+          const row = idIndex.get(id);
+          if (row) for (const c of cols) row[c] = d.rows[i][c];
+        });
+      }
+      if (!state.ids.length) {
+        // Nothing has rows yet: an empty page (fine) or failures so far. Only
+        // decide at the end — a later column may still bring the rows.
+        if (!state.pending.size) {
+          if (state.colErrors) {
+            setLoading(false);
+            wrap.innerHTML = `<div id="status" class="error">Failed to load rows.</div>`;
+          } else {
+            state.pending = null; // drop the placeholder skeleton grid
+            renderAll(true); // genuinely empty result -> headers + "rows 0–0"
+          }
+        }
+        return;
+      }
+      if (!state.rowsRendered) {
+        // Buffering (page change with the old grid still up): hold the paint
+        // until the last batch, so the swap is a single repaint. The timer in
+        // load() breaks the hold if the tail batch is slow.
+        if (state.deferRender && state.pending.size) return;
+        // First batch with data: replace the previous grid (placeholder
+        // skeletons or the old page's rows) with the real rows — skeleton
+        // cells remain for still-pending columns.
+        state.rowsRendered = true;
+        renderAll(true);
+      } else {
+        cols.forEach((c) => (d ? fillColumn(c) : fillColumnError(c)));
+      }
+    }
+
+    // A batch failed after the rows were already on screen: swap its skeleton
+    // cells for an explicit error marker (a silent blank would read as data).
+    function fillColumnError(col) {
+      wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => {
+        const td = tr.querySelector(`td[data-col="${CSS.escape(col)}"]`);
+        if (!td) return;
+        td.classList.remove("skel");
+        td.classList.add("load-err");
+        td.removeAttribute("contenteditable");
+        td.style.pointerEvents = "";
+        td.title = "Column failed to load — reload to retry";
+        td.textContent = "⚠";
+      });
+    }
+
+    // Replace one landed column's skeleton cells in place (no full re-render,
+    // so a cell the user is already editing keeps focus and caret).
+    function fillColumn(col) {
+      const editable = !!state.editable;
+      wrap.querySelectorAll("tbody tr[data-id]").forEach((tr) => {
+        const td = tr.querySelector(`td[data-col="${CSS.escape(col)}"]`);
+        if (!td) return;
+        const id = state.idsByAttr.get(tr.getAttribute("data-id"));
+        const raw = (idIndex.get(id) || {})[col];
+        const isNull = raw === null || raw === undefined;
+        td.classList.remove("skel");
+        td.classList.toggle("is-null", isNull);
+        td.style.pointerEvents = "";
+        const disp = isNull ? "" : cell(raw);
+        if (editable) td.setAttribute("contenteditable", "true");
+        else td.title = disp;
+        td.textContent = disp;
+      });
+    }
+
+    async function save() {
+      const file = fused.params.get("_file");
+      // Values go through verbatim: a string "" is an empty string, null is an
+      // explicit SQL NULL — the two are kept distinct all the way to the writer.
+      const edits = [...staged.edits.values()].map((e) => ({ row: e.row, column: e.column, value: e.value }));
+      const deletes = [...staged.deletes];
+      // Only send columns the user touched; an untouched column falls back to
+      // the writer's column default (NULL), matching its "(NULL)" display.
+      const inserts = staged.inserts
+        .filter((ins) => Object.keys(ins.values).length)
+        .map((ins) => {
+          const out = {};
+          for (const c of state.columns) {
+            const v = ins.values[c];
+            if (v !== undefined) out[c] = v;
+          }
+          return out;
+        });
+      saveBtn.disabled = true;
+      saveBtn.title = "Saving…";
+      try {
+        await fused.runPython("./writer.py", {
+          file, table: state.table || "", edits, deletes, inserts,
+        }, { key: null }); // never cancel an in-flight save (D114)
+        await load(); // reflect the written file (clears staging)
+      } catch (err) {
+        // Batch is atomic server-side: on failure the file is untouched and the
+        // staged edits are still here to retry, so just surface the error.
+        alert((err.type ? err.type + ": " : "") + (err.message || "Save failed"));
+        updateBars(currentOffset());
+      }
+    }
+
+    prevBtn.addEventListener("click", () => fused.params.set("offset", String(Math.max(0, currentOffset() - LIMIT))));
+    nextBtn.addEventListener("click", () => fused.params.set("offset", String(currentOffset() + LIMIT)));
+    tableSel.addEventListener("change", () => {
+      fused.params.set("offset", "0");
+      fused.params.set("table", tableSel.value);
+    });
+    addBtn.addEventListener("click", () => { staged.inserts.push({ values: {} }); renderAll(); });
+    saveBtn.addEventListener("click", save);
+    discardBtn.addEventListener("click", load);
+    applyBtn.addEventListener("click", () => { if (!isDirty()) applyFilter(); });
+    resetBtn.addEventListener("click", () => { if (!isDirty()) clearSortFilters(); });
+
+    fused.params.onChange(load);
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+import importlib
+import os
+
+import pytest
+
+import fused_render._branch as _branch
+
+
+def _reload_with_ref(ref: str):
+    """Set FUSED_RENDER_BRANCH, reset the _branch cache, then reload the
+    target runtime modules so their module-level constants re-resolve.
+    """
+    os.environ["FUSED_RENDER_BRANCH"] = ref
+    _branch._CACHED_REF = None
+    importlib.reload(_branch)
+
+    import fused_render.server as server
+    import fused_render.server.templates as _server_templates
+    import fused_render.app as app
+    import fused_render.cli as cli
+
+    _server_templates = importlib.reload(_server_templates)
+    server = importlib.reload(server)
+    app = importlib.reload(app)
+    cli = importlib.reload(cli)
+    return server, app, cli, _server_templates
+
+
+@pytest.fixture(autouse=True)
+def _restore_baseline():
+    yield
+    # `os.environ.pop`, NOT `monkeypatch.delenv`: this file sets the variable
+    # with a bare assignment (`_reload_with_ref`), so monkeypatch never recorded
+    # a pre-test value to restore. Deleting it THROUGH monkeypatch during
+    # teardown is self-defeating — delenv records the current value for undo and
+    # monkeypatch's own undo then runs after this fixture, putting the ref right
+    # back. The variable leaked out of this file for the rest of the worker's
+    # session, and any later test resolving a branch-aware path (the call log's
+    # store, ~/.fused-render/branches/<ref>/) silently looked in a directory
+    # nothing writes to.
+    os.environ.pop("FUSED_RENDER_BRANCH", None)
+    _branch._CACHED_REF = None
+    importlib.reload(_branch)
+    import fused_render.server
+    import fused_render.server.templates
+    import fused_render.app
+    import fused_render.cli
+
+    importlib.reload(fused_render.server.templates)
+    importlib.reload(fused_render.server)
+    importlib.reload(fused_render.app)
+    importlib.reload(fused_render.cli)
+
+
+def test_baseline_ref_empty(monkeypatch):
+    server, app, cli, _server_templates = _reload_with_ref("")
+    import fused_render.shell.storage as storage
+
+    # Baseline: shell home is un-nested; templates live under it (D76).
+    base = os.environ["FUSED_RENDER_HOME"]
+    assert storage.home_dir() == base
+    assert _server_templates.USER_TEMPLATES_DIR == os.path.join(base, "templates")
+    assert _server_templates.USER_REGISTRY == os.path.join(base, "templates", "registry.json")
+    assert app.APP_SUPPORT_DIR == os.path.expanduser(
+        "~/Library/Application Support/fused-render"
+    )
+    assert app.DEFAULT_PORT == 1777
+    assert app.MAX_PORT == 1787
+    assert cli.DEFAULT_PORT == 1777
+
+
+def test_branch_ref_foo(monkeypatch):
+    server, app, cli, _server_templates = _reload_with_ref("foo")
+    import fused_render.shell.storage as storage
+
+    # Ref "foo": the whole shell home nests under branches/foo/ (templates,
+    # bookmarks, prefs all follow home_dir), and App Support + port shift too.
+    base = os.environ["FUSED_RENDER_HOME"]
+    assert storage.home_dir() == os.path.join(base, "branches", "foo")
+    assert _server_templates.USER_TEMPLATES_DIR == os.path.join(base, "branches", "foo", "templates")
+    assert app.APP_SUPPORT_DIR.endswith("Application Support/fused-render/branches/foo")
+    assert app.DEFAULT_PORT == _branch.branch_port("foo")
+    assert app.MAX_PORT == app.DEFAULT_PORT + 10
+    assert cli.DEFAULT_PORT == app.DEFAULT_PORT

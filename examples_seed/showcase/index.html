@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Example projects</title>
+<style>
+  :root {
+    --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
+    --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
+    --yellow:#E5FF44;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:44px 30px 70px; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .wrap { max-width:1100px; margin:0 auto; }
+  h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
+  .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:680px; }
+  .tag b { color:var(--text); font-weight:600; }
+  .note { color:var(--mut); font-size:12.5px; margin:0 0 34px; max-width:680px; }
+  .note code { color:var(--dim); }
+  code { font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.95em; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       margin:40px 0 4px; font-weight:700; }
+  .h2sub { color:var(--dim); font-size:13.5px; margin:0 0 16px; }
+
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .grid .feat { grid-column:span 2; }
+
+  .card { display:flex; flex-direction:column; background:var(--panel); border:1px solid var(--border);
+          border-radius:14px; overflow:hidden; text-decoration:none; color:var(--text);
+          transition:border-color .15s, transform .15s; }
+  .card:hover { border-color:#4a4a4e; transform:translateY(-2px); }
+  .card:hover .go { color:var(--yellow); }
+
+  /* fixed-aspect media: monogram sits behind the img, so a failed load shows
+     the fallback with zero layout shift */
+  .media { position:relative; aspect-ratio:16/9; background:var(--panel2);
+           border-bottom:1px solid var(--border); overflow:hidden; }
+  .media .mono-fb { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+           font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:34px; font-weight:700;
+           color:#3a3a3d; letter-spacing:2px; user-select:none; }
+  .feat .media .mono-fb { font-size:46px; }
+  .media img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:top;
+           display:block; }
+
+  .body { padding:14px 16px 13px; display:flex; flex-direction:column; flex:1; }
+  .body h3 { margin:0 0 3px; font-size:14.5px; display:flex; align-items:baseline; gap:8px; }
+  .body h3 .name { font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:11px;
+                   color:var(--mut); font-weight:400; }
+  .body p { margin:0 0 12px; color:var(--dim); font-size:12.5px; }
+  .meta { margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .tags { display:flex; flex-wrap:wrap; gap:5px; }
+  .t { font-size:10.5px; color:var(--dim); background:var(--panel2); border:1px solid var(--border);
+       border-radius:5px; padding:2px 7px; white-space:nowrap; }
+  .t.key { color:var(--yellow); border-color:#4a4a2a; background:transparent; }
+  .go { font-size:11px; color:var(--mut); white-space:nowrap; transition:color .15s; }
+
+  footer { margin-top:48px; border-top:1px solid var(--border); padding-top:16px;
+           color:var(--mut); font-size:12.5px; }
+  footer a { color:var(--dim); }
+  footer a:hover { color:var(--text); }
+
+  @media (max-width:900px){ .grid { grid-template-columns:repeat(2,1fr); } .grid .feat { grid-column:span 2; } }
+  @media (max-width:600px){ .grid { grid-template-columns:1fr; } .grid .feat { grid-column:auto; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Example projects</h1>
+  <p class="tag">Working projects you can open and pick apart — each one is a <b>page plus a Python file</b> in a folder, like everything in Fused Render.</p>
+  <p class="note">Clicking a card fetches that example from GitHub into <code>~/Documents/Fused</code> and opens it. A confirm screen appears first.</p>
+
+  <h2>Geospatial</h2>
+  <p class="h2sub">Maps, hexagons, rasters, and public datasets — analysis that runs on your machine.</p>
+  <div class="grid" id="geo"></div>
+
+  <h2>Local tools</h2>
+  <p class="h2sub">Fused Render pointed at your own machine — files, processes, and settings as web pages.</p>
+  <div class="grid" id="local"></div>
+
+  <footer>
+    Browse the source of every example at
+    <a href="https://github.com/fusedio/fused-render-examples">github.com/fusedio/fused-render-examples</a>.
+  </footer>
+</div>
+
+<script>
+const REPO = "https://github.com/fusedio/fused-render-examples/tree/main/";
+
+const GEO = [
+  { n:"hexagon_lab", t:"Hexagon Lab", feat:true,
+    d:"A three-tab H3 sandbox: aggregate buildings, sample terrain rasters, and diff dataset releases — all on one hexagonal grid.",
+    tags:["H3","rasters","diffs"] },
+  { n:"locker_network_simulator", t:"Locker Network Simulator", feat:true,
+    d:"Place parcel lockers on a real road network and watch delivery routes re-optimize as you move them.",
+    tags:["routing","optimization"] },
+  { n:"buildings_to_hexagons", t:"Buildings to Hexagons",
+    d:"An interactive explainer that turns every building on Earth into H3 hexes, step by step.",
+    tags:["H3","explainer"] },
+  { n:"cog_range_viewer", t:"COG Range Viewer",
+    d:"Stream tiles out of a huge cloud-optimized GeoTIFF with HTTP range requests — nothing is downloaded.",
+    tags:["COG","HTTP ranges"] },
+  { n:"cog_overview_pyramid", t:"COG Overview Pyramid",
+    d:"Every resolution level of a COG stacked into an interactive 3D pyramid.",
+    tags:["COG","3D"] },
+  { n:"overture_census_isochrone", t:"Isochrone Explorer",
+    d:"Combine a travel-time isochrone with Overture POIs and Census income on H3 hexes.",
+    tags:["H3","Overture","Census"], key:true },
+  { n:"zonal_stats_hex", t:"Zonal Stats",
+    d:"Who lives at what elevation: Census population joined against a DEM in DuckDB.",
+    tags:["DuckDB","DEM","Census"] },
+  { n:"store_site_selection", t:"Store Site Selection",
+    d:"Where should a cafe open? Score census tracts with weights you control.",
+    tags:["Census","scoring"], key:true },
+  { n:"forest_carbon_monitor", t:"Forest Carbon Monitor",
+    d:"Track deforestation inside protected areas using Global Forest Watch data.",
+    tags:["GFW","time series"] },
+  { n:"disaster_response_dashboard", t:"Disaster Response Dashboard",
+    d:"Satellite imagery, a storm track, and building footprints fused for one disaster event.",
+    tags:["imagery","buildings"] },
+  { n:"gers_pixel_ref", t:"GERS Pixel References",
+    d:"eopix: mint and resolve GERS-anchored byte-range references to individual pixels.",
+    tags:["GERS","COG"] },
+];
+
+const LOCAL = [
+  { n:"visual_claude", t:"Visual Claude", feat:true,
+    d:"A visual settings page for Claude Code. Edits write straight to ~/.claude, with git keeping every version.",
+    tags:["local machine","git-versioned"] },
+  { n:"pytop", t:"pytop",
+    d:"A live, top-style system and process monitor built from the Python stdlib alone.",
+    tags:["local machine","stdlib only"] },
+  { n:"disk_usage", t:"Disk Usage",
+    d:"A treemap of your disk. Find what's eating space and clean it up.",
+    tags:["local machine","treemap"] },
+  { n:"notion_db", t:"Notion-style Tasks",
+    d:"A task tracker with views and filters, backed by a local Parquet lake.",
+    tags:["local machine","Parquet"] },
+];
+
+function monogram(name){
+  return name.split("_").map(w => w[0]).join("").slice(0,3).toUpperCase();
+}
+
+function card(p, prefix){
+  const a = document.createElement("a");
+  a.className = "card" + (p.feat ? " feat" : "");
+  a.href = "fused-render://open?git=" + REPO + prefix + p.n;
+  const tags = p.tags.map(t => '<span class="t">'+t+'</span>').join("")
+             + (p.key ? '<span class="t key">needs API key (free)</span>' : "");
+  a.innerHTML =
+    '<div class="media"><div class="mono-fb">'+monogram(p.n)+'</div>' +
+    '<img loading="lazy" alt="" src="'+fused.rawUrl("assets/"+p.n+".jpg")+'" onerror="this.remove()"></div>' +
+    '<div class="body"><h3>'+p.t+' <span class="name">'+p.n+'</span></h3>' +
+    '<p>'+p.d+'</p>' +
+    '<div class="meta"><div class="tags">'+tags+'</div>' +
+    '<span class="go">Click to clone into your workspace →</span></div></div>';
+  return a;
+}
+
+GEO.forEach(p => document.getElementById("geo").appendChild(card(p, "geospatial/")));
+LOCAL.forEach(p => document.getElementById("local").appendChild(card(p, "local-tools/")));
+</script>
+</body>
+</html>

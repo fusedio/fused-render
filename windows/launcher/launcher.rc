@@ -1,0 +1,7 @@
+#include <windows.h>
+
+/* The Win11 "Open with" picker reads an .exe's own embedded icon, not the
+ * Applications\<exe>\DefaultIcon registry value, so the app icon has to live
+ * in the exe too. rc.exe finds fused-render.ico via the /i path passed by
+ * scripts/build_windows_installer.ps1. */
+1 ICON "fused-render.ico"

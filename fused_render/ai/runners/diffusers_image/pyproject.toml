@@ -1,0 +1,55 @@
+# The diffusers image runner's environment (SPEC §40, PY-16).
+#
+# This folder exists so that torch and diffusers are named in exactly one place
+# and live in exactly one interpreter — not fused-render's. They are several GB;
+# a file explorer that could not start without them would be a worse file
+# explorer, and `envinstall` (PY-18) builds this on first use with the same
+# detached `uv sync` and the same verbatim errors any declaring folder gets.
+#
+# **This first install is genuinely large** — a torch wheel alone is 2-3GB — so
+# it is a reported stage rather than a silent wait, and the AI Models page shows
+# it as "Preparing Diffusers (PyTorch)…" before any weights are fetched.
+#
+# **Every dependency here must be installable as a WHEEL, and that is a rule
+# rather than a preference.** A source build runs a build backend in a subprocess
+# uv creates, and inside the macOS .app that subprocess used to inherit the
+# bundle's `PYTHONHOME` — the app's frozen `_distutils_hack` then hijacked the
+# fresh setuptools and every build died on `No module named 'jaraco.text'`
+# (D266). `_env_install_worker` scrubs the env now, so the trap is disarmed; the
+# rule stands anyway, because a source build in this environment is minutes of
+# compiling on a user's laptop for something a wheel already answers.
+#
+# What each earns:
+#   torch          the tensors and the device (CUDA / MPS / CPU)
+#   diffusers      the pipelines. `>=0.39` because that is the first RELEASE
+#                  carrying Flux2KleinPipeline — this used to track
+#                  git+https://github.com/huggingface/diffusers.git for exactly
+#                  that class, back when it existed only on main (D266).
+#   transformers   the text encoder every text-to-image pipeline puts in front
+#   accelerate     device placement / offload for models bigger than the GPU
+#   sentencepiece  the tokenizer format those text encoders use
+#   protobuf       sentencepiece's model format needs it at load time
+#   gguf           reads the quantized single-file transformer (see worker.py)
+#   pillow         writes the PNG
+#   huggingface_hub downloads
+#   psutil         answers "how much memory is this costing"
+[project]
+name = "fused-render-runner-diffusers-image"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "diffusers>=0.39",
+    "transformers",
+    "accelerate",
+    "sentencepiece",
+    "protobuf",
+    "gguf",
+    "pillow",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

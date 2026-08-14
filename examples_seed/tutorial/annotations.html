@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tutorial — annotating pages</title>
+<style>
+  :root {
+    --bg:#141414; --panel:#1c1c1e; --panel2:#252527; --border:#333333;
+    --text:#ffffff; --dim:#a6a6ab; --mut:#77777c;
+    --yellow:#E5FF44;
+    --code-bg:#0f0f10;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:44px 30px 70px 224px; background:var(--bg); color:var(--text);
+         font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; }
+
+  /* tutorial nav rail (shared across the 4 pages; body padding reserves it) */
+  .tnav { position:fixed; top:46px; left:24px; width:176px; }
+  .tnav .tlab { margin:0 0 8px; padding-left:12px; font-size:10.5px; text-transform:uppercase;
+                letter-spacing:.7px; color:var(--mut); font-weight:700; }
+  .tnav a { display:block; margin:2px 0; padding:7px 12px; border-radius:8px; border:1px solid transparent;
+            font-size:12.5px; color:var(--dim); text-decoration:none; }
+  .tnav a:hover { color:var(--text); background:var(--panel); }
+  .tnav a.cur { color:var(--text); background:var(--panel); border-color:var(--border); font-weight:600; }
+  .tnav a.cur::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%;
+                        background:var(--yellow); margin-right:8px; vertical-align:1px; }
+  .tnav a.gone { display:none; }
+  .tnav a.sub { margin:0; padding:4px 12px 4px 27px; border:0; font-size:11.5px; color:var(--mut); }
+  .tnav a.sub:hover { color:var(--text); background:none; }
+  .tnav a.sub .sn { color:var(--yellow); margin-right:6px; font-weight:700; }
+  h1 { font-size:27px; margin:0 0 10px; letter-spacing:-.4px; }
+  .tag { color:var(--dim); font-size:15.5px; margin:0 0 8px; max-width:660px; }
+  .tag b { color:var(--text); font-weight:600; }
+  .tag .y { color:var(--yellow); font-weight:600; }
+  code, .mono { font-family:"SF Mono",ui-monospace,Menlo,monospace; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:var(--mut);
+       margin:42px 0 6px; font-weight:700; }
+  h2 .n { color:var(--yellow); margin-right:7px; }
+  .h2sub { color:var(--dim); font-size:13.5px; margin:0 0 16px; max-width:660px; }
+  .h2sub code { color:var(--text); font-size:12.5px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:18px 20px; }
+  a { color:var(--dim); }
+  a:hover { color:var(--text); }
+  .status { color:var(--mut); font-size:12px; min-height:16px; }
+
+  .frame { position:relative; border:1px solid var(--border); border-radius:14px; overflow:hidden;
+           background:var(--panel); }
+  .frame iframe { display:block; width:100%; border:0; background:var(--panel); }
+  .frame.tall iframe { height:560px; }
+  .framebar { display:flex; align-items:center; justify-content:space-between; gap:12px;
+              padding:9px 14px; border-bottom:1px solid var(--border); background:var(--panel2); }
+  .framebar .cap { color:var(--dim); font-size:12px; }
+  .framebar .cap b { color:var(--text); }
+  .framebar a { font-size:12px; color:var(--yellow); text-decoration:none; white-space:nowrap; }
+  .framebar a:hover { text-decoration:underline; }
+  .miss { display:none; padding:26px 20px; color:var(--mut); font-size:13px; text-align:center; }
+  .miss code { color:var(--dim); }
+  .frame.gone iframe { display:none; }
+  .frame.gone .miss { display:block; }
+
+  .steps { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px; }
+  .step { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .step .num { width:22px; height:22px; border-radius:7px; background:var(--panel2); border:1px solid var(--border);
+               display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700;
+               color:var(--yellow); margin-bottom:10px; }
+  .step h4 { margin:0 0 5px; font-size:13.5px; }
+  .step p { margin:0; color:var(--dim); font-size:12px; }
+  .step p code { color:var(--text); font-size:11px; }
+
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .pair .card p { margin:6px 0 0; color:var(--dim); font-size:12.5px; }
+  .pair .card b { color:var(--text); }
+  .pair .card code { color:var(--yellow); font-size:11.5px; }
+
+  .outro { border-top:1px solid var(--border); margin-top:46px; padding-top:18px;
+           color:var(--dim); font-size:13.5px; max-width:660px; }
+  .outro b { color:var(--text); }
+  .outro code { color:var(--yellow); font-size:12.5px; }
+
+  @media (max-width:760px){
+    .steps { grid-template-columns:1fr 1fr; }
+    .pair { grid-template-columns:1fr; }
+    body { padding:28px 18px 70px; }
+    .tnav { position:static; width:auto; display:flex; flex-wrap:wrap; gap:6px; margin-bottom:26px; }
+    .tnav .tlab { display:none; }
+    .tnav a { margin:0; padding:7px 11px; border-color:var(--border); background:var(--panel); }
+    .tnav a.sub { display:none; }
+  }
+</style>
+</head>
+<body>
+<nav class="tnav" id="tnav">
+  <p class="tlab">Tutorials</p>
+  <a data-page="index.html">Using Fused</a>
+  <a data-page="claude.html">Claude Code</a>
+  <a data-page="annotations.html" class="cur">Annotating pages</a>
+  <a data-page="templates.html">Custom templates</a>
+</nav>
+<div class="wrap">
+  <h1>Tutorial — annotating pages</h1>
+  <p class="tag">Any file you can preview, you can <span class="y">review</span>. Annotate mode overlays a commenting layer on the page: click an element, leave a note, and the whole review travels in the URL — send someone the link and they see exactly what you marked.</p>
+
+  <!-- ---------- 1 · A LIVE PLAYGROUND ---------- -->
+  <h2><span class="n">1</span>A live playground</h2>
+  <p class="h2sub">This is the <code>how_it_works/</code> page from your workspace, opened in annotate mode. Click anything in there to leave a comment — it's real. Pins get letters (A, B, C…), and every comment shows up as a card in the sidebar.</p>
+  <div class="frame tall" id="annoFrame">
+    <div class="framebar">
+      <span class="cap"><b>how_it_works/explainer.html</b> — in annotate mode (<code>?_mode=annotate</code>)</span>
+      <a id="annoOpen" target="_blank" rel="noopener">open in the app ↗</a>
+    </div>
+    <iframe id="annoIf" title="Annotate mode on the how_it_works example, embedded live"></iframe>
+    <div class="miss">The <code>how_it_works/</code> example isn't next to this tutorial. Open any file from your workspace and pick annotate from the mode switcher instead.</div>
+  </div>
+
+  <!-- ---------- 2 · THE MOVES ---------- -->
+  <h2><span class="n">2</span>The moves</h2>
+  <p class="h2sub">Four gestures cover a whole review. All of them work in the playground above.</p>
+  <div class="steps">
+    <div class="step"><div class="num">1</div><h4>Click an element</h4>
+      <p>A composer pops up on the element. <code>Enter</code> saves, <code>Shift+Enter</code> adds a line, <code>Esc</code> cancels.</p></div>
+    <div class="step"><div class="num">2</div><h4>Select some text</h4>
+      <p>Drag across a passage to quote it — the comment anchors to that exact phrase. On images and PDFs, a click drops a pixel-accurate pin instead.</p></div>
+    <div class="step"><div class="num">3</div><h4>Resolve &amp; reopen</h4>
+      <p>Each sidebar card has a Resolve toggle. Resolved comments dim but stay in the record — flip them back anytime.</p></div>
+    <div class="step"><div class="num">4</div><h4>Delete</h4>
+      <p>Deleting removes a comment from this review's URL and marks it deleted in the permanent log, so it never comes back through a deep link. A link copied <em>before</em> the delete still carries the old comment, though — the URL is the store.</p></div>
+  </div>
+
+  <!-- ---------- 3 · THE URL IS THE REVIEW ---------- -->
+  <h2><span class="n">3</span>The URL is the review</h2>
+  <p class="h2sub">Same idea as the main tutorial's sliders: annotate keeps no private state. Comments live in the page URL's <code>comments</code> param.</p>
+  <div class="pair">
+    <div class="card">
+      <b>Share by link.</b>
+      <p>Copy the URL, send it, and the recipient opens the page with your pins in place — no account, no server-side review object. Bookmark it and the review is saved. A deep link with <code>&amp;comment=&lt;id&gt;</code> opens scrolled to one specific comment.</p>
+    </div>
+    <div class="card">
+      <b>And a permanent log.</b>
+      <p>Every comment is also appended to the file's <code>.json</code> sidecar — a write-only history that survives even if the URL is lost. When a URL grows past its size budget, the oldest <em>resolved</em> comments are dropped from the link (a banner warns you); the sidecar keeps them all.</p>
+    </div>
+  </div>
+
+  <!-- ---------- 4 · SEND THE REVIEW TO CLAUDE ---------- -->
+  <h2><span class="n">4</span>Send the review to Claude</h2>
+  <p class="h2sub">The sidebar's <b>Send to Claude</b> button flips the same file into Claude mode with your comments attached — "fix everything marked here" becomes a one-click handoff. How that chat works is the subject of the <a id="claudeTutLink"><code>claude.html</code></a> guide.</p>
+  <div class="card">
+    <div class="status">Under the hood it's just another URL: <code class="mono">_mode=claude&amp;claudeComments=&lt;your comments as JSON&gt;</code>. The review stays a link from first pin to final fix.</div>
+  </div>
+
+  <!-- ---------- OUTRO ---------- -->
+  <p class="outro"><b>Where to next:</b> back to the <a id="outroSeries"><code>index.html</code></a> overview, or see <a id="outroClaude"><code>claude.html</code></a> for the chat this hands off to.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---- locate ourselves & our siblings (same scheme as index.html) ------------
+// Served at /render?path=<abs path of this file>; folder and siblings derive
+// from the URL alone. Tutorial pages live in THIS dir; example projects one up.
+const ownPath = new URLSearchParams(window.location.search).get("path");
+const ownDir = ownPath ? ownPath.slice(0, ownPath.lastIndexOf("/")) : null;
+const parentDir = ownDir ? ownDir.slice(0, ownDir.lastIndexOf("/")) : null;
+const page = rel => ownDir ? ownDir + "/" + rel : null;
+const sibling = rel => parentDir ? parentDir + "/" + rel : null;
+// Per-segment encoding, matching the shell's own URL scheme for fs paths.
+const encPath = p => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+const embedUrl = (p, q) => "/embed/" + encPath(p) + (q || "");
+const viewUrl  = (p, q) => "/view/"  + encPath(p) + (q || "");
+
+// Nav rail: each entry points at a page in this folder; clicking navigates the
+// WHOLE shell (target=_top keeps its chrome). Hide entries that don't exist.
+document.querySelectorAll("#tnav a[data-page]").forEach(a => {
+  const p = page(a.dataset.page);
+  if (!p) { a.classList.add("gone"); return; }
+  fused.stat(p).then(() => {
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => a.classList.add("gone"));
+});
+
+// Under the open page's entry, list this page's sections (the numbered h2s)
+// as in-page jump links.
+let navAnchor = document.querySelector("#tnav a.cur");
+document.querySelectorAll(".wrap h2").forEach((h, i) => {
+  if (!h.id) h.id = "s" + (i + 1);
+  const num = h.querySelector(".n");
+  const title = Array.from(h.childNodes)
+    .filter(n => n.nodeType === Node.TEXT_NODE)
+    .map(n => n.textContent).join("").trim();
+  const a = document.createElement("a");
+  a.className = "sub";
+  a.href = "#" + h.id;
+  a.innerHTML = (num ? '<span class="sn">' + num.textContent + '</span>' : "") + title;
+  a.addEventListener("click", e => {
+    e.preventDefault();
+    h.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  navAnchor.after(a);
+  navAnchor = a;
+});
+
+// Live annotate-mode frame on how_it_works, iff it exists next door.
+const targetPath = sibling("how_it_works/explainer.html");
+if (targetPath) {
+  fused.stat(targetPath).then(() => {
+    $("annoIf").src = embedUrl(targetPath, "?_mode=annotate");
+    $("annoOpen").href = viewUrl(targetPath, "?_mode=annotate");
+  }).catch(() => $("annoFrame").classList.add("gone"));
+} else {
+  $("annoFrame").classList.add("gone");
+}
+
+// Cross-links to the other tutorial pages in this folder (stat-guarded;
+// _top so the whole shell navigates, same as the nav rail).
+function linkTo(aId, rel){
+  const p = page(rel);
+  if (!p) return;
+  fused.stat(p).then(() => {
+    const a = $(aId);
+    a.href = viewUrl(p);
+    a.target = "_top";
+  }).catch(() => {});
+}
+linkTo("outroSeries", "index.html");
+linkTo("claudeTutLink", "claude.html");
+linkTo("outroClaude", "claude.html");
+</script>
+</body>
+</html>

@@ -1,0 +1,603 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+concurrency:
+  # PR number is unique repo-wide, unlike head_ref — two fork PRs that happen
+  # to share a branch name (e.g. "patch-1") must not land in the same group
+  # and cancel each other's runs.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read # for dorny/paths-filter on pull_request
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      linux_desktop: ${{ steps.filter.outputs.linux_desktop }}
+      windows_desktop: ${{ steps.filter.outputs.windows_desktop }}
+      windows_packaging: ${{ steps.filter.outputs.windows_packaging }}
+      macos_desktop: ${{ steps.filter.outputs.macos_desktop }}
+      macos_packaging: ${{ steps.filter.outputs.macos_packaging }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            # Each platform's packaging paths live in a YAML anchor (must precede
+            # the aliases below) and are ALSO referenced into `app`, so a platform
+            # filter can never match a path `app` does not: a *_desktop filter
+            # firing therefore implies `app` fired. That invariant is load-bearing
+            # for any desktop job that depends on the `frontend` artifact — the
+            # filter firing while `app` stayed false would leave `frontend` skipped
+            # and the artifact missing. dorny/paths-filter flattens each aliased
+            # sequence into the referencing filter's list; a path shared across
+            # anchors (file_associations.*) flattening into `app` twice is harmless.
+            linux_packaging: &linux_packaging
+              - 'scripts/build_linux_appimage.sh'
+              - 'scripts/linux/**'
+              - 'scripts/file_associations.*'
+            windows_packaging: &windows_packaging
+              - 'scripts/build_windows_installer.ps1'
+              - 'scripts/windows/**'
+              - 'scripts/file_associations.*'
+            macos_packaging: &macos_packaging
+              - 'scripts/build_dmg.sh'
+              - 'scripts/setup_py2app.py'
+              - 'scripts/app_entry.py'
+              - 'scripts/file_associations.*'
+            app:
+              - 'fused_render/**'
+              - 'tests/**'
+              - 'frontend/**'
+              - 'examples_seed/**'
+              - 'scripts/hatch_build.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *linux_packaging
+              - *windows_packaging
+              - *macos_packaging
+            # Each *_desktop filter gates its platform's test job; the matching
+            # *_packaging filter gates only that job's expensive build smoke
+            # (minutes of toolchain downloads), pointless on a server-only PR.
+            # (linux-desktop keeps gating its smoke on the whole linux_desktop
+            # filter — pre-existing behavior, left unchanged.)
+            linux_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/shell/mounts/**'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *linux_packaging
+            windows_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/winopen.py'
+              # the claude template's win32 spawn/liveness/cancel paths (D160)
+              - 'fused_render/templates/claude/agent.py'
+              - 'fused_render/templates/shared/procutil.py'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *windows_packaging
+            macos_desktop:
+              - 'fused_render/supervisor/**'
+              - 'fused_render/app.py'
+              - 'fused_render/menubar_pin.py'
+              - 'fused_render/shell/mounts/**'
+              # The NSPasteboard backend: its round-trips need a real macOS
+              # login session, so this job is the only place they can run.
+              - 'fused_render/shell/pasteboard/**'
+              - 'pyproject.toml'
+              - '.github/workflows/test.yml'
+              - *macos_packaging
+
+  # The React shell (frontend/) is built once here and shared with every
+  # python-version job below — fused_render/server.py refuses to start
+  # (RuntimeError) until fused_render/static/shell-dist/ exists (D52/D54),
+  # and the output is never committed, so tests always need a fresh build.
+  frontend:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck + build shell (tsc --noEmit && vite build)
+        working-directory: frontend
+        run: npm run build
+
+      # The shell's unit tests (`bun test`, frontend/src/**/*.test.ts) run on
+      # Bun's own runner, so this job needs Bun even though the build itself is
+      # npm + vite. Without this step the suite existed and CI never ran it —
+      # the clipboard race tests, which exist precisely because those races are
+      # invisible to review, had no guard against regression.
+      #
+      # After `npm install`, so it reuses that node_modules rather than
+      # resolving the tree a second time.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run shell unit tests (bun test)
+        working-directory: frontend
+        run: bun test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist/
+          retention-days: 1
+
+  test-python:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    # Job-level permissions override (not merge with) the workflow-level
+    # block above — restated here because the coverage-comment step below
+    # needs pull-requests: write, which the other jobs must not have.
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install fused-render (dev extra)
+        run: pip install -e ".[dev]"
+
+      # shell/mounts.py shells out to rclone (D102/D103); not bundled outside
+      # the packaged macOS app, so CI installs the real binary like a dev
+      # machine would (README's "Remote storage (mounts)" section).
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Run tests
+        run: >
+          python -m pytest tests/ -v
+          --cov=fused_render --cov-report=term-missing --cov-report=xml --cov-report=html
+
+      # One representative version avoids 4 duplicate reports/artifacts for
+      # the same source tree; 3.11 is the floor for the optional fused engine
+      # (D69) so it exercises the most code paths of the matrix.
+      - name: Coverage summary
+        if: matrix.python-version == '3.11'
+        run: |
+          echo "## Coverage Report (Python ${{ matrix.python-version }})" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report -m >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          TOTAL=$(python -m coverage report --format=total)
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Total coverage: ${TOTAL}%**" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-${{ github.sha }}
+          path: |
+            htmlcov/
+            coverage.xml
+          retention-days: 30
+          # Default "warn" would let this step succeed even if pytest's --cov
+          # never wrote htmlcov/coverage.xml — fail loudly instead of quietly
+          # shipping an empty coverage artifact.
+          if-no-files-found: error
+
+      # Same action + pin as the `fused` and `application/fused-py` CI (org
+      # convention). Reads the .coverage data file pytest-cov just wrote in
+      # this same job/workspace; PR-only (no badge-storage branch on push to
+      # main, unlike some setups — this repo doesn't maintain one).
+      - name: Post coverage comment
+        if: matrix.python-version == '3.11' && github.event_name == 'pull_request'
+        uses: py-cov-action/python-coverage-comment-action@53ff7553078bad69030786e486677315346c2dd2
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  # The optional fused execution engine (D69) — the engine the migration plan
+  # promotes to default, after which the built-in executor goes away. Until this
+  # job, CI had never run it: no job installed the `[fused]` extra, so every
+  # engine.available()-gated test skipped and the green matrix said nothing
+  # about it — the param-binding divergence and the missing script-venv
+  # dependencies fixed in D167/D170 would all have been caught here.
+  #
+  # A separate job rather than adding the extra to the matrix above, for two
+  # reasons: the matrix must keep exercising the *built-in* engine (still the
+  # default per PY-12), and the extra can't be added blanket anyway — it is
+  # marked `python_version >= "3.11"`, so on the matrix's 3.10 entry it installs
+  # nothing at all and the job would silently prove nothing.
+  fused-engine:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The suite starts the HTTP server (create_app), which serves the built
+      # shell — same artifact dependency as test-python.
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v6
+        with:
+          # 3.11 is the extra's floor (the wheel's marker) and the version the
+          # matrix job already reports coverage from.
+          python-version: "3.11"
+          # The pinned wheel itself is ~3 MB and S3 serves it without
+          # Cache-Control, so pip won't reuse it — but it pulls 27 unconditional
+          # dependencies (boto3, pandas, pyarrow, cryptography, …) that are
+          # ordinary PyPI wheels, and those are what this cache holds.
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The backend builds each script's venv with `uv venv` + `uv pip install`
+      # when uv is on PATH (it falls back to `python -m venv` + pip otherwise,
+      # which works but is markedly slower). Same action the desktop jobs use.
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      # tests/test_server_env_install.py runs the install loader's own JS under
+      # node (the only way to assert which key gets polled and when the overlay
+      # comes down), and skips those four tests when node is missing. The
+      # zero-skip gate below turns any skip into a job failure, so node has to be
+      # DECLARED here: it was passing only because the current `ubuntu-latest`
+      # image happens to ship one, and a runner-image change would have failed
+      # this job for a reason unrelated to the engine. Same version as the
+      # frontend job.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install fused-render (dev + fused extras)
+        run: pip install -e ".[dev,fused]"
+
+      # shell/mounts.py shells out to rclone (D102/D103), as in test-python.
+      - name: Install rclone
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rclone
+
+      - name: Prove the engine tests run rather than skip
+        # The failure mode this job exists to avoid is looking like coverage
+        # while providing none, so it is asserted twice over:
+        #   * FUSED_RENDER_REQUIRE_FUSED_ENGINE turns engine.available() from a
+        #     skip condition into an assertion (test_engine.py);
+        #   * these three files — the real-backend integration tests, the
+        #     cross-engine binding parity table, and the install-loader HTTP
+        #     surface — must report ZERO skips on 3.11 with the extra
+        #     installed. Every OTHER reason those files can skip is provisioned
+        #     by the steps above (the extra itself, uv, rclone, and node for the
+        #     loader's JS tests), so any skip means the extra didn't take
+        #     effect. tests/test_ci_engine_gate.py keeps that list honest.
+        #     test_server_env_install
+        #     is listed because two of its tests skip without `fused` on the
+        #     matrix job, and they are the only coverage of "requirements come
+        #     from the .py, never the request body" — exactly the kind of
+        #     silent CI skip that let a broken bundle ship.
+        # `shell: bash` for pipefail: without it the pipe into tee would hide
+        # pytest's exit code.
+        shell: bash
+        env:
+          FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
+        run: |
+          python -m pytest tests/test_engine.py tests/test_engine_parity.py \
+            tests/test_server_env_install.py -q -rs \
+            | tee engine-tests.log
+          if grep -qE '[0-9]+ skipped' engine-tests.log; then
+            echo "::error::engine tests skipped in the job whose whole purpose is to run them"
+            exit 1
+          fi
+
+      - name: Run the full suite with the fused engine installed
+        # Not just the engine files: `fused` being importable changes what
+        # server.py resolves (engine selection, /api/config) and what the
+        # deploy/pinned-wheel tests can see, so the whole suite is the honest
+        # check that installing the extra doesn't break anything else.
+        env:
+          FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
+        run: python -m pytest tests/ -q
+
+  # Does the macOS bundle actually contain what `[bundled]` promises? Same shape
+  # of hole as `fused-engine` above, one extra along: tests/test_bundle_contents.py
+  # can only speak about a distribution it finds real metadata for, and the
+  # matrix installs `.[dev]`, which carries none of `[bundled]`. So the file ran
+  # everywhere and asserted almost nothing — a green check for the invariant that
+  # a DMG had already violated (D176: `python-pptx` missing, the slides template
+  # telling a DMG user to `pip install`).
+  #
+  # build_dmg.sh now runs the same file in its build venv, which is the strongest
+  # place for it, but that build is gated on `macos_packaging` — which does NOT
+  # include pyproject.toml. Adding a distribution to `[bundled]` is exactly the
+  # change this test polices and exactly the change that would not have built a
+  # DMG, so this job exists to catch it: `app` fires on pyproject.toml.
+  #
+  # ubuntu, not macos: the reconciliation reads pyproject.toml and imports
+  # setup_py2app.py (stdlib + fused_render only, its build work behind a
+  # `py2app in sys.argv` guard), so nothing here needs a Mac — only the metadata
+  # of a real `[bundled]` install. One install on one cheap runner.
+  bundle-contents:
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.app == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          # 3.12 is what all three desktop builds ship, so the markers this
+          # resolves are the ones the bundle actually gets.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install fused-render (dev + bundled extras)
+        run: pip install -e ".[dev,bundled]"
+
+      - name: Reconcile the bundle against what [bundled] installed
+        # FUSED_RENDER_REQUIRE_BUNDLED=1 is what makes this job load-bearing
+        # rather than decorative: it turns the file's per-distribution "not
+        # installed here" skips into failures, so if this install ever stops
+        # carrying `[bundled]`, the job fails instead of passing vacuously.
+        env:
+          FUSED_RENDER_REQUIRE_BUNDLED: "1"
+        run: python -m pytest tests/test_bundle_contents.py -q -rs
+
+  # Linux desktop supervisor (docs/LINUX_DESKTOP_SPEC.md). With the
+  # linux-desktop extra installed, the _linux backend tests EXECUTE here instead
+  # of skipping as they do on macOS — this job is where gate (a) (no-orphans)
+  # runs in CI form. Desktop-session gates (tray, dialogs, open-with) stay a
+  # manual checklist in the spec: a headless runner cannot see them.
+  linux-desktop:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      # desktop-file-utils provides desktop-file-validate, which appimagetool
+      # runs against the bundled .desktop file during the AppImage build smoke.
+      # (No rclone install here: every test file below monkeypatches or never
+      # execs rclone, and the build script downloads its own pinned binary.)
+      - name: Install desktop-file-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils
+
+      - name: Install fused-render (dev + linux-desktop extras)
+        run: pip install -e ".[dev,linux-desktop]"
+
+      - name: Lint the AppImage build script
+        # Errors only — style/info findings are a manual review concern, not a
+        # gate (the script cannot be run end-to-end off-Linux; see the spec).
+        run: shellcheck --severity=error scripts/build_linux_appimage.sh
+
+      - name: Run the Linux backend + packaging suite
+        # These skip on macOS but execute here: the process-tree gate,
+        # Unix-socket IPC, XDG paths/autostart/UI resolution, the tray retry
+        # contract, the association-table sync, and rclone_bin resolution.
+        env:
+          # pystray picks its backend at import time; on a headless runner the
+          # X11 backend raises DisplayNameError during test collection. The
+          # tray test stubs the run loop anyway — force the dummy backend.
+          PYSTRAY_BACKEND: dummy
+        run: >
+          python -m pytest -q
+          tests/test_supervisor_core.py
+          tests/test_supervisor_linux_tree.py
+          tests/test_supervisor_linux_instance.py
+          tests/test_supervisor_linux_paths.py
+          tests/test_supervisor_linux_tray.py
+          tests/test_supervisor_tray.py
+          tests/test_file_associations.py
+          tests/test_mounts_rclone_bin.py
+
+      - name: Build the AppImage (smoke)
+        # Exercises the full pipeline (wheel → relocatable CPython → desktop
+        # extra → DuckDB extensions → bundled uv + rclone → import/_child.py/
+        # rclone smoke tests → AppDir → appimagetool with the static runtime).
+        # Step-gated to desktop/packaging changes: it's minutes of toolchain
+        # downloads, pointless on a server-only PR.
+        if: needs.detect-changes.outputs.linux_desktop == 'true'
+        env:
+          # The default (level 22, release.yml doesn't set this so it keeps
+          # getting the smallest real download) took ~4 of this job's ~5
+          # minutes compressing the sci-stack-heavy payload with mksquashfs —
+          # CPU the smoke build throws away seconds later. This artifact is
+          # never shipped, so trade compression ratio for speed.
+          FUSED_RENDER_APPIMAGE_COMPRESSION_LEVEL: "3"
+        run: bash scripts/build_linux_appimage.sh
+
+  # Windows desktop supervisor (docs/PYTHON_SUPERVISOR_SPEC.md). The _win32
+  # backend, the Explorer "Open with" entry point (winopen.py), the
+  # ed25519-signed update-manifest verifier, and the claude template's win32
+  # spawn/liveness/cancel paths (D160) run here on real Windows — the Linux
+  # matrix only ever simulates them. No shell-dist dependency: none of these
+  # tests start the HTTP server (create_app), so the frontend artifact isn't
+  # needed.
+  windows-desktop:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.windows_desktop == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install fused-render (dev + windows-desktop extras)
+        run: python -m pip install -e ".[dev,windows-desktop]"
+
+      - name: Run the Windows backend suite
+        # test_supervisor_core is platform-neutral but its backend import
+        # succeeds on win32 (it raises → skips on darwin), so it executes here.
+        run: >
+          python -m pytest -q
+          tests/test_supervisor_core.py
+          tests/test_win_supervisor_update.py
+          tests/test_windows_registry.py
+          tests/test_winopen.py
+          tests/test_claude_agent_windows.py
+
+      # Dropped from the windows runner image (actions/runner-images#11644); the
+      # build script finds ISCC.exe where choco installs it. Setup copied from
+      # release.yml's build-windows-release job.
+      - name: Install Inno Setup
+        if: needs.detect-changes.outputs.windows_packaging == 'true'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - uses: astral-sh/setup-uv@v9.0.0
+        if: needs.detect-changes.outputs.windows_packaging == 'true'
+
+      - name: Build the Windows installer (smoke)
+        # Secret-free: the ed25519 manifest signing (FUSED_RENDER_UPDATE_SIGNING_
+        # KEY) happens in release.yml AFTER this script, not inside it. Step-gated
+        # to packaging changes — minutes of toolchain work (embeddable CPython,
+        # launcher compile, Inno Setup), pointless on a server-only PR.
+        if: needs.detect-changes.outputs.windows_packaging == 'true'
+        shell: pwsh
+        run: .\scripts\build_windows_installer.ps1
+
+  # macOS menu-bar app (SPEC DM-3/DM-7). darwin has no supervisor backend (only
+  # win32/linux), so the supervisor-core tests skip here; what this job uniquely
+  # covers is the darwin-only code the Linux matrix never runs — the nfsmount
+  # options in shell/mounts.py (test_shell_mounts.py's @skipif(platform != darwin)
+  # tests) — plus the macOS app entry (view-url mapping, in-process desktop
+  # instance/token) and the NSPasteboard clipboard bridge on real macOS.
+  # test_pasteboard_darwin.py is here for the same reason as the mounts tests
+  # and no other: its round-trips drive the real login-session pasteboard, so
+  # the Linux matrix skips every one of them. Without this job running it, the
+  # backend had no coverage anywhere on any platform — which is how a missing
+  # pyobjc went unnoticed while the bridge reported `supported: false` on every
+  # dev machine (the tests skipped for the very import that was absent).
+  # test_shell_mounts.py starts the HTTP server
+  # (create_app) through its client fixture, which refuses without the React
+  # shell, so this job depends on `frontend` and downloads shell-dist.
+  macos-desktop:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.macos_desktop == 'true' && needs.frontend.result == 'success'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      # build_dmg.sh copies the host's uv INTO the bundle: the macOS app ships no
+      # `venv`, `ensurepip` or `pip` module, so the install loader (SPEC PY-18) has
+      # no other way to build a script venv there (D176). The Linux and Windows
+      # build scripts already require uv on the host the same way; macOS runners
+      # do not have it preinstalled, so the build fails loudly without this.
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install fused-render (dev extra)
+        run: pip install -e ".[dev]"
+
+      - name: Run the macOS backend suite
+        run: >
+          python -m pytest -q
+          tests/test_shell_mounts.py
+          tests/test_app_desktop_instance.py
+          tests/test_app_view_url.py
+          tests/test_pasteboard_darwin.py
+
+      - name: Build the DMG (smoke)
+        # build_dmg.sh falls back to ad-hoc signing when no Developer ID identity
+        # is configured (FUSED_RENDER_CODESIGN_IDENTITY unset) and skips
+        # notarization — a plain run needs no release secrets. Step-gated to
+        # packaging changes: py2app + the full [bundled] install is several
+        # minutes. setup-python 3.12 above satisfies the script's own version
+        # check (str | None syntax, py>=3.10), same as release.yml's DMG job.
+        if: needs.detect-changes.outputs.macos_packaging == 'true'
+        run: bash scripts/build_dmg.sh
+
+  test-status:
+    name: Test Status
+    runs-on: ubuntu-latest
+    needs: [detect-changes, frontend, test-python, fused-engine, bundle-contents, linux-desktop, windows-desktop, macos-desktop]
+    if: always()
+    steps:
+      - name: Check test status
+        run: |
+          # A cancelled detect-changes means THIS RUN was superseded by
+          # concurrency-cancel (a newer push); failing here paints a red X on
+          # the history of a run nobody cares about. Neutral pass instead.
+          if [[ "${{ needs.detect-changes.result }}" == "cancelled" ]]; then
+            echo "Run superseded (detect-changes cancelled); nothing to verify."
+            exit 0
+          fi
+          if [[ "${{ needs.detect-changes.result }}" != "success" ]]; then
+            echo "detect-changes did not succeed (${{ needs.detect-changes.result }})"
+            exit 1
+          fi
+          if [[ "${{ needs.detect-changes.outputs.app }}" != "true" ]]; then
+            echo "No relevant changes; skipped."
+            exit 0
+          fi
+          # app fired ⇒ these five always run (they gate on app only), so
+          # anything other than success is a failure.
+          for result in "${{ needs.frontend.result }}" "${{ needs.test-python.result }}" "${{ needs.fused-engine.result }}" "${{ needs.linux-desktop.result }}" "${{ needs.bundle-contents.result }}"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Job did not succeed: $result"
+              exit 1
+            fi
+          done
+          # windows-desktop/macos-desktop gate on their OWN filters, so a
+          # "skipped" (filter did not fire) is a legitimate pass. Truth table
+          # per job: success → pass, skipped → pass, failure → fail,
+          # cancelled → fail.
+          for result in "${{ needs.windows-desktop.result }}" "${{ needs.macos-desktop.result }}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "Platform desktop job did not succeed or skip: $result"
+              exit 1
+            fi
+          done
+          echo "Tests passed"
+          exit 0
