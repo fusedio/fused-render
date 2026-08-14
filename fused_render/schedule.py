@@ -190,6 +190,21 @@ _events_lock = threading.Lock()
 # across THOSE would drop a cancel or resurrect a fired entry.
 _lock = threading.RLock()
 
+# Serialises the wake stub's launchctl pair. Separate from `_lock` because
+# `_sync_wake` must not hold the store lock across two subprocesses; see there for
+# why it also has to RE-READ rather than take a snapshot from its caller.
+# Lock order is `_wake_lock` then `_lock`, never the reverse.
+_wake_lock = threading.Lock()
+
+# Entry ids whose turn THIS process is watching.
+#
+# The store cannot answer that question, and that is the whole reason this exists:
+# `sent` with no `turn` is what a LIVE turn looks like and equally what one
+# abandoned by a killed process looks like. Only the difference decides whether the
+# sweep should close the entry, and only a live process knows it.
+_watched: set[str] = set()
+_watched_lock = threading.Lock()
+
 _thread: threading.Thread | None = None
 _thread_lock = threading.Lock()
 
@@ -342,14 +357,41 @@ def _pending_due(entries: list[dict]) -> list[str]:
     return [str(e.get("due") or "") for e in entries if e.get("state") == PENDING]
 
 
-def _sync_wake(due: list[str]) -> None:
+def _watching(entry_id: str, on: bool) -> None:
+    """Mark (or unmark) an entry as having a live watcher in THIS process."""
+    with _watched_lock:
+        if on:
+            _watched.add(entry_id)
+        else:
+            _watched.discard(entry_id)
+
+
+def _is_watched(entry_id: str) -> bool:
+    with _watched_lock:
+        return entry_id in _watched
+
+
+def _sync_wake() -> None:
     """Tell the OS-side wake stub which times still matter.
 
     **Called OUTSIDE `_lock`, always.** On macOS this shells out to `launchctl`
     twice, and holding the store lock across two subprocesses would make every
     tick able to stall a `GET /api/schedule` for as long as launchd takes to
-    answer. Callers therefore snapshot the pending times under the lock and sync
-    after releasing it.
+    answer.
+
+    **Reads the pending times itself**, under `_wake_lock`, rather than taking a
+    snapshot from the caller. Snapshotting was the first shape and it lost writes:
+    each caller sampled the times inside its own `_lock` block and synced after
+    releasing, so two mutations racing could reach `launchctl` in the opposite
+    order and the OLDER snapshot would overwrite the plist — dropping the newer
+    message's time, with nothing to resync until the next store mutation happened
+    to come along. A message scheduled in that window simply missed its wake. One
+    lock serialises the launchctl pair, and re-reading inside it means whoever
+    writes the plist last also read the store last.
+
+    Lock order is `_wake_lock` then `_lock`, and nothing may take `_wake_lock`
+    while holding `_lock` — the reverse pairing deadlocks, which is what the
+    "outside `_lock`, always" rule above is really protecting.
 
     Best-effort by construction: the wake stub only makes the app more likely to
     be RUNNING at a due time, and everything about firing works without it. A
@@ -358,7 +400,10 @@ def _sync_wake(due: list[str]) -> None:
     try:
         from fused_render import schedule_wake
 
-        schedule_wake.sync(due)
+        with _wake_lock:
+            with _lock:
+                due = _pending_due(_read())
+            schedule_wake.sync(due)
     except Exception:  # noqa: BLE001 — a wake stub must never break the schedule
         logger.debug("could not sync the schedule wake stub", exc_info=True)
 
@@ -457,8 +502,7 @@ def create(target: str, message: str, due, session_id: str = "",
         entries = _read()
         entries.append(entry)
         _write(entries)
-        due_times = _pending_due(entries)
-    _sync_wake(due_times)
+    _sync_wake()
     return entry
 
 
@@ -475,28 +519,27 @@ def cancel(entry_id: str) -> dict | None:
                 entry["state"] = CANCELLED
                 _write(entries)
                 cancelled = entry
-                due_times = _pending_due(entries)
                 break
     if cancelled is None:
         return None
-    _sync_wake(due_times)
+    _sync_wake()
     return cancelled
 
 
 def _update(entry_id: str, **fields) -> None:
     """Merge `fields` into one entry, re-reading under the lock so a concurrent
     cancel or create is not clobbered by a stale copy."""
-    due_times = None
+    written = False
     with _lock:
         entries = _read()
         for entry in entries:
             if entry.get("id") == entry_id:
                 entry.update(fields)
                 _write(entries)
-                due_times = _pending_due(entries)
+                written = True
                 break
-    if due_times is not None:
-        _sync_wake(due_times)
+    if written:
+        _sync_wake()
 
 
 # --------------------------------------------------------------- the firing
@@ -544,6 +587,31 @@ def _claim_due(now: datetime) -> list[dict]:
                     announce.append((EVENT_FAILED, dict(entry), entry["error"]))
                     changed = True
                 continue
+            if state == SENT and not entry.get("turn"):
+                # Sent, with the turn still open. In a live process that is the
+                # NORMAL shape of a running turn and `_watch_turn` owns it; with
+                # nothing watching, the process that was watching died mid-turn and
+                # nobody is ever coming back for it.
+                #
+                # `_close_unwatched` is the in-process floor under an ending watch
+                # and cannot cover this — the whole thread went with the process —
+                # so the sweep is the only place a restart can notice. Left alone
+                # the entry costs the user three separate things: the page reads
+                # `Running…` for ever, no toast ever says what happened, and its
+                # session stays in `_busy_sessions`, so the NEXT scheduled message
+                # to that conversation is held back tick after tick until the
+                # catch-up bound gives up and calls it missed.
+                #
+                # `state` stays SENT because that is true — the message did go —
+                # and `turn` becomes `unknown`, the same verdict and the same word
+                # `_close_unwatched` uses for a watch that ended without one.
+                if not _is_watched(str(entry.get("id") or "")):
+                    entry["turn"] = "unknown"
+                    entry["error"] = ("interrupted: the app stopped while this "
+                                      "message's turn was running")
+                    announce.append((EVENT_FAILED, dict(entry), entry["error"]))
+                    changed = True
+                continue
             if state != PENDING:
                 continue
             try:
@@ -565,13 +633,12 @@ def _claim_due(now: datetime) -> list[dict]:
                 continue
             # Due and sendable. Left PENDING — `_claim` takes it, one at a time.
             due.append((when, str(entry["id"])))
-        due_times = _pending_due(entries) if changed else None
         if changed:
             _write(entries)
     for kind, entry, detail in announce:
         _emit(kind, entry, detail)
-    if due_times is not None:
-        _sync_wake(due_times)
+    if changed:
+        _sync_wake()
     # BY DUE TIME, not by store order. The store is in creation order, and the two
     # disagree the moment a catch-up pass finds several messages overdue at once:
     # something scheduled this morning for tonight would go before something
@@ -602,11 +669,10 @@ def _claim(entry_id: str, now: datetime) -> dict | None:
             entry["fired"] = now.isoformat()
             _write(entries)
             claimed = dict(entry)
-            due_times = _pending_due(entries)
             break
         else:
             return None
-    _sync_wake(due_times)
+    _sync_wake()
     return claimed
 
 
@@ -636,6 +702,12 @@ def _send(entry: dict) -> None:
     if res.get("error") or not run_id:
         _fail(entry, str(res.get("error") or "failed to start session"))
         return
+    # Registered BEFORE the store says `sent`, and that order is the point: the
+    # sweep treats a `sent` entry with nothing watching it as abandoned, so a
+    # window where this one is already `sent` but not yet registered is a window in
+    # which a concurrent sweep would close a turn that is about to be watched
+    # perfectly well.
+    _watching(entry["id"], True)
     _update(entry["id"], state=SENT, run_id=str(run_id), error="")
     # The row opens `running` and stays that way for the whole TURN, not just the
     # spawn — the spawn takes a moment and the turn can take minutes, and the
@@ -653,6 +725,11 @@ def _send(entry: dict) -> None:
             daemon=True, name="fused-schedule-session-record").start()
     except Exception:  # noqa: BLE001
         logger.debug("could not start the sidecar-recording thread", exc_info=True)
+        # Nothing is watching and nothing will, so say so now rather than leave the
+        # sweep to notice a turn it cannot distinguish from one abandoned by a dead
+        # process — this one is abandoned in a live process, and immediately.
+        _watching(entry["id"], False)
+        _close_unwatched(entry, "could not start the watcher for this turn")
 
 
 def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
@@ -717,20 +794,30 @@ def _watch_turn(entry: dict, run_id: str) -> None:
     logic as "nothing to say", so a row sat live forever and the user was never
     told. `_close_unwatched` is the floor under all of them: a `load_agent` that
     raises, a `_poll` that raises, and the tick cap (~1h) that a genuinely long
-    turn can outrun."""
+    turn can outrun.
+
+    What it is NOT a floor under is the process dying, because this thread dies
+    with it. That case belongs to the sweep, which is why the `finally` here has to
+    run on every path: while this id is registered the sweep leaves the entry
+    alone, so failing to deregister would make a finished turn look permanently
+    live to the next sweep — the same stuck row, arrived at from the other side."""
     try:
-        agent = claude_spawn.load_agent()
-    except Exception:  # noqa: BLE001
-        logger.debug("could not load the agent backend to watch a run", exc_info=True)
-        _close_unwatched(entry, "could not read the run's progress")
-        return
-    claude_spawn.record_session_when_ready(
-        agent, run_id,
-        on_tick=lambda data: _turn_tick(entry, run_id, agent, data))
-    # Back here means the poll loop is finished. If `_turn_tick` saw `done` it
-    # already recorded the outcome and this is a no-op; anything else and the watch
-    # ended without one.
-    _close_unwatched(entry, "stopped reporting before the turn finished")
+        try:
+            agent = claude_spawn.load_agent()
+        except Exception:  # noqa: BLE001
+            logger.debug("could not load the agent backend to watch a run",
+                         exc_info=True)
+            _close_unwatched(entry, "could not read the run's progress")
+            return
+        claude_spawn.record_session_when_ready(
+            agent, run_id,
+            on_tick=lambda data: _turn_tick(entry, run_id, agent, data))
+        # Back here means the poll loop is finished. If `_turn_tick` saw `done` it
+        # already recorded the outcome and this is a no-op; anything else and the
+        # watch ended without one.
+        _close_unwatched(entry, "stopped reporting before the turn finished")
+    finally:
+        _watching(entry["id"], False)
 
 
 def _close_unwatched(entry: dict, reason: str) -> None:
