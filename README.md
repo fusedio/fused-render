@@ -142,6 +142,13 @@ Any `.html` file can call it and bind the result to the URL:
   chosen for you if you don't pass one, so a render is always repeatable). It
   runs for minutes, so `onProgress` fires per denoising step and the download
   manager's ✕ really stops it.
+- `fused.ai.transcribe({path, ...})` — speech to text, locally: point it at an
+  audio or video file on this machine and it resolves with the words plus the
+  `{start, end, text}` segments that carry their timestamps. `task` picks
+  between transcribing in the original language and translating to English; the
+  language is auto-detected unless you name one. It runs for minutes, so
+  `onProgress` fires with seconds of audio and the download manager's ✕ really
+  stops it, and the transcript is written to a file so it outlives the tab.
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).
@@ -162,7 +169,8 @@ Any `.html` file can call it and bind the result to the URL:
   it describes. Your page is the only thing that can stop its own work, so the
   ✕ here is a *request* you honour by checking `cancelRequested`.
 - `fused.watchJob(id)` — the other half: watch work the **server** is doing
-  (`fused.ai.image()` and `fused.ai.models.load()` both hand you an id) with
+  (`fused.ai.image()`, `fused.ai.transcribe()` and `fused.ai.models.load()` all
+  hand you an id) with
   `.onUpdate(cb)`, `.get()` and a `.cancel()` that really stops it — the server
   owns those processes, so its ✕ is an act rather than a request.
 

@@ -185,11 +185,16 @@ where a first model comes from.
     environment, which shows as its own row in the download manager before any
     weights are fetched.
 - **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
-  local chat model instead of Claude, and `fused.ai.image({prompt})` renders a
-  picture — both through the same download manager, so a page that asks for a
-  model you don't have yet shows the download rather than hanging. Images land
-  in `~/.fused-render/ai/images/`, named by the time they were made, and the
-  seed comes back with every one so you can make the same picture again.
+  local chat model instead of Claude, `fused.ai.image({prompt})` renders a
+  picture, and `fused.ai.transcribe({path})` turns a recording into text — all
+  through the same download manager, so a page that asks for a model you don't
+  have yet shows the download rather than hanging. Images land in
+  `~/.fused-render/ai/images/`, named by the time they were made, and the seed
+  comes back with every one so you can make the same picture again. Transcripts
+  land in `~/.fused-render/ai/transcripts/` as a `.json` carrying every
+  segment's timestamps and a plain `.txt` beside it — written to disk, so a
+  transcription that took twenty minutes survives closing the tab that asked
+  for it.
 - **Two tabs: Local and Discover.** Local is what this machine has; Discover is
   what the Hub has. Which one is showing is part of the address (`?tab=discover`),
   so you can bookmark or share a link to either — and the **back button** returns

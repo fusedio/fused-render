@@ -6256,7 +6256,16 @@ an AI Models page that could say what was on disk but not what was *running*.
   on to write a transcript nobody was told about, still holding `GENERATE_LOCK`
   so every queued request repeated it. It is a backstop, not the stop: the ✕
   makes the worker reply and an unload closes the socket, both in seconds.
-  One row per RECORDING (`sys:ai-transcribe:<uid>`). The
+  **A second transcription waits on the SUPERVISOR's side, not inside the
+  worker.** The worker serializes generations anyway, but by parking the second
+  request before its handler reaches `heartbeat()` — so with a four-hour
+  timeout that row got no ticks for hours and hit every timer in §36: stalled
+  at 30s ("no longer reporting" about work that is merely queued), swept at
+  600s, after which the bridge is told a still-running transcription failed.
+  Holding a supervisor-side lock instead is what makes the wait describable —
+  the row says it is queued, keeps saying so, and its ✕ is honoured, none of
+  which is reachable from inside a blocked `urlopen` that has sent the worker
+  nothing to cancel. One row per RECORDING (`sys:ai-transcribe:<uid>`). The
   transcript is written under `<home>/ai/transcripts/` as a `.json` (segments
   with timestamps, language, duration, model) and a `.txt` (plain words) —
   **segments, not a flat token stream**, because the timestamps are most of what
