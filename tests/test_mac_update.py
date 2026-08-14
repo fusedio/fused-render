@@ -71,7 +71,9 @@ def test_detect_method_dmg_when_brew_errors(tmp_path):
 
 
 def _manager(monkeypatch, *, method="dmg", available=None, current="0.4.10"):
-    manager = mac.UpdateManager(bundle="/Applications/FusedRender.app", method=method)
+    # A bundle path that exists on no machine: _disk_version() must read None
+    # so these tests never see the developer's real /Applications install.
+    manager = mac.UpdateManager(bundle="/nonexistent/FusedRender.app", method=method)
     monkeypatch.setattr(mac, "__version__", current)
     if available is not None:
         manifest = {"schema": 1, "version": available, "url": "https://x/y.dmg",
@@ -204,9 +206,40 @@ def test_brew_success_lands_installed(monkeypatch):
     monkeypatch.setattr(
         mac.subprocess, "run",
         lambda cmd, **kwargs: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
+    # brew exit 0 alone must not count — the bundle on disk proves the install.
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
     manager.install()
     manager._install_thread.join(timeout=5)
     assert manager.status()["state"] == "installed"
+
+
+def test_brew_exit_zero_with_stale_tap_is_an_error(monkeypatch):
+    """brew exits 0 without upgrading when the tap bump hasn't landed yet; the
+    manager must not claim "installed" while the bundle on disk is still old."""
+    manager = _manager(monkeypatch, method="brew", available="9.9.9")
+    manager.check()
+    monkeypatch.setattr(mac, "find_brew", lambda: "/fake/brew")
+    monkeypatch.setattr(
+        mac.subprocess, "run",
+        lambda cmd, **kwargs: types.SimpleNamespace(returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(manager, "_disk_version", lambda: "0.4.10")
+    manager.install()
+    manager._install_thread.join(timeout=5)
+    status = manager.status()
+    assert status["state"] == "error"
+    assert "tap" in status["error"]
+    assert status["manual_command"] == "brew upgrade --cask fused-render"
+
+
+def test_check_reports_installed_once_disk_has_the_update(monkeypatch):
+    """After a swap (ours or a manual brew upgrade) the running __version__ is
+    still old; a later auto-check must land on "installed", not flip back to
+    "available" with a live install button."""
+    manager = _manager(monkeypatch, available="9.9.9")
+    monkeypatch.setattr(manager, "_disk_version", lambda: "9.9.9")
+    status = manager.check()
+    assert status["state"] == "installed"
+    assert status["latest_version"] == "9.9.9"
 
 
 # ---- dmg helpers ---------------------------------------------------------------

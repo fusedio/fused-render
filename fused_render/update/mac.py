@@ -183,15 +183,37 @@ class UpdateManager:
                     # transient failure.
                     self._state = "available" if self._latest else "idle"
             return self.status()
+        # The bundle on disk, not the running __version__, decides "already
+        # installed": after a successful swap (ours, brew's, or a manual one
+        # in a terminal) this process still runs the old code, and comparing
+        # against __version__ alone would flip a completed install back to
+        # "available" — offering a second swap against an already-new bundle.
+        disk = self._disk_version()
         with self._lock:
             if self._state == "checking":
-                if newer:
+                if newer and disk is not None and not common.is_newer(
+                        manifest["version"], disk):
+                    self._latest = manifest
+                    self._state = "installed"
+                elif newer:
                     self._latest = manifest
                     self._state = "available"
                 else:
                     self._latest = None
                     self._state = "idle"
         return self.status()
+
+    def _disk_version(self) -> str | None:
+        """CFBundleShortVersionString of the bundle on disk — what would launch
+        next time (same read as installed.installed_version, but against this
+        manager's bundle path so tests can point it at a fixture)."""
+        if self._bundle is None:
+            return None
+        try:
+            with open(os.path.join(self._bundle, "Contents", "Info.plist"), "rb") as f:
+                return plistlib.load(f).get("CFBundleShortVersionString")
+        except (OSError, plistlib.InvalidFileException):
+            return None
 
     # -- installing -----------------------------------------------------------
 
@@ -219,7 +241,7 @@ class UpdateManager:
     def _install(self, manifest: dict) -> None:
         try:
             if self.method() == "brew":
-                self._install_brew()
+                self._install_brew(manifest)
             elif self.method() == "dmg":
                 self._install_dmg(manifest)
             else:
@@ -236,7 +258,7 @@ class UpdateManager:
 
     # -- brew path ------------------------------------------------------------
 
-    def _install_brew(self) -> None:
+    def _install_brew(self, manifest: dict) -> None:
         brew = find_brew()
         command = f"brew upgrade --cask {CASK_NAME}"
         if brew is None:
@@ -260,6 +282,19 @@ class UpdateManager:
             with self._lock:
                 self._manual_command = command
             raise RuntimeError("brew upgrade failed: " + " / ".join(tail))
+        # brew exits 0 without upgrading anything when it considers the cask
+        # current — which it is whenever the tap bump (release CI's last job)
+        # hasn't landed yet, since the signed manifest publishes first. Only
+        # the bundle on disk proves the install happened.
+        target = manifest["version"]
+        disk = self._disk_version()
+        if disk is None or common.is_newer(target, disk):
+            with self._lock:
+                self._manual_command = command
+            raise RuntimeError(
+                f"brew finished but the installed app is still v{disk or 'unknown'} "
+                f"— v{target} may not have reached the Homebrew tap yet. "
+                "Try again in a few minutes.")
 
     # -- dmg path -------------------------------------------------------------
 
