@@ -840,6 +840,12 @@
     padding: 8px 12px;
     border-radius: 10px;
   }
+  /* ...and once it IS history it is parked inside the turn it belongs to
+     (parkResolvedCard), where it is a sibling of the segment views rather than a
+     top-level turn — so it takes their vertical rhythm instead of a turn's 20px
+     gutter, and sits on the reply's text column because `.assistant` is a flex
+     row and the body is its second item. */
+  .assistant .body > .perm { margin: 8px 0; }
   .perm.resolved .plan-body,
   .perm.resolved .qtext,
   .perm.resolved .perm-sub { color: var(--dim); }
@@ -851,7 +857,15 @@
   .perm .perm-head { font-size: 13px; color: var(--dim); }
   .perm .perm-head .tool { color: var(--accent-text); font-weight: 600; }
   .perm .perm-sub { color: var(--dim); word-break: break-word; font-size: 12px; margin-top: 2px; }
-  .perm pre {
+  /* The second selector is the SAME rule one class richer, for a card that has
+     been parked back into its turn (parkResolvedCard): inside `.assistant` the
+     `.assistant pre` rule far below matches too, at equal specificity and later
+     in the sheet — so it would win and hand the card's payload box `white-space:
+     pre` and no height cap, i.e. a long Bash command that scrolls sideways
+     instead of wrapping and a 400-line body with no ceiling. Restating the
+     selector is enough to outrank it wherever the card sits. */
+  .perm pre,
+  .assistant .perm pre {
     /* Anchors .copybtn, top-right — attachCodeCopy runs on a plan card's body
        too (buildPlanCard), and without this its absolutely-positioned button
        escapes to the nearest positioned ancestor instead of its own pre. */
@@ -1549,6 +1563,50 @@
     margin: 0 auto;
     padding: 8px 20px 6px;
   }
+  /* The live artifacts strip: a page Claude publishes DURING a turn, announced
+     while the turn is still going. It sits under the composer rather than in the
+     transcript because it is not part of what was said — the transcript's own
+     record of a publish is a tool chip that scrolls away, and the thing the user
+     wants afterwards ("open the page you just made") must not scroll with it.
+     A chip row, not the landing page's stacked rows: this is an accumulating
+     count of small identical things beside a live conversation, which is the
+     same job .annchips does two elements up, so it takes that shape.
+     `hidden` rather than an inline `display`, because a child of #chat may not
+     carry an inline display — see the #inputbox rule (D146, and
+     tests/test_claude_narrow.py pins it). The [hidden] rule below is needed for
+     the same reason .annchips-style flex boxes need one: `display: flex`
+     outranks the UA's `[hidden]`. */
+  #artstrip {
+    flex-shrink: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-width: 720px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 2px 24px 6px;
+  }
+  #artstrip[hidden] { display: none; }
+  #chat.home #artstrip { display: none; }
+  .art-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 220px;
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 11.5px;
+    text-decoration: none;
+  }
+  .art-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .art-chip .art-chip-lbl { overflow: hidden; text-overflow: ellipsis;
+                            white-space: nowrap; }
+  .art-chip .art-chip-go { color: var(--faint); flex-shrink: 0; }
+  .art-chip:hover .art-chip-go { color: var(--accent); }
+
   #footnote {
     max-width: 720px;
     margin: 0 auto;
@@ -1727,7 +1785,12 @@
     align-items: center;
     padding-top: 14vh;
   }
-  #home .inner { width: 100%; max-width: 620px; padding: 0 24px; }
+  /* The bottom breathing room belongs to the COLUMN, not to each section: every
+     landing section used to end in its own `padding-bottom: 32px`, which only
+     the last one needed and which added itself to the next one's `margin-top`
+     for a 60px gutter between blocks that read as three unrelated screens
+     stacked. One 32px here, one margin per block below. */
+  #home .inner { width: 100%; max-width: 620px; padding: 0 24px 32px; }
   .home-title {
     font-size: 26px;
     font-weight: 600;
@@ -1746,7 +1809,51 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  #recent { margin-top: 28px; padding-bottom: 32px; }
+  /* ONE block for the two cross-session lists — past chats and published
+     artifacts — because they are two answers to the same question ("what has
+     happened here before?") and stacking them cost the landing page two
+     headings, two 60px gutters and an artifacts section pushed so far down it
+     was below the fold on a short pane. Where there is something in both, the
+     block wears a TAB BAR and shows one list at a time; where only one of them
+     exists it is just that list under its own heading, exactly as before, since
+     a tab bar with one tab is a label pretending to be a control. */
+  #lists { margin-top: 28px; }
+  #listtabs {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+  /* `display: flex` outranks the UA's `[hidden]` rule. */
+  #listtabs[hidden] { display: none; }
+  /* The tabs ARE the section headings — same 11px uppercase letter-spaced
+     micro-type as every other label on this page (.head below), so switching
+     lists never changes the shape of the screen. The only thing that marks the
+     active one is ink plus a hairline under it; a pair of pills here would be
+     the loudest object on a landing page whose subject is the composer. */
+  .list-tab {
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    color: var(--faint);
+    background: none;
+    border: 0;
+    border-bottom: 1.5px solid transparent;
+    border-radius: 0;
+    padding: 0 0 4px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .list-tab:hover { color: var(--fg); }
+  .list-tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .list-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .list-tab .tab-count { font-weight: 400; letter-spacing: 0; }
+  /* Tabbed: the bar names both lists, so the per-list headings would say the
+     active tab's label twice. */
+  #lists.tabbed #recent .head, #lists.tabbed #artifacts .head { display: none; }
   #recent .head {
     color: var(--faint);
     font-size: 11px;
@@ -1902,6 +2009,68 @@
   .snap-note { color: var(--faint); flex-basis: 100%; }
   .snap-err { color: var(--error); }
   #snapsnote { color: var(--faint); font-size: 11.5px; padding: 4px; }
+
+  /* Artifacts: the pages Claude PUBLISHED from this target's working directory.
+     Now the SECOND HALF of #lists rather than a third stack of its own, and
+     styled as the same thing — the same quiet uppercase label (when it is alone
+     and has to carry one) over the same bordered pressable rows as #recent and
+     #snaps, because it answers the same shape of question and a fourth visual
+     idiom on one screen would only make the other three look accidental.
+     ALWAYS EXPANDED: the read is one localhost call made with the landing page,
+     so by the time the section exists the rows are already in hand and
+     collapsing them would hide what was just paid for. The `hide ▾` that used
+     to sit on the head line is GONE — in the tabbed case the tab bar is already
+     the control for which list shows (a second one for the same box, in a
+     different type system, beside a label that is itself a control), and in the
+     single-list case the section is high in a tighter column now, so the thing
+     it was protecting — the composer's own history below it — is no longer
+     below it. */
+  #artifacts { margin-top: 0; }
+  #artifacts .head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+  .art-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 6px;
+    font-size: 12.5px;
+    cursor: pointer;
+    background: transparent;
+    transition: background .12s, border-color .12s;
+  }
+  .art-row:hover { background: var(--surface); border-color: var(--border-strong); }
+  .art-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  /* The favicon, in BOTH places an artifact is drawn (a landing row and a live
+     chip) — one rule, because it is one thing: the emoji the author chose, sized
+     to sit on the text baseline without stretching the line. */
+  .art-ic { flex-shrink: 0; font-size: 13px; line-height: 1; }
+  .art-chip .art-ic { font-size: 12px; }
+  .art-row .art-title { color: var(--fg); flex: 1; overflow: hidden;
+                        text-overflow: ellipsis; white-space: nowrap; }
+  .art-row .art-when { color: var(--faint); flex-shrink: 0; }
+  /* The hosted-page opener reads as a small BUTTON, not a bare glyph: it is
+     the one control on the row that leaves the app (deployed preview), so it
+     gets a bordered hit target — globe icon inside. */
+  .art-row .art-go { color: var(--faint); flex-shrink: 0; text-decoration: none;
+                     display: inline-flex; align-items: center; justify-content: center;
+                     width: 24px; height: 24px; border: 1px solid var(--border);
+                     border-radius: 6px; }
+  .art-row .art-go svg { display: block; }
+  .art-row .art-go:hover { color: var(--link); border-color: var(--link); }
+  #artifactscount { font-weight: 400; letter-spacing: 0; }
 
   .chat-row {
     display: flex;
@@ -2268,6 +2437,11 @@
         </div>
       </div>
     </form>
+    <!-- Pages published during this conversation, above the footnote so a chip
+         appearing never moves the composer the user is typing into. Empty (and
+         `hidden`) until a publish is seen — see the #artstrip rule for why the
+         attribute and not a style. -->
+    <div id="artstrip" hidden aria-label="Pages Claude published in this chat"></div>
     <!-- The second piece of chrome that names the target (the composer
          placeholder is the first), and it ships the kind-FREE wording for the
          same reason: the kind is not known until stat answers, and a sentence
@@ -2304,9 +2478,39 @@
             </button>
           </div>
         </form>
-        <div id="recent">
-          <div class="head">Recent chats</div>
-          <div id="recentlist"></div>
+        <!-- The two cross-session lists for this target, in ONE block: past
+             chats and every page published from here. Both are read as the
+             landing page mounts, so switching between them is a class change
+             and never a round trip.
+             The TAB BAR only exists when both lists have something in them
+             (syncLists) — with one list it would be a single tab, which is a
+             heading that can be clicked, and the plain .head below is the
+             honest version of that. -->
+        <div id="lists">
+          <div id="listtabs" hidden role="tablist" aria-label="Past chats and published pages">
+            <button class="list-tab" type="button" role="tab" id="tab-recent"
+                    aria-selected="true" aria-controls="recent">Recent chats</button>
+            <button class="list-tab" type="button" role="tab" id="tab-artifacts"
+                    aria-selected="false" aria-controls="artifacts">Artifacts<span
+                    class="tab-count" id="tabartcount"></span></button>
+          </div>
+          <!-- Both ship `hidden`: which of them shows (and whether either does)
+               is not known until the two reads answer, and a section that
+               appears and then empties is worse than one that arrives late. -->
+          <div id="recent" hidden>
+            <div class="head">Recent chats</div>
+            <div id="recentlist"></div>
+          </div>
+          <!-- Every page Claude has published from this target's working
+               directory, across every past session — the one product of a chat
+               that outlives it and is not on disk. -->
+          <div id="artifacts" hidden>
+            <div class="head">
+              <span>Artifacts</span>
+              <span id="artifactscount"></span>
+            </div>
+            <div id="artifactslist"></div>
+          </div>
         </div>
         <!-- Claude Code's own file-history checkpoints for this file (SPEC
              §34). Ported from the superseded `annotate` template, whose reader
@@ -5930,13 +6134,21 @@ document.getElementById("back").onclick = () => {
   resetCardPolicy();  // ...and the collapse overrides: that transcript is gone
   chatEl.classList.add("home");
   document.getElementById("recentlist").innerHTML = "";
-  document.getElementById("recent").style.display = "";
   // Deliberately NOT awaited in sequence with the mount below: these are two
   // independent reads and neither should hold the other's section blank. What
   // makes that safe is that `loadRecent` repaints the run headings itself once it
   // has names — see the tail of that function — rather than this call site being
   // ordered so it happens to win.
+  // The two counts are deliberately NOT reset here, unlike the log above: both
+  // reads are about to run again and land within a few hundred ms, and clearing
+  // them first would take the tab bar off screen and put it back for the trip —
+  // a stale count for a moment is quieter than a section that blinks. Boot is
+  // the only place the "not read yet" state is real.
   loadRecent();
+  // The chips belonged to the conversation being left; the section below the
+  // composer is the cross-session view and is re-read from the index instead.
+  clearArtStrip();
+  loadArtifacts();
   // The snapshots panel belongs to the LANDING page, so it is offered on every
   // path onto it — not just the boot with no session. A page opened straight
   // into a resumed chat (`?session_id=`) never ran the boot's landing branch, so
@@ -6828,6 +7040,52 @@ function showPermissionCard(card, working) {
   scrollBottom();
 }
 
+// An ANSWERED card belongs where it was answered. While a card is open it lives
+// at the bottom of the log, right above the working line, because that is where
+// a control the run is blocked on has to be — but the turn's prose and tool
+// chips all render INSIDE the one streaming `reply` bubble, which sits above it.
+// So every segment produced after the click appended above the card, and a
+// decision the user made in the middle of a turn slid down the page and stuck to
+// the bottom of the log for the rest of it: a receipt filed after everything it
+// came before. (See `.perm.resolved` — the card was always meant to "keep its
+// place in the transcript"; the pinning was an artifact of where it was mounted,
+// not a decision.)
+//
+// So on resolve the card moves once, into the live turn's segment container at
+// its current tail. renderSegments only ever appends its own views and removes
+// its own views (tracked by index in segStates), so a foreign child at the tail
+// keeps its spot and everything rendered afterwards lands below it — which is
+// exactly chronological order. The container is published by pollLoop only AFTER
+// the one `segBody.replaceChildren()` of the legacy→segment flip, so that sweep
+// can never take a parked card with it.
+//
+// Two things are deliberately left alone:
+//   * no live turn (a decision that landed after the run ended, or a card
+//     re-attached with its verdict already on disk) leaves the card where it is,
+//     i.e. today's behaviour;
+//   * an errored run drops its whole bubble (keepText false) and a parked card
+//     goes with it. The chip-ask tool chip is the durable record of the exchange
+//     and is already in the transcript, so nothing is lost that a reload would
+//     have kept.
+function parkResolvedCard(card) {
+  const seg = activeSegBody;
+  const el = card && card.el;
+  if (!seg || !seg.isConnected || !el || !el.isConnected) return;
+  if (el.parentNode === seg) return;   // already filed; do not drag it to the tail again
+  // The move reflows everything between the card's old and new home, so read the
+  // viewport first. Sticking to the bottom is the log's own rule while a run
+  // streams (see the typer's nearBottom check); otherwise the most this may do
+  // is keep the card the user was just looking at on screen — scrolling a reader
+  // who is somewhere else entirely would be the move yanking the page.
+  const atBottom = nearBottom();
+  const box = el.getBoundingClientRect();
+  const port = logwrap.getBoundingClientRect();
+  const wasVisible = box.bottom > port.top && box.top < port.bottom;
+  seg.appendChild(el);
+  if (atBottom) scrollBottom();
+  else if (wasVisible) el.scrollIntoView({ block: "nearest" });
+}
+
 // Reconcile the poll's request list with what is on screen. Idempotent — poll
 // replays the whole list every 400 ms.
 function syncPermissions(list, run_id, working, liveMode) {
@@ -6844,7 +7102,14 @@ function syncPermissions(list, run_id, working, liveMode) {
     // `answers` is only ever set on a question card, and it is why poll carries
     // it: a frame that re-attaches after the click has to be able to show what
     // was chosen, not just that something was.
-    if (p.decision) card.resolve(p.decision, p.scope, p.mode, p.answers);
+    if (p.decision) {
+      card.resolve(p.decision, p.scope, p.mode, p.answers);
+      // Filed here rather than inside the card's own click handler: `decision` on
+      // the poll is the verdict that LANDED on disk, and the poll is also the only
+      // thing that reports a card the run expired or a decision this frame did not
+      // make. One move, from whichever of those settles the card first.
+      parkResolvedCard(card);
+    }
   }
 }
 
@@ -7778,6 +8043,12 @@ async function answerAppState(list, run_id, working) {
 // button and Escape have something to aim at, which covers a re-attached run too.
 let activeRun = null;
 let activeWorking = null;
+// The live turn's segment container, or null between turns. Published by pollLoop
+// once the segment path owns the bubble, and read by parkResolvedCard — which is
+// the one thing outside the loop that has to put something INTO the turn being
+// streamed. Nulled in the loop's `finally`, so a decision that arrives after the
+// run is over cannot file itself into a finished (or removed) bubble.
+let activeSegBody = null;
 // Keyed by id, not a bare boolean: it is read when a run ENDS, and a stale flag
 // would label the next turn's ending as a stop too.
 let stoppedRun = "";
@@ -8114,10 +8385,17 @@ async function pollLoop(run_id) {
   let segBody = null;    // the element the segment views are rendered into
   let segMode = false;   // this turn returned segments, so they are the truth
   let tailText = null;   // the trailing text segment, for typer.finish()
+  // Ticks of THIS loop, so the artifacts read below is one in every eight polls
+  // (~3.2s) rather than one every 400ms: a publish is a rare event in a turn and
+  // a transcript read is an open() of a file that is being appended to.
+  let tick = 0;
   try {
     while (true) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id }, { key: null });
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
+      // Not awaited, for the same reason the app-state answer below is not: a
+      // strip of chips may never hold up the streaming reply by a single frame.
+      if (tick++ % 8 === 0) pollArtifacts();
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
       w.setStats(tokens, data.phase || "thinking", data.retry);
@@ -8150,6 +8428,11 @@ async function pollLoop(run_id) {
             segMode = true;
             typer.retarget(null);
             segBody.replaceChildren();
+            // Published only NOW, and this is the reason: the line above is the
+            // one and only sweep this container ever sees, so a resolved card
+            // parked into it afterwards (parkResolvedCard) can never be swept
+            // away. Before the flip there is nothing to park into anyway.
+            activeSegBody = segBody;
           }
           tailText = renderSegments(segBody, segs, { typer });
         } else if (!data.done) typer.update(data.text);
@@ -8166,6 +8449,9 @@ async function pollLoop(run_id) {
         // The turn may have edited the file, and Claude Code checkpoints what it
         // edits — so the snapshots panel's cached timeline is now behind.
         snapInvalidate();
+        // One last read: a page published in the final seconds of the turn would
+        // otherwise sit unmentioned until the user went back to the landing page.
+        pollArtifacts();
         const end = runEnding(data, stoppedRun === run_id);
         if (!end.keepText) {
           if (typer) typer.abort();
@@ -8208,6 +8494,7 @@ async function pollLoop(run_id) {
     // the NEXT turn's ending as a stop.
     activeRun = null;
     activeWorking = null;
+    activeSegBody = null;
     setRunningUi(false);
   }
 }
@@ -8600,15 +8887,72 @@ function renderRecentSkeleton(list) {
   });
 }
 
+// ── the landing page's two cross-session lists, and the tab bar over them ──
+//
+// #recent and #artifacts answer the same question about the same target — what
+// has happened here before — from two different stores, so they share one block
+// and, when both have something to say, one tab bar. Neither is the page's
+// subject (the composer is), so the whole thing is allowed to be absent.
+//
+// The counts are the state: `null` means the read has not answered yet, which is
+// NOT the same as zero — a skeleton is drawn into #recent while the sessions
+// read is in flight, and it has to be on screen to be a skeleton of anything.
+let recentCount = null;
+let artCount = null;
+// Which list is showing, and it is the BLOCK's state rather than the page's:
+// leaving for a chat and coming back keeps the tab you were on, the same way
+// `snapExpanded` survives that round trip.
+let listTab = "recent";
+
+function syncLists() {
+  // Tabs only when BOTH lists really have rows: one tab is a heading with a
+  // pointer cursor, and the plain .head each section carries is the honest
+  // version of it.
+  const tabbed = recentCount > 0 && artCount > 0;
+  document.getElementById("lists").classList.toggle("tabbed", tabbed);
+  document.getElementById("listtabs").hidden = !tabbed;
+  // `null > 0` is false, which is why the loading case is spelled out: unread
+  // recent chats still show (the skeleton), unread artifacts do not (there is
+  // nothing to stand in for, and the section may well never exist).
+  document.getElementById("recent").hidden =
+    tabbed ? listTab !== "recent" : !(recentCount === null || recentCount > 0);
+  document.getElementById("artifacts").hidden =
+    tabbed ? listTab !== "artifacts" : !(artCount > 0);
+  for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts"]]) {
+    const tab = document.getElementById(id);
+    tab.setAttribute("aria-selected", listTab === name ? "true" : "false");
+    // Only the selected tab is in the tab order, which is what a tablist means:
+    // Tab enters the bar, arrows move inside it.
+    tab.tabIndex = listTab === name ? 0 : -1;
+  }
+}
+
+function selectListTab(name) {
+  listTab = name;
+  syncLists();
+}
+for (const [name, id] of [["recent", "tab-recent"], ["artifacts", "tab-artifacts"]]) {
+  const tab = document.getElementById(id);
+  tab.onclick = () => selectListTab(name);
+  tab.onkeydown = (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const other = name === "recent" ? "artifacts" : "recent";
+    selectListTab(other);
+    document.getElementById(other === "recent" ? "tab-recent" : "tab-artifacts").focus();
+  };
+}
+
 async function loadRecent() {
   const list = document.getElementById("recentlist");
   renderRecentSkeleton(list);
+  syncLists();  // the skeleton needs its section shown
   try {
     const { sessions, error } = await fused.runPython(AGENT, { action: "sessions", file: FILE }, { key: null });
     if (error) throw new Error(error);
     list.innerHTML = "";  // drop the skeleton now that we know the real state
     // Name the snapshot runs from the SAME strings these rows are labelled with,
-    // before the early return: a file can have chains in the store and no chats in
+    // even for an empty list: a file can have chains in the store and no chats in
     // its sidecar, and the reverse — an empty session list is still an answer the
     // snapshots panel wants (it means "name nothing"), not a reason to skip.
     let named = false;
@@ -8627,14 +8971,177 @@ async function loadRecent() {
     // names, or no panel yet) costs nothing, and it repaints from the cached
     // timeline rather than re-reading anything.
     if (named && snapTimeline) renderSnapshots(snapTimeline);
-    if (!sessions.length) {
-      document.getElementById("recent").style.display = "none";
-      return;
-    }
+    // No early return and no inline display write for the empty case: the count
+    // drives the section's visibility through syncLists (hidden/classes), the
+    // same way the artifacts list is shown and hidden.
+    recentCount = sessions.length;
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
     list.innerHTML = "";
+    // A list that could not be read is not a list with nothing in it, but it
+    // renders the same way here: no heading, no empty state, no error.
+    recentCount = 0;
     console.warn("session list failed:", err.message);
+  }
+  syncLists();
+}
+
+// ── Artifacts: the pages Claude published from this target ──
+//
+// TWO views of one thing, from one backend (./artifacts.py):
+//   * the landing page's #artifacts section — every artifact ever published from
+//     this target's workdir, from the server's cross-session index ("list");
+//   * the live #artstrip during a turn — the CURRENT session's transcript, read
+//     straight off disk ("live"), so a page announces itself seconds after it is
+//     published instead of at the next landing.
+// Neither is load-bearing: every failure below is a console warning and an
+// absent section, never the error overlay. A chat whose artifacts cannot be
+// listed is still a working chat.
+const ARTIFACTS = "./artifacts.py";
+
+// Mirrors the shell codec (router.ts urlForFsPath), same as the peer templates
+// that link out to the explorer: normalize ONLY drive-letter paths, because a
+// backslash is a legal POSIX filename char and must round-trip.
+function artOpenHref(path) {
+  const norm = /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/") : String(path);
+  const segs = norm.replace(/^\/+/, "").split("/").filter(Boolean).map(encodeURIComponent);
+  return "/explorer/view/" + segs.join("/");
+}
+
+// The title the page published under, falling back to the file's basename: a
+// publish that let the HTML's own <title> name it gets nothing echoed back, and
+// an untitled row is worse than a filename.
+function artLabel(a) {
+  return a.title || String(a.file_path || "").split(/[\\/]/).pop() || a.remote_url;
+}
+
+function addArtifactRow(list, a) {
+  const row = document.createElement("div");
+  row.className = "art-row";
+  row.innerHTML =
+    '<span class="art-ic"></span><span class="art-title"></span>' +
+    '<span class="art-when"></span>' +
+    '<a class="art-go" target="_blank" rel="noopener noreferrer" title="Open the published page" aria-label="Open the published page">' +
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/>' +
+    '<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></a>';
+  // Emoji, not markup: the favicon is author-chosen text from a transcript, so
+  // it goes in through textContent like every other field on this row.
+  row.querySelector(".art-ic").textContent = a.favicon || "◻";
+  row.querySelector(".art-title").textContent = artLabel(a);
+  row.querySelector(".art-when").textContent = ago(a.updated_at || a.created_at || 0);
+  row.querySelector(".art-go").href = a.remote_url;
+  // The ↗ is the ONE place the hosted page opens; a click on it must not also
+  // count as a click on the row (which opens the local file instead).
+  row.querySelector(".art-go").onclick = (e) => e.stopPropagation();
+  // The row's own subject is the LOCAL file — the thing this window can show.
+  // Always pressable: `list` returns only artifacts whose source is still on
+  // disk (artifacts.py filters on `exists`), so there is no unpressable row to
+  // style or explain here any more. The guard stays on `file_path` alone,
+  // because a row with no local path has nothing for a press to open.
+  if (a.file_path) {
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    row.title = a.file_path;
+    // A new tab, not this frame: this window is a chat (often a pane of a
+    // split), and navigating it away would end the conversation.
+    const open = () => window.open(artOpenHref(a.file_path), "_blank", "noopener");
+    row.onclick = open;
+    row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  }
+  list.appendChild(row);
+}
+
+// The landing page's read. Called on every path ONTO the landing page (boot and
+// the back button), not once per page life: a turn that just published a page
+// must be able to leave it behind here.
+//
+// Whether the rows end up under a heading or behind a tab is syncLists's call —
+// this function only ever reports how many there are. It never collapses them:
+// the read is one localhost call made with the landing page, so by the time
+// there is anything to draw it is already paid for.
+async function loadArtifacts() {
+  const list = document.getElementById("artifactslist");
+  try {
+    const { artifacts, error } = await fused.runPython(
+      ARTIFACTS, { action: "list", file: FILE }, { key: null });
+    if (error) throw new Error(error);
+    list.innerHTML = "";
+    // Nothing published from here is the common case — so no heading, no tab, no
+    // empty state, no row saying so. The section simply is not there.
+    artCount = (artifacts || []).length;
+    for (const a of artifacts || []) addArtifactRow(list, a);
+    const count = "· " + artCount;
+    document.getElementById("artifactscount").textContent = count;
+    // The tab carries the count too, because in the tabbed case the heading that
+    // used to carry it is not drawn.
+    document.getElementById("tabartcount").textContent = " " + count;
+  } catch (err) {
+    // No visible failure: an unreachable index is not news on a landing page
+    // whose subject is the composer above it.
+    console.warn("artifacts list failed:", err.message);
+    artCount = 0;
+  }
+  syncLists();
+}
+
+// ── the live strip ──
+//
+// ACCUMULATING, keyed by url: the poll below reads the transcript of whichever
+// session is current, and a chip must not vanish because a turn ended or a
+// later read raced. Cleared only by leaving for the landing page (a different
+// conversation's pages are not this one's) or by a reload.
+const artChips = new Map();
+
+function renderArtStrip() {
+  const strip = document.getElementById("artstrip");
+  strip.replaceChildren();
+  for (const a of artChips.values()) {
+    const chip = document.createElement("a");
+    chip.className = "art-chip";
+    chip.href = a.remote_url;
+    chip.target = "_blank";
+    chip.rel = "noopener noreferrer";
+    chip.title = "Open " + artLabel(a);
+    chip.innerHTML = '<span class="art-ic"></span><span class="art-chip-lbl"></span>' +
+                     '<span class="art-chip-go">↗</span>';
+    chip.querySelector(".art-ic").textContent = a.favicon || "◻";
+    chip.querySelector(".art-chip-lbl").textContent = artLabel(a);
+    strip.appendChild(chip);
+  }
+  strip.hidden = artChips.size === 0;
+}
+
+function clearArtStrip() {
+  artChips.clear();
+  renderArtStrip();
+}
+
+// One transcript read. Deliberately dumb: re-absorb the whole returned list
+// every time and let the Map dedupe, rather than tracking what was already
+// seen — the list is a handful of entries and a publish that arrives twice must
+// be idempotent anyway (a redeploy reports the same url again).
+async function pollArtifacts() {
+  const session_id = fused.params.get("session_id");
+  if (!session_id) return;  // no session yet: nothing has been written to read
+  try {
+    const { artifacts } = await fused.runPython(
+      ARTIFACTS, { action: "live", session_id, file: FILE }, { key: null });
+    if (!artifacts || !artifacts.length) return;
+    // Change detection is by CONTENT, not by count: the favicon/title join can
+    // land a poll or two after the frame-link (the tool_use streams later in
+    // the transcript), so an already-seen url can gain metadata without the
+    // set growing. Still no rebuild when nothing changed — this runs every few
+    // seconds beside a streaming reply, and rebuilding an unchanged strip
+    // would drop the user's mid-click on a chip.
+    const sig = (m) => Array.from(m.values(), (a) =>
+      a.remote_url + "\u0000" + (a.title || "") + "\u0000" + (a.favicon || "")).join("\u0001");
+    const before = sig(artChips);
+    for (const a of artifacts) artChips.set(a.remote_url, a);
+    if (sig(artChips) !== before) renderArtStrip();
+  } catch (err) {
+    // A poll for decoration must never interrupt the poll for the reply.
+    console.warn("artifacts poll failed:", err.message);
   }
 }
 
@@ -9166,6 +9673,10 @@ async function loadSnapshots() {
     // re-attach nothing.
     restoreQueue(session_id, run_id);
     if (session_id) await loadHistory(session_id);
+    // The chips this session already earned. The poll loop rebuilds them while a
+    // run streams, but a resumed conversation with nothing in flight never
+    // reaches that loop — and its pages are no less published for it.
+    if (session_id) pollArtifacts();
     if (run_id) await resumeRun(run_id);
     // The run this queue was parked behind may have finished while no frame was
     // attached (`resumeRun` takes the done branch and never polls), and then
@@ -9183,6 +9694,10 @@ async function loadSnapshots() {
     focusBox(homebox);
     await loadRecent();
     await mountSnapshots();
+    // Last of the three landing reads, and unawaited by nothing above it on
+    // purpose: it is the only one that leaves the machine (a localhost call to
+    // the artifacts index), so it must not sit in front of the session list.
+    loadArtifacts();
   }
 })();
 </script>
