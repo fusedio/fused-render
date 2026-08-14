@@ -134,9 +134,12 @@ again on every watch tick of a folder on screen**:
    indefinitely, and this one is serving a listing.
 3. `MIN_INTERVAL_S` (60 s) since any scan of that root, read off `scans.json` — so no
    state file of its own, and a scan that just ran for any reason suppresses a trigger.
-   The same number as `routers/index.FRESHNESS_CHECK_S`, which paces the checks in
-   memory; scanning sooner is also *cheaper*, since both dominant scan costs (the
-   journal replay and the visit set it names) scale with the window since the last one.
+   `routers/index.FRESHNESS_CHECK_S` (55 s) paces the checks in memory to the same
+   cadence, deliberately a little **shorter**: the check clock starts when a check
+   begins and the scan clock when the scan is spawned, so equal intervals would put
+   every second check just inside the floor and halve the real rate. Scanning sooner is
+   also *cheaper*, since both dominant scan costs (the journal replay and the visit set
+   it names) scale with the window since the last one.
 4. `QUIET_S` (30 s) since the directory's own mtime moved. A build tree's mtime never
    stops moving, so it is never quiet and never triggers; the open after the churn stops
    still does.

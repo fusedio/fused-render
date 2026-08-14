@@ -187,11 +187,17 @@ def test_the_scan_floor_matches_the_routers_check_debounce(tmp_path):
     """Two floors, one cadence. freshness.MIN_INTERVAL_S paces the SCANS (read
     off scans.json, so it also sees the startup scheduler and the manual
     buttons); routers.index.FRESHNESS_CHECK_S paces the CHECKS, per root, in
-    memory. They answer the same question at different layers, and a check
-    interval shorter than the scan floor is just work that can never act."""
+    memory.
+
+    An ordering, not an equality. Longer would leave scans the floor allows
+    unstarted, since a check is the only thing that starts one. Exactly equal is
+    the subtler failure: the check clock is stamped when a check BEGINS and the
+    scan clock when the scan is spawned (runner._record_scan, a duckdb lookup and
+    a Popen later), so the next due check lands just inside the scan floor, is
+    refused, and re-stamps — halving the real rate. Hence strictly shorter."""
     from fused_render.server.routers.index import FRESHNESS_CHECK_S
 
-    assert MIN_INTERVAL_S == FRESHNESS_CHECK_S
+    assert FRESHNESS_CHECK_S < MIN_INTERVAL_S
 
 
 def test_a_folder_outside_every_configured_root_triggers_nothing(

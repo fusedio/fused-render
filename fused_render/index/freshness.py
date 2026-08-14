@@ -44,8 +44,10 @@ QUIET_S = 30.0
 # in favour of routers/index.FRESHNESS_CHECK_S: that one throttles the CHECKS
 # per root, in memory, and sees nothing started by the scheduler or the buttons,
 # so without this floor a folder-open could rescan seconds after either. The two
-# are now the same number, which is the intent — one cadence, expressed at both
-# layers. Still far below the startup debounce (SCAN_DEBOUNCE_S, 15 min): that
+# express ONE cadence at two layers, and the check interval is set a few seconds
+# under this number rather than equal to it — see the note there on why equal
+# ones interleave into half the intended rate. Still far below the startup
+# debounce (SCAN_DEBOUNCE_S, 15 min): that
 # one exists to stop a reload loop, this one to stop a browsing session from
 # queueing.
 #
