@@ -39,7 +39,12 @@ from fused_render.update import common
 
 logger = logging.getLogger("fused_render.update")
 
-MANIFEST_URL = "https://d2ic19jpchjovp.cloudfront.net/fused-render-macos/latest.json"
+# Overridable for staging/E2E tests (point a test build at a test manifest).
+# Safe to expose: the manifest must still verify against the pinned ed25519
+# key, so redirecting the URL alone cannot feed the updater different bytes.
+MANIFEST_URL = os.environ.get(
+    "FUSED_RENDER_UPDATE_MANIFEST_URL",
+    "https://d2ic19jpchjovp.cloudfront.net/fused-render-macos/latest.json")
 CASK_NAME = "fused-render"
 # GUI apps launch with a bare PATH, so brew is probed at its two fixed homes
 # (Apple Silicon, then Intel) rather than through the environment.
