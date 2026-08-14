@@ -74,6 +74,7 @@ dirs.parquet `ORDER BY dir` (`store._compact_locked`), and stripping the trailin
 alongside their parent rather than being collapsed away — a repo inside a repo is
 still a repo you might want to open.
 """
+import itertools
 import logging
 import os
 
@@ -97,6 +98,12 @@ router = APIRouter()
 # scan records opaquely" and may grow to hold names that have nothing to do with
 # git, at which point iterating it here would start listing non-repositories.
 GIT_DIR = ".git"
+
+# Whose turn it is to be freshness-checked when the tab is opened
+# (`_note_tab_opened`). Unbounded and never reset — it is only ever read modulo
+# the root count, and a counter that survives a config change simply resumes the
+# rotation somewhere in the middle of the new list.
+_root_turn = itertools.count()
 
 
 class IndexUnreadable(RuntimeError):
@@ -171,17 +178,19 @@ def _note_tab_opened(cfg) -> None:
     guarantee that the tab is current — the honest answer to "is this list
     complete" remains `stale` plus the next scheduled scan.
 
-    Every root is offered, but at most ONE check actually runs: the checker is
-    serialized by a single non-blocking slot (routers/index._freshness_slot), so
-    the second root is simply skipped whenever the first took the slot. That is
-    accepted rather than worked around — the roots take turns across requests,
-    and a queue of checks behind a tab render is exactly what the slot exists to
-    prevent.
+    Exactly ONE root per request, taken round-robin, because the checker admits
+    exactly one check at a time: note_folder_opened acquires a non-blocking slot
+    (routers/index._freshness_slot) and its background thread releases it a
+    config read — and possibly a duckdb lookup — later. Offering every root in a
+    loop therefore does not check every root; it checks the FIRST one and loses
+    the rest microseconds later on a failed acquire, every request, forever. The
+    first root would also take the slot on requests where it is not even due,
+    since due-ness is decided after the acquire. Rotating the offer is what makes
+    "each root gets checked" true, and it fits the slot rather than fighting it:
+    a tab render never queues more than one check.
 
-    note_folder_opened itself never raises and never blocks (it spawns a
-    thread), so this costs the request a lock acquire — but the guard is
-    per-root, not around the loop: the roots are independent questions, and one
-    that somehow throws must not silently swallow the checks for the others."""
+    note_folder_opened never raises and never blocks (it spawns a thread), so
+    this costs the request one lock acquire."""
     try:
         # Function-local, like `_fresh`'s: routers/index.py is the module that
         # owns both the scan roots and the freshness hook, and importing it at
@@ -189,16 +198,19 @@ def _note_tab_opened(cfg) -> None:
         from fused_render.server.routers.index import note_folder_opened, scan_roots
 
         roots = scan_roots(cfg)
+        if not roots:
+            return
+        # next() on an itertools.count is atomic in CPython, which is all the
+        # synchronization a turn counter needs — two concurrent tab renders
+        # taking the same turn, or skipping one, costs a check nobody was
+        # promised. The counter is per PROCESS, not per client: the question
+        # ("is this root behind?") is about the machine, so two windows sharing
+        # the rotation is right rather than merely tolerable.
+        root = roots[next(_root_turn) % len(roots)]
+        note_folder_opened(root)
     except Exception:  # noqa: BLE001 - housekeeping must never become the answer
-        logger.debug("could not read the scan roots for the repos tab",
+        logger.debug("could not check index freshness for the repos tab",
                      exc_info=True)
-        return
-    for root in roots:
-        try:
-            note_folder_opened(root)
-        except Exception:  # noqa: BLE001 - as above, and one root is not the rest
-            logger.debug("could not check index freshness for %s", root,
-                         exc_info=True)
 
 
 def _repos() -> dict:

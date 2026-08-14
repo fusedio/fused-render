@@ -149,11 +149,13 @@ thread throttled to one at a time, and nothing about the listing waits on it or 
 with it.
 
 **Who fires it:** `/api/fs/list`, naming the folder just opened, and `/api/git-repos`,
-naming the configured roots — that tab is served entirely from the index and has no
-folder to name, so without it the homepage's Repos list could never notice a stale
-index. The root form catches little (a root's mtime moves only when its own direct
-entries change), and the single slot means a second root is skipped whenever the first
-took it; both are accepted, since the check is cheap and the tab has no better signal.
+naming **one configured root per request, round-robin** — that tab is served entirely
+from the index and has no folder to name, so without it the homepage's Repos list could
+never notice a stale index. One root, not all of them, because the slot admits a single
+check at a time and is released by that check's own thread: offering the whole list in a
+loop checks the first root and loses every other one on a failed acquire, on every
+request. The root form catches little anyway (a root's mtime moves only when its own
+direct entries change); it is cheap, and the tab has no better signal.
 
 **Bound, by design:** a directory's mtime moves only when entries are added, removed or
 renamed *in that directory*. An edit five levels down does not flip the mtime of the
