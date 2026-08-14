@@ -145,7 +145,12 @@ export interface PaneSideEntries {
 //
 // So a directory row offers the COMPANIONS, and since `_side` absent parses as
 // `preview`, `activePaneSide` lands it on the first of them — the chat about that
-// folder, which is what the owner asked a folder to default to.
+// folder, which is what the owner asked a folder to default to. **First OFFERED,
+// so a denied `claude` lands on `git`** where the folder is in a work tree; the
+// built-in gates make that shape unreachable in practice (claude refuses only a
+// mount-backed or nonexistent path, and git refuses those too, on top of needing a
+// work tree), but the rule is "the first one on offer" and not "claude or the
+// peek".
 //
 // **Unless neither companion is offered** (a mount-backed folder: both gates
 // refuse), when `preview` comes back as the fallback. The pane must show
