@@ -1852,8 +1852,8 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 // `tag` is the FIRST path segment — any folder qualifies, there is no fixed tag
 // set, and a third-level app carries the same tag as its second-level
 // neighbours. `entry_html` is the app's "/" route entry file (absolute path);
-// null only for a LINKED app, which the registry lists whether or not the folder
-// has a page. `title` comes from that file's <title>, null falls back to the
+// the workspace walk only lists folders with a page, so it is non-null in
+// practice. `title` comes from that file's <title>, null falls back to the
 // folder name in the UI.
 export interface AppInfo {
   name: string;

@@ -23,7 +23,7 @@ Three things are worth pinning down, and each of them broke once:
 
 * the FILE branch of the gate must test `isfile`, not `not isdir`. The loose form
   reads every path that does not exist as "a file", which is how a nonexistent
-  child of a linked-app folder got a `True` out of a gate.
+  child of a registered folder once got a `True` out of a gate.
 * the pane must resolve the file's template the way the SHELL does — the first
   non-`conditional` entry from stat — rather than from a per-extension table,
   which drifts from the registry the moment a binding changes and ignores a user
@@ -97,7 +97,7 @@ def test_an_empty_path_is_refused(workspace):
 
 def test_every_directory_is_offered_the_chat(tmp_path, workspace):
     """The directory rule is now "any directory". It used to be exactly
-    <workspace>/<tag>/<project>, plus a registered linked app — a narrowing that
+    <workspace>/<tag>/<project> — a narrowing that
     existed only because an ordinary folder's chat was the separate `claude` mode,
     whose pane had no app entry to render. `claude` is deleted, so narrowing here
     would leave an ordinary folder with no chat at all — the capability the delete
