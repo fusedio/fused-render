@@ -157,7 +157,11 @@ export default function Home({ config }: { config: Config }) {
         </header>
 
         {searching ? null : (
+          // Outer div is the full-width measuring element; the inner column is
+          // exactly as wide as the cards that fit and centered, so the section
+          // titles and "See all" stay flush with the cards' edges.
           <div ref={stripRef}>
+            <div className="home-strips" style={{ width: count * (CARD_W + CARD_GAP) - CARD_GAP }}>
             <Section title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <p className="fh-empty">Loading apps…</p>
@@ -207,6 +211,7 @@ export default function Home({ config }: { config: Config }) {
                 <p className="fh-empty">Nothing opened yet. Files you view will show up here.</p>
               )}
             </Section>
+            </div>
           </div>
         )}
       </div>

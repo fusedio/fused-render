@@ -311,6 +311,13 @@
    fit (Home.tsx useStripCount — its CARD_W/CARD_GAP must match the width and
    gap here) and renders exactly that many, so nothing wraps, clips, or
    scrolls. The full lists live behind "See all". */
+/* The centered column holding the three sections — exactly as wide as the
+   cards that fit (Home.tsx sets the pixel width inline). */
+.home-strips {
+  max-width: 100%;
+  margin: 0 auto;
+}
+
 .home-row {
   display: flex;
   gap: 16px;
