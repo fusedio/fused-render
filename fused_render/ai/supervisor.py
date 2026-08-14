@@ -39,6 +39,7 @@ boundary, in an interpreter this one built.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -1319,9 +1320,38 @@ def _await_turn(job: str, title: str) -> None:
             # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
             _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
             next_tick = time.monotonic() + _QUEUE_TICK_S
-    if _cancel_requested(job):
+    # Guarded, because this runs while we HOLD the lock and before any caller's
+    # `finally` exists to release it: `_cancel_state` walks `jobs.list_jobs()`,
+    # and an exception escaping here would leave `_TRANSCRIBE_LOCK` — a module
+    # global that is never re-created — held for the life of the process. Every
+    # later transcription would then block in this function forever, showing
+    # "Queued behind another transcription…" with nothing running. Low
+    # probability; permanent and process-wide if it happens.
+    try:
+        cancelled = _cancel_requested(job)
+    except BaseException:
+        _TRANSCRIBE_LOCK.release()
+        raise
+    if cancelled:
         _TRANSCRIBE_LOCK.release()
         raise SupervisorError("cancelled")
+
+
+@contextlib.contextmanager
+def _transcribe_turn(job: str, title: str):
+    """`_await_turn` as a `with`, so the acquire and the release are one thing.
+
+    The release used to live in a `try/finally` the CALLER opened after
+    `_await_turn` returned, which left a window — the post-acquire cancel check
+    — where the lock was held with no `finally` in scope. Pairing them here is
+    the shape that cannot regress: there is no way to take this turn without
+    also giving it back, and a future caller cannot forget.
+    """
+    _await_turn(job, title)
+    try:
+        yield
+    finally:
+        _TRANSCRIBE_LOCK.release()
 
 
 def generate_transcript(model: str, request: dict, job: str) -> dict:
@@ -1345,8 +1375,7 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     a handle to a process an unload may since have killed, so the request went
     to a dead port instead of re-resolving.
     """
-    _await_turn(job, _transcribe_title(request, model))
-    try:
+    with _transcribe_turn(job, _transcribe_title(request, model)):
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:
             # The row identity travels into the wait too — it is the longest
@@ -1365,8 +1394,6 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
             except ValueError as e:
                 raise SupervisorError(
                     "the transcription process sent a malformed reply") from e
-    finally:
-        _TRANSCRIBE_LOCK.release()
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):

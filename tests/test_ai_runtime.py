@@ -1662,6 +1662,35 @@ def test_a_queued_row_is_never_absent_for_longer_than_the_WATCHER_TOLERATES():
         f"a queued row can be absent for {supervisor._QUEUE_POLL_S}s against a "
         f"{window}s give-up window")
 
+    # …but the HONEST worst case is not ours. The ACTIVE decode's row is
+    # refreshed by the worker, whose floor is `worker_base.HEARTBEAT_S` when a
+    # single long segment produces no per-segment ticks — and that is ALREADY
+    # wider than the window, without any cadence this module chooses. It is
+    # asserted here as a known gap rather than left unstated, so that closing
+    # it (by making live rows un-evictable, D276) makes this test change
+    # deliberately instead of passing by accident.
+    heartbeat = _worker_base_module().HEARTBEAT_S
+    assert heartbeat > window, (
+        "the active decode's worst-case row gap is now inside the watcher's "
+        "window — the D276 gap may be closed; update this and SPEC AI-10a")
+    # Which is exactly why `fused.ai.transcribe` must not SETTLE on an absent
+    # row. That is pinned in `test_both_artefact_bridges_survive_a_row_that_aged_out`.
+
+
+def _worker_base_module():
+    """`worker_base`, loaded by path — the runner loads it off `sys.path` in
+    its own interpreter, so importing it the packaged way would be reading a
+    module that never ships."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "ai", "runners", "worker_base.py")
+    spec = importlib.util.spec_from_file_location("worker_base_probe", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 def test_the_queue_cadence_stays_below_the_worker_heartbeat():
     """The eviction ordering is a RELATIONSHIP between two modules, so it is
@@ -1678,15 +1707,7 @@ def test_the_queue_cadence_stays_below_the_worker_heartbeat():
     Read out of `worker_base` rather than restated here, so changing the
     heartbeat fails this instead of silently re-inverting the sweep.
     """
-    import importlib.util
-
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "fused_render", "ai", "runners", "worker_base.py")
-    spec = importlib.util.spec_from_file_location("worker_base_cadence", path)
-    assert spec is not None and spec.loader is not None
-    worker_base = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(worker_base)
-
+    worker_base = _worker_base_module()
     assert supervisor._QUEUE_TICK_S > worker_base.HEARTBEAT_S, (
         "a queued row reporting faster than the worker's heartbeat makes the "
         "ACTIVE decode the first thing the cap evicts")
@@ -1696,6 +1717,44 @@ def test_the_queue_cadence_stays_below_the_worker_heartbeat():
     # The ✕ is read on its own, faster cadence — the eviction fix must not be
     # paid for in cancel latency.
     assert supervisor._QUEUE_POLL_S <= 1.0
+
+
+def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monkeypatch):
+    """`_TRANSCRIBE_LOCK` is a module global that is never re-created, so a
+    single leak is permanent and process-wide.
+
+    `_await_turn` returns HOLDING the lock, and the post-acquire cancel check
+    ran before any caller's `finally` existed — it walks `jobs.list_jobs()`, so
+    an exception there escaped with the lock held and every later transcription
+    blocked forever showing "Queued behind another transcription…" with nothing
+    running.
+    """
+    job = supervisor.TRANSCRIBE_JOB_PREFIX + "boom"
+    _open_transcribe_row(job)
+
+    def explode(_job):
+        raise RuntimeError("the job registry blew up")
+
+    monkeypatch.setattr(supervisor, "_cancel_state", explode)
+    with pytest.raises(RuntimeError):
+        supervisor._await_turn(job, "x.m4a")
+    monkeypatch.undo()
+
+    # The lock is free, so the NEXT transcription is not wedged.
+    assert supervisor._TRANSCRIBE_LOCK.acquire(blocking=False)
+    supervisor._TRANSCRIBE_LOCK.release()
+
+
+def test_the_turn_is_released_even_when_the_body_raises(monkeypatch):
+    """The pairing itself: acquisition and release are one construct, so a
+    caller cannot take a turn and forget to give it back."""
+    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title: None)
+    supervisor._TRANSCRIBE_LOCK.acquire()
+    with pytest.raises(ValueError):
+        with supervisor._transcribe_turn("sys:ai-transcribe:x", "x.m4a"):
+            raise ValueError("boom")
+    assert supervisor._TRANSCRIBE_LOCK.acquire(blocking=False)
+    supervisor._TRANSCRIBE_LOCK.release()
 
 
 def test_a_missing_row_is_UNKNOWN_rather_than_not_cancelled():
@@ -1874,10 +1933,19 @@ def test_both_artefact_bridges_survive_a_row_that_aged_out():
                                "fused_render", "static", "runtime.js"),
                   encoding="utf-8").read()
     assert "ai.transcribe = aiTranscribe" in source
+    transcribe = source[source.index("function aiTranscribe("):]
+    transcribe = transcribe[:transcribe.index("\n  const aiModels")]
     # The page-relative half is the bridge's job (RH-1): the server can only
     # resolve "clip.m4a" if the page says where it is standing.
-    transcribe = source[source.index("function aiTranscribe("):]
-    assert "body.base = ownPath" in transcribe[:transcribe.index("\n  }\n")]
+    assert "body.base = ownPath" in transcribe
+    # And transcribe goes FURTHER than image on the absent-row branch, because
+    # it has to: a row describing live work can be gone for longer than
+    # watch()'s ~3.5s give-up window (the manager evicts under its cap, and the
+    # active decode's own worst case is the worker's 5s heartbeat). So it must
+    # not SETTLE on absence — it retries against the transcript file and
+    # resumes watching if the row returns.
+    assert "watcher.get()" in transcribe and "regrace" in transcribe
+    assert "return watcher.watch(onProgress).then(settle)" in transcribe
     for call in ("function aiImage(", "function aiTranscribe("):
         start = source.index(call)
         end = source.index("\n  }\n", start)

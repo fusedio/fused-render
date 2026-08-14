@@ -2630,19 +2630,36 @@
             language: written.language,
             duration: written.duration,
           }));
-      return watcher.watch(onProgress).then((record) => {
-        if (!record) {
-          // The row aged out from under us — a backgrounded tab can sleep past
-          // its retention on a transcription this long. The FILE is the other
-          // witness, and the one that actually matters. `done()` reads it, so
-          // its own failure is the answer to whether the work landed.
-          return done().catch(() => {
-            const err = new Error("the transcription job is no longer being reported");
-            err.type = "ai_error";
-            err.jobId = started.jobId;
-            throw err;
-          });
-        }
+      // An absent row does NOT mean the work is over, and treating it that way
+      // is what made a long transcription reject while it was still running.
+      // watch() gives up after five consecutive misses (~3.5s), and a row
+      // describing live work can be gone for longer than that: the manager
+      // evicts under its cap, and the active decode's own worst-case refresh
+      // is the worker's 5s heartbeat when one long segment produces no ticks.
+      // So absence is a routine event on a recording of any length.
+      //
+      // The TRANSCRIPT is the authority. Keep looking for it, resume watching
+      // if the row comes back, and only give up once neither has happened for
+      // long enough that the work really is gone (a killed worker, a restarted
+      // server) — a bounded wait, so the promise still always settles.
+      const GRACE_TRIES = 40; // ~28s at the poll below
+      let grace = GRACE_TRIES;
+      const pause = () => new Promise((r) => setTimeout(r, 700));
+      const regrace = () =>
+        done().catch(() =>
+          watcher.get().then((back) => {
+            if (back) return watcher.watch(onProgress).then(settle);
+            if (--grace <= 0) {
+              const err = new Error("the transcription job is no longer being reported");
+              err.type = "ai_error";
+              err.jobId = started.jobId;
+              throw err;
+            }
+            return pause().then(regrace);
+          }),
+        );
+      function settle(record) {
+        if (!record) return regrace();
         if (record.state === "done") return done();
         const err = new Error(
           record.state === "cancelled"
@@ -2652,7 +2669,8 @@
         err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
         err.jobId = started.jobId;
         throw err;
-      });
+      }
+      return watcher.watch(onProgress).then(settle);
     });
   }
 

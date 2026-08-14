@@ -312,6 +312,13 @@ def generate(body):
             source, task=task, language=language, initial_prompt=initial_prompt,
             vad_filter=vad),
         job, row, "Decoding audio…")
+    # `info.duration` is the whole AUDIO; a segment's `end` is where SPEECH
+    # ended. With the VAD on (the default) those differ by however much silence
+    # the recording trails off with — so the bar legitimately stops short of its
+    # total on a file that ends quietly, and that is not an off-by-one to fix.
+    # Making them agree would mean either reporting against speech-only
+    # duration, which is not knowable until the end, or disabling the VAD, which
+    # costs the wall-clock saving it exists for.
     total = round(float(getattr(info, "duration", 0) or 0), 2) or None
     # The ETA's clock starts HERE, not at `started`. The eager phase above
     # produced no segments, so charging its seconds to the first one makes the
@@ -352,7 +359,22 @@ def generate(body):
             # Asking the generator for one more segment is what tells the two
             # apart, and it is only ever paid for on the cancel path. If one
             # comes back it is dropped, which costs nothing: we are stopping.
-            if next(stream, None) is not None:
+            # It does cost the DECODE of that segment, so a ✕ on a long segment
+            # is honoured seconds later than it was pressed — the price of not
+            # throwing away a finished transcript, and paid only once.
+            #
+            # **A failure in the probe must not become the outcome.** Decoding
+            # the tail of a file is exactly where a container or codec error
+            # surfaces, and an exception raised here would REPLACE the
+            # `Cancelled` in flight: `_single` would answer `{"ok": false}` and
+            # the row would end in `error`, telling the user the transcription
+            # they cancelled had failed. Unknown means "assume there is more",
+            # which re-raises the cancel — the honest answer to a ✕.
+            try:
+                more = next(stream, None) is not None
+            except BaseException:  # noqa: BLE001 - the cancel is the outcome, not this
+                more = True
+            if more:
                 raise
             break
 

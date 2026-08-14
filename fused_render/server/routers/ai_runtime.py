@@ -354,9 +354,12 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     # something a user browses, and `meeting-2024.json` is findable where a hex
     # id is not. Time-ordered and unique all the same, so the folder sorts
     # chronologically and two runs over the same file do not overwrite.
+    # `out_base`, not `base`: `base` above is the calling PAGE's path, and two
+    # different meanings on one name in one function is one edit away from
+    # resolving an input against a transcripts directory.
     stem = os.path.splitext(os.path.basename(source))[0][:60]
-    base = os.path.join(_transcripts_dir(),
-                        f"{time.strftime('%Y%m%d-%H%M%S')}-{stem}-{uid}")
+    out_base = os.path.join(_transcripts_dir(),
+                            f"{time.strftime('%Y%m%d-%H%M%S')}-{stem}-{uid}")
 
     request = {
         "path": source,
@@ -375,8 +378,8 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # of the documented default. `task` and `language` use `or` above and
         # are null-safe already; this was the one that inverted.
         "vad": True if body.get("vad") is None else bool(body.get("vad")),
-        "out": base + ".json",
-        "outText": base + ".txt",
+        "out": out_base + ".json",
+        "outText": out_base + ".txt",
     }
     try:
         supervisor.start_transcribe(model, request, job)

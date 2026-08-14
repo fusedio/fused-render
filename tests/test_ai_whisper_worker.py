@@ -328,6 +328,29 @@ def test_a_cancel_on_the_LAST_segment_still_writes_the_finished_transcript(
     assert open(request["outText"], encoding="utf-8").read() == "hello world\n"
 
 
+def test_a_DECODE_ERROR_in_the_cancel_probe_stays_a_cancel(worker, base, tmp_path):
+    """The probe asks the generator for one more segment, and the tail of a file
+    is exactly where a container or codec error surfaces.
+
+    An exception there would REPLACE the `Cancelled` in flight, so
+    `worker_base._single` answers `{"ok": false}` and the row ends in error —
+    telling the user the transcription they cancelled had failed. A ✕ is the
+    outcome; a fault in the code that checks whether the ✕ was worth honouring
+    is not.
+    """
+    def exploding_tail():
+        yield FakeSegment(0.0, 1.0, "one")
+        raise RuntimeError("moov atom not found")
+
+    model = FakeModel([])
+    model.segments = exploding_tail()
+    worker._loaded["model"] = model
+    base.cancel_on_tick = 2
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+
+
 def test_a_cancel_with_segments_still_to_come_is_honoured_and_writes_nothing(
         worker, base, tmp_path):
     """The other side of it: a cancel is real work stopped, and a half
