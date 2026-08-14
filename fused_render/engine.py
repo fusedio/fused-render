@@ -215,21 +215,43 @@ def _child_env() -> dict:
     return {k: v for k, v in os.environ.items() if k not in _stripped_env_vars()}
 
 
-def _probe(exe: str) -> tuple[dict | None, str]:
-    """Run `exe` and report what it says about itself. (info, failure detail)."""
+def _probe(exe: str) -> tuple[dict | None, str, bool]:
+    """Run `exe` and report what it says about itself. (info, detail, conclusive).
+
+    `conclusive` is False when the failure says nothing about `exe` itself — the
+    spawn died for a reason that a second attempt may well not hit. Its only job is
+    to stop `app_interpreter` caching such an answer for the life of the process;
+    D212 gave the sibling-venv probe the same treatment and names this function as
+    its model, but this one never got it.
+
+    The split follows D212's, by exception TYPE rather than by errno: a missing,
+    unreadable or not-a-directory path is a fact about `exe` and is definite; any
+    other OSError (EAGAIN, ENOMEM) and a timeout are transient. Added to that, a
+    child killed by a SIGNAL — `returncode < 0` — is inconclusive: it never got to
+    run our code, so it reported nothing about itself. That case is not
+    hypothetical. It is this codebase's PROJ `pthread_atfork` crash (see
+    `tests/test_worker_forksafe.py`), which killed the child at ~1ms with -11 and,
+    read as a definite rejection, took down every header-less script until restart.
+    """
     try:
         proc = subprocess.run(
             [exe, "-c", _PROBE],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=_child_env(),
+            close_fds=False,
         )
+    except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
+        return None, f"{type(e).__name__}: {e}", True
     except (OSError, subprocess.SubprocessError) as e:
-        return None, f"{type(e).__name__}: {e}"
+        return None, f"{type(e).__name__}: {e}", False
+    if proc.returncode < 0:
+        return None, f"killed by signal {-proc.returncode}", False
     if proc.returncode != 0:
-        return None, (proc.stderr or proc.stdout or "").strip() or f"exit {proc.returncode}"
+        return None, ((proc.stderr or proc.stdout or "").strip()
+                      or f"exit {proc.returncode}"), True
     try:
-        return json.loads(proc.stdout.strip().splitlines()[-1]), ""
+        return json.loads(proc.stdout.strip().splitlines()[-1]), "", True
     except (ValueError, IndexError) as e:
-        return None, f"unparseable probe output ({type(e).__name__}: {e})"
+        return None, f"unparseable probe output ({type(e).__name__}: {e})", True
 
 
 def _wrapper_path() -> str:
@@ -380,8 +402,14 @@ def app_interpreter() -> str | None:
     with _app_interpreter_lock:
         if _app_interpreter is not _UNPROBED:
             return _app_interpreter
-        _app_interpreter = _resolve_app_interpreter()
-        return _app_interpreter
+        exe, conclusive = _resolve_app_interpreter()
+        # An inconclusive probe is NOT an answer, so it must not become one: leave
+        # the cache _UNPROBED and let the next caller pay for another spawn. The
+        # cost of re-probing is one subprocess; the cost of caching a transient
+        # spawn failure is every header-less script broken until restart.
+        if conclusive:
+            _app_interpreter = exe
+        return exe
 
 
 # --- a header the app interpreter ALREADY satisfies ---------------------------
@@ -462,6 +490,7 @@ def _probe_app_packages(exe: str) -> dict | None:
         proc = subprocess.run(
             [exe, "-c", _APP_PACKAGES_PROBE],
             capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=_child_env(),
+            close_fds=False,
         )
     except (OSError, subprocess.SubprocessError) as e:
         logger.info("app package probe failed for %s: %s: %s", exe, type(e).__name__, e)
@@ -500,10 +529,16 @@ def app_packages() -> dict | None:
         if _app_packages is not _UNPROBED:
             return _app_packages
         exe = app_interpreter()
-        # No verified interpreter means nothing to probe AND nothing to run on, so
-        # there is no answer to cache-bust later: `app_interpreter` is itself
-        # per-process and terminal, so this cannot go stale while it stays None.
-        _app_packages = None if exe is None else _probe_app_packages(exe)
+        # No verified interpreter means nothing to probe AND nothing to run on.
+        # This used to cache that None, on the premise that `app_interpreter` was
+        # "per-process and terminal, so this cannot go stale". That premise is now
+        # false — an inconclusive probe leaves it unresolved and retryable — so
+        # caching here would outlive the reason for it and permanently lose the
+        # fast path after one transient spawn failure. Not caching costs nothing:
+        # there is no subprocess in this branch to repeat.
+        if exe is None:
+            return None
+        _app_packages = _probe_app_packages(exe)
         return _app_packages
 
 
@@ -648,13 +683,19 @@ def _app_interpreter_if_satisfies(requirements: list[str]) -> str | None:
     return app_interpreter() if app_satisfies(requirements) else None
 
 
-def _resolve_app_interpreter() -> str | None:
-    """Probe the rungs and answer with the interpreter to cache.
+def _resolve_app_interpreter() -> tuple[str | None, bool]:
+    """Probe the rungs and answer with the interpreter to cache. (exe, conclusive).
 
     Split out of `app_interpreter` purely so the cache is written in exactly one
     place, under the lock: every early return here used to assign the global
     itself, which is what let a losing thread's `None` land on top of a winner's
     working path.
+
+    `conclusive` is False only when NO rung reached a verdict about the candidate
+    itself — see `_probe`. A False here means "ask again next time", not "no
+    interpreter": the caller must return the None without caching it, because the
+    alternative is one unlucky spawn disabling header-less scripts until restart.
+    A found interpreter is always conclusive; there is nothing left to retry.
     """
     candidate, autodetected = _interpreter_candidate()
     name = os.path.basename(candidate).lower().removesuffix(".exe")
@@ -665,12 +706,12 @@ def _resolve_app_interpreter() -> str | None:
             "interpreter's, so it was not run. Set %s to a real python.",
             candidate, name, _APP_PYTHON_ENV,
         )
-        return None
+        return None, True
 
-    info, detail = _probe(candidate)
+    info, detail, conclusive = _probe(candidate)
     if info is not None and info["prefix"] == sys.prefix:
         logger.info("header-less scripts will run on %s", candidate)
-        return candidate
+        return candidate, True
 
     why = detail or (
         f"it reports sys.prefix {info['prefix']!r}, not this app's {sys.prefix!r}"
@@ -684,13 +725,17 @@ def _resolve_app_interpreter() -> str | None:
     if wrapper is not None:
         # Probed exactly like rung 1, under the same stripped env and against the
         # same rule: it has to earn its place by running, not by existing.
-        wrap_info, wrap_probe_detail = _probe(wrapper)
+        wrap_info, wrap_probe_detail, wrap_conclusive = _probe(wrapper)
         if wrap_info is not None and wrap_info["prefix"] == sys.prefix:
             logger.info(
                 "header-less scripts will run on %s (PYTHONHOME wrapper for %s)",
                 wrapper, candidate,
             )
-            return wrapper
+            return wrapper, True
+        # Both rungs must be definite before this resolution can be cached: the
+        # wrapper is built FROM the candidate, so an inconclusive rung 1 makes the
+        # whole answer provisional even when rung 2 reached a real verdict.
+        conclusive = conclusive and wrap_conclusive
         wrap_detail = wrap_probe_detail or (
             f"the wrapper reports sys.prefix {wrap_info['prefix']!r}, not this "
             f"app's {sys.prefix!r}"
@@ -701,10 +746,12 @@ def _resolve_app_interpreter() -> str | None:
         "not be used directly (%s), and the PYTHONHOME wrapper did not work either "
         "(%s). Such scripts will now fail with a clear error rather than run in an "
         "environment without this app's packages. Set %s to a Python executable "
-        "that has them.",
+        "that has them.%s",
         candidate, why, wrap_detail, _APP_PYTHON_ENV,
+        "" if conclusive else " The probe never got a verdict, so this will be "
+        "retried on the next request rather than remembered.",
     )
-    return None
+    return None, conclusive
 
 
 def available() -> bool:

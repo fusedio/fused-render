@@ -388,7 +388,7 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     # renderAnn draws THREE things and they answer differently now: the pins need a
     # layer (null bindings when the host shows nothing marked, and the loop is
     # skipped), the annotation chips are the payload of a message this chat can
-    # still send, and the ATTACHED PICTURES (D279) belong to no pane at all — a
+    # still send, and the ATTACHED PICTURES (D280) belong to no pane at all — a
     # screenshot pasted or dropped into a folder chat with no preview is still an
     # attachment, so the no-pane exit draws those and only those.
     render = code[code.index("function renderAnn() {"):]
