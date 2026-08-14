@@ -2147,6 +2147,8 @@ export interface AiRunner {
   code: string;
   capability: string;
   label: string;
+  /** What using this backend is like, when there is something worth saying. */
+  note: string | null;
   available: boolean;
   /** Why not, in words — "needs Apple Silicon…". Null when it is available. */
   reason: string | null;
@@ -2162,6 +2164,11 @@ export interface AiLoadedModel {
   error: string | null;
   /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
   residentBytes: number | null;
+  /** "cuda" | "mps" | "cpu" — where the weights actually landed, as the worker
+   *  reported it. Null from a runner that does not say. The page shows it
+   *  because a model answering at a few words a second on a CPU is working
+   *  perfectly and looks broken, and this is the whole explanation. */
+  device: string | null;
   loadedAt: number | null;
   startedAt: number;
   /** The download-manager row for this model's bring-up. */
@@ -2204,6 +2211,15 @@ export interface AiCatalogModel {
 export interface AiCatalogCapability {
   capability: string;
   runner: string | null;
+  /** The backend in words — "MLX (Apple Silicon)", "Transformers (PyTorch)".
+   *  One capability can have more than one runner (text generation has two
+   *  since D293), so which one this machine resolved is worth naming. */
+  runnerLabel: string | null;
+  /** What using that backend is LIKE, when there is something worth saying —
+   *  the CPU-speed warning for PyTorch. A standing fact about the runner, not a
+   *  claim about this machine: the device a model actually got is on the loaded
+   *  card, and is not knowable until one has run. */
+  runnerNote: string | null;
   available: boolean;
   reason: string | null;
   default: string | null;

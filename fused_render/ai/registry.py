@@ -16,9 +16,10 @@ than an import:
   other declaring folder gets. No new install machinery exists for AI.
 * **A wedged model cannot take the app down.** OOM, a CUDA fault, a Rust panic
   inside a loader — all of it happens in a process the supervisor can kill.
-* **Adding a backend is adding a folder.** MLX today; llama.cpp or transformers
-  for Windows tomorrow is a new module here plus a new folder, and nothing else
-  in the app has to learn about it.
+* **Adding a backend is adding a folder.** This was written when MLX was the only
+  text runner and said "transformers for Windows tomorrow" — which turned out to
+  be exactly one new row here and one new folder (D293), with nothing else in the
+  app changed. The claim is kept because it was tested.
 
 **Availability is checked, never assumed.** MLX runs on Apple Silicon and nowhere
 else, so `available()` answers with a REASON rather than a bool — "needs Apple
@@ -29,6 +30,14 @@ Resolution is by CAPABILITY, not by model: a caller asks for `text-generation`
 and gets whichever runner serves it here. A model id never picks the runner,
 because the same repo can be servable by two backends and the choice belongs to
 the machine, not to the string.
+
+**Two runners can share one capability, and the ORDER between them is the whole
+mechanism.** Text generation is served by MLX on Apple Silicon and by torch
+everywhere else: both rows are registered, both are asked whether they can run,
+and the first that says yes wins. Nothing else in the app knows there is more
+than one — but the CATALOG does, because what to suggest depends on which
+backend will load it (`catalog.py`), and an MLX checkpoint on a Windows machine
+is a download that cannot be used.
 """
 
 from __future__ import annotations
@@ -75,6 +84,16 @@ class Runner:
     #: What this backend is, in one line, for the page that has to explain a
     #: capability the machine cannot serve.
     label: str
+    #: What using this backend is LIKE, for the page to say before anything is
+    #: loaded. A standing fact about the runner, never a claim about this
+    #: machine — the device a model actually got is the worker's to report
+    #: (`worker_base.STATE["device"]`) and is not knowable until one has run.
+    #:
+    #: It exists because the honest answer for `transformers-text` is "this may
+    #: be a great deal slower than you expect, and here is why", and a user who
+    #: reads that before starting an 8GB download has been told something
+    #: useful. Empty for a runner with nothing surprising to say.
+    note: str = ""
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
     def available(self) -> Availability:
@@ -117,15 +136,18 @@ def _apple_silicon() -> Availability:
 
 
 def _always() -> Availability:
-    """torch + diffusers, and CTranslate2, build wheels for macOS (both
-    architectures), Linux and Windows. Whether the machine is FAST enough is a
-    different question, and not one to refuse on."""
+    """torch + diffusers, torch + transformers, and CTranslate2 all build wheels
+    for macOS (both architectures), Linux and Windows. Whether the machine is
+    FAST enough is a different question, and not one to refuse on — a model
+    answering slowly on a CPU is a model answering, and the device is reported
+    (`worker_base.STATE["device"]`) so the page can say which case it is."""
     return Availability(True)
 
 
-# The table. Ordered, and first-match-wins per capability — so a future
-# cross-platform text runner sits after mlx_text and picks up the machines MLX
-# turns down.
+# The table. Ordered, and first-match-wins per capability — which is what lets
+# TWO runners serve text generation: MLX takes Apple Silicon, and `transformers`
+# below it picks up every machine MLX turns down. The ordering is the whole
+# mechanism, so the rows are not sorted alphabetically and must not be.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -133,6 +155,27 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "mlx_text"),
         label="MLX (Apple Silicon)",
         _available=_apple_silicon,
+    ),
+    Runner(
+        code="transformers-text",
+        capability=TEXT_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "transformers_text"),
+        label="Transformers (PyTorch)",
+        # ONE LINE, and that is a hard constraint rather than a summary: this
+        # sits above the cards where it is read on the way past, and anything
+        # that wraps is something nobody finishes. Everything that used to
+        # follow a dash here — that the Windows build is CPU-only, that a CPU
+        # answers at a few words a second — lives in the loaded card's tooltip
+        # instead, where somebody has stopped to ask.
+        note="Uses an NVIDIA GPU when PyTorch can see one, and the CPU otherwise.",
+        # `_always`, and it is deliberately BELOW the MLX row rather than
+        # instead of it. torch runs everywhere, so this row alone would serve
+        # Apple Silicon too — and would be the wrong answer there: MLX is faster
+        # on Metal and its 4-bit catalog is sized for a 16GB laptop, where this
+        # runner's unquantized checkpoints are not. First-match-wins gives each
+        # machine the better backend without either runner knowing about the
+        # other.
+        _available=_always,
     ),
     Runner(
         code="diffusers-image",
@@ -245,6 +288,29 @@ def for_capability(capability: str) -> Runner | None:
     return None
 
 
+def unavailable_reason(capability: str) -> str | None:
+    """Why nothing here serves `capability`, in words — or None when something does.
+
+    The same sentence `supervisor._runner_or_raise` raises, available to a
+    caller that has not got as far as starting anything. It exists because a
+    request can now fail EARLIER than the supervisor for a reason that has
+    nothing to do with the real one: since the catalog became per-runner (D293),
+    an unavailable runner also has no curated default, so `POST /api/ai/image`
+    answered "no image model is configured" — true, useless, and hiding the
+    actionable "the Diffusers runner is not built yet" one layer down.
+
+    Both messages are worth keeping, and this is what tells them apart: no
+    runner is a fact about the MACHINE, and no suggestion is a fact about the
+    CATALOG.
+    """
+    if for_capability(capability) is not None:
+        return None
+    known = next((r for r in _RUNNERS if r.capability == capability), None)
+    if known is None:
+        return f"no runner provides {capability!r}"
+    return known.available().reason or f"no runner provides {capability!r}"
+
+
 def capabilities() -> tuple[str, ...]:
     """Every capability the registry knows, servable here or not — the page
     lists them all so an unavailable one can say why."""
@@ -266,6 +332,7 @@ def describe() -> list[dict]:
                 "code": runner.code,
                 "capability": runner.capability,
                 "label": runner.label,
+                "note": runner.note or None,
                 "available": status.ok,
                 "reason": status.reason or None,
             }

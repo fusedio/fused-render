@@ -6385,6 +6385,81 @@ an AI Models page that could say what was on disk but not what was *running*.
   that PyAV opens the container formats users will point at it. A first real
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
+- **AI-11** **Text generation runs everywhere, on the backend that suits the
+  machine — and TWO runners share one capability for the first time** (D293).
+  MLX is Metal-only, so the app's flagship local capability was something a
+  Windows or Linux user could read about and not use: the exact complaint AI-10
+  answers for transcription, still standing for chat. A `transformers_text`
+  runner folder (torch + transformers) is registered BELOW `mlx_text`, and
+  AI-2's first-match-wins ordering does the rest — Apple Silicon keeps MLX
+  (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop), while
+  Windows, Linux and Intel Macs fall through to torch. Nothing else in the app
+  learned that a capability can have two runners, which is the claim AI-2 made
+  and this is the test of it.
+  **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
+  the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
+  and no wheels at all, so declaring it would put cmake and a C++ toolchain —
+  MSVC, on Windows — between a user and the Download button, with its prebuilt
+  wheels on a private index that is a second thing to trust. torch is the
+  runtime this app already builds on users' machines for the image runner, so
+  its install path and its failure modes are known rather than guessed at.
+  `onnxruntime-genai` is the credible alternative (tiny, fast int4 on CPU,
+  DirectML reaching every Windows GPU) and was deferred rather than dismissed:
+  it only loads pre-converted ONNX repos, so the Hub models the page already
+  offers a Load button for would refuse — and as a SECOND text runner it would
+  break the rule that a model id never picks the runner.
+- **AI-11a** **The CATALOG is keyed by runner, and the page says which one it
+  resolved.** This is the part a second runner really did change. A suggestion
+  is only meaningful for the backend that will load it: `mlx-community/…` is
+  packed for Metal kernels and is an unusable download on a PC, while an
+  ordinary safetensors repo is the right answer there and the wrong one on a Mac
+  that has MLX. So `catalog.SUGGESTIONS` moved from capability keys to RUNNER
+  keys, and `catalog.describe()` resolves the runner the way a LOAD resolves it
+  — it used to take the first runner REGISTERED for a capability whatever its
+  availability, which with two rows would have told a Windows machine that text
+  generation "needs Apple Silicon" while a runner sat ready to serve it, under a
+  heading whose four suggestions it could not load. The curation rules for the
+  cross-platform list are three, each a failure this app has already shipped
+  once: unquantized safetensors only (every other format needs a package the
+  runner does not ship — the CTranslate2 trap AI-10 describes), ungated only (a
+  licence-gated repo 401s partway through a download for a user who did nothing
+  wrong), and sized for a machine with no GPU. One consequence had to be fixed
+  where it surfaced rather than where it started: an unavailable runner also has
+  no curated default, so `POST /api/ai/image` began answering "no image model is
+  configured" — true, useless, and hiding the actionable "the Diffusers runner is
+  not built yet" underneath. `registry.unavailable_reason()` tells the two apart,
+  because no runner is a fact about the MACHINE and no suggestion is a fact about
+  the catalog.
+- **AI-11b** **The device is reported, because a model on a CPU works and looks
+  broken.** torch runs on whatever it can see, and what it can see is not
+  knowable from outside the process: **the PyPI torch wheel is CPU-only on
+  Windows** (its `nvidia-*` dependencies are all marked `platform_system ==
+  "Linux"`), so the ordinary outcome on a Windows machine with a graphics card
+  is a perfectly healthy model answering at a few words a second, with a green
+  LOADED card and a healthy memory figure and nothing on screen to explain the
+  speed. `worker_base.STATE` therefore carries a `device` that each runner sets
+  in its own `load()` — the same argument AI-8 makes about resident bytes: only
+  the process holding the weights knows. It surfaces twice, and the two are
+  different KINDS of statement: the loaded card shows a measurement (**on CPU**,
+  warning-coloured, beside the memory figure), while Discover shows a standing
+  fact about the backend above the cards, before any download, since that is
+  when it can still change a decision. All three runners report it — the image
+  runner has had the same Windows CPU-only problem since D257 and never said so.
+  **Windows CUDA was deferred, deliberately**: reaching it means pulling torch
+  from `download.pytorch.org` through a `[[tool.uv.index]]`, which costs EVERY
+  Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA card. The
+  trade is stated rather than hidden, which is what the device reporting is for.
+- **AI-11c** **No text has ever been generated by this runner, and AI-10b's
+  disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
+  catalog, the resolution across four platforms and the API are exercised
+  against fakes, and the runner's OWN logic is tested a level down —
+  `transformers_text/worker.py` is stdlib-only at import time, so its format
+  refusals, its dtype-keyword choice, its device placement and its two
+  prompt-encoding paths are all driven on CI with stubs. What no test touches is
+  torch itself: the actual generation, the streaming, the real speed on a CPU,
+  and whether the four suggested repos load as expected — **their `size_gb` is
+  `None` for that reason**, since D255 forbids a figure nobody has measured. A
+  first real load is the outstanding verification.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

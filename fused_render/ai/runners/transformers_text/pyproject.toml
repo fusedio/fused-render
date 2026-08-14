@@ -1,0 +1,59 @@
+# The transformers text runner's environment (SPEC §40, PY-16).
+#
+# The cross-platform half of text generation. `mlx_text` is Metal-only, so on a
+# Windows or Linux machine the app's flagship local capability was something to
+# read about rather than use — the same complaint AI-10 makes about transcription
+# and answers with CTranslate2. This answers it with torch, which is the one
+# runtime that publishes wheels for every platform this app ships on.
+#
+# **Deliberately the stack `diffusers_image` already proves.** torch and
+# transformers are named in one more place, not a new one: the image runner has
+# been building this pair on users' machines since D257, so the install path, the
+# wheel availability and the failure modes are known rather than guessed at. A
+# second folder means a second venv, but uv hardlinks from its own cache, so a
+# machine that has already built the image runner pays almost nothing in disk for
+# this one.
+#
+# **Every dependency here must be installable as a WHEEL** (AI-2a), and that rule
+# is what ruled out llama.cpp: `llama-cpp-python` publishes an sdist and nothing
+# else on PyPI, so declaring it would put cmake and a C++ toolchain between a user
+# and the Download button — on Windows, MSVC. Its prebuilt wheels live on a
+# private index, which is a second thing to trust and a second thing to go down.
+#
+# **torch from PyPI is CPU-only on Windows, and that is not a mistake here.** Its
+# `nvidia-*` dependencies are all marked `platform_system == "Linux"`, so a Linux
+# machine gets CUDA (and pays several GB for it whether or not it owns a card)
+# while a Windows machine gets a 122MB CPU build. CUDA on Windows means pulling
+# torch from `download.pytorch.org` through a `[[tool.uv.index]]`, which would
+# cost EVERY Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA
+# card. The trade was taken deliberately for v1: the runner reports the device it
+# actually got (`worker.py`'s `device()`), the AI Models page shows it, and the
+# suggested models are curated so the CPU case is a real option rather than a
+# consolation. The same constraint already applies to `diffusers_image` and is
+# simply not stated there.
+#
+# What each earns:
+#   torch           the tensors and the device (CUDA / MPS / CPU)
+#   transformers    the model classes, the chat templates and TextIteratorStreamer
+#   accelerate      `device_map` and the low-memory load path for a big checkpoint
+#   sentencepiece   the tokenizer format some instruct models still ship
+#   protobuf        sentencepiece's model format needs it at load time
+#   huggingface_hub downloads
+#   psutil          answers "how much memory is this costing"
+[project]
+name = "fused-render-runner-transformers-text"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers>=4.46",
+    "accelerate",
+    "sentencepiece",
+    "protobuf",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

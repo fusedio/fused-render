@@ -210,23 +210,61 @@ function LoadedBadge({ loaded }: { loaded: AiLoadedModel }) {
 // loading (no percentage, because weights going into memory is one opaque step
 // and an invented bar reads as frozen), ready (with its resident memory), and
 // error (with what went wrong, because "it failed" sends people nowhere).
+/** Where a loaded model actually ended up, and — on a CPU — what that means.
+ *
+ *  **The CPU case is the one this exists for.** torch runs on whatever it can
+ *  see, and on Windows the standard PyTorch build sees no GPU at all, so a
+ *  perfectly healthy 4B model answers at a few words a second. Without this the
+ *  page shows a green LOADED card and a memory figure, both of which say the
+ *  model is fine, and leaves the user to conclude from the speed that it is not.
+ *  A GPU is reported too — quietly, as a fact — because a chip that appears only
+ *  when something is slow is a warning, and this is information.
+ */
+function DeviceNote({ device }: { device: string }) {
+  const cpu = device === "cpu";
+  const label = cpu ? "on CPU" : `on ${device.toUpperCase()}`;
+  return (
+    <span
+      className={"am-runtime-device" + (cpu ? " am-runtime-device-cpu" : "")}
+      title={
+        cpu
+          ? "This model is running on the processor, not a graphics card — it " +
+            "works, but expect a few words a second rather than an instant " +
+            "answer. On Windows the standard PyTorch build is CPU-only; " +
+            "elsewhere it means no supported GPU was found."
+          : "This model is running on the graphics card."
+      }
+    >
+      {label}
+      {cpu && <span className="am-runtime-device-tail"> — a few words a second</span>}
+    </span>
+  );
+}
+
 function RuntimeChip({ loaded, job }: { loaded?: AiLoadedModel; job?: Job }) {
   if (loaded?.state === "ready") {
-    // The badge above already said "loaded"; this row carries the one thing a
-    // badge cannot — the number. Nothing at all when the worker could not
-    // measure itself, rather than a row that repeats the badge.
-    if (!loaded.residentBytes) return null;
+    // The badge above already said "loaded"; this row carries the two things a
+    // badge cannot — the number, and the device. Nothing at all when the worker
+    // could answer with neither, rather than a row that repeats the badge.
+    //
+    // Both are optional and independently so: a runner that cannot measure its
+    // own memory still knows where it put the weights, and an early return on
+    // the memory figure alone would have thrown the device away with it.
+    if (!loaded.residentBytes && !loaded.device) return null;
     return (
       <div className="am-card-runtime am-card-runtime-ready">
-        <span
-          className="am-runtime-mem am-runtime-mem-lead"
-          title={
-            "Resident memory of the model's process. Not the model's size: it " +
-            "counts shared pages too and moves while it generates."
-          }
-        >
-          {formatSize(loaded.residentBytes)} in memory
-        </span>
+        {loaded.residentBytes ? (
+          <span
+            className="am-runtime-mem am-runtime-mem-lead"
+            title={
+              "Resident memory of the model's process. Not the model's size: it " +
+              "counts shared pages too and moves while it generates."
+            }
+          >
+            {formatSize(loaded.residentBytes)} in memory
+          </span>
+        ) : null}
+        {loaded.device && <DeviceNote device={loaded.device} />}
       </div>
     );
   }

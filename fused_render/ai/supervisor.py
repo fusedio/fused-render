@@ -208,6 +208,12 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
+    #: worked it out. The supervisor can see that a machine has a GPU and not
+    #: whether the runner's torch was built to use it, and on Windows those
+    #: differ by default (the PyPI wheel is CPU-only). Same argument AI-8 makes
+    #: about resident bytes: only the process holding the weights knows.
+    device: str = ""
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
     #: Set when the user cancels or a newer load evicts this one. The bring-up
@@ -702,6 +708,10 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                # Read on every poll rather than once at `ready`: a runner sets
+                # it inside `load()`, and this loop is what is watching when
+                # that happens.
+                worker.device = str(health.get("device") or "")
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
                     _report(job, state="done", detail="Model loaded")
@@ -1436,6 +1446,10 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # What the weights actually landed on. None from a runner that
+                # does not report one, which the page renders as nothing rather
+                # than as a guess.
+                "device": w.device or None,
                 "loadedAt": w.loaded_at,
                 "startedAt": w.started_at,
                 "jobId": job_id_for(w.model),

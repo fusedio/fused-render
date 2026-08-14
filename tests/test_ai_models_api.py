@@ -1210,12 +1210,14 @@ def test_every_suggested_model_could_be_loaded_by_the_page():
     """
     from fused_render.ai import catalog
 
-    for capability, entries in catalog.SUGGESTIONS.items():
-        assert capability in set(_ai_registry._TASK_CAPABILITIES.values()), (
-            f"nothing in the task vocabulary maps to {capability!r}, so no cached "
-            f"card will ever offer Load for the models suggested under it"
+    for code, entries in catalog.SUGGESTIONS.items():
+        runner = _ai_registry.by_code(code)
+        assert runner is not None, f"{code!r} suggests models and is not a runner"
+        assert runner.capability in set(_ai_registry._TASK_CAPABILITIES.values()), (
+            f"nothing in the task vocabulary maps to {runner.capability!r}, so no "
+            f"cached card will ever offer Load for the models suggested under it"
         )
-        assert entries, f"{capability} suggests nothing"
+        assert entries, f"{code} suggests nothing"
 
 
 @requires_symlinks
