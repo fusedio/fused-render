@@ -42,6 +42,12 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # The Hugging Face cache inventory (SPEC §37) — a client-side page like the
 # rest, and reachable by URL even where the sidebar hides its entry.
 @router.get("/ai-models")
+# Scheduled messages (SPEC §41). Omitting it here is what a missing entry in this
+# list looks like from the outside: in-app navigation worked (it is a client-side
+# pushState and never asks the server), and a refresh or a bookmark 404'd. That
+# asymmetry is why test_shell_routes.py now derives this list from the shell's own
+# route table rather than trusting the next page to remember.
+@router.get("/scheduled")
 def shell_page(shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 

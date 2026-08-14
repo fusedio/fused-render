@@ -6385,3 +6385,321 @@ an AI Models page that could say what was on disk but not what was *running*.
   that PyAV opens the container formats users will point at it. A first real
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
+
+## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
+
+Goal: the app could start a Claude Code session on demand — the split-view chat,
+and the apps API's scaffolding turn — but had no way to say *later*. Scheduling
+a message ("update the changelog at 6pm", "re-run the check tomorrow morning")
+had to be done outside the app, by a crontab line or a Task Scheduler entry
+invoking `agent.py` directly, and that turns out not to work in the way that
+matters: a scheduled turn launched from outside the app runs in a different
+world from one the user typed.
+
+- **SCH-1** **A durable schedule** (`fused_render/schedule.py`,
+  `<home>/scheduled_messages.json`). One entry per message:
+  `{id, target, message, due, session_id, permission_mode, state, created,
+  fired, run_id, error}`. On disk, not in memory (unlike the job registry, §36)
+  — the whole point is to outlive the app session that scheduled it. Branch-aware
+  through `storage.home_dir()`, so a dev checkout on a branch ref never fires the
+  baseline install's messages. A missing or corrupt store reads as "nothing
+  scheduled", the same degradation as every other registry here.
+- **SCH-2** **The app sends it, not the OS.** `supervisor/paths.py`'s
+  `child_environment` injects ~20 variables into every child the app spawns
+  (state/cache/runtime/temp/log dirs, the bundled rclone and uv, `TMPDIR`, the
+  `CLAUDE_CONFIG_DIR` passthrough), and `_plugin_argv` hands a session
+  fused-render's skills only when that contract is present. A cron line
+  reproduces none of it, so its turn silently becomes a *different install*:
+  other state dir, no skills. On macOS it is worse than different — per D72 a
+  process that is not the app does not inherit the app's Documents/Desktop TCC
+  grants, and the CLI's credentials live in the login Keychain of a GUI session
+  cron is not in; both spawn paths run headless (`claude -p`) where the `/login`
+  the CLI prints can never be actioned. Firing inside the server process makes a
+  scheduled turn environmentally identical to a typed one.
+- **SCH-3** **The cost, stated: nothing fires while the app is closed.** The page
+  says this where it is relevant rather than implying a guarantee it does not
+  have. Two mechanisms make it survivable:
+  - **SCH-3a** **Wall-clock comparison, never tick-counting.** Every tick asks
+    what is due *now*. A laptop that slept through a due time fires on the tick
+    after it wakes; an app that was quit fires on the tick after it starts.
+    Catch-up is not a feature — it is what the absence of tick-counting gets for
+    free, which is why the loop is a **startup event** (not the `create_app`
+    body: it sends things, and every test that builds an app would otherwise
+    spawn whatever the developer's store held) and does not sleep before its
+    first pass.
+  - **SCH-3b** **A bound on how late is still worth sending**
+    (`FUSED_RENDER_SCHEDULE_MAX_LATE`, default 24h). Unbounded catch-up is its
+    own bug: a message meant for Tuesday's standup, fired unattended on Friday
+    against a repo that has moved on, is worse than one that never fired. Past
+    the bound an entry becomes `missed` — visible, never sent. `GET /api/schedule`
+    reports the bound, because the page cannot explain a `missed` entry without it.
+- **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
+  *before* the helper is launched, so a process that dies mid-spawn leaves it
+  `sending` rather than `pending` and the next boot does not resend it; a sweep
+  later reports it as interrupted. That is the safe direction to fail — an unsent
+  message is a disappointment, a message sent five times over five crash-restarts
+  is an agent running unattended five times.
+- **SCH-5** **Permission mode is per-entry, default `auto`.** Same reasoning as
+  the apps API (`_APP_SESSION_PERMISSION_MODE`): nobody polls `decide`, so under
+  the strict default the first tool call parks a request until `PERMISSION_WAIT`
+  denies it — a message that "sent" and did nothing. The extra wrinkle here is
+  that the turn is unattended *by definition*, so the mode is recorded ON the
+  entry: "auto" is a choice made per message, not a property of scheduling.
+- **SCH-6** **A mount-backed target is refused**, in the router rather than the
+  model (the mounts registry lives above it). A scheduled turn is an agent turned
+  loose on a path; scheduling one against a FUSE mount would route around the
+  gate `templates/claude/condition.py` exists solely to be.
+- **SCH-7** **Routes.** `GET /api/schedule` lists and `GET /api/schedule/events`
+  reads undelivered outcomes (both unguarded, like every read);
+  `POST /api/schedule` schedules, `POST /api/schedule/cancel` withdraws, and
+  `POST /api/schedule/events/ack` confirms narration — all three
+  behind the D3 X-Fused guard — one schedules code execution and the other stops
+  it. Create takes **exactly one** of `due` (ISO 8601) or `delay_seconds`, so a
+  caller offering "in 30 minutes" never does timezone arithmetic; a **naive**
+  `due` is read as LOCAL time, because it came from a human writing the time on
+  their own clock. Only a `pending` entry is cancellable: the helper for a
+  `sending` one is already away.
+- **SCH-8** **The OS half launches the app and nothing else**
+  (`fused_render/schedule_wake.py`). It sends no messages and does not know what
+  one is; it asks the platform to have the app *running* at the times something
+  is due, and the app's own first tick (SCH-3a) does the rest. **macOS: a
+  LaunchAgent** — `launchd`, not cron, because it runs in the Aqua session (so
+  the app it starts has the Keychain and can prompt for consent) and it runs a
+  missed `StartCalendarInterval` when the machine next wakes, which cron does not
+  do at all. Intervals are written in **local time** (what launchd evaluates
+  against), capped to the soonest few (the plist is a wake-up list, not the
+  schedule), and `open -g -a` launches **without stealing focus** from whatever a
+  3am wake interrupted. **Windows and Linux get nothing new, deliberately:** both
+  already have a start-at-login toggle the supervisor owns (`_win32/startup.py`'s
+  Run key, `_linux/startup.py`'s autostart entry), and a schedule-specific timer
+  would be a third mechanism that can disagree with those two about whether the
+  app should be running. Everything here is best-effort: a failed plist write
+  makes messages fire less reliably, never lost, and must not fail the store
+  write that triggered it.
+  - **SCH-8a** **The wake stub reads the store; nobody hands it a view of it.**
+    `_sync_wake()` takes no argument. It cannot run under `_lock` — that would hold
+    the store across two `launchctl` subprocesses, letting one tick stall a
+    `GET /api/schedule` for as long as launchd takes — so it takes `_wake_lock`,
+    re-reads the pending times under `_lock`, releases, and only then shells out.
+    Callers used to snapshot the times inside their own locked block and pass them
+    in, and that lost writes: two mutations racing could reach `launchctl` in the
+    opposite order, and the older snapshot then overwrote the plist and **dropped
+    the newer message's wake time**, with nothing to resync until some later store
+    write happened along. Serialising the shell-out and re-reading inside it is
+    what makes "last to write the plist is last to read the store" true. Lock order
+    is `_wake_lock` then `_lock`, never the reverse — a caller still holding `_lock`
+    here inverts it, and two such callers deadlock, which is what the
+    "outside `_lock`, always" rule is really protecting.
+- **SCH-9** **One copy of the spawn discipline** (`fused_render/claude_spawn.py`).
+  The apps API and the scheduler need the identical posix_spawn posture — calling
+  `agent._start` in the server process fork()s with libproj resident and SIGSEGVs
+  the child before exec — plus the same poll that gets a run into its sidecar.
+  Extracted rather than duplicated, because that reasoning is the kind that gets
+  paraphrased into something false on the second telling.
+- **SCH-10** **Two surfaces, because nobody is looking when it happens.** This is
+  the one kind of work in the app with no audience at the moment it runs, so
+  "what did it do" cannot be left to a page the user has to think to visit.
+  - **SCH-10a** **A job row per send** (§36's registry, id `sys:schedule:<entry>`,
+    kind `task`). Opened `running` when the send succeeds and held for the whole
+    **turn**, not just the spawn — the spawn takes a moment, the turn can take
+    minutes, and the minutes are what is worth seeing. Its `detail` carries the
+    turn's phase and token count, and — the one worth having — reports **waiting
+    for permission** when `_poll` shows a parked card, because from the outside a
+    turn nobody has approved looks exactly like a slow one, and for an unattended
+    session that is the likeliest way to be stuck. `cancellable` is honest here in
+    a way it is not for most reporters: this process owns the run, so the
+    manager's ✕ calls `agent._cancel` and is an ACTION (`jobs.OWNER_SERVER`).
+  - **SCH-10b** **An event log the shell toasts** (`schedule.event_log()`,
+    `GET /api/schedule/events`) — append-only, monotonically ided, bounded. A
+    separate endpoint from the listing for the reason the mount-health log is
+    separate: this poll runs app-wide in every shell forever and must not carry
+    the page's payload. **The SERVER decides what is undelivered**
+    (`undelivered_events` + a guarded `ack` the shell POSTs after narrating), and
+    that is the correction to the first shape, which copied `useMountHealth`'s
+    "first successful poll is a silent baseline". That rule is right for mounts —
+    which emit nothing at startup by design — and exactly wrong here: the catch-up
+    pass emits its `missed` verdicts on the scheduler's FIRST tick, long before a
+    shell has loaded, so a client-side baseline swallowed precisely the events the
+    log exists to deliver. Acking after narrating means a client that dies in
+    between gets a duplicate toast rather than a silent miss, and a reload is quiet
+    without the client having to guess. It is an ack POST rather than a
+    drain-on-read because a GET with that side effect would let any page the user
+    visits silently consume their notifications. Kinds: `done` → info, auto-dismissing; `failed`
+    and `missed` → persistent errors with an action onto `/scheduled`. `missed` is
+    worded differently from `failed` on purpose — nothing went wrong, the app was
+    not running — but it still needs a person, because the user asked for
+    something that did not happen. The rules are a pure module
+    (`schedule-toast.ts`, bun-tested) with the polling left in the hook, the same
+    split `server-status.ts` uses.
+  - **SCH-10c** **`state` and `turn` are two facts, not one.** `state` says
+    whether the message was SENT; `turn` says how the session it started then went
+    (`""` until it ends, else `ok`/`failed`/`cancelled`). They fail
+    independently — a message can send perfectly and its turn still die on the
+    first tool call — and reporting a dead turn as a send failure would send the
+    user looking in the wrong place. The page labels a sent row by its turn
+    ("Running…", "Ran", "Turn failed") and counts a still-running turn as live.
+  - **SCH-10d** **The watcher wraps the recorder, it does not replace it.**
+    `record_session_when_ready` gained an optional `on_tick` observer (called
+    before its `done` check, since that final tick is where the outcome is), whose
+    exceptions are swallowed: the sidecar write and the commit must happen whether
+    or not anything is watching, so an observer is never allowed to abandon a run.
+    Every report is best-effort — a registry that refuses a field must not cost a
+    message its send.
+  - **SCH-10e** **A turn abandoned by a dead process is closed by the sweep.**
+    `sent` with an empty `turn` means two different things — a turn running
+    normally, and one whose watcher died with the app mid-turn — and the store
+    cannot tell them apart, because the difference is only knowable by a live
+    process. `schedule._watched` holds the entry ids this process is watching
+    (registered BEFORE the store says `sent`, so a concurrent sweep cannot close a
+    turn that is about to be watched; deregistered in a `finally`, so a finished
+    turn does not stay invisible to the sweep instead). The sweep closes any `sent`
+    entry with no `turn` that nothing is watching: `state` stays `sent` because the
+    message did go, `turn` becomes `unknown` — the same word SCH-10d's
+    `_close_unwatched` uses, which is the in-process floor under a watch that ENDS
+    and by construction cannot cover a process that DIES. Left unclosed the entry
+    cost three separate things: the page read `Running…` for ever, no toast ever
+    said what happened, and — the one that costs a future message rather than a
+    label — its session stayed in `_busy_sessions`, so the next scheduled message to
+    that conversation was held back tick after tick until the catch-up bound gave up
+    and called it missed.
+- **SCH-11** **Scheduling happens in the claude template's composer, not on a
+  settings page** (`templates/claude/template.html`, the **Send now** pill beside
+  the model/effort/approvals pills). The composer already holds the two hard
+  parts — WHICH FOLDER (the template is bound to one target, `FILE`) and WHAT TO
+  SAY — so the only thing it was missing is *when*. A settings page asking for a
+  path and a message again was making the user do twice what they had already
+  done once, and typing an absolute path by hand was the worst affordance in the
+  feature.
+  - **SCH-11a** **Presets, not a date picker.** The pill row is a fixed
+    vocabulary and a `datetime-local` field wedged between the pills would read as
+    a different app; "in an hour / this evening / tomorrow 9am / Monday 9am" is
+    what a deferred prompt actually wants. `POST /api/schedule` still takes an
+    exact `due`, so nothing is lost for a caller that needs 03:14. Presets resolve
+    at SEND time — "tomorrow 9am" means tomorrow from the moment the user commits,
+    not from whenever the pill was touched — and a preset already past today (the
+    evening case) is reported rather than silently shifted a day.
+  - **SCH-11b** **The choice does not outlive its message.** Model, effort and
+    approvals persist in `fused.params` because they describe how the chat
+    behaves; "send it at 6pm" describes ONE message, so the pill resets to
+    **Send now** after every send. A deferral that survived its own send would
+    silently defer whatever the user typed next.
+  - **SCH-11c** **The approvals pill applies to the scheduled turn**, which is the
+    same question asked about the case where the answer matters most. The
+    composer's four modes and `schedule.PERMISSION_MODES` are therefore held
+    together by a test (`test_claude_schedule_pill.py`): the first version of that
+    copied tuple omitted `acceptEdits`, so a composer sitting on that mode had its
+    schedule refused with a 400 naming modes the user had never chosen.
+  - **SCH-11d** **Annotations are not folded into a scheduled message**, unlike a
+    sent one. A note is a crop of what is on screen *now* plus a pointer into this
+    render of the pane, and by the time the message runs the pane may show
+    something else. A scheduled message is the words; the pending notes stay
+    pending. An annotation-only send is therefore refused with a reason rather
+    than deferred.
+  - **SCH-11i** **The two list groups run in OPPOSITE directions**, because "most
+    relevant first" means opposite things about the future and the past: live
+    entries ascending (the next thing that will happen, at the top), handled ones
+    DESCENDING (the latest news, at the top). One direction for both was a straight
+    bug, found by hand: it buried what had just run under every message ever
+    scheduled, and got worse the longer the feature was used. A handled entry sorts
+    on when it ACTED (`fired`), falling back to `due` for one that never did —
+    `missed` and `cancelled` carry no fired stamp — which is also the stamp its row
+    displays, so the order matches what the reader is reading. Ordered by
+    `list_entries`, not the page: the page filters the one list into its two
+    sections and must not re-sort or reverse what it is handed.
+  - **SCH-11j** **The page's URL is served by `routers/shell.py`**, like every
+    other shell route. Omitting it is invisible to whoever built the page — in-app
+    navigation is a client-side pushState that never asks the server — and 404s for
+    anyone who refreshes or bookmarks. `/scheduled` shipped that way and was found
+    by hand. `test_shell_routes.py` now DERIVES the list from the shell's own route
+    table (the `pathname === "…"` comparisons in App.tsx) and requests each for
+    real, so the next page added without a server entry fails a test rather than
+    waiting for someone to press ⌘R.
+  - **SCH-11k** **A scheduled message is a CARD**, in the grid and shell the apps
+    hub already uses (`.apps-cards` / `.app-pcard`: auto-fill columns, `--bg-alt`
+    on a 12px radius, a hover lift) so it reads as the same kind of object as the
+    rest of the app's cards. Borrowed, not re-invented — these carry no thumbnail,
+    so only the shell comes across, and the columns are narrower (280 vs 300)
+    because a card here holds a few lines of text rather than a 16:10 preview. The
+    prompt is the card's subject and gets the body colour, clamped to four lines so
+    a grid keeps an even baseline with the full text in the title. Actions are
+    pinned to the foot (`margin-top: auto`) so buttons line up across a row however
+    long each prompt is. **Only `error` and `missed` tint their border** — the two
+    states that need a person — because a pill alone is easy to miss across twenty
+    cards, and if every card had an accent the accent would mean "this is a card"
+    rather than "look here". Those two **restate their tint on `:hover`**, without
+    which the generic card-hover border (two selectors to the modifier's one) wins
+    and pointing at a failed card is what erases the mark saying it failed.
+    The page runs at **two widths**, not one: it is built out of the settings
+    vocabulary, whose `.prefs-page > *` caps children at 760px, so a
+    `minmax(280px, …)` grid needing 868px for a third track sat silently two-up.
+    The sections holding cards get the ~1120px the app's other card grids use
+    (`.apps-cards`, `.fhb-grid`) while the prose inside them keeps the narrow
+    measure — two kinds of content in one page: text read a line at a time, and
+    objects scanned in a grid. Both invariants are arithmetic between rules in two
+    files, which nobody re-checks after changing one, so
+    `tests/test_schedule_css.py` reads the stylesheet's own numbers and pins them.
+  - **SCH-11e** **The page keeps the list and loses the form.** Every folder's
+    schedule in one place, with cancel and the outcomes, is the part that has
+    nowhere else to live; it points at the composer for the scheduling itself.
+  - **SCH-11f** **A chat left open picks up its own scheduled send.** The gap this
+    closes was reported from use and it was the composer's worst failure: a
+    scheduled message is spawned by the SERVER, so nothing in the page ever set
+    `activeRun`, and a chat left open past its own scheduled time sat on
+    "Scheduled for 12:20" while the session ran, finished, and edited files — the
+    page's only route to the truth being a reload. That made the composer a worse
+    place to schedule from than the settings page it replaced, where at least
+    nobody expected the conversation on screen. `pollScheduledRuns` reads
+    `/api/schedule` every 15s while the chat view is showing and hands any newly
+    fired run for this target to **`resumeRun`**, which is already written for a
+    run this frame did not start: live, it renders the user line and streams the
+    rest through `pollLoop`; already finished, it repairs the transcript from the
+    poll payload. Three guards, each earning its place: never over a live turn
+    (`resumeRun` would fight `pollLoop` for the frame); the first pass is a silent
+    baseline — taken AT LOAD, not one interval later, since baselining on the first
+    interval wrote off anything firing in the opening 15s as predating a frame it
+    had fired inside, which is exactly when a reader opens the chat because the
+    note told them to; and a run only attaches when it BELONGS on this screen — the same session by either id, or, with no
+    session yet, one that resumed nothing and so created a session this frame can
+    adopt. Splicing another conversation's turn into this transcript would be the
+    page lying about what was said where, which is worse than not attaching. The
+    confirmation note promises the turn will appear here, which is true only
+    because this exists; the two move together and a test says so.
+  - **SCH-11g** **A finished scheduled turn is APPENDED, which needed an opt-in**
+    (`resumeRun(run_id, {neverShown: true})`). `resumeRun`'s done path repairs
+    only what it can prove is missing — an empty log, or a last user bubble that IS
+    this run's message — because on the reload path it was written for, the restored
+    transcript may already hold the turn and appending would duplicate it. A
+    scheduled send is the opposite case: it fired *after* this frame rendered, so
+    the turn cannot be on screen and the caller knows it. Without the opt-in, a
+    scheduled turn that finished between two polls fell through both branches and
+    appeared nowhere — which is most of them, since a short turn beats a 15s poll,
+    so the first cut of SCH-11f fixed only the live case while the note promised
+    otherwise. A failed run appended this way gets its own user line first, or the
+    error reads as belonging to whatever the reader last said. **The flag suppresses
+    `matches` outright rather than adding a branch beside it**, which is the second
+    bug in this area: with matching still preferred, the same prompt sent twice ("run
+    the tests" now, those words scheduled for later) let the earlier identical bubble
+    match, and the repair stripped everything after it — DELETING that turn's real
+    reply to hang the scheduled answer there. The live path strips partial rows on a
+    match too, so the suppression is folded into `matches` itself, in one place,
+    covering both. **And `neverShown` is only sound while the visible transcript
+    postdates every already-fired run**, which a session SWITCH breaks: `loadHistory`
+    restores the new session's history, already containing any scheduled turn that
+    ran in it, so attaching appended a second copy. `scheduleResetForNewTranscript`
+    therefore clears both sets and re-baselines wherever the transcript is replaced,
+    beside the other per-transcript clears — which is what makes `neverShown` true by
+    construction for the attaches that survive, and which supersedes the earlier
+    reasoning that a foreign-session run was left unmarked so a later switch could
+    adopt it. Adoption is history's job, not the poller's.
+  - **SCH-11h** **A run is written off only once it is really handled.** Two sets,
+    not one: `SCHEDULE_ATTACHED` blocks a second attach, `SCHEDULE_NOTED` blocks a
+    repeated mention of a run that belongs to another session — which is
+    deliberately NOT marked attached, because this frame can switch sessions without
+    remounting and the turn would then belong here after all. The live-turn guard
+    sits adjacent to the `resumeRun` call with nothing awaited between: checked
+    before the fetch it could go stale, and `resumeRun` returning early on `sending`
+    while the id had already been written off lost the turn entirely. The attached
+    run also goes on the URL as `run` (a `replace` write, PR-3), for the same reason
+    `sendMessage` does it — a reload or a remounting mode switch re-attaches from
+    the param, and without it the stream was lost and the next frame's baseline then
+    wrote the same run off as predating it.

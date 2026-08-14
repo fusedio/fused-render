@@ -1,0 +1,199 @@
+/* ---- Scheduled messages page (shell/Scheduled.tsx) ---------------------- */
+/* Borrows the settings-page vocabulary wholesale — .prefs-page, .prefs-section,
+   .field / .field-control, .btn — so the only rules here are the three things
+   that page has and no other does: a state pill, the row header that carries it,
+   and the quick-pick button row. */
+
+.schedule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.schedule-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* The submit button sits at the end of the quick-pick row, so push it away from
+   the chips that only stage a time. */
+.schedule-quick .btn-primary {
+  margin-left: auto;
+}
+
+/* -- Cards --------------------------------------------------------------------
+   Same grid and card shell as the apps hub (.apps-cards / .app-pcard): auto-fill
+   columns, --bg-alt on a 12px radius, and a hover lift. Borrowed rather than
+   re-invented so a scheduled message reads as the same KIND of object as the rest
+   of the app's cards — these have no thumbnail, so only the shell carries over.
+
+   Narrower columns than the apps hub (280 vs 300) because a card here holds a few
+   lines of text rather than a 16:10 preview, and three-up beats two-up for
+   scanning a schedule.
+
+   That last sentence is only TRUE because of the rule below. This page is built
+   out of the settings vocabulary, and `.prefs-page > *` caps every child at
+   760px — a good measure for prose and 108px short of three 280px tracks, so
+   the grid silently stayed two-up. The rest of the app's card grids
+   (.apps-cards, .fhb-grid) live in a ~1120px column, so the sections that hold
+   cards get that width and the prose inside them keeps the narrow measure. Two
+   different widths in one page, because there are two different kinds of content
+   in it: text you read a line at a time, and objects you scan a grid of. */
+.schedule-page > .prefs-section {
+  max-width: 1120px;
+}
+
+.schedule-page .prefs-section > p {
+  max-width: 760px;
+}
+
+.schedule-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.schedule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.schedule-card:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+  box-shadow: 0 4px 18px var(--shadow-sm);
+}
+
+/* The two states that need a person get an edge the eye catches across a grid —
+   a pill alone is easy to miss when there are twenty cards. Everything else keeps
+   the neutral border, so the accent means "look here", not "this is a card". */
+.schedule-card--error {
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+}
+
+.schedule-card--missed {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+
+/* Hover has to restate the tint, and this is not a nicety. `.schedule-card:hover`
+   is two selectors to the modifiers' one, so without these the generic muted
+   hover border WINS and pointing at a failed card is what erases the mark that
+   says it failed — the one state where the user is most likely to have their
+   cursor on it. Stronger than the resting mix rather than equal, so hover still
+   reads as hover. tests/test_schedule_css.py pins the pairing. */
+.schedule-card--error:hover {
+  border-color: color-mix(in srgb, var(--error) 70%, var(--border));
+}
+
+.schedule-card--missed:hover {
+  border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
+}
+
+.schedule-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.schedule-card-when {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.schedule-card-message {
+  /* The prompt is the card's subject, so it gets the body colour while the
+     metadata around it stays muted. Clamped to keep a grid of cards on an even
+     baseline — the full text is in the title attribute. `pre-wrap` keeps a
+     multi-line prompt looking the way the user typed it. */
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.schedule-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.schedule-card-meta code {
+  /* One line, ellipsised at the END, with the full path in the title.
+
+     Clipping the FRONT would be better here — the tail of a path is the folder you
+     recognise, while the `/Users/you/…` head is shared by every card — and the
+     usual way to get it is `direction: rtl`. Not used, because on a string that
+     STARTS with a separator the bidi algorithm moves that leading `/` to the
+     visual end, so `/Users/you/proj` renders as `Users/you/proj/`. A subtly wrong
+     path is worse than a truncated one, and this is a rendering detail no test
+     here can catch. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-card-why {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Pinned to the foot (margin-top:auto) so buttons line up across a row however
+   long each card's prompt is. */
+.schedule-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 2px;
+}
+
+.schedule-card-actions:empty {
+  display: none;
+}
+
+.schedule-state {
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+/* Only the states that need to be distinguished at a glance get a colour: a
+   message still waiting, and the two ways one can fail to have been sent.
+   `sent` and `cancelled` are deliberately plain — nothing to act on. */
+.schedule-state--pending,
+.schedule-state--sending {
+  color: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+/* Missed is a warning, not an error: nothing went wrong, the app just wasn't
+   running in the window where sending was still the right thing to do. */
+.schedule-state--missed {
+  color: var(--warning);
+  border-color: currentColor;
+}
+
+.schedule-state--error {
+  color: var(--error);
+  border-color: currentColor;
+}
