@@ -12,10 +12,11 @@ chatty calls (compile, then outline+bib, plus warm/install status polls every
     to `engine.main()`, the SAME dispatcher, so there is no second copy of the
     domain logic here.
 
-Stdlib-only and runs on the app interpreter (engine.py needs nothing else), so
-unlike the tile-server daemons it manages no venv of its own. A random per-run
-token gates every request; the server self-exits after 30 min idle and respawns
-whenever the code changes (the state file records a content hash).
+Runs in the folder's project venv (the one pyproject.toml declares), so export's
+`import pypandoc` resolves here exactly as it would under a direct runPython; the
+daemon's own code is stdlib-only. A random per-run token gates every request; the
+server self-exits after 30 min idle and respawns whenever the code or deps change
+(the state file records a content hash of daemon.py / engine.py / pyproject.toml).
 
 Run detached:  python daemon.py --serve
 """
@@ -109,14 +110,19 @@ def _coerce(value, ann):
     return value
 
 
+# {param name: annotation} for engine.main, resolved once — the daemon serves
+# this on its hot path, so the reflection cost is paid at import, not per request.
+_MAIN_ANNOTATIONS = {
+    name: (None if p.annotation is inspect.Parameter.empty else p.annotation)
+    for name, p in inspect.signature(engine.main).parameters.items()
+}
+
+
 def _dispatch(params: dict):
     """Call `engine.main` with the same string→type coercion the runPython
     binding does, so the HTTP path and the direct path behave identically."""
-    kwargs = {}
-    for name, p in inspect.signature(engine.main).parameters.items():
-        if name in params:
-            kwargs[name] = (params[name] if p.annotation is inspect.Parameter.empty
-                            else _coerce(params[name], p.annotation))
+    kwargs = {name: (params[name] if ann is None else _coerce(params[name], ann))
+              for name, ann in _MAIN_ANNOTATIONS.items() if name in params}
     return engine.main(**kwargs)
 
 
@@ -179,7 +185,10 @@ def _make_server():
         def do_GET(self):
             global _last_hit
             u = urlsplit(self.path)
-            q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            # keep_blank_values: an empty param ("target=") must arrive as "" —
+            # dropping it would silently diverge from the runPython fallback,
+            # which passes "" straight through to engine.main.
+            q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
             if q.get("_token") != token:
                 self._json({"error": "forbidden"}, 403)
                 return

@@ -96,6 +96,22 @@ def test_server_serves_engine_over_http_and_gates_on_the_token(dm, monkeypatch):
         srv.server_close()
 
 
+def test_blank_param_reaches_engine_as_empty_string(dm, monkeypatch):
+    # An empty param must arrive as "" (keep_blank_values), matching what the
+    # runPython fallback would pass — not be dropped so engine.main sees its default.
+    seen = {}
+    monkeypatch.setattr(dm.engine, "main", lambda **kw: seen.update(kw) or {"ok": True})
+    srv, port, token = dm._make_server()
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        _get(port, f"/run?action=browse&target=&_token={token}")
+        assert seen.get("target") == "" and seen.get("action") == "browse"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_raised_exception_comes_back_under_the_sentinel(dm, monkeypatch):
     def boom(**kw):
         raise ValueError("nope")
