@@ -427,6 +427,52 @@ def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     assert resolved is not None and resolved.code == "mlx-text"
 
 
+def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatch):
+    """A capability with two runners must not answer for only the first of them.
+
+    `mlx-text` is registered first, so a Linux machine whose transformers worker
+    was missing — a state `Runner.available` documents, since a runner is
+    registered before its folder is written — was told text generation "needs
+    Apple Silicon": the one backend that was never going to serve it, with the
+    one that would have gone unmentioned. Reported by review on the PR that
+    added the second runner, and the fix is that all three copies of this
+    lookup (registry, `_runner_or_raise`, `start_image`) became one.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    # The transformers runner present but unbuilt, which is what makes the whole
+    # capability unservable on a machine MLX has already turned down.
+    ghost = registry.Runner(
+        code="transformers-text", capability=registry.TEXT_GENERATION,
+        folder="/nowhere", label="Transformers (PyTorch)")
+    monkeypatch.setattr(
+        registry, "_RUNNERS", (registry.by_code("mlx-text"), ghost))
+
+    reason = registry.unavailable_reason(registry.TEXT_GENERATION)
+    assert "not built yet" in reason, reason
+    assert "Transformers (PyTorch)" in reason, reason
+    # The supervisor raises the same sentence rather than deriving its own.
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor.load("org/x", registry.TEXT_GENERATION)
+    assert str(caught.value) == reason
+
+
+def test_one_runner_per_capability_reads_exactly_as_before(monkeypatch):
+    """Joining the reasons must not have changed the common case into a list.
+
+    Every capability but text generation has a single runner, so its message is
+    that runner's sentence and nothing else — no separator, no second clause.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    ghost = registry.Runner(
+        code="ghost", capability=registry.IMAGE_GENERATION,
+        folder="/nowhere", label="Ghost")
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    assert registry.unavailable_reason(registry.IMAGE_GENERATION) == (
+        "the Ghost runner is not built yet")
+
+
 def test_a_capability_nothing_can_serve_still_resolves_to_nothing(monkeypatch):
     """The other half of the rule, now that no real capability demonstrates it.
 

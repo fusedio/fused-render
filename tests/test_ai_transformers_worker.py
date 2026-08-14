@@ -134,7 +134,7 @@ def test_a_repo_with_no_config_is_not_refused_for_that_alone(worker, tmp_path):
 @pytest.mark.parametrize(
     ("version", "expected"),
     [
-        ("4.46.0", "torch_dtype"),
+        ("4.51.0", "torch_dtype"),   # the runner's declared floor
         ("4.55.4", "torch_dtype"),
         ("4.56.0", "dtype"),
         ("4.57.0.dev0", "dtype"),   # a dev build must not parse as 4.5
@@ -257,6 +257,46 @@ def test_a_chat_prompt_is_tokenized_BY_the_template_not_after_it(
     worker._encode(tokenizer, [{"role": "user", "content": "hi"}], "", "cpu")
     assert [call[0] for call in tokenizer.calls] == ["template"]
     assert tokenizer.calls[0][2]["add_generation_prompt"] is True
+
+
+def test_reasoning_is_off_by_default(worker, monkeypatch):
+    """Qwen3's template defaults thinking ON, and three of four suggestions are Qwen3.
+
+    Left on, an ordinary question emits a `<think>` block first — hundreds of
+    tokens the caller cannot tell apart from the answer, because `/generate`
+    streams whatever the model produces. At a few tokens a second on the CPU
+    path this runner exists for, that is minutes of apparent silence on a
+    machine already suspected of being slow. Reported by review on the PR that
+    added this runner.
+    """
+    torch = _fake_torch()
+    torch.ones_like = lambda ids: _Tensor([1] * len(ids))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    tokenizer = _Tokenizer()
+    worker._encode(tokenizer, [{"role": "user", "content": "hi"}], "", "cpu")
+    assert tokenizer.calls[0][2]["enable_thinking"] is False
+
+
+def test_a_tokenizer_that_refuses_the_keyword_still_answers(worker, monkeypatch):
+    """`enable_thinking` goes to every model, which is safe — kwargs land in the
+    Jinja context and a template that never mentions it does not read it. The
+    other skew is a tokenizer whose signature rejects it outright, and a model
+    that will not take the hint should still answer, just verbosely."""
+    torch = _fake_torch()
+    torch.ones_like = lambda ids: _Tensor([1] * len(ids))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    class Picky(_Tokenizer):
+        def apply_chat_template(self, messages, **kwargs):
+            if "enable_thinking" in kwargs:
+                raise TypeError("unexpected keyword argument 'enable_thinking'")
+            return super().apply_chat_template(messages, **kwargs)
+
+    tokenizer = Picky()
+    ids, _mask = worker._encode(tokenizer, [{"role": "user", "content": "hi"}], "", "cpu")
+    assert list(ids) == [1, 2, 3]
+    assert [call[0] for call in tokenizer.calls] == ["template"]
 
 
 def test_a_raw_prompt_skips_the_template_entirely(worker, monkeypatch):

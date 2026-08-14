@@ -282,6 +282,34 @@ def memory():
 # ------------------------------------------------------------------ generation
 
 
+def _apply_template(tokenizer, messages):
+    """The model's own chat template, with REASONING OFF by default.
+
+    **Qwen3's template defaults `enable_thinking` to true**, and three of the
+    four models this runner's catalog suggests are Qwen3. Left on, an ordinary
+    "what does this file do?" emits a `<think>` block first — hundreds of tokens
+    of hidden reasoning that the caller has no way to tell apart from the answer,
+    since `/generate` streams whatever the model produces. On the CPU path this
+    runner exists to serve, at a few tokens a second, that is minutes of silence
+    before the first useful word, on a machine already suspected of being slow.
+    So the default is the one that makes a chat box behave like a chat box.
+
+    It is passed to EVERY model, which is safe and deliberate: `kwargs` here
+    land in the Jinja render context, and a template that never mentions
+    `enable_thinking` — Phi-4's, Llama's — simply does not read it. The retry
+    exists for the other kind of skew, a tokenizer whose `apply_chat_template`
+    rejects the keyword outright: a model that will not take the hint should
+    still answer, just verbosely.
+    """
+    try:
+        return tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt",
+            enable_thinking=False)
+    except TypeError:
+        return tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, return_tensors="pt")
+
+
 def _encode(tokenizer, messages, prompt, device):
     """The prompt as token ids on the model's device.
 
@@ -305,8 +333,7 @@ def _encode(tokenizer, messages, prompt, device):
         encoded = tokenizer(prompt, return_tensors="pt")
         ids, mask = encoded["input_ids"], encoded.get("attention_mask")
     elif getattr(tokenizer, "chat_template", None):
-        ids = tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt")
+        ids = _apply_template(tokenizer, messages)
         mask = None
     else:
         # No template to apply. The same fallback MLX takes — better a plain

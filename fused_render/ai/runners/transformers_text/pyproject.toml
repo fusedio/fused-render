@@ -34,7 +34,14 @@
 #
 # What each earns:
 #   torch           the tensors and the device (CUDA / MPS / CPU)
-#   transformers    the model classes, the chat templates and TextIteratorStreamer
+#   transformers    the model classes, the chat templates and TextIteratorStreamer.
+#                   `>=4.51` because that is the release that knows what a
+#                   `qwen3` is, and three of the four models this runner's
+#                   catalog suggests are Qwen3 — an older resolution installs
+#                   perfectly and then fails every one of those Downloads with
+#                   `KeyError: 'qwen3'`, which reads as a broken model rather
+#                   than an environment a version too old. A floor is the only
+#                   place that can be said once for all of them.
 #   accelerate      `device_map` and the low-memory load path for a big checkpoint
 #   sentencepiece   the tokenizer format some instruct models still ship
 #   protobuf        sentencepiece's model format needs it at load time
@@ -46,7 +53,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "torch",
-    "transformers>=4.46",
+    "transformers>=4.51",
     "accelerate",
     "sentencepiece",
     "protobuf",

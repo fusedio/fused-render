@@ -6429,7 +6429,30 @@ an AI Models page that could say what was on disk but not what was *running*.
   configured" — true, useless, and hiding the actionable "the Diffusers runner is
   not built yet" underneath. `registry.unavailable_reason()` tells the two apart,
   because no runner is a fact about the MACHINE and no suggestion is a fact about
-  the catalog.
+  the catalog. **It reports EVERY runner's reason, not the first one's**, which
+  only became a distinction when a capability grew a second runner: three places
+  independently took "the first runner registered for this capability" — the
+  registry, `_runner_or_raise` and `start_image` — so a Linux machine whose
+  transformers worker was missing was told text generation "needs Apple
+  Silicon", naming the one backend that was never going to serve it. The three
+  copies are now one, which is the actual fix; joining rather than picking is
+  the answer because there is no rule for choosing between two reasons that is
+  not a guess about which the reader meant.
+- **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
+  path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
+  true and three of the four curated models are Qwen3, so an ordinary question
+  emits a `<think>` block first — hundreds of tokens the caller cannot tell
+  apart from the answer, since `/generate` streams whatever the model produces.
+  At a few tokens a second on the CPU this runner exists to serve, that is
+  minutes of apparent silence on a machine already suspected of being slow. The
+  flag is passed to every model rather than to a list of known ones: kwargs land
+  in the Jinja render context, so a template that never mentions it does not
+  read it, and a tokenizer whose signature rejects it outright retries without —
+  a model that will not take the hint should still answer, just verbosely. The
+  same class of trap as the version floor beside it: `transformers>=4.51` is
+  what knows a `qwen3` exists, and an older resolution installs perfectly and
+  then fails every Qwen3 Download with `KeyError: 'qwen3'`, which reads as a
+  broken model rather than an environment one version too old.
 - **AI-11b** **The device is reported, because a model on a CPU works and looks
   broken.** torch runs on whatever it can see, and what it can see is not
   knowable from outside the process: **the PyPI torch wheel is CPU-only on

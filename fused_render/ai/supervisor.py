@@ -803,14 +803,19 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
 def _runner_or_raise(capability: str) -> registry.Runner:
     """The runner serving `capability`, or a SupervisorError saying why there isn't
     one — the machine's reason ("needs Apple Silicon") where a runner exists but
-    cannot run here, and a bare "no runner provides …" where none is registered."""
+    cannot run here, and a bare "no runner provides …" where none is registered.
+
+    The sentence comes from `registry.unavailable_reason` rather than being
+    derived again here. It used to be derived here, and in `start_image`, and in
+    the registry: three copies of "the first runner registered for this
+    capability", which was one rule while every capability had one runner and
+    three wrong answers the moment text generation had two — all three named the
+    Apple Silicon runner on machines that were never going to use it.
+    """
     runner = registry.for_capability(capability)
     if runner is None:
-        known = next((r for r in registry.all_runners() if r.capability == capability), None)
-        raise SupervisorError(
-            known.available().reason if known
-            else f"no runner provides {capability!r}"
-        )
+        raise SupervisorError(registry.unavailable_reason(capability)
+                              or f"no runner provides {capability!r}")
     return runner
 
 
@@ -907,13 +912,9 @@ def start_image(model: str, request: dict, job: str) -> None:
     a job row that immediately fails — the caller gets an error it can show,
     rather than a progress bar it has to watch die.
     """
-    runner = registry.for_capability(registry.IMAGE_GENERATION)
-    if runner is None:
-        known = next((r for r in registry.all_runners()
-                      if r.capability == registry.IMAGE_GENERATION), None)
-        raise SupervisorError(
-            known.available().reason if known
-            else f"no runner provides {registry.IMAGE_GENERATION!r}")
+    # `_runner_or_raise`, not a third copy of the same lookup — which is what
+    # this was, and it drifted the moment a capability grew a second runner.
+    _runner_or_raise(registry.IMAGE_GENERATION)
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model

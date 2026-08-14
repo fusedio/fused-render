@@ -302,13 +302,33 @@ def unavailable_reason(capability: str) -> str | None:
     Both messages are worth keeping, and this is what tells them apart: no
     runner is a fact about the MACHINE, and no suggestion is a fact about the
     CATALOG.
+
+    **Every runner's reason, not the first one's**, and with two runners per
+    capability that stopped being a detail. The first cut took
+    `next(r for r in _RUNNERS if r.capability == capability)`, which for text
+    generation is always `mlx-text` — so a Linux machine whose transformers
+    worker was missing (a state `Runner.available` documents, since a runner is
+    registered before its folder is written) would be told text generation
+    "needs Apple Silicon", naming the one backend that was never going to serve
+    it and hiding the one that would have. Reported by review on the PR that
+    added the second runner.
+
+    Joined rather than picked, because there is no rule for choosing between
+    them that is not a guess about which the reader meant — and a capability
+    with one runner, which is all of them but this one, reads exactly as before.
+    Duplicates are dropped: two runners of the same label failing the same way
+    is one sentence, said once.
     """
     if for_capability(capability) is not None:
         return None
-    known = next((r for r in _RUNNERS if r.capability == capability), None)
-    if known is None:
-        return f"no runner provides {capability!r}"
-    return known.available().reason or f"no runner provides {capability!r}"
+    reasons: list[str] = []
+    for runner in _RUNNERS:
+        if runner.capability != capability:
+            continue
+        reason = runner.available().reason
+        if reason and reason not in reasons:
+            reasons.append(reason)
+    return "; ".join(reasons) or f"no runner provides {capability!r}"
 
 
 def capabilities() -> tuple[str, ...]:
