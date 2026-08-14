@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<title>Model file</title>
+<style>
+  /* Palette pair (SPEC §30): this view follows the shell's appearance because
+     it opted in with `data-fused-theme` on <html> above — the runtime then
+     keeps `data-theme` in step. Every colour below is a token defined in these
+     two blocks and nowhere else. */
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed;
+    --fg-muted: #9aa0a6;
+    --border: #2a2d33;
+    --bg: #131417;
+    --bg-alt: #1b1d21;
+    --accent: #E5FF44;
+    --error: #ff6b6b;
+    --warn: #e8b339;
+    --ok: #5fd97a;
+    --bar: #3a6ee8;
+    --json-str: #98c379;
+    --json-num: #d19a66;
+    --json-bool: #c678dd;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023;
+    --fg-muted: #61656c;
+    --border: #d8dade;
+    --bg: #ffffff;
+    --bg-alt: #f4f5f7;
+    --accent: #5f7300;
+    --error: #c62828;
+    --warn: #9a6a00;
+    --ok: #237a3c;
+    --bar: #2b5fd9;
+    --json-str: #2f7d32;
+    --json-num: #9a5b00;
+    --json-bool: #7c4dbd;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 22px 26px 40px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--fg);
+    background: var(--bg);
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; overflow-wrap: anywhere; }
+  .sub { margin-top: 3px; font-size: 12px; color: var(--fg-muted); overflow-wrap: anywhere; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 20px; }
+  .fact {
+    padding: 8px 12px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    min-width: 100px;
+  }
+  .fact .k { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--fg-muted); }
+  .fact .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .pill {
+    display: inline-block;
+    padding: 2px 7px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    border-radius: 4px;
+    background: var(--border);
+    color: var(--fg-muted);
+  }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 22%, transparent); color: var(--ok); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
+  .pill.danger { background: color-mix(in srgb, var(--error) 22%, transparent); color: var(--error); }
+  section { margin-bottom: 24px; }
+  h2 {
+    margin: 0 0 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--fg-muted);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  td, th { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { font-weight: 500; color: var(--fg-muted); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.name { overflow-wrap: anywhere; }
+  .bar { height: 3px; background: var(--bar); border-radius: 2px; min-width: 1px; }
+  .muted { color: var(--fg-muted); }
+  .err { color: var(--error); }
+  .scroll { max-height: 340px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .scroll table td:first-child, .scroll table th:first-child { padding-left: 12px; }
+  .note {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--fg);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-width: 80ch;
+  }
+  .note.danger { border-color: var(--error); }
+  .note.warn { border-color: var(--warn); }
+  .note ul { margin: 6px 0 0; padding-left: 18px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* Structure-walk collapsible tree — same visual language as the tree/ template. */
+  #struct { padding: 10px 12px; white-space: nowrap; overflow-x: auto; }
+  #struct .row { cursor: default; padding-left: 0; }
+  #struct .row.foldable { cursor: pointer; }
+  #struct .toggle { display: inline-block; width: 1em; color: var(--fg-muted); user-select: none; }
+  #struct .node { padding-left: 16px; }
+  #struct .collapsed > .node { display: none; }
+  #struct .collapsed > .row .preview { color: var(--fg-muted); }
+  #struct .key { color: var(--accent); }
+  #struct .punct, #struct .count { color: var(--fg-muted); }
+  #struct .count { font-style: italic; }
+  #struct .type { color: var(--json-bool); }
+  #struct .str { color: var(--json-str); }
+  #struct .num { color: var(--json-num); }
+  #struct .bool { color: var(--json-bool); }
+  #struct .null { color: var(--fg-muted); }
+
+  select {
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    margin: 4px 0 10px;
+  }
+  button {
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--fg-muted); }
+  .treebox {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: auto;
+    background: var(--bg-alt);
+    padding: 8px;
+  }
+  .treebox .placeholder { padding: 20px; color: var(--fg-muted); }
+</style>
+</head>
+<body>
+<div id="root" class="muted">Reading the file…</div>
+
+<script>
+const FILE = fused.params.get("_file");
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+));
+
+function bytes(n) {
+  if (!n && n !== 0) return "—";
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n, u = 0;
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+  return `${u === 0 ? v : v.toFixed(v < 10 ? 1 : 0)} ${units[u]}`;
+}
+
+function dateStr(epochSeconds) {
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+function rows(items, cells) {
+  return items.map((item) => `<tr>${cells(item)}</tr>`).join("");
+}
+
+// ------------------------------------------------------------ safety panel
+
+const VERDICT_LABEL = { safe: "Loaded", unavailable: "Partially available", blocked: "Blocked" };
+const VERDICT_CLASS = { safe: "ok", unavailable: "warn", blocked: "danger" };
+
+function scanNote(scan) {
+  if (scan.verdict === "blocked") {
+    const offending = scan.refs.filter((r) => !r.allowed);
+    return `<div class="note danger">
+      This file references code this viewer does not trust, so it was not loaded.
+      ${scan.message ? `<div class="mono" style="margin-top:6px">${esc(scan.message)}</div>` : ""}
+      ${offending.length ? `<ul class="mono">${offending.map((r) =>
+        `<li>${esc(r.module)}.${esc(r.name)}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
+  if (scan.verdict === "unavailable") {
+    return `<div class="note warn">
+      This file's classes are trusted, but a library it needs isn't available to this
+      template: <span class="mono">${esc(scan.message)}</span>. Nothing was loaded.
+    </div>`;
+  }
+  return "";
+}
+
+// ------------------------------------------------------------ structure walk
+
+function structPrimitive(item) {
+  if (item.kind === "scalar") {
+    const v = item.value;
+    if (v === null || v === undefined) return `<span class="null">None</span>`;
+    if (typeof v === "string") return `<span class="str">"${esc(v)}"</span>`;
+    if (typeof v === "boolean") return `<span class="bool">${v}</span>`;
+    return `<span class="num">${esc(v)}</span>`;
+  }
+  if (item.kind === "ndarray") {
+    return `<span class="type">ndarray</span> <span class="muted">shape=(${item.shape.join(", ")}) dtype=${esc(item.dtype)}</span>`;
+  }
+  if (item.kind === "estimator") {
+    return `<span class="type">${esc(item.type)}</span> <span class="muted mono">${esc(item.module)}</span>`;
+  }
+  if (item.kind === "truncated") return `<span class="muted">… (nesting limit reached)</span>`;
+  return `<span class="type">${esc(item.type || "")}</span> <span class="muted mono">${esc(item.repr || "")}</span>`;
+}
+
+function buildStructNode(item, keyHtml, depth) {
+  if (item.kind !== "dict" && item.kind !== "list") {
+    const el = document.createElement("div");
+    el.className = "row";
+    el.innerHTML = `${keyHtml}${structPrimitive(item)}`;
+    return el;
+  }
+  const entries = item.kind === "dict"
+    ? item.items.map((it) => [it.key, it])
+    : item.items.map((it, i) => [String(i), it]);
+  const open = item.kind === "dict" ? "{" : "[";
+  const close = item.kind === "dict" ? "}" : "]";
+  // item.length is the true count server-side; item.items is capped at 50 —
+  // they can diverge, so the label (and the "+N more" row below) reflect the
+  // true count rather than just what was actually walked.
+  const total = item.length !== undefined ? item.length : entries.length;
+  const countLabel = `${total} ${item.kind === "dict" ? "key" : "item"}${total === 1 ? "" : "s"}`;
+
+  const container = document.createElement("div");
+  const row = document.createElement("div");
+  row.className = "row foldable";
+  row.innerHTML =
+    `<span class="toggle">▾</span>${keyHtml}` +
+    `<span class="punct">${open}</span>` +
+    `<span class="count preview"> ${countLabel} </span>` +
+    `<span class="punct">${close}</span>`;
+  container.appendChild(row);
+
+  const children = document.createElement("div");
+  children.className = "node";
+  for (const [k, child] of entries) {
+    const childKey = item.kind === "dict"
+      ? `<span class="key">"${esc(k)}"</span><span class="punct">: </span>`
+      : "";
+    children.appendChild(buildStructNode(child, childKey, depth + 1));
+  }
+  if (total > entries.length) {
+    const moreRow = document.createElement("div");
+    moreRow.className = "row";
+    moreRow.innerHTML = `<span class="muted">… +${total - entries.length} more ${item.kind === "dict" ? "keys" : "items"}</span>`;
+    children.appendChild(moreRow);
+  }
+  container.appendChild(children);
+
+  function setCollapsed(collapsed) {
+    container.classList.toggle("collapsed", collapsed);
+    row.querySelector(".toggle").textContent = collapsed ? "▸" : "▾";
+  }
+  row.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setCollapsed(!container.classList.contains("collapsed"));
+  });
+  if (entries.length > 0 && depth >= 1) setCollapsed(true); // default-open only the root
+
+  return container;
+}
+
+// reader.py sends nan/inf as the strings "NaN"/"Infinity"/"-Infinity" (the
+// production response path rejects literal non-finite floats) -- format
+// those as-is instead of crashing a bare .toFixed() call on a string.
+function fmtNum(v, digits) {
+  return typeof v === "number" ? v.toFixed(digits) : String(v);
+}
+
+// -------------------------------------------------------- tree SVG renderer
+
+const BASE_RENDER_DEPTH = 6;
+const COL_WIDTH = 92, ROW_HEIGHT = 58, PADDING = 26;
+
+function countNodes(node) {
+  if (node.leaf !== undefined) return 1;
+  return 1 + countNodes(node.left) + countNodes(node.right);
+}
+
+function layoutTree(node, depth, maxDepth, counter) {
+  const isRealLeaf = node.leaf !== undefined;
+  const truncate = !isRealLeaf && depth >= maxDepth;
+  if (isRealLeaf || truncate) {
+    const x = counter.n++;
+    return { x, depth, node, isLeaf: isRealLeaf, truncatedCount: truncate ? countNodes(node) - 1 : 0, children: [] };
+  }
+  const left = layoutTree(node.left, depth + 1, maxDepth, counter);
+  const right = layoutTree(node.right, depth + 1, maxDepth, counter);
+  return { x: (left.x + right.x) / 2, depth, node, isLeaf: false, children: [left, right] };
+}
+
+function maxDepthOf(l) {
+  return l.children.length ? Math.max(...l.children.map(maxDepthOf)) : l.depth;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+function renderTreeSvg(container, root, maxDepth) {
+  const counter = { n: 0 };
+  const layout = layoutTree(root, 0, maxDepth, counter);
+  const depthShown = maxDepthOf(layout);
+  const width = Math.max(220, counter.n * COL_WIDTH + PADDING * 2);
+  const height = (depthShown + 1) * ROW_HEIGHT + PADDING * 2;
+
+  // Colours read live via getComputedStyle (SPEC §30): CSS var() does not
+  // resolve for values set through JS/SVG attributes, only through CSS itself.
+  const cs = getComputedStyle(document.documentElement);
+  const fg = cs.getPropertyValue("--fg").trim();
+  const border = cs.getPropertyValue("--border").trim();
+  const accent = cs.getPropertyValue("--accent").trim();
+  const bg = cs.getPropertyValue("--bg").trim();
+
+  const px = (x) => PADDING + x * COL_WIDTH + COL_WIDTH / 2;
+  const py = (depth) => PADDING + depth * ROW_HEIGHT;
+
+  const svg = svgEl("svg", { width, height, viewBox: `0 0 ${width} ${height}` });
+
+  function draw(l) {
+    for (const child of l.children) {
+      svg.appendChild(svgEl("line", {
+        x1: px(l.x), y1: py(l.depth) + 13, x2: px(child.x), y2: py(child.depth) - 13,
+        stroke: border, "stroke-width": 1.4,
+      }));
+      draw(child);
+    }
+    const truncated = !l.isLeaf && l.children.length === 0;
+    const featureLabel = typeof l.node.feature === "number" ? `f${l.node.feature}` : l.node.feature;
+    const label = l.isLeaf
+      ? `leaf ${l.node.leaf.map((v) => fmtNum(v, 3)).join(", ")}`
+      : truncated
+        ? `+${l.truncatedCount} more`
+        : `${featureLabel} < ${fmtNum(l.node.threshold, 3)}`;
+    const w = Math.min(COL_WIDTH - 8, Math.max(46, label.length * 6.4));
+    svg.appendChild(svgEl("rect", {
+      x: px(l.x) - w / 2, y: py(l.depth) - 12, width: w, height: 24, rx: 5,
+      fill: l.isLeaf ? accent : truncated ? "none" : bg,
+      "fill-opacity": l.isLeaf ? 0.16 : 1,
+      stroke: l.isLeaf ? accent : border,
+      "stroke-dasharray": truncated ? "3,2" : "none",
+    }));
+    const text = svgEl("text", {
+      x: px(l.x), y: py(l.depth) + 4, "text-anchor": "middle",
+      "font-size": 10.5, "font-family": "ui-monospace, monospace", fill: fg,
+    });
+    text.textContent = label;
+    svg.appendChild(text);
+  }
+  draw(layout);
+
+  container.innerHTML = "";
+  container.appendChild(svg);
+  return depthShown;
+}
+
+// ------------------------------------------------------------------ render
+
+function renderEstimators(estimators) {
+  if (!estimators.length) return "";
+  return `<section><h2>Model summary</h2>${estimators.map((e) => `
+    <div style="margin-bottom:16px">
+      <div><b>${esc(e.path || "(root)")}</b> <span class="pill">${esc(e.type)}</span></div>
+      <div class="sub mono">${esc(e.module)}</div>
+      <div class="facts">
+        ${e.n_features_in !== undefined ? `<div class="fact"><div class="k">Features</div><div class="v">${e.n_features_in}</div></div>` : ""}
+        ${e.classes ? `<div class="fact"><div class="k">Classes</div><div class="v">${e.classes.length}</div></div>` : ""}
+      </div>
+      <div class="scroll"><table>
+        ${rows(Object.entries(e.params), ([k, v]) => `<th>${esc(k)}</th><td class="mono">${esc(v)}</td>`)}
+      </table></div>
+    </div>`).join("")}
+  </section>`;
+}
+
+function renderFeatureImportance(list) {
+  if (!list.length) return "";
+  return list.map((fi) => {
+    const top = fi.features.slice(0, 40);
+    const numOr0 = (v) => (typeof v === "number" ? v : 0);
+    const biggest = top.length ? numOr0(top[0].importance) : 0;
+    return `<section><h2>Feature importance — ${esc(fi.path || "(root)")}</h2>
+      <div class="scroll"><table>
+        <tr><th>Feature</th><th class="num">Importance</th><th></th></tr>
+        ${rows(top, (f) => `
+          <td class="mono">#${f.feature}</td>
+          <td class="num">${fmtNum(f.importance, 4)}</td>
+          <td style="width:120px"><div class="bar" style="width:${
+            biggest ? Math.max(1, Math.round((numOr0(f.importance) / biggest) * 100)) : 1}%"></div></td>`)}
+      </table></div>
+      ${fi.features.length > top.length ? `<div class="sub">+${fi.features.length - top.length} more features</div>` : ""}
+    </section>`;
+  }).join("");
+}
+
+function renderTreeSections(treesList) {
+  if (!treesList.length) return "";
+  return treesList.map((t, ti) => `
+    <section>
+      <h2>Trees — ${esc(t.path || "(root)")} <span class="pill">${esc(t.library)}</span></h2>
+      <div class="sub">${t.count} tree${t.count === 1 ? "" : "s"}</div>
+      ${t.count > 1 ? `<div><select id="treesel-${ti}" class="mono"></select></div>` : ""}
+      <div id="treebox-${ti}" class="treebox"><div class="placeholder">Loading tree…</div></div>
+      <div id="treemore-${ti}"></div>
+    </section>`).join("");
+}
+
+function wireTreeSections(treesList) {
+  treesList.forEach((t, ti) => {
+    // Section-qualified key: each estimator's tree section has its own
+    // independent selection, same idea as structure/template.html's "view"
+    // tab param but keyed per section since there can be several here.
+    const paramKey = `tree_${ti}`;
+    const select = document.getElementById(`treesel-${ti}`);
+    let initialIndex = 0;
+    if (select) {
+      select.innerHTML = t.trees.map((m) => {
+        const label = m.round !== undefined ? `Tree ${m.index} (round ${m.round}, class ${m.class})` : `Tree ${m.index}`;
+        return `<option value="${m.index}">${esc(label)}</option>`;
+      }).join("");
+      const saved = Number(fused.params.get(paramKey));
+      if (Number.isInteger(saved) && saved >= 0 && saved < t.trees.length) {
+        initialIndex = saved;
+        select.value = String(saved);
+      }
+    }
+
+    let extraDepth = 0;
+    let currentTreeData = null;
+
+    function draw() {
+      if (!currentTreeData) return;
+      const box = document.getElementById(`treebox-${ti}`);
+      const shown = renderTreeSvg(box, currentTreeData, BASE_RENDER_DEPTH + extraDepth);
+      const more = document.getElementById(`treemore-${ti}`);
+      const totalDepth = maxDepthOf(layoutTree(currentTreeData, 0, Infinity, { n: 0 }));
+      more.innerHTML = shown < totalDepth
+        ? `<button type="button" id="treeexpand-${ti}">Show deeper levels</button>`
+        : "";
+      const btn = document.getElementById(`treeexpand-${ti}`);
+      if (btn) btn.addEventListener("click", () => { extraDepth += 4; draw(); });
+    }
+
+    async function loadTree(index) {
+      const box = document.getElementById(`treebox-${ti}`);
+      box.innerHTML = `<div class="placeholder">Loading tree…</div>`;
+      extraDepth = 0;
+      try {
+        const data = await fused.runPython("./reader.py", { file: FILE, tree_index: index }, { key: `tree-${ti}` });
+        const entry = data.trees.find((x) => x.path === t.path);
+        if (!entry || !entry.tree) {
+          box.innerHTML = `<div class="placeholder err">${esc(entry && entry.tree_error || "This tree could not be rendered.")}</div>`;
+          return;
+        }
+        currentTreeData = entry.tree;
+        draw();
+      } catch (err) {
+        box.innerHTML = `<div class="placeholder err">${esc((err && err.message) || err)}</div>`;
+      }
+    }
+
+    if (t.tree && initialIndex === 0) {
+      currentTreeData = t.tree;
+      draw();
+    } else {
+      loadTree(initialIndex);
+    }
+    if (select) {
+      select.addEventListener("change", () => {
+        const index = Number(select.value);
+        fused.params.set(paramKey, String(index));
+        loadTree(index);
+      });
+    }
+  });
+}
+
+function render(d) {
+  const scan = d.scan;
+  const facts = [
+    ["Size", bytes(d.file.size)],
+    ["Modified", dateStr(d.file.mtime)],
+    ["Files", String(1 + (d.file.sibling_files || []).length)],
+  ];
+
+  document.getElementById("root").innerHTML = `
+    <h1>${esc(FILE.split(/[\\/]/).pop())} <span class="pill ${VERDICT_CLASS[scan.verdict] || ""}">${
+      esc(VERDICT_LABEL[scan.verdict] || scan.verdict)}</span></h1>
+    <div class="sub mono">${esc(FILE)}</div>
+    <div class="facts">${facts.map(([k, v]) => `
+      <div class="fact"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("")}
+    </div>
+    ${scanNote(scan)}
+    ${scan.verdict === "safe" ? `
+      <section><h2>Structure</h2><div id="struct" class="scroll"></div></section>
+      ${renderEstimators(d.estimators)}
+      ${renderFeatureImportance(d.feature_importance)}
+      ${renderTreeSections(d.trees)}
+    ` : ""}
+  `;
+
+  if (scan.verdict === "safe") {
+    document.getElementById("struct").appendChild(buildStructNode(d.structure, "", 0));
+    wireTreeSections(d.trees);
+  }
+}
+
+async function load() {
+  try {
+    render(await fused.runPython("./reader.py", { file: FILE }));
+  } catch (err) {
+    document.getElementById("root").innerHTML =
+      `<div class="err">Could not read this file: ${esc((err && err.message) || err)}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

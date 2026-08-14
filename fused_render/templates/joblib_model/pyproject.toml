@@ -1,0 +1,26 @@
+# This template's environment (SPEC PY-16). Unlike most readers, this one
+# genuinely has to unpickle real estimators to introspect them (hyperparams,
+# feature importances, tree structure) rather than reading raw bytes/headers —
+# so, unlike model_card's stdlib-only inspect_model.py, it needs the actual
+# ML libraries installed.
+#
+# `catboost` is deliberately NOT declared here: it is heavier and less common
+# than the other three, and a pickle referencing it still resolves to a clear
+# "unavailable" verdict (reader.py's allowlist trusts the package without
+# requiring it to be bundled) rather than failing outright.
+[project]
+name = "fused-render-template-joblib-model"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "joblib>=1.5",
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+    "lightgbm>=4.0",
+    "pandas>=2.0",
+]
+
+# Not a distribution — this folder is a set of scripts, not something to build
+# and install.
+[tool.uv]
+package = false
