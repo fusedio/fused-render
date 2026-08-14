@@ -243,6 +243,11 @@ export default function NewJobModal({
   const pad = (n: number) => String(n).padStart(2, "0");
   const atTime = pickedOk ? `${pad(picked.getHours())}:${pad(picked.getMinutes())}` : "";
 
+  // The replacement was created but the original could not be withdrawn: the
+  // one state where pressing Save again would mint a THIRD copy, so it
+  // disables the button outright and the error says what to do by hand.
+  const [replaced, setReplaced] = useState(false);
+
   const submit = async () => {
     setBusy(true);
     setError(null);
@@ -252,12 +257,32 @@ export default function NewJobModal({
         message,
         ...(cron ? { repeats: cron } : { due: when }),
         permission_mode: permission,
+        // An edit keeps what it cannot re-ask for: a composer-scheduled task
+        // that continues an open chat must still continue it after a time
+        // change, or the edit silently turns it into a fresh session.
+        ...(editing?.session_id ? { session_id: editing.session_id } : {}),
       });
       if (editing) {
         // Replacement first, THEN withdraw — a failed create must never leave
         // the user with neither task. A 404 here is the fine race: the old
         // run fired (or was cancelled elsewhere) while the form was open.
-        await cancelScheduledMessage(editing.id).catch(() => undefined);
+        // Anything ELSE is the bad case — old and new both armed, an
+        // unattended double-run — so it is said out loud instead of closed
+        // over (the first cut swallowed every error here).
+        try {
+          await cancelScheduledMessage(editing.id);
+        } catch (e) {
+          if ((e as Error & { status?: number }).status !== 404) {
+            onCreated();
+            setReplaced(true);
+            setBusy(false);
+            setError(
+              "The new task is saved, but the old one couldn't be withdrawn — " +
+              "cancel it from the list so it doesn't also run.",
+            );
+            return;
+          }
+        }
       }
       onCreated();
       onClose();
@@ -277,6 +302,7 @@ export default function NewJobModal({
     repeat === "none" && pickedOk && picked.getTime() <= Date.now();
 
   const ready =
+    !replaced &&
     message.trim() !== "" &&
     target.trim() !== "" &&
     (repeat === "custom" ? cron !== "" : pickedOk) &&

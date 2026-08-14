@@ -964,11 +964,18 @@ def _materialize(now: datetime) -> None:
         _sync_wake(due_times)
 
 
-def upcoming(entry: dict, horizon_days: int = 14, limit: int = 50) -> list[str]:
+def upcoming(entry: dict, horizon_days: int = 14, limit: int = 500) -> list[str]:
     """Projected occurrence times (UTC ISO) for a recurring template, `now`
     forward — what lets the calendar draw future runs without the client
     growing a cron parser. Projection only: nothing here is stored, and an
-    unparseable line projects as nothing rather than raising into a listing."""
+    unparseable line projects as nothing rather than raising into a listing.
+
+    The cap must clear the horizon for the schedules the FORM offers, or the
+    calendar lies: hourly over 14 days is 336 instants, and the first cut's
+    cap of 50 blanked the week view two days out. 500 covers every preset
+    with room; a deliberately denser custom line (every minute) hits the cap
+    early, which is the honest trade against a megabyte of ISO strings on a
+    listing poll."""
     try:
         rule = cron.parse(str(entry.get("repeats") or ""))
     except ValueError:

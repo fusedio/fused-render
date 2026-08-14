@@ -277,3 +277,14 @@ def test_restore_can_leave_two_pending_and_both_fire(target, spawned):
     states = {o["id"]: o["state"] for o in _occurrences(template["id"])}
     assert states[first["id"]] == schedule.SENT
     assert len(spawned) == 2
+
+
+def test_upcoming_covers_the_full_horizon_for_hourly(target):
+    # The cap must clear the horizon for the presets the form offers: hourly
+    # over 14 days is 336 instants, and a 50-instant cap blanked the week
+    # view two days out (Bugbot, PR #529).
+    template = schedule.create(str(target), "run", repeats="0 * * * *")
+    times = schedule.upcoming(template)
+    assert len(times) >= 14 * 24 - 2
+    last = schedule.parse_due(times[-1])
+    assert last > datetime.now(timezone.utc) + timedelta(days=13)
