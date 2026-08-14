@@ -244,6 +244,47 @@ def test_every_tick_carries_the_job_the_route_opened(worker, base, tmp_path):
     assert {t["job"] for t in base.ticks} == {"sys:ai-transcribe:zzz"}
 
 
+def test_a_cancel_on_the_LAST_segment_still_writes_the_finished_transcript(
+        worker, base, tmp_path):
+    """The decode is over; the ✕ arrived too late to save anything.
+
+    The per-segment tick runs after the segment is appended, so a cancel
+    landing on the FINAL one raised out of the loop and skipped the write
+    entirely — an hour of decoding discarded at 99%, with nothing to show for
+    it. A cancel can only be worth honouring when there is work left to stop.
+    """
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 1.5, "hello"), FakeSegment(1.5, 3.0, "world")],
+        duration=3.0)
+    request = _request(tmp_path)
+    # Ticks: one for the opening report, then one per segment — so this fires
+    # on the second and last segment.
+    base.cancel_on_tick = 3
+
+    result = worker.generate(request)
+
+    assert result["segments"] == 2
+    assert json.load(open(request["out"], encoding="utf-8"))["text"] == "hello world"
+    assert open(request["outText"], encoding="utf-8").read() == "hello world\n"
+
+
+def test_a_cancel_with_segments_still_to_come_is_honoured_and_writes_nothing(
+        worker, base, tmp_path):
+    """The other side of it: a cancel is real work stopped, and a half
+    transcript presented as a whole one would be worse than none."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 1.0, "one"), FakeSegment(1.0, 2.0, "two"),
+         FakeSegment(2.0, 3.0, "three")],
+        duration=3.0)
+    request = _request(tmp_path)
+    base.cancel_on_tick = 2  # the first segment, with two still to decode
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(request)
+    assert not os.path.exists(request["out"])
+    assert not os.path.exists(request["outText"])
+
+
 def test_the_clock_rolls_over_to_HOURS(worker):
     """`90:00` for ninety minutes is the same ambiguity as `720 / 5400`, and
     worse for sitting one line under `jobAmount` rendering it as `1:30:00`."""
@@ -311,6 +352,25 @@ def test_an_absent_language_means_auto_detect_not_an_empty_code(worker, tmp_path
     worker._loaded["model"] = model
     worker.generate(_request(tmp_path, language=""))
     assert model.calls[0]["language"] is None
+
+
+def test_an_explicit_null_vad_means_the_DEFAULT_not_off(worker, tmp_path):
+    """`bool(body.get("vad", True))` reads a JSON null as False rather than as
+    "not specified", so it inverted: a page spreading an options object with an
+    unset key silently turned the VAD OFF. `task` and `language` use `or
+    <default>` and are null-safe; this was the one that flipped."""
+    for value, expected in ((None, True), (True, True), (False, False)):
+        model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+        worker._loaded["model"] = model
+        worker.generate(_request(tmp_path, vad=value,
+                                out=str(tmp_path / f"v{value}.json"),
+                                outText=str(tmp_path / f"v{value}.txt")))
+        assert model.calls[0]["vad_filter"] is expected, value
+    # And an absent key is the same as an explicit null.
+    model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker._loaded["model"] = model
+    worker.generate(_request(tmp_path))
+    assert model.calls[0]["vad_filter"] is True
 
 
 def test_generating_with_no_model_loaded_says_so(worker, tmp_path):

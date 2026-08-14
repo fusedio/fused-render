@@ -270,7 +270,10 @@ def generate(body):
     # empty string would be passed through as a language code that matches none.
     language = str(body.get("language") or "") or None
     initial_prompt = str(body.get("initialPrompt") or "") or None
-    vad = bool(body.get("vad", True))
+    # `is None`, not `get("vad", True)`: a JSON null is "not specified", and a
+    # default reached only by an absent KEY inverts for the caller that spreads
+    # an options object carrying an unset one.
+    vad = True if body.get("vad") is None else bool(body.get("vad"))
     job = body.get("job") or None
 
     started = time.time()
@@ -305,15 +308,31 @@ def generate(body):
         })
         done = segments[-1]["end"]
         elapsed = time.time() - transcribing_since
-        # `report_or_cancel`, not `report`: this loop is the only place a stop
-        # can be honoured, and the reply to this tick is how the ✕ gets here.
-        worker_base.report_or_cancel(
-            job=job, kind="task", unit="s", done=done, total=total,
-            detail="Transcribing — %s of %s%s" % (
-                _clock(done), _clock(total) if total else "?",
-                _eta(total - done if total else None, elapsed, done)))
-        if worker_base.CANCEL.is_set():
+        try:
+            # `report_or_cancel`, not `report`: this loop is the only place a
+            # stop can be honoured, and the reply to this tick is how the ✕
+            # gets here.
+            worker_base.report_or_cancel(
+                job=job, kind="task", unit="s", done=done, total=total,
+                detail="Transcribing — %s of %s%s" % (
+                    _clock(done), _clock(total) if total else "?",
+                    _eta(total - done if total else None, elapsed, done)))
+            if not worker_base.CANCEL.is_set():
+                continue
             raise worker_base.Cancelled()
+        except worker_base.Cancelled:
+            # **A cancel is only worth honouring while there is work left to
+            # stop.** This tick fires AFTER its segment is appended, so a ✕
+            # landing on the last one used to raise straight past the write
+            # below — an hour of decoding discarded at 99%, with the transcript
+            # complete in memory and nothing on disk to show for it.
+            #
+            # Asking the generator for one more segment is what tells the two
+            # apart, and it is only ever paid for on the cancel path. If one
+            # comes back it is dropped, which costs nothing: we are stopping.
+            if next(stream, None) is not None:
+                raise
+            break
 
     text = " ".join(s["text"] for s in segments).strip()
     result = {
