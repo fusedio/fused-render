@@ -6203,7 +6203,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   so the honest claim is "at least this much". A runner's probe that raises is
   worth no memory figure, never a broken `/health`.
 - **AI-10** **Speech to text is the third capability, and it is the first one
-  that works EVERYWHERE** (D275). `automatic-speech-recognition` — the Hub's own
+  that works EVERYWHERE** (D276). `automatic-speech-recognition` — the Hub's own
   tag — served by a `faster_whisper` runner folder built on CTranslate2, which
   publishes wheels for macOS on both architectures, Linux and Windows. That
   choice is the point of the bullet: mlx-whisper would be quicker on Apple
@@ -6257,3 +6257,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   progress bar that dies. `fused.ai.transcribe({path, …})` resolves with the
   text, the segments and a ready-made `/api/fs/raw` url, and falls back to the
   file when the row has aged out from under a backgrounded tab.
+- **AI-10b** **No audio has ever been transcribed by this code, and the two
+  bullets above should be read as a design that is tested only down to the
+  worker's door.** faster-whisper cannot run on CI — CTranslate2 plus a model
+  download — so the route, the supervisor, the job row, the glossary, the
+  catalog and the bridge are all exercised against a FAKE worker speaking the
+  AI-3 contract with canned segments, exactly as the image path is. Everything
+  INSIDE `faster_whisper/worker.py` is unverified against a real model: the
+  decode loop, the seconds-of-audio arithmetic behind the progress bar, the
+  cancel path through the per-segment `report_or_cancel`, the CUDA-vs-CPU
+  placement, and the CTranslate2-format check that is meant to turn a
+  transformers-format repo into a readable error. This is the standing position
+  for every concrete runner in this app (AI-9a says the contract is testable
+  precisely because the workers are not), but it is stated rather than left to
+  be inferred, because AI-10a's prose about units and interruption points
+  describes code that has so far only been read. A first real transcription is
+  the outstanding verification.

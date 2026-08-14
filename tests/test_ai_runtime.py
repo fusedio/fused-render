@@ -1280,6 +1280,16 @@ def test_both_artefact_bridges_survive_a_row_that_aged_out():
     gone, the FILE is the other witness and the one that matters. A new
     minutes-long call that only trusted the row would fail on work that had in
     fact finished, which is the failure this pins.
+
+    **This asserts on SOURCE TEXT and cannot catch a runtime regression — do
+    not read a pass here as the fallback working.** There is no JS harness for
+    either bridge (the image one has never had a test of any kind), so what is
+    checked is that the branch is still WRITTEN, not that it behaves: a
+    `!record` arm that called the wrong function, read the wrong field, or threw
+    on its own would pass this test. It is a tripwire against the branch being
+    deleted or a third artefact call being added without one, and that is all.
+    A real test needs node driving `runtime.js` against a stub `fetch`, which is
+    worth doing the next time either bridge is touched.
     """
     source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "fused_render", "static", "runtime.js"),
