@@ -299,7 +299,7 @@ export default function ListingPreviewPane({
         {appEntry && (
           <button
             type="button"
-            className="bar-ctl"
+            className="bar-ctl bar-ctl-strong"
             title={"Open " + appEntry.slice(appEntry.lastIndexOf("/") + 1)}
             onClick={onOpenApp}
           >
