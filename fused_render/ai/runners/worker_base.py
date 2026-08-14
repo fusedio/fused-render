@@ -544,17 +544,19 @@ def _probe_host(location, token, probes):
     same startup cost `_resolve` was parallelised to remove, reintroduced on a
     thirty-shard repo.
 
-    Only an ANSWER is remembered. Caching a probe that FAILED lets one transient
-    503 put every remaining shard of the repo on a single connection for the
-    rest of the download, with nothing on screen to say the fast path switched
-    itself off — the same mistake as treating a failed probe as a reason to
-    discard resume state, one scope wider.
+    True, False, or None for "could not ask" — and the three are distinct
+    because two rules turn on the difference. Only an ANSWER is remembered:
+    caching a probe that FAILED lets one transient 503 put every remaining shard
+    of the repo on a single connection for the rest of the download, with
+    nothing on screen to say the fast path switched itself off. And only an
+    answer of NO is grounds for throwing away a recorded layout (see `plan`);
+    silence is not.
     """
     host = urllib.parse.urlsplit(location).netloc
     if probes.get(host) is None:
         answer = _supports_ranges(location, token)
         if answer is None:
-            return False  # this file goes on one connection; the next re-asks
+            return None  # this file goes on one connection; the next re-asks
         probes[host] = answer
     return probes[host]
 
@@ -664,13 +666,24 @@ class _FileFetch:
         saved = self._saved()
         if saved is not None:
             # The layout to resume with is the layout the bytes were fetched
-            # INTO. Re-deriving it here would re-probe, and a probe that fails
-            # for a moment (a 503 on the one-byte request) yields one segment,
-            # a segment-count mismatch, and the deletion of gigabytes of
-            # durable, correctly recorded progress — for a network condition
+            # INTO. A probe that fails for a moment (a 503 on the one-byte
+            # request) must not cost us that: re-deriving on silence yields one
+            # segment, a segment-count mismatch, and the deletion of gigabytes
+            # of durable, correctly recorded progress — for a network condition
             # that says nothing about the bytes on disk.
+            #
+            # A probe that ANSWERS NO is different, and asking is what makes the
+            # difference visible. Without it, a server that has stopped honouring
+            # ranges hands byte 0 to every segment past the first, `_whole_body`
+            # refuses, and the refusal takes down the whole repo — the fallback
+            # then deleting this file's sidecar along with every OTHER file's
+            # progress. Restarting this one file whole is strictly cheaper.
             self.segments = _segments(self.size, len(saved))
             if not self._restore(saved):
+                saved = None
+            elif len(saved) > 1 and _probe_host(self.meta["location"],
+                                                self._cdn_token(),
+                                                self.probes) is False:
                 saved = None
         if saved is None:
             # …and once the sidecar is out, its layout goes with it. Kept, it
@@ -678,8 +691,9 @@ class _FileFetch:
             # described a file we just deleted: one connection for a 4.6GB
             # shard, or dozens for a small one.
             count = _segment_count(self.size)
-            if count > 1 and not _probe_host(self.meta["location"],
-                                             self._cdn_token(), self.probes):
+            if count > 1 and _probe_host(self.meta["location"],
+                                         self._cdn_token(),
+                                         self.probes) is not True:
                 count = 1
             self.segments = _segments(self.size, count)
             _remove(self.part)
@@ -1014,23 +1028,32 @@ def _run_segment(fetch, seg):
     """One unit of work in the pool: fill a segment, and finalise if it was the
     last one its file was waiting on."""
     try:
-        fetch.run(seg)
+        try:
+            fetch.run(seg)
+        finally:
+            fetch.flush(force=True)
+        if not _seg_complete(seg):
+            return  # abandoned because a sibling segment failed; nothing to publish
+        with fetch.lock:
+            fetch.pending -= 1
+            last = fetch.pending == 0
+        if last:
+            fetch.finish()
     except BaseException:
         # The other segments stop pulling bytes nobody is going to use, and
         # what they already wrote is recorded before they go. That state is for
         # a LATER RUN of the app: this attempt is about to hand the repo to
         # huggingface_hub, which fetches those files itself (see `_clear_parts`).
+        #
+        # `finish()` is INSIDE this guard, not after it. It fails for reasons
+        # that have nothing to do with the download — a full disk, an
+        # `os.replace` across devices, another instance publishing the same blob
+        # first — and outside the guard that exception reached the caller with
+        # `stop` still clear, so the pool's own shutdown waited for every
+        # remaining segment of every remaining file to finish first: minutes and
+        # gigabytes spent on a download that had already failed.
         fetch.stop.set()
         raise
-    finally:
-        fetch.flush(force=True)
-    if not _seg_complete(seg):
-        return  # abandoned because a sibling segment failed; nothing to publish
-    with fetch.lock:
-        fetch.pending -= 1
-        last = fetch.pending == 0
-    if last:
-        fetch.finish()
 
 
 def _segmented_fetch(model_id, filenames, revision="main"):

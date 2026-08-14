@@ -627,6 +627,11 @@ def test_a_probe_that_fails_does_not_throw_away_recorded_progress(base, monkeypa
     single connection. A probe failing is a network condition; it is not
     evidence that the bytes already on disk are wrong. The layout we already
     fetched into is the layout to resume with.
+
+    Silence is the case here — `_supports_ranges` answering None. A probe that
+    answers NO is a fact about the server and does discard the layout; that is
+    the case its sibling test covers, and the pair is why the answer is
+    three-valued rather than a bool.
     """
     url, state = _start_server(payload, budget=60_000)
     folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
@@ -714,6 +719,66 @@ def test_a_rejected_sidecar_does_not_keep_its_layout(base, monkeypatch, tmp_path
 
     assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
     assert _offsets(state["log"]) == [0, 50_000, 100_000, 150_000]
+
+
+def test_a_resume_whose_server_stopped_honouring_ranges_restarts_that_file(
+        base, monkeypatch, tmp_path, payload):
+    """The resume path skips the probe on purpose — but only a probe can tell it
+    the ground has moved.
+
+    If ranges have genuinely gone (a host swap, an interposing proxy), every
+    segment past the first is handed byte 0, `_whole_body` refuses it, and the
+    refusal takes down the WHOLE repo: the fallback then deletes the very
+    sidecar the un-probed resume existed to protect, plus every other file's
+    progress. Restarting this one file from a single segment costs one file's
+    bytes and keeps the rest. The distinction that makes both rules hold at once
+    is the one round 2 introduced: a probe that fails to ANSWER still leaves the
+    recorded layout standing; only a probe that answers "no" discards it.
+    """
+    url, state = _start_server(payload, budget=60_000)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "SEGMENT_ATTEMPTS", 1)
+    monkeypatch.setattr(base, "RETRY_BACKOFF_S", 0)
+
+    with pytest.raises(Exception):
+        base._segmented_fetch("org/m", ["model.safetensors"])
+
+    sidecar = os.path.join(folder, "blobs", "e7ag.fusedpart.json")
+    assert sum(s["done"] for s in json.load(open(sidecar))["segments"]) > 0
+
+    state["budget"], state["ranges"] = None, False
+    state["log"].clear()
+
+    snapshot = base._segmented_fetch("org/m", ["model.safetensors"])
+
+    assert open(os.path.join(snapshot, "model.safetensors"), "rb").read() == payload
+    assert _ranges(state["log"]) == [], "it kept range-fetching a server that said no"
+
+
+def test_a_failure_while_publishing_stops_the_other_segments(base, monkeypatch,
+                                                             tmp_path, payload):
+    """`finish()` is the last thing a segment does, and it can fail for reasons
+    that have nothing to do with this download — a full disk, an `os.replace`
+    across devices, another instance publishing the same blob first.
+
+    Outside the guard, the exception reached `future.result()` but left `stop`
+    clear, and the pool's own shutdown then waits: every remaining segment of
+    every remaining file runs to completion before the fallback even starts,
+    which on a thirty-shard repo is many minutes and many gigabytes spent on a
+    download that has already failed.
+    """
+    url, _state = _start_server(payload)
+    folder = _wire(base, monkeypatch, tmp_path, url, len(payload))
+    fetch = _planned(base, folder, url, len(payload))
+    segment = fetch.segments[0]
+    segment["done"] = segment["end"] - segment["start"] + 1  # the last one home
+    fetch.pending = 1
+    fetch.finish = lambda: (_ for _ in ()).throw(OSError("No space left on device"))
+
+    with pytest.raises(OSError):
+        base._run_segment(fetch, segment)
+
+    assert fetch.stop.is_set(), "the siblings were left pulling bytes for nothing"
 
 
 @pytest.mark.parametrize("wrong", ["etag", "size", "segments"])

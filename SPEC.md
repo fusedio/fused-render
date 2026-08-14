@@ -5976,13 +5976,25 @@ an AI Models page that could say what was on disk but not what was *running*.
   partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
   resumes one of those by seeking to its length, ours are written out of order,
   and handing it one would produce a silently corrupt blob. Resume demands that
-  etag and size still agree and that the recorded LAYOUT is the one resumed with
-  — re-deriving it would re-probe, and a probe failing for a moment is a network
-  condition, not evidence about the bytes on disk; anything that does not agree
-  starts clean, never a guess. A segment reconnects on an exception AND on a body
-  that simply ends early (a server closing mid-stream raises nothing), resets its
-  retry budget whenever bytes arrive, and treats a failed re-resolve as a retry
-  rather than the end of the download.
+  etag and size still agree and that the recorded LAYOUT is the one resumed with;
+  anything that does not agree starts clean, never a guess. **The range probe is
+  therefore three-valued**, because two rules turn on the difference between a
+  server that says no and a server that does not answer: a probe that FAILS is a
+  network condition and leaves both the recorded layout and the host's cached
+  answer alone, while a probe that answers NO is a fact — it caps that file at
+  one connection, and on a resume it discards the multi-segment layout so the
+  file restarts whole. Without that second half, a CDN that stopped honouring
+  ranges hands byte 0 to every segment past the first, the refusal takes down the
+  entire repo, and the fallback deletes the progress the un-probed resume existed
+  to protect. A segment reconnects on an exception AND on a body that simply ends
+  early (a server closing mid-stream raises nothing), and treats a failed
+  re-resolve as a retry rather than the end of the download. **Its budget resets
+  on the CURSOR MOVING across an attempt, not on bytes arriving** — a distinction
+  that is a hang in one direction (a server ignoring `Range` and truncating
+  re-sends the same prefix forever, and the safe reading of that body rewinds the
+  cursor, so a byte-counting budget never expires) and an abort in the other
+  (bytes written before a `read()` raised are real progress, and counting them as
+  a failed attempt exhausted the budget on a link that reset reliably).
   **Three rules exist because a wrong-content blob under a correct etag is the
   worst failure available here** — hf then serves it from cache forever. (a) A
   200 answering a ranged request at a non-zero offset is refused, and so is a
