@@ -1125,6 +1125,31 @@ def test_a_probe_that_cannot_be_SPAWNED_destroys_nothing_and_reports_installed(
     assert str(venv_dir) not in envinstall._VALIDATED
 
 
+def test_the_probe_classifies_a_returncode_the_way_engine_probe_does(monkeypatch):
+    """`_venv_runs` alone, with no `fused` and no venv — the classification IS the
+    behaviour under test.
+
+    `engine._probe` already carries this exact rule ("a child killed by a SIGNAL
+    — `returncode < 0` — is inconclusive: it never got to answer"), which D277
+    gave it while naming this function as the sibling it was not applying it to.
+    Written without the `requires_fused` gate the sibling tests need, because
+    the branch it covers is the one that decides whether a user's environment
+    gets deleted, and it should not go unrun wherever that wheel is absent.
+    """
+    def _answer(code, **fields):
+        monkeypatch.setattr(
+            envinstall.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess(args=["python"], returncode=code,
+                                                        stdout="", stderr=""),
+        )
+        return envinstall._venv_runs("/nonexistent/venv")
+
+    assert _answer(0) is True
+    assert _answer(1) is False, "an interpreter that RAN and refused is definite"
+    for signal_number in (11, 9, 15, 64):  # 64 has no name on macOS/Linux
+        assert _answer(-signal_number) is None, f"signal {signal_number}"
+
+
 @requires_fused
 def test_a_probe_KILLED_BY_A_SIGNAL_destroys_nothing_and_reports_installed(
     tmp_path, monkeypatch
@@ -3271,6 +3296,44 @@ def test_a_worker_we_reaped_ourselves_is_diagnosed_by_its_SIGNAL(tmp_path, monke
         json.dump(record, f)
     err = envinstall.progress(key)["error"]
     assert "exited with status 3" in err and "killed" not in err
+
+
+def _has_no_signal_name(number):
+    try:
+        signal.Signals(number)
+    except ValueError:
+        return True
+    return False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="waitpid statuses are POSIX")
+def test_an_unreaped_or_nameless_ending_degrades_instead_of_failing():
+    """The message must survive not knowing. Three ways it can not know: a pid we
+    never buried (a record left by a previous server), a pid that is not a number
+    at all (`progress.json` is a file on disk and may say anything), and a signal
+    this platform has no name for — which must not print "signal 64 (signal 64)".
+    """
+    assert envinstall._how_it_ended(2 ** 31 - 1) == ""
+    assert envinstall._how_it_ended("nonsense") == ""
+    assert envinstall._how_it_ended(None) == ""
+
+    # Found rather than hardcoded: which numbers have names is the PLATFORM's
+    # answer (Linux names every realtime signal up to SIGRTMAX, macOS does not),
+    # and a literal here would test the wrong thing on one of them.
+    nameless = next((n for n in range(1, 128) if _has_no_signal_name(n)), None)
+
+    kept = dict(envinstall._ENDINGS)
+    try:
+        if nameless is not None:
+            envinstall._remember_ending(4242, nameless)  # WIFSIGNALED
+            assert envinstall._how_it_ended(4242) == (
+                f"it was killed by signal {nameless}"), "never 'signal N (signal N)'"
+        envinstall._remember_ending(4243, 7 << 8)  # a plain exit, not a kill
+        assert envinstall._how_it_ended(4243) == (
+            "it exited with status 7 without finishing")
+    finally:
+        envinstall._ENDINGS.clear()
+        envinstall._ENDINGS.update(kept)
 
 
 def test_the_endings_table_survives_concurrent_reaps():
