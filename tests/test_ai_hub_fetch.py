@@ -113,6 +113,7 @@ def _start_server(payload, **flags):
         def do_GET(self):
             header = self.headers.get("Range")
             probe = header == "bytes=0-0"
+            failed_probe = expired = False  # bound on every branch, not just one
             with state["lock"]:
                 state["log"].append(header)
                 state["requests"].append({
@@ -128,7 +129,7 @@ def _start_server(payload, **flags):
                     if state["unauthorized"] > 0:
                         state["unauthorized"] -= 1
 
-            if probe and failed_probe:
+            if failed_probe:
                 self.send_response(503)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -1087,6 +1088,69 @@ def test_the_fallback_does_not_inherit_our_half_written_parts(base, monkeypatch,
     assert state["log"], "the segmented route was never tried"
     left = os.listdir(os.path.join(folder, "blobs"))
     assert left == [], f"our part files were left for hf to trip over: {left}"
+
+
+@pytest.mark.parametrize("breaks", ["listing", "fetch"])
+def test_download_file_falls_back_like_the_snapshot_does(base, monkeypatch, tmp_path,
+                                                         payload, breaks):
+    """The single-file arm has the same two failure points as the snapshot arm
+    and had neither of them exercised. It is the diffusers runner's quantized
+    transformer — a 2.6GB GGUF — so "it falls back" is not a detail: a listing
+    that fails and a fetch that fails must both still fetch the file."""
+    url, _state = _start_server(payload)
+    _wire(base, monkeypatch, tmp_path, url, len(payload))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    _fake_hub(monkeypatch, hf_hub_download=lambda **kwargs: "/cache/blobs/gguf",
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(siblings=[])))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("the Hub is unreachable")
+
+    if breaks == "listing":
+        monkeypatch.setattr(base, "_repo_files", boom)
+    else:
+        monkeypatch.setattr(base, "_repo_files",
+                            lambda repo, include=None, ignore=None, revision="main":
+                            ("c0m", [(include, len(payload))]))
+        monkeypatch.setattr(base, "_hub_file_meta", boom)
+
+    assert base.download_file("org/m", "q4.gguf") == "/cache/blobs/gguf"
+
+
+@pytest.mark.parametrize("call", ["snapshot", "file"])
+def test_a_cancel_is_never_swallowed_into_a_fallback(base, monkeypatch, tmp_path,
+                                                     call):
+    """The ✕ is the one failure that must NOT degrade to hf's downloader.
+
+    Every other failure here means "try the slow way"; a cancel means the user
+    asked us to stop, and treating it as one more reason to fall back would
+    start a fresh multi-gigabyte `snapshot_download` out of pressing Stop.
+    """
+    started = []
+    _fake_hub(monkeypatch,
+              snapshot_download=lambda *a, **k: started.append("snapshot"),
+              hf_hub_download=lambda **k: started.append("file"),
+              HfApi=lambda: types.SimpleNamespace(
+                  model_info=lambda *a, **k: types.SimpleNamespace(
+                      sha="c0m", siblings=[types.SimpleNamespace(
+                          rfilename="w.gguf", size=10)])))
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": str(tmp_path))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    def cancelled(*args, **kwargs):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "_segmented_fetch", cancelled)
+
+    with pytest.raises(base.Cancelled):
+        if call == "snapshot":
+            base.download_snapshot("org/m")
+        else:
+            base.download_file("org/m", "w.gguf")
+
+    assert started == [], "pressing Stop started a download instead"
 
 
 def test_a_commit_that_moved_under_the_listing_is_refused(base, monkeypatch,
