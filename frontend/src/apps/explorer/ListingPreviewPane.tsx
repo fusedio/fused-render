@@ -96,6 +96,8 @@ export default function ListingPreviewPane({
   folder,
   side,
   sideEntries,
+  appEntry,
+  onOpenApp,
   onSelectSide,
   onClose,
 }: {
@@ -122,6 +124,16 @@ export default function ListingPreviewPane({
   // per selection — see the module comment.
   sideEntries: PaneSideEntries;
   onSelectSide: (side: PaneSideChoice) => void;
+  // The pane SUBJECT's entry page (`index.html`), or null when it has none — the
+  // "Open app" button in the strip. Resolved by Listing, which already owns the
+  // subject and its settle: this component is one of the things keyed on that
+  // subject, so it must not go asking the question a second time and risk a
+  // different answer from the one the pane is showing.
+  appEntry: string | null;
+  // Opens it. The caller's own `navigate`, for the reason the whole button lives in
+  // Listing: an EMBEDDED pane may not move the host view, and the way that stays
+  // true is that this component never navigates.
+  onOpenApp: () => void;
   // Shuts the pane (`_side=off`). The listing's search row grows the reopening
   // half of the affordance while the pane is down — SideChrome writes the split
   // between the two down.
@@ -274,10 +286,26 @@ export default function ListingPreviewPane({
   //
   // `extra` is what only the settled Preview puts in it — the open-full-screen
   // button — at the far end, after the pill.
+  //
+  // "Open app" rides in here rather than in one branch, so it is present in every
+  // pane state the way the chevron and the pill are — including the skeleton, where
+  // the subject is known long before the pane has resolved what to show about it.
+  // Ahead of the pill so the pill keeps the strip's right end, where the expand
+  // button (`extra`) also lands.
   const strip = (extra?: React.ReactNode) => (
     <div className="pane-header">
       <SideCloseButton what={modeTitle(side)} onClick={onClose} />
       <div className="side-header-tail">
+        {appEntry && (
+          <button
+            type="button"
+            className="bar-ctl"
+            title={"Open " + appEntry.slice(appEntry.lastIndexOf("/") + 1)}
+            onClick={onOpenApp}
+          >
+            Open app
+          </button>
+        )}
         {sideMenu}
         {extra}
       </div>

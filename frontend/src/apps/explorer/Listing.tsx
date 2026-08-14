@@ -38,6 +38,7 @@ import {
 import { createPortal } from "react-dom";
 import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
+import { prefetchListDir } from "@platform/lib/api";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
@@ -110,6 +111,18 @@ function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
 // Flips the tight-bar measurement is allowed at one bar width before it holds.
 // The reasoning is at `tightFlipRef` and at the layout effect it guards.
 const FLIP_BUDGET = 2;
+
+// The entry page of a folder, given its rows: literally `index.html`,
+// case-insensitive and a FILE — a directory of that name is a real shape (an
+// exported site tree). The narrow reading of the owner's "the open button simply
+// opens the index.html", and the first clause of the server's own entry rule
+// (`app_listing.app_entry`), which is deliberately NOT re-derived here: this decides
+// whether to offer a button, where being wrong costs a click, not which page a
+// folder IS, where the server and the templates must agree to the letter.
+function entryHtmlIn(entries: { name: string; is_dir: boolean }[], dir: string): string | null {
+  const hit = entries.find((e) => !e.is_dir && e.name.toLowerCase() === "index.html");
+  return hit ? dir + "/" + hit.name : null;
+}
 
 export default function Listing({
   fsPath,
@@ -822,18 +835,57 @@ export default function Listing({
   // **The subject no longer enters into it at all** (D285): `preview` is not on offer
   // for any row type, so there is nothing left to ask about the subject and
   // `paneSideList` takes no flag. What it answers is what the FOLDER offers.
-  // The open folder's entry page, or null when it has none — a lookup over the rows
-  // this listing already fetched, so it costs no request and re-answers itself on a
-  // dir-watch refresh like any other derived row value. Literally `index.html`
-  // (case-insensitive, and a FILE — a directory of that name is a real shape), which
-  // is the narrow reading of the owner's "the open button simply opens the
-  // index.html" and the first clause of the server's own entry rule.
-  const appEntryPath = useMemo(() => {
-    const hit = sortedEntries.find(
-      (e) => !e.is_dir && e.name.toLowerCase() === "index.html",
+  // --- OPEN APP: the entry page of THE PANE'S SUBJECT ------------------------
+  //
+  // One question asked of one subject, which is what keeps "a selected folder row"
+  // and "the open folder" from being two conditions with a precedence rule between
+  // them. The pane already resolves its subject and already pays the settled-lead
+  // debounce for it (paneRow above; paneSideTarget/paneKey downstream), so the
+  // precedence the owner asked for — a selected row wins over the open folder —
+  // falls out of asking the same value rather than being a tiebreak to maintain.
+  //
+  // The subject as a FOLDER, or null when there is no folder subject: a single
+  // settled directory row, else the open folder when nothing is selected. A FILE row
+  // has no entry page to open, and a MULTI-selection has no single subject at all
+  // (`paneRow` is only ever set for a single-row selection, so both fall out).
+  const paneSubjectDir =
+    paneRow?.isDir ? paneRow.path : sel.paths.length === 0 ? base : null;
+
+  // The open folder's rows are ALREADY IN HAND — this bar sits on them — so that
+  // half is a lookup and costs no request. Recomputed on a dir-watch refresh like
+  // any other derived row value.
+  const openFolderEntry = useMemo(() => entryHtmlIn(sortedEntries, base), [sortedEntries, base]);
+
+  // A folder ROW's children are not in hand, so that half is the one request this
+  // feature costs — and it hangs off the SETTLED subject and nothing else, which is
+  // the whole reason it was deferred: keyed on `paneSubjectDir`, an arrow-key walk
+  // re-keys only when the selection settles (useSettledLead's 250 ms gate), so a
+  // walk down a listing of folders issues nothing per row. `prefetchListDir` caches
+  // per directory, so a revisit is free and the pane's own embedded peek of the same
+  // folder shares the answer.
+  //
+  // Cleared to null on every subject change BEFORE the fetch: the button must never
+  // point at the previous subject while the new one resolves, which is the "whatever
+  // it points at is what the pane says it is about" rule. Hidden-then-shown is the
+  // acceptable shape of that; pointing at the wrong row is not.
+  const [rowEntry, setRowEntry] = useState<string | null>(null);
+  useEffect(() => {
+    if (paneSubjectDir === null || paneSubjectDir === base) return;
+    let alive = true;
+    setRowEntry(null);
+    prefetchListDir(paneSubjectDir).then(
+      (res) => alive && setRowEntry(entryHtmlIn(res.entries, paneSubjectDir)),
+      // An unreadable folder is "no entry page", never an error of its own: the
+      // button simply does not appear.
+      () => alive && setRowEntry(null),
     );
-    return hit ? base + "/" + hit.name : null;
-  }, [sortedEntries, base]);
+    return () => {
+      alive = false;
+    };
+  }, [paneSubjectDir, base]);
+
+  const appEntryPath =
+    paneSubjectDir === null ? null : paneSubjectDir === base ? openFolderEntry : rowEntry;
 
   const paneSides = paneSideList(sideEntries);
   // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
@@ -1650,27 +1702,21 @@ export default function Listing({
                   Here rather than in the crumb bar because over a folder THIS ROW
                   is the bar (it portals into it — search-slot.ts), and this is the
                   folder's own chrome, beside the folder's own search box. */}
-              {/* OPEN APP — this folder's own `index.html`, opened as the file it is.
-                  Shown only when the folder HAS one, hidden otherwise: a button that
-                  cannot act is noise, and unlike the pane's companions this is not a
-                  mode the user is owed a reason for.
+              {/* OPEN APP, the SHUT-PANE FALLBACK. Its home is the pane's own strip,
+                  beside the chevron and the pill (ListingPreviewPane) — the button is
+                  about the pane's SUBJECT, so it belongs to the pane. With the pane
+                  shut there is no strip to live in, and this row is the folder's own
+                  chrome, so it lands here instead of vanishing with the column.
 
-                  The entries are already in hand (`sortedEntries`, the listing this
-                  bar sits on), so the question is a lookup and costs no request. The
-                  SELECTED-ROW case — a folder row that itself contains an index.html
-                  — is deliberately NOT here: a row's children are not in hand, so it
-                  needs a per-selection `/api/fs/list`, and nothing already on the
-                  wire answers it (the stat's `templates` is the registry's mode list,
-                  and lib/dir-mode resolves the FOLDER's own companion entries;
-                  neither says anything about a child's children). D280 deleted the
-                  resolution that used to do it. If it comes back it hangs off the
-                  SETTLED lead (useSettledLead) and off nothing else, or an arrow-key
-                  walk down a listing of folders is one request per row.
+                  `!paneOpen` and not `!pane.on`: a pane the user has closed
+                  (`_side=off`) is the case this exists for. When the pane is open the
+                  strip has it and a second copy here would be two buttons for one
+                  action a few pixels apart, which reads as a rendering fault.
 
-                  `navigate(path, { isDir: false })` is the row's own double-click
-                  path (onRowDoubleClick), reused rather than reinvented: no new view
-                  and no `_mode`, just the file. */}
-              {appEntryPath && (
+                  Same `navigate(path, { isDir: false })` as the row's own
+                  double-click (onRowDoubleClick), reused rather than reinvented: no
+                  new view and no `_mode`, just the file. */}
+              {!paneOpen && appEntryPath && (
                 <button
                   type="button"
                   className="bar-ctl"
@@ -1851,6 +1897,10 @@ export default function Listing({
                 }
                 selCount={sel.paths.length}
                 undecided={paneUndecided}
+                appEntry={appEntryPath}
+                onOpenApp={() =>
+                  appEntryPath && navigate(appEntryPath, { isDir: false })
+                }
                 folder={fsPath}
                 side={paneSide}
                 sideEntries={sideEntries}
