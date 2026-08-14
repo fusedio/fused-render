@@ -283,9 +283,9 @@ def test_mount_backed_file_is_not_stated_and_reports_not_local(
     client, projects_dir, tmp_path, monkeypatch
 ):
     # A path under the mounts dir must never reach the kernel stat — that
-    # GETATTR is what wedges a dead mount, once per card per listing. The card
-    # falls back to its hosted link, so False is the safe answer even when the
-    # remote file is really there.
+    # GETATTR is what wedges a dead mount, once per card per listing. `exists`
+    # is None there, not False: "not checked" is a different claim from "gone
+    # from disk", and a UI that hides the known-gone must not also hide these.
     from fused_render.shell.mounts import access as mounts_access
 
     page = tmp_path / "mounts-root" / "s3" / "page.html"
@@ -300,7 +300,7 @@ def test_mount_backed_file_is_not_stated_and_reports_not_local(
     monkeypatch.setattr(claude_artifacts_mod.os.path, "isfile",
                         lambda p: (stats.append(p), real_isfile(p))[1])
     artifacts = client.get("/api/claude-artifacts").json()["artifacts"]
-    assert artifacts[0]["exists"] is False
+    assert artifacts[0]["exists"] is None
     assert str(page) not in stats
 
 

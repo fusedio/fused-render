@@ -6161,6 +6161,10 @@ document.getElementById("back").onclick = () => {
 
 function enterChat() {
   chatEl.classList.remove("home");
+  // The strip belongs to ONE conversation. Chips from the previous chat are
+  // hidden on the home screen but still in the map — a new chat must not
+  // inherit them (nor a late poll's leftovers).
+  clearArtStrip();
   focusBox(box);
 }
 
@@ -8900,8 +8904,7 @@ function renderRecentSkeleton(list) {
 let recentCount = null;
 let artCount = null;
 // Which list is showing, and it is the BLOCK's state rather than the page's:
-// leaving for a chat and coming back keeps the tab you were on, the same way
-// `snapExpanded` survives that round trip.
+// leaving for a chat and coming back keeps the tab you were on.
 let listTab = "recent";
 
 function syncLists() {
@@ -8971,9 +8974,14 @@ async function loadRecent() {
     // names, or no panel yet) costs nothing, and it repaints from the cached
     // timeline rather than re-reading anything.
     if (named && snapTimeline) renderSnapshots(snapTimeline);
-    // No early return and no inline display write for the empty case: the count
-    // drives the section's visibility through syncLists (hidden/classes), the
-    // same way the artifacts list is shown and hidden.
+    if (!sessions.length) {
+      // Empty is an answer, not an error — but there is nothing to draw, and
+      // the count is what hides the section (syncLists; hidden/classes, never
+      // an inline display write).
+      recentCount = 0;
+      syncLists();
+      return;
+    }
     recentCount = sessions.length;
     for (const s of sessions) addChatRow(list, s);
   } catch (err) {
@@ -9035,17 +9043,19 @@ function addArtifactRow(list, a) {
   // count as a click on the row (which opens the local file instead).
   row.querySelector(".art-go").onclick = (e) => e.stopPropagation();
   // The row's own subject is the LOCAL file — the thing this window can show.
-  // Always pressable: `list` returns only artifacts whose source is still on
-  // disk (artifacts.py filters on `exists`), so there is no unpressable row to
-  // style or explain here any more. The guard stays on `file_path` alone,
-  // because a row with no local path has nothing for a press to open.
-  if (a.file_path) {
+  // `list` drops the KNOWN-gone, so what reaches here is exists true (a real
+  // local file) or exists null: a mount-backed path the server refuses to
+  // stat, where the hosted page is the one door that cannot hang. The press
+  // follows that split; either way a row is always pressable.
+  const local = a.exists === true && a.file_path;
+  if (local || a.remote_url) {
     row.setAttribute("role", "button");
     row.tabIndex = 0;
-    row.title = a.file_path;
+    row.title = local ? a.file_path : a.remote_url;
     // A new tab, not this frame: this window is a chat (often a pane of a
     // split), and navigating it away would end the conversation.
-    const open = () => window.open(artOpenHref(a.file_path), "_blank", "noopener");
+    const open = () => window.open(
+      local ? artOpenHref(a.file_path) : a.remote_url, "_blank", "noopener");
     row.onclick = open;
     row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
   }
@@ -9127,6 +9137,10 @@ async function pollArtifacts() {
   try {
     const { artifacts } = await fused.runPython(
       ARTIFACTS, { action: "live", session_id, file: FILE }, { key: null });
+    // The await straddles navigation: Back may have cleared the strip (and the
+    // session param) while this read was in flight, and a fresh chat may even
+    // be underway. A stale answer must evaporate, not repopulate the strip.
+    if (fused.params.get("session_id") !== session_id) return;
     if (!artifacts || !artifacts.length) return;
     // Change detection is by CONTENT, not by count: the favicon/title join can
     // land a poll or two after the frame-link (the tool_use streams later in

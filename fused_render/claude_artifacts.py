@@ -155,7 +155,13 @@ def artifact_dict(
         # re-resolved: that string is what the publish actually used, and it is
         # already absolute.
         "file_path": canonical_fs_path(file_path),
-        "exists": not is_mount_backed(file_path) and os.path.isfile(file_path),
+        # Tri-state: True/False are real answers from a local stat; None means
+        # "not checked" — the path sits on a managed mount, where the kernel
+        # stat is the GETATTR that wedges a dead mount (see server/mount.py),
+        # once per artifact per listing. None rather than False because the two
+        # claims differ: False is "gone from disk" and a UI may hide it; None
+        # is "unknowable cheaply" and the hosted page is still the safe door.
+        "exists": None if is_mount_backed(file_path) else os.path.isfile(file_path),
         "remote_url": remote_url,
         "title": title,
         "description": description,

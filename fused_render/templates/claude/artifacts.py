@@ -200,11 +200,12 @@ def _list(file: str) -> dict:
     The server answers per DIRECTORY (`cwd`), which is one step coarser than
     what the screen means, so two filters run on top of its answer:
 
-    ONE, only artifacts whose local source is still on disk (`exists`). A page
+    ONE, no artifacts whose local source is KNOWN gone (`exists` False). A page
     published from a scratchpad that has since been cleaned up is still live at
     its url, but it is not something this target has any hold on any more, and
     a landing screen listing four dead scratchpads above three real pages reads
-    as noise.
+    as noise. `exists` None (a mount-backed path the server refuses to stat) is
+    not "gone" — those rows stay and open their hosted page.
 
     TWO, strict per-target scoping, in the two directions a target can be:
 
@@ -243,7 +244,11 @@ def _list(file: str) -> dict:
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list):
         return {"artifacts": [], "error": "unexpected response"}
-    artifacts = [a for a in artifacts if isinstance(a, dict) and a.get("exists")]
+    # Drop only the KNOWN-gone (exists is False). None means the server did
+    # not stat the path (mount-backed, hang-avoidance) — those rows stay, and
+    # the page opens their hosted url instead of claiming a local file.
+    artifacts = [a for a in artifacts
+                 if isinstance(a, dict) and a.get("exists") is not False]
 
     if os.path.isdir(file):
         own = _sidecar_sessions(file)
