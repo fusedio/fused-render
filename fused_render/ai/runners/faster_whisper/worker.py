@@ -141,13 +141,57 @@ def _eta(remaining_audio, elapsed, done_audio):
 
 
 def _clock(seconds):
-    """m:ss — what a progress line about a recording should say."""
+    """m:ss, or h:mm:ss once there are hours.
+
+    The hours field is not optional politeness: without it a 90-minute file
+    reads "90:00" in this detail line while the manager renders the very same
+    pair as "1:30:00" one line above (`jobAmount`), so one row states the same
+    number two ways. Same rule as that formatter, for the same reason "720 /
+    5400" was wrong there.
+    """
     seconds = int(seconds or 0)
-    return "%d:%02d" % (seconds // 60, seconds % 60)
+    hours, rest = divmod(seconds, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return "%d:%02d:%02d" % (hours, minutes, secs)
+    return "%d:%02d" % (minutes, secs)
 
 
 #: How often the eager phase ticks. Module-level so a test can shorten it.
 _TICK_S = 1.0
+
+#: The decode thread a cancel walked away from, if one is still running.
+#:
+#: A cancel unwinds the HANDLER, not the work: `worker_base._single` catches
+#: `Cancelled`, replies, and leaves its `with GENERATE_LOCK` block while this
+#: thread is still inside `model.transcribe()` holding the whole mel buffer. A
+#: user who presses ✕ and immediately retries would then have two decodes
+#: running on one process and one `WhisperModel` — the exact thing that lock
+#: exists to prevent. The lock belongs to the base and is not ours to hold
+#: longer, so the abandoned thread is remembered and waited for here instead.
+_orphan = {"thread": None}
+
+
+def _await_orphan(job):
+    """Let a decode abandoned by an earlier cancel finish before starting another.
+
+    Ticks while it waits, for the same reason the decode itself does: this is
+    time the user is watching, and a row that says nothing during it is a row
+    that goes stale. It is bounded by the file the cancelled run was reading.
+    """
+    thread = _orphan.get("thread")
+    if thread is None or not thread.is_alive():
+        _orphan["thread"] = None
+        return
+    while thread.is_alive():
+        thread.join(timeout=_TICK_S)
+        if thread.is_alive():
+            worker_base.report_or_cancel(
+                job=job, kind="task", unit="s", done=None, total=None,
+                detail="Finishing a cancelled decode…")
+            if worker_base.CANCEL.is_set():
+                raise worker_base.Cancelled()
+    _orphan["thread"] = None
 
 
 def _call_with_ticks(call, job, detail):
@@ -186,10 +230,19 @@ def _call_with_ticks(call, job, detail):
         # No `done`/`total`: nothing is known about the audio until `info`
         # arrives, and an invented percentage is what makes live work read as
         # frozen. The tick is here to be answered, not to move a bar.
-        worker_base.report_or_cancel(job=job, kind="task", unit="s",
-                                     done=None, total=None, detail=detail)
-        if worker_base.CANCEL.is_set():
-            raise worker_base.Cancelled()
+        try:
+            worker_base.report_or_cancel(job=job, kind="task", unit="s",
+                                         done=None, total=None, detail=detail)
+            if not worker_base.CANCEL.is_set():
+                continue
+        except BaseException:
+            # Handing the thread over BEFORE unwinding, so the next request
+            # waits for it. Doing this only on the way out of a cancel is what
+            # keeps the normal path free of it.
+            _orphan["thread"] = thread
+            raise
+        _orphan["thread"] = thread
+        raise worker_base.Cancelled()
     if "error" in result:
         raise result["error"]
     return result["value"]
@@ -220,6 +273,7 @@ def generate(body):
     started = time.time()
     worker_base.report(job=job, state="running", kind="task", unit="s",
                        done=0, total=None, detail="Decoding audio…")
+    _await_orphan(job)
     # TWO phases, and only the second one is lazy. `transcribe` returns a
     # generator that decodes segment by segment as it is consumed — but it
     # decodes the whole file and runs the VAD before handing that generator
@@ -231,6 +285,13 @@ def generate(body):
             vad_filter=vad),
         job, "Decoding audio…")
     total = round(float(getattr(info, "duration", 0) or 0), 2) or None
+    # The ETA's clock starts HERE, not at `started`. The eager phase above
+    # produced no segments, so charging its seconds to the first one makes the
+    # rate read as wildly slower than it is: a 60-second decode and a first
+    # segment ending at 5s of audio says 12 wall-seconds per audio-second, and
+    # a 90-minute file that will take ~18 minutes announces "~1079 min left".
+    # `started` still measures the whole job, which is what `seconds` reports.
+    transcribing_since = time.time()
 
     segments = []
     for segment in stream:
@@ -240,7 +301,7 @@ def generate(body):
             "text": segment.text.strip(),
         })
         done = segments[-1]["end"]
-        elapsed = time.time() - started
+        elapsed = time.time() - transcribing_since
         # `report_or_cancel`, not `report`: this loop is the only place a stop
         # can be honoured, and the reply to this tick is how the ✕ gets here.
         worker_base.report_or_cancel(

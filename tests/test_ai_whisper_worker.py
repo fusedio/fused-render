@@ -17,6 +17,7 @@ real `info.duration` and a real `segment.end` would have to supply.
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -107,13 +108,25 @@ class FakeModel:
         self.info = types.SimpleNamespace(duration=duration, language=language)
         self.decode_seconds = decode_seconds
         self.calls = []
+        #: How many decodes were ever running at once. One model, one process —
+        #: anything above 1 is the thing `GENERATE_LOCK` exists to prevent.
+        self.max_concurrent = 0
+        self._live = 0
+        self._lock = threading.Lock()
 
     def transcribe(self, source, **kwargs):
         self.calls.append({"source": source, **kwargs})
-        # The eager phase: PyAV decodes the whole file and (with the VAD on)
-        # silero runs over all of it, BEFORE the generator is handed back.
-        time.sleep(self.decode_seconds)
-        return iter(self.segments), self.info
+        with self._lock:
+            self._live += 1
+            self.max_concurrent = max(self.max_concurrent, self._live)
+        try:
+            # The eager phase: PyAV decodes the whole file and (with the VAD on)
+            # silero runs over all of it, BEFORE the generator is handed back.
+            time.sleep(self.decode_seconds)
+            return iter(self.segments), self.info
+        finally:
+            with self._lock:
+                self._live -= 1
 
 
 def _request(tmp_path, **over):
@@ -164,6 +177,34 @@ def test_a_cancel_during_DECODING_is_honoured_before_any_segment(worker, base, t
     assert not os.path.exists(_request(tmp_path)["out"])
 
 
+def test_a_cancelled_decode_is_WAITED_FOR_before_the_next_one_starts(worker, base, tmp_path):
+    """A cancel unwinds the handler, but not the decode it abandoned.
+
+    `_call_with_ticks` raises on the handler thread; `worker_base._single`
+    catches it, replies, and leaves its `with GENERATE_LOCK` block — while the
+    decode thread is still inside `model.transcribe()`, holding the whole mel
+    buffer. Press ✕ and immediately re-submit and two decodes run at once on
+    one process and one `WhisperModel`, which is exactly what that lock exists
+    to prevent. The lock is the worker base's and not ours to change, so the
+    abandoned thread has to be waited for here.
+    """
+    model = FakeModel([FakeSegment(0.0, 3.0, "hi")], decode_seconds=0.4)
+    worker._loaded["model"] = model
+    worker._TICK_S = 0.05
+    base.cancel_on_tick = 2
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+
+    # Straight back in, the way a user who pressed ✕ and retried would.
+    base.cancel_on_tick = None
+    worker.generate(_request(tmp_path, out=str(tmp_path / "second.json"),
+                             outText=str(tmp_path / "second.txt")))
+
+    assert model.max_concurrent == 1, "two decodes ran on one model at once"
+    assert len(model.calls) == 2
+
+
 def test_a_cancel_between_segments_is_still_honoured(worker, base, tmp_path):
     worker._loaded["model"] = FakeModel(
         [FakeSegment(0.0, 3.0, "one"), FakeSegment(3.0, 6.0, "two")])
@@ -197,6 +238,34 @@ def test_every_tick_carries_the_job_the_route_opened(worker, base, tmp_path):
     worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")])
     worker.generate(_request(tmp_path, job="sys:ai-transcribe:zzz"))
     assert {t["job"] for t in base.ticks} == {"sys:ai-transcribe:zzz"}
+
+
+def test_the_clock_rolls_over_to_HOURS(worker):
+    """`90:00` for ninety minutes is the same ambiguity as `720 / 5400`, and
+    worse for sitting one line under `jobAmount` rendering it as `1:30:00`."""
+    assert worker._clock(9) == "0:09"
+    assert worker._clock(185) == "3:05"
+    assert worker._clock(5400) == "1:30:00"
+    assert worker._clock(3661) == "1:01:01"
+
+
+def test_the_ETA_does_not_charge_the_decode_to_the_first_segment(worker, base, tmp_path):
+    """The eager phase produced no segments, so counting its seconds against
+    the first one makes the rate read as wildly slower than it is — a 90-minute
+    file that takes ~18 minutes announced "~1079 min left"."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 1.0, "hi")], duration=100.0, decode_seconds=0.5)
+    worker._TICK_S = 0.05
+
+    worker.generate(_request(tmp_path))
+
+    detail = [t["detail"] for t in base.ticks if "Transcribing" in str(t.get("detail"))][0]
+    # 99 seconds of audio left, decoded at effectively zero elapsed — the ETA
+    # must come from the transcribing rate, not from 0.5s spent before it.
+    # Charging the decode would read ~50s here.
+    match = re.search(r"~(\d+)s left", detail)
+    assert match, detail
+    assert int(match.group(1)) < 5, detail
 
 
 # -- what lands on disk ---------------------------------------------------------
