@@ -6,7 +6,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   EMPTY_SELECTION,
-  autoSelectPath,
   firstEntryPath,
   oneSelected,
   pathFromSelParam,
@@ -14,11 +13,14 @@ import {
   rangeBetween,
   rowPressAction,
   selParam,
+  selectionAfterVanish,
   INITIAL_SEARCH_SELECT,
   nextSearchSelection,
   searchAutoSelectPath,
-  selectionClaimed,
 } from "./selection";
+// The whole module, to assert what it no longer offers (see the folder
+// auto-select block below).
+import * as selectionModule from "./selection";
 
 // Rows as the listing hands them over: the rendered (sorted) path order plus
 // the path→row map the table builds anyway.
@@ -69,140 +71,86 @@ describe("firstEntryPath", () => {
   });
 });
 
-describe("autoSelectPath", () => {
-  const folder = () =>
-    rows([
-      ["src", true],
-      ["a.txt", false],
-      ["b.txt", false],
-    ]);
-
-  test("a page anywhere in the folder wins over the first row", () => {
-    // D263: the pane is there to SHOW something, and a page is the one row in
-    // an ordinary folder that renders as itself. Row one is still the fallback,
-    // not the rule.
-    const { paths, byPath } = rows([
-      ["src", true],
-      ["a.txt", false],
-      ["index.html", false],
-      ["z.txt", false],
-    ]);
-    expect(autoSelectPath(paths, byPath)).toBe("/d/index.html");
+// OPENING A FOLDER SELECTS NOTHING (FS-16, D278 — superseding D263's answer
+// and, with it, D240's). The rule is now an ABSENCE, so there is no function
+// left to test and the whole `autoSelectPath` suite is gone with the decision it
+// pinned: a folder's pane opens on its self target and its `Select a file to
+// preview.` hint, which is what FS-11 already describes.
+//
+// What is left to defend is that the behaviour does not creep back, and that
+// takes both halves below. A re-added helper with no caller would pass a
+// "Listing does not call it" check while re-inviting the behaviour; a caller
+// re-added under another name would pass an "export is gone" check.
+describe("a freshly opened folder selects nothing", () => {
+  test("no folder auto-select decision is exported at all", () => {
+    const exported = Object.keys(selectionModule);
+    expect(exported).not.toContain("autoSelectPath");
+    // Its "has something already claimed the selection?" guard existed only to
+    // hold that shot back, so it goes with it.
+    expect(exported).not.toContain("selectionClaimed");
+    // SEARCH auto-selection is a DIFFERENT surface and is untouched: typing a
+    // query still lands on the top hit, so the pane and Enter have a target.
+    expect(exported).toContain("searchAutoSelectPath");
+    // …and its shared "first row that is actually on screen" helper stays too.
+    expect(exported).toContain("firstEntryPath");
   });
 
-  test("the FIRST page in rendered order, never a favourite name", () => {
-    // Deliberately not "index.html if there is one": the choice follows the
-    // active sort, so the row that wins is the one nearest the top of the table
-    // the user is looking at. Reversing the sort reverses the answer.
-    const { paths, byPath } = rows([
-      ["about.html", false],
-      ["index.html", false],
-    ]);
-    expect(autoSelectPath(paths, byPath)).toBe("/d/about.html");
-    const rev = rows([
-      ["index.html", false],
-      ["about.html", false],
-    ]);
-    expect(autoSelectPath(rev.paths, rev.byPath)).toBe("/d/index.html");
-  });
-
-  test("a page already at the top is simply the first row", () => {
-    const { paths, byPath } = rows([
-      ["index.html", false],
-      ["a.txt", false],
-    ]);
-    expect(autoSelectPath(paths, byPath)).toBe("/d/index.html");
-  });
-
-  test(".htm counts as a page", () => {
-    // The permissive reading, and the opposite call from lib/app-entry's entry
-    // rule — see the comment on autoSelectPath for why the two differ. (It was
-    // lib/folder-app's app gate that made that call until D269 replaced it.)
-    const { paths, byPath } = rows([
-      ["a.txt", false],
-      ["page.htm", false],
-    ]);
-    expect(autoSelectPath(paths, byPath)).toBe("/d/page.htm");
-  });
-
-  test("the extension match is case-insensitive", () => {
-    const { paths, byPath } = rows([
-      ["a.txt", false],
-      ["PAGE.HTML", false],
-    ]);
-    expect(autoSelectPath(paths, byPath)).toBe("/d/PAGE.HTML");
-  });
-
-  test("a DIRECTORY named like a page is not a page", () => {
-    // `foo.html` as a folder is a real shape (an exported site tree). Selecting
-    // it would peek a directory in place of the file the user can see, so the
-    // kind is checked, not the name.
-    const { paths, byPath } = rows([
-      ["src", true],
-      ["build.html", true],
-      ["a.txt", false],
-    ]);
-    expect(autoSelectPath(paths, byPath)).toBe("/d/src");
-  });
-
-  test("no page falls back to the first entry, dirs included", () => {
-    const { paths, byPath } = folder();
-    expect(autoSelectPath(paths, byPath)).toBe("/d/src");
-  });
-
-  test("a page with no rendered row cannot be selected", () => {
-    // Same rule as firstEntryPath's: a path that is not on screen is not a
-    // candidate, so the search falls through to the first row that is.
-    const { byPath } = rows([["a.txt", false]]);
-    expect(autoSelectPath(["/d/ghost.html", "/d/a.txt"], byPath)).toBe("/d/a.txt");
-  });
-
-  test("nothing in the URL can claim the selection", () => {
-    // The `?sel` param is gone (useListingSelection documents why), so this
-    // decision has no input but the rows.
-    // (autoSelectPath takes no URL argument at all any more — that IS the pin.)
-    const { paths, byPath } = folder();
-    expect(autoSelectPath(paths, byPath)).toBe("/d/src");
-  });
-
-  test("an empty folder leaves the selection empty", () => {
-    expect(autoSelectPath([], new Map())).toBeNull();
+  test("the listing runs no auto-select over a folder's rows", () => {
+    // The effect needs a DOM and a React renderer this setup does not have (see
+    // the file header), so the absence is pinned at the source. The lookbehind
+    // keeps `searchAutoSelectPath` from matching.
+    const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
+    expect(src).not.toMatch(/(?<![A-Za-z])autoSelectPath/);
+    expect(src).not.toContain("selectionClaimed");
+    expect(src).not.toContain("autoSelectedRef");
+    // Deep links and the cross-remount stash are NOT part of this removal: a
+    // `?sel=` and a click in the pre-stat scaffold still seed the selection.
+    expect(src).toContain("nextSearchSelection(");
   });
 });
 
-describe("selectionClaimed", () => {
-  test("a fresh folder claims nothing", () => {
-    expect(selectionClaimed(EMPTY_SELECTION)).toBe(false);
+// What happens when the LEAD's row is not among the rendered rows — the one
+// remaining way a row the user never chose could end up selected (D279).
+//
+// Two situations reach this, and they get opposite answers. The test writes both
+// out because the distinction IS the rule: it hangs entirely on whether the
+// selection was ever seen as a live row of this listing.
+describe("selectionAfterVanish", () => {
+  const rows = ["/d/a.txt", "/d/b.txt", "/d/c.txt"];
+
+  test("a selection that was never a live row selects NOTHING", () => {
+    // The `?sel=` miss: a bookmark or a shared link names `old.txt`, the file is
+    // gone, so the seeded lead is a path this folder does not have and never had.
+    // Clamping there picks row one — a file nobody named, previewed in an iframe
+    // nobody asked for, which is exactly what D278 removed.
+    expect(selectionAfterVanish(rows, -1)).toEqual(EMPTY_SELECTION);
   });
 
-  test("one clicked row is a claim", () => {
-    expect(selectionClaimed(oneSelected("/d/b.txt"))).toBe(true);
+  test("a row that vanished WHILE the folder was open re-anchors to its slot", () => {
+    // The half that must not change: an external delete, or a rename the user
+    // made themselves, should leave the selection on the row that took the old
+    // one's place — not empty, and not row one.
+    expect(selectionAfterVanish(rows, 1)).toEqual(oneSelected("/d/b.txt"));
   });
 
-  test("a multi-row selection is a claim", () => {
-    expect(selectionClaimed({ paths: ["/d/a", "/d/b"], anchor: "/d/a", lead: "/d/b" })).toBe(true);
+  test("a slot past the end lands on the last row", () => {
+    // The folder shrank under the selection (a multi-delete of the tail).
+    expect(selectionAfterVanish(rows, 7)).toEqual(oneSelected("/d/c.txt"));
+    expect(selectionAfterVanish(rows, 2)).toEqual(oneSelected("/d/c.txt"));
   });
 
-  test("a leftover anchor with no rows is not a claim", () => {
-    // Nothing is highlighted, so nothing outranks the auto-select: `paths` is
-    // the whole question.
-    expect(selectionClaimed({ paths: [], anchor: "/d/a", lead: "/d/a" })).toBe(false);
+  test("no rows left to re-anchor to selects nothing", () => {
+    // Emptied folder: there is no neighbour, however well anchored it was.
+    expect(selectionAfterVanish([], 1)).toEqual(EMPTY_SELECTION);
+    expect(selectionAfterVanish([], -1)).toEqual(EMPTY_SELECTION);
   });
 
-  // The yield lives in Listing's auto-select effect (the effect owns WHEN;
-  // autoSelectPath owns the answer and stays blind to the selection, D240), and
-  // that effect needs a DOM and a React renderer this test setup does not have.
-  // So the wiring is pinned at the source: the guard must run BEFORE the
-  // selectOnly, or a click made in the provisional scaffold — carried across
-  // the swap by recallSelection — is overwritten with row one the moment the
-  // resolved listing settles.
-  test("the auto-select effect yields to a claim before it selects", () => {
-    const src = readFileSync(join(import.meta.dir, "../Listing.tsx"), "utf8");
-    const guard = src.indexOf("if (selectionClaimed(sel)) return;");
-    const auto = src.indexOf("const first = autoSelectPath(");
-    expect(guard).toBeGreaterThan(-1);
-    expect(auto).toBeGreaterThan(-1);
-    expect(guard).toBeLessThan(auto);
+  // The reconcile effect needs a DOM and a React renderer this setup does not
+  // have, so the wiring is pinned at the source: the decision must not be
+  // re-inlined as a bare clamp, which is the shape the bug had.
+  test("the reconcile's vanished-lead path defers to this decision", () => {
+    const src = readFileSync(join(import.meta.dir, "./useListingSelection.ts"), "utf8");
+    expect(src).toContain("selectionAfterVanish(rows, lastSelIndexRef.current)");
   });
 });
 

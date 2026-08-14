@@ -253,16 +253,24 @@ def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
         assert "claude" not in got, path
 
 
-def test_gated_directory_peers_follow_the_listing():
-    # `_listing` stays the default of the universal `/` key (D81); the gated
-    # peers follow it in switcher order (left to right). `app` (the app itself,
-    # full-bleed — what OPENING an app lands on) leads them, then the split
-    # build view and the working tree. The two model views sit beside `zarr_aoi`
-    # because they are the same species as it — a gated view for one KIND of
-    # directory content, rather than a view of any folder.
+def test_claude_leads_the_universal_directory_key():
+    # `claude` is the LEAD of the universal `/` key (D280) and `_listing` follows
+    # it, because the listing's preview pane reads this order for its default
+    # (`activePaneMode` takes the first offered mode literally): selecting a
+    # folder row opens the chat about that folder rather than running anything of
+    # the folder's own. The gated peers follow in switcher order — the working
+    # tree, then the link graph, then the views for one KIND of directory content
+    # (`zarr_aoi` and the two model views, SPEC §38).
+    #
+    # `_listing` STAYS, and second place does not demote it where it matters: it
+    # is the one UNCONDITIONAL entry here, and the full-screen folder route
+    # resolves "first unconditional" (lib/mode-visibility `defaultMode`), so
+    # opening a folder still lands on its file table. Dropping it instead makes
+    # every folder unbrowsable.
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
-    assert got == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"]
+    assert got == ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
+    assert got[0] == "claude" and "_listing" in got
 
 
 def test_git_ships_a_condition_gate_and_an_icon():
@@ -307,16 +315,17 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     # an unmapped, non-existent file resolves to nothing — it can't be sniffed
     # as text (no such path), so it stays on the metadata fallback
     assert modes("/x/a.xyz") == ([], None)
-    # every directory resolves the universal `/` key (D81): the built-in
-    # listing (default) plus the offered-but-gated candidates — `graph` (the
-    # link graph, SPEC §32), `zarr_aoi`, and the two model views (SPEC §38) —
-    # for a plain folder, a dotted folder and the filesystem root alike. Each
-    # gated mode is dropped unless its condition.py says otherwise; see
-    # tests/test_graph_condition.py, tests/test_model_templates.py and the
-    # zarr_aoi tests below.
-    assert modes("/x/somedir", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
-    assert modes("/x/my.data", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
-    assert modes("/", is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
+    # every directory resolves the universal `/` key (D81): `claude` (the pane's
+    # default for a folder, D280), the built-in listing, and the offered-but-gated
+    # candidates — `git`, `graph` (the link graph, SPEC §32), `zarr_aoi` and the
+    # two model views (SPEC §38) — for a plain folder, a dotted folder and the
+    # filesystem root alike. Each gated mode is dropped unless its condition.py
+    # says otherwise; see tests/test_graph_condition.py,
+    # tests/test_model_templates.py and the zarr_aoi tests below.
+    UNIVERSAL_DIR = ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
+    assert modes("/x/somedir", is_dir=True) == (UNIVERSAL_DIR, None)
+    assert modes("/x/my.data", is_dir=True) == (UNIVERSAL_DIR, None)
+    assert modes("/", is_dir=True) == (UNIVERSAL_DIR, None)
 
 
 # --------------------------------------------- text sniff for unmapped files
@@ -366,34 +375,45 @@ def test_mapped_file_never_hits_text_sniff(tmp_path):
 
 # ------------------------------------------------------------------ matcher
 
+def matched(reg, basename, is_dir=False):
+    """The VALUE `_match_registry` picks for `basename`, asserting that it picked
+    at all. `_match_registry` answers `None` for "no key matches", so subscripting
+    its result directly reads as an Optional to a type checker and would fail with
+    a bare TypeError rather than a message when a match is unexpectedly missing.
+    The no-match cases assert `is None` against the raw call instead."""
+    got = server._match_registry(reg, basename, is_dir)
+    assert got is not None, f"no key matched {basename!r} (is_dir={is_dir})"
+    return got[1]
+
+
 def test_specificity_literal_beats_wildcard_beats_shorter():
     reg = {".json": "a", ".*.json": "b", ".xyz.json": "c"}
-    assert server._match_registry(reg, "f.xyz.json", False)[1] == "c"
-    assert server._match_registry(reg, "f.abc.json", False)[1] == "b"
-    assert server._match_registry(reg, "f.json", False)[1] == "a"
+    assert matched(reg, "f.xyz.json") == "c"
+    assert matched(reg, "f.abc.json") == "b"
+    assert matched(reg, "f.json") == "a"
 
 
 def test_rightmost_segment_dominates_tie():
     reg = {".a.*": "left", ".*.json": "right"}
-    assert server._match_registry(reg, "x.a.json", False)[1] == "right"
+    assert matched(reg, "x.a.json") == "right"
 
 
 def test_case_insensitive():
     reg = {".tar.gz": "archive"}
-    assert server._match_registry(reg, "BACKUP.TAR.GZ", False)[1] == "archive"
+    assert matched(reg, "BACKUP.TAR.GZ") == "archive"
 
 
 def test_dotfile_named_like_key_does_not_match():
     reg = {".json": "a"}
     assert server._match_registry(reg, ".json", False) is None
     # but a hidden file with a real extension does ('.h' is the stem)
-    assert server._match_registry(reg, ".h.json", False)[1] == "a"
+    assert matched(reg, ".h.json") == "a"
 
 
 def test_dir_and_file_keys_are_disjoint():
     reg = {".zarr/": "d", ".zarr": "f"}
-    assert server._match_registry(reg, "s.zarr", True)[1] == "d"
-    assert server._match_registry(reg, "s.zarr", False)[1] == "f"
+    assert matched(reg, "s.zarr", True) == "d"
+    assert matched(reg, "s.zarr") == "f"
 
 
 def test_wildcard_matches_whole_nonempty_segment_only():
@@ -418,9 +438,9 @@ def test_universal_dir_key_segments():
 def test_universal_dir_key_lowest_specificity():
     reg = {"/": "any", ".zarr/": "zarr"}
     # a dot-anchored directory key beats the universal key
-    assert server._match_registry(reg, "s.zarr", True)[1] == "zarr"
+    assert matched(reg, "s.zarr", True) == "zarr"
     # a plain folder falls to the universal key
-    assert server._match_registry(reg, "plain", True)[1] == "any"
+    assert matched(reg, "plain", True) == "any"
     # files never match the universal (or any) directory key
     assert server._match_registry(reg, "plain", False) is None
 
@@ -755,7 +775,7 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
     assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"]
+    assert registry["/"] == ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -786,7 +806,7 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
@@ -798,7 +818,7 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
     assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
@@ -849,22 +869,27 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["_listing", "claude", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
     assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
     entries, _ = server._templates_for(str(store), True)
-    assert entries[0]["mode"] == "_listing" and "conditional" not in entries[0]
-    assert entries[1]["mode"] == "claude" and entries[1].get("conditional") is True
+    assert entries[0]["mode"] == "claude" and entries[0].get("conditional") is True
+    assert entries[1]["mode"] == "_listing" and "conditional" not in entries[1]
     assert entries[2]["mode"] == "git" and entries[2].get("conditional") is True
     assert entries[3]["mode"] == "graph" and entries[3].get("conditional") is True
     assert entries[4]["mode"] == "zarr_aoi" and entries[4].get("conditional") is True
     assert entries[5]["mode"] == "model_card" and entries[5].get("conditional") is True
     assert len(entries) == 6
-    # `claude` used to sit at index 3 as the one UNCONDITIONAL entry after
-    # `_listing` — the "no condition.py at all" case this list also covered. It is
-    # deleted; `_listing` at index 0 still covers it.
+    # `_listing` moved to index 1 behind the gated `claude` (D280) and is STILL the
+    # only entry here carrying no `conditional` flag. That is load-bearing twice
+    # over: the full-screen folder route resolves "first unconditional", so the
+    # folder still opens as its file table from second place, and the "no
+    # condition.py at all" case is covered by the sentinel rather than by a
+    # template. (`claude` itself used to be that unconditional entry, before it
+    # gained a gate.)
+    assert [e["mode"] for e in entries if "conditional" not in e] == ["_listing"]
 
 
 def test_zarr_condition_fail_closed(tmp_path):

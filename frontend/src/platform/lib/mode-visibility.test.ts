@@ -147,6 +147,18 @@ describe("defaultMode", () => {
     expect(defaultMode([app, listing, claude])?.mode).toBe("_listing");
   });
 
+  it("keeps a folder browsable when the registry leads with a GATED mode", () => {
+    // The safety net under D280's reorder. The universal `/` key now ships
+    // `["claude", "_listing", …]` so the preview PANE lands on the chat
+    // (`activePaneMode` takes modes[0] literally). The FULL-SCREEN folder route
+    // resolves through here instead, and "first unconditional" makes `_listing`
+    // win from second place — which is why the reorder cannot leave a folder
+    // opening as a chat with no file table. If this ever changes, opening any
+    // folder breaks, so it is pinned in the shape the registry actually ships.
+    // The registry's `claude` is condition.py-gated, unlike the bare fixture.
+    expect(defaultMode([t("claude", true), listing])?.mode).toBe("_listing");
+  });
+
   it("falls back to the first entry of an all-conditional list", () => {
     expect(defaultMode([split, app])?.mode).toBe("claude_split");
   });

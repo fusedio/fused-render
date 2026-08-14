@@ -447,6 +447,32 @@
   display: block;
 }
 
+/* THE STRONGEST CONTROL IN A BAR — the "Open app" button in the pane's strip.
+   Filled with --fg on --bg, which is the same idiom `.btn-primary`
+   (buttons-modal.css) and the home composer's send button use, so it inherits
+   maximal contrast in BOTH themes by construction rather than by a chosen colour:
+   the pair IS the theme's text-on-surface, whichever way round the theme puts them.
+   --on-fg on hover is the token that file defines for exactly this ("one step
+   further from --bg than --fg").
+
+   DELIBERATELY NOT ACCENT, and this is a reservation rather than a preference.
+   `.btn-menu-item.active` in this same strip uses `color-mix(--accent 16%)` to say
+   WHICH MODE THE PANE IS ON, and the crumb bar next to it uses --accent for drop
+   targets and the spring-armed highlight. Accent here would put a second accent
+   element inches from the one that means "this is the mode you are looking at", and
+   `.btn-primary` states the house rule twice over: "reads strongest through
+   contrast, not accent — accent stays for focus/selection". A filled --fg button is
+   already the loudest thing in a strip of ghost controls. */
+.bar-ctl.bar-ctl-strong {
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.bar-ctl.bar-ctl-strong:hover:not(:disabled) {
+  background: var(--on-fg);
+}
+
 .bar-ctl:hover:not(:disabled) {
   background: rgba(var(--tint), 0.08);
   color: var(--fg);
