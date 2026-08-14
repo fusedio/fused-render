@@ -12,6 +12,7 @@ import {
   paneSideParam,
   paneSideTarget,
   parsePaneSide,
+  resumingPaneSession,
   type PaneSide,
 } from "./pane-side";
 
@@ -279,5 +280,38 @@ describe("paneSideTarget", () => {
     expect(paneSideTarget("claude", folder, "/w/repo/a.md")).toBe("/w/repo/a.md");
     expect(paneSideTarget("preview", folder, "/w/repo/a.md")).toBe("/w/repo/a.md");
     expect(paneSideTarget("claude", folder, null)).toBe(folder);
+  });
+});
+
+// Arriving to CONTINUE one conversation (the Inbox's "Open in explorer"). What
+// hangs off the answer is the listing's one-shot auto-select, which spends its
+// shot instead of firing — because the target it would pick (a row) is the one
+// target a session id cannot be resolved against. See pane-side.ts.
+describe("resumingPaneSession", () => {
+  const id = "c0f1bb8a-2fcb-4e4f-a3d2-390b3aef8afc";
+
+  test("both halves of the inbox link, in either order", () => {
+    expect(resumingPaneSession(`?_side=claude&session_id=${id}`)).toBe(true);
+    expect(resumingPaneSession(`?session_id=${id}&_side=claude`)).toBe(true);
+    // and undisturbed by the params it travels with
+    expect(resumingPaneSession(`?snapshot=1&_side=claude&session_id=${id}&sort=size`)).toBe(true);
+  });
+
+  test("one half alone is not an arrival", () => {
+    // A pane the user simply left open on the chat: nothing here says WHICH
+    // conversation, so the row-driven target is still the right one.
+    expect(resumingPaneSession("?_side=claude")).toBe(false);
+    // And a session id under another mode is not this pane's business — Git and
+    // Preview have their own subjects, neither of them a conversation.
+    expect(resumingPaneSession(`?_side=git&session_id=${id}`)).toBe(false);
+    expect(resumingPaneSession(`?session_id=${id}`)).toBe(false);
+  });
+
+  test("an empty search, and an empty id, are both no", () => {
+    expect(resumingPaneSession("")).toBe(false);
+    expect(resumingPaneSession("?")).toBe(false);
+    // `session_id=` is what the chat template writes when it CLEARS the param
+    // (`{ default: "" }`), so a present-but-blank id must not read as a resume.
+    expect(resumingPaneSession("?_side=claude&session_id=")).toBe(false);
   });
 });

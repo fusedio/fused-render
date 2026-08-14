@@ -2243,7 +2243,11 @@ export type ScheduledState =
   | "sent"
   | "missed"
   | "error"
-  | "cancelled";
+  | "cancelled"
+  // A recurring TEMPLATE — never sent itself. The server materializes its next
+  // run as an ordinary `pending` entry carrying `template_id`, so a recurring
+  // job appears here twice: once as the rule, once as the next concrete run.
+  | "recurring";
 
 export interface ScheduledMessage {
   id: string;
@@ -2269,6 +2273,14 @@ export interface ScheduledMessage {
   // for a fresh one). This is the id the Inbox addresses a session by, so it is
   // what a row links to. Absent on entries stored before it existed.
   claude_session_id?: string;
+  // The 5-field cron line on a `recurring` template; "" (or absent) elsewhere.
+  repeats?: string;
+  // On an occurrence: the template it was materialized from.
+  template_id?: string;
+  // On a `recurring` template in GET /api/schedule only: projected occurrence
+  // times (UTC ISO) over the next two weeks — server-side cron math, so the
+  // calendar can draw future runs without a client cron parser. Not stored.
+  upcoming?: string[];
 }
 
 export interface ScheduleResult {
@@ -2285,15 +2297,25 @@ export function getSchedule(): Promise<ScheduleResult> {
 
 // Exactly one of `due` (ISO 8601) or `delay_seconds` — the server refuses both,
 // so a caller offering "in 30 minutes" never has to do timezone arithmetic.
+// `repeats` (a 5-field cron line) replaces both: it already says every time it
+// means, and the server refuses it alongside either.
 export function scheduleMessage(body: {
   target: string;
   message: string;
   due?: string;
   delay_seconds?: number;
+  repeats?: string;
   session_id?: string;
   permission_mode?: string;
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
+}
+
+// Un-skip a skipped recurring run: cancelled occurrence -> pending again.
+// 404s unless it is a skipped run of a still-active schedule whose time has
+// not passed — a skip is the one cancel that can honestly be walked back.
+export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
+  return postJson<{ entry: ScheduledMessage }>("/api/schedule/restore", { id });
 }
 
 // Rejects with the server's 404 message when the entry is no longer pending —

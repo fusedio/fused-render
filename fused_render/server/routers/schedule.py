@@ -35,7 +35,14 @@ def api_schedule():
     entry without it — the bound is configurable (FUSED_RENDER_SCHEDULE_MAX_LATE),
     so the number has to come from the server rather than be restated in the
     page."""
-    return {"entries": schedule.list_entries(),
+    entries = schedule.list_entries()
+    for entry in entries:
+        # Server-side cron math, so the calendar can draw a recurring job's
+        # future runs without the client growing a cron parser. Projection
+        # only — the store holds just the ONE materialized next occurrence.
+        if entry.get("state") == schedule.RECURRING:
+            entry["upcoming"] = schedule.upcoming(entry)
+    return {"entries": entries,
             "max_late_seconds": schedule.max_late_seconds(),
             "permission_modes": list(schedule.PERMISSION_MODES)}
 
@@ -107,10 +114,18 @@ def api_schedule_create(body: dict = Body(...),
 
     # `delay_seconds` is the other way to say when: a page offering "in 30
     # minutes" should not have to do timezone arithmetic to say it. Exactly one
-    # of the two, so a request carrying both cannot half-mean each.
+    # of the two, so a request carrying both cannot half-mean each. A `repeats`
+    # cron line replaces both — it already says every time it means — so a
+    # request carrying it alongside either would half-mean two schedules.
     due = body.get("due")
     delay = body.get("delay_seconds")
-    if (due is None) == (delay is None):
+    repeats = str(body.get("repeats") or "").strip()
+    if repeats:
+        if due is not None or delay is not None:
+            return _error("repeats: cannot be combined with `due` or "
+                          "`delay_seconds` — the cron line says when",
+                          status=400)
+    elif (due is None) == (delay is None):
         return _error("expected exactly one of `due` or `delay_seconds`",
                       status=400)
     if delay is not None:
@@ -126,9 +141,32 @@ def api_schedule_create(body: dict = Body(...),
         entry = schedule.create(
             resolved, body.get("message"), due,
             session_id=str(body.get("session_id") or ""),
-            permission_mode=str(body.get("permission_mode") or ""))
+            permission_mode=str(body.get("permission_mode") or ""),
+            repeats=repeats)
     except ValueError as exc:
         return _error(str(exc), status=400)
+    return {"entry": entry}
+
+
+@router.post("/api/schedule/restore")
+def api_schedule_restore(body: dict = Body(...),
+                         x_fused: str | None = Header(default=None)):
+    """Un-skip a skipped recurring run. Guarded like the other writes — it
+    re-arms an unattended agent turn, which is exactly what D3's header guard
+    exists to keep foreign pages from doing."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    entry_id = body.get("id")
+    if not isinstance(entry_id, str) or not entry_id:
+        return _error("id: required", status=400)
+    entry = schedule.restore(entry_id)
+    if entry is None:
+        return _error(
+            f"no restorable skipped run with id {entry_id!r} — only a skipped "
+            "run of a still-active schedule, before its time, can be unskipped",
+            status=404)
     return {"entry": entry}
 
 
@@ -149,6 +187,6 @@ def api_schedule_cancel(body: dict = Body(...),
         # user was reaching for Cancel is not cancellable, and saying "already
         # sent" would be a guess this layer cannot make (the entry may equally
         # have been cancelled a moment ago in another tab).
-        return _error(f"no pending scheduled message with id {entry_id!r}",
+        return _error(f"no cancellable scheduled message with id {entry_id!r}",
                       status=404)
     return {"entry": entry}

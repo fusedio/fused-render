@@ -230,3 +230,37 @@ export function paneSideTarget(
 ): string {
   return side === "git" ? folder : (rowPath ?? folder);
 }
+
+// Whether this page was OPENED to continue one Claude conversation about the
+// folder: the Inbox's "Open in explorer" (core_apps/sessions/inbox.html) links
+// to /explorer/view/<the session's cwd>?_side=claude&session_id=<id>. BOTH
+// halves have to be there for that to be what the URL means — `_side=claude`
+// on its own is just a pane the user left open.
+//
+// Nothing needs to FORWARD the id into the pane: its chat iframe reads
+// `session_id` off the shell URL through the runtime's ancestor climb
+// (runtime.js D46/D72 — a pane is not a param boundary), and the template
+// resumes from it on boot. What the arrival does need is for the pane to be
+// aimed at the right TARGET, and that is what this answers — for the listing's
+// one-shot auto-select (Listing.tsx, FS-16), which SPENDS its shot rather than
+// firing when the answer is yes.
+//
+// The reason is agent.py's: a session is keyed on ONE cwd, its transcript
+// resolved under ~/.claude/projects/<munge(_workdir)>. The Claude pane's target
+// follows the selected row (paneSideTarget above), so auto-selecting a row on
+// arrival aimed the chat at a SUBFOLDER of the cwd the session was recorded in
+// and the resume found nothing there — the pane came up with the right session
+// id in its corner and an empty transcript under it. With no row selected the
+// target falls back to the folder, which is the ground the session has.
+//
+// Only the ARRIVAL is special, deliberately: a row the user picks afterwards
+// moves the pane exactly as it always did, and this asks nothing about what
+// happens next. Nor does any later mount inherit the answer — `session_id` is
+// not carried across a folder hop (router.ts navigate carries `_side` and never
+// this), so the two params only appear together on a link that meant it, or on
+// a reload of the very chat this describes, where declining to steal the pane is
+// equally what the reader wants.
+export function resumingPaneSession(search: string): boolean {
+  const params = new URLSearchParams(search);
+  return params.get("_side") === "claude" && !!params.get("session_id");
+}

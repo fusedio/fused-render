@@ -256,7 +256,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // Ungated, unlike Claude Config / App Basics above: the page is useful (and
     // says so) even with nothing scheduled yet, and there is no machine state
     // that can make scheduling unavailable.
-    { href: "/scheduled", label: "Scheduled", icon: SCHEDULED_ICON },
+    { href: "/scheduled", label: "Schedule", icon: SCHEDULED_ICON },
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     {
       href: "/preferences",

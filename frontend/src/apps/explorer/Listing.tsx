@@ -74,6 +74,7 @@ import {
   paneSideList,
   paneSideParam,
   parsePaneSide,
+  resumingPaneSession,
   type PaneSide,
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
@@ -760,12 +761,21 @@ export default function Listing({
   // listing settled, and the auto-selection used to land on top of it. The
   // decision half (autoSelectPath) stays blind to the selection (D240); this is
   // a condition on WHEN to ask, which is this effect's half.
+  //
+  // The SECOND thing that already holds the pane is a Claude session this page
+  // was opened to continue (`resumingPaneSession` — the Inbox's "Open in
+  // explorer"). Same shape as `selectionClaimed` and spent the same way: the
+  // pane has a subject, so the shot is not the one that decides it. Firing here
+  // aimed the chat at whichever row sorted first and the resume came up empty —
+  // see pane-side.ts for why the folder is the only target a session id can be
+  // resolved against.
   const autoSelectedRef = useRef(false);
   useEffect(() => {
     if (embedded || provisional || autoSelectedRef.current) return;
     if (searching || state.status !== "ok" || !pane.on) return;
     autoSelectedRef.current = true;
     if (selectionClaimed(sel)) return;
+    if (resumingPaneSession(location.search)) return;
     const first = autoSelectPath(navRows, rowCtxByPath);
     if (first) selectOnly(first);
     // Fires on the commit that first satisfies the guards above; the rows it

@@ -6411,3 +6411,43 @@ world from one the user typed.
     `sendMessage` does it — a reload or a remounting mode switch re-attaches from
     the param, and without it the stream was lost and the next frame's baseline then
     wrote the same run off as predating it.
+
+### 41.b Recurring schedules and the calendar (D278)
+
+- **SCH-12** **A recurring job is a `recurring` TEMPLATE plus materialized
+  one-shot occurrences** (`repeats`: a 5-field cron line; occurrences carry
+  `template_id`). The template is never claimed or sent; each tick,
+  `_materialize` guarantees exactly one `pending` occurrence per live template,
+  computed from the latest occurrence ever created (never earlier than now).
+  Everything downstream — claim-before-spawn, job rows, the event log, the
+  watcher — handles only one-shots, unchanged.
+- **SCH-13** **A missed recurring run is SKIPPED, never caught up.** Occurrences
+  carry `max_late: 120` where one-shots keep the day-long global bound: replaying
+  "daily at 9am" at 2pm is not what the words meant, and the next run is already
+  coming. The two minutes absorb tick jitter only. The missed verdict is worded
+  as "skipped", and the next materialization rolls past every missed slot.
+- **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
+  ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
+  standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at
+  9am" is a promise about the reader's wall clock. One question is ever asked of
+  it (next occurrence strictly after t), so a dependency was not bought for it.
+  Bad lines fail at `create` with the field named; a template whose stored line
+  stops parsing (hand-edited store) goes to `error` and is announced — silently
+  never firing again is the one outcome the feature must not have.
+- **SCH-15** **The page grew a week calendar (default) beside the card list**,
+  one toggle apart (persisted). Same entries, two questions: the calendar
+  answers "when", the list "what exactly happened". Future runs of a recurring
+  job render as dashed GHOST boxes from `upcoming` — a projection the SERVER
+  computes on `GET /api/schedule` (next 14 days) precisely so the client needs
+  no cron parser; ghosts that collide with the stored next occurrence to the
+  minute are not drawn twice. A box's popover reuses the card vocabulary, and a
+  ghost's cancel is honestly the TEMPLATE's cancel — a projection has no id.
+- **SCH-16** **Creation lives in BOTH places now**: the composer pill keeps the
+  convenient path (it knows the folder, holds the message) and gained an exact
+  `datetime-local` pick plus repeat presets; the page's New job modal serves the
+  calendar-first direction ("what should run Monday 9am?"), where no chat exists
+  to borrow from — an empty-slot click opens it with the time filled in. Preset
+  UI is a cron BUILDER: the generated line is always shown, so "Custom" is a
+  continuation, not a cliff. Cancelling a template cascades to its pending
+  occurrence; cancelling just the occurrence means "skip this one" and the
+  schedule continues.
