@@ -6476,6 +6476,20 @@ world from one the user typed.
   app should be running. Everything here is best-effort: a failed plist write
   makes messages fire less reliably, never lost, and must not fail the store
   write that triggered it.
+  - **SCH-8a** **The wake stub reads the store; nobody hands it a view of it.**
+    `_sync_wake()` takes no argument. It cannot run under `_lock` — that would hold
+    the store across two `launchctl` subprocesses, letting one tick stall a
+    `GET /api/schedule` for as long as launchd takes — so it takes `_wake_lock`,
+    re-reads the pending times under `_lock`, releases, and only then shells out.
+    Callers used to snapshot the times inside their own locked block and pass them
+    in, and that lost writes: two mutations racing could reach `launchctl` in the
+    opposite order, and the older snapshot then overwrote the plist and **dropped
+    the newer message's wake time**, with nothing to resync until some later store
+    write happened along. Serialising the shell-out and re-reading inside it is
+    what makes "last to write the plist is last to read the store" true. Lock order
+    is `_wake_lock` then `_lock`, never the reverse — a caller still holding `_lock`
+    here inverts it, and two such callers deadlock, which is what the
+    "outside `_lock`, always" rule is really protecting.
 - **SCH-9** **One copy of the spawn discipline** (`fused_render/claude_spawn.py`).
   The apps API and the scheduler need the identical posix_spawn posture — calling
   `agent._start` in the server process fork()s with libproj resident and SIGSEGVs
@@ -6531,6 +6545,23 @@ world from one the user typed.
     or not anything is watching, so an observer is never allowed to abandon a run.
     Every report is best-effort — a registry that refuses a field must not cost a
     message its send.
+  - **SCH-10e** **A turn abandoned by a dead process is closed by the sweep.**
+    `sent` with an empty `turn` means two different things — a turn running
+    normally, and one whose watcher died with the app mid-turn — and the store
+    cannot tell them apart, because the difference is only knowable by a live
+    process. `schedule._watched` holds the entry ids this process is watching
+    (registered BEFORE the store says `sent`, so a concurrent sweep cannot close a
+    turn that is about to be watched; deregistered in a `finally`, so a finished
+    turn does not stay invisible to the sweep instead). The sweep closes any `sent`
+    entry with no `turn` that nothing is watching: `state` stays `sent` because the
+    message did go, `turn` becomes `unknown` — the same word SCH-10d's
+    `_close_unwatched` uses, which is the in-process floor under a watch that ENDS
+    and by construction cannot cover a process that DIES. Left unclosed the entry
+    cost three separate things: the page read `Running…` for ever, no toast ever
+    said what happened, and — the one that costs a future message rather than a
+    label — its session stayed in `_busy_sessions`, so the next scheduled message to
+    that conversation was held back tick after tick until the catch-up bound gave up
+    and called it missed.
 - **SCH-11** **Scheduling happens in the claude template's composer, not on a
   settings page** (`templates/claude/template.html`, the **Send now** pill beside
   the model/effort/approvals pills). The composer already holds the two hard

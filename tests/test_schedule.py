@@ -8,8 +8,10 @@ Nothing here spawns a real claude: the send is stubbed at claude_spawn's
 `spawn_helper` seam, and the wake stub is stubbed everywhere so no test writes a
 LaunchAgent on a developer's own macOS machine.
 """
+import inspect
 import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -32,6 +34,17 @@ def no_real_wake(monkeypatch):
     calls = []
     monkeypatch.setattr(schedule_wake, "sync", lambda due: calls.append(list(due)))
     return calls
+
+
+@pytest.fixture(autouse=True)
+def fresh_process():
+    """`schedule._watched` is process-global and says "this process is watching
+    that turn", so a test inheriting another's entries would look like a process
+    that never died. Cleared on the way in AND out: a test that leaves an id behind
+    silently disables the sweep's abandoned-turn branch for everything after it."""
+    schedule._watched.clear()
+    yield schedule._watched
+    schedule._watched.clear()
 
 
 @pytest.fixture()
@@ -492,8 +505,12 @@ def test_the_wake_stub_is_never_synced_while_the_store_lock_is_held(target, spaw
                                                                     monkeypatch):
     """On macOS `sync` shells out to launchctl twice. Holding the store lock
     across those subprocesses would let one tick stall a GET /api/schedule for as
-    long as launchd takes to answer, so every caller snapshots under the lock and
-    syncs after releasing it.
+    long as launchd takes to answer, so `_sync_wake` reads what it needs, releases
+    the lock, and only then shells out.
+
+    This is also the lock-ORDER guard. `_sync_wake` takes `_wake_lock` and then
+    `_lock`; a caller that still held `_lock` when it got here would be taking them
+    in the opposite order, and two such callers deadlock.
 
     Checked from ANOTHER thread on purpose: `_lock` is an RLock, so re-acquiring
     it on the calling thread would succeed whether or not it is held."""
@@ -529,3 +546,172 @@ def test_max_late_seconds_falls_back_on_nonsense(monkeypatch):
     assert schedule.max_late_seconds() == 24 * 3600
     monkeypatch.setenv("FUSED_RENDER_SCHEDULE_MAX_LATE", "90")
     assert schedule.max_late_seconds() == 90
+
+
+# ---------------------------------------------------------------------------
+# A turn whose watcher died with the process
+#
+# `sent` with an empty `turn` means two completely different things depending on
+# whether anything is still watching: a turn running normally, or one abandoned
+# when the app was killed mid-turn. `_close_unwatched` is the floor under a watch
+# that ENDS, and cannot cover a process that dies — the thread goes with it. So the
+# sweep has to notice, and `schedule._watched` is how it tells the two apart.
+
+
+def _abandon():
+    """What a restart looks like from the store's side: the entries survive, the
+    knowledge of which turns were being watched does not."""
+    schedule._watched.clear()
+
+
+def test_a_turn_abandoned_by_a_dead_process_is_closed_by_the_next_sweep(
+        target, spawned):
+    schedule.create(str(target), "hi", _in(-5))
+    schedule.tick()
+    sent = schedule.list_entries()[0]
+    assert (sent["state"], sent["turn"]) == (schedule.SENT, "")
+
+    _abandon()
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    # The message DID go out, so `state` stays sent and only the turn is unknown —
+    # the same verdict `_close_unwatched` reaches for a watch that ended silently.
+    assert stored["state"] == schedule.SENT
+    assert stored["turn"] == "unknown"
+    assert "interrupted" in stored["error"]
+
+
+def test_a_turn_this_process_is_watching_is_left_alone(target, spawned):
+    """The other half of the same branch, and the one that makes it safe: while a
+    watcher is registered, a sweep landing mid-turn must not touch the entry."""
+    schedule.create(str(target), "hi", _in(-5))
+    schedule.tick()
+
+    schedule.tick()          # a second sweep, watcher still registered
+    schedule.tick()
+
+    stored = schedule.list_entries()[0]
+    assert stored["turn"] == "", "a live turn was closed as abandoned"
+    assert not stored["error"]
+
+
+def test_closing_an_abandoned_turn_releases_its_session(target, spawned):
+    """The consequence that costs the user a LATER message, not just a wrong label.
+
+    A `sent` entry with no verdict keeps its session in `_busy_sessions`, so the
+    next scheduled message to that conversation is held back tick after tick — for
+    an abandoned turn, until the catch-up bound gives up and calls it missed. The
+    hold is right while the turn is live and wrong once nothing is watching it."""
+    schedule.create(str(target), "first", _in(-20), session_id="sess-a")
+    schedule.create(str(target), "second", _in(-10), session_id="sess-a")
+
+    schedule.tick()
+    assert [c["message"] for c in spawned] == ["first"]
+
+    schedule.tick()          # still watching: the follower correctly waits
+    assert [c["message"] for c in spawned] == ["first"]
+
+    _abandon()
+    schedule.tick()
+
+    assert [c["message"] for c in spawned] == ["first", "second"], (
+        "the follower is still held by a session whose turn nobody is watching")
+
+
+def test_an_abandoned_turn_is_announced_once_not_every_tick(target, spawned):
+    """It writes a verdict, so the branch stops matching — but if it ever did not,
+    the user would get one toast per tick for the rest of the session."""
+    schedule.create(str(target), "hi", _in(-5))
+    schedule.tick()
+    _abandon()
+    # The event log is process-global and this file does not clear it, so ack what
+    # earlier tests left behind: otherwise the count below is of the whole worker.
+    outstanding = schedule.undelivered_events()
+    if outstanding:
+        schedule.ack_events(outstanding[-1]["id"])
+
+    schedule.tick()
+    schedule.tick()
+    schedule.tick()
+
+    failures = [e for e in schedule.undelivered_events()
+                if e["kind"] == schedule.EVENT_FAILED]
+    assert len(failures) == 1, failures
+
+
+def test_a_watcher_that_ends_deregisters_so_a_later_sweep_sees_the_truth(
+        target, monkeypatch):
+    """The mirror image: leaving an id registered after the watch ends would make a
+    FINISHED turn permanently invisible to the sweep — the same stuck row, reached
+    from the other side. Every exit path has to deregister, which is why the
+    `finally` is there; this drives the raising one."""
+    monkeypatch.setattr(claude_spawn, "spawn_helper", lambda *a, **k: {"run_id": "r-1"})
+
+    def boom():
+        raise RuntimeError("no agent backend")
+
+    monkeypatch.setattr(claude_spawn, "load_agent", boom)
+
+    schedule.create(str(target), "hi", _in(-5))
+    schedule.tick()
+
+    entry_id = schedule.list_entries()[0]["id"]
+    # The watcher thread is a daemon; give it a moment to reach its `finally`.
+    for _ in range(50):
+        if not schedule._is_watched(entry_id):
+            break
+        time.sleep(0.02)
+    assert not schedule._is_watched(entry_id), (
+        "the watch ended but the entry is still marked as watched")
+
+
+# ---------------------------------------------------------------------------
+# The wake stub is told the store, not a caller's memory of it
+
+
+def test_sync_wake_cannot_be_handed_a_stale_view():
+    """Structural, because it is what makes the bug unrepresentable rather than
+    merely absent: callers used to snapshot the pending times inside their own lock
+    and pass them here, and two mutations racing could reach launchctl in the
+    opposite order — the older snapshot then overwrote the plist and dropped the
+    newer message's time, with nothing to resync until some later store write
+    happened along. There is no argument to be stale now."""
+    assert not inspect.signature(schedule._sync_wake).parameters
+
+
+def test_the_wake_stub_is_given_the_pending_times_as_they_are_at_sync_time(
+        target, no_real_wake):
+    schedule.create(str(target), "first", _in(600))
+    schedule.create(str(target), "second", _in(1200))
+
+    assert no_real_wake, "nothing synced, so this proves nothing"
+    due = {e["due"] for e in schedule.list_entries()
+           if e["state"] == schedule.PENDING}
+    assert set(no_real_wake[-1]) == due
+
+
+def test_two_threads_never_shell_out_to_the_wake_stub_at_once(target, monkeypatch):
+    """The serialisation half of the same fix. Overlapping launchctl pairs are how
+    an older view of the store won the plist; one lock around the shell-out is what
+    makes "last to write the plist is last to read the store" true."""
+    live, peak = [], []
+
+    def sync(due):
+        live.append(1)
+        peak.append(len(live))
+        time.sleep(0.01)      # long enough for a racing thread to arrive
+        live.pop()
+
+    monkeypatch.setattr(schedule_wake, "sync", sync)
+
+    threads = [threading.Thread(target=schedule.create,
+                                args=(str(target), f"m{i}", _in(600 + i)))
+               for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert peak, "nothing synced, so this proves nothing"
+    assert max(peak) == 1, f"{max(peak)} syncs were inside launchctl at once"
