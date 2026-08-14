@@ -193,3 +193,36 @@ def test_every_git_spawn_here_stays_off_the_fork_path():
             kwargs["close_fds"].value is False), f"line {call.lineno}: close_fds"
         for forcing in ("start_new_session", "preexec_fn", "cwd", "pass_fds"):
             assert forcing not in kwargs, f"line {call.lineno}: {forcing} forces fork()"
+
+
+def test_an_unusable_tempdir_degrades_instead_of_raising(monkeypatch):
+    """Nothing in this module may raise at its callers.
+
+    `_IgnoreOracle.__init__` and `_git_ignored` read None as "degrade to
+    nothing ignored" and put no `except` around the call, so an OSError out of
+    `mkdtemp` — a full disk, a read-only TMPDIR — would turn the loss of some
+    dimming into a failed /api/fs/list for every un-inited directory carrying a
+    .gitignore. It is also not a verdict about git, so it must not be cached.
+    """
+    monkeypatch.setattr(gitignore, "_EMPTY_GIT_DIR", None)
+    monkeypatch.setattr(
+        gitignore.tempfile, "mkdtemp",
+        lambda **kw: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+
+    assert gitignore._empty_git_dir() is None
+    assert gitignore._EMPTY_GIT_DIR is None
+
+
+def test_a_listing_survives_a_gitignore_oracle_that_cannot_be_built(tmp_path, monkeypatch):
+    """The same thing one layer up, through the route the user actually hits."""
+    (tmp_path / ".gitignore").write_text("*.log\n", encoding="utf-8")  # no repo here
+    (tmp_path / "debug.log").write_text("l", encoding="utf-8")
+    monkeypatch.setattr(gitignore, "_EMPTY_GIT_DIR", None)
+    monkeypatch.setattr(
+        gitignore.tempfile, "mkdtemp",
+        lambda **kw: (_ for _ in ()).throw(OSError(28, "No space left on device")))
+
+    r = _client(tmp_path).get("/api/fs/list", params={"path": str(tmp_path)})
+
+    assert r.status_code == 200
+    assert all(e["ignored"] is False for e in r.json()["entries"])

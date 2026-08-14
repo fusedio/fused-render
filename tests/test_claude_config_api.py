@@ -26,6 +26,8 @@ import ast
 import json
 import os
 import subprocess
+import sys
+import time
 from unittest import mock
 
 import pytest
@@ -752,6 +754,84 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
     assert bare_text == []
     # A guard that silently matched nothing would pass forever.
     assert calls >= 6
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows keeps subprocess")
+def test_a_detached_launch_really_leads_its_own_session(tmp_path, monkeypatch):
+    """End to end, because both halves of this call are behavioural.
+
+    `mcp login` opens a browser and outlives the request, so the child must be
+    detached — and it must be detached WITHOUT `start_new_session`, which is
+    what put this call back on fork()+exec while the SUBPROCESS_KWARGS spread
+    made it read as guarded. Spawning a real child and asking it for its own
+    session id is the only way to check we still get the property the keyword
+    was there for.
+    """
+    out = tmp_path / "who.txt"
+    script = (f"import os; open({str(out)!r}, 'w')"
+              ".write('%d %d' % (os.getpid(), os.getsid(0)))")
+    monkeypatch.setattr(lib, "_resolve_claude", lambda path_env: sys.executable)
+
+    spawned = []
+    real_spawn = os.posix_spawn
+    monkeypatch.setattr(os, "posix_spawn",
+                        lambda *a, **k: (spawned.append(k), real_spawn(*a, **k))[1])
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("a detached launch must not fork"))
+
+    assert lib.claude_cli_detached("-c", script) == {"ok": True, "launched": True}
+    assert spawned and spawned[0].get("setsid") is True
+
+    deadline = time.time() + 10
+    while time.time() < deadline and not out.exists():
+        time.sleep(0.05)
+    assert out.exists(), "the child never ran"
+    pid, sid = out.read_text().split()
+    assert pid == sid, "the child must lead its own session, as start_new_session did"
+
+    lib._reap_launched()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows keeps subprocess")
+def test_a_platform_without_SETSID_falls_back_to_a_process_group(monkeypatch):
+    """`POSIX_SPAWN_SETSID` is not universal, and the answer to its absence is
+    the process GROUP the docstring always described the detachment as — never
+    a quiet return to forking."""
+    monkeypatch.setattr(lib, "_resolve_claude", lambda path_env: "/bin/true")
+    calls = []
+
+    def _no_setsid(path, argv, env, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("setsid"):
+            raise NotImplementedError("setsid is not supported on this platform")
+        return 424242
+
+    monkeypatch.setattr(os, "posix_spawn", _no_setsid)
+    monkeypatch.setattr(lib, "_reap_launched", lambda: None)
+
+    assert lib.claude_cli_detached("mcp", "login", "x")["ok"] is True
+    assert [k.get("setsid") for k in calls] == [True, None]
+    assert calls[1]["setpgroup"] == 0
+    lib._LAUNCHED.discard(424242)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows keeps subprocess")
+def test_detached_launches_do_not_pile_up_zombies(tmp_path, monkeypatch):
+    """`posix_spawn` returns a pid and no `Popen`, so nothing in `subprocess`
+    sweeps these up: without the opportunistic reap, every `mcp login` would
+    leave a zombie for the life of the server."""
+    monkeypatch.setattr(lib, "_resolve_claude", lambda path_env: sys.executable)
+    monkeypatch.setattr(lib, "_LAUNCHED", set())
+
+    lib.claude_cli_detached("-c", "pass")
+    assert len(lib._LAUNCHED) == 1
+    pid = next(iter(lib._LAUNCHED))
+
+    deadline = time.time() + 10
+    while time.time() < deadline and lib._LAUNCHED:
+        lib._reap_launched()
+        time.sleep(0.05)
+    assert lib._LAUNCHED == set(), f"pid {pid} was never reaped"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the preview runs `sh -c`")

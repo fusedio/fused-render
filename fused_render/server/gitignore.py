@@ -35,11 +35,22 @@ def _empty_git_dir():
 
     The scratch directory is removed on those paths, because retryable means it
     would otherwise leak one empty repo per attempt.
+
+    Nothing here raises. `_IgnoreOracle` and `_git_ignored` read a None as
+    "degrade to nothing ignored" and have no `except` around the call, so an
+    exception escaping would turn a soft loss of dimming into a failed
+    `/api/fs/list` for any un-inited directory that carries a `.gitignore` —
+    which is why the `mkdtemp` is inside a guard of its own rather than sharing
+    the spawn's: a full or read-only tempdir is no more a verdict about git
+    than a killed child is.
     """
     global _EMPTY_GIT_DIR
     if _EMPTY_GIT_DIR is not None:
         return _EMPTY_GIT_DIR or None
-    root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
+    try:
+        root = tempfile.mkdtemp(prefix="fused-render-emptygit-")
+    except OSError:
+        return None
     try:
         proc = subprocess.run(
             ["git", "init", "-q", root],
