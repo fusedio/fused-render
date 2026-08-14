@@ -331,6 +331,34 @@ def test_live_SERVER_work_is_never_evicted_by_the_cap():
     assert all(r["owner"] == jobs.OWNER_SERVER for r in rows)
 
 
+def test_live_server_rows_do_not_push_PAGE_rows_out():
+    """The MIXED population, which neither single-population test can reach.
+
+    An exemption is a rule about the RELATIONSHIP between two populations, so
+    testing each alone proves nothing about it — and that is exactly the gap
+    that let a real bug through: with the eviction COUNT measured over the whole
+    dict while the slice was applied to the evictable list, live server rows
+    past the cap made the excess exceed the page population and the slice took
+    all of it. Seventy transcriptions deleted every page row, and the cap was
+    still unmet, so the deletions bought nothing — the harm the exemption exists
+    to prevent, relocated onto pages, whose reporters send deltas and whose
+    `watchJob` settles null after five misses just the same.
+    """
+    for i in range(70):
+        jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:{i}",
+                     "title": f"rec{i}.m4a", "state": "running"},
+                    server=True, now=1000.0 + i * 0.01)
+    for i in range(3):
+        jobs.upsert({"id": f"pagejob{i}", "title": "my export", "state": "running"},
+                    now=1000.7 + i * 0.01)
+    at = 1001.0
+
+    rows = jobs.list_jobs(now=at)
+    page = [r for r in rows if r["owner"] == jobs.OWNER_PAGE]
+    assert len(page) == 3, "live server work evicted the page's own rows"
+    assert len(rows) == 73
+
+
 def test_the_cap_still_bites_on_page_owned_rows():
     """Page-owned rows stay evictable, and that is the asymmetry that makes the
     exemption safe: a server row is minted only by this app's own code and is

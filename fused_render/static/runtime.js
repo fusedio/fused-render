@@ -2619,6 +2619,15 @@
     return aiPost("/api/ai/transcribe", body).then((started) => {
       const watcher = watchJob(started.jobId);
       // The transcript file is the result; the row only said when to read it.
+      //
+      // TYPED on failure, like every other rejection this bridge produces. The
+      // reads here can fail on their own — a transcript deleted between the
+      // row going `done` and this fetch, an unreadable path, a truncated file
+      // that fails JSON.parse — and without this a caller switching on
+      // `err.type` got a bare SyntaxError or "failed to read … HTTP 404" with
+      // no `.type` and no `.jobId`, falling through to its unknown-error path
+      // on the one failure it could most easily explain. `aiImage` has no
+      // equivalent exposure because its `done()` does no I/O.
       const done = () =>
         readFile(started.output)
           .then(JSON.parse)
@@ -2629,7 +2638,16 @@
             segments: written.segments,
             language: written.language,
             duration: written.duration,
-          }));
+          }))
+          .catch((cause) => {
+            const err = new Error(
+              "the transcript could not be read: " + ((cause && cause.message) || cause),
+            );
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            err.cause = cause;
+            throw err;
+          });
       return watcher.watch(onProgress).then((record) => {
         if (!record) {
           // The row is gone — and since the manager stopped evicting live

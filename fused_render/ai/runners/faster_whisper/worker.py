@@ -189,25 +189,62 @@ _TICK_S = 1.0
 _orphan: "dict[str, threading.Thread | None]" = {"thread": None}
 
 
+#: How long a new transcription will wait for an abandoned decode to finish
+#: before refusing instead.
+#:
+#: There has to be a deadline, and "the file it was reading" is NOT one. A wedge
+#: inside PyAV or the VAD — a malformed container is exactly where a decoder
+#: hangs — means `model.transcribe()` never returns, and an unbounded join then
+#: blocks every later transcription on "Finishing a cancelled decode…" for as
+#: long as the process lives, with unloading the model the only way out. A hang
+#: with a spinner is the worst failure available: nothing says what is wrong and
+#: nothing can be done from the page.
+#:
+#: Short rather than generous, because the ordinary case wants it short too:
+#: cancelling five seconds into a 90-minute file leaves an eager decode of that
+#: whole file running, and the NEXT recording must not sit through a decode of
+#: the one the user already abandoned. So a caller waits briefly, and otherwise
+#: gets an error naming the situation and what to do about it — which is
+#: recoverable in a way a hang is not, and self-healing whenever the orphan
+#: really does finish.
+_ORPHAN_WAIT_S = 30.0
+
+
 def _await_orphan(job, row):
     """Let a decode abandoned by an earlier cancel finish before starting another.
 
     Ticks while it waits, for the same reason the decode itself does: this is
-    time the user is watching, and a row that says nothing during it is a row
-    that goes stale. It is bounded by the file the cancelled run was reading.
+    time the user is watching, and a row that says nothing during it goes stale.
+
+    **Bounded by `_ORPHAN_WAIT_S`, not by the file.** An earlier version of this
+    docstring claimed the file bounded it; that is only true of a decoder that
+    returns, and the case worth defending against is the one that does not.
+    Raises `RuntimeError` on the deadline rather than starting a second decode
+    on the same model, which is the thing this wait exists to prevent.
     """
     thread = _orphan.get("thread")
     if thread is None or not thread.is_alive():
         _orphan["thread"] = None
         return
+    deadline = time.time() + _ORPHAN_WAIT_S
     while thread.is_alive():
         thread.join(timeout=_TICK_S)
-        if thread.is_alive():
-            worker_base.report_or_cancel(
-                job=job, **row, state="running", done=None, total=None,
-                detail="Finishing a cancelled decode…")
-            if worker_base.CANCEL.is_set():
-                raise worker_base.Cancelled()
+        if not thread.is_alive():
+            break
+        if time.time() >= deadline:
+            # The orphan is KEPT, deliberately: it may still finish, and the
+            # next request will then sail through. Refusing is the honest answer
+            # meanwhile — the alternative is either a second decode on one
+            # `WhisperModel` or a wait with no end.
+            raise RuntimeError(
+                "a previous transcription that was cancelled is still stopping "
+                f"(over {int(_ORPHAN_WAIT_S)}s). Try again in a moment; if it "
+                "never clears, unload the model from the AI Models page.")
+        worker_base.report_or_cancel(
+            job=job, **row, state="running", done=None, total=None,
+            detail="Finishing a cancelled decode…")
+        if worker_base.CANCEL.is_set():
+            raise worker_base.Cancelled()
     _orphan["thread"] = None
 
 

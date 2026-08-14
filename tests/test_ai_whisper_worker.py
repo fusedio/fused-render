@@ -214,6 +214,75 @@ def test_a_cancelled_decode_is_WAITED_FOR_before_the_next_one_starts(worker, bas
     assert len(model.calls) == 2
 
 
+def test_a_WEDGED_abandoned_decode_is_refused_rather_than_waited_on_forever(
+        worker, base, tmp_path):
+    """"Bounded by the file" is only true of a decoder that returns.
+
+    A malformed container is exactly where PyAV or the VAD hangs, and then
+    `model.transcribe()` never returns. An unbounded join blocked every later
+    transcription on "Finishing a cancelled decode…" for the life of the
+    process, with unloading the model the only escape — a hang with a spinner,
+    which is the worst failure available because nothing says what is wrong.
+
+    The wedged thread is a daemon and is deliberately left running: it may yet
+    finish, and the next request would then sail through. What must not happen
+    is an unbounded wait or a second decode on the same model.
+    """
+    stuck = threading.Event()
+    entered = threading.Event()
+
+    class WedgedModel(FakeModel):
+        def transcribe(self, source, **kwargs):
+            self.calls.append({"source": source, **kwargs})
+            entered.set()
+            stuck.wait(30)  # never set within the test
+            return iter([]), self.info
+
+    worker._loaded["model"] = WedgedModel([])
+    worker._TICK_S = 0.02
+    worker._ORPHAN_WAIT_S = 0.2
+    base.cancel_on_tick = 2
+
+    try:
+        with pytest.raises(base.Cancelled):
+            worker.generate(_request(tmp_path))
+        assert entered.wait(5)
+
+        # Straight back in: bounded refusal, not a hang.
+        base.cancel_on_tick = None
+        with pytest.raises(RuntimeError) as caught:
+            worker.generate(_request(tmp_path, out=str(tmp_path / "b.json"),
+                                     outText=str(tmp_path / "b.txt")))
+        message = str(caught.value)
+        assert "cancelled" in message and "unload" in message.lower()
+        # And it refused rather than starting a second decode on one model:
+        # `transcribe` was entered exactly once.
+        assert len(worker._loaded["model"].calls) == 1
+    finally:
+        stuck.set()
+        worker._orphan["thread"] = None
+
+
+def test_an_abandoned_decode_that_FINISHES_lets_the_next_one_through(
+        worker, base, tmp_path):
+    """The other half of the deadline: refusing is temporary, not sticky. The
+    orphan slot is kept on the deadline precisely so a decode that does finish
+    clears it and the next request proceeds normally."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")],
+                                        decode_seconds=0.3)
+    worker._TICK_S = 0.02
+    worker._ORPHAN_WAIT_S = 5.0
+    base.cancel_on_tick = 2
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
+
+    base.cancel_on_tick = None
+    result = worker.generate(_request(tmp_path, out=str(tmp_path / "b.json"),
+                                     outText=str(tmp_path / "b.txt")))
+    assert result["segments"] == 1
+    assert worker._orphan["thread"] is None
+
+
 def test_a_cancel_between_segments_is_still_honoured(worker, base, tmp_path):
     worker._loaded["model"] = FakeModel(
         [FakeSegment(0.0, 3.0, "one"), FakeSegment(3.0, 6.0, "two")])

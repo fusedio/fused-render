@@ -1921,6 +1921,102 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
+def _run_ai_transcribe(readfile, record, node_required=True):
+    """Run `aiTranscribe` out of runtime.js under node, against stubs.
+
+    The same extraction the claude suites use (`tests/test_claude_narrow.py`):
+    a named function is lifted out and driven with its closure stubbed, because
+    what matters is the decision it reaches rather than the DOM it reached it
+    in. This bridge had only source assertions until now, which cannot tell a
+    typed rejection from an untyped one.
+
+    `readfile` is JS for the body of the stub `readFile`; `record` is the job
+    row `watch` resolves with. Returns the settled outcome as a dict.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own transcription glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    end = source.index("\n  }\n", start) + 4
+    fn = source[start:end]
+
+    prelude = f"""
+      const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
+                        outputText: "/t/out.txt", path: "/t/a.m4a",
+                        model: "m", task: "transcribe"}};
+      const window = {{location: {{search: "?path=/pages/p.html"}}}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const readFile = () => {readfile};
+      const watchJob = () => ({{
+        watch: () => Promise.resolve({record}),
+        get: () => Promise.resolve({record}),
+        stop() {{}}, cancel: () => Promise.resolve(true),
+      }});
+    """
+    call = """
+      aiTranscribe({path: "a.m4a"}).then(
+        (value) => console.log(JSON.stringify({ok: true, value})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, jobId: err.jobId})),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_an_unreadable_transcript_rejects_TYPED_like_every_other_failure():
+    """`done()` does I/O, so it can fail on its own — a transcript deleted
+    between the row going `done` and this fetch, an unreadable path, a
+    truncated file that fails `JSON.parse`.
+
+    Untyped, those arrived as a bare `SyntaxError` or "failed to read … HTTP
+    404" with no `.type` and no `.jobId`, so a caller switching on `err.type`
+    fell through to its unknown-error path on the one failure it could most
+    easily explain — while the sibling branch three lines below was typed.
+    `aiImage` has no equivalent exposure: its `done()` does no I/O.
+    """
+    row = '{state: "done"}'
+    missing = _run_ai_transcribe('Promise.reject(new Error("failed to read (HTTP 404)"))', row)
+    assert missing["ok"] is False
+    assert missing["type"] == "ai_error"
+    assert missing["jobId"] == "sys:ai-transcribe:x"
+    assert "transcript could not be read" in missing["message"]
+
+    truncated = _run_ai_transcribe('Promise.resolve("{\\"text\\": ")', row)
+    assert truncated["ok"] is False and truncated["type"] == "ai_error"
+    assert truncated["jobId"] == "sys:ai-transcribe:x"
+
+
+def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
+    """The success path, end to end through the real function."""
+    good = ('Promise.resolve(JSON.stringify({text: "hello world", '
+            'segments: [{start: 0, end: 1.5, text: "hello world"}], '
+            'language: "en", duration: 1.5}))')
+    settled = _run_ai_transcribe(good, '{state: "done"}')
+    assert settled["ok"] is True, settled
+    value = settled["value"]
+    assert value["text"] == "hello world"
+    assert value["segments"][0]["end"] == 1.5
+    assert value["language"] == "en" and value["duration"] == 1.5
+    assert value["url"] == "/api/fs/raw?path=/t/out.json"
+
+
+def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
+    settled = _run_ai_transcribe('Promise.reject(new Error("no file"))',
+                                 '{state: "cancelled"}')
+    assert settled["ok"] is False and settled["type"] == "cancelled"
+    assert "cancelled" in settled["message"]
+
+
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
     """The page half, pinned as an INVARIANT rather than an instance.
 
