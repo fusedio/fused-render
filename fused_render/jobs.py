@@ -467,7 +467,25 @@ def _sweep(now: float) -> None:
         elif (now - (job.finished_at or job.updated_at)) > FINISHED_TTL_S:
             _forget(job_id, now)
 
-    if len(_jobs) <= MAX_JOBS:
+    # **The cap counts only what it could actually shed.** Measuring it against
+    # every row while refusing to evict most of them does not bound anything —
+    # it just moves which row pays, and the row that paid was whichever had
+    # JUST finished: over the cap with 64+ live server rows, the terminal row
+    # was the only candidate left and went on the very next `list_jobs()`, which
+    # is the same read `fused.watchJob` polls. So a watcher never saw the
+    # outcome. A success survives that (the artefact is on disk) but a failure
+    # or a cancel has no artefact, so the page reported "no longer being
+    # reported" instead of the real reason — on exactly the large queue the
+    # exemption exists to support.
+    #
+    # It also put the cap in contradiction with BG-6: a finished record is
+    # supposed to stay `FINISHED_TTL_S` so someone not watching the corner can
+    # notice it, and this was silently shortening that to zero under pressure.
+    evictable = [
+        job for job in _jobs.values()
+        if not (job.state == RUNNING and job.owner == OWNER_SERVER)
+    ]
+    if len(evictable) <= MAX_JOBS:
         return
     # Over the cap: finished rows go before running ones (the work they
     # describe is over), and within each group the least recently updated
@@ -501,10 +519,6 @@ def _sweep(now: float) -> None:
     # for live work, not for a `sys:` prefix — and the age sweep above still
     # drops a running row whose reporter has gone silent for `STALE_DROP_S`,
     # so a crashed worker cannot pin a row for the session.
-    evictable = [
-        job for job in _jobs.values()
-        if not (job.state == RUNNING and job.owner == OWNER_SERVER)
-    ]
     order = sorted(evictable, key=lambda j: (j.state == RUNNING, j.updated_at))
-    for job in order[: len(_jobs) - MAX_JOBS]:
+    for job in order[: len(evictable) - MAX_JOBS]:
         del _jobs[job.id]

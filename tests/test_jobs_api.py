@@ -344,21 +344,68 @@ def test_the_cap_still_bites_on_page_owned_rows():
     assert len(jobs.list_jobs(now=at)) == jobs.MAX_JOBS
 
 
-def test_live_server_rows_do_not_shield_finished_ones_from_the_cap():
-    """The exemption is for LIVE work only — a server row that has finished is
-    as evictable as any other, or a day of completed transcriptions would push
-    the cap up forever."""
-    for i in range(jobs.MAX_JOBS):
+def test_a_watcher_SEES_THE_OUTCOME_of_a_job_that_finishes_under_a_full_queue():
+    """The consequence of exempting rows from eviction while still COUNTING
+    them toward the budget: the pressure lands on whatever just finished.
+
+    Over the cap with 64+ live server rows, a terminal row was the only
+    evictable candidate left, so it was deleted on the very next `list_jobs()`
+    — which is the same read `fused.watchJob` polls. A watcher therefore never
+    observed the outcome. A success is still recoverable from the artefact on
+    disk; a FAILURE or a CANCEL has no artefact, so the page reported the
+    generic "no longer being reported" instead of the real reason, on exactly
+    the large queue the exemption exists to support.
+
+    Asserted on the OUTCOME rather than on `len(_jobs)`, because the row count
+    is what made this look fine: the list was the right length throughout.
+    """
+    for i in range(jobs.MAX_JOBS + 6):
+        jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:{i}",
+                     "title": f"rec{i}.m4a", "state": "running"},
+                    server=True, now=1000.0 + i * 0.01)
+    at = 1000.0 + (jobs.MAX_JOBS + 6) * 0.01
+
+    failed = f"{jobs.SERVER_ID_PREFIX}ai-transcribe:5"
+    jobs.upsert({"id": failed, "title": "rec5.m4a", "state": "error",
+                 "message": "the decoder exploded"}, server=True, now=at)
+    seen = {r["id"]: r for r in jobs.list_jobs(now=at)}.get(failed)
+    assert seen is not None, "the terminal row was evicted before any watcher saw it"
+    assert seen["state"] == "error" and "exploded" in seen["message"]
+
+    # A cancel has no artefact either, and is the other outcome a page can only
+    # learn from the row.
+    stopped = f"{jobs.SERVER_ID_PREFIX}ai-transcribe:6"
+    jobs.upsert({"id": stopped, "title": "rec6.m4a", "state": "cancelled"},
+                server=True, now=at)
+    seen = {r["id"]: r for r in jobs.list_jobs(now=at)}.get(stopped)
+    assert seen is not None and seen["state"] == "cancelled"
+
+
+def test_finished_server_rows_are_still_capped():
+    """The exemption is for LIVE work only. A server row that has finished is
+    as evictable as any other, or a day of completed transcriptions would grow
+    the list without bound — and the cap counting only what it can shed must
+    not be read as the cap no longer applying to what it can.
+
+    `MAX_JOBS + 2` finished rows is what produces the pressure now; the live
+    rows alongside are not counted, which is the point of the previous test.
+    """
+    for i in range(jobs.MAX_JOBS + 2):
         jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old{i}",
                      "title": "x", "state": "done"},
                     server=True, now=1000.0 + i * 0.01)
-    at = 1000.0 + jobs.MAX_JOBS * 0.01
-    jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live",
-                 "title": "rec.m4a", "state": "running"}, server=True, now=at)
-    ids = [r["id"] for r in jobs.list_jobs(now=at)]
-    assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live" in ids
+    at = 1000.0 + (jobs.MAX_JOBS + 2) * 0.01
+    for i in range(5):
+        jobs.upsert({"id": f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live{i}",
+                     "title": "rec.m4a", "state": "running"}, server=True, now=at)
+
+    ids = {r["id"] for r in jobs.list_jobs(now=at)}
+    # The two oldest finished rows paid; every live row survived.
     assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old0" not in ids
-    assert len(ids) == jobs.MAX_JOBS
+    assert f"{jobs.SERVER_ID_PREFIX}ai-transcribe:old1" not in ids
+    assert all(f"{jobs.SERVER_ID_PREFIX}ai-transcribe:live{i}" in ids for i in range(5))
+    # Finished rows are held at the cap, so the total is the cap plus live work.
+    assert len(ids) == jobs.MAX_JOBS + 5
 
 
 def test_a_stale_server_row_is_still_dropped_by_the_AGE_sweep():

@@ -1322,6 +1322,32 @@ def test_a_transcription_row_is_server_owned_and_reserved(
     assert refused.status_code == 400
 
 
+def test_a_failure_reaches_the_page_even_with_the_QUEUE_OVER_THE_CAP(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """The outcome a watcher sees, end to end, on the queue this feature is for.
+
+    With more than `MAX_JOBS` live server rows, a row that had just reached a
+    terminal state was the only thing the cap could still evict — so it went on
+    the next `list_jobs()`, which is the same read `fused.watchJob` polls, and
+    the page learned nothing. A success survives that because the transcript is
+    on disk; a FAILURE has no artefact, so `fused.ai.transcribe()` rejected with
+    "no longer being reported" instead of the reason.
+
+    `_wait_job` polls exactly what the bridge polls, so this asserts what the
+    page would actually observe rather than what the registry contains.
+    """
+    monkeypatch.setenv("FAKE_TRANSCRIBE_FAILS", "1")
+    # A queue already over the cap, all of it live server work.
+    for i in range(jobs.MAX_JOBS + 4):
+        supervisor._report(f"{jobs.SERVER_ID_PREFIX}ai-transcribe:bulk{i}",
+                           **supervisor._transcribe_row(f"rec{i}.m4a", "Queued…"))
+
+    started = _post_transcribe(client, path=recording).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error", row
+    assert "exploded" in row["message"], row
+
+
 def test_a_failing_transcription_reports_the_reason_on_the_row(
         client, fake_transcribe_runner, recording, monkeypatch):
     monkeypatch.setenv("FAKE_TRANSCRIBE_FAILS", "1")
@@ -1668,12 +1694,19 @@ def test_a_LIVE_transcription_row_is_never_absent_at_all():
         jobs.upsert({"id": f"noise{i}", "title": "x", "state": "running"})
     assert _row_now(job) is not None, "a live transcription row was evicted"
 
-    # The residual absence is USER-caused only — dismissing the row — and the
-    # queue heals that within one poll, which still has to beat the watcher.
+    # Every removal path was walked against a row of this exact shape and none
+    # of them reaches it: cap eviction (exempt), the age sweep (`_QUEUE_TICK_S`
+    # is far inside `STALE_DROP_S`), `dismiss` and `clear_finished` (both refuse
+    # a RUNNING row that is not stalled). ONE remote path survives — a tick
+    # thread starved past `STALE_AFTER_S` makes the row dismissible, and a user
+    # looking at "no longer reporting" may well dismiss it — and the rebuild on
+    # detection heals that, because `_transcribe_row` carries the `title` and
+    # `state: "running"` that reopen a forgotten id. So the poll cadence is the
+    # backstop's latency, and it still has to beat the watcher.
     window = _watcher_giveup_window_s()
     assert supervisor._QUEUE_POLL_S < window / 2, (
-        f"a dismissed queued row takes {supervisor._QUEUE_POLL_S}s to come back "
-        f"against a {window}s give-up window")
+        f"a dismissed-while-stalled row takes {supervisor._QUEUE_POLL_S}s to come "
+        f"back against a {window}s give-up window")
 
 
 def test_a_waiting_row_never_reads_as_no_longer_reporting():
