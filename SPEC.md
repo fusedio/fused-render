@@ -5856,10 +5856,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   bytes is how a 4.6GB pull came to read **"10 / 11 B"**, and during a single
   large shard it does not move at all — so the row also went stale mid-download
   and the manager declared nobody was reporting. The runner instead walks its own
-  repo folder (counting the `.incomplete` files, skipping the snapshot symlinks)
-  on a **one-second poll that doubles as the heartbeat**, and the repo's total
-  comes from one Hub metadata call. No total means an indeterminate bar, which is
-  honest; a wrong total is not.
+  repo folder (counting the partial files, skipping the snapshot symlinks) on a
+  **one-second poll that doubles as the heartbeat**, and the repo's total comes
+  from one Hub metadata call. No total means an indeterminate bar, which is
+  honest; a wrong total is not. Since AI-5i the partial file being counted is
+  usually **ours**, and it is measured by allocated BLOCKS rather than by length:
+  segments write out of order, so the file is created at its final size and
+  filled sparsely, and `st_size` would report a 4.6GB download as complete before
+  a byte had arrived.
 - **AI-5c** **The port handshake file is per BRING-UP, never per capability.**
   Two workers for one capability really do overlap — an eviction's replacement
   starts while the old one is still being killed, a Download runs beside a Load —
@@ -5951,6 +5955,80 @@ an AI Models page that could say what was on disk but not what was *running*.
   it, because `stop` cannot reach a beat already inside its POST and that tick
   would land after the work finished, flipping a row the supervisor had just
   marked done back to running.
+- **AI-5i** **The weights are fetched on several connections, and an interrupted
+  fetch resumes.** `snapshot_download` opens one connection per file and one file
+  at a time, so a model whose bytes are a single 4.6GB shard downloaded at
+  exactly one connection's speed — and a cancel, a crash or a quit threw all of
+  it away, which is not a corner case: the supervisor KILLS the fetch on quit
+  (AI-5e). `worker_base` therefore fetches the repo itself, stdlib only. **One
+  Hub listing decides three things at once — the bar's total, the files to fetch
+  and the REVISION to fetch them at** — because deciding the revision separately
+  is how a list taken from a repo's default branch came to be fetched at a
+  hardcoded `main`: a different set of bytes, recorded under a ref for a revision
+  nobody read, internally consistent the whole way down since every etag still
+  matches its content. The revision is asked for by name (`main`, the same
+  default hf's own `snapshot_download` uses, so the fast path and the fallback
+  cannot land on different revisions of one model) and the fetch is pinned to the
+  COMMIT that name resolved to, which also settles the repo moving between the
+  listing and the last byte. Then `get_hf_file_metadata` per file at that commit,
+  for the CDN location, the etag and the commit,
+  then — **carrying the Hub token only when the blob is served by the Hub
+  itself**, since a presigned URL already holds its credentials in the query
+  string and S3 refuses a request bearing two of them, which made every download
+  by a token-holding user fail over to the slow path — up to
+  **4 `Range` segments per file** with **segments across all files** as
+  the units of work in one pool capped at **8 connections** — the single number
+  that bounds how many sockets a download opens, which a pool per file would
+  multiply out. Segments share one fd and write with `os.pwrite`, and per-segment
+  offsets go to a sidecar in the order that makes them true: snapshot the
+  cursors, **fsync the data, then write the sidecar** — a recorded byte is always
+  a durable byte, so a resume never skips one that was still in flight. The
+  partial file is `<blob>.fusedpart`, deliberately **not** hf's `.incomplete`: hf
+  resumes one of those by seeking to its length, ours are written out of order,
+  and handing it one would produce a silently corrupt blob. Resume demands that
+  etag and size still agree and that the recorded LAYOUT is the one resumed with;
+  anything that does not agree starts clean, never a guess. **The range probe is
+  therefore three-valued**, because two rules turn on the difference between a
+  server that says no and a server that does not answer: a probe that FAILS is a
+  network condition and leaves both the recorded layout and the host's cached
+  answer alone, while a probe that answers NO is a fact — it caps that file at
+  one connection, and on a resume it discards the multi-segment layout so the
+  file restarts whole. Without that second half, a CDN that stopped honouring
+  ranges hands byte 0 to every segment past the first, the refusal takes down the
+  entire repo, and the fallback deletes the progress the un-probed resume existed
+  to protect. A segment reconnects on an exception AND on a body that simply ends
+  early (a server closing mid-stream raises nothing), and treats a failed
+  re-resolve as a retry rather than the end of the download. **Its budget resets
+  on the CURSOR MOVING across an attempt, not on bytes arriving** — a distinction
+  that is a hang in one direction (a server ignoring `Range` and truncating
+  re-sends the same prefix forever, and the safe reading of that body rewinds the
+  cursor, so a byte-counting budget never expires) and an abort in the other
+  (bytes written before a `read()` raised are real progress, and counting them as
+  a failed attempt exhausted the budget on a link that reset reliably).
+  **Three rules exist because a wrong-content blob under a correct etag is the
+  worst failure available here** — hf then serves it from cache forever. (a) A
+  200 answering a ranged request at a non-zero offset is refused, and so is a
+  **206 whose `Content-Range` does not start where we asked** (a clamping proxy):
+  either body written at four segment offsets gives a file of exactly the right
+  length and entirely wrong content. (b) The 401/403 re-resolve may replace only
+  the LOCATION; a changed etag, size or commit aborts, because the blob path and
+  every offset were derived from the first answer and a repo updated mid-download
+  would publish a mixture of two revisions. (c) Publishing is gated on the
+  per-segment CURSORS, never on the part file's length — the file is pre-sized
+  before a byte arrives, so a sparse file of pure holes measures exactly right.
+  No hash, like huggingface_hub itself, which relies on TLS and `Content-Length`.
+  **Every failure and every incapability falls back to `snapshot_download` /
+  `hf_hub_download`** — no range support, a Hub API that moved, a platform with
+  no `os.pwrite`, a cache filesystem that allocates rather than holding a sparse
+  file, an argument ours does not understand — logging the reason to stderr and
+  clearing our part files first, because a download that got faster and sometimes
+  broken would be a bad trade. Resume therefore covers the app being killed, quit
+  or crashed — the case that motivated it — and not a fetch that fell back, which
+  hf re-downloads. Explicitly out of scope: no bandwidth limit, no detached
+  daemon (quitting still stops it; the on-disk state is what makes that cheap
+  rather than destructive), no per-segment UI, and no cache lock — the etag names
+  the content, so two instances write identical bytes at identical offsets and
+  the loser of a rename race falls back rather than corrupting anything.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
