@@ -64,9 +64,12 @@ missed.
 **Replayed alongside the cache read, not after it.** `load_dir_cache` (parquet IO) and
 `hint` (a CFRunLoop draining the journal) are independent and both release the GIL, so
 `run_scan` runs them on two threads and pays `max()` rather than the sum — measured
-~0.75 s and 0.1–2.9 s respectively on a 588k-file index. The consequence is that the
-hint is computed **unconditionally**, before it is known whether there is a cache to
-apply it to, and discarded on a full or rules-changed run.
+~0.75 s and 0.1–2.9 s respectively on a 588k-file index. A run that has already decided
+to rescan everything (`full`, or the ignore rules changed) skips the replay entirely:
+both facts are known before either read starts, there is no cache read to hide the
+replay behind, and a full scan must stay usable as the remedy for a corrupt
+`fsevents.json` — `hint` parses that file with no guard of its own. An empty cache is
+the one case still replayed for nothing, since only the read can report it.
 
 **Any doubt falls back to a walk.** `hint` returns `None` when: no saved event id for
 this root; the root spans more than one device (per-device ids don't apply); the volume

@@ -479,9 +479,11 @@ def test_changing_the_ignore_rules_forces_a_full_rescan(tmp_path):
 
 
 def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
-    """The setup reads (dir cache, journal replay) run concurrently, so the hint
-    is computed BEFORE it is known whether there is a cache to apply it to — a
-    full or rules-changed run must throw it away rather than act on it.
+    """A run that has already decided to rescan everything asks the journal
+    NOTHING — it does not merely discard the answer. The replay is scheduled on a
+    thread beside the dir-cache read, but a full run has no cache read to hide it
+    behind, so consulting it would just stall the walk (up to _replay's 20s
+    timeout) for a result that cannot be used.
 
     The hint pinned here names a directory that no longer holds the file, so a
     run that wrongly took the journal path would carry the stale cached row
@@ -494,9 +496,12 @@ def test_a_full_run_does_not_take_the_journal_path(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, ignore=["node_modules"])
     _run(cfg, str(src))
     os.remove(src / "sub" / "b.md")
-    monkeypatch.setattr(fsevents, "hint", lambda _cfg, _root: (set(), []))
+    asked = []
+    monkeypatch.setattr(fsevents, "hint",
+                        lambda _cfg, _root: (asked.append(_root), (set(), []))[1])
 
     run_dir = _run(cfg, str(src), full=True, run_name="run2")
+    assert asked == [], "a full rescan waited on a journal replay it cannot use"
     msgs = [e.get("msg") for e in _events(run_dir)]
     assert _summary(run_dir)["msg"] == "complete", _summary(run_dir).get("error")
     assert "scanning (full)" in msgs
@@ -518,10 +523,13 @@ def test_a_rules_changed_run_does_not_take_the_journal_path(tmp_path, monkeypatc
     _tree(src)
     cfg = _cfg(tmp_path, ignore=["node_modules"])
     _run(cfg, str(src))
-    monkeypatch.setattr(fsevents, "hint", lambda _cfg, _root: (set(), []))
+    asked = []
+    monkeypatch.setattr(fsevents, "hint",
+                        lambda _cfg, _root: (asked.append(_root), (set(), []))[1])
 
     wider = _cfg(tmp_path, ignore=["node_modules", "sub"])
     run_dir = _run(wider, str(src), run_name="run2")
+    assert asked == []
     msgs = [e.get("msg") for e in _events(run_dir)]
     assert msgs.index("ignore rules changed - full rescan") < msgs.index(
         "scanning (full)")
@@ -534,7 +542,14 @@ def test_a_hint_that_explodes_fails_the_run_rather_than_scanning_full(
     """fsevents.hint returns None on every failure it knows about, so anything
     raising out of it is a defect. Computing it on a thread must not turn that
     into a silent "no hint": a full walk of a large root looks like a slow scan,
-    not like a bug, and would keep looking like one every run."""
+    not like a bug, and would keep looking like one every run.
+
+    ...and a FULL scan must still work, which is what makes that acceptable.
+    `hint` parses `fsevents.json` with no guard of its own — a non-numeric event
+    id or a legacy `devs` shape raises — so if a full run consulted it too, a
+    corrupt state file would fail every scan of that root forever and the index
+    could only be rebuilt by hand-deleting the file. The full run is the remedy:
+    it never asks the journal, and it rewrites the state on the way out."""
     from fused_render.index import fsevents
 
     def boom(*a, **k):
@@ -551,6 +566,14 @@ def test_a_hint_that_explodes_fails_the_run_rather_than_scanning_full(
     end = _summary(run_dir)
     assert end["msg"] == "failed"
     assert "journal exploded" in (end.get("error") or "")
+
+    full = _run(cfg, str(src), full=True, run_name="run3")
+    assert _summary(full)["msg"] == "complete", _summary(full).get("error")
+    assert "scanning (full)" in [e.get("msg") for e in _events(full)]
+    paths = []
+    for part in partition_files(cfg):
+        paths += pq.read_table(part).column("path").to_pylist()
+    assert sorted(paths) == sorted([str(src / "a.txt"), str(src / "sub" / "b.md")])
 
 
 def test_a_cancelled_run_leaves_the_index_untouched(tmp_path):
