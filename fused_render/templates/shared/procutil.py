@@ -4,6 +4,22 @@ Not a package: each backend loads this by path (the templates tree is always
 staged as one unit, so ../shared/ resolves from any template folder).
 """
 import os
+import sys
+
+
+def spawn_python():
+    """Interpreter to launch DETACHED background children with. On Windows,
+    prefer ``pythonw.exe`` (no console) over ``python.exe`` so a detached worker
+    or daemon never flashes a terminal window. ``DETACHED_PROCESS`` already
+    suppresses the console; this is belt-and-braces — and note that
+    ``CREATE_NO_WINDOW`` must NOT be added to a detached spawn, since the two
+    combined fail to launch on Windows. Falls back to ``sys.executable``."""
+    exe = sys.executable
+    if os.name == "nt" and exe:
+        cand = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.exists(cand):
+            return cand
+    return exe
 
 
 def pid_alive(pid):

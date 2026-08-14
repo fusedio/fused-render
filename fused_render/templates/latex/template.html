@@ -432,10 +432,55 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
 
   // ---- shorthands
   const $ = (id) => document.getElementById(id);
-  // key:null — every engine.py action (compile/export writes, detached install,
-  // status poll, concurrent outline+bib) shares this helper; the default per-file
-  // cancellation would abort in-flight work or stall the poll loop (D114).
-  const py = (params) => fused.runPython("./engine.py", params, { key: null });
+  // Every engine action goes over a persistent localhost daemon (daemon.py)
+  // instead of runPython: under the "fused" engine each runPython pays 5–25s of
+  // backend overhead, and this template is chatty (compile, then outline+bib,
+  // plus ~1.5s warm/install status polls and a synctex probe per cursor settle).
+  // One runPython spawns the daemon and hands back {port, token}; from then on
+  // it's a direct fetch. If the daemon can't be reached for any reason we fall
+  // straight back to runPython, so the worst case is today's behaviour, never a
+  // dead call. key:null on the spawn: the default per-file cancellation would
+  // abort concurrent engine work / stall the poll loop (D114).
+  let _daemon = null, _daemonPromise = null, _daemonFailed = false;
+  function ensureDaemon() {
+    if (_daemon) return Promise.resolve(_daemon);
+    if (_daemonFailed) return Promise.resolve(null);   // tried once and failed — don't hammer runPython
+    if (_daemonPromise) return _daemonPromise;         // dedupe concurrent first-calls onto one spawn
+    _daemonPromise = (async () => {
+      try {
+        const r = await fused.runPython("./daemon.py", {}, { key: null });
+        if (r && r.port) { _daemon = r; return _daemon; }
+      } catch (e) { /* fall back to runPython below */ }
+      _daemonFailed = true;
+      return null;
+    })();
+    return _daemonPromise;
+  }
+  async function py(params) {
+    const d = await ensureDaemon();
+    if (d && d.port) {
+      let res = null;
+      try {
+        const qs = new URLSearchParams();
+        for (const [k, v] of Object.entries(params || {})) qs.set(k, v == null ? "" : String(v));
+        qs.set("_token", d.token || "");
+        res = await fetch(`http://127.0.0.1:${d.port}/run?${qs.toString()}`);
+      } catch (e) { /* transport failure — the daemon likely died */ }
+      if (res && res.ok) {
+        const out = await res.json();
+        // A RAISED exception rejects like runPython (drives the error overlay /
+        // callers' try-catch); a normal {error} return passes through resolved.
+        if (out && out.__exc__) {
+          const err = new Error(out.__exc__.message || "python error");
+          err.type = out.__exc__.type; err.traceback = out.__exc__.traceback;
+          throw err;
+        }
+        return out;
+      }
+      _daemon = null; _daemonPromise = null; _daemonFailed = false;   // unreachable — retire and re-ensure (respawn) next call
+    }
+    return fused.runPython("./engine.py", params, { key: null });
+  }
   // Mount-safe listing: origin lets the worker route a mount-backed dir through
   // /api/fs/list (and skip project-dir walks) instead of a kernel scan that
   // could drop the mount. Origin only; stays mount-agnostic.

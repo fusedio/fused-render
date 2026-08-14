@@ -51,6 +51,7 @@ if "__file__" not in globals():
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
+from procutil import spawn_python as _spawn_python
 
 CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/latex")
 TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/font cache
@@ -120,7 +121,7 @@ def _tectonic_install():
     # fetch happens up front instead of gating the user's first document — pass it
     # the cache and warm-progress dirs it needs for that.
     child = subprocess.Popen(
-        [sys.executable, worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR,
+        [_spawn_python(), worker, TECTONIC_VERSION, BIN_DIR, INSTALL_DIR,
          TECTONIC_CACHE, WARM_DIR],
         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, cwd=HERE, **detach_kwargs)
     logf.close()
@@ -176,7 +177,7 @@ def _ensure_warming(main_path: str):
         return
     os.makedirs(WARM_DIR, exist_ok=True)
     worker = os.path.join(HERE, "warm_worker.py")
-    args = [sys.executable, worker, bin_path, TECTONIC_CACHE, WARM_DIR,
+    args = [_spawn_python(), worker, bin_path, TECTONIC_CACHE, WARM_DIR,
             os.path.abspath(main_path), _build_dir_for(main_path)]
     logf = open(os.path.join(WARM_DIR, "worker.log"), "ab")
     detach_kwargs = (
