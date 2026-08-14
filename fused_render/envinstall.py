@@ -172,6 +172,22 @@ _CLAIM_GRACE_S = 30
 # is not an approximation of provenance — it is exactly it.
 _SPAWNED: set[int] = set()
 
+# How a worker we reaped actually died — `pid -> os.waitpid` status — kept just
+# long enough for `_crash_diagnosis` to read it, which is the very next thing
+# `_recorded_progress` does after the reap.
+#
+# The status is the ONLY place the difference between "killed" and "failed"
+# actually exists. Everything else is inference from absence: an empty
+# `worker.log` says the worker wrote nothing, which was the old diagnosis and
+# left the user picking between an OOM kill, a cancel, a quit and a sleeping
+# machine. A signal number says which.
+#
+# Bounded because a long-lived server spawns many installers and none of these
+# entries is load-bearing once its record has been read: `_ENDINGS_KEPT` most
+# recent, oldest evicted, and a miss simply falls back to the older wording.
+_ENDINGS: dict[int, int] = {}
+_ENDINGS_KEPT = 32
+
 # Backend attributes the loader reads to stay in step with it. Named here so
 # `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
 #
@@ -492,10 +508,11 @@ def _venv_runs(venv_dir: str) -> bool | None:
       False — DEFINITE evidence there is no usable interpreter here: the probe
               completed with a non-zero exit, or the spawn failed on the exe
               itself (`FileNotFoundError`/`PermissionError`/`NotADirectoryError`).
-      None  — INCONCLUSIVE: we could not complete the probe. A timeout, or any
+      None  — INCONCLUSIVE: we could not complete the probe. A timeout, any
               other `OSError` — `EAGAIN` (cannot fork under load), `EMFILE` (the
-              server is out of descriptors), `EINTR`. None of those are facts
-              about the venv, and the caller must not act on them.
+              server is out of descriptors), `EINTR` — or a child KILLED BY A
+              SIGNAL. None of those are facts about the venv, and the caller
+              must not act on them.
 
     The two-valued version of this was a real hazard, not a hypothetical:
     `subprocess.TimeoutExpired` IS a `SubprocessError` and the budget is 5s, so a
@@ -527,6 +544,15 @@ def _venv_runs(venv_dir: str) -> bool | None:
             [exe, "-c", ""],
             capture_output=True, text=True,
             timeout=_VENV_PROBE_TIMEOUT_S, env=_child_env(),
+            # close_fds=False for posix_spawn instead of fork()+exec — the same
+            # discipline `_probe_python` above already follows, and the site
+            # D277 flagged as still missing it. This probe runs in the SERVER
+            # process, which has PROJ resident (`fused`/geopandas pull it in),
+            # and fork() runs PROJ's pthread_atfork child handler: it
+            # `sqlite3_close()`s a handle that is no longer valid and the child
+            # takes SIGSEGV at ~1ms, before exec. `exe` is absolute, which
+            # posix_spawn also requires; a bare name would fork despite the flag.
+            close_fds=False,
         )
     except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
         # About the PATH we asked to execute, so evidence about the venv. Listed
@@ -542,6 +568,21 @@ def _venv_runs(venv_dir: str) -> bool | None:
             "could not complete the readiness probe of script venv %s (%s: %s) — "
             "leaving it alone; the run will surface any real failure itself",
             venv_dir, type(e).__name__, e,
+        )
+        return None
+    if proc.returncode < 0:
+        # Killed by a signal, so the interpreter never reached the point of
+        # answering — the same "no verdict" as a timeout, and it MUST NOT be
+        # read as one. This is the half of D277 that `close_fds=False` above
+        # does not cover: the flag removes the crash we know about (PROJ's
+        # atfork handler, -11), and this makes any OTHER signal — an OOM
+        # SIGKILL, a stray SIGTERM during shutdown, a code-signing kill after a
+        # macOS update — cost one wasted subprocess instead of a deleted ready
+        # marker and a multi-GB re-download of a venv that was fine.
+        logger.warning(
+            "the readiness probe of script venv %s was killed by signal %s — "
+            "leaving it alone; the run will surface any real failure itself",
+            venv_dir, -proc.returncode,
         )
         return None
     if proc.returncode != 0:
@@ -1059,8 +1100,10 @@ def _pid_alive(pid: int) -> bool:
     # owners branches on that status.
     if pid in _SPAWNED:
         try:
-            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            reaped, status = os.waitpid(pid, os.WNOHANG)
+            if reaped == pid:
                 _SPAWNED.discard(pid)  # reaped: the pid is now free to be reused
+                _remember_ending(pid, status)
                 return False
         except ChildProcessError:
             _SPAWNED.discard(pid)  # already reaped elsewhere; never reap it again
@@ -1168,6 +1211,80 @@ def _recorded_progress(key: str) -> dict | None:
     return data
 
 
+def _remember_ending(pid: int, status: int) -> None:
+    """Keep the `waitpid` status of a worker we just reaped. See `_ENDINGS`."""
+    _ENDINGS[pid] = status
+    while len(_ENDINGS) > _ENDINGS_KEPT:
+        _ENDINGS.pop(next(iter(_ENDINGS)))
+
+
+def _signal_name(number: int) -> str:
+    """`SIGKILL` for 9 — or "" for a number this platform has no name for, which
+    the caller says differently rather than printing "signal 9 (signal 9)"."""
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return ""
+
+
+def _how_it_ended(pid: object) -> str:
+    """How the worker at `pid` died, in a clause — or "" if we never reaped it.
+
+    Only ever reached for a worker THIS process spawned (`_ENDINGS` is written
+    by the one `waitpid` in `_pid_alive`, which is gated on `_SPAWNED`), so the
+    status is about the installer and not about a recycled pid.
+    """
+    if not isinstance(pid, int):
+        return ""
+    status = _ENDINGS.get(pid)
+    if status is None:
+        return ""
+    if os.WIFSIGNALED(status):
+        number = os.WTERMSIG(status)
+        name = _signal_name(number)
+        return _KILLED_BY.get(name) or (
+            f"it was killed by {name} (signal {number})" if name
+            else f"it was killed by signal {number}")
+    if os.WIFEXITED(status):
+        return f"it exited with status {os.WEXITSTATUS(status)} without finishing"
+    return ""
+
+
+#: What each way of being killed actually MEANS for an installer. The signal is
+#: the fact; these are the readings worth acting on, and they replace the list of
+#: four guesses this message used to end with — a user told "an OOM kill, a
+#: cancel, the app quitting, or the machine sleeping" has been told nothing,
+#: whereas a SIGKILL narrows it to the first and a SIGTERM to the middle two.
+#:
+#: Keyed by NAME rather than by number so this table can be written on a platform
+#: that has no SIGKILL: `getattr(signal, "SIGKILL", -1)` as a key would put every
+#: absent signal on -1 and silently drop all but the last.
+_KILLED_BY = {
+    "SIGKILL": (
+        "it was killed by SIGKILL (signal 9) — on an install this size that is "
+        "almost always an out-of-memory kill (a large `uv sync` on a machine "
+        "under memory pressure), or a force quit"
+    ),
+    "SIGTERM": (
+        "it was asked to stop (SIGTERM) — the ✕ on the download row, an unload, "
+        "or the app quitting mid-install"
+    ),
+    "SIGSEGV": (
+        "it crashed on startup (SIGSEGV) before it could run or log anything — "
+        "which is what a spawn that took the fork() path out of the server "
+        "process looks like (D277); please report it"
+    ),
+    "SIGBUS": (
+        "it crashed on startup (SIGBUS) before it could run or log anything; "
+        "please report it"
+    ),
+    "SIGHUP": (
+        "it was hung up on (SIGHUP) — the session that started it went away "
+        "before it could detach"
+    ),
+}
+
+
 def _crash_diagnosis(key: str, data: dict) -> str:
     """What to tell the user about a worker that died without finishing.
 
@@ -1183,6 +1300,14 @@ def _crash_diagnosis(key: str, data: dict) -> str:
     because "empty" is itself the diagnosis: a worker that failed writes to it,
     a worker that was killed cannot, so an empty log narrows the cause to the
     handful of things that kill a process outright.
+
+    **And when we reaped the worker ourselves, the guess becomes a fact.**
+    `_pid_alive` is the one place a `waitpid` status exists, and it was being
+    thrown away — so a message written FROM that status ("killed by SIGKILL",
+    "asked to stop (SIGTERM)") replaces the list of four things it might have
+    been. That list was the honest answer while the status was unavailable, and
+    it is still what a foreign or already-reaped pid gets; it is not what a
+    worker this server spawned and buried should get.
     """
     directory = progress_dir(key)
     try:
@@ -1197,9 +1322,15 @@ def _crash_diagnosis(key: str, data: dict) -> str:
 
     if log_size > 0:
         return f"{head} — see worker.log in {directory}"
+    ending = _how_it_ended(data.get("pid"))
+    log = f"worker.log in {directory} is " + ("empty" if log_size == 0 else "missing")
+    if ending:
+        # The status names the cause, so the log's emptiness is corroboration
+        # rather than the argument, and it comes second.
+        return (f"{head} — {ending}, and {log}, so there is nothing more it could "
+                "tell us. Re-opening the page retries it.")
     return (
-        f"{head} — and worker.log in {directory} is "
-        + ("empty" if log_size == 0 else "missing")
+        f"{head} — and {log}"
         + ", which means it was killed rather than failing: an out-of-memory kill "
         "(a large `uv sync` on a machine under memory pressure), a cancel, the app "
         "quitting, or the machine sleeping mid-install. Re-opening the page retries it."
@@ -1390,8 +1521,41 @@ def _worker_env() -> dict:
 def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int:
     """Launch the detached worker; returns its pid.
 
-    Detached (`start_new_session` / DETACHED_PROCESS) so the build outlives the
-    request that started it and any page reload — exactly docs.py's spawn.
+    Detached so the build outlives the request that started it and any page
+    reload — but on POSIX the CHILD is what detaches itself, with `os.setsid()`
+    as the first statement of `_env_install_worker.main`, rather than this
+    Popen passing `start_new_session=True`.
+
+    **That split is the whole point, and it is D277's crash one layer down.**
+    `start_new_session` forces CPython off `posix_spawn` and onto `fork()+exec`
+    (see `subprocess.Popen._execute_child`: the fast path requires
+    `not close_fds and not start_new_session`), and this spawn happens in the
+    SERVER process, where PROJ is resident — so `fork()` ran PROJ's
+    `pthread_atfork` child handler, which `sqlite3_close()`s a handle that is no
+    longer valid, and the worker took SIGSEGV at ~1ms, before exec.
+
+    The user-visible shape of that is worth naming, because it is deliberately
+    hard to read: the worker dies before it can write ANYTHING, so `worker.log`
+    is empty, `progress.json` still holds the parent's `spawn` record, and
+    `_crash_diagnosis` reports an installer that "was killed rather than
+    failing". The install never started, the page retries, and it fails again
+    the same way for as long as the server process lives — which for a runner
+    environment (`fused_render.ai.supervisor._ensure_venv`) means a model that
+    can never be loaded.
+
+    `close_fds=False` is what puts this on `posix_spawn`, and it costs nothing:
+    every fd Python opens is non-inheritable by default (PEP 446), so the
+    detached worker inherits the log file it is given and not the server's
+    sockets. `os.setsid()` in the child then restores everything
+    `start_new_session` bought — a session and process group of its own, so
+    `_kill`'s `killpg` reaches the `uv` it is waiting on, and so a terminal
+    signal aimed at the server does not take the download with it. The window
+    between exec and that call is a few milliseconds, and `_kill` already
+    handles a pid that is not (yet) a group leader.
+
+    Windows keeps `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`: there is no
+    fork there, so there is nothing to avoid, and `CTRL_BREAK_EVENT` (which
+    `_kill` sends) needs the group flag.
 
     Every path the worker needs travels in argv rather than being re-derived
     there, because the worker must not import `fused_render` (D152: importing the
@@ -1426,7 +1590,7 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     # and reports errors about arguments this call never passes.
     detach: dict[str, Any] = (
         {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt" else {"start_new_session": True}
+        if os.name == "nt" else {"close_fds": False}
     )
     with open(os.path.join(d, "worker.log"), "ab") as logf:
         child = subprocess.Popen(

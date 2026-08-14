@@ -495,6 +495,33 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
         raise
 
 
+def _detach():
+    """Lead our own session, so this install outlives the request that began it.
+
+    The DETACHMENT is done here rather than by the spawner, and that is not a
+    style choice: `subprocess.Popen(start_new_session=True)` forces CPython off
+    `posix_spawn` onto `fork()+exec`, and the spawner is the SERVER process,
+    where PROJ is resident — its `pthread_atfork` child handler closes a stale
+    SQLite handle and the forked child dies of SIGSEGV before it ever reaches
+    this file (D277's crash; see `envinstall._spawn`). Called from the child,
+    a few milliseconds later, it buys exactly the same thing with no fork.
+
+    First statement of the run, before any record is written and long before uv
+    is started, because it is `envinstall._kill`'s `killpg` that reaches that uv
+    — and `_kill` only signals a group whose leader is this pid.
+
+    EPERM means we are already a process-group leader, which is the same end
+    state; anything else here is not worth failing an install over, since the
+    only thing lost is the tidiness of the teardown.
+    """
+    if os.name == "nt" or not hasattr(os, "setsid"):
+        return  # Windows detaches at spawn time (DETACHED_PROCESS) and never forks
+    try:
+        os.setsid()
+    except OSError:
+        pass
+
+
 def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
     <python_executable> <acquire_python>`
@@ -504,6 +531,7 @@ def main(args):
     the literal `""` instead, the last slot would have this worker try to download a
     Python version called nothing on every ordinary install.
     """
+    _detach()
     if len(args) < 7:
         print(__doc__, file=sys.stderr)
         sys.exit(2)

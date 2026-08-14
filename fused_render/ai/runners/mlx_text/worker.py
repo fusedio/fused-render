@@ -44,9 +44,46 @@ def download(model_id):
     return worker_base.download_snapshot(model_id)
 
 
+def _mlx_load():
+    """`mlx_lm.load`, or an error that names the ENVIRONMENT rather than a module.
+
+    An ImportError out of mlx-lm is never about the model being loaded, and by
+    the time it reaches the AI Models page it has lost every trace of that: what
+    the user reads is `cannot import name 'AutoTokenizer' from 'transformers'`,
+    raised inside mlx-lm's tokenizer module, printed beside the name of a Qwen
+    repo that is perfectly fine. mlx-lm pulls transformers in for the tokenizer,
+    so an interpreter whose packages are half-there fails exactly there — and
+    the fix is this environment, not the model, not the repo, and not anything
+    the user can reach by trying a different one.
+
+    Half-there is a real state, not a hypothetical: `uv sync` reconciles a venv
+    in place, so an install that is killed partway (see
+    `envinstall._crash_diagnosis`) can leave mlx-lm installed and the
+    transformers it depends on removed or half-written.
+
+    The same message covers a missing `mlx` — which the registry's Apple Silicon
+    gate should have prevented — because the answer is identical: this
+    environment is not what it claims to be, and it is rebuilt by removing it.
+    """
+    try:
+        from mlx_lm import load as mlx_load
+    except ImportError as e:
+        raise RuntimeError(
+            f"the MLX runner environment at {sys.prefix} is incomplete — "
+            f"{e.__class__.__name__}: {e}.\n\n"
+            "That is an environment failure, not a problem with this model: "
+            "mlx-lm imports transformers for the tokenizer, so an install that "
+            "was interrupted (or rebuilt while a worker was using it) fails on "
+            "whichever import comes first.\n\n"
+            "Delete that folder and load the model again to have it rebuilt. "
+            "The weights are cached separately and are not downloaded again."
+        ) from e
+    return mlx_load
+
+
 def load(model_id, path):
     """`path` is what `download` returned — the snapshot directory."""
-    from mlx_lm import load as mlx_load
+    mlx_load = _mlx_load()
 
     model, tokenizer = mlx_load(path)
     _loaded["model"] = model
