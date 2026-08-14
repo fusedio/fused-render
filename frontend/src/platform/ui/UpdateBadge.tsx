@@ -1,9 +1,9 @@
 // Sidebar self-update affordance. Renders nothing until /api/config's
 // `update` field says a newer version exists (packaged mac app only — the
 // field is absent everywhere else), then shows an "Update available" row that
-// expands into a small panel: install button, download/brew progress, and the
-// brew-failure fallback (the exact command to run by hand — a brew-managed
-// install is never updated behind brew's back).
+// expands into a small panel. DMG installs get an install button with download
+// progress; brew-managed installs get the exact `brew upgrade` command to run
+// by hand — the app never runs brew itself.
 //
 // Owns its own slow poll (60s idle, 2s while installing) instead of riding
 // ServerStatusBanner's 5s one: the two components live in different trees and
@@ -97,12 +97,25 @@ export default function UpdateBadge() {
       </button>
       {open && (
         <div className="update-badge-panel">
-          {status.state === "available" && (
+          {status.state === "available" && status.method === "brew" && (
             <>
               <div className="update-badge-text">
-                {status.method === "brew"
-                  ? "Installed with Homebrew — updating runs brew for you."
-                  : "Downloads the new version and installs it in place."}
+                Installed with Homebrew — run this in your terminal:
+              </div>
+              {status.manual_command && (
+                <div className="update-badge-command">
+                  <code>{status.manual_command}</code>
+                  <button type="button" className="update-badge-copy" onClick={copyCommand}>
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+          {status.state === "available" && status.method !== "brew" && (
+            <>
+              <div className="update-badge-text">
+                Downloads the new version and installs it in place.
               </div>
               <button type="button" className="update-badge-action" onClick={install}>
                 Update to v{status.latest_version}
@@ -111,9 +124,7 @@ export default function UpdateBadge() {
           )}
           {status.state === "installing" && (
             <div className="update-badge-text">
-              {status.method === "brew"
-                ? "Updating via Homebrew…"
-                : `Downloading… ${formatMb(status.progress)}`}
+              Downloading… {formatMb(status.progress)}
             </div>
           )}
           {status.state === "installed" && (

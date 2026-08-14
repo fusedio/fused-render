@@ -209,8 +209,11 @@ def _acquire_python(version):
     # handle and SIGSEGVs before exec — a bare returncode -11 with no stderr. `uv` is
     # dir-qualified here (it comes from `shutil.which`), which posix_spawn also
     # requires; a bare command name forks despite the flag.
+    # This worker runs detached with no console of its own, so Windows would
+    # otherwise pop a fresh one for a console-subsystem child like uv.exe.
     proc = subprocess.run([uv, "python", "install", version], env=_uv_env(),
-                          capture_output=True, text=True, close_fds=False)
+                          capture_output=True, text=True, close_fds=False,
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     if proc.returncode != 0:
         # Verbatim, exactly like the requirements install below: uv's own text names
         # the real problem (an offline machine, a proxy refusing the download, no
@@ -335,7 +338,8 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     # close_fds=False for posix_spawn rather than fork()+exec — the same discipline
     # every other spawn in this codebase follows; see `_acquire_python` above.
     proc = subprocess.run(cmd, cwd=project_dir, env=env,
-                          capture_output=True, text=True, close_fds=False)
+                          capture_output=True, text=True, close_fds=False,
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     if proc.returncode != 0:
         # Verbatim: uv's own text names the real problem (no wheel for this
         # platform, a bad pin, no network, a lock that no longer matches the

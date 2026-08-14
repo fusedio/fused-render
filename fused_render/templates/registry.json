@@ -565,5 +565,14 @@
     "code",
     "claude",
     "reader"
+  ],
+  ".joblib": [
+    "joblib_model"
+  ],
+  ".pkl": [
+    "joblib_model"
+  ],
+  ".pickle": [
+    "joblib_model"
   ]
 }

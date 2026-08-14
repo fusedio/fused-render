@@ -301,18 +301,20 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     taken away.
 
     What goes is exactly the chrome that acts on the pane: `#left` (the frame,
-    the pins, the highlight, the popover), `#divider` (no ratio to drag), and —
-    out of the `#anntools` strip — the annotate switch, the `leftmode` picker
-    and the view toggle. The strip itself STAYS, because the kebab stays: its
-    "New session in terminal" acts on the TARGET, not on the pane, and a folder
-    with no preview is still a thing to hand to a terminal. The `nopane` body
-    class is the styling half of that survival — it hands the kebab the row's
+    the pins, the highlight, the popover), `#divider` (no ratio to drag), both
+    copies of the composer's screenshot button (a whole-pane picture of no pane),
+    and — out of the `#anntools` strip — the annotate switch, the `leftmode`
+    picker and the view toggle. The strip itself STAYS, because the kebab stays:
+    its "New session in terminal" acts on the TARGET, not on the pane, and a
+    folder with no preview is still a thing to hand to a terminal. The `nopane`
+    body class is the styling half of that survival — it hands the kebab the row's
     auto margin, whose usual owner (#annbtn) just left the document.
     """
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert 'for (const id of ["annbtn", "leftmode", "viewbtn", "left", "divider"]) {' in body
+    assert ('for (const id of ["annbtn", "viewshot", "hviewshot", "leftmode", '
+            '"viewbtn",\n                    "left", "divider"]) {') in body
     assert "if (el) el.remove();" in body
     assert '"anntools"' not in body, "the strip survives — the kebab lives there"
     assert 'document.body.classList.add("nopane");' in body
@@ -384,12 +386,15 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     for fn in ("function applySplit() {", "function applyNarrowView() {"):
         body = code[code.index(fn):code.index(fn) + 300]
         assert "if (noPane) return;" in body, fn
-    # renderAnn draws two things and they answer differently now: the pins need a
+    # renderAnn draws THREE things and they answer differently now: the pins need a
     # layer (null bindings when the host shows nothing marked, and the loop is
-    # skipped), the chips are the payload of a message this chat can still send.
+    # skipped), the annotation chips are the payload of a message this chat can
+    # still send, and the ATTACHED PICTURES (D287) belong to no pane at all — a
+    # screenshot pasted or dropped into a folder chat with no preview is still an
+    # attachment, so the no-pane exit draws those and only those.
     render = code[code.index("function renderAnn() {"):]
     render = render[:render.index("\n}\n")]
-    assert "if (noPane && !CHAT_ONLY) return;" in render
+    assert "if (noPane && !CHAT_ONLY) { renderShotChips(); return; }" in render
     assert "if (annPins) {" in render
 
 
@@ -699,11 +704,80 @@ def test_the_hosted_switch_hides_itself_when_the_host_shows_nothing_marked():
     assert "#annbtn[hidden] { display: none; }" in _pane_source(), \
         "`display: flex` outranks the UA's [hidden] rule"
     start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
-    wiring = code[start:start + 400]
+    wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start) + 40]
     assert 'window.addEventListener("focus", annPollTarget);' in wiring
     assert "setInterval(annPollTarget, ANN_TARGET_POLL_MS);" in wiring
     assert "annWatchTarget(annOwnFrame);" in wiring, \
         "and the split layout still adopts its own frame instead"
+
+
+def test_a_sidebar_boot_starts_with_an_empty_annotation_list():
+    """The shell tears the sidebar frame down on every mode switch (it is keyed
+    on the mode) and on a close, so at boot "the page reloaded" and "the user
+    left for Git and came back" are the same event — the `annotations` param
+    cannot say which. Hydrating from it re-armed pins for a review the user had
+    walked away from, sent receipts included. So a CHAT_ONLY boot starts empty
+    and the stale param is ignored, not rewritten — while the standalone split
+    layout, whose URL is its own, keeps its reload-restores-the-review behavior.
+    """
+    code = _pane_code()
+    assert "let annotations = CHAT_ONLY ? [] : annLoad();" in code
+    # Ignored means ignored: nothing strips the stale param either (the same
+    # posture the folder URL's leftovers get, see the stale-split test below).
+    boot = code[code.index("let annotations = "):]
+    assert 'params.delete("annotations"' not in boot
+
+
+def test_the_sidebar_teardown_removes_the_layer_it_injected():
+    """The pin layer is OUR node in the TARGET's document, and the host detaches
+    this document without warning — the sidebar frame is keyed on the mode, so
+    Git, History and the close button all destroy it. Nothing survives us to
+    clean the layer up, which left the pins painted over the content pane for as
+    long as the user stayed in the other mode. `pagehide` fires synchronously on
+    detach; removing the host element takes the shadow tree — pins, highlight,
+    and a portaled composer — with it.
+
+    DOM removal only, no param write: a set() from pagehide lands in the
+    runtime's coalescing queue AFTER its own pagehide flush has run, so it may
+    never reach the URL at all.
+    """
+    code = _pane_code()
+    start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
+    wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start)]
+    hide = wiring[wiring.index('window.addEventListener("pagehide"'):]
+    assert "annTargetDoc()" in hide
+    assert 'doc.querySelector("[" + ANN_LAYER_MARK + "]")' in hide
+    assert "host.remove();" in hide
+    assert "params.set" not in hide, "no param writes from a dying document"
+
+
+def test_the_sidebar_teardown_releases_the_target_for_the_next_instance():
+    """The adoption guards — `__fusedAnnWatched` on the host's iframe element,
+    `__fusedAnnWired` on its document — exist to stop ONE instance stacking a
+    second set of listeners. But both objects are the HOST's and outlive the
+    sidebar, so to the next sidebar instance (Git and back, close and reopen)
+    they read as "already adopted": annWatchTarget and annWireTarget never ran,
+    and the switch sat armed over a pane with no hover ring and no click —
+    the only wiring the target ever had belonged to a torn-down document whose
+    handlers the browser no longer runs. The teardown must hand the target
+    back: clear both guards, and disarm `annOn` so any leftover handler of ours
+    that the browser does still run gates itself out.
+
+    The MutationObserver goes the same way, and BEFORE the guards: it watches
+    the HOST's document, and a mutation over there between the teardown and our
+    destruction would run renderAnn → annSyncTarget — which re-injects the
+    layer and re-sets the very guards the teardown just cleared.
+    """
+    code = _pane_code()
+    start = code.index("if (CHAT_ONLY) {\n  annPollTarget();")
+    wiring = code[start:code.index("annWatchTarget(annOwnFrame);", start)]
+    hide = wiring[wiring.index('window.addEventListener("pagehide"'):]
+    assert "annOn = false;" in hide
+    assert "annObserver.disconnect();" in hide
+    assert hide.index("annObserver.disconnect();") \
+        < hide.index("annFrame.__fusedAnnWatched = false;")
+    assert "annFrame.__fusedAnnWatched = false;" in hide
+    assert "doc.__fusedAnnWired = false;" in hide
 
 
 def test_a_stale_split_param_on_a_folder_url_is_ignored_not_an_error():
@@ -1267,21 +1341,27 @@ def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
 
     A control acting on a hidden half is a dead control, and a disabled one is
     worse than absent: it still occupies the row and still advertises a feature
-    this view cannot perform. Both of these act on the left preview and nothing
+    this view cannot perform. Two of these act on the left preview and nothing
     else — the annotate toggle (nothing to point at, no frame to place a pin in)
     and the left-view picker (nothing to choose a view FOR) — so the chat-only
     view drops them, and Preview, where they both work, keeps them.
 
-    A third control used to be in the list, the composer's "attach a screenshot
-    of the app pane" pill, and it was the one that did NOT follow from "it cannot
-    work here" — the parked column keeps a real viewport, so the capture worked
-    fine from the chat view. It was hidden under the stronger reading of the rule
-    this test is named for: a view showing no preview offers no features OF the
-    preview. That control has since been deleted outright, which is the same
-    answer taken further.
+    The third, the composer's screenshot button, is the one that does NOT follow
+    from "it cannot work here": the parked column keeps a real viewport, so the
+    capture works fine from the chat view. It is hidden under the stronger reading
+    of the rule this test is named for — a view showing no preview offers no
+    features OF the preview — and the picture it produces is one the user is
+    supposed to look at before sending, which they cannot do from a view that is
+    not showing the pane.
+
+    Its CHIP is deliberately not in the list, and that is the line between the two:
+    the button is a feature of the preview, the chip is chat content — a picture
+    already taken, about to be sent. Hiding it would hide part of the message while
+    leaving the message carrying it.
     """
     block = _media_block()
     assert ("body.view-chat #annbtn,\n"
+            "    body.view-chat .viewshot,\n"
             "    body.view-chat #leftmode { display: none; }") in block
     # Absent, not disabled: nothing here reaches for `disabled` or aria-disabled
     # as a substitute.
@@ -1290,6 +1370,9 @@ def test_no_control_for_the_hidden_half_is_reachable_in_the_chat_only_view():
     # are the ones collapsing #chat to its strip.
     assert "body.view-preview #annbtn" not in block
     assert "body.view-preview #leftmode" not in block
+    assert "body.view-preview .viewshot" not in block
+    # The chips row stays in both views — it is the message, not the preview.
+    assert "annchips" not in block
 
 
 def test_no_armed_preview_control_survives_leaving_the_preview_view():
