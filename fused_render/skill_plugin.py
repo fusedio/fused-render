@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 # guidance). `tests/test_skill_plugin.py` pins this against user_skills.SKILLS
 # and against the real repo dirs, so the two lists cannot drift apart.
 SKILLS = (
+    "fused-render-ai",
     "fused-render-authoring",
     "fused-render-custom-templates",
     "fused-render-index",

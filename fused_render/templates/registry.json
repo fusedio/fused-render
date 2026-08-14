@@ -398,8 +398,8 @@
     "netcdf"
   ],
   "/": [
-    "_listing",
     "claude",
+    "_listing",
     "git",
     "graph",
     "zarr_aoi",
@@ -565,5 +565,14 @@
     "code",
     "claude",
     "reader"
+  ],
+  ".joblib": [
+    "joblib_model"
+  ],
+  ".pkl": [
+    "joblib_model"
+  ],
+  ".pickle": [
+    "joblib_model"
   ]
 }

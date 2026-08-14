@@ -451,12 +451,16 @@ class _Sibling:
 class _Info:
     def __init__(self, siblings):
         self.siblings = siblings
+        #: What the requested revision resolved to. The download pins itself to
+        #: this rather than to the name it asked for, so the list and the fetch
+        #: cannot describe different commits.
+        self.sha = "c0mm1t"
 
 
 def _hub(monkeypatch, base, siblings):
     """Stand in for one Hub metadata call."""
     class _Api:
-        def model_info(self, model_id, files_metadata=False):
+        def model_info(self, model_id, revision=None, files_metadata=False):
             return _Info(siblings)
 
     import types

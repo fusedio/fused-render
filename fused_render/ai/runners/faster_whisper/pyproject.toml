@@ -1,0 +1,36 @@
+# The faster-whisper transcription runner's environment (SPEC §40, PY-16).
+#
+# This folder exists so that CTranslate2 is named in exactly one place and lives
+# in exactly one interpreter — not fused-render's. `envinstall` (PY-18) builds
+# it on first use with the same detached `uv sync` and the same verbatim errors
+# any declaring folder gets.
+#
+# **No system ffmpeg.** Whisper implementations traditionally shell out to
+# `ffmpeg` for anything that is not a 16kHz wav, which is a dependency this app
+# does not ship and cannot promise — it bundles rclone, not ffmpeg, so a runner
+# that assumed it would work on the machine it was written on and fail on a
+# user's with a subprocess error nobody can act on. faster-whisper decodes
+# through PyAV, whose wheels CARRY the ffmpeg libraries, so the dependency stays
+# inside this file. That is the property the runner-folder design exists to
+# preserve, and it is why `worker.py` never calls `subprocess`.
+#
+# What each earns:
+#   faster-whisper  the model, the decoder and the VAD. Pulls in ctranslate2
+#                   (which builds wheels for macOS on both architectures, Linux
+#                   and Windows — the reason this capability is available
+#                   everywhere) and av (the ffmpeg libraries, see above).
+#   huggingface_hub downloads
+#   psutil          answers "how much memory is this costing"
+[project]
+name = "fused-render-runner-faster-whisper"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "faster-whisper",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

@@ -64,12 +64,17 @@ THREE THINGS THAT LOOK WRONG AND ARE NOT
    rootless form is not enough); the consequence of a mismatch is now `stale`
    rather than silence.
 
+   Serving a stale list does not mean ignoring staleness: the request also fires
+   the ordinary background freshness check (`_note_tab_opened`), so a tab open is
+   a chance for the index to catch up, never a wait for it to.
+
 Order is the index's own row order, which is path order: the compaction writes
 dirs.parquet `ORDER BY dir` (`store._compact_locked`), and stripping the trailing
 `/.git` preserves that order. Free, deterministic, no sort. Nested repos appear
 alongside their parent rather than being collapsed away — a repo inside a repo is
 still a repo you might want to open.
 """
+import itertools
 import logging
 import os
 
@@ -93,6 +98,12 @@ router = APIRouter()
 # scan records opaquely" and may grow to hold names that have nothing to do with
 # git, at which point iterating it here would start listing non-repositories.
 GIT_DIR = ".git"
+
+# Whose turn it is to be freshness-checked when the tab is opened
+# (`_note_tab_opened`). Unbounded and never reset — it is only ever read modulo
+# the root count, and a counter that survives a config change simply resumes the
+# rotation somewhere in the middle of the new list.
+_root_turn = itertools.count()
 
 
 class IndexUnreadable(RuntimeError):
@@ -149,8 +160,65 @@ def _not_ready(cfg, reason: str) -> dict:
             "stale": False, "repos": []}
 
 
+def _note_tab_opened(cfg) -> None:
+    """Ask the index whether it is behind, in the background, exactly as
+    /api/fs/list does for the folder the explorer just opened.
+
+    This tab reads nothing but the index, so without a nudge of its own it is
+    the one surface in the app that can never notice a stale one — it would
+    happily serve a repo list from a scan hours old, marked `stale: false`,
+    because as far as the index knows it IS as fresh as it gets.
+
+    The paths checked are the configured scan ROOTS, because the tab is
+    machine-wide: there is no open folder to name, and note_folder_opened only
+    acts on a path inside a root anyway. Named limitation, and it is a real one:
+    a root's own mtime moves only when its DIRECT entries change, so a repo
+    cloned three levels down does not make the root look stale and is not
+    detected here. This is a cheap check that occasionally helps, not a
+    guarantee that the tab is current — the honest answer to "is this list
+    complete" remains `stale` plus the next scheduled scan.
+
+    Exactly ONE root per request, taken round-robin, because the checker admits
+    exactly one check at a time: note_folder_opened acquires a non-blocking slot
+    (routers/index._freshness_slot) and its background thread releases it a
+    config read — and possibly a duckdb lookup — later. Offering every root in a
+    loop therefore does not check every root; it checks the FIRST one and loses
+    the rest microseconds later on a failed acquire, every request, forever. The
+    first root would also take the slot on requests where it is not even due,
+    since due-ness is decided after the acquire. Rotating the offer is what makes
+    "each root gets checked" true, and it fits the slot rather than fighting it:
+    a tab render never queues more than one check.
+
+    note_folder_opened never raises and never blocks (it spawns a thread), so
+    this costs the request one lock acquire."""
+    try:
+        # Function-local, like `_fresh`'s: routers/index.py is the module that
+        # owns both the scan roots and the freshness hook, and importing it at
+        # module scope would close the cycle between the two routers.
+        from fused_render.server.routers.index import note_folder_opened, scan_roots
+
+        roots = scan_roots(cfg)
+        if not roots:
+            return
+        # next() on an itertools.count is atomic in CPython, which is all the
+        # synchronization a turn counter needs — two concurrent tab renders
+        # taking the same turn, or skipping one, costs a check nobody was
+        # promised. The counter is per PROCESS, not per client: the question
+        # ("is this root behind?") is about the machine, so two windows sharing
+        # the rotation is right rather than merely tolerable.
+        root = roots[next(_root_turn) % len(roots)]
+        note_folder_opened(root)
+    except Exception:  # noqa: BLE001 - housekeeping must never become the answer
+        logger.debug("could not check index freshness for the repos tab",
+                     exc_info=True)
+
+
 def _repos() -> dict:
     cfg = load_config()
+    # Off the event loop already (run_in_threadpool below), and fire-and-forget:
+    # the repo list is served from whatever the index holds right now, whether or
+    # not this starts a scan.
+    _note_tab_opened(cfg)
     # The only genuinely unanswerable state: no store to read. Everything past here
     # queries first and judges freshness second — rows win over signatures.
     if read_manifest(cfg) is None or not os.path.exists(cfg.dirs_parquet):

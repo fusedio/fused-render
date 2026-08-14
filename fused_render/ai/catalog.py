@@ -78,6 +78,41 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "original — the full-precision one OOMs on 16GB machines.",
         },
     ],
+    # CTranslate2 conversions ONLY. `openai/whisper-large-v3` is the repo
+    # everyone reaches for and it does not load here — the runner reads
+    # CTranslate2's `model.bin`, not transformers' safetensors — so suggesting
+    # one would hand the user the exact failure `worker.py` had to write an
+    # error message about.
+    #
+    # Sizes are None because nobody has measured a completed download of these
+    # on disk, and the file's own rule is that an unmeasured size shows as "—"
+    # rather than as a figure someone plans a multi-GB pull around (D255).
+    registry.SPEECH_TO_TEXT: [
+        {
+            "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
+            "label": "Whisper large-v3 turbo (CT2)",
+            "size_gb": None,
+            "note": "large-v3 accuracy at roughly a quarter of its decoding "
+                    "cost — the one to start with. Usable on CPU: a laptop "
+                    "transcribes faster than real time.",
+        },
+        {
+            "id": "Systran/faster-whisper-medium",
+            "label": "Whisper medium (CT2)",
+            "size_gb": None,
+            "note": "The middle option. Slower than turbo for no gain in "
+                    "English; worth trying if a language turbo handles badly "
+                    "is the problem.",
+        },
+        {
+            "id": "Systran/faster-whisper-small",
+            "label": "Whisper small (CT2)",
+            "size_gb": None,
+            "note": "Fast and light enough for an old machine. Noticeably "
+                    "weaker — it drops names and punctuation the larger models "
+                    "get right.",
+        },
+    ],
 }
 
 #: The default for each capability: what "just load something" means.

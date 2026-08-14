@@ -1023,8 +1023,8 @@ def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
 
 # --- a header the app interpreter ALREADY satisfies ----------------------------
 #
-# The `[bundled]` extra puts pandas/duckdb/pyarrow/numpy/geopandas/rasterio/zarr/
-# pyproj/keyring/yaml/cryptography on the app interpreter, and D172 stops a header
+# The `[bundled]` extra puts pandas/duckdb/pyarrow/numpy/pillow/openpyxl/
+# requests/msgpack on the app interpreter, and D172 stops a header
 # being EXTENDED with a baseline — but nothing checked whether a header was already
 # SATISFIED. So a header naming `pandas` built a multi-GB venv beside the pandas the
 # app already ships. Measured on one machine's venv store: the set
@@ -1620,8 +1620,12 @@ def test_concurrent_probes_resolve_once_and_never_cache_the_loser(monkeypatch):
             seen.append(exe)
         time.sleep(0.2)  # wide enough that every thread is inside at once
         if first:
-            return {"prefix": sys.prefix, "executable": exe}, ""
-        return None, "a second probe of the same candidate deliberately fails"
+            return {"prefix": sys.prefix, "executable": exe}, "", True
+        # Conclusive on purpose: this test is about a losing thread's cached None
+        # landing on the winner's path, so the failure must be one that IS eligible
+        # for caching. An inconclusive one would never be cached and would prove
+        # nothing here.
+        return None, "a second probe of the same candidate deliberately fails", True
 
     monkeypatch.setattr(engine, "_probe", probe_once)
     # No rung-2 rescue: a failed direct probe is a cached None, which is the
@@ -1698,3 +1702,209 @@ def test_two_threads_writing_the_wrapper_both_succeed(tmp_path, monkeypatch):
     assert not [
         n for n in os.listdir(os.path.dirname(wrapper_path)) if n.endswith(".tmp")
     ], "a temp file was left behind"
+
+
+# --- fork-safety + the three-valued probe (PROJ atfork regression) ------------
+#
+# Both probes here spawn from the SERVER process, which has libproj resident (via
+# `fused`/geopandas). `close_fds=True` — CPython's default — forces fork()+exec,
+# and the forked child runs PROJ's pthread_atfork handler and takes SIGSEGV at
+# ~1ms, before exec. tests/test_worker_forksafe.py carries the full stack trace
+# and pins the same rule for the worker spawns; these two sites were missed.
+#
+# The crash was then made PERMANENT by the second half: `_resolve_app_interpreter`
+# read `returncode == -11` as a definite "this is not a usable interpreter" and
+# cached None for the life of the process, and no HTTP path resets that cache. One
+# unlucky spawn disabled every header-less script until restart. So the tests come
+# in pairs: don't fork, and — should something else ever kill a child — don't
+# remember it.
+
+
+def test_the_interpreter_probe_disables_fork(monkeypatch):
+    """`_probe` must spawn with close_fds=False (posix_spawn, no atfork handlers)."""
+    captured = {}
+    real_run = subprocess.run
+
+    def fake_run(argv, **kw):
+        captured.update(kw)
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(engine.subprocess, "run", fake_run)
+    engine._probe(sys.executable)
+    assert captured.get("close_fds") is False, (
+        "the interpreter probe must pass close_fds=False so the child is spawned "
+        "via posix_spawn, not fork() (which runs PROJ's crashing atfork handler)"
+    )
+
+
+def test_the_app_package_probe_disables_fork(monkeypatch):
+    """`_probe_app_packages` spawns from the same process, under the same hazard."""
+    captured = {}
+    real_run = subprocess.run
+
+    def fake_run(argv, **kw):
+        captured.update(kw)
+        return real_run(argv, **kw)
+
+    monkeypatch.setattr(engine.subprocess, "run", fake_run)
+    engine._probe_app_packages(sys.executable)
+    assert captured.get("close_fds") is False, (
+        "the app package probe must pass close_fds=False — it spawns from the "
+        "server process, where PROJ's atfork handler is registered"
+    )
+
+
+def _fake_completed(returncode, stdout="", stderr=""):
+    return subprocess.CompletedProcess(
+        args=["python", "-c", "..."], returncode=returncode,
+        stdout=stdout, stderr=stderr,
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome, conclusive, why",
+    [
+        # Definite: each of these IS a fact about the candidate itself.
+        (FileNotFoundError(2, "No such file or directory"), True, "missing path"),
+        (PermissionError(13, "Permission denied"), True, "unreadable path"),
+        (NotADirectoryError(20, "Not a directory"), True, "a file used as a dir"),
+        # Inconclusive: the spawn failed for a reason a retry may well not hit.
+        (OSError(35, "Resource temporarily unavailable"), False, "EAGAIN"),
+        (subprocess.TimeoutExpired(cmd="python", timeout=1), False, "timeout"),
+    ],
+)
+def test_the_probe_splits_spawn_failures_by_exception_type(
+    outcome, conclusive, why, monkeypatch
+):
+    """D212's split, applied to the probe D212 names as its own model.
+
+    By exception TYPE, not by errno: a missing/unreadable/not-a-directory path is
+    definite, any other OSError is transient.
+    """
+    def boom(*a, **kw):
+        raise outcome
+
+    monkeypatch.setattr(engine.subprocess, "run", boom)
+    info, detail, got = engine._probe("/some/candidate")
+    assert info is None
+    assert got is conclusive, f"{why} should be {'' if conclusive else 'in'}conclusive"
+    assert detail, "a failure must always say why"
+
+
+def test_a_signal_killed_probe_is_inconclusive(monkeypatch):
+    """`returncode < 0` — the -11 this whole section exists for.
+
+    The child never got to run our code, so it reported NOTHING about itself. It
+    is not a rejection, and the non-zero-exit branch must not swallow it.
+    """
+    monkeypatch.setattr(engine.subprocess, "run",
+                        lambda *a, **kw: _fake_completed(-11))
+    info, detail, conclusive = engine._probe("/some/candidate")
+    assert info is None
+    assert conclusive is False, "a SIGSEGV'd child must never be cached as a verdict"
+    assert "signal 11" in detail
+
+
+def test_a_nonzero_exit_is_still_a_definite_rejection(monkeypatch):
+    """The contrast: the child RAN and said no. That is an answer, and cacheable."""
+    monkeypatch.setattr(
+        engine.subprocess, "run",
+        lambda *a, **kw: _fake_completed(1, stderr="ModuleNotFoundError: encodings"),
+    )
+    info, detail, conclusive = engine._probe("/some/candidate")
+    assert info is None
+    assert conclusive is True
+    assert "encodings" in detail
+
+
+def test_an_inconclusive_probe_is_not_remembered(monkeypatch):
+    """The bug, end to end: one signal-killed spawn must not be terminal.
+
+    Before the fix the first call cached None and every header-less script failed
+    with InterpreterUnavailable until the server restarted. Now the failure costs
+    exactly one extra subprocess on the next request.
+    """
+    candidate, _autodetected = engine._interpreter_candidate()
+    calls = []
+
+    def probe(exe):
+        calls.append(exe)
+        if len(calls) == 1:
+            return None, "killed by signal 11", False
+        return {"prefix": sys.prefix, "executable": exe}, "", True
+
+    monkeypatch.setattr(engine, "_probe", probe)
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: (None, "stub"))
+
+    assert engine.app_interpreter() is None, "an inconclusive probe is not a verdict"
+    assert engine.app_interpreter() == candidate, (
+        "the transient failure was cached: the second call never re-probed"
+    )
+    assert len(calls) == 2
+
+
+def test_a_definite_rejection_is_remembered(monkeypatch):
+    """The other half of the same rule — the fix must not cost the cache.
+
+    A candidate that ran and reported a foreign prefix has answered the question,
+    so re-spawning it on every request would be pure waste.
+    """
+    calls = []
+
+    def probe(exe):
+        calls.append(exe)
+        return {"prefix": "/somewhere/else", "executable": exe}, "", True
+
+    monkeypatch.setattr(engine, "_probe", probe)
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: (None, "stub"))
+
+    assert engine.app_interpreter() is None
+    assert engine.app_interpreter() is None
+    assert len(calls) == 1, "a definite rejection was re-probed"
+
+
+def test_an_inconclusive_first_rung_makes_the_whole_answer_provisional(monkeypatch):
+    """Rung 2 is built FROM rung 1, so it cannot rescue rung 1's uncertainty.
+
+    A wrapper that definitely fails still leaves the candidate itself unjudged —
+    and the candidate is the thing that would have worked directly.
+    """
+    def probe(exe):
+        if exe == "/the/wrapper":
+            return None, "the wrapper reports a foreign prefix", True
+        return None, "killed by signal 11", False
+
+    monkeypatch.setattr(engine, "_probe", probe)
+    monkeypatch.setattr(engine, "_wrapper_interpreter", lambda c: ("/the/wrapper", ""))
+
+    exe, conclusive = engine._resolve_app_interpreter()
+    assert exe is None
+    assert conclusive is False, (
+        "a definite rung 2 must not launder an inconclusive rung 1 into a "
+        "cacheable answer"
+    )
+
+
+def test_app_packages_does_not_cache_an_unresolved_interpreter(monkeypatch):
+    """`app_packages` used to cache None on the premise that `app_interpreter`
+    was terminal. Making the interpreter retryable voids that premise: caching
+    here would lose the PEP 723 fast path for the life of the process after one
+    transient spawn failure, even once the interpreter resolved fine."""
+    engine.reset_app_packages_cache()
+    try:
+        resolved = []
+
+        def interpreter():
+            resolved.append(1)
+            return None if len(resolved) == 1 else sys.executable
+
+        monkeypatch.setattr(engine, "app_interpreter", interpreter)
+        monkeypatch.setattr(engine, "_probe_app_packages",
+                            lambda exe: {"pandas": "2.0"})
+
+        assert engine.app_packages() is None
+        assert engine.app_packages() == {"pandas": "2.0"}, (
+            "the unresolved interpreter was cached as 'no packages'"
+        )
+    finally:
+        engine.reset_app_packages_cache()

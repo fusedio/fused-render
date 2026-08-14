@@ -61,6 +61,16 @@ speed, never its correctness.
 events that land mid-scan are replayed — harmlessly re-checked — next time rather than
 missed.
 
+**Replayed alongside the cache read, not after it.** `load_dir_cache` (parquet IO) and
+`hint` (a CFRunLoop draining the journal) are independent and both release the GIL, so
+`run_scan` runs them on two threads and pays `max()` rather than the sum — measured
+~0.75 s and 0.1–2.9 s respectively on a 588k-file index. A run that has already decided
+to rescan everything (`full`, or the ignore rules changed) skips the replay entirely:
+both facts are known before either read starts, there is no cache read to hide the
+replay behind, and a full scan must stay usable as the remedy for a corrupt
+`fsevents.json` — `hint` parses that file with no guard of its own. An empty cache is
+the one case still replayed for nothing, since only the read can report it.
+
 **Any doubt falls back to a walk.** `hint` returns `None` when: no saved event id for
 this root; the root spans more than one device (per-device ids don't apply); the volume
 UUID differs from the saved one; or the replay itself bails. `_replay` bails on
@@ -122,8 +132,14 @@ again on every watch tick of a folder on screen**:
 2. Not mount-backed. This is checked before any syscall on the path, by the same pure
    string `MountGuard` §4 uses: `os.stat` under a wedged rclone mount blocks its thread
    indefinitely, and this one is serving a listing.
-3. `MIN_INTERVAL_S` (120 s) since any scan of that root, read off `scans.json` — so no
+3. `MIN_INTERVAL_S` (60 s) since any scan of that root, read off `scans.json` — so no
    state file of its own, and a scan that just ran for any reason suppresses a trigger.
+   `routers/index.FRESHNESS_CHECK_S` (55 s) paces the checks in memory to the same
+   cadence, deliberately a little **shorter**: the check clock starts when a check
+   begins and the scan clock when the scan is spawned, so equal intervals would put
+   every second check just inside the floor and halve the real rate. Scanning sooner is
+   also *cheaper*, since both dominant scan costs (the journal replay and the visit set
+   it names) scale with the window since the last one.
 4. `QUIET_S` (30 s) since the directory's own mtime moved. A build tree's mtime never
    stops moving, so it is never quiet and never triggers; the open after the churn stops
    still does.
@@ -131,6 +147,15 @@ again on every watch tick of a folder on screen**:
 A live run of the root is refused rather than joined, the check runs on a background
 thread throttled to one at a time, and nothing about the listing waits on it or fails
 with it.
+
+**Who fires it:** `/api/fs/list`, naming the folder just opened, and `/api/git-repos`,
+naming **one configured root per request, round-robin** — that tab is served entirely
+from the index and has no folder to name, so without it the homepage's Repos list could
+never notice a stale index. One root, not all of them, because the slot admits a single
+check at a time and is released by that check's own thread: offering the whole list in a
+loop checks the first root and loses every other one on a failed acquire, on every
+request. The root form catches little anyway (a root's mtime moves only when its own
+direct entries change); it is cheap, and the tab has no better signal.
 
 **Bound, by design:** a directory's mtime moves only when entries are added, removed or
 renamed *in that directory*. An edit five levels down does not flip the mtime of the

@@ -1,21 +1,18 @@
 """The Home view's apps backend: list the app folders in the Fused workspace
 and scaffold new ones.
 
-Apps live two levels under the workspace (``fused_dir()``, ~/Documents/Fused):
-``<workspace>/<tag>/<name>/``. A "tag" is simply any non-hidden top-level
-directory in the workspace — there is no registry or whitelist, so a new tag
-is just a new folder, discovered on the next listing. An "app" is any
-non-hidden directory directly inside a tag dir. Its entry is its
+Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
+~/Documents/Fused), found by a bounded recursive walk whose per-level rules are
+written down in ``app_listing.workspace_apps``: A PAGE IS WHAT MAKES A FOLDER AN
+APP — any ``*.html`` at depth 1 or 2, an ``index.html`` at depth 3, nothing
+deeper. A page-less folder is a SHELF: it is never a card, but it IS walked, which
+is how the apps inside it are found. A "tag" is the FIRST path segment — there is
+no registry or whitelist, so a new tag is just a new folder, discovered on the
+next listing, and a third-level app files under the same tag as its second-level
+neighbours. An app's entry is its
 ``index.html``, else the first non-hidden direct-child ``.html`` in name order
 — the shared entry rule (D269), so the card, the preview pane and the templates
-all resolve one folder to one page. A folder with no top-level ``.html`` still
-lists, but opens as a directory instead of a view (``entry_html: null``).
-
-Alongside the workspace walk, the listing merges in *linked apps*: folders
-anywhere on disk registered in ~/.fused-render/linked_apps.json, surfaced
-under the reserved virtual tag ``linked`` (fused_render/linked_apps.py — a
-registry, deliberately not a symlink dir; see that module for why). Nothing
-registers one any more — see the note above the recents section.
+all resolve one folder to one page.
 
 The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
@@ -49,7 +46,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing, claude_spawn, linked_apps
+from fused_render import app_listing, claude_spawn
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.seed import fused_dir
 
@@ -72,40 +69,64 @@ _APP_STARTER_DIR = os.path.join(
 
 @router.get("/api/apps")
 def api_apps():
-    # "linked" is the registry's reserved tag, but nothing stops a user from
-    # creating a real <workspace>/linked/<name> folder. The two cards would
-    # then be two entries with the same (tag, name) identity — which is the key
-    # the recents store and the link-status probe speak — so the workspace twin
-    # is dropped rather than listed as an indistinguishable duplicate. (Their
-    # CARDS would still open different folders correctly: a card opens its own
-    # `path`.) Non-colliding workspace "linked" apps keep listing.
-    registry = linked_apps.linked_apps()
-    taken = {a["name"] for a in registry}
-    workspace = [
-        a for a in app_listing.two_level_apps(fused_dir())
-        if not (a["tag"] == linked_apps.LINKED_TAG and a["name"] in taken)
-    ]
-    apps = workspace + registry
+    apps = list(app_listing.workspace_apps(fused_dir()))
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
+    opened = _opened_at_by_app()
+    root = fused_dir()
+    for a in apps:
+        a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
     return {"apps": apps}
 
 
-# Linked apps: the routes that REGISTERED one (GET /api/apps/link-status,
-# POST /api/apps/link, /api/apps/unlink) are gone with the app concept they
-# served (D264 — "Add as app" was their only caller). The registry is read-only
-# now: `GET /api/apps` still merges whatever an earlier version registered, so
-# nobody's cards disappear, and nothing can add to it.
+def _workspace_rel(root: str, path: str) -> str | None:
+    """`path` as a workspace-relative, forward-slash key, or None when it isn't
+    inside the workspace. The store's identity: unique at every depth the walk
+    lists (1-3), where (tag, name) is not — two depth-3 apps under different
+    shelves of one tag share both. Normalized to "/" so a key written on
+    Windows matches the split in _app_folder_exists; the replace is os.sep-
+    conditional because on POSIX a backslash is a legal filename character."""
+    try:
+        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    except ValueError:
+        # Windows: relpath across drives has no relative form — that is just
+        # "not inside the workspace", not an error.
+        return None
+    if rel == "." or rel.startswith(".."):
+        return None
+    return rel.replace(os.sep, "/") if os.sep != "/" else rel
+
+
+def _opened_at_by_app() -> dict[str, float]:
+    """Workspace-relative app path → last-open time as epoch seconds
+    (updated_at's unit), from the recents store. The file is user-writable, so
+    a malformed openedAt just drops that entry — a bad timestamp must never
+    fail the listing."""
+    out: dict[str, float] = {}
+    for e in _read_app_recents()["entries"]:
+        ts = e.get("openedAt")
+        if not isinstance(ts, str):
+            continue
+        try:
+            out[e["path"]] = datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            continue
+    return out
 
 
 # ------------------------------------------------------------------- recents
 #
 # App-builder recents at ~/.fused-render/app_recents.json — its OWN store,
 # fully independent of the explorer's recents.json (shell/recents.py). Entries
-# identify an app by (tag, name), newest-first, deduped, capped. GET filters
-# entries whose app folder is gone (read-only — the folder may come back).
-# The workspace is always local, so plain isdir checks are safe here.
+# identify an app by its WORKSPACE-RELATIVE path (`path`, e.g. "local/demo" or
+# "tag/shelf/app") — unique at every depth the walk lists, where the previous
+# (tag, name) key was not — newest-first, deduped, capped. GET filters entries
+# whose app folder is gone (read-only — the folder may come back). The
+# workspace is always local, so plain isdir checks are safe here.
 
-APP_RECENTS_CAP = 20
+# The store is the sort input for /home and /apps (opened_at in GET /api/apps),
+# not just a short recents row — so the cap must comfortably exceed the number
+# of apps a user actively cycles through, or open #N+1 silently loses its rank.
+APP_RECENTS_CAP = 200
 
 
 def _app_recents_path() -> str:
@@ -125,29 +146,34 @@ def _read_app_recents() -> dict:
         "entries": [
             e
             for e in (entries if isinstance(entries, list) else [])
-            if isinstance(e, dict)
-            and isinstance(e.get("tag"), str)
-            and isinstance(e.get("name"), str)
+            if isinstance(e, dict) and isinstance(e.get("path"), str)
         ]
     }
 
 
-def _app_folder_exists(tag: str, name: str) -> bool:
-    """Does the (tag, name) app currently resolve to a folder on disk?
-    Workspace apps resolve under <workspace>/<tag>/<name>; a "linked" tag
-    resolves through the registry instead."""
-    if tag == linked_apps.LINKED_TAG:
-        path = linked_apps.linked_path(name)
-        return path is not None and os.path.isdir(path)
-    return os.path.isdir(os.path.join(fused_dir(), tag, name))
+def _app_folder_exists(rel: str) -> bool:
+    """Does the workspace-relative app path currently resolve to a folder on
+    disk? Rejects a key that would escape the workspace — the store is
+    user-writable, so `rel` cannot be trusted to stay under it."""
+    # Split on the OS separator too: a user-edited backslash key on Windows
+    # must not smuggle `..` past a "/"-only split. Segments are then vetted
+    # individually — a drive-relative segment like "C:foo" would make a
+    # starred os.path.join discard the workspace base entirely, so anything
+    # carrying a drive or absolute form is rejected, and the join happens as
+    # ONE "/"-joined string (a legal separator on Windows as well) so no
+    # segment can ever reset the base.
+    parts = rel.replace(os.sep, "/").split("/")
+    if os.path.isabs(rel) or rel.startswith(".") or ".." in parts:
+        return False
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
+        return False
+    return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
 
 @router.get("/api/apps/recents")
 def api_app_recents():
     entries = [
-        e
-        for e in _read_app_recents()["entries"]
-        if _app_folder_exists(e["tag"], e["name"])
+        e for e in _read_app_recents()["entries"] if _app_folder_exists(e["path"])
     ]
     return {"entries": entries}
 
@@ -161,31 +187,31 @@ def api_app_recent_open(
         return guard
     from fused_render.shell import storage
 
-    tag, name = body.get("tag"), body.get("name")
-    if not isinstance(tag, str) or not isinstance(name, str) or not tag or not name:
-        return _error("tag and name required", 400)
-    # Only real app folders are recorded — same benign no-op posture as the
-    # explorer's POST /api/recents/open for a non-file url.
-    if "/" in tag or "/" in name or tag.startswith(".") or name.startswith("."):
-        return {"recorded": False}
-    if not _app_folder_exists(tag, name):
+    path = body.get("path")
+    if not isinstance(path, str) or not path:
+        return _error("path required", 400)
+    # The client sends the app's absolute `path` from the listing; the store
+    # keys on the workspace-relative form. Only real app folders inside the
+    # workspace are recorded — same benign no-op posture as the explorer's
+    # POST /api/recents/open for a non-file url.
+    rel = _workspace_rel(fused_dir(), path)
+    if rel is None or not _app_folder_exists(rel):
         return {"recorded": False}
     title_raw = body.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
     data = _read_app_recents()
-    # Dedupe by (tag, name); a title-less re-record keeps the last known title.
+    # Dedupe by path; a title-less re-record keeps the last known title.
     existing_title = None
     kept = []
     for e in data["entries"]:
-        if e["tag"] == tag and e["name"] == name:
+        if e["path"] == rel:
             t = e.get("title")
             if existing_title is None and isinstance(t, str) and t:
                 existing_title = t
             continue
         kept.append(e)
     entry = {
-        "tag": tag,
-        "name": name,
+        "path": rel,
         "openedAt": datetime.now(timezone.utc).isoformat(),
     }
     if title is not None:

@@ -11,21 +11,21 @@
 // ONE AFFORDANCE, TWO PLACES, CHOSEN BY STATE — the rule the listing pane's own
 // visibility control already followed (SPEC FS-10):
 //
-//   CLOSING is a control ON the column — the chevron below, first thing in the
-//   header, sitting on the seam the column collapses toward and pointing the way
-//   it goes.
+//   CLOSING is a control ON the column — the panel glyph below, first thing in
+//   the header, sitting on the seam the column collapses toward and naming the
+//   side it is on (platform/ui/PanelIcon).
 //   OPENING cannot live there, because a closed column hosts nothing, so that
 //   half is the mode-icon button in the host's own bar (the crumb bar for a file,
 //   the listing's search row for a folder), rendered ONLY while the column is
 //   shut.
 //
 // Both at once is what the file sidebar's middle version did, and it was the
-// wrong answer: the bar's toggle and the column's chevron sat a few pixels apart
+// wrong answer: the bar's toggle and the column's own close sat a few pixels apart
 // across the divider, two buttons for one piece of state, which reads as a
 // rendering fault rather than as a choice. Exactly one of them is on screen at
 // any moment, and each sits where its own action makes sense.
 import type { ReactNode } from "react";
-import Chevron from "@platform/ui/Chevron";
+import PanelIcon from "@platform/ui/PanelIcon";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import {
   paneSideIconEntry,
@@ -45,10 +45,12 @@ export function SideCloseButton({ what, onClick }: { what: string; onClick: () =
       aria-label={label}
       onClick={onClick}
     >
-      {/* Points RIGHT — this column is on the right, and right is the way it
-          goes when it collapses. The identical glyph mirrored is what the left
-          sidebar's collapse button wears (platform/ui/Chevron). */}
-      <Chevron dir="right" />
+      {/* A frame with its RIGHT half filled — this column, on this side. The
+          same glyph mirrored is what the global sidebar's toggle wears
+          (platform/ui/PanelIcon), which is what makes the two edges of the
+          window read as one idea rather than as two chevrons pointing
+          opposite ways for unrelated reasons. */}
+      <PanelIcon side="right" />
     </button>
   );
 }

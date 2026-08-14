@@ -337,7 +337,7 @@
    --topbar-h, same vertical padding, same hairline. The two are one bar across
    the window, split by the divider.
 
-   Two items, at opposite ends: the close chevron leads, on the seam the column
+   Two items, at opposite ends: the close button leads, on the seam the column
    collapses toward, and the mode control is packed to the far end the way the crumb
    bar's own controls are. That far end is `.side-header-tail` (explorer.css), the
    ONE auto margin the two side-column headers share — so the right-hand end holds

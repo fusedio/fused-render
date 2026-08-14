@@ -24,6 +24,10 @@ export interface Config {
   learn_mount_ready: boolean;
   // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
+  // Self-update state (fused_render/update/mac.py) — present only when the
+  // packaged mac app started the update manager; absent on dev servers and
+  // the Windows/Linux packages (those update through their supervisor).
+  update?: UpdateStatus;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -151,6 +155,32 @@ export const postJson = <T>(url: string, body: unknown) => mutateJson<T>("POST",
 
 export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
+}
+
+// -- Self-update (fused_render/server/routers/update.py) ---------------------
+
+export interface UpdateStatus {
+  // idle | checking | available | installing | installed | error
+  state: string;
+  // brew: the user runs `brew upgrade --cask` themselves (see manual_command);
+  // dmg: the app downloads and swaps its own bundle; none: not updatable.
+  method: string;
+  latest_version: string | null;
+  // Bytes downloaded so far (dmg method only) — the manifest carries no total
+  // size, so the UI shows MB downloaded rather than a percentage.
+  progress: number | null;
+  error: string | null;
+  // Set when the user must run the update themselves (brew-managed installs,
+  // state "available") — shown with a copy button.
+  manual_command: string | null;
+}
+
+export function updateCheck(): Promise<UpdateStatus> {
+  return postJson<UpdateStatus>("/api/update/check", {});
+}
+
+export function updateInstall(): Promise<UpdateStatus> {
+  return postJson<UpdateStatus>("/api/update/install", {});
 }
 
 export function listDir(fsPath: string, cursor?: string | null): Promise<ListResult> {
@@ -1815,12 +1845,16 @@ export function openTemplateInClaude(name: string): Promise<{ url: string }> {
 }
 
 // -- Apps (GET /api/apps, POST /api/apps/new) ---------------------------------
-// An app folder two levels under the workspace: <fused_dir>/<tag>/<name>/.
-// `tag` is just the top-level folder's name — any folder qualifies, there is
-// no fixed tag set. `entry_html` is the app's "/" route entry file (absolute
-// path), null when the folder has no single resolvable .html entry; `title`
-// comes from that file's <title>, null falls back to the folder name in the
-// UI.
+// An app folder one to three levels under the workspace, found by a bounded
+// recursive walk (the rules live in app_listing.workspace_apps: a page makes a
+// folder an app — any *.html at depth 1 or 2, an index.html at depth 3, nothing
+// deeper; a page-less folder is a shelf, walked but never listed).
+// `tag` is the FIRST path segment — any folder qualifies, there is no fixed tag
+// set, and a third-level app carries the same tag as its second-level
+// neighbours. `entry_html` is the app's "/" route entry file (absolute path);
+// the workspace walk only lists folders with a page, so it is non-null in
+// practice. `title` comes from that file's <title>, null falls back to the
+// folder name in the UI.
 export interface AppInfo {
   name: string;
   tag: string;
@@ -1846,10 +1880,30 @@ export interface AppInfo {
   // Last-modified time, epoch seconds. Optional/null for servers that don't
   // report it (older backends) — those sort last in the Home grid.
   updated_at?: number | null;
+  // Last-opened time, epoch seconds, from the app recents store
+  // (~/.fused-render/app_recents.json). Null for an app never opened, and
+  // undefined on older backends — both fall back to updated_at in sortApps.
+  opened_at?: number | null;
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
+}
+
+// Record that an app was opened (feeds opened_at above, which is what /home
+// and /apps sort by). `path` is the app's absolute folder path from the
+// listing — the identity the store keys on (workspace-relative server-side),
+// unique at every depth where (tag, name) is not. Server no-ops
+// (recorded: false) for an app whose folder is gone, so callers need not
+// pre-check.
+export function postAppOpen(
+  path: string,
+  title?: string | null,
+): Promise<{ recorded: boolean }> {
+  return postJson<{ recorded: boolean }>(
+    "/api/apps/recents/open",
+    title ? { path, title } : { path },
+  );
 }
 
 // Scaffold a new app folder and (optionally) kick off a Claude session seeded

@@ -1,0 +1,740 @@
+"""Reader backing joblib_model/template.html: restricted, allowlist-based
+loading of untrusted `.joblib`/`.pkl`/`.pickle` files, then introspection
+(hyperparameters, feature importances, tree structure) once every referenced
+class/callable is confirmed trusted. Self-contained — templates are scripts
+run by the engine, not part of the package (SPEC PY-15/D166).
+"""
+import io
+import itertools
+import json
+import math
+import os
+import pickle
+import zlib
+
+import joblib.numpy_pickle
+import numpy as np
+
+_RAW_SIZE_CAP = 2 * 1024 * 1024 * 1024
+_DECOMPRESSED_CAP = 512 * 1024 * 1024
+_MAX_ARRAY_BYTES = _DECOMPRESSED_CAP
+_MAX_TREE_DEPTH = 200  # real trees rarely exceed depth 30-40
+
+# Exact-symbol allow: never widened to a prefix ("builtins" would allow eval/exec/open).
+_EXACT_ALLOW = {
+    "builtins": {"dict", "list", "tuple", "set", "frozenset", "complex",
+                 "bytes", "bytearray", "str", "int", "float", "bool", "slice"},
+    "collections": {"OrderedDict", "defaultdict"},
+    "copyreg": {"_reconstructor", "__newobj__", "__newobj_ex__"},
+    "_codecs": {"encode"},
+}
+
+# Prefix allow: trust the package, not its internal module layout.
+_PREFIX_ALLOW = (
+    "numpy.", "numpy._core.", "numpy.core.",
+    "scipy.", "sklearn.", "xgboost.", "lightgbm.", "catboost.",
+    "pandas.", "joblib.",
+)
+
+# A prefix-trusted FUNCTION (unlike a class) is DANGEROUS ONLY once REDUCE
+# actually calls it with attacker-chosen args (e.g. joblib.load would re-enter
+# an unrestricted load) -- merely resolving/storing a reference is harmless, so
+# find_class allows that freely and _RestrictedUnpickler.load_reduce is the
+# real gate. These are the known-safe functions real pickles need to CALL.
+_PREFIX_FUNCTION_ALLOW = {
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy.core.multiarray", "scalar"),
+    ("numpy._core.multiarray", "_reconstruct"),
+    ("numpy._core.multiarray", "scalar"),
+    ("numpy.core.numeric", "_frombuffer"),
+    ("numpy._core.numeric", "_frombuffer"),
+    ("numpy.random._pickle", "__randomstate_ctor"),
+    ("numpy.random._pickle", "__bit_generator_ctor"),
+    ("numpy.random._pickle", "__generator_ctor"),
+    ("pandas._libs.internals", "_unpickle_block"),
+    ("pandas.core.indexes.base", "_new_Index"),
+    ("pandas.core.internals.blocks", "new_block"),
+    ("pandas.core.series", "_new_Series"),
+}
+
+
+def _is_pyx_unpickle_helper(name: str) -> bool:
+    """Cython's auto-generated `__pyx_unpickle_<Class>` reconstruction helpers."""
+    return name.startswith("__pyx_unpickle_")
+
+
+class _Stub:
+    """Inert stand-in for every disallowed class; swallows any call as a no-op."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        return _Stub()
+
+    def __setstate__(self, state):
+        pass
+
+    def __reduce__(self):
+        return (_Stub, ())
+
+    def __setitem__(self, key, value):
+        pass
+
+    def __getitem__(self, key):
+        return _Stub()
+
+    def append(self, value):
+        pass
+
+    def extend(self, values):
+        pass
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+
+def _classify(module: str, name: str) -> bool:
+    """Fail closed: anything not explicitly recognised is unsafe by default."""
+    allowed_names = _EXACT_ALLOW.get(module)
+    if allowed_names is not None and name in allowed_names:
+        return True
+    return any(module == prefix.rstrip(".") or module.startswith(prefix) for prefix in _PREFIX_ALLOW)
+
+
+def _refuse_unsafe_call(target, unsafe_to_call, refs_by_key, blocked):
+    """None if `target` is safe to call. Otherwise records the block against the
+    (module, name) find_class resolved it from and returns a substitute _Stub().
+    refs_by_key is an O(1) lookup (not a scan) so an attacker can't turn repeated,
+    memo-reused REDUCE/INST calls to the same blocked target into O(n*m) work."""
+    origin = unsafe_to_call.get(id(target))
+    if origin is None:
+        return None
+    ref = refs_by_key.get(origin)
+    if ref is not None:
+        ref["allowed"] = False
+    blocked.append({"module": origin[0], "name": origin[1]})
+    return _Stub()
+
+
+def _guarded_reduce(unpickler, unsafe_to_call, refs_by_key, blocked):
+    """Gates the REDUCE opcode: mirrors pickle._Unpickler.load_reduce exactly,
+    except a call target find_class flagged unsafe-to-call is never invoked.
+    Used by both _RestrictedUnpickler and _DelegatingUnpickler (the object-dtype
+    array delegate) so neither stream can call an unvetted function."""
+    args = unpickler.stack.pop()
+    func = unpickler.stack[-1]
+    stub = _refuse_unsafe_call(func, unsafe_to_call, refs_by_key, blocked)
+    unpickler.stack[-1] = stub if stub is not None else func(*args)
+
+
+def _guarded_instantiate(unpickler, klass, args, unsafe_to_call, refs_by_key, blocked):
+    """Gates the legacy INST/OBJ opcodes: mirrors pickle._Unpickler._instantiate
+    exactly. Like REDUCE, this can call an arbitrary resolved callable with
+    attacker-chosen args -- through an opcode pair load_reduce alone doesn't cover,
+    since load_inst/load_obj call self._instantiate(...) directly, not REDUCE."""
+    stub = _refuse_unsafe_call(klass, unsafe_to_call, refs_by_key, blocked)
+    if stub is not None:
+        unpickler.append(stub)
+        return
+    if args or not isinstance(klass, type) or hasattr(klass, "__getinitargs__"):
+        try:
+            value = klass(*args)
+        except TypeError as err:
+            raise TypeError("in constructor for %s: %s" % (klass.__name__, str(err)), err.__traceback__)
+    else:
+        value = klass.__new__(klass)
+    unpickler.append(value)
+
+
+class _DelegatingUnpickler(pickle._Unpickler):
+    """Delegates find_class/persistent_load to the enclosing _RestrictedUnpickler
+    and shares its _unsafe_to_call/refs/blocked bookkeeping, so a function call
+    reached through an object-dtype array's embedded stream is gated exactly
+    like one reached through the top-level stream. Explicitly the pure-Python
+    Unpickler (not the C-accelerated one `pickle.Unpickler` aliases to) because
+    only the pure-Python one exposes an overridable `dispatch` table for
+    load_reduce -- the same reason NumpyUnpickler itself is built on it."""
+
+    def __init__(self, file_handle, restricted):
+        super().__init__(file_handle)
+        self._restricted = restricted
+
+    def find_class(self, module, name):
+        return self._restricted.find_class(module, name)
+
+    def persistent_load(self, pid):
+        return self._restricted.persistent_load(pid)
+
+    def load_reduce(self):
+        r = self._restricted
+        _guarded_reduce(self, r._unsafe_to_call, r.refs_by_key, r.blocked)
+
+    def _instantiate(self, klass, args):
+        r = self._restricted
+        _guarded_instantiate(self, klass, args, r._unsafe_to_call, r.refs_by_key, r.blocked)
+
+    dispatch = dict(pickle._Unpickler.dispatch)
+    dispatch[pickle.REDUCE[0]] = load_reduce
+
+
+class _SafeNumpyArrayWrapper(joblib.numpy_pickle.NumpyArrayWrapper):
+    """NumpyArrayWrapper.read_array bypasses find_class entirely for
+    object-dtype arrays (a bare pickle.load()) and sizes its allocation from
+    its own declared shape before reading a single byte. This closes both:
+    object-dtype content is re-read through the same restricted find_class,
+    and an oversized declared shape is refused before allocating."""
+
+    def read_array(self, unpickler, ensure_native_byte_order):
+        if self.dtype.hasobject:
+            embedded = _DelegatingUnpickler(unpickler.file_handle, unpickler)
+            return embedded.load()
+        count = 1
+        for dim in self.shape:
+            count *= int(dim)
+        declared_bytes = count * self.dtype.itemsize
+        if declared_bytes > _MAX_ARRAY_BYTES:
+            raise pickle.UnpicklingError(
+                f"refusing to allocate a {declared_bytes:,}-byte array "
+                f"(declared shape {tuple(self.shape)!r}), above the "
+                f"{_MAX_ARRAY_BYTES:,}-byte safety cap"
+            )
+        return super().read_array(unpickler, ensure_native_byte_order)
+
+    def read_mmap(self, unpickler):
+        # Unreachable today (this reader never sets mmap_mode), but read_mmap
+        # memory-maps unpickler.filename at an attacker-controlled offset/shape/
+        # dtype/order with none of read_array's checks -- refuse outright rather
+        # than rely on that staying true.
+        raise pickle.UnpicklingError("refusing to memory-map an array")
+
+
+class _SafeNDArrayWrapper(joblib.numpy_pickle.NDArrayWrapper):
+    """Legacy joblib<=0.9 wrapper: loads an attacker-named sibling file via
+    np.load(allow_pickle=True). Nothing recent uses this format — refuse outright."""
+
+    def read(self, unpickler):
+        raise pickle.UnpicklingError(
+            "refusing to load a legacy (joblib<=0.9) NDArrayWrapper array"
+        )
+
+
+class _RestrictedUnpickler(joblib.numpy_pickle.NumpyUnpickler):
+    """find_class is the reference gate (disallowed names never resolve); REDUCE
+    and the legacy INST/OBJ opcodes -- the only ways a resolved reference is ever
+    actually CALLED, each with attacker-chosen args -- are gated separately below,
+    since find_class alone can't tell which resolved names will go on to be called."""
+
+    def __init__(self, filename, file_obj):
+        super().__init__(filename, file_obj, ensure_native_byte_order=True)
+        self.refs_by_key = {}  # (module, name) -> {"module", "name", "allowed"}, first-seen order
+        self.blocked = []
+        self.missing = set()
+        # A prefix-trusted name may resolve to a real, uncalled reference (e.g. a
+        # FunctionTransformer merely storing numpy.log1p as an attribute) -- that's
+        # harmless, so find_class doesn't block it. This maps id(resolved) -> the
+        # (module, name) it must refuse to actually CALL, for load_reduce/_instantiate.
+        self._unsafe_to_call = {}
+
+    def find_class(self, module, name):
+        key = (module, name)
+        ref = self.refs_by_key.get(key)
+        if ref is None:
+            ref = {"module": module, "name": name, "allowed": True}
+            self.refs_by_key[key] = ref
+
+        if not _classify(module, name):
+            ref["allowed"] = False
+            self.blocked.append({"module": module, "name": name})
+            return _Stub
+        try:
+            resolved = super().find_class(module, name)
+        except (ImportError, AttributeError):
+            self.missing.add(module.split(".", 1)[0])
+            return _Stub
+        if resolved is joblib.numpy_pickle.NumpyArrayWrapper:
+            return _SafeNumpyArrayWrapper
+        if resolved is joblib.numpy_pickle.NDArrayWrapper:
+            return _SafeNDArrayWrapper
+        exact = _EXACT_ALLOW.get(module)
+        prefix_trusted = exact is None or name not in exact
+        is_safe_function = key in _PREFIX_FUNCTION_ALLOW or _is_pyx_unpickle_helper(name)
+        if prefix_trusted and not isinstance(resolved, type) and not is_safe_function:
+            self._unsafe_to_call[id(resolved)] = key
+        return resolved
+
+    def load_reduce(self):
+        _guarded_reduce(self, self._unsafe_to_call, self.refs_by_key, self.blocked)
+
+    def _instantiate(self, klass, args):
+        _guarded_instantiate(self, klass, args, self._unsafe_to_call, self.refs_by_key, self.blocked)
+
+    dispatch = dict(joblib.numpy_pickle.NumpyUnpickler.dispatch)
+    dispatch[pickle.REDUCE[0]] = load_reduce
+
+    def persistent_load(self, pid):
+        raise pickle.UnpicklingError(f"unsupported persistent reference: {pid!r}")
+
+
+def _decompress_capped(raw: bytes, cap: int):
+    """None on cap exceeded. Recognises joblib's own zlib/gzip wrapping;
+    anything else passes through unchanged (fails to parse later, already treated as blocked)."""
+    if raw[:2] == b"\x1f\x8b":
+        decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    elif raw[:1] == b"\x78":
+        decompressor = zlib.decompressobj()
+    else:
+        return raw
+
+    out = bytearray()
+    pending = raw
+    while pending or decompressor.unconsumed_tail:
+        chunk = decompressor.unconsumed_tail or pending
+        pending = b""
+        piece = decompressor.decompress(chunk, max(1, cap - len(out)))
+        out.extend(piece)
+        if len(out) > cap:
+            return None
+        if not piece and not decompressor.unconsumed_tail:
+            break
+    out.extend(decompressor.flush())
+    return bytes(out) if len(out) <= cap else None
+
+
+def _bounded_bytes(path: str):
+    """(bytes, error); never raises."""
+    try:
+        size = os.path.getsize(path)
+    except OSError as exc:
+        return None, f"could not stat file: {exc}"
+    if size > _RAW_SIZE_CAP:
+        return None, f"file is {size:,} bytes, above the {_RAW_SIZE_CAP:,}-byte safety cap"
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as exc:
+        return None, f"could not read file: {exc}"
+    try:
+        data = _decompress_capped(raw, _DECOMPRESSED_CAP)
+    except zlib.error as exc:
+        return None, f"could not decompress: {exc}"
+    if data is None:
+        return None, f"decompressed content exceeds the {_DECOMPRESSED_CAP:,}-byte safety cap"
+    return data, None
+
+
+def _restricted_load(path: str, data: bytes):
+    """(verdict, refs, message, obj); obj is real only when verdict is "safe"."""
+    unpickler = _RestrictedUnpickler(path, io.BytesIO(data))
+    try:
+        obj = unpickler.load()
+    except Exception as exc:  # noqa: BLE001 - any failure here means "not proven safe"
+        return "blocked", [], f"could not parse as a pickle stream: {exc}", None
+
+    refs = list(unpickler.refs_by_key.values())
+    if unpickler.blocked:
+        return "blocked", refs, None, None
+    if unpickler.missing:
+        return "unavailable", refs, ", ".join(sorted(unpickler.missing)), None
+    return "safe", refs, None, obj
+
+
+def _sibling_chunks(path: str):
+    """joblib's memmap sibling files (`name.pkl_01.npy`, `_02.npy`, ...)."""
+    base = os.path.basename(path)
+    directory = os.path.dirname(path) or "."
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return []
+    prefix = base + "_"
+    return sorted(
+        name for name in entries
+        if name.startswith(prefix) and name.endswith(".npy")
+    )
+
+
+def _short_repr(value, limit=120) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _json_float(v):
+    """float, or a JSON-safe string sentinel for nan/inf (XGBClassifier's
+    default `missing` param is nan, so this is common, not exotic)."""
+    f = float(v)
+    if math.isnan(f):
+        return "NaN"
+    if math.isinf(f):
+        return "Infinity" if f > 0 else "-Infinity"
+    return f
+
+
+def _escape_path_key(key) -> str:
+    """Escapes a dict key before splicing into a synthesized dotted path, so a
+    literal "." in a key can't collide with an actually-nested path."""
+    return str(key).replace("\\", "\\\\").replace(".", "\\.").replace("[", "\\[").replace("]", "\\]")
+
+
+def _describe(obj, path="", depth=0, max_depth=4, seen=None):
+    if seen is None:
+        seen = set()
+    if depth >= max_depth:
+        return {"path": path, "kind": "truncated"}
+    if isinstance(obj, (dict, list, tuple)):
+        # Pickle's memo lets a tiny file declare the SAME object many times over
+        # (shared references) -- without this, a handful of nested lists sharing
+        # one inner list produces branch^depth walk work from a few hundred bytes.
+        obj_id = id(obj)
+        if obj_id in seen:
+            return {"path": path, "kind": "shared"}
+        seen.add(obj_id)
+    if isinstance(obj, dict):
+        return {
+            "path": path, "kind": "dict",
+            "length": len(obj),
+            "items": [
+                {"key": str(k), **_describe(v, f"{path}.{_escape_path_key(k)}" if path else _escape_path_key(k), depth + 1, max_depth, seen)}
+                for k, v in itertools.islice(obj.items(), 50)
+            ],
+        }
+    if isinstance(obj, (list, tuple)):
+        return {
+            "path": path, "kind": "list",
+            "length": len(obj),
+            "items": [_describe(v, f"{path}[{i}]", depth + 1, max_depth, seen) for i, v in enumerate(obj[:50])],
+        }
+    if _is_ndarray(obj):
+        return {"path": path, "kind": "ndarray", "shape": list(obj.shape), "dtype": str(obj.dtype)}
+    if hasattr(obj, "get_params") and callable(obj.get_params):
+        return {"path": path, "kind": "estimator", "type": type(obj).__name__, "module": type(obj).__module__}
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        value = _json_float(obj) if isinstance(obj, float) else obj
+        # "type" carries the ORIGINAL Python type, since a NaN/Infinity float is
+        # sent as the JSON string "NaN" -- indistinguishable from a real string
+        # that happens to say "NaN" unless the view knows it started as a float.
+        py_type = "none" if obj is None else type(obj).__name__
+        return {
+            "path": path, "kind": "scalar", "type": py_type,
+            "value": value if not isinstance(value, str) or len(value) <= 200 else value[:200] + "…",
+        }
+    return {"path": path, "kind": "object", "type": type(obj).__name__, "repr": _short_repr(obj)}
+
+
+def _is_ndarray(obj) -> bool:
+    return isinstance(obj, np.ndarray)
+
+
+_FIND_ESTIMATORS_MAX_DEPTH = 12  # a dict-wrapped Pipeline alone needs dict->Pipeline->steps->tuple->estimator
+
+
+def _find_estimators(obj, path="", depth=0, max_depth=_FIND_ESTIMATORS_MAX_DEPTH, seen=None):
+    """All objects with a scikit-learn-style get_params(), tagged with their path."""
+    if seen is None:
+        seen = set()
+    if depth >= max_depth:
+        return []
+    obj_id = id(obj)
+    if obj_id in seen:
+        return []
+    # Marked as seen for EVERY object, not just estimators: pickle's memo lets a
+    # tiny file declare the same (large) container many times over via shared
+    # references, which would otherwise blow up recursive work exponentially
+    # with depth (see _describe's identical guard).
+    seen.add(obj_id)
+    found = []
+    is_estimator = hasattr(obj, "get_params") and callable(obj.get_params)
+    if is_estimator:
+        found.append((path, obj))
+    if isinstance(obj, dict):
+        for key, value in itertools.islice(obj.items(), 50):
+            child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
+            found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
+    elif isinstance(obj, (list, tuple)):
+        for index, value in enumerate(obj[:50]):
+            found.extend(_find_estimators(value, f"{path}[{index}]", depth + 1, max_depth, seen))
+    elif is_estimator and not _is_tree_ensemble(obj) and hasattr(obj, "__dict__"):
+        # Composite estimators (Pipeline, VotingClassifier, ...) hold sub-estimators
+        # as plain attributes. Skipped for a tree ensemble itself (RandomForest,
+        # Bagging, ...): its members are already covered by the tree viewer, not
+        # independent top-level models.
+        attrs = vars(obj)
+        for key, value in itertools.islice(attrs.items(), 50):
+            # `estimators` next to `estimators_` is the pre-fit copy of the same
+            # models (sklearn's trailing-underscore convention); listing both would
+            # show every sub-model twice, once untrained. Pipeline has no `steps_`,
+            # so its `steps` is still walked.
+            if f"{key}_" in attrs:
+                continue
+            child_path = f"{path}.{_escape_path_key(key)}" if path else _escape_path_key(key)
+            found.extend(_find_estimators(value, child_path, depth + 1, max_depth, seen))
+    return found
+
+
+def _jsonable_params(params: dict) -> dict:
+    out = {}
+    for key, value in params.items():
+        if isinstance(value, float):
+            out[key] = _json_float(value)
+        elif isinstance(value, (str, int, bool)) or value is None:
+            out[key] = value
+        else:
+            out[key] = _short_repr(value, 80)
+    return out
+
+
+def _estimator_summary(path: str, est) -> dict:
+    summary = {
+        "path": path,
+        "type": type(est).__name__,
+        "module": type(est).__module__,
+        "params": _jsonable_params(est.get_params(deep=False)),
+    }
+    if hasattr(est, "n_features_in_"):
+        summary["n_features_in"] = int(est.n_features_in_)
+    if hasattr(est, "classes_"):
+        try:
+            summary["classes"] = [
+                _json_float(v) if isinstance(v, float) else v
+                for v in (c.item() if hasattr(c, "item") else c for c in list(est.classes_))
+            ]
+        except Exception:  # noqa: BLE001 - best-effort, never fatal to the view
+            pass
+    return summary
+
+
+def _feature_importance(path: str, est):
+    values = None
+    if hasattr(est, "feature_importances_"):
+        values = list(est.feature_importances_)
+    elif hasattr(est, "coef_"):
+        coef = est.coef_
+        if getattr(coef, "ndim", 1) > 1:
+            values = list(abs(coef).mean(axis=0))  # multi-class: mean |coef| across classes
+        else:
+            values = [abs(float(v)) for v in coef]
+    if values is None:
+        return None
+    # NaN compares False against everything, so sorting by a raw NaN key leaves it
+    # in an arbitrary position (even rank 0) instead of last, where "can't rank
+    # this" belongs.
+    ranked = sorted(
+        ({"feature": i, "importance": float(v)} for i, v in enumerate(values)),
+        key=lambda row: math.inf if math.isnan(row["importance"]) else -row["importance"],
+    )
+    for row in ranked:
+        row["importance"] = _json_float(row["importance"])
+    return {"path": path, "features": ranked}
+
+
+def _has_tree(obj) -> bool:
+    tree = getattr(obj, "tree_", None)
+    return tree is not None and hasattr(tree, "children_left")
+
+
+def _tree_kind(est):
+    if hasattr(est, "get_booster"):
+        return "xgboost"
+    if hasattr(est, "booster_") and hasattr(est.booster_, "dump_model"):
+        return "lightgbm"
+    # `estimators_` alone is not enough: composite meta-estimators (VotingClassifier,
+    # StackingClassifier, ...) have one too, holding arbitrary models rather than
+    # trees. Only claim the ensemble if its members really are trees, otherwise
+    # _tree_ensemble's `estimators_[i].tree_` has nothing to read and
+    # _find_estimators would skip walking into a composite it should descend.
+    members = getattr(est, "estimators_", None)
+    if members is not None and len(members):
+        if getattr(members, "ndim", 1) > 1:
+            if _has_tree(members[0][0]):
+                return "sklearn_gradient_boosting"  # 2-D: one row of trees per round
+        elif _has_tree(members[0]):
+            return "sklearn_forest"
+    if _has_tree(est):
+        return "sklearn_tree"
+    return None
+
+
+def _is_tree_ensemble(est) -> bool:
+    """True if _tree_kind can render est's own trees -- so _find_estimators must
+    not also treat its individual members (e.g. a RandomForest's per-tree
+    estimators_) as separate, independently-listed top-level models."""
+    return _tree_kind(est) is not None
+
+
+def _sklearn_tree_node(tree, node_id, depth=0):
+    if depth >= _MAX_TREE_DEPTH:
+        return {"leaf": [], "truncated": True}
+    if tree.children_left[node_id] == -1:
+        value = tree.value[node_id]
+        return {"leaf": [_json_float(v) for v in value.reshape(-1)]}
+    return {
+        "feature": int(tree.feature[node_id]),
+        "threshold": _json_float(tree.threshold[node_id]),
+        "left": _sklearn_tree_node(tree, tree.children_left[node_id], depth + 1),
+        "right": _sklearn_tree_node(tree, tree.children_right[node_id], depth + 1),
+    }
+
+
+def _xgboost_feature_index(split: str):
+    """xgboost names an unnamed feature "f<index>" (a string); normalized to
+    an int only when it round-trips exactly, so a real feature literally
+    named "f007" isn't corrupted."""
+    if split.startswith("f"):
+        try:
+            index = int(split[1:])
+        except ValueError:
+            return split
+        if f"f{index}" == split:
+            return index
+    return split
+
+
+def _xgboost_tree_node(node, depth=0):
+    if depth >= _MAX_TREE_DEPTH:
+        return {"leaf": [], "truncated": True}
+    if "leaf" in node:
+        return {"leaf": [_json_float(node["leaf"])]}
+    children = {child["nodeid"]: child for child in node.get("children", [])}
+    return {
+        "feature": _xgboost_feature_index(node["split"]),
+        "threshold": _json_float(node["split_condition"]),
+        "left": _xgboost_tree_node(children[node["yes"]], depth + 1),
+        "right": _xgboost_tree_node(children[node["no"]], depth + 1),
+    }
+
+
+def _lightgbm_tree_node(node, depth=0):
+    if depth >= _MAX_TREE_DEPTH:
+        return {"leaf": [], "truncated": True}
+    if "leaf_value" in node:
+        return {"leaf": [_json_float(node["leaf_value"])]}
+    return {
+        "feature": int(node["split_feature"]),
+        "threshold": _json_float(node["threshold"]),
+        "left": _lightgbm_tree_node(node["left_child"], depth + 1),
+        "right": _lightgbm_tree_node(node["right_child"], depth + 1),
+    }
+
+
+def _tree_meta(count, n_classes):
+    """Per-tree labels. A boosting round holds one tree per class, so the flat
+    index splits into round/class -- meaningless (and noise in the picker) when
+    a round holds a single tree, so it's omitted there."""
+    if n_classes <= 1:
+        return [{"index": i} for i in range(count)]
+    return [{"index": i, "round": i // n_classes, "class": i % n_classes} for i in range(count)]
+
+
+def _tree_ensemble(path: str, est, tree_index):
+    kind = _tree_kind(est)
+    if kind is None:
+        return None
+
+    if kind == "sklearn_tree":
+        count = 1
+        meta = [{"index": 0}]
+        tree = est.tree_
+        node_builder = lambda: _sklearn_tree_node(tree, 0)  # noqa: E731
+    elif kind == "sklearn_forest":
+        count = len(est.estimators_)
+        meta = [{"index": i} for i in range(count)]
+        idx = tree_index if tree_index is not None else 0
+        node_builder = lambda: _sklearn_tree_node(est.estimators_[idx].tree_, 0)  # noqa: E731
+    elif kind == "sklearn_gradient_boosting":
+        n_rounds, n_classes = est.estimators_.shape
+        count = n_rounds * n_classes
+        meta = _tree_meta(count, n_classes)
+        idx = tree_index if tree_index is not None else 0
+
+        def node_builder():
+            round_idx, class_idx = divmod(idx, n_classes)
+            return _sklearn_tree_node(est.estimators_[round_idx, class_idx].tree_, 0)
+    elif kind == "xgboost":
+        # num_boosted_rounds() is cheap; a full get_dump() costs seconds on a large
+        # model. booster[i:i+1] slices by ROUND (all classes' trees for that round),
+        # not by flat tree index, so the round is sliced out and the class picked
+        # from it -- dumping one round instead of dumping every tree in the model.
+        booster = est.get_booster()
+        n_classes = len(est.classes_) if hasattr(est, "classes_") and len(est.classes_) > 2 else 1
+        count = booster.num_boosted_rounds() * n_classes
+        meta = _tree_meta(count, n_classes)
+        idx = tree_index if tree_index is not None else 0
+
+        def node_builder():
+            round_idx, class_idx = divmod(idx, n_classes)
+            round_dump = booster[round_idx:round_idx + 1].get_dump(dump_format="json")
+            return _xgboost_tree_node(json.loads(round_dump[class_idx]))
+    elif kind == "lightgbm":
+        # num_trees() counts trees FLAT, but dump_model's num_iteration/
+        # start_iteration select boosting ROUNDS -- and a multiclass round holds
+        # one tree per class, so the flat index has to be split the same way the
+        # xgboost branch splits it.
+        booster = est.booster_
+        n_classes = len(est.classes_) if hasattr(est, "classes_") and len(est.classes_) > 2 else 1
+        count = booster.num_trees()
+        meta = _tree_meta(count, n_classes)
+        idx = tree_index if tree_index is not None else 0
+
+        def node_builder():
+            round_idx, class_idx = divmod(idx, n_classes)
+            round_dump = booster.dump_model(num_iteration=1, start_iteration=round_idx)["tree_info"]
+            return _lightgbm_tree_node(round_dump[class_idx]["tree_structure"])
+    else:
+        return None
+
+    result = {"path": path, "library": kind, "count": count, "trees": meta}
+    if tree_index is not None or count == 1:
+        try:
+            result["tree"] = node_builder()
+        except Exception as exc:  # noqa: BLE001 - a bad index still returns a usable summary
+            result["tree_error"] = str(exc)
+    return result
+
+
+def _safe(fn, *args):
+    """None on any failure, isolating one bad estimator from the rest of the bundle."""
+    try:
+        return fn(*args)
+    except Exception:  # noqa: BLE001 - best-effort, isolated per estimator
+        return None
+
+
+def main(file: str, tree_index=None) -> dict:
+    try:
+        idx = int(tree_index) if tree_index not in (None, "") else None
+    except (TypeError, ValueError):
+        idx = None
+
+    try:
+        size = os.path.getsize(file)
+        mtime = os.path.getmtime(file)
+    except OSError as exc:
+        file_info = {"size": None, "mtime": None, "sibling_files": []}
+        return {"file": file_info, "scan": {"verdict": "blocked", "refs": [], "message": str(exc)}}
+
+    data, error = _bounded_bytes(file)
+    file_info = {"size": size, "mtime": mtime, "sibling_files": _sibling_chunks(file)}
+    if error is not None:
+        return {"file": file_info, "scan": {"verdict": "blocked", "refs": [], "message": error}}
+
+    verdict, refs, message, obj = _restricted_load(file, data)
+    scan_info = {"verdict": verdict, "refs": refs, "message": message}
+    if verdict != "safe":
+        return {"file": file_info, "scan": scan_info}
+
+    found = _find_estimators(obj)
+
+    return {
+        "file": file_info,
+        "scan": scan_info,
+        "structure": _describe(obj),
+        "estimators": [s for s in (_safe(_estimator_summary, p, e) for p, e in found) if s],
+        "feature_importance": [fi for fi in (_safe(_feature_importance, p, e) for p, e in found) if fi],
+        "trees": [t for t in (_safe(_tree_ensemble, p, e, idx) for p, e in found) if t],
+    }

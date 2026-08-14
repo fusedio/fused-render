@@ -97,6 +97,13 @@ def api_config(
         # not of the build.
         "native_dir_picker": dirpicker.available(),
     }
+    # Self-update state (update/mac.py) — present only when the mac app
+    # started the manager; the shell shows the sidebar badge / install panel
+    # off this. Rides this endpoint so the ServerStatusBanner poll carries it.
+    from fused_render.update import mac as mac_update
+
+    if (update_manager := mac_update.manager()) is not None:
+        config["update"] = update_manager.status()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

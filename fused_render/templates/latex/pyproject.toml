@@ -1,6 +1,7 @@
-# The latex template's environment (SPEC PY-16). engine.py is the runPython
-# entrypoint; install_worker.py and warm_worker.py are spawned beside it and are
-# stdlib-only.
+# The latex template's environment (SPEC PY-16). daemon.py is the runPython
+# entrypoint (it serves engine.py's actions over a localhost HTTP daemon that
+# runs in THIS venv, so `export`'s `import pypandoc` resolves); install_worker.py
+# and warm_worker.py are spawned beside them and are stdlib-only.
 #
 # `pypandoc-binary`, NOT `pypandoc`: the two are the same import name and the
 # same version, but the plain wheel is 0.0 MB of pure Python with NO pandoc

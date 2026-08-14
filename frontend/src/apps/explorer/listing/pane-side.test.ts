@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import {
-  DEFAULT_PANE_SIDE,
+  PANE_SIDE_COMPANIONS,
+  PANE_SIDE_FALLBACK,
   PANE_SIDE_MODES,
   PANE_SIDE_OFF,
   activePaneSide,
@@ -12,7 +13,6 @@ import {
   paneSideParam,
   paneSideTarget,
   parsePaneSide,
-  resumingPaneSession,
   type PaneSide,
 } from "./pane-side";
 
@@ -26,28 +26,42 @@ const entry = (mode: string): TemplateEntry => ({
 const NONE = { claude: null, git: null };
 const BOTH = { claude: entry("claude"), git: entry("git") };
 
-test("the three, in the order the switcher shows them", () => {
+test("two companions in switcher order, and a fallback that is not one of them", () => {
+  // D285: the pane is a companion column. `PANE_SIDE_MODES` still carries `preview`
+  // because the pane can BE in that state, but only as the neither-companion
+  // fallback — `PANE_SIDE_COMPANIONS` is what a user can choose and what the URL can
+  // carry, and the old `DEFAULT_PANE_SIDE` is gone with the idea that `preview` was
+  // anything's default.
   expect(PANE_SIDE_MODES).toEqual(["preview", "claude", "git"]);
-  expect(DEFAULT_PANE_SIDE).toBe("preview");
+  expect(PANE_SIDE_COMPANIONS).toEqual(["claude", "git"]);
+  expect(PANE_SIDE_FALLBACK).toBe("preview");
 });
 
 // WHAT AN ABSENT `_side` MEANS, which is the one place the folder's reading of the
 // param deliberately differs from the file view's — see parsePaneSide.
 describe("parsePaneSide", () => {
-  test("no param at all is OPEN at Preview, not closed", () => {
+  test("no param at all is OPEN with NO CHOICE, not closed and not Preview", () => {
     // Every folder URL, bookmark and recent from before this param existed says
-    // nothing, and every one of them means the two-column folder view.
-    expect(parsePaneSide(null)).toEqual({ open: true, mode: "preview" });
+    // nothing, and every one of them means the two-column folder view. What it does
+    // NOT mean any more is `preview` (D285): absence is `mode: null`, "no choice
+    // yet", which `activePaneSide` resolves against what the folder offers — so a
+    // clean URL lands on Claude instead of on a mode nothing offers.
+    expect(parsePaneSide(null)).toEqual({ open: true, mode: null });
   });
 
   test("`off` is the only closed state", () => {
-    expect(parsePaneSide(PANE_SIDE_OFF)).toEqual({ open: false, mode: "preview" });
+    // A shut pane records no mode either — it reopens at whatever is offered first,
+    // which since D285 is a companion rather than Preview.
+    expect(parsePaneSide(PANE_SIDE_OFF)).toEqual({ open: false, mode: null });
   });
 
-  test("a named mode opens the pane on it", () => {
+  test("a named COMPANION opens the pane on it — and `preview` is not one", () => {
     expect(parsePaneSide("claude")).toEqual({ open: true, mode: "claude" });
     expect(parsePaneSide("git")).toEqual({ open: true, mode: "git" });
-    expect(parsePaneSide("preview")).toEqual({ open: true, mode: "preview" });
+    // `preview` used to round-trip here. D285 refuses it like any unknown value: it
+    // names a state the pane can only FALL into, so honouring it would pin the pane
+    // to a hint the switcher cannot get the user out of.
+    expect(parsePaneSide("preview")).toEqual({ open: true, mode: null });
   });
 
   test("an unknown value falls back silently, pane still open", () => {
@@ -55,16 +69,22 @@ describe("parsePaneSide", () => {
     // router keeps `_side` across a directory hop. Same silent fallback an
     // unknown `_mode` gets, and NOT a closed pane: a value nobody recognises must
     // not take the folder view's other half away.
-    expect(parsePaneSide("notes")).toEqual({ open: true, mode: "preview" });
-    expect(parsePaneSide("graph")).toEqual({ open: true, mode: "preview" });
-    expect(parsePaneSide("")).toEqual({ open: true, mode: "preview" });
+    expect(parsePaneSide("notes")).toEqual({ open: true, mode: null });
+    expect(parsePaneSide("graph")).toEqual({ open: true, mode: null });
+    expect(parsePaneSide("")).toEqual({ open: true, mode: null });
   });
 });
 
 // Round-tripping, and which state gets the CLEAN url.
 describe("paneSideParam", () => {
-  test("open at the default writes nothing", () => {
-    expect(paneSideParam({ open: true, mode: "preview" })).toBeNull();
+  test("open with NO CHOICE writes nothing — the clean URL (PT-9)", () => {
+    // This case read `mode: "preview"` until D285, when "the default" stopped being a
+    // named mode. The clean URL now means "no choice recorded", and it resolves to
+    // whichever companion the folder offers first — so Claude is what a clean folder
+    // link lands on. Listing's `selectSide` normalises a pick of the leading
+    // companion back to null for exactly this reason: clicking the mode you are
+    // already on must not grow a param on every shared listing link.
+    expect(paneSideParam({ open: true, mode: null })).toBeNull();
   });
 
   test("open on a companion writes the mode", () => {
@@ -76,11 +96,14 @@ describe("paneSideParam", () => {
     // The mode to reopen on is session state (Listing), so a shared link to a
     // one-column listing does not carry a companion nobody can see.
     expect(paneSideParam({ open: false, mode: "git" })).toBe(PANE_SIDE_OFF);
-    expect(paneSideParam({ open: false, mode: "preview" })).toBe(PANE_SIDE_OFF);
+    expect(paneSideParam({ open: false, mode: null })).toBe(PANE_SIDE_OFF);
   });
 
   test("every writable state parses back to itself, modulo the shut mode", () => {
-    for (const mode of PANE_SIDE_MODES) {
+    // The writable states are the COMPANIONS plus no-choice (D285) — `preview` is not
+    // among them, which is the round-trip property that makes the fallback
+    // unreachable from a URL.
+    for (const mode of [...PANE_SIDE_COMPANIONS, null] as const) {
       const open = { open: true, mode };
       expect(parsePaneSide(paneSideParam(open))).toEqual(open);
       expect(parsePaneSide(paneSideParam({ open: false, mode })).open).toBe(false);
@@ -88,25 +111,79 @@ describe("paneSideParam", () => {
   });
 });
 
-// Which of the three a folder actually offers. `preview` always — it is the pane's
-// identity, and a row with no template at all still has the metadata card.
+// WHAT THE PANE MAY BE ON, and it no longer depends on the subject at all (D285):
+// `preview` is not offered for a file row either, so the two describes that used to
+// stand here — one for a file row or multi-selection, one for a folder subject — have
+// collapsed into this one. The `subjectIsDir` flag they were parameterised over is
+// deleted, and with it the only reason this function ever asked about the row.
+//
+// The old file-row premise, "`preview` always — it is the pane's identity there",
+// is exactly what D285 deleted: the pane is a companion column, the shape the
+// full-screen file sidebar has had all along.
 describe("paneSideList", () => {
-  test("a folder with neither companion offers Preview alone", () => {
-    // A mount-backed folder: both gates refuse a mount, so the pane can only ever
-    // BE Preview. The switcher still lists all three (paneSideMenu) — this list
-    // is what the pane may show, not what the header contains.
+  test("the companions alone, whatever the subject, and Claude is what it lands on", () => {
+    expect(paneSideList(BOTH)).toEqual(["claude", "git"]);
+    // An absent `_side` parses as no choice (`null`), and the resolve lands on the
+    // first offered side.
+    expect(activePaneSide(paneSideList(BOTH), null)).toBe("claude");
+  });
+
+  test("an explicit Git choice still wins", () => {
+    // The user's own `?_side=git` is a choice, not a default.
+    expect(activePaneSide(paneSideList(BOTH), "git")).toBe("git");
+  });
+
+  test("a folder outside a repository lands on Claude with Git gone", () => {
+    const outside = { claude: entry("claude"), git: null };
+    expect(paneSideList(outside)).toEqual(["claude"]);
+    expect(activePaneSide(paneSideList(outside), "git")).toBe("claude");
+  });
+
+  // A PROBE STILL OUT IS NOT A DENIAL, and conflating the two put the reported bug
+  // straight back for the window after a folder opens. `Listing` nulls both entries
+  // while `lib/dir-mode` is still resolving them (a stat plus a per-gate
+  // condition.py fork), so "no companion offered" is the same shape as
+  // mount-backed — and answering `preview` there made the pill read "Preview" while
+  // a chat rendered inside it, then flipped the side when the probe landed and spawned
+  // `agent.py` a SECOND time. So an undecided subject offers NOTHING and the pane
+  // holds a skeleton.
+  const PENDING = { claude: null, git: null, claudePending: true, gitPending: true };
+
+  test("probes still out offers nothing yet — for every row type now", () => {
+    expect(paneSideList(PENDING)).toEqual([]);
+    // The contract the caller reads: an EMPTY list means undecided, and the pane
+    // must not render a mode. `preview` in particular is not the answer.
+    expect(paneSideList(PENDING)).not.toContain("preview");
+  });
+
+  test("one probe landing is enough to decide", () => {
+    // Git still out, Claude answered: the chat is offered and the pane can mount.
+    expect(paneSideList({ ...PENDING, claude: entry("claude"), claudePending: false }))
+      .toEqual(["claude"]);
+    // Claude denied, Git answered: the first side ON OFFER, which is Git.
+    expect(paneSideList({ ...PENDING, git: entry("git"), gitPending: false, claudePending: false }))
+      .toEqual(["git"]);
+  });
+
+  test("a FILE row waits with everything else now — the old exemption is void", () => {
+    // This case asserted the opposite: a file row got `["preview"]` while the probes
+    // were out, because "its `preview` is its own template list, which this probe says
+    // nothing about". D285 removed that offer, so there is nothing to resolve for a
+    // file row either until a companion answers. The wait is bounded — `useDirMode` is
+    // keyed on the FOLDER and caches per directory, so the window opens once per
+    // folder open and arrow-keying between rows afterwards never re-enters it.
+    expect(paneSideList(PENDING)).toEqual([]);
+  });
+
+  test("with NEITHER companion, `preview` comes back as the fallback", () => {
+    // A mount-backed folder: both gates refuse. The pane must show something, and
+    // this is the one state that renders what pane-modes.ts resolves — the hint for
+    // the folder, a file row's own default template, or the metadata card.
     expect(paneSideList(NONE)).toEqual(["preview"]);
-  });
-
-  test("a folder in a repository offers all three, in order", () => {
-    expect(paneSideList(BOTH)).toEqual(["preview", "claude", "git"]);
-  });
-
-  test("a folder outside a repository loses Git and keeps Claude", () => {
-    expect(paneSideList({ claude: entry("claude"), git: null })).toEqual([
-      "preview",
-      "claude",
-    ]);
+    expect(activePaneSide(paneSideList(NONE), null)).toBe("preview");
+    // …and it cannot be REQUESTED, only fallen into: a `_side=preview` never becomes
+    // a want in the first place (parsePaneSide refuses it).
+    expect(parsePaneSide("preview").mode).toBeNull();
   });
 });
 
@@ -123,9 +200,8 @@ describe("paneSideMenu", () => {
   const rows = (e: Parameters<typeof paneSideMenu>[0]) =>
     paneSideMenu(e).map((r) => [r.mode, r.disabledReason ?? (r.pending ? "…" : null)]);
 
-  test("a folder in a repository offers all three, none explained", () => {
+  test("a folder in a repository offers both companions, neither explained", () => {
     expect(rows(BOTH)).toEqual([
-      ["preview", null],
       ["claude", null],
       ["git", null],
     ]);
@@ -133,7 +209,6 @@ describe("paneSideMenu", () => {
 
   test("a folder outside a repository keeps Git, disabled and explained", () => {
     expect(rows({ claude: entry("claude"), git: null })).toEqual([
-      ["preview", null],
       ["claude", null],
       ["git", NO_REPO],
     ]);
@@ -142,44 +217,77 @@ describe("paneSideMenu", () => {
   test("a mount-backed folder still gets a switcher", () => {
     // Both gates refuse a mount. This used to be a one-pill menu, which hid
     // itself, leaving the pane header a lone chevron.
+    // Two rows, both disabled and both explained. The pane is on its `preview`
+    // fallback here, and the menu says so by having nothing selectable — which is a
+    // truer account than a Preview row that looks like a choice (D285).
     expect(rows(NONE)).toEqual([
-      ["preview", null],
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
     ]);
+  });
+
+  test("an undecided subject draws two spinners", () => {
+    // A probe still out is neither offered nor denied, so the companions are CT-12
+    // spinners rather than denials.
+    const pending = { claude: null, git: null, claudePending: true, gitPending: true };
+    expect(paneSideMenu(pending)).toEqual([
+      { mode: "claude", pending: true },
+      { mode: "git", pending: true },
+    ]);
+  });
+
+  test("NO subject draws a Preview row — not even the fallback state (D285)", () => {
+    // The menu must not offer what a user cannot pick. `preview` is now unpickable
+    // everywhere: it is a state the pane falls into, so a row for it would be a
+    // control that cannot be honoured, and it carries no `disabledReason` either
+    // (it is not unavailable for a reason — it is not a mode).
+    expect(paneSideMenu(BOTH).map((r) => r.mode)).toEqual(["claude", "git"]);
+    // Unavailable COMPANIONS are still drawn and still explained — that rule is
+    // untouched, and it is why the pill never shrinks to one row and hides.
+    expect(paneSideMenu({ claude: entry("claude"), git: null })).toEqual([
+      { mode: "claude" },
+      { mode: "git", disabledReason: NO_REPO },
+    ]);
+    // Even where the pane IS on `preview` — neither companion offered — the menu
+    // shows the two companions and nothing else. This case used to assert the row
+    // came back here.
+    expect(paneSideMenu(NONE).map((r) => r.mode)).toEqual(["claude", "git"]);
   });
 
   test("an undecided probe spins rather than claiming a reason", () => {
     // "Not inside a git repository" before anyone has looked is a guess, and one
     // that flips to a working Git pill a moment later.
     expect(rows({ claude: null, git: null, claudePending: true, gitPending: true })).toEqual([
-      ["preview", null],
       ["claude", "…"],
       ["git", "…"],
     ]);
     // The two probes land independently: a settled denial beside an open probe
     // is the usual frame, and each row says only what is known of IT.
     expect(rows({ claude: null, git: null, gitPending: true })).toEqual([
-      ["preview", null],
       ["claude", NO_CLAUDE],
       ["git", "…"],
     ]);
   });
 
-  test("Preview is never explained away", () => {
-    // It is the pane's identity — it cannot be unavailable, so it never carries
-    // a reason and is always selectable.
-    for (const e of [NONE, BOTH, { claude: null, git: null, gitPending: true }])
-      expect(paneSideMenu(e)[0]).toEqual({ mode: "preview" });
+  test("Preview is never a row, in any state (D285)", () => {
+    // This case asserted the opposite — that `preview` is always row 0 and never
+    // carries a reason, because "it is the pane's identity". It is not a mode at all
+    // now, so the menu never mentions it; what it cannot do is carry a reason, since
+    // the reasons belong to companions that are unavailable.
+    for (const e of [NONE, BOTH, { claude: null, git: null, gitPending: true }]) {
+      expect(paneSideMenu(e).map((r) => r.mode)).toEqual(["claude", "git"]);
+    }
   });
 
   test("the rows decide nothing", () => {
     // What the pane may BE is still paneSideList's answer: a disabled row must
     // not become a mode the pane can land on.
     const outside = { claude: entry("claude"), git: null };
-    expect(paneSideMenu(outside).length).toBe(3);
-    expect(paneSideList(outside)).toEqual(["preview", "claude"]);
-    expect(activePaneSide(paneSideList(outside), "git")).toBe("preview");
+    expect(paneSideMenu(outside).length).toBe(2);
+    expect(paneSideList(outside)).toEqual(["claude"]);
+    // A denied request lands on the first mode ON OFFER — which is a companion now,
+    // not the fallback. This asserted `"preview"` while `preview` led every list.
+    expect(activePaneSide(paneSideList(outside), "git")).toBe("claude");
   });
 });
 
@@ -220,11 +328,15 @@ describe("activePaneSide", () => {
     expect(activePaneSide(paneSideList(BOTH), "claude")).toBe("claude");
   });
 
-  test("an unavailable request lands on Preview", () => {
-    expect(activePaneSide(paneSideList(NONE), "git")).toBe("preview");
+  test("an unavailable request lands on the first mode ON OFFER", () => {
+    // It used to land on Preview, because Preview led every list. Since D285 the
+    // fallback is reached only when there is nothing else — so a denied `git` in a
+    // folder that offers the chat lands on Claude, and only a folder offering neither
+    // lands on `preview`.
     expect(activePaneSide(paneSideList({ claude: entry("claude"), git: null }), "git")).toBe(
-      "preview"
+      "claude"
     );
+    expect(activePaneSide(paneSideList(NONE), "git")).toBe("preview");
   });
 });
 
@@ -253,6 +365,9 @@ describe("paneKey", () => {
   });
 
   test("Preview keeps its three selection states apart", () => {
+    // Still three, and the `self` one is still needed: since D284 it identifies the
+    // neither-companion fallback (a mount-backed folder) rather than the ordinary
+    // no-selection state, but it is the key the hint renders under either way.
     const row = paneKey("preview", folder, "/w/repo/a.md", 1);
     const self = paneKey("preview", folder, null, 0);
     const many = paneKey("preview", folder, null, 3);
@@ -283,35 +398,3 @@ describe("paneSideTarget", () => {
   });
 });
 
-// Arriving to CONTINUE one conversation (the Inbox's "Open in explorer"). What
-// hangs off the answer is the listing's one-shot auto-select, which spends its
-// shot instead of firing — because the target it would pick (a row) is the one
-// target a session id cannot be resolved against. See pane-side.ts.
-describe("resumingPaneSession", () => {
-  const id = "c0f1bb8a-2fcb-4e4f-a3d2-390b3aef8afc";
-
-  test("both halves of the inbox link, in either order", () => {
-    expect(resumingPaneSession(`?_side=claude&session_id=${id}`)).toBe(true);
-    expect(resumingPaneSession(`?session_id=${id}&_side=claude`)).toBe(true);
-    // and undisturbed by the params it travels with
-    expect(resumingPaneSession(`?snapshot=1&_side=claude&session_id=${id}&sort=size`)).toBe(true);
-  });
-
-  test("one half alone is not an arrival", () => {
-    // A pane the user simply left open on the chat: nothing here says WHICH
-    // conversation, so the row-driven target is still the right one.
-    expect(resumingPaneSession("?_side=claude")).toBe(false);
-    // And a session id under another mode is not this pane's business — Git and
-    // Preview have their own subjects, neither of them a conversation.
-    expect(resumingPaneSession(`?_side=git&session_id=${id}`)).toBe(false);
-    expect(resumingPaneSession(`?session_id=${id}`)).toBe(false);
-  });
-
-  test("an empty search, and an empty id, are both no", () => {
-    expect(resumingPaneSession("")).toBe(false);
-    expect(resumingPaneSession("?")).toBe(false);
-    // `session_id=` is what the chat template writes when it CLEARS the param
-    // (`{ default: "" }`), so a present-but-blank id must not read as a resume.
-    expect(resumingPaneSession("?_side=claude&session_id=")).toBe(false);
-  });
-});

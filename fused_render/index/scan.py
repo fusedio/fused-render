@@ -15,6 +15,7 @@ See specs/scan.md and specs/scan-incremental.md.
 import hashlib
 import json
 import os
+import threading
 import time
 
 from fused_render.index import fsevents
@@ -361,9 +362,6 @@ def run_scan(run_dir: str) -> None:
         # of an unfingerprinted index is the cheap side of that trade.
         applied = applied_ignore_sig(cfg, root)
         rules_changed = applied != rules.sig()
-        cache = ({} if (spec.get("full") or rules_changed)
-                 else load_dir_cache(cfg, root, pq))
-        incremental = bool(cache)
         if rules_changed:
             _emit(ev, type="phase", msg=(
                 "ignore rules changed - full rescan" if applied is not None
@@ -371,9 +369,68 @@ def run_scan(run_dir: str) -> None:
 
         # Journal position captured BEFORE scanning: events during the scan get
         # replayed (harmlessly re-checked) next time instead of being missed.
+        # Before the hint too, and before anything is read — an id taken later
+        # would silently drop whatever happened in between.
         fs_id0 = fsevents.current_id()
         fs_uuid = fsevents.device_uuid(root) if fs_id0 is not None else None
-        hint = fsevents.hint(cfg, root) if incremental else None
+
+        # A run that has already decided to rescan everything asks the journal
+        # nothing. Known HERE, before either read starts — `full` comes off the
+        # spec and `rules_changed` off a fingerprint compare — so it costs
+        # nothing to decide up front, and deciding it up front is what keeps a
+        # full rescan from waiting out a replay it would only discard (up to
+        # _replay's 20s timeout) before visiting its first directory. It is also
+        # what keeps "Full scan" working as the remedy for a corrupt
+        # fsevents.json: hint reads that file without a guard of its own, so a
+        # malformed event id raises, and a full run that called it would fail
+        # exactly like the incremental ones it is supposed to rescue.
+        rescan_all = bool(spec.get("full")) or rules_changed
+
+        # Otherwise the two setup reads are independent and both spend their
+        # time outside the GIL — load_dir_cache is parquet IO, fsevents.hint is a
+        # CFRunLoop draining the journal over IPC — so they run together and
+        # setup costs max() instead of sum(). Measured on a 588k-file index: the
+        # cache read is a flat ~0.75s and the replay 0.1-2.9s depending on how
+        # much churn there has been since the last scan, and they used to be paid
+        # one after the other on every single run. Threads, not processes:
+        # neither holds the GIL for its cost, and a spawn would eat the saving.
+        # The replay is not main-thread bound either: it schedules its stream on
+        # CFRunLoopGetCurrent(), which gives whichever thread runs it that
+        # thread's own run loop (fsevents._replay).
+        #
+        # One case still replays for nothing: an EMPTY cache (a first scan, or an
+        # index whose store is gone) also falls back to a full walk, and that is
+        # only known once the read returns. Unavoidable without serializing the
+        # two again, and it is the one run where a wasted replay is guaranteed
+        # cheap — there is no saved event id for the root, so `hint` answers None
+        # before it opens anything.
+        box: dict = {}
+        hint_thread = None
+        if not rescan_all:
+            def _hint_thread():
+                try:
+                    box["hint"] = fsevents.hint(cfg, root)
+                except BaseException as exc:  # noqa: BLE001 - re-raised below
+                    box["error"] = exc
+
+            hint_thread = threading.Thread(target=_hint_thread, daemon=True,
+                                           name="fsevents-hint")
+            hint_thread.start()
+        try:
+            cache = {} if rescan_all else load_dir_cache(cfg, root, pq)
+        finally:
+            if hint_thread is not None:
+                hint_thread.join()
+        if "error" in box:
+            # fsevents.hint answers None on every failure path it knows about,
+            # so anything raising out of it is a defect. Re-raised into the run's
+            # own handler (a `failed` run_end with the traceback) rather than
+            # degraded to "no hint": a silent full walk of a large root reads as
+            # a slow scan, not as a bug, and would keep doing so every run. The
+            # user's way out is a full scan, which never reaches this code.
+            raise box["error"]
+        incremental = bool(cache)
+        hint = box.get("hint") if incremental else None
         _emit(ev, type="phase", msg=(
             "scanning (fsevents journal)" if hint is not None
             else "scanning (incremental)" if incremental else "scanning (full)"))

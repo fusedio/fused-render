@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { NAV_EVENT } from "@platform/lib/router";
 import { createCloseDeferrer } from "@platform/lib/exit-animation";
 import { getConfig } from "@platform/lib/api";
+import { navReach, subscribeNavReach, type NavReach } from "@platform/lib/nav-history";
 import {
   getSidebarState,
   subscribeSidebarState,
@@ -234,4 +235,12 @@ function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
 // dragged width, shared so every owner of the frame agrees on the layout.
 export function useSidebarState(): SidebarState {
   return useSyncExternalStore(subscribeSidebarState, getSidebarState, getSidebarState);
+}
+
+// Whether Back / Forward have anywhere to go (platform/lib/nav-history). Not
+// `useNavEpoch` + a read: the answer also changes on `currententrychange`, an
+// event that fires on `window.navigation` rather than on `window`, so the
+// counter hook above cannot see it.
+export function useNavReach(): NavReach {
+  return useSyncExternalStore(subscribeNavReach, navReach, navReach);
 }
