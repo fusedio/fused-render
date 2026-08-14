@@ -40,19 +40,35 @@ QUIET_S = 30.0
 # Floor between scans of one root STARTED by this path. Read off `scans.json`
 # via runner.last_scan, which the startup scheduler and the manual buttons also
 # stamp — so a scan that just ran for any reason suppresses a trigger, and the
-# trigger needs no state file of its own. Still below the startup debounce
-# (routers/index.SCAN_DEBOUNCE_S, 15 min): that one exists to stop a reload
-# loop, this one to stop a browsing session from queueing.
+# trigger needs no state file of its own. That is also why it cannot be dropped
+# in favour of routers/index.FRESHNESS_CHECK_S: that one throttles the CHECKS
+# per root, in memory, and sees nothing started by the scheduler or the buttons,
+# so without this floor a folder-open could rescan seconds after either. The two
+# are now the same number, which is the intent — one cadence, expressed at both
+# layers. Still far below the startup debounce (SCAN_DEBOUNCE_S, 15 min): that
+# one exists to stop a reload loop, this one to stop a browsing session from
+# queueing.
 #
-# Raised from two minutes, because a completed scan is not free to the client:
-# it invalidates every fetched corpus in the app (platform/lib/index-status ->
-# index-freshness), and the explorer's answer to that is now to keep serving
-# what it has and say it is a generation behind rather than to refetch. Being a
-# few minutes behind is a labelled, readable state; a scan finishing every two
-# minutes under a churny home directory is a permanent "indexing…" and a
-# permanent dimming, which reads as broken. Freshness still wins over an
-# out-of-band change eventually, just not eagerly.
-MIN_INTERVAL_S = 600.0
+# Lowered from 600s, which was itself raised from 120s on the argument that a
+# completed scan invalidates every fetched corpus in the app
+# (platform/lib/index-status -> index-freshness) and so a scan finishing every
+# couple of minutes is a permanent "indexing…" and a permanent dimming. That
+# argument no longer holds: the explorer defers a new generation instead of
+# refetching under the user (apps/explorer/listing/revalidate.ts, and the
+# `fetchLifecycle` pin in FilesHome.tsx), so a scan completing mid-search no
+# longer disturbs the results being read.
+#
+# And scanning sooner is actively cheaper, not merely tolerable. Measured on a
+# 588k-file index: a whole-root incremental scan is ~4.5s, of which the FSEvents
+# journal replay (0.1-2.9s) and the visit of the dirs it names (1.3-2.8s) BOTH
+# scale with the window since the last scan. Halving the window halves the two
+# dominant terms; the fixed costs (worker spawn, dir-cache read, compaction) are
+# ~1.3s and are paid either way.
+#
+# NOT fixed by any of this: apps/explorer/listing/index-caveat.ts still derives
+# its "indexing…" caption straight from `status.scanning`, with no deferral of
+# its own — so more frequent scans do mean that caption appears more often.
+MIN_INTERVAL_S = 60.0
 
 
 def enclosing_root(roots, path: str):

@@ -129,8 +129,11 @@ again on every watch tick of a folder on screen**:
 2. Not mount-backed. This is checked before any syscall on the path, by the same pure
    string `MountGuard` §4 uses: `os.stat` under a wedged rclone mount blocks its thread
    indefinitely, and this one is serving a listing.
-3. `MIN_INTERVAL_S` (120 s) since any scan of that root, read off `scans.json` — so no
+3. `MIN_INTERVAL_S` (60 s) since any scan of that root, read off `scans.json` — so no
    state file of its own, and a scan that just ran for any reason suppresses a trigger.
+   The same number as `routers/index.FRESHNESS_CHECK_S`, which paces the checks in
+   memory; scanning sooner is also *cheaper*, since both dominant scan costs (the
+   journal replay and the visit set it names) scale with the window since the last one.
 4. `QUIET_S` (30 s) since the directory's own mtime moved. A build tree's mtime never
    stops moving, so it is never quiet and never triggers; the open after the churn stops
    still does.

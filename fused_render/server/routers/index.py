@@ -142,12 +142,11 @@ _freshness_slot = threading.Lock()
 # client has fetched (platform/lib/index-status). So a root is checked at most
 # this often, whatever the explorer is doing.
 #
-# Deliberately coarse. The client's posture is now to keep serving the corpus
-# it has and label it a generation behind rather than to refetch on every
-# index event (listing/revalidate), which makes an eager freshness check worth
-# much less than it used to be and its side effect — a scan completing mid-read
-# — worth avoiding. freshness.MIN_INTERVAL_S is the second, longer floor on the
-# SCANS themselves; this one is about the checks.
+# freshness.MIN_INTERVAL_S is the other floor — on the SCANS themselves, read
+# off scans.json so it also sees the ones the scheduler and the manual buttons
+# start; this one is about the checks, and only about the ones this process
+# makes. They are deliberately the same number: a check more often than a scan
+# may be started is work that can never act on what it finds.
 FRESHNESS_CHECK_S = 60.0
 
 # root -> when it was last checked. Bounded by the number of configured scan
