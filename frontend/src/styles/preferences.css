@@ -263,6 +263,46 @@
   margin-top: 30px;
 }
 
+/* -- Home page sections (shell/Home.tsx) --------------------------------------
+   Title row with the "See all" action on its right edge, over a one-row strip
+   of the same cards the full pages use. */
+.home-sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.home-sec-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.home-sec-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.home-sec-more:hover {
+  color: var(--fg);
+}
+
+/* The strips never wrap: the sections preview their full pages, so anything
+   past the first row lives behind "See all" rather than pushing the next
+   section below the fold. */
+.home-row {
+  grid-template-rows: auto;
+  grid-auto-rows: 0;
+  overflow: hidden;
+}
+
 .fh-empty {
   margin: 0;
   font-size: 13.5px;
