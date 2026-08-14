@@ -30,6 +30,7 @@ Deliberately torch + transformers only. No FastAPI, no requests — this process
 must start fast, and its dependency list is a thing users download.
 """
 
+from collections.abc import Mapping
 import json
 import os
 import sys
@@ -333,8 +334,17 @@ def _encode(tokenizer, messages, prompt, device):
         encoded = tokenizer(prompt, return_tensors="pt")
         ids, mask = encoded["input_ids"], encoded.get("attention_mask")
     elif getattr(tokenizer, "chat_template", None):
-        ids = _apply_template(tokenizer, messages)
-        mask = None
+        encoded = _apply_template(tokenizer, messages)
+        # transformers v4 returned the input-id tensor directly, while v5
+        # consistently returns a BatchEncoding like an ordinary tokenizer call.
+        # Accept both: this runner deliberately supports both sides of that
+        # dependency boundary, and handing the v5 mapping to `torch.ones_like`
+        # produces "input must be Tensor, not BatchEncoding" before generation
+        # can start.
+        if isinstance(encoded, Mapping):
+            ids, mask = encoded["input_ids"], encoded.get("attention_mask")
+        else:
+            ids, mask = encoded, None
     else:
         # No template to apply. The same fallback MLX takes — better a plain
         # concatenation than turn markers invented here.

@@ -259,6 +259,38 @@ def test_a_chat_prompt_is_tokenized_BY_the_template_not_after_it(
     assert tokenizer.calls[0][2]["add_generation_prompt"] is True
 
 
+def test_a_v5_batch_encoding_from_the_chat_template_is_unwrapped(
+        worker, monkeypatch):
+    """Transformers v5 made the mapping return consistent with tokenization.
+
+    Before v5, ``apply_chat_template(..., return_tensors="pt")`` returned the
+    input-id tensor directly. In v5 it returns a ``BatchEncoding`` carrying
+    both ids and the attention mask. Passing that object to ``torch.ones_like``
+    raises before the model sees the prompt, so the worker accepts both shapes
+    across the dependency range it declares.
+    """
+    torch = _fake_torch()
+    torch.ones_like = lambda _ids: pytest.fail(
+        "a supplied attention mask must not be replaced")
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    class V5Tokenizer(_Tokenizer):
+        def apply_chat_template(self, messages, **kwargs):
+            self.calls.append(("template", messages, kwargs))
+            return {
+                "input_ids": _Tensor([1, 2, 3]),
+                "attention_mask": _Tensor([1, 1, 1]),
+            }
+
+    tokenizer = V5Tokenizer()
+    ids, mask = worker._encode(
+        tokenizer, [{"role": "user", "content": "hi"}], "", "cpu")
+
+    assert list(ids) == [1, 2, 3]
+    assert list(mask) == [1, 1, 1]
+    assert [call[0] for call in tokenizer.calls] == ["template"]
+
+
 def test_reasoning_is_off_by_default(worker, monkeypatch):
     """Qwen3's template defaults thinking ON, and three of four suggestions are Qwen3.
 
