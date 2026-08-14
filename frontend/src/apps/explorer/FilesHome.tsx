@@ -10,8 +10,7 @@ import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
 import { indexCaveat } from "@apps/explorer/listing/index-caveat";
 import { getClaudeSessionFolders, getGitRepos, indexSearch, statPath } from "@platform/lib/api";
-import { allBookmarks, hydrateBookmarks, loadBookmarks } from "@platform/lib/bookmarks";
-import { useBookmarksVersion, useUrlVersion } from "@platform/lib/hooks";
+import { useUrlVersion } from "@platform/lib/hooks";
 import {
   fsMutationCount,
   indexLifecycleCount,
@@ -19,7 +18,7 @@ import {
   subscribeIndexLifecycle,
 } from "@platform/lib/index-freshness";
 import { hydrateRecents, loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
-import { BookmarkPreviewCard, RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
+import { RecentPreviewCard, FolderPreviewCard } from "@apps/explorer/BookmarkCards";
 import { describeSpec, runAiSearch, type AiSearchResult } from "@apps/explorer/lib/ai-search";
 import {
   refreshIsPending,
@@ -56,7 +55,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 // 9 fills a 3×3 grid at the layout's usual three columns.
 const MAX_CARDS = 9;
 
-type LaunchTab = "bookmarks" | "recents" | "sessions" | "repos";
+type LaunchTab = "recents" | "sessions" | "repos";
 
 // -- The home search bar ------------------------------------------------------
 //
@@ -233,7 +232,8 @@ function AiResults({ home, query, result }: { home: string; query: string; resul
   );
 }
 
-function FilesSearch({
+// Exported for the shell Home page (/home), which reuses this box as its hero.
+export function FilesSearch({
   home,
   initialQuery,
   indexScan,
@@ -681,7 +681,6 @@ export default function FilesHome({ config }: { config: Config }) {
   // Panel.tsx): backslashed on Windows, while search hits and path helpers
   // (basename, the "home + /" strip below) are forward-slash-only.
   const home = config.home.replace(/\\/g, "/");
-  useBookmarksVersion();
   useRecentsVersion();
   // The active tab lives entirely in the URL (?tab=recents) — read fresh on
   // every render, re-triggered by any history write (typed url, back/forward,
@@ -699,14 +698,9 @@ export default function FilesHome({ config }: { config: Config }) {
   };
   // Each tab folds at a flat MAX_CARDS and keeps its own "Show more" state,
   // so switching tabs doesn't reset (or leak) the other tab's expansion.
-  const [expandedBookmarks, setExpandedBookmarks] = useState(false);
   const [expandedRecents, setExpandedRecents] = useState(false);
   const [expandedSessions, setExpandedSessions] = useState(false);
   const [expandedRepos, setExpandedRepos] = useState(false);
-  // Folders flattened: the homepage is a launcher, and a bookmark buried two
-  // folders deep is still one the user cared enough to save. Saved-list order.
-  const bookmarks = loadBookmarks().length ? allBookmarks() : [];
-  const shownBookmarks = expandedBookmarks ? bookmarks : bookmarks.slice(0, MAX_CARDS);
   // Raw MRU (newest first) — not the sidebar's stable-slot top-3, since a
   // full page doesn't jump under the pointer the way an always-visible
   // sidebar section does.
@@ -827,18 +821,13 @@ export default function FilesHome({ config }: { config: Config }) {
   const repoList = reposTab.kind === "ready" ? reposTab.repos : [];
   const shownRepos = expandedRepos ? repoList : repoList.slice(0, MAX_CARDS);
   // With no ?tab= in the URL, land on Claude sessions — the leading tab.
-  // Bookmark/recent caches still hydrate on mount (effect below) so the other
-  // tabs are ready when clicked. An explicit ?tab= always wins.
+  // The recents cache still hydrates on mount so the tab is ready when
+  // clicked. An explicit ?tab= always wins.
   useEffect(() => {
-    // Both are idempotent (enqueued; bookmarks no-ops when already hydrated).
-    void hydrateBookmarks();
     void hydrateRecents();
   }, []);
   const tab: LaunchTab =
-    tabParam === "recents" ||
-    tabParam === "sessions" ||
-    tabParam === "bookmarks" ||
-    tabParam === "repos"
+    tabParam === "recents" || tabParam === "sessions" || tabParam === "repos"
       ? tabParam
       : "sessions";
   // A ?q= present at load was a committed AI search; FilesSearch re-runs it.
@@ -872,16 +861,7 @@ export default function FilesHome({ config }: { config: Config }) {
                 className={"fh-tab" + (tab === "sessions" ? " active" : "")}
                 onClick={() => setTab("sessions")}
               >
-                Artifacts
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === "bookmarks"}
-                className={"fh-tab" + (tab === "bookmarks" ? " active" : "")}
-                onClick={() => setTab("bookmarks")}
-              >
-                Bookmarks
+                Claude Sessions
               </button>
               <button
                 type="button"
@@ -917,28 +897,7 @@ export default function FilesHome({ config }: { config: Config }) {
               </button>
             </div>
 
-            {tab === "bookmarks" ? (
-              bookmarks.length ? (
-                <>
-                  <div className="fhb-grid">
-                    {shownBookmarks.map((b) => (
-                      <BookmarkPreviewCard key={b.id} b={b} />
-                    ))}
-                  </div>
-                  {bookmarks.length > MAX_CARDS && (
-                    <ShowMoreButton
-                      expanded={expandedBookmarks}
-                      onClick={() => setExpandedBookmarks((v) => !v)}
-                    />
-                  )}
-                </>
-              ) : (
-                <p className="fh-empty">
-                  No bookmarks yet. While browsing, use the star in the breadcrumb to save a
-                  spot — it'll show up here.
-                </p>
-              )
-            ) : tab === "recents" ? (
+            {tab === "recents" ? (
               recents.length ? (
                 <>
                   <div className="fhb-grid">

@@ -1,12 +1,12 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Explorer / Build App / Inbox), the explorer's Recents
-// and Bookmarks below it, and a single Settings trigger pinned to the
+// primary nav on top (Home / Inbox), the explorer's Bookmarks below it,
+// and a single Settings trigger pinned to the
 // bottom that opens a menu holding everything else (Config / App Basics for
 // now, plus Templates / Mounts / AI Models / Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
-// (SidebarFrame) and explorer-owned sections (Recents/Bookmarks), which only
+// (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
@@ -24,24 +24,14 @@ import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useAiRuntime } from "@shell/aiRuntime";
 import { formatSize } from "@platform/lib/format";
-import RecentsSection from "@apps/explorer/sidebar/RecentsSection";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 
-// Magnifier — the Explorer's front door is its search prompt (FilesHome's
-// hero), so the entry reads as "find things" rather than "a folder".
-const EXPLORER_ICON = (
+// House — the Home page (/home): search hero + the three recency strips.
+const HOME_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="11" cy="11" r="7" />
-    <line x1="16.5" y1="16.5" x2="21" y2="21" />
-  </svg>
-);
-
-const APPS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <rect x="3" y="3" width="8" height="8" rx="2" />
-    <rect x="13" y="3" width="8" height="8" rx="2" />
-    <rect x="3" y="13" width="8" height="8" rx="2" />
-    <circle cx="17" cy="17" r="4" />
+    <path d="M3 10.5 12 3l9 7.5" />
+    <path d="M5 9.5V21h14V9.5" />
+    <path d="M10 21v-6h4v6" />
   </svg>
 );
 
@@ -226,11 +216,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     />
   ) : undefined;
 
-  // Only the Explorer HOMEPAGE lights the row. Viewing a file
-  // (/explorer/view|embed/...) is "being somewhere", not "being on Explorer" —
+  // Only the Home page itself lights the row. Viewing a file
+  // (/explorer/view|embed/...) is "being somewhere", not "being on Home" —
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
-  const explorerActive = pathname === "/explorer";
+  const homeActive = pathname === "/home";
 
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
@@ -262,8 +252,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const prefsActive = menuEntries.some((e) => e !== "separator" && e.href === pathname);
 
   const rail: SidebarRailItem[] = [
-    { key: "explorer", label: "Explorer", icon: EXPLORER_ICON, href: "/explorer", active: explorerActive },
-    { key: "apps", label: "Build App", icon: APPS_ICON, href: "/apps" },
+    { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     ...(sessionsMountReady
       ? [{ key: "sessions", label: "Inbox", icon: SESSIONS_ICON, href: "/sessions" }]
       : []),
@@ -277,21 +266,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     (deployEnabled && accountLoggedIn ? <span className="account-signedin-dot" /> : undefined);
 
   return (
-    <SidebarFrame title="Render" version={config.version} homeHref="/explorer" rail={rail}>
+    <SidebarFrame title="Render" version={config.version} homeHref="/home" rail={rail}>
       <div className="sidebar-section sidebar-group">
         <NavItem
-          href="/explorer"
-          id="explorer-link"
-          label="Explorer"
-          icon={EXPLORER_ICON}
-          active={explorerActive}
+          href="/home"
+          id="home-link"
+          label="Home"
+          icon={HOME_ICON}
+          active={homeActive}
         />
-        <NavItem href="/apps" id="apps-link" label="Build App" icon={APPS_ICON} />
         {sessionsMountReady && (
           <NavItem href="/sessions" id="sessions-link" label="Inbox" icon={SESSIONS_ICON} />
         )}
       </div>
-      <RecentsSection />
       <BookmarksSection />
       <div className="sidebar-section sidebar-settings">
         <PreferencesMenu entries={menuEntries} dot={triggerDot} active={prefsActive} />
