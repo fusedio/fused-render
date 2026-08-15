@@ -38,7 +38,7 @@ import {
 import { createPortal } from "react-dom";
 import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { prefetchListDir } from "@platform/lib/api";
+import { postAppOpen, prefetchListDir } from "@platform/lib/api";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
@@ -887,6 +887,19 @@ export default function Listing({
   const appEntryPath =
     paneSubjectDir === null ? null : paneSubjectDir === base ? openFolderEntry : rowEntry;
 
+  // The ONE "Open app" click, shared by the pane strip's button and its
+  // shut-pane fallback in the bar so they can't drift. Opening also RECORDS the
+  // open — fire-and-forget, like appEntry.ts's recordAppOpen — which is what
+  // puts an app on the /apps hub and feeds its recency sort: a workspace app's
+  // open lands in the recents store, an external folder's registers it
+  // (registered_apps.py). The server decides which; the click just reports the
+  // FOLDER (the store's identity), not the entry file it navigates to.
+  const openAppEntry = () => {
+    if (!appEntryPath || !paneSubjectDir) return;
+    void postAppOpen(paneSubjectDir).catch(() => undefined);
+    navigate(appEntryPath, { isDir: false });
+  };
+
   const paneSides = paneSideList(sideEntries);
   // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
   // paneSideList returns an empty list, and only for that). The pane holds a
@@ -1721,7 +1734,7 @@ export default function Listing({
                   type="button"
                   className="bar-ctl bar-ctl-strong"
                   title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
-                  onClick={() => navigate(appEntryPath, { isDir: false })}
+                  onClick={openAppEntry}
                 >
                   Open app
                 </button>
@@ -1898,9 +1911,7 @@ export default function Listing({
                 selCount={sel.paths.length}
                 undecided={paneUndecided}
                 appEntry={appEntryPath}
-                onOpenApp={() =>
-                  appEntryPath && navigate(appEntryPath, { isDir: false })
-                }
+                onOpenApp={openAppEntry}
                 folder={fsPath}
                 side={paneSide}
                 sideEntries={sideEntries}

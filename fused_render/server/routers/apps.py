@@ -69,12 +69,18 @@ _APP_STARTER_DIR = os.path.join(
 
 @router.get("/api/apps")
 def api_apps():
+    from fused_render import registered_apps
+
     apps = list(app_listing.workspace_apps(fused_dir()))
-    apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     opened = _opened_at_by_app()
     root = fused_dir()
     for a in apps:
         a["opened_at"] = opened.get(_workspace_rel(root, a["path"]))
+    # External folders the user opened through "Open app" — the registry's own
+    # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
+    # sort by recency exactly as workspace apps do.
+    apps.extend(registered_apps.registered_apps())
+    apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
 
@@ -195,7 +201,15 @@ def api_app_recent_open(
     # workspace are recorded — same benign no-op posture as the explorer's
     # POST /api/recents/open for a non-file url.
     rel = _workspace_rel(fused_dir(), path)
-    if rel is None or not _app_folder_exists(rel):
+    if rel is None:
+        # Outside the workspace: an external app folder. Opening IS
+        # registering — the registry stores the open time itself, so these
+        # entries never touch the workspace recents store. Validation
+        # (exists, has a page, not behind a wedged mount) is the module's.
+        from fused_render import registered_apps
+
+        return {"recorded": registered_apps.record_open(path)}
+    if not _app_folder_exists(rel):
         return {"recorded": False}
     title_raw = body.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
