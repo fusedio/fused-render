@@ -110,6 +110,10 @@ def load(model_id, fetched):
     device, compute_type = _placement()
     _loaded["model"] = WhisperModel(fetched, device=device, compute_type=compute_type)
     _loaded["device"] = device
+    # See `worker_base.STATE["device"]`. CTranslate2 has no Metal backend, so an
+    # Apple Silicon machine transcribes on its CPU cores — which is fine, and is
+    # exactly the sort of thing a user should be able to read rather than deduce.
+    worker_base.set_state(device=device)
 
 
 def memory():

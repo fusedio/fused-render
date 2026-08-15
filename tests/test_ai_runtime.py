@@ -289,6 +289,15 @@ def fake_image_runner(tmp_path, monkeypatch):
         folder=str(folder), label="Fake image",
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    # A shortlist for the fake runner, because since D293 the catalog is keyed
+    # by RUNNER rather than by capability — so "the default image model" is
+    # whatever the runner that will actually load it suggests, and a runner with
+    # no list has no default. That is the right production behaviour (a default
+    # the resolving backend cannot load is worse than none), and it means a
+    # fixture that swaps the registry has to swap the curation with it.
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/fake-image", "label": "Fake image", "size_gb": None, "note": ""},
+    ])
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     # The prerequisites (`uv`, the `fused` package) are a fact about the
     # MACHINE, and these tests are about the supervisor. Stubbed rather than
@@ -312,6 +321,11 @@ def fake_transcribe_runner(tmp_path, monkeypatch):
         folder=str(folder), label="Fake whisper",
     )
     monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    # See `fake_image_runner`: the catalog is keyed by runner since D293, so the
+    # fake backend brings its own default.
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-whisper", [
+        {"id": "org/fake-whisper", "label": "Fake whisper", "size_gb": None, "note": ""},
+    ])
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
     yield runner
@@ -390,20 +404,220 @@ def test_a_runner_that_cannot_run_here_says_why(monkeypatch):
 def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     # Picking an unavailable runner and failing at load time would report "the
     # model failed to load" for a machine that was never going to load it.
+    #
+    # Linux used to prove this by resolving to NOTHING, which stopped being the
+    # observation the day a cross-platform text runner landed below MLX (D293):
+    # a None then meant "nobody serves this" rather than "the unavailable one
+    # was skipped". Skipping is now visible as a HANDOVER, which is the stronger
+    # statement of the same rule — and the ordering is what carries it, so the
+    # test names both sides.
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
-    assert registry.for_capability(registry.TEXT_GENERATION) is None
-    # …and the same runner resolves on the platform it was built for.
+    resolved = registry.for_capability(registry.TEXT_GENERATION)
+    assert resolved is not None and resolved.code == "transformers-text"
+    # …and the runner that was skipped is still registered ahead of it, which is
+    # what makes this a skip rather than an absence.
+    assert registry.all_runners()[0].code == "mlx-text"
+    assert registry.by_code("mlx-text").available().ok is False
+
+    # The same capability resolves to MLX on the platform it was built for.
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     resolved = registry.for_capability(registry.TEXT_GENERATION)
     assert resolved is not None and resolved.code == "mlx-text"
 
 
-def test_every_suggested_model_names_a_capability_with_a_runner():
-    # A suggestion for a capability nothing serves is a dead card on the page.
-    for capability in catalog.SUGGESTIONS:
-        assert any(r.capability == capability for r in registry.all_runners()), capability
+def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatch):
+    """A capability with two runners must not answer for only the first of them.
+
+    `mlx-text` is registered first, so a Linux machine whose transformers worker
+    was missing — a state `Runner.available` documents, since a runner is
+    registered before its folder is written — was told text generation "needs
+    Apple Silicon": the one backend that was never going to serve it, with the
+    one that would have gone unmentioned. Reported by review on the PR that
+    added the second runner, and the fix is that all three copies of this
+    lookup (registry, `_runner_or_raise`, `start_image`) became one.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    # The transformers runner present but unbuilt, which is what makes the whole
+    # capability unservable on a machine MLX has already turned down.
+    ghost = registry.Runner(
+        code="transformers-text", capability=registry.TEXT_GENERATION,
+        folder="/nowhere", label="Transformers (PyTorch)")
+    monkeypatch.setattr(
+        registry, "_RUNNERS", (registry.by_code("mlx-text"), ghost))
+
+    reason = registry.unavailable_reason(registry.TEXT_GENERATION)
+    assert "not built yet" in reason, reason
+    assert "Transformers (PyTorch)" in reason, reason
+    # The supervisor raises the same sentence rather than deriving its own.
+    with pytest.raises(supervisor.SupervisorError) as caught:
+        supervisor.load("org/x", registry.TEXT_GENERATION)
+    assert str(caught.value) == reason
+
+
+def test_one_runner_per_capability_reads_exactly_as_before(monkeypatch):
+    """Joining the reasons must not have changed the common case into a list.
+
+    Every capability but text generation has a single runner, so its message is
+    that runner's sentence and nothing else — no separator, no second clause.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    ghost = registry.Runner(
+        code="ghost", capability=registry.IMAGE_GENERATION,
+        folder="/nowhere", label="Ghost")
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    assert registry.unavailable_reason(registry.IMAGE_GENERATION) == (
+        "the Ghost runner is not built yet")
+
+
+def test_a_capability_nothing_can_serve_still_resolves_to_nothing(monkeypatch):
+    """The other half of the rule, now that no real capability demonstrates it.
+
+    Every capability has a runner that runs everywhere since D293, so the
+    "skipped everything and found nobody" branch has no platform left to be
+    reached on — and an unreachable branch is one nobody notices breaking. A
+    registry holding only the Metal-only runner puts it back within reach.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("mlx-text"),))
+    assert registry.for_capability(registry.TEXT_GENERATION) is None
+
+
+def test_every_suggested_model_names_a_runner_that_exists():
+    # A suggestion list under a runner nobody registered is a dead card on the
+    # page — and since D293 the table is keyed by RUNNER rather than capability,
+    # because `mlx-community/…` and `Qwen/…` serve the same capability and are
+    # unloadable on each other's machines.
+    for code in catalog.SUGGESTIONS:
+        assert registry.by_code(code) is not None, code
+
+
+def test_every_runner_that_can_run_here_suggests_something(monkeypatch):
+    """A capability with a runner and no shortlist is an empty Discover heading.
+
+    Checked on the platform where it would actually bite: text generation
+    resolves to a DIFFERENT runner on Windows than on a Mac, so a list added for
+    one and forgotten for the other is invisible to anyone developing on the
+    other machine.
+    """
+    for system, machine in (("Darwin", "arm64"), ("Windows", "AMD64"), ("Linux", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        for capability in registry.capabilities():
+            if registry.for_capability(capability) is None:
+                continue
+            assert catalog.for_capability(capability), (
+                f"{capability} resolves to a runner on {system} and suggests nothing")
+
+
+def test_text_generation_resolves_to_a_runner_on_every_supported_platform(monkeypatch):
+    """The whole point of D293, stated as one assertion.
+
+    Text generation was Apple-Silicon-only, which made the app's flagship local
+    capability something a Windows or Linux user could read about and not use.
+    """
+    for system, machine, code in (
+        ("Darwin", "arm64", "mlx-text"),
+        ("Windows", "AMD64", "transformers-text"),
+        ("Linux", "x86_64", "transformers-text"),
+    ):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        runner = registry.for_capability(registry.TEXT_GENERATION)
+        assert runner is not None and runner.code == code, (system, machine)
+
+
+def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch):
+    """Availability controls the catalog and Load button, so it is a support claim."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+
+    assert registry.for_capability(registry.TEXT_GENERATION) is None
+    status = registry.by_code("transformers-text").available()
+    assert status.ok is False
+    assert "Apple Silicon macOS" in status.reason
+
+
+def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
+        monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        registry, "_RUNNERS",
+        tuple(runner for runner in registry.all_runners() if runner.code != "mlx-text"),
+    )
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    assert runner is not None and runner.code == "transformers-text"
+
+
+def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
+    expected = {
+        "Qwen/Qwen3-4B-Instruct-2507": 8.1,
+        "microsoft/Phi-4-mini-instruct": 7.7,
+        "Qwen/Qwen3-1.7B": 4.1,
+        "Qwen/Qwen3-8B": 16.4,
+        "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
+        "Systran/faster-whisper-medium": 1.5,
+        "Systran/faster-whisper-small": 0.5,
+    }
+    actual = {
+        model["id"]: model["size_gb"]
+        for runner in ("transformers-text", "faster-whisper")
+        for model in catalog.SUGGESTIONS[runner]
+    }
+    assert actual == expected
+
+
+def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
+    """A Windows machine must not be shown MLX repos, or told it has no runner.
+
+    Both halves were one bug: `describe()` took the FIRST runner registered for
+    a capability regardless of whether it could run, so with MLX listed above
+    transformers a Windows box would have read "needs Apple Silicon" under a
+    heading whose four suggestions were all Metal-packed checkpoints it could
+    not load — while a runner sat ready to serve it.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    text = next(row for row in catalog.describe()
+                if row["capability"] == registry.TEXT_GENERATION)
+    assert text["available"] is True and text["reason"] is None
+    assert text["runner"] == "transformers-text"
+    assert text["runnerLabel"] == "Transformers (PyTorch)"
+    assert not any(m["id"].startswith("mlx-community/") for m in text["models"])
+    # …and the default a bare `fused.ai.image()`-style call would reach for is
+    # the loadable one, not the first entry of some other machine's list.
+    assert catalog.default_for(registry.TEXT_GENERATION) == text["models"][0]["id"]
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    text = next(row for row in catalog.describe()
+                if row["capability"] == registry.TEXT_GENERATION)
+    assert text["runner"] == "mlx-text"
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/")) for m in text["models"])
+
+
+def test_the_cpu_warning_reaches_the_page_before_the_download(monkeypatch):
+    """The PyTorch runner says what using it is LIKE, and the catalog carries it.
+
+    torch from PyPI is CPU-only on Windows, so the ordinary outcome there is a
+    model that works and answers at walking pace. That is worth knowing BEFORE
+    an 8GB pull, and nothing else on the page can say it: the device a model
+    really got is a measurement that does not exist until one has loaded.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    text = next(row for row in catalog.describe()
+                if row["capability"] == registry.TEXT_GENERATION)
+    assert text["runnerNote"] and "CPU" in text["runnerNote"]
+    # A standing fact about the BACKEND, never a claim about this machine — the
+    # note must not assert a device nothing has measured yet.
+    assert "GPU" in text["runnerNote"]
 
 
 def test_speech_recognition_is_a_capability_something_here_serves(monkeypatch):
@@ -520,8 +734,14 @@ def test_a_worker_that_dies_is_error_not_ready(fake_runner):
 
 
 def test_a_load_on_a_machine_without_a_runner_says_why(monkeypatch):
+    # The registry is narrowed to the Metal-only runner because since D293 no
+    # real capability is unservable on Linux — which is the feature, and which
+    # took away the situation this test was written to describe. The BEHAVIOUR
+    # under test is unchanged: a load nothing can serve answers with the
+    # machine's reason rather than with a job row that dies.
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("mlx-text"),))
     with pytest.raises(supervisor.SupervisorError, match="Apple Silicon"):
         supervisor.load("org/x", registry.TEXT_GENERATION)
 
@@ -922,7 +1142,7 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
-        "mlx-text", "diffusers-image", "faster-whisper"}
+        "mlx-text", "transformers-text", "diffusers-image", "faster-whisper"}
     assert body["loaded"] == []
 
 
@@ -933,13 +1153,22 @@ def test_every_mutating_route_carries_the_guard(client):
 
 
 def test_the_catalog_explains_a_capability_this_machine_cannot_serve(client, monkeypatch):
+    # Narrowed to the Metal-only runner, because text generation on Linux is
+    # servable since D293 and no longer demonstrates an unavailable capability.
+    # The behaviour under test is the same one: a capability this machine cannot
+    # serve is SHOWN with its reason and keeps its shortlist, rather than being
+    # hidden and leaving a user wondering where the feature went.
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("mlx-text"),))
     rows = {row["capability"]: row for row in client.get("/api/ai/catalog").json()["capabilities"]}
     text = rows[registry.TEXT_GENERATION]
-    # Shown, not hidden: hiding it leaves a user wondering where it went.
     assert text["available"] is False and "Apple Silicon" in text["reason"]
     assert text["models"], "the suggestions are still listed"
+    # The note is about a backend that CAN run; an unavailable one has a reason
+    # instead, and saying both would be telling someone what it will be like to
+    # use something they cannot use.
+    assert text["runnerNote"] is None
 
 
 def test_an_unknown_capability_is_refused(client):
@@ -961,13 +1190,47 @@ def test_ai_without_a_model_still_means_claude(client, monkeypatch):
 
 
 def test_a_slash_bearing_model_goes_local(client, monkeypatch):
-    # …and the same call with a repo id does NOT reach for the CLI at all.
+    """…and the same call with a repo id does NOT reach for the CLI at all.
+
+    On Linux this now takes the LOAD path rather than failing — text generation
+    has a runner everywhere since D293 — so what proves the model went local is
+    a `model_loading` answer carrying a job to watch, which is AI-5's contract
+    for a generation whose model is not resident yet. The `_claude_bin` trap is
+    the assertion that matters either way: reaching it fails the test outright.
+    """
     from fused_render.server import ai as ai_mod
 
     monkeypatch.setattr(ai_mod, "_claude_bin",
                         lambda: pytest.fail("a local model reached the Claude CLI"))
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    # `_require_build_tools` would otherwise refuse before any of this, on a CI
+    # box with no `uv` — and the question here is which DESTINATION the model id
+    # picked, not whether this machine could build a venv for it.
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    response = client.post("/api/ai", json={"prompt": "hi", "model": "org/x"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["type"] == "model_loading"
+    assert body["error"]["jobId"] == supervisor.job_id_for("org/x")
+    supervisor.unload(model="org/x")
+
+
+def test_a_slash_bearing_model_no_runner_can_serve_says_why(client, monkeypatch):
+    """The failure this used to describe, kept where it can still be reached.
+
+    A machine whose only text runner is Metal-only answers `ai_unavailable` with
+    the platform's reason, rather than a `model_loading` job that nothing will
+    ever finish.
+    """
+    from fused_render.server import ai as ai_mod
+
+    monkeypatch.setattr(ai_mod, "_claude_bin",
+                        lambda: pytest.fail("a local model reached the Claude CLI"))
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("mlx-text"),))
     response = client.post("/api/ai", json={"prompt": "hi", "model": "mlx-community/x"},
                            headers={"X-Fused": "1"})
     assert response.status_code == 502

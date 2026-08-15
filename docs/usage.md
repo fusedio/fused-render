@@ -181,11 +181,22 @@ where a first model comes from.
     model does not, because nothing here would load them. A multimodal chat
     model — one labelled "image + text to text" — counts as a chat model: it is
     loaded for its text, and its picture-reading half simply goes unused.
-  - Text generation currently needs Apple Silicon (it runs on MLX). On other
-    machines the button is not offered and the Discover tab says why. Image
-    generation runs anywhere torch does — the first use of it builds a several-GB
-    environment, which shows as its own row in the download manager before any
-    weights are fetched.
+  - **Every kind of model runs on every supported desktop platform**, on the
+    backend that suits it: chat models prefer MLX on Apple Silicon with PyTorch
+    as a fallback, while Windows and Linux use PyTorch directly; images use
+    PyTorch everywhere; transcription uses CTranslate2 everywhere. The Discover
+    tab names which backend a suggestion will load on, because the shortlists
+    differ — an MLX checkpoint is packed for Metal and will not load on a PC, so
+    you are never offered one there.
+  - **A model may be running on your processor rather than a graphics card**, and
+    the page says so: a loaded card carries **on CPU** beside its memory figure
+    when it is, and Discover warns before the download. It works — expect a few
+    words a second rather than an instant answer. On Windows the standard PyTorch
+    build is CPU-only, so that is the usual case there whatever card is fitted.
+    The smaller suggestions exist for exactly this: Qwen3 1.7B answers at a
+    readable speed with no GPU at all.
+  - The first use of a backend builds a several-GB environment, which shows as
+    its own row in the download manager before any weights are fetched.
 - **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
   local chat model instead of Claude, `fused.ai.image({prompt})` renders a
   picture, and `fused.ai.transcribe({path})` turns a recording into text — all

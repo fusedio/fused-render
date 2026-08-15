@@ -400,6 +400,40 @@
   margin-left: 0;
 }
 
+/* -- where the weights actually landed ---------------------------------------
+   A muted chip beside the memory figure, because on a GPU it is a fact worth
+   one glance and no more. `margin-left: auto` puts it at the far edge, so the
+   row reads "3.2 GB in memory …………… on CPU" — the two independent things the
+   card knows about a running model, at its two ends. */
+.am-runtime-device {
+  margin-left: auto;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* The CPU case is the one that has to be READ rather than glanced at: the card
+   is green, the memory figure is healthy, and the model is about to answer at
+   walking pace for reasons nothing else on screen explains. Warning-coloured
+   rather than error-coloured — this is working software, just slowly. */
+.am-runtime-device-cpu {
+  color: var(--warning, var(--fg-muted));
+}
+
+/* The consequence, spelled out. Muted rather than warning-coloured so the two
+   halves are not equally loud: "on CPU" is the fact and this is the gloss, and
+   the tooltip carries the full explanation for anyone who wants it. */
+.am-runtime-device-tail {
+  color: var(--fg-muted);
+}
+
+/* The row wraps rather than eliding, and the device chip is what wraps: a
+   narrow card puts it on its own line under the memory figure instead of
+   squeezing both. `margin-left: auto` still holds it right on a wide one. */
+.am-card-runtime {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
 /* -- loaded, said loudly -----------------------------------------------------
    The user's complaint, verbatim: "Loaded bullet on a model is too subtle (not
    bright enough) to indicate it is running". Two changes, because the grid is
@@ -529,6 +563,23 @@
 .am-suggested-why {
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* Which backend the shortlist below belongs to. Quiet: it qualifies the
+   heading rather than competing with it, and it only starts mattering once a
+   capability has more than one runner. */
+.am-suggested-runner {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* What running on that backend is like — the CPU-speed warning, above the
+   cards, where it can still change a decision. Sized to be read rather than
+   skimmed past, and indented to hang off the heading it qualifies. */
+.am-suggested-note {
+  margin: 0 0 8px;
+  max-width: 62ch;
+  color: var(--warning, var(--fg-muted));
 }
 
 .am-suggest-note {
