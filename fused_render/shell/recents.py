@@ -130,18 +130,21 @@ def _file_path_from_url(url: str) -> str | None:
 
 
 def _is_app_entry(fs_path: str) -> bool:
-    """Whether `fs_path` is a workspace app's entry page — those never appear
-    in the FILE recents: opening one is already recorded in the app recents
-    store (server/routers/apps.py), and one open landing in both sidebar
-    lists is the duplication this filters. Applied at record time AND as a
-    GET filter (entries recorded before this rule, hide-not-delete like the
-    missing-file filter). Fails toward False — an indeterminate answer must
-    record/keep the row, never hide a file from both lists."""
-    from fused_render import app_listing
+    """Whether `fs_path` is an app's entry page — a workspace app's or a
+    registered (linked) one's. Those never appear in the FILE recents:
+    opening one is already recorded in the app recents store
+    (server/routers/apps.py) or the registry (registered_apps.record_open),
+    and one open landing in both sidebar lists is the duplication this
+    filters. Applied at record time AND as a GET filter (entries recorded
+    before this rule, hide-not-delete like the missing-file filter). Fails
+    toward False — an indeterminate answer must record/keep the row, never
+    hide a file from both lists."""
+    from fused_render import app_listing, registered_apps
     from fused_render.shell.seed import fused_dir
 
     try:
-        return app_listing.is_workspace_app_entry(fs_path, fused_dir())
+        return (app_listing.is_workspace_app_entry(fs_path, fused_dir())
+                or registered_apps.is_registered_app_entry(fs_path))
     except Exception:
         return False
 

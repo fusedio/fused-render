@@ -228,3 +228,45 @@ def test_registry_is_capped(tmp_path, workspace, monkeypatch):
         assert registered_apps.record_open(str(d))
     entries = registered_apps.read_entries()
     assert [os.path.basename(e["path"]) for e in entries] == ["app2", "app1"]
+
+
+# ------------------------------------------------------ is_registered_app_entry
+#
+# The file recents' question (shell/recents.py): is this file the ENTRY of a
+# registered app? Parity with `registered_apps()`, same posture as
+# `app_listing.is_workspace_app_entry` vs the workspace walk.
+
+
+def test_entry_check_true_for_a_registered_apps_entry(client, tmp_path):
+    d = _folder(tmp_path, "ext")
+    assert _open(client, d)
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is True
+
+
+def test_entry_check_false_for_a_non_entry_page(client, tmp_path):
+    d = _folder(tmp_path, "ext", htmls=("index.html", "other.html"))
+    assert _open(client, d)
+    assert registered_apps.is_registered_app_entry(str(d / "other.html")) is False
+
+
+def test_entry_check_false_for_an_unregistered_folder(client, tmp_path):
+    d = _folder(tmp_path, "ext")
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
+
+
+def test_entry_check_false_when_the_page_went_away(client, tmp_path):
+    d = _folder(tmp_path, "ext")
+    assert _open(client, d)
+    (d / "index.html").unlink()
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
+
+
+def test_entry_check_tracks_the_entry_rule(client, tmp_path):
+    """The entry moves when index.html appears — the check must follow the
+    same rule registered_apps() reports."""
+    d = _folder(tmp_path, "ext", htmls=("page.html",))
+    assert _open(client, d)
+    assert registered_apps.is_registered_app_entry(str(d / "page.html")) is True
+    (d / "index.html").write_text("<html></html>")
+    assert registered_apps.is_registered_app_entry(str(d / "page.html")) is False
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is True

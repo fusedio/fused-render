@@ -459,3 +459,25 @@ def test_legacy_app_entry_rows_are_hidden_from_get_not_deleted(tmp_path, monkeyp
     assert [e["url"] for e in entries] == [_view_url(f)]
     saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
     assert len(saved["entries"]) == 2  # hidden, never deleted
+
+
+def test_registered_app_entry_open_is_not_recorded(tmp_path, monkeypatch):
+    """A registered (linked) app's entry page is filtered exactly like a
+    workspace app's — its open is the registry's record, not this store's."""
+    ws, _ = _workspace_app(tmp_path, monkeypatch)
+    ext = tmp_path / "elsewhere" / "ext"
+    ext.mkdir(parents=True)
+    entry = ext / "index.html"
+    entry.write_text("<html></html>", encoding="utf-8")
+    other = ext / "other.html"
+    other.write_text("<html></html>", encoding="utf-8")
+    client, _ = _client(tmp_path, monkeypatch)
+    # Register the external folder (the "Open app" click's record).
+    assert client.post("/api/apps/recents/open", json={"path": str(ext)},
+                       headers=FUSED).json()["recorded"]
+
+    resp = client.post("/api/recents/open", json={"url": _view_url(entry)}, headers=FUSED)
+    assert resp.json() == {"recorded": False}
+    # A non-entry page in the same registered folder still records.
+    resp = client.post("/api/recents/open", json={"url": _view_url(other)}, headers=FUSED)
+    assert resp.json() == {"recorded": True}
