@@ -1164,14 +1164,17 @@ def _upcoming_rule(entry: dict, spec: dict, horizon_days: int,
     """`upcoming` for a structured rule. Same contract, different arithmetic —
     and one real difference, which is how an END is honoured.
 
-    `until` needs nothing special: the walk stops at it. `count` does, and the
-    honest way to project it is to NUMBER THE SERIES FROM THE ANCHOR rather
-    than to subtract `made` from a projection that starts at `now`. The
-    subtraction looks equivalent and is not: the already-materialized
-    occurrence is usually still in the future, so it appears in the projection
-    AND has already been counted in `made`, and the calendar would drop the
-    last run of a 13-run series. Counting from the first run cannot make that
-    mistake — the 13th is the 13th whoever is asking."""
+    `until` needs nothing special: the walk stops at it. `count` must agree
+    with MATERIALIZATION, which spends the budget only on occurrences it
+    actually creates — theoretical runs between a past anchor and now were
+    never made and cost nothing (a past anchor is a legitimate phase, per
+    create()). So the projection is built the way the store will act: the
+    latest materialized occurrence (mirrored on the template's own `due`)
+    when it is still ahead, then exactly the `count - made` occurrences the
+    sweep will still create after it. Numbering the theoretical series from
+    the anchor looked equivalent and was not (Bugbot, PR #541): with a past
+    anchor it billed the budget for runs that never existed and the calendar
+    under-drew the series' tail."""
     try:
         anchor = _local_naive(parse_due(entry.get("anchor") or entry.get("due")))
     except ValueError:
@@ -1179,14 +1182,35 @@ def _upcoming_rule(entry: dict, spec: dict, horizon_days: int,
     now = _local_naive(_now())
     end = now + timedelta(days=horizon_days)
     count = spec.get("count")
-    if isinstance(count, int):
-        # Bounded by `count` itself (999 at the very most), so this is a walk of
-        # known, small length even when the horizon is far away.
-        series = recur.occurrences(spec, anchor, None, count)
-    else:
-        series = recur.occurrences(spec, anchor, now, limit)
     times: list[str] = []
-    for when in series:
+    if isinstance(count, int):
+        made = _made(entry)
+        remaining = max(0, count - made)
+        # The template's `due` mirrors its latest occurrence (written at
+        # materialize). Ahead of now it IS the next run and leads the
+        # projection; the ghost dedupe on the client drops it again if that
+        # occurrence was skipped, so including it cannot double-draw.
+        latest = None
+        if made:
+            try:
+                latest = _local_naive(parse_due(entry.get("due")))
+            except ValueError:
+                latest = None
+        if latest is not None and now < latest <= end:
+            times.append(_from_local(latest).isoformat())
+        if remaining == 0:
+            # occurrences() clamps limit AFTER appending, so a 0 must not
+            # reach it — and a spent series has nothing to walk for anyway.
+            return times
+        after = latest if (latest is not None and latest > now) else now
+        for when in recur.occurrences(spec, anchor, after, remaining):
+            if when <= after:
+                continue
+            if when > end or len(times) >= limit:
+                break
+            times.append(_from_local(when).isoformat())
+        return times
+    for when in recur.occurrences(spec, anchor, now, limit):
         if when <= now:
             continue  # a run already behind us; the store has its own record
         if when > end:

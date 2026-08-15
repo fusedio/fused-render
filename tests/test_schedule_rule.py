@@ -464,6 +464,21 @@ def test_count_stops_the_series_at_n_runs(target, spawned, clock):
     assert schedule.upcoming(stored) == []
 
 
+def test_count_projection_ignores_never_made_past_runs(target):
+    """A past anchor is phase, not history: theoretical runs between the
+    anchor and now were never materialized, so they cost the `count` budget
+    nothing — and the projection must bill it the way the SWEEP will, or the
+    calendar under-draws the series' tail (Bugbot, PR #541). Ten days of a
+    daily rule already lie 'behind' this anchor; all three runs are ahead."""
+    template = schedule.create(str(target), "run",
+                               due=_anchor(days=-10, minutes=5),
+                               rule={"freq": "day", "count": 3})
+    stored = _entries()[template["id"]]
+    ahead = schedule.upcoming(stored)
+    assert len(ahead) == 3
+    assert all(schedule.parse_due(t) > schedule._now() for t in ahead)
+
+
 def test_a_skipped_run_still_counts_against_the_count(target, spawned, clock):
     """The user asked for three runs to be SCHEDULED. Deciding to skip one is a
     decision about a run that was scheduled, so it consumes one — otherwise a

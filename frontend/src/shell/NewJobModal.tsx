@@ -764,8 +764,12 @@ export default function NewJobModal({
   // accepts a slightly-past due (the catch-up bound exists for the composer's
   // "send at" racing the clock), but from a planning form a past time is only
   // ever a mistake.
+  // Only a ONE-OFF refuses a past time: for a rule the picked time is the
+  // series' anchor — "Daily at 9am" saved in the afternoon legitimately
+  // starts tomorrow (the server materializes from the next future run), and
+  // cron never reads `due` at all (Bugbot, PR #541).
   const dueIsPast =
-    repeat !== "cron" && pickedOk && picked.getTime() <= Date.now();
+    repeat === "none" && pickedOk && picked.getTime() <= Date.now();
 
   const ready =
     !replaced &&
