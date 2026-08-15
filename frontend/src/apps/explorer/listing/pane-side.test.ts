@@ -397,3 +397,4 @@ describe("paneSideTarget", () => {
     expect(paneSideTarget("claude", folder, null)).toBe(folder);
   });
 });
+

@@ -261,8 +261,36 @@ function midTrunc(s, max) {
 const curView = () => fused.params.get("view") || "unread";
 const curProject = () => fused.params.get("project") || "";
 const curSearch = () => fused.params.get("search") || "";
-const curLayout = () => fused.params.get("layout") || "list";
 const curTag = () => fused.params.get("tag") || "";
+
+// ---------- layout (list | board), remembered across visits ----------
+// The URL param stays the authority: a link with ?layout=board MEANS board, and
+// every other filter on this page works that way too. What the param cannot do
+// is survive a fresh visit. The shell's per-file session restore (LSN-*) is what
+// replays a file's last query, and it is skipped for this page BY DESIGN — the
+// sessions app is mounted read-only (ensure_builtin_mounts sets read_only), and
+// useSessionRestore/useSessionTracking both opt out of non-writable paths
+// because their sidecar write is server-refused there. So someone who only ever
+// works the board got snapped back to the list on every single open of
+// /sessions. localStorage is the one store this page owns.
+const LAYOUT_KEY = "fused.sessions.layout";
+const LAYOUTS = ["list", "board"];
+
+// Anything not a layout we render ("", a stale key, a hand-typed param) reads as
+// "no opinion" and falls through, rather than rendering an empty #content.
+const asLayout = (v) => (LAYOUTS.includes(v) ? v : "");
+
+function storedLayout() {
+  try { return localStorage.getItem(LAYOUT_KEY); } catch (e) { return null; }
+}
+function rememberLayout(v) {
+  // Private mode / blocked storage: the param still holds for this visit, so a
+  // failed write costs the memory, not the click.
+  try { localStorage.setItem(LAYOUT_KEY, v); } catch (e) {}
+}
+
+const curLayout = () =>
+  asLayout(fused.params.get("layout")) || asLayout(storedLayout()) || "list";
 
 function ago(iso) {
   if (!iso) return "";
@@ -881,13 +909,20 @@ function renderPeek() {
   // codec the shell's router uses (segment-wise encode of the abs path).
   // Navigates the TOP window: the inbox is an iframe inside the shell, and
   // "open in explorer" means leaving the inbox for the explorer.
+  //
+  // WITH the conversation still in hand: `_side=claude` opens the folder's
+  // Claude pane (one of the listing pane's three modes) and `session_id`
+  // hands it THIS session to load — the reader lands next to the files the
+  // chat was about, chat intact, instead of at a bare listing that forgot
+  // why they came.
   const openDirBtn = $("peek-open-dir");
   openDirBtn.style.display = cwd ? "" : "none";
   openDirBtn.onclick = () => {
     const norm = /^[A-Za-z]:[\\/]/.test(cwd) ? cwd.replace(/\\/g, "/") : cwd;
     const encoded = norm.replace(/^\/+/, "").split("/")
       .filter(Boolean).map(encodeURIComponent).join("/");
-    window.open("/explorer/view/" + encoded, "_top");
+    window.open("/explorer/view/" + encoded
+      + "?_side=claude&session_id=" + encodeURIComponent(id), "_top");
   };
 
   // launch a new detached Claude session that analyzes this one — it appears
@@ -1008,8 +1043,13 @@ function recount() {
   for (const s of DATA.sessions) DATA.statusCounts[s.status]++;
 }
 
+// Picking a layout records the choice, then routes through the param like every
+// other control here — fused.params.onChange(render) does the redraw.
 document.querySelectorAll("#layout-toggle button").forEach((b) =>
-  b.onclick = () => fused.params.set("layout", b.dataset.layout));
+  b.onclick = () => {
+    rememberLayout(b.dataset.layout);
+    fused.params.set("layout", b.dataset.layout);
+  });
 
 let searchTimer;
 $("search").addEventListener("input", () => {
