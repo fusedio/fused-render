@@ -578,8 +578,11 @@
   overflow-wrap: anywhere;
 }
 
-/* Buttons with icons: the glyph sits on the text line with a small gap. */
+/* Buttons with icons: the glyph sits on the text line with a small gap.
+   The list rows' actions renamed away from -card- and still set their icons
+   flush against the label without this (Bugbot, PR #541). */
 .schedule-card-actions .btn svg,
+.schedule-row-actions .btn svg,
 .schedule-cal-popover .btn svg {
   margin-right: 5px;
   transform: translateY(2px);

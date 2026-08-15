@@ -259,6 +259,10 @@ export default function NewJobModal({
   // shrink back when lines are deleted.
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
+  // Escape-from-a-row hands focus back to the field WITHOUT reopening the
+  // list it just dismissed — the input's onFocus otherwise undoes the close
+  // in the same tick.
+  const suppressOpen = useRef(false);
   // Whether the picker is closing because a folder was chosen (done — stay
   // closed) or backed out of (return to the recents dropdown). onPick runs
   // just before onClose, so a ref is enough to tell the two closes apart.
@@ -449,6 +453,19 @@ export default function NewJobModal({
                 setRecentsOpen(false);
               }
             }}
+            // On the WRAP, not the input: a row reached by Tab is focusable
+            // too, and Escape from it must dismiss the list, not bubble to
+            // the modal's close handler (Bugbot, PR #541).
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && recentsOpen) {
+                e.stopPropagation();
+                setRecentsOpen(false);
+                if (document.activeElement !== pathRef.current) {
+                  suppressOpen.current = true;
+                  pathRef.current?.focus();
+                }
+              }
+            }}
           >
             <input
               ref={pathRef}
@@ -458,15 +475,14 @@ export default function NewJobModal({
               role="combobox"
               aria-expanded={recentsOpen}
               value={target}
-              onFocus={() => setRecentsOpen(true)}
-              onClick={() => setRecentsOpen(true)}
-              onKeyDown={(e) => {
-                // Escape closes the dropdown, not the modal — stop it here.
-                if (e.key === "Escape" && recentsOpen) {
-                  e.stopPropagation();
-                  setRecentsOpen(false);
+              onFocus={() => {
+                if (suppressOpen.current) {
+                  suppressOpen.current = false;
+                  return;
                 }
+                setRecentsOpen(true);
               }}
+              onClick={() => setRecentsOpen(true)}
               onChange={(e) => setTarget(e.target.value)}
             />
             {recentsOpen && (
