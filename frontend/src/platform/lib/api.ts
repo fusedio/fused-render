@@ -1129,6 +1129,51 @@ export interface Prefs {
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
+  // Which local-model backend serves each capability (D298). A DIFFERENT thing
+  // from `engine` above, however similar the word: that one is /api/run's
+  // executor, this one is the inference runner behind fused.ai's local models.
+  engines: EnginesPrefs;
+}
+
+export interface EnginesPrefs {
+  // One row per capability the registry knows, servable here or not — a
+  // preference the user cannot see is one they cannot fix.
+  capabilities: CapabilityEngine[];
+  // The literal the server means by "let the registry decide". Shipped with
+  // the value rather than hardcoded here, for the same reason `model.choices`
+  // is: the page must not be able to send a value a PUT would reject.
+  auto: string;
+}
+
+export interface CapabilityEngine {
+  // The Hub's own tag ("automatic-speech-recognition"), which is the vocabulary
+  // the whole feature speaks.
+  capability: string;
+  // As STORED — `auto` or a runner code. Never rewritten to match reality: a
+  // preference silently corrected on read is one the user cannot see or undo.
+  selected: string;
+  // What is actually resolving. Null when nothing can serve the capability
+  // here. Differs from `selected` whenever a preference could not be honoured.
+  effective: string | null;
+  effectiveLabel: string | null;
+  // Why the selection is not in force, in the registry's own words — null when
+  // it is (including "auto", which is honoured by definition). A control whose
+  // value does nothing, with nothing saying why, is what this field prevents.
+  ignoredReason: string | null;
+  choices: EngineChoice[];
+}
+
+export interface EngineChoice {
+  code: string;
+  label: string;
+  /** What using this backend is LIKE, when there is something worth saying. */
+  note: string | null;
+  available: boolean;
+  /** Why not — "needs Apple Silicon — MLX runs on Metal only (this is
+   *  windows/amd64)". The page renders this beside a disabled control rather
+   *  than writing its own copy, which it could not: this is a fact about the
+   *  machine and the backend, and only the server knows it. */
+  reason: string | null;
 }
 
 // Short model names, matching shell/prefs.py's VALID_DEFAULT_MODELS. "" is the
@@ -1179,6 +1224,14 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { default_model: model });
+}
+
+// One capability's inference engine. A MAP rather than a pair, because the
+// server applies it key by key onto what is stored — so this changes one
+// capability without echoing the others, and two open tabs cannot undo each
+// other's choice.
+export function putEngineForCapability(capability: string, code: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { engines: { [capability]: code } });
 }
 
 export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
@@ -2152,6 +2205,12 @@ export interface AiRunner {
   available: boolean;
   /** Why not, in words — "needs Apple Silicon…". Null when it is available. */
   reason: string | null;
+  /** Whether this is the runner the capability is ACTUALLY using — which since
+   *  D298 is a different question from `available`. Two whisper runners are
+   *  available on an Apple Silicon machine and exactly one is active; a reader
+   *  that only sees availability cannot say which engine served it. False for
+   *  every runner of a capability nothing can serve. */
+  active: boolean;
 }
 
 export interface AiLoadedModel {

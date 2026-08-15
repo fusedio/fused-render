@@ -11,6 +11,17 @@
 //     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
+//   Inference engines  — which local-model backend serves each capability
+//     (SPEC §40, D298). A tab rather than a section on the render tab, and
+//     that is a deliberate call in a page whose whole comment block is about
+//     not adding tabs lightly: this is the one control here that is about
+//     MODELS rather than about rendering, its rows are per-capability and
+//     grow with the registry, and each row carries an availability
+//     explanation of its own. Folded into "Render preferences" it would have
+//     been the longest section on the page and the least related to its
+//     neighbours. Always present, like Indexing — an engine you cannot see is
+//     one you cannot fix, and the tab is where "why did my suggested models
+//     change?" is answered.
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
@@ -30,9 +41,10 @@ import {
   putCallsRetentionDays,
   putDefaultModel,
   putDeployEnabled,
+  putEngineForCapability,
   putReaderEnabled,
 } from "@platform/lib/api";
-import type { CallsParamsMode, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, CapabilityEngine, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { notifyPrefsChanged } from "@platform/lib/prefs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -40,8 +52,15 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { AccountPanel } from "@shell/Account";
 import { IndexingPanel } from "@shell/Indexing";
+import {
+  capabilityLabel,
+  choiceReason,
+  ignoredWarning,
+  servingLine,
+  wouldChangeEngine,
+} from "@shell/engines";
 
-type PrefsTab = "render" | "indexing" | "account";
+type PrefsTab = "render" | "engines" | "indexing" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -373,6 +392,126 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   );
 }
 
+// One capability's engine: a radio per backend, plus Automatic.
+//
+// Radios rather than a select, matching the Appearance section: the options
+// each need a sentence beside them (what the backend is like, or why it cannot
+// run here) and a <select> has nowhere to put one. It also makes the DISABLED
+// case work — a greyed-out option in a dropdown is invisible until you open it,
+// while a greyed-out radio with its reason next to it explains itself in place,
+// which is the same idiom the Call log section uses for an env-locked control.
+function CapabilityEngineRow({
+  row,
+  auto,
+  onChange,
+}: {
+  row: CapabilityEngine;
+  auto: string;
+  onChange: (p: Prefs) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [changed, setChanged] = useState<string | null>(null);
+  const warning = ignoredWarning(row);
+
+  const choose = async (code: string) => {
+    if (busy || code === row.selected) return;
+    // Worked out BEFORE the write, from the state that is about to be
+    // replaced: afterwards the server's answer is the new reality and there is
+    // nothing left to compare it against.
+    const consequential = wouldChangeEngine(row, code, auto);
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putEngineForCapability(row.capability, code));
+      setChanged(consequential ? code : null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="prefs-field">
+      <h3>{capabilityLabel(row.capability)}</h3>
+      <label className="prefs-radio">
+        <input
+          type="radio"
+          name={`engine-${row.capability}`}
+          checked={row.selected === auto}
+          disabled={busy}
+          onChange={() => choose(auto)}
+        />
+        <span>
+          <b>Automatic</b> — the best backend this machine can run.
+        </span>
+      </label>
+      {row.choices.map((choice) => {
+        const reason = choiceReason(choice);
+        return (
+          <label className="prefs-radio" key={choice.code}>
+            <input
+              type="radio"
+              name={`engine-${row.capability}`}
+              checked={row.selected === choice.code}
+              // Unavailable backends are shown and not offered. Hidden, a user
+              // on a Windows machine would have no way to learn that the MLX
+              // path exists and why it is not for them — and the reason is the
+              // registry's own sentence, which is the only place it is known.
+              disabled={busy || !choice.available}
+              onChange={() => choose(choice.code)}
+            />
+            <span>
+              <b>{choice.label}</b>
+              {reason ? ` — ${reason}` : ""}
+            </span>
+          </label>
+        );
+      })}
+      <div className="deploy-muted">{servingLine(row)}</div>
+      {warning && <div className="deploy-muted">{warning}</div>}
+      {changed && (
+        // Two consequences a user will otherwise meet as surprises, said once
+        // at the moment they are caused rather than left to be discovered: the
+        // resident model for this capability has just been unloaded (one
+        // capability holds one, and it belonged to the other backend), and the
+        // AI Models page now suggests different repos, because a suggestion is
+        // only meaningful for the backend that will load it.
+        <div className="deploy-muted">
+          Switched. Any model loaded for this was unloaded — it belonged to the
+          other backend — and the models suggested on the AI Models page have
+          changed to ones this engine can load.
+        </div>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
+}
+
+function EnginesPanel({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  return (
+    <section className="prefs-section">
+      <h2>Inference engines</h2>
+      <p className="deploy-muted">
+        Which backend runs local models for each kind of work. Some capabilities have more
+        than one — speech to text runs on Metal through MLX on Apple Silicon and on
+        CTranslate2 everywhere else — and <b>Automatic</b> picks the one this machine runs
+        best. Choosing a specific engine changes which models are suggested for it, and
+        unloads whatever is currently loaded for that capability.
+      </p>
+      {prefs.engines.capabilities.map((row) => (
+        <CapabilityEngineRow
+          key={row.capability}
+          row={row}
+          auto={prefs.engines.auto}
+          onChange={onChange}
+        />
+      ))}
+    </section>
+  );
+}
+
 function DeploymentsSection({
   prefs,
   onChange,
@@ -420,7 +559,13 @@ export default function Preferences() {
   // a tab with no button pointing at it.
   const requested = new URLSearchParams(location.search).get("tab");
   const requestedTab: PrefsTab =
-    requested === "account" ? "account" : requested === "indexing" ? "indexing" : "render";
+    requested === "account"
+      ? "account"
+      : requested === "indexing"
+        ? "indexing"
+        : requested === "engines"
+          ? "engines"
+          : "render";
   const tab: PrefsTab =
     requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {
@@ -459,6 +604,18 @@ export default function Preferences() {
             >
               Indexing
             </button>
+            {/* Inference engines — which local-model backend serves each
+                capability. Always present for the same reason Indexing is: a
+                machine with only one usable backend per capability still
+                benefits from being able to SEE that, and it is where "why did
+                the suggested models change?" is answered. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "engines" ? " active" : "")}
+              onClick={() => setTab("engines")}
+            >
+              Inference engines
+            </button>
             {prefs.deploy.enabled && (
               <button
                 type="button"
@@ -483,6 +640,7 @@ export default function Preferences() {
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
               </>
             )}
+            {tab === "engines" && <EnginesPanel prefs={prefs} onChange={setPrefs} />}
             {tab === "indexing" && <IndexingPanel />}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
