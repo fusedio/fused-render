@@ -30,11 +30,12 @@ from __future__ import annotations
 
 from fused_render.ai import registry
 
-#: runner code -> suggested models, best first. `size_gb` is the download —
-#: **None when nobody has measured it**, which the card shows as "—" rather than
-#: as a number someone would plan a multi-GB download around (the same no-guess
-#: rule the Hub result cards follow, D255). `note` is why you would or would not
-#: pick this one.
+#: runner code -> suggested models, best first. `size_gb` is the approximate
+#: full-snapshot download in decimal GB: the sum of the Hub's per-file byte
+#: metadata, rounded to one decimal. **None when that metadata is unavailable**,
+#: which the card shows as "—" rather than inventing a figure from parameter
+#: counts (the same no-guess rule the Hub result cards follow, D255/D295).
+#: `note` is why you would or would not pick this one.
 SUGGESTIONS: dict[str, list[dict]] = {
     "mlx-text": [
         {
@@ -79,7 +80,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "you already trust.",
         },
     ],
-    # Text generation on Windows and Linux (D293). Three rules
+    # Text generation on Windows and Linux, plus the Apple Silicon fallback
+    # when MLX is unavailable (D293). Three rules
     # picked these, and each one is a failure this app has already shipped once:
     #
     # * **Unquantized safetensors only.** Every other format on the Hub needs
@@ -97,13 +99,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #   rather than assuming one — which is why the smallest entry is here on
     #   merit and not as an afterthought.
     #
-    # **Every `size_gb` is None because nobody has measured a completed download
-    # of these on disk**, and the file's own rule is that an unmeasured size
-    # shows as "—" rather than as a figure someone plans a multi-GB pull around
-    # (D255). Deriving one from the parameter count would be arithmetic dressed
-    # as a measurement: it counts the weights and not the tokenizer, the configs
-    # or a second precision the repo may also publish. One pass on a real
-    # machine fills these in.
+    # Sizes sum every file in the Hub snapshot (2026-08-14) and round the byte
+    # total to one decimal GB. That makes them download estimates rather than
+    # filesystem measurements, but unlike parameter arithmetic they include the
+    # tokenizer, configs, split weights and any other payload the whole-repo
+    # downloader actually fetches (D295).
     #
     # **One line each.** A shortlist is read by SWEEPING it, and four cards of
     # three sentences is a wall nobody reaches the end of — so each note carries
@@ -114,27 +114,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Qwen/Qwen3-4B-Instruct-2507",
             "label": "Qwen3 4B Instruct",
-            "size_gb": None,
+            "size_gb": 8.1,
             "note": "The one to start with: the strongest all-rounder that "
                     "still fits a 16GB machine.",
         },
         {
             "id": "microsoft/Phi-4-mini-instruct",
             "label": "Phi-4 mini (3.8B)",
-            "size_gb": None,
+            "size_gb": 7.7,
             "note": "Punches above its size on reasoning and maths, and MIT "
                     "licensed.",
         },
         {
             "id": "Qwen/Qwen3-1.7B",
             "label": "Qwen3 1.7B",
-            "size_gb": None,
+            "size_gb": 4.1,
             "note": "The one to pick with no GPU.",
         },
         {
             "id": "Qwen/Qwen3-8B",
             "label": "Qwen3 8B",
-            "size_gb": None,
+            "size_gb": 16.4,
             "note": "Best quality here, and the only one that needs a GPU.",
         },
     ],
@@ -153,14 +153,13 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # one would hand the user the exact failure `worker.py` had to write an
     # error message about.
     #
-    # Sizes are None because nobody has measured a completed download of these
-    # on disk, and the file's own rule is that an unmeasured size shows as "—"
-    # rather than as a figure someone plans a multi-GB pull around (D255).
+    # Sizes use the same full-snapshot Hub metadata estimate as the Transformers
+    # list above (2026-08-14), including model.bin plus tokenizer and configs.
     "faster-whisper": [
         {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
             "label": "Whisper large-v3 turbo (CT2)",
-            "size_gb": None,
+            "size_gb": 1.6,
             "note": "large-v3 accuracy at roughly a quarter of its decoding "
                     "cost — the one to start with. Usable on CPU: a laptop "
                     "transcribes faster than real time.",
@@ -168,7 +167,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Systran/faster-whisper-medium",
             "label": "Whisper medium (CT2)",
-            "size_gb": None,
+            "size_gb": 1.5,
             "note": "The middle option. Slower than turbo for no gain in "
                     "English; worth trying if a language turbo handles badly "
                     "is the problem.",
@@ -176,7 +175,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "Systran/faster-whisper-small",
             "label": "Whisper small (CT2)",
-            "size_gb": None,
+            "size_gb": 0.5,
             "note": "Fast and light enough for an old machine. Noticeably "
                     "weaker — it drops names and punctuation the larger models "
                     "get right.",

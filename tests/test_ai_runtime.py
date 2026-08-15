@@ -539,7 +539,38 @@ def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch)
     assert registry.for_capability(registry.TEXT_GENERATION) is None
     status = registry.by_code("transformers-text").available()
     assert status.ok is False
-    assert "Windows and Linux only" in status.reason
+    assert "Apple Silicon macOS" in status.reason
+
+
+def test_apple_silicon_falls_back_to_transformers_when_mlx_is_unavailable(
+        monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        registry, "_RUNNERS",
+        tuple(runner for runner in registry.all_runners() if runner.code != "mlx-text"),
+    )
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    assert runner is not None and runner.code == "transformers-text"
+
+
+def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
+    expected = {
+        "Qwen/Qwen3-4B-Instruct-2507": 8.1,
+        "microsoft/Phi-4-mini-instruct": 7.7,
+        "Qwen/Qwen3-1.7B": 4.1,
+        "Qwen/Qwen3-8B": 16.4,
+        "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
+        "Systran/faster-whisper-medium": 1.5,
+        "Systran/faster-whisper-small": 0.5,
+    }
+    actual = {
+        model["id"]: model["size_gb"]
+        for runner in ("transformers-text", "faster-whisper")
+        for model in catalog.SUGGESTIONS[runner]
+    }
+    assert actual == expected
 
 
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):

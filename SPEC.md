@@ -6392,12 +6392,12 @@ an AI Models page that could say what was on disk but not what was *running*.
   Windows or Linux user could read about and not use: the exact complaint AI-10
   answers for transcription, still standing for chat. A `transformers_text`
   runner folder (torch + transformers) is registered BELOW `mlx_text`, and
-  AI-2's first-match-wins ordering does the rest — Apple Silicon keeps MLX
-  (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop), while
-  Windows and Linux fall through to torch. Intel macOS is not a distribution
-  target and is not advertised by the runner. Nothing else in the app learned
-  that a capability can have two runners, which is the claim AI-2 made and this
-  is the test of it.
+  AI-2's first-match-wins ordering does the rest — Apple Silicon prefers MLX
+  (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop) but can
+  fall through to torch when MLX is unavailable, while Windows and Linux reach
+  torch directly. Intel macOS is not a distribution target and is not
+  advertised by the runner. Nothing else in the app learned that a capability
+  can have two runners, which is the claim AI-2 made and this is the test of it.
   **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
   the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
   and no wheels at all, so declaring it would put cmake and a C++ toolchain —
@@ -6482,9 +6482,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   refusals, its dtype-keyword choice, its device placement and its two
   prompt-encoding paths are all driven on CI with stubs. What no test touches is
   torch itself: the actual generation, the streaming, the real speed on a CPU,
-  and whether the four suggested repos load as expected — **their `size_gb` is
-  `None` for that reason**, since D255 forbids a figure nobody has measured. A
-  first real load is the outstanding verification.
+  and whether the four suggested repos load as expected. Their `size_gb` values
+  are full-snapshot download estimates from the Hub's per-file byte metadata,
+  not claims about measured filesystem usage (D295). A first real load is the
+  outstanding verification.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

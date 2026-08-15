@@ -182,11 +182,12 @@ where a first model comes from.
     model — one labelled "image + text to text" — counts as a chat model: it is
     loaded for its text, and its picture-reading half simply goes unused.
   - **Every kind of model runs on every supported desktop platform**, on the
-    backend that suits it: chat models use MLX on Apple Silicon and PyTorch on
-    Windows and Linux; images use PyTorch everywhere; transcription uses
-    CTranslate2 everywhere. The Discover tab names which backend a suggestion
-    will load on, because the shortlists differ — an MLX checkpoint is packed
-    for Metal and will not load on a PC, so you are never offered one there.
+    backend that suits it: chat models prefer MLX on Apple Silicon with PyTorch
+    as a fallback, while Windows and Linux use PyTorch directly; images use
+    PyTorch everywhere; transcription uses CTranslate2 everywhere. The Discover
+    tab names which backend a suggestion will load on, because the shortlists
+    differ — an MLX checkpoint is packed for Metal and will not load on a PC, so
+    you are never offered one there.
   - **A model may be running on your processor rather than a graphics card**, and
     the page says so: a loaded card carries **on CPU** beside its memory figure
     when it is, and Discover warns before the download. It works — expect a few

@@ -10,8 +10,9 @@ It exists because `mlx_text` is Metal-only, which made the app's flagship local
 capability something a Windows or Linux user could read about but not use — the
 complaint AI-10 answers for transcription and this answers for chat. The
 registry lists it AFTER the MLX runner, so first-match-wins leaves Apple Silicon
-on MLX (faster there, and its 4-bit catalog is sized for a laptop) and hands this
-to Windows and Linux.
+on MLX when available (faster there, and its 4-bit catalog is sized for a laptop),
+hands this to Windows and Linux, and retains this runner as the Apple Silicon
+fallback.
 
 Three things differ from the MLX runner, and all three are torch's doing:
 

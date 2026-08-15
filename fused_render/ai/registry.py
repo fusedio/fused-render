@@ -32,8 +32,9 @@ because the same repo can be servable by two backends and the choice belongs to
 the machine, not to the string.
 
 **Two runners can share one capability, and the ORDER between them is the whole
-mechanism.** Text generation is served by MLX on Apple Silicon and by torch on
-Windows and Linux: both rows are registered, both are asked whether they can
+mechanism.** Text generation prefers MLX on Apple Silicon and uses torch on
+Windows and Linux, with torch also remaining a fallback on Apple Silicon when
+MLX is unavailable: both rows are registered, both are asked whether they can
 run, and the first that says yes wins. Nothing else in the app knows there is
 more than one — but the CATALOG does, because what to suggest depends on which
 backend will load it (`catalog.py`), and an MLX checkpoint on a Windows machine
@@ -146,27 +147,33 @@ def _always() -> Availability:
     return Availability(True)
 
 
-def _windows_or_linux() -> Availability:
+def _transformers_platform() -> Availability:
     """The transformers text runner's supported production platforms.
 
-    Intel macOS is not a distribution target, and advertising it here is a
-    stronger claim than the project makes anywhere else: availability drives
-    the catalog and Load button. Keep the worker's MPS placement defensive for
-    direct development use, but do not expose it as a supported backend.
+    MLX is preferred on Apple Silicon by registry order, but torch's MPS path is
+    a working fallback when MLX is absent or unavailable. Intel macOS is not a
+    distribution target, and availability drives the catalog and Load button,
+    so it must not be advertised merely because torch happens to publish a
+    wheel there.
     """
     system = platform.system()
-    if system in ("Windows", "Linux"):
+    machine = platform.machine()
+    if (
+        system in ("Windows", "Linux")
+        or (system == "Darwin" and machine == "arm64")
+    ):
         return Availability(True)
     return Availability(
         False,
-        f"supports Windows and Linux only (this is {system.lower()}/{platform.machine()})",
+        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
     )
 
 
 # The table. Ordered, and first-match-wins per capability — which is what lets
-# TWO runners serve text generation: MLX takes Apple Silicon, and `transformers`
-# below it serves Windows and Linux. The ordering is the whole mechanism, so the
-# rows are not sorted alphabetically and must not be.
+# TWO runners serve text generation: MLX takes Apple Silicon when available,
+# and `transformers` below it serves Windows and Linux plus the Apple Silicon
+# fallback. The ordering is the whole mechanism, so the rows are not sorted
+# alphabetically and must not be.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -187,12 +194,11 @@ _RUNNERS: tuple[Runner, ...] = (
         # answers at a few words a second — lives in the loaded card's tooltip
         # instead, where somebody has stopped to ask.
         note="Uses an NVIDIA GPU when PyTorch can see one, and the CPU otherwise.",
-        # Deliberately BELOW the MLX row rather than instead of it. The backend
-        # is supported on Windows and Linux; Apple Silicon keeps MLX, and Intel
-        # macOS is not a distribution target. The worker retains defensive MPS
-        # placement for direct development use, but availability is the product
-        # claim and must match the platforms we actually support.
-        _available=_windows_or_linux,
+        # Deliberately BELOW the MLX row rather than instead of it. Apple Silicon
+        # therefore gets MLX when it is present and this runner's working MPS
+        # path when it is not; Windows and Linux come here directly. Intel macOS
+        # is not a distribution target.
+        _available=_transformers_platform,
     ),
     Runner(
         code="diffusers-image",
