@@ -132,8 +132,12 @@ Any `.html` file can call it and bind the result to the URL:
   reproduces its exact state.
 - `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
   Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
-  Hugging Face repo id as `model` (`"mlx-community/Qwen3-8B-4bit"`) and the same
+  Hugging Face repo id as `model` (`"Qwen/Qwen3-4B-Instruct-2507"`) and the same
   call runs a model **locally** instead — the slash is what tells them apart.
+  Local chat works on every supported desktop platform: MLX is preferred on
+  Apple Silicon with PyTorch as its fallback, while Windows and Linux use
+  PyTorch directly. The AI Models page suggests models that suit whichever
+  backend your machine got.
   Local calls also take `history` (prior `{role, content}` turns, for a
   conversation rather than one question) and can be stopped mid-answer with
   `fused.ai.cancel()`.

@@ -208,6 +208,12 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
+    #: worked it out. The supervisor can see that a machine has a GPU and not
+    #: whether the runner's torch was built to use it, and on Windows those
+    #: differ by default (the PyPI wheel is CPU-only). Same argument AI-8 makes
+    #: about resident bytes: only the process holding the weights knows.
+    device: str = ""
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
     #: Set when the user cancels or a newer load evicts this one. The bring-up
@@ -702,6 +708,10 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                # Read on every poll rather than once at `ready`: a runner sets
+                # it inside `load()`, and this loop is what is watching when
+                # that happens.
+                worker.device = str(health.get("device") or "")
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
                     _report(job, state="done", detail="Model loaded")
@@ -793,14 +803,19 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
 def _runner_or_raise(capability: str) -> registry.Runner:
     """The runner serving `capability`, or a SupervisorError saying why there isn't
     one — the machine's reason ("needs Apple Silicon") where a runner exists but
-    cannot run here, and a bare "no runner provides …" where none is registered."""
+    cannot run here, and a bare "no runner provides …" where none is registered.
+
+    The sentence comes from `registry.unavailable_reason` rather than being
+    derived again here. It used to be derived here, and in `start_image`, and in
+    the registry: three copies of "the first runner registered for this
+    capability", which was one rule while every capability had one runner and
+    three wrong answers the moment text generation had two — all three named the
+    Apple Silicon runner on machines that were never going to use it.
+    """
     runner = registry.for_capability(capability)
     if runner is None:
-        known = next((r for r in registry.all_runners() if r.capability == capability), None)
-        raise SupervisorError(
-            known.available().reason if known
-            else f"no runner provides {capability!r}"
-        )
+        raise SupervisorError(registry.unavailable_reason(capability)
+                              or f"no runner provides {capability!r}")
     return runner
 
 
@@ -897,13 +912,9 @@ def start_image(model: str, request: dict, job: str) -> None:
     a job row that immediately fails — the caller gets an error it can show,
     rather than a progress bar it has to watch die.
     """
-    runner = registry.for_capability(registry.IMAGE_GENERATION)
-    if runner is None:
-        known = next((r for r in registry.all_runners()
-                      if r.capability == registry.IMAGE_GENERATION), None)
-        raise SupervisorError(
-            known.available().reason if known
-            else f"no runner provides {registry.IMAGE_GENERATION!r}")
+    # `_runner_or_raise`, not a third copy of the same lookup — which is what
+    # this was, and it drifted the moment a capability grew a second runner.
+    _runner_or_raise(registry.IMAGE_GENERATION)
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
@@ -1436,6 +1447,10 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # What the weights actually landed on. None from a runner that
+                # does not report one, which the page renders as nothing rather
+                # than as a guess.
+                "device": w.device or None,
                 "loadedAt": w.loaded_at,
                 "startedAt": w.started_at,
                 "jobId": job_id_for(w.model),

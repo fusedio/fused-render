@@ -52,7 +52,7 @@ const STATE_LABELS: Record<ScheduledState, string> = {
 export function stateLabel(entry: ScheduledMessage): string {
   // An OCCURRENCE that didn't run was SKIPPED, whoever decided it: a cancelled
   // one is the user's skip, and a `missed` one is the loop's own skip-not-
-  // catch-up verdict (SCH-13 / D292 — the store's error text already says
+  // catch-up verdict (SCH-13 / D296 — the store's error text already says
   // "skipped"). Painting the loop's as "Missed" filed routine behavior under
   // faults.
   if ((entry.state === "cancelled" || entry.state === "missed") && entry.template_id)

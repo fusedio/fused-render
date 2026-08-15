@@ -229,7 +229,12 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     model = _model_of(body) or catalog.default_for(registry.IMAGE_GENERATION)
     if not model:
-        return _error("no image model is configured", status=409)
+        # A machine with no image runner has no default either, and answering
+        # about the CATALOG would bury the reason: "the Diffusers runner is not
+        # built yet" is something a user can act on, "no image model is
+        # configured" is not. The runner's reason wins where there is one.
+        return _error(registry.unavailable_reason(registry.IMAGE_GENERATION)
+                      or "no image model is configured", status=409)
 
     try:
         steps = max(1, min(_MAX_STEPS, int(body.get("steps") or 28)))
@@ -346,7 +351,10 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
 
     model = _model_of(body) or catalog.default_for(registry.SPEECH_TO_TEXT)
     if not model:
-        return _error("no transcription model is configured", status=409)
+        # See `api_ai_image`: no runner and no curated default are different
+        # facts, and only the first one tells the user what to do.
+        return _error(registry.unavailable_reason(registry.SPEECH_TO_TEXT)
+                      or "no transcription model is configured", status=409)
 
     uid = secrets.token_hex(6)
     job = supervisor.transcribe_job_id(uid)

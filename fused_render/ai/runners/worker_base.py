@@ -68,6 +68,16 @@ STATE = {
     "error": "",
     "resident_bytes": None,
     "loaded_at": None,
+    #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
+    #: runner's `load()`. Only the process holding them knows: the supervisor
+    #: can see that this machine HAS a GPU and not that torch was built to use
+    #: it, which on Windows is the common case rather than the exotic one (the
+    #: PyPI torch wheel there is CPU-only). Reported because a model answering
+    #: at three tokens a second is working perfectly and looks broken, and the
+    #: device is the whole of the explanation.
+    #:
+    #: None from a runner that does not set it — one device, nothing to say.
+    "device": None,
 }
 _state_lock = threading.Lock()
 

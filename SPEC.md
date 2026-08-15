@@ -364,7 +364,7 @@ Deferred to later milestones (needed for data templates):
 - **PY-14** Both engines return **one wire shape** — `{ok, result, error: {type, message, traceback}, stdout}` (the fused engine adds `stderr`/`duration_ms`) — so `runtime.js` and templates never see which ran. Tracebacks under the fused engine point at the user's real file (the source is compiled as its own unit under its own filename); backend/wrapper plumbing frames are stripped.
 - **PY-16** A `.py`'s environment is decided by the **folder** it belongs to, never by anything written in the file. The project root is resolved first — the app folder (`<fused_dir()>/<tag>/<name>`), an immediate child of a template root, else the **topmost** ancestor holding a `pyproject.toml` — and that root's `pyproject.toml` `[project].dependencies` is the whole declaration. A manifest that declares **no** dependencies that apply on this platform is not an environment at all and falls through to PY-17 — a bare `uv init` scaffold must not put a script into an empty venv without the bundled stack. Every `.py` under the root shares one venv, however deep it sits; a `pyproject.toml` in a subfolder is **inert** and is surfaced as such (an inert file that looks correct is the failure this rule exists to prevent), and a `# /// script` header is **not read at all** — a leftover block is an ordinary comment, neither honored, merged, nor reported, and a file carrying one runs exactly as it would without it. There is deliberately **no migration tooling and no detection**: this is a clean break in a pre-release product (D233). The venv contains **exactly** what the manifest declares and nothing else — no baseline is unioned in, so it does not contain the rest of the `[bundled]` extra (DM-2), which only the app's own interpreter ships (PY-17). It is built by `uv sync` and stored **centrally** at `<home_dir()>/venvs/<sha256 of the root's absolute path>[:16]`, never inside the user's folder: the folder gains only `pyproject.toml` and `uv.lock`, both source, both git-tracked (MD-7). The path is hashed **as given**, not canonicalised, so moving or renaming a folder yields a fresh environment by design and the orphan is reclaimed by garbage collection at server startup. Staleness is a **digest of `pyproject.toml`** recorded in a `.fused-source.json` sidecar inside the venv — the manifest only, since `uv.lock` is an output of `uv sync` and not an input to it — never an mtime chain — core templates are re-staged with `copy2` on every release, which would make an mtime rule resync byte-identical dependencies at every upgrade. A template that manages its own venv for a daemon declares its dependencies there, not in the folder manifest — that is the only form the built-in engine can honor too (D174). A core template may declare an environment **only if** it is **necessary** (it names something the platform's app interpreter genuinely lacks — judged against the macOS bundle's real contents, not `[bundled]`'s promises, D176), it is **complete** (it covers every such distribution imported by any `.py` under the folder), it has something a `runPython` call site can actually reach, and it ships a committed `uv.lock` so a released build never resolves against PyPI on first render. All of these are enforced by `tests/test_engine_requirements.py`, `tests/test_bundle_contents.py` and `tests/test_template_locks.py`, which derive entry points from the source (`_runpython_targets`/`_module_refs`) rather than from a maintained list (D172, D177; supersedes the per-file header rule).
 - **PY-17** A script whose project root declares **no** `pyproject.toml` (or one with no `[project]` table) runs on **the app's own interpreter** and gets no venv at all: the app ships `[bundled]` + its core `dependencies`, so numpy/pandas/pyarrow/duckdb/pillow/… are available with no download and no first-run wait — a deliberately small set since D276, which moved polars, matplotlib, scipy, the PDF stack and the geo stack out of `[bundled]` and into the manifests of the templates that use them. The interpreter is **verified, not assumed** — it is run once per server process and must report this app's own `sys.prefix`, probed under the child's stripped environment (the backend removes PYTHONHOME/PYTHONPATH, which a packaged interpreter may need to locate its stdlib). An autodetected candidate whose basename is not python-shaped is rejected without being spawned. If the direct candidate fails, the app generates a **wrapper script** that restores the `PYTHONHOME` this process depends on and `exec`s the real interpreter, then verifies THAT the same way. This is the packaged-macOS path, not an edge case: measured on a real DMG, the bundled interpreter stripped of `PYTHONHOME` reports the *build machine's* Homebrew framework as its prefix, and the bundle ships no `venv` module, so a venv-based rescue is impossible there. The wrapper sets the child's `sys.executable` to itself (`exec -a`), so a daemon re-spawned as `[sys.executable, …]` — geotiff, zarr_aoi, usd — keeps working even though those templates scrub `PYTHONHOME` from the environments they spawn into. Wrappers are POSIX-only and generated **only** when this process actually needs `PYTHONHOME`; Windows and the Linux AppImage self-locate and stay on the direct candidate. If no interpreter can be verified, such a script **fails with a configuration error** naming `FUSED_RENDER_APP_PYTHON` — it is never silently degraded to a venv, because with no baseline requirements that venv has no data stack and would fail on the first import, and because a core template that declares nothing must never reach the network. Nothing in this resolution installs anything. `FUSED_RENDER_APP_PYTHON` overrides the candidate (still probed) (D172, D175). **Both probes spawn with `close_fds=False`, and a probe that reached no verdict is not cached** (D277). They run in the server process, where PROJ is resident, so the default `close_fds=True` takes the `fork()` path and the child dies in PROJ's atfork handler at ~1ms — the crash GT-3 documents, one layer up. The probe is therefore **three-valued**, like the sibling-venv probe D212 already made three-valued and which names this one as its model: a candidate that RAN and answered (a foreign `sys.prefix`, a non-zero exit, unparseable output) is a definite rejection and is remembered, while a spawn that never got a verdict — killed by a **signal**, timed out, or failing with a transient `OSError` — leaves the resolution **unresolved and retryable**, at the cost of one subprocess on the next request. The split is by exception **type**, not by errno: a missing, unreadable or not-a-directory path is a fact about the candidate and stays definite. Rung 2 cannot launder rung 1 — the wrapper is built FROM the candidate, so an inconclusive direct probe makes the whole answer provisional even when the wrapper reached a real verdict. For the same reason `app_packages()` no longer caches its `None` when there is no interpreter: it used to, justified by the interpreter's answer being terminal, which this rule voids. Getting this wrong is not a slow path but a dead one — the resolution is per process and no HTTP route resets it, so a single unlucky spawn disabled **every** header-less script until the server restarted.
-- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
+- **PY-18** A script whose **project** declares something not installed yet gets an **explicit install flow**, never a blocking download inside `/api/run`: the endpoint answers `needs_install` (venv key + the project root, its display name and its declared requirements, alongside a normal `error` object), `POST /api/env/install` spawns a detached worker that runs `uv sync` and writes `{stage, pct, detail, done, error, pid, ts}` to `progress.json`, `GET /api/env/progress?key=` polls it, and `POST /api/env/cancel` stops it by the recorded pid. **That spawn takes the `posix_spawn` path and the worker detaches ITSELF** (D292): it runs from the server process, where PROJ is resident, so `start_new_session=True` — which forces `fork()+exec` — killed the worker in PROJ's atfork handler before it could write anything, leaving an empty `worker.log`, a record stuck at `spawn`, and an install that failed identically on every retry for the life of the process. `close_fds=False` selects `posix_spawn`; `os.setsid()` as the worker's first statement restores the session `killpg` needs. **The venv readiness probe (D212) obeys the same rule and treats a signal as no verdict at all**: forked, it died `-11`, which read as "this venv cannot run its own python" and unlinked a healthy venv's ready marker — charging the user a full re-download for a crash in the probe. `runtime.js` shows the loader and retries the run **once**, so every template gets this without its own code; concurrent callers resolving to one project share a single POST, poller and progress row. Installer failures reach the user **verbatim** — uv's own message ("no matching distribution / no wheels with a matching platform tag") is the answer, never a generic engine error. Progress is deliberately coarse (`uv sync` captures its output, so per-package progress is unavailable) and reports only stages it can observe. Scope is **per-folder** (PY-16): one venv per project root, shared by every script in it — the sharing D173 deferred. Once the venv exists the run is handed its interpreter directly, so the environment can live under the app's home dir rather than in the backend's store.
 
 ---
 
@@ -6385,6 +6385,107 @@ an AI Models page that could say what was on disk but not what was *running*.
   that PyAV opens the container formats users will point at it. A first real
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
+- **AI-11** **Text generation runs on every supported desktop platform, on the
+  backend that suits the machine — and TWO runners share one capability for the
+  first time** (D293).
+  MLX is Metal-only, so the app's flagship local capability was something a
+  Windows or Linux user could read about and not use: the exact complaint AI-10
+  answers for transcription, still standing for chat. A `transformers_text`
+  runner folder (torch + transformers) is registered BELOW `mlx_text`, and
+  AI-2's first-match-wins ordering does the rest — Apple Silicon prefers MLX
+  (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop) but can
+  fall through to torch when MLX is unavailable, while Windows and Linux reach
+  torch directly. Intel macOS is not a distribution target and is not
+  advertised by the runner. Nothing else in the app learned that a capability
+  can have two runners, which is the claim AI-2 made and this is the test of it.
+  **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
+  the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
+  and no wheels at all, so declaring it would put cmake and a C++ toolchain —
+  MSVC, on Windows — between a user and the Download button, with its prebuilt
+  wheels on a private index that is a second thing to trust. torch is the
+  runtime this app already builds on users' machines for the image runner, so
+  its install path and its failure modes are known rather than guessed at.
+  `onnxruntime-genai` is the credible alternative (tiny, fast int4 on CPU,
+  DirectML reaching every Windows GPU) and was deferred rather than dismissed:
+  it only loads pre-converted ONNX repos, so the Hub models the page already
+  offers a Load button for would refuse — and as a SECOND text runner it would
+  break the rule that a model id never picks the runner.
+- **AI-11a** **The CATALOG is keyed by runner, and the page says which one it
+  resolved.** This is the part a second runner really did change. A suggestion
+  is only meaningful for the backend that will load it: `mlx-community/…` is
+  packed for Metal kernels and is an unusable download on a PC, while an
+  ordinary safetensors repo is the right answer there and the wrong one on a Mac
+  that has MLX. So `catalog.SUGGESTIONS` moved from capability keys to RUNNER
+  keys, and `catalog.describe()` resolves the runner the way a LOAD resolves it
+  — it used to take the first runner REGISTERED for a capability whatever its
+  availability, which with two rows would have told a Windows machine that text
+  generation "needs Apple Silicon" while a runner sat ready to serve it, under a
+  heading whose four suggestions it could not load. The curation rules for the
+  cross-platform list are three, each a failure this app has already shipped
+  once: unquantized safetensors only (every other format needs a package the
+  runner does not ship — the CTranslate2 trap AI-10 describes), ungated only (a
+  licence-gated repo 401s partway through a download for a user who did nothing
+  wrong), and sized for a machine with no GPU. One consequence had to be fixed
+  where it surfaced rather than where it started: an unavailable runner also has
+  no curated default, so `POST /api/ai/image` began answering "no image model is
+  configured" — true, useless, and hiding the actionable "the Diffusers runner is
+  not built yet" underneath. `registry.unavailable_reason()` tells the two apart,
+  because no runner is a fact about the MACHINE and no suggestion is a fact about
+  the catalog. **It reports EVERY runner's reason, not the first one's**, which
+  only became a distinction when a capability grew a second runner: three places
+  independently took "the first runner registered for this capability" — the
+  registry, `_runner_or_raise` and `start_image` — so a Linux machine whose
+  transformers worker was missing was told text generation "needs Apple
+  Silicon", naming the one backend that was never going to serve it. The three
+  copies are now one, which is the actual fix; joining rather than picking is
+  the answer because there is no rule for choosing between two reasons that is
+  not a guess about which the reader meant.
+- **AI-11d** **Reasoning is OFF by default, because it is invisible and the CPU
+  path cannot afford it.** Qwen3's chat template defaults `enable_thinking` to
+  true and three of the four curated models are Qwen3, so an ordinary question
+  emits a `<think>` block first — hundreds of tokens the caller cannot tell
+  apart from the answer, since `/generate` streams whatever the model produces.
+  At a few tokens a second on the CPU this runner exists to serve, that is
+  minutes of apparent silence on a machine already suspected of being slow. The
+  flag is passed to every model rather than to a list of known ones: kwargs land
+  in the Jinja render context, so a template that never mentions it does not
+  read it, and a tokenizer whose signature rejects it outright retries without —
+  a model that will not take the hint should still answer, just verbosely. The
+  same class of trap as the version floor beside it: `transformers>=4.51` is
+  what knows a `qwen3` exists, and an older resolution installs perfectly and
+  then fails every Qwen3 Download with `KeyError: 'qwen3'`, which reads as a
+  broken model rather than an environment one version too old.
+- **AI-11b** **The device is reported, because a model on a CPU works and looks
+  broken.** torch runs on whatever it can see, and what it can see is not
+  knowable from outside the process: **the PyPI torch wheel is CPU-only on
+  Windows** (its `nvidia-*` dependencies are all marked `platform_system ==
+  "Linux"`), so the ordinary outcome on a Windows machine with a graphics card
+  is a perfectly healthy model answering at a few words a second, with a green
+  LOADED card and a healthy memory figure and nothing on screen to explain the
+  speed. `worker_base.STATE` therefore carries a `device` that each runner sets
+  in its own `load()` — the same argument AI-8 makes about resident bytes: only
+  the process holding the weights knows. It surfaces twice, and the two are
+  different KINDS of statement: the loaded card shows a measurement (**on CPU**,
+  warning-coloured, beside the memory figure), while Discover shows a standing
+  fact about the backend above the cards, before any download, since that is
+  when it can still change a decision. All three runners report it — the image
+  runner has had the same Windows CPU-only problem since D257 and never said so.
+  **Windows CUDA was deferred, deliberately**: reaching it means pulling torch
+  from `download.pytorch.org` through a `[[tool.uv.index]]`, which costs EVERY
+  Windows user a ~3GB CUDA runtime to serve the ones with an NVIDIA card. The
+  trade is stated rather than hidden, which is what the device reporting is for.
+- **AI-11c** **No text has ever been generated by this runner, and AI-10b's
+  disclaimer applies verbatim.** torch cannot run on CI, so the registry, the
+  catalog, the resolution across four platforms and the API are exercised
+  against fakes, and the runner's OWN logic is tested a level down —
+  `transformers_text/worker.py` is stdlib-only at import time, so its format
+  refusals, its dtype-keyword choice, its device placement and its two
+  prompt-encoding paths are all driven on CI with stubs. What no test touches is
+  torch itself: the actual generation, the streaming, the real speed on a CPU,
+  and whether the four suggested repos load as expected. Their `size_gb` values
+  are full-snapshot download estimates from the Hub's per-file byte metadata,
+  not claims about measured filesystem usage (D295). A first real load is the
+  outstanding verification.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
@@ -6704,7 +6805,7 @@ world from one the user typed.
     the param, and without it the stream was lost and the next frame's baseline then
     wrote the same run off as predating it.
 
-### 41.b Recurring schedules and the calendar (D292)
+### 41.b Recurring schedules and the calendar (D296)
 
 - **SCH-12** **A recurring job is a `recurring` TEMPLATE plus materialized
   one-shot occurrences** (`repeats`: a 5-field cron line; occurrences carry
