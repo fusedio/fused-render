@@ -79,7 +79,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "you already trust.",
         },
     ],
-    # Text generation on Windows, Linux, and Intel Macs (D293). Three rules
+    # Text generation on Windows and Linux (D293). Three rules
     # picked these, and each one is a failure this app has already shipped once:
     #
     # * **Unquantized safetensors only.** Every other format on the Hub needs

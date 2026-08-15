@@ -12,10 +12,13 @@ Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
 an interpreter of its own, so importing it the packaged way
 (`fused_render.ai.runners.…`) would be testing an import that never ships.
 """
+import contextlib
 import importlib.util
 import json
+import queue
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -358,3 +361,67 @@ def test_a_model_with_no_chat_template_falls_back_rather_than_inventing_one(
                                {"role": "assistant", "content": "hello"}], "", "cpu")
     assert [call[0] for call in tokenizer.calls] == ["plain"]
     assert tokenizer.calls[0][1] == "hi\n\nhello"
+
+
+def test_a_disconnected_stream_stops_and_joins_generation(worker, monkeypatch):
+    """A broken response must not leave the model running past the request lock."""
+    fake_transformers = types.ModuleType("transformers")
+
+    class StoppingCriteria:
+        pass
+
+    class StoppingCriteriaList(list):
+        pass
+
+    class Streamer:
+        def __init__(self, *_args, **_kwargs):
+            self.items = queue.Queue()
+
+        def __iter__(self):
+            while True:
+                item = self.items.get(timeout=2)
+                if item is None:
+                    return
+                yield item
+
+        def end(self):
+            self.items.put(None)
+
+    fake_transformers.StoppingCriteria = StoppingCriteria
+    fake_transformers.StoppingCriteriaList = StoppingCriteriaList
+    fake_transformers.TextIteratorStreamer = Streamer
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    torch = _fake_torch()
+    torch.inference_mode = contextlib.nullcontext
+    torch.ones_like = lambda ids: _Tensor([1] * len(ids))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    producer = {}
+
+    class Model:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            producer["thread"] = threading.current_thread()
+            kwargs["streamer"].items.put("first token")
+            criterion = kwargs["stopping_criteria"][0]
+            deadline = time.monotonic() + 2
+            while not criterion(None, None):
+                assert time.monotonic() < deadline, "generation was not stopped"
+                time.sleep(0.005)
+
+    tokenizer = _Tokenizer()
+    tokenizer.pad_token_id = 0
+    tokenizer.eos_token_id = 1
+    worker._loaded.update(model=Model(), tokenizer=tokenizer)
+
+    def disconnected(payload):
+        if payload["type"] == "chunk":
+            raise BrokenPipeError("client disconnected")
+
+    with pytest.raises(BrokenPipeError, match="client disconnected"):
+        worker.generate({"prompt": "hello", "max_tokens": 8}, disconnected)
+
+    assert "thread" in producer
+    assert not producer["thread"].is_alive()

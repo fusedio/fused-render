@@ -11,7 +11,7 @@ capability something a Windows or Linux user could read about but not use — th
 complaint AI-10 answers for transcription and this answers for chat. The
 registry lists it AFTER the MLX runner, so first-match-wins leaves Apple Silicon
 on MLX (faster there, and its 4-bit catalog is sized for a laptop) and hands this
-every machine MLX turns down.
+to Windows and Linux.
 
 Three things differ from the MLX runner, and all three are torch's doing:
 
@@ -361,20 +361,24 @@ def _encode(tokenizer, messages, prompt, device):
     return ids.to(device), mask.to(device)
 
 
-def _stopping_criteria():
-    """Stop when `/cancel` was pressed.
+def _stopping_criteria(local_stop=None):
+    """Stop when `/cancel` was pressed or this stream went away.
 
     `model.generate` owns the token loop here — unlike mlx-lm, which hands back
     a generator this runner steps itself — so its own callback is the only place
     a stop can be honoured. Without it the ✕ would be read only after generation
     finished, which is to say never, since finishing is what it was trying to
-    avoid.
+    avoid. The request-local event covers the other way a token loop ends early:
+    a disconnected client makes its `write` raise. That producer must stop and
+    join before the worker releases its generation lock, or the next request can
+    enter `model.generate` while the abandoned one is still using the model.
     """
     from transformers import StoppingCriteria, StoppingCriteriaList
 
     class Cancelled(StoppingCriteria):
         def __call__(self, input_ids, scores, **kwargs):
-            return worker_base.CANCEL.is_set()
+            return worker_base.CANCEL.is_set() or (
+                local_stop is not None and local_stop.is_set())
 
     return StoppingCriteriaList([Cancelled()])
 
@@ -398,13 +402,14 @@ def generate(body, write):
     temperature = float(body.get("temperature", 0.7))
     top_p = float(body.get("top_p", 0.95))
 
+    local_stop = threading.Event()
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     kwargs = {
         "input_ids": ids,
         "attention_mask": mask,
         "max_new_tokens": max_tokens,
         "streamer": streamer,
-        "stopping_criteria": _stopping_criteria(),
+        "stopping_criteria": _stopping_criteria(local_stop),
         # A model whose tokenizer has no pad token pads with EOS, which is
         # transformers' own advice and silences a warning that would otherwise
         # reach the supervisor's log on every single generation.
@@ -444,12 +449,18 @@ def generate(body, write):
 
     count = 0
     started = time.time()
-    for text in streamer:
-        if not text:
-            continue
-        count += 1
-        write({"type": "chunk", "text": text})
-    thread.join()
+    try:
+        for text in streamer:
+            if not text:
+                continue
+            count += 1
+            write({"type": "chunk", "text": text})
+    finally:
+        # `write` raises when the client disconnects. Signal the producer and
+        # wait for it here so `worker_base` cannot release GENERATE_LOCK while
+        # this model is still generating for a request nobody can read.
+        local_stop.set()
+        thread.join()
 
     if "error" in result:
         raise result["error"]

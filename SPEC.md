@@ -6385,17 +6385,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   that PyAV opens the container formats users will point at it. A first real
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
-- **AI-11** **Text generation runs everywhere, on the backend that suits the
-  machine — and TWO runners share one capability for the first time** (D293).
+- **AI-11** **Text generation runs on every supported desktop platform, on the
+  backend that suits the machine — and TWO runners share one capability for the
+  first time** (D293).
   MLX is Metal-only, so the app's flagship local capability was something a
   Windows or Linux user could read about and not use: the exact complaint AI-10
   answers for transcription, still standing for chat. A `transformers_text`
   runner folder (torch + transformers) is registered BELOW `mlx_text`, and
   AI-2's first-match-wins ordering does the rest — Apple Silicon keeps MLX
   (faster on Metal, and its 4-bit catalog is sized for a 16GB laptop), while
-  Windows, Linux and Intel Macs fall through to torch. Nothing else in the app
-  learned that a capability can have two runners, which is the claim AI-2 made
-  and this is the test of it.
+  Windows and Linux fall through to torch. Intel macOS is not a distribution
+  target and is not advertised by the runner. Nothing else in the app learned
+  that a capability can have two runners, which is the claim AI-2 made and this
+  is the test of it.
   **The backend was chosen on packaging, not on benchmarks.** llama.cpp would be
   the obvious pick and is refused by AI-2a: `llama-cpp-python` publishes an sdist
   and no wheels at all, so declaring it would put cmake and a C++ toolchain —

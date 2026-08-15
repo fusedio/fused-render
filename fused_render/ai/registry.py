@@ -32,10 +32,10 @@ because the same repo can be servable by two backends and the choice belongs to
 the machine, not to the string.
 
 **Two runners can share one capability, and the ORDER between them is the whole
-mechanism.** Text generation is served by MLX on Apple Silicon and by torch
-everywhere else: both rows are registered, both are asked whether they can run,
-and the first that says yes wins. Nothing else in the app knows there is more
-than one — but the CATALOG does, because what to suggest depends on which
+mechanism.** Text generation is served by MLX on Apple Silicon and by torch on
+Windows and Linux: both rows are registered, both are asked whether they can
+run, and the first that says yes wins. Nothing else in the app knows there is
+more than one — but the CATALOG does, because what to suggest depends on which
 backend will load it (`catalog.py`), and an MLX checkpoint on a Windows machine
 is a download that cannot be used.
 """
@@ -136,18 +136,37 @@ def _apple_silicon() -> Availability:
 
 
 def _always() -> Availability:
-    """torch + diffusers, torch + transformers, and CTranslate2 all build wheels
-    for macOS (both architectures), Linux and Windows. Whether the machine is
-    FAST enough is a different question, and not one to refuse on — a model
-    answering slowly on a CPU is a model answering, and the device is reported
-    (`worker_base.STATE["device"]`) so the page can say which case it is."""
+    """torch + diffusers and CTranslate2 build on every platform we ship.
+
+    Whether the machine is FAST enough is a different question, and not one to
+    refuse on — a model answering slowly on a CPU is a model answering, and the
+    device is reported (`worker_base.STATE["device"]`) so the page can say which
+    case it is.
+    """
     return Availability(True)
+
+
+def _windows_or_linux() -> Availability:
+    """The transformers text runner's supported production platforms.
+
+    Intel macOS is not a distribution target, and advertising it here is a
+    stronger claim than the project makes anywhere else: availability drives
+    the catalog and Load button. Keep the worker's MPS placement defensive for
+    direct development use, but do not expose it as a supported backend.
+    """
+    system = platform.system()
+    if system in ("Windows", "Linux"):
+        return Availability(True)
+    return Availability(
+        False,
+        f"supports Windows and Linux only (this is {system.lower()}/{platform.machine()})",
+    )
 
 
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve text generation: MLX takes Apple Silicon, and `transformers`
-# below it picks up every machine MLX turns down. The ordering is the whole
-# mechanism, so the rows are not sorted alphabetically and must not be.
+# below it serves Windows and Linux. The ordering is the whole mechanism, so the
+# rows are not sorted alphabetically and must not be.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -168,14 +187,12 @@ _RUNNERS: tuple[Runner, ...] = (
         # answers at a few words a second — lives in the loaded card's tooltip
         # instead, where somebody has stopped to ask.
         note="Uses an NVIDIA GPU when PyTorch can see one, and the CPU otherwise.",
-        # `_always`, and it is deliberately BELOW the MLX row rather than
-        # instead of it. torch runs everywhere, so this row alone would serve
-        # Apple Silicon too — and would be the wrong answer there: MLX is faster
-        # on Metal and its 4-bit catalog is sized for a 16GB laptop, where this
-        # runner's unquantized checkpoints are not. First-match-wins gives each
-        # machine the better backend without either runner knowing about the
-        # other.
-        _available=_always,
+        # Deliberately BELOW the MLX row rather than instead of it. The backend
+        # is supported on Windows and Linux; Apple Silicon keeps MLX, and Intel
+        # macOS is not a distribution target. The worker retains defensive MPS
+        # placement for direct development use, but availability is the product
+        # claim and must match the platforms we actually support.
+        _available=_windows_or_linux,
     ),
     Runner(
         code="diffusers-image",

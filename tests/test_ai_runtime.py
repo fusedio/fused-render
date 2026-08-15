@@ -514,7 +514,7 @@ def test_every_runner_that_can_run_here_suggests_something(monkeypatch):
                 f"{capability} resolves to a runner on {system} and suggests nothing")
 
 
-def test_text_generation_resolves_to_a_runner_on_every_platform(monkeypatch):
+def test_text_generation_resolves_to_a_runner_on_every_supported_platform(monkeypatch):
     """The whole point of D293, stated as one assertion.
 
     Text generation was Apple-Silicon-only, which made the app's flagship local
@@ -524,15 +524,22 @@ def test_text_generation_resolves_to_a_runner_on_every_platform(monkeypatch):
         ("Darwin", "arm64", "mlx-text"),
         ("Windows", "AMD64", "transformers-text"),
         ("Linux", "x86_64", "transformers-text"),
-        # An Intel Mac is not Apple Silicon and MLX is Metal-only, so it falls
-        # through to torch like everything else — the case a naive
-        # `system == "Darwin"` check would get wrong.
-        ("Darwin", "x86_64", "transformers-text"),
     ):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
         runner = registry.for_capability(registry.TEXT_GENERATION)
         assert runner is not None and runner.code == code, (system, machine)
+
+
+def test_intel_macos_is_not_advertised_as_a_supported_text_platform(monkeypatch):
+    """Availability controls the catalog and Load button, so it is a support claim."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+
+    assert registry.for_capability(registry.TEXT_GENERATION) is None
+    status = registry.by_code("transformers-text").available()
+    assert status.ok is False
+    assert "Windows and Linux only" in status.reason
 
 
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
