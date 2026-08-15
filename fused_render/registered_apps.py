@@ -58,11 +58,34 @@ def _in_or_over_workspace(folder: str) -> bool:
     Inside-workspace folders are the walk's to list (an entry here would
     double-list them); an ancestor entry would be a card for the user's whole
     disk. Filtered on read AND refused on write, so a hand-edited registry
-    can't poison the listing either way."""
+    can't poison the listing either way.
+
+    PURE STRING WORK on abspaths, deliberately — `read_entries` runs this per
+    entry with no MountGuard in front, and a resolve is a syscall a wedged
+    mount can block on. The symlink-alias hole that leaves (a link whose
+    TARGET is the workspace) is closed by `_resolves_into_workspace`, which
+    the two callers that have already passed the guard run as well."""
     from fused_render.shell.seed import fused_dir
 
     root = os.path.abspath(fused_dir())
     folder = os.path.abspath(folder)
+    return (
+        root == folder
+        or root.startswith(folder + os.sep)
+        or folder.startswith(root + os.sep)
+    )
+
+
+def _resolves_into_workspace(folder: str) -> bool:
+    """The realpath half of the workspace refusal: an external SYMLINK whose
+    target is the workspace (or sits over/under it) passes the string check
+    above, and would double-list the walk's own apps under `linked`. Costs a
+    resolve — a syscall — so callers run it only AFTER MountGuard has passed
+    on the path."""
+    from fused_render.shell.seed import fused_dir
+
+    root = os.path.realpath(fused_dir())
+    folder = os.path.realpath(folder)
     return (
         root == folder
         or root.startswith(folder + os.sep)
@@ -111,6 +134,8 @@ def record_open(path: str) -> bool:
     # answers from mount records with pure string work.
     if MountGuard().blocks(path):
         return False
+    if _resolves_into_workspace(path):
+        return False
     try:
         if not os.path.isdir(path) or app_listing.app_entry(path) is None:
             return False
@@ -134,6 +159,8 @@ def registered_apps() -> list[dict]:
         path = e["path"]
         if guard.blocks(path):
             continue
+        if _resolves_into_workspace(path):
+            continue  # a symlink alias of the workspace: the walk's to list
         try:
             if not os.path.isdir(path):
                 continue

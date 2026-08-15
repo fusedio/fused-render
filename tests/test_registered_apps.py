@@ -124,6 +124,28 @@ def test_workspace_and_ancestor_entries_are_refused_and_filtered(
     assert registered_apps.read_entries() == []
 
 
+def test_symlink_alias_of_workspace_is_refused_and_filtered(
+    client, tmp_path, workspace
+):
+    """An external symlink whose TARGET is (or contains) the workspace passes
+    the string check — realpath is what catches it. Registering or listing it
+    would double-list the walk's own apps under `linked`."""
+    ws_app = workspace / "local" / "demo"
+    ws_app.mkdir(parents=True)
+    (ws_app / "index.html").write_text("<html></html>")
+    link = tmp_path / "elsewhere" / "ws-link"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(ws_app, link)
+
+    assert _open(client, link) is False
+    # A hand-edited entry of the same shape is skipped on listing too.
+    registered_apps.write_entries(
+        [{"path": str(link), "openedAt": "2026-01-01T00:00:00+00:00"}]
+    )
+    listed = [(a["tag"], a["name"]) for a in client.get("/api/apps").json()["apps"]]
+    assert listed == [("local", "demo")]
+
+
 # ------------------------------------------------------------------- listing
 
 
