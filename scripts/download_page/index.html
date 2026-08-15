@@ -353,6 +353,32 @@
   @media (max-width: 640px) {
     .dl pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   }
+  /* Copy icon button pinned inside the command block. The pre gets right
+     padding so a long command scrolls under its own edge, not under the icon. */
+  .dl pre { position: relative; padding-right: 46px; }
+  .copy-cmd {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .copy-cmd svg { width: 14px; height: 14px; display: block; }
+  .copy-cmd:hover { color: var(--text); border-color: var(--accent); }
+  /* Feedback state after a successful copy: the icon flips to a check. */
+  .copy-cmd.copied { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+  .copy-cmd .check { display: none; }
+  .copy-cmd.copied .check { display: block; }
+  .copy-cmd.copied .sheets { display: none; }
   /* Mobile visitors can't install a desktop app; say so before they tap a
      .dmg onto their phone. */
   .mobile-note { display: none; }
@@ -519,7 +545,11 @@
            upgraded to the direct DMG link once the manifest loads. -->
       <a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
       <p>Signed and notarized, macOS 11+. Bundles Python, the fused CLI and rclone.</p>
-      <pre>brew install --cask fusedio/tap/fused-render</pre>
+      <!-- The button sits INSIDE the <pre> (absolutely positioned) so the text
+           node stays exactly the command — selecting the block by hand grabs
+           the command and nothing else. Icon-only; the aria-label carries the
+           name and the check icon carries the feedback. -->
+      <pre>brew install --cask fusedio/tap/fused-render<button class="copy-cmd" type="button" aria-label="Copy the brew command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
     </div>
     <div class="dl" data-os="win">
       <!-- Usable before/without latest.json: falls back to the releases page,
@@ -621,6 +651,25 @@
       if (t) t.scrollIntoView();
     } catch (e) { /* cross-origin parent: not the shell */ }
   }
+
+  // Copy buttons on command blocks. The command is the <pre>'s text nodes only
+  // — the button is a child of the pre, so a plain textContent read would drag
+  // in whatever the button holds (today an <svg>, empty; tomorrow, who knows).
+  // navigator.clipboard needs a secure context — true on https and on the
+  // app's 127.0.0.1 — so no execCommand fallback. "Copied" confirms, then the
+  // label resets so the button reads as pressable again.
+  document.querySelectorAll(".copy-cmd").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cmd = Array.from(btn.parentElement.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.nodeValue).join("").trim();
+      navigator.clipboard.writeText(cmd).then(() => {
+        // The .copied class swaps the sheets icon for a check (CSS above).
+        btn.classList.add("copied");
+        setTimeout(() => btn.classList.remove("copied"), 1600);
+      }).catch(() => { /* clipboard permission denied: leave the button as-is */ });
+    });
+  });
 
   // Fill version + direct artifact links from the release manifest.
   fetch("/latest.json", { cache: "no-cache" })
