@@ -114,6 +114,47 @@ def _declared_dists_installable_here() -> frozenset[str]:
 
 
 @functools.lru_cache(maxsize=1)
+def _declared_dists_the_BUNDLE_can_have() -> frozenset[str]:
+    """`_declared_dists()` minus the ones the DMG's OWN interpreter excludes.
+
+    The reachability check below reasons about a bundle built on
+    `envinstall.SCRIPT_PYTHON_VERSION` (3.12), not about the interpreter running
+    this test — and a marker-gated requirement the build interpreter rejects can
+    never be in that bundle, so demanding py2app force it is asking for the
+    impossible.
+
+    `tomli>=2.0; python_version < '3.11'` is the case that surfaced it. On 3.10
+    it is declared, installed and forced; on 3.12/3.13 it is simply not
+    installed and the loop skips it. On **3.11** it is neither — the marker
+    excludes it, so the derivation does not force it, while some transitive
+    dependency of the test tooling installs it anyway — and the check demanded a
+    distribution the macOS bundle is right not to carry. That made a green suite
+    depend on which packages the CI runner's resolver happened to drag in.
+
+    Markers are evaluated with the build interpreter's version over THIS
+    environment, so `sys_platform` stays the runner's. That costs nothing here:
+    a darwin-only distribution is not installed on the Linux runner either, so
+    the loop already skips it one line down.
+    """
+    from packaging.requirements import Requirement
+
+    from fused_render.envinstall import SCRIPT_PYTHON_VERSION
+
+    build_env = {"python_version": SCRIPT_PYTHON_VERSION,
+                 "python_full_version": SCRIPT_PYTHON_VERSION + ".0"}
+    pp = _pyproject()
+    raw = list(pp["project"]["optional-dependencies"]["bundled"]) + list(
+        pp["project"]["dependencies"]
+    )
+    keep = set()
+    for spec in raw:
+        marker = Requirement(spec).marker
+        if marker is None or marker.evaluate(build_env):
+            keep.add(_norm(spec))
+    return frozenset(keep)
+
+
+@functools.lru_cache(maxsize=1)
 def _excluded_dists() -> frozenset[str]:
     return frozenset(_norm(n) for n in _packaging_module().BUNDLED_EXCLUDED)
 
@@ -367,6 +408,11 @@ def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():
             # that claims to have `[bundled]` must not reach here.
             if _REQUIRE_BUNDLED and dist in _declared_dists_installable_here():
                 absent.append(dist)
+            continue
+        if dist not in _declared_dists_the_BUNDLE_can_have():
+            # Declared, installed here, and marker-excluded from the interpreter
+            # the DMG is built on — so it cannot be in the bundle and must not be
+            # demanded of it. See that helper: this is `tomli` on 3.11.
             continue
         # A dotted entry (google.auth) covers its namespace parent (google).
         if not any(n in forced or any(f.startswith(n + ".") for f in forced)
@@ -709,11 +755,25 @@ def test_the_bundle_ships_the_whole_importable_stdlib():
     assert "filecmp" in forced, "the module whose absence started this"
 
 
+#: Excluded names CPython has since REMOVED, and the version that removed them.
+#: The DMG is built on 3.12 (`envinstall.SCRIPT_PYTHON_VERSION`), while this
+#: suite runs on 3.10–3.13, so an entry can be perfectly valid for the build
+#: interpreter and absent from the one asserting about it — `lib2to3` is gone in
+#: 3.13. Listed rather than waved through so a typo is still caught: an
+#: exclusion has to be a real module on SOME version we know about.
+_STDLIB_REMOVED_UPSTREAM = {"lib2to3": (3, 13)}
+
+
 def test_every_stdlib_exclusion_is_real_and_reasoned():
     """An exclusion is a claim about a module that EXISTS, with a reason someone
     can disagree with. A typo'd name would otherwise silently widen the list."""
     module = _packaging_module()
     for name, reason in module.STDLIB_EXCLUDED.items():
+        if name in _STDLIB_REMOVED_UPSTREAM:
+            gone_in = _STDLIB_REMOVED_UPSTREAM[name]
+            assert sys.version_info[:2] >= gone_in or name in sys.stdlib_module_names, (
+                f"{name} is listed as removed in {gone_in} but is missing here too")
+            continue
         assert name in sys.stdlib_module_names, f"{name} is not a stdlib module"
         assert isinstance(reason, str) and len(reason) > 15, (
             f"{name} is excluded without a usable reason: {reason!r}")
