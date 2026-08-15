@@ -81,11 +81,20 @@ def _resolves_into_workspace(folder: str) -> bool:
     target is the workspace (or sits over/under it) passes the string check
     above, and would double-list the walk's own apps under `linked`. Costs a
     resolve — a syscall — so callers run it only AFTER MountGuard has passed
-    on the path."""
+    on the path.
+
+    A resolve that RAISES (realpath can, e.g. a symlink loop) answers True:
+    both callers treat True as refuse/skip, and "cannot tell" must keep
+    reading as "refuse" — a path we can't resolve is not one to register or
+    list, and one bad registry entry must never 500 the endpoint or fail the
+    listing."""
     from fused_render.shell.seed import fused_dir
 
-    root = os.path.realpath(fused_dir())
-    folder = os.path.realpath(folder)
+    try:
+        root = os.path.realpath(fused_dir())
+        folder = os.path.realpath(folder)
+    except OSError:
+        return True
     return (
         root == folder
         or root.startswith(folder + os.sep)

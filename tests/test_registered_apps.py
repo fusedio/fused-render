@@ -146,6 +146,24 @@ def test_symlink_alias_of_workspace_is_refused_and_filtered(
     assert listed == [("local", "demo")]
 
 
+def test_unresolvable_path_is_refused_not_a_500(client, tmp_path, monkeypatch):
+    """realpath can raise (symlink loop and friends) — the endpoint answers
+    recorded:false and the listing skips, never a 500."""
+    d = _folder(tmp_path, "notes")
+    assert _open(client, d)
+
+    real = os.path.realpath
+
+    def raising(p, **kw):
+        if str(p) == str(d):
+            raise OSError("unresolvable")
+        return real(p, **kw)
+
+    monkeypatch.setattr(os.path, "realpath", raising)
+    assert _open(client, d) is False
+    assert client.get("/api/apps").json()["apps"] == []
+
+
 # ------------------------------------------------------------------- listing
 
 
