@@ -216,14 +216,27 @@ export default function NewJobModal({
   // non-empty" — an Edit modal opens full, and treating prefill as dirty made
   // its ✕ appear broken (QA 2026-08-14).
   const [initial, setInitial] = useState(() => ({
-    // Same expression as the `target` state above, and it has to be: a prefill
+    // Same expressions as the states above, and they have to be: a prefill
     // the user did not type must not read as dirty, or the ✕ arms its
     // close-twice guard on an untouched modal (the bug the getConfig effect's
     // setInitial exists for — this is the same one, one prefill earlier).
     target: editing?.target ?? initialTarget ?? "",
     message: editing?.message ?? "",
+    when,
+    repeat,
+    customCron,
+    permission,
   }));
-  const dirty = target !== initial.target || message !== initial.message;
+  // EVERY field the form can lose arms the guard — time, repeat rule, cron
+  // line and permission included. Comparing only text fields let a single ✕
+  // silently discard an adjusted schedule (Bugbot, PR #538).
+  const dirty =
+    target !== initial.target ||
+    message !== initial.message ||
+    when !== initial.when ||
+    repeat !== initial.repeat ||
+    customCron !== initial.customCron ||
+    permission !== initial.permission;
 
   const picked = useMemo(() => new Date(when), [when]);
   const pickedOk = !Number.isNaN(picked.getTime());

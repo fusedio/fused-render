@@ -341,7 +341,13 @@ export default function ScheduleCalendar({
     // box's, and it stopPropagation()s before reaching here.
     const rect = e.currentTarget.getBoundingClientRect();
     const minutes = ((e.clientY - rect.top) / HOUR_H) * 60;
-    const snapped = Math.round(minutes / SNAP_MIN) * SNAP_MIN;
+    // Clamped to the day's last slot: rounding at the very bottom of a column
+    // could reach 24:00, and setMinutes(1440) rolls into TOMORROW — a click
+    // in Friday opening a task for Saturday (Bugbot, PR #538).
+    const snapped = Math.min(
+      Math.round(minutes / SNAP_MIN) * SNAP_MIN,
+      24 * 60 - SNAP_MIN,
+    );
     const t = new Date(day);
     t.setMinutes(snapped, 0, 0);
     onCreateAt(t);

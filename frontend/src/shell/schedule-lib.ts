@@ -141,12 +141,17 @@ export function calendarEvents(
       }
       continue;
     }
-    if (entry.state === "cancelled") {
+    if (entry.state === "cancelled" ||
+        (entry.state === "missed" && entry.template_id)) {
       // A skipped run stays visible only while the schedule it is an
       // exception TO still exists — a dead template's skips are just history
       // (the list keeps them), and on the grid they were immortal clutter
-      // with an Unskip that could only 404. A plain cancelled one-shot is off
-      // the calendar the way a deleted event is off Google's.
+      // with an Unskip that could only 404. The rule covers BOTH kinds of
+      // skip — the user's (cancelled occurrence) and the loop's (missed
+      // occurrence, SCH-13) — because the label calls them the same thing,
+      // so the grid must retire them the same way. A plain cancelled
+      // one-shot is off the calendar the way a deleted event is off
+      // Google's; a missed ONE-SHOT stays, being a fault worth seeing.
       if (!entry.template_id || !liveTemplates.has(entry.template_id)) continue;
       if (Number.isNaN(new Date(entry.due).getTime())) continue;
       out.push({

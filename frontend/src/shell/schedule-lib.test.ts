@@ -129,3 +129,29 @@ describe("missed recurring runs", () => {
     expect(boardColumn(missedOneShot)).toBe("attention");
   });
 });
+
+// ---- dead-schedule skips retire from the grid, whichever skip they were ------
+describe("dead-schedule skipped runs", () => {
+  it("hides loop-missed occurrences of a cancelled/replaced schedule", () => {
+    const dead = calendarEvents([
+      entry({ id: "t1", state: "cancelled", repeats: "30 9 * * *" }),
+      entry({ id: "o1", state: "missed", template_id: "t1" }),
+    ], NOW);
+    expect(dead).toEqual([]);
+  });
+
+  it("keeps a live schedule's loop-missed run, without Unskip", () => {
+    const events = calendarEvents([
+      entry({ id: "t1", state: "recurring", repeats: "30 9 * * *", upcoming: [] }),
+      entry({ id: "o1", state: "missed", template_id: "t1",
+              due: "2026-08-15T09:30:00Z" }),
+    ], NOW);
+    expect(events.length).toBe(1);
+    expect(events[0].unskippable).toBe(false);
+  });
+
+  it("still shows a missed one-shot — that one is a fault", () => {
+    const events = calendarEvents([entry({ state: "missed" })], NOW);
+    expect(events.length).toBe(1);
+  });
+});
