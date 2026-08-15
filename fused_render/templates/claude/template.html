@@ -207,8 +207,12 @@
   #annbtn:hover { color: var(--fg); }
   #annbtn.on { color: var(--fg); }
   /* Where the row's shrinking actually happens — on the TEXT, not on the track,
-     which stays 28px (a knob that slid off its rail would stop being a switch). */
-  #annbtn .lbl { overflow: hidden; text-overflow: ellipsis; }
+     which stays 28px (a knob that slid off its rail would stop being a switch).
+     `line-height` re-widened here: the button's `line-height: 1` plus this
+     `overflow: hidden` sliced the descender off any label with one (the old
+     "Commenting" lost its g's tail) — the clip box must clear the font's
+     descent, not just its em box. */
+  #annbtn .lbl { overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
   /* The slider: knob left = off, knob right = on. Off is drawn in the quiet
      currentColor; the on-state fills the track with the accent — the only
      colour the control ever shows, and only while armed. */
@@ -441,7 +445,7 @@
   .kebab-opt:hover, .kebab-opt:focus-visible { background: var(--surface-2); }
   .kebab-opt[disabled] { color: var(--dim); cursor: default; }
 
-  /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
+  /* "Comment on preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
      screen there is nothing to toggle, so it is display:none here and the media
      query is the only thing that reveals it. Drawn like #back (bordered, quiet)
@@ -2541,7 +2545,7 @@
        `visibility: visible` anywhere under #left would float it over the chat. */
 
     /* Preview view: the chat column collapses to its #anntools strip, so the
-       Annotate switch and this toggle stay reachable while the preview owns the
+       Comment switch and this toggle stay reachable while the preview owns the
        screen. #anntools is a child of #chat (it is the chat pane's top row in
        the wide layout, and moving it out of there in the DOM would rework a
        layout that is correct), so the strip is kept by hiding #chat's OTHER
@@ -2616,7 +2620,7 @@
     <div id="anntools">
       <!-- The way back to the chat list, at the strip's left end. It lived at
            the right end of #topbar; it sits HERE so the strip reads
-           [← Chats … Annotate] on one line, with the topbar below carrying only
+           [← Chats … Comment] on one line, with the topbar below carrying only
            the session's identity. Hidden on the home view (there is no chat to
            leave) and in the narrow preview view (the view it returns to is off
            screen there) — both rules are in the stylesheet, where the topbar's
@@ -2625,11 +2629,11 @@
       <!-- Kind-free wording, and rewritten by applyPaneNoun once stat says what
            the pane is: "the app" for an app folder, "the preview" for a file. It
            said "the app" unconditionally, so a screen-reader user on `notes.md`
-           heard "Annotate the app" over a markdown preview — the same bug the
+           heard "Comment on the app" over a markdown preview — the same bug the
            footnote and the frame's own title had. -->
-      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the preview"
-              title="Annotate the preview, then send the notes to Claude"><span
-        class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+      <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
+              title="Comment on the preview, then send the notes to Claude"><span
+        class="lbl">Comment</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
            (kebabOpen) because it names what the copied command will do —
@@ -2668,8 +2672,8 @@
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
            until the 800px media query reveals it). It sits in THIS strip
            because the strip is the one row that both views keep on screen. -->
-      <button id="viewbtn" type="button" aria-label="Annotate preview"
-              title="Switch between the chat and the preview pane, where the annotation tools are">Annotate preview</button>
+      <button id="viewbtn" type="button" aria-label="Comment on preview"
+              title="Switch between the chat and the preview pane, where the annotation tools are">Comment on preview</button>
     </div>
     <!-- chat view -->
     <div id="topbar">
@@ -3650,7 +3654,7 @@ let paneNoun = "preview";
 // and — live, because they are built per message — the chip's label, the receipt
 // thumbnail's `alt` and the two block preambles further down.
 function applyPaneNoun() {
-  annBtn.setAttribute("aria-label", "Annotate the " + paneNoun);
+  annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
   // Not written directly: annSetMode rewrites this title on every disarm, so the
   // idle wording has to have exactly one definition or the noun comes back wrong
   // the first time the user toggles the switch off. That is how it broke here.
@@ -5098,7 +5102,7 @@ annTa.addEventListener("keydown", (e) => {
 // It was a literal in both places, so the kind-correct noun applyPaneNoun had just
 // written was thrown away by the first toggle-off. One definition, two callers.
 const annIdleTitle = () =>
-  "Annotate the " + paneNoun + ", then send the notes to Claude";
+  "Comment on the " + paneNoun + ", then send the notes to Claude";
 
 // The one way in and out of annotate mode. Extracted because Escape leaves the
 // mode too, and a second copy of this would be a second chance for the banner's
@@ -5141,17 +5145,19 @@ function annSetMode(on) {
   }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  annBtn.querySelector(".lbl").textContent = annOn ? "Annotating" : "Annotate";
+  // The label is the static markup "Comment" in BOTH states — the track's
+  // accent fill is what says armed. It used to flip to "Commenting", but a
+  // label that changes width makes the whole right-anchored row shuffle on
+  // every toggle, and one mode wearing two names reads as two features.
   // Pins follow the mode, so a toggle must repaint them (show on arm, hide on
   // disarm) — renderAnn gates on `annOn` now.
   renderAnn();
-  // No label in either state — the icon never changes size or position, so nothing
-  // here can cover more of the app than the idle button already does. The tooltip
-  // is where the instruction and BOTH ways out live, because it has no width limit
-  // and costs no space. The visible signals are the accent fill and the highlight
-  // box that tracks the pointer over the app (the strongest of the two: it only
-  // appears in annotate mode and it follows what the user is aiming at).
-  annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this button to stop"
+  // The tooltip is where the instruction and BOTH ways out live, because it has
+  // no width limit and costs no space. The visible signals are the accent fill
+  // and the highlight box that tracks the pointer over the app (the strongest
+  // of the two: it only appears in comment mode and it follows what the user
+  // is aiming at).
+  annBtn.title = annOn ? "Comment mode on — click an element to add a note · Esc or click this button to stop"
                        : annIdleTitle();
   // The ring can be gone rather than merely hidden: hosted, it lives in the
   // target's document and that document may have been replaced (or unmarked)
@@ -5217,7 +5223,7 @@ function annPollTarget() {
   }
   // A target that has just ARRIVED re-applies the boot default, because the boot
   // itself may have run before the host stamped anything — the switch would then
-  // read "Annotate" while the URL says the mode is on. Through annSetMode, the
+  // read "Comment" while the URL says the mode is on. Through annSetMode, the
   // one door, so the label, aria-pressed, the param and the pins agree.
   if (has) annSetMode(fused.params.get("annmode") !== "0");
   // And a target that has GONE disarms without writing the param: annSetMode
@@ -5421,7 +5427,7 @@ if (CHAT_ONLY) {
   // second set of listeners — but both objects are the host's and outlive us,
   // so to the NEXT sidebar instance they read as "already adopted" and its
   // annWatchTarget/annWireTarget never run. That was the armed-but-dead
-  // switch: "Annotating" on, no hover ring, no click, because the only wiring
+  // switch: "Comment" armed, no hover ring, no click, because the only wiring
   // the target ever had belonged to a torn-down document whose handlers the
   // browser no longer runs. Cleared here, the next instance re-adopts and
   // re-wires; the dead listeners it cannot remove stay inert for the same
@@ -5492,7 +5498,7 @@ function applyNarrowView() {
   // ONE string for the label and the aria-label: a second wording is a second
   // thing to keep in step, and there is nothing the screen reader needs that the
   // visible text does not already say.
-  const viewLabel = preview ? "Back to chat" : "Annotate preview";
+  const viewLabel = preview ? "Back to chat" : "Comment on preview";
   viewBtn.textContent = viewLabel;
   viewBtn.setAttribute("aria-label", viewLabel);
   // ARRIVING AT THE NARROW CHAT VIEW DISARMS annotate mode — by flipping there
@@ -8712,7 +8718,7 @@ function buildPlanCard(p, run_id) {
 //     path), i.e. a fork of the thing whose whole job is to be read carefully
 //     before it is answered;
 //   * leaving Preview is honest and reversible: the run cannot continue without
-//     the user's attention, "Back to chat"/"Annotate preview" is one click either
+//     the user's attention, "Back to chat"/"Comment on preview" is one click either
 //     way, and the notes and pins survive the trip (applyNarrowView re-measures
 //     them). We only take the screen for a HARD BLOCK, never for ordinary
 //     progress — the working line and errors still go to the hidden #log, and
@@ -9077,20 +9083,21 @@ function makeTyper(bodyEl) {
 // centre instead of its own.
 const TOOL_STATUS_GLYPH = { running: "", ok: "", error: "✗" };
 
-// ── which disclosures are open: the newest one, and nothing else ──
+// ── which disclosures are open: the ones the reader opened, and no others ──
 // Every collapsible card in the transcript — a tool chip, a thinking block —
-// ships COLLAPSED except the most recent one, which is open. A single turn can
-// make twenty tool calls, and twenty open bodies is a log where the reply is
-// somewhere far below, whereas the one card whose body is still news is always
-// the one that just arrived. So a new card opens and the card it replaced folds
-// itself back up.
+// ships COLLAPSED, and that now includes the newest card and the one still
+// streaming. A single turn can make twenty tool calls, and a transcript that
+// opens bodies on its own is a transcript that MOVES under the reader while the
+// run is live: each arriving card pushes everything above it up the screen, and
+// the next arrival a second later folds it again. Closed by default makes the
+// log scannable — one summary line per step, so the shape of the turn is
+// readable at a glance and the reply stays where the eye left it.
 //
-// The user's own click OUTRANKS that, in both directions and permanently: a
-// card they opened is never auto-folded, and one they closed is never
-// auto-opened — not even while it is the newest. The override is recorded from
-// the SUMMARY's click rather than the `toggle` event, because `toggle` fires
-// asynchronously and fires for programmatic opens too, so it cannot tell a
-// user's fold from this policy's.
+// The user's click is therefore the ONLY thing that opens a card, and it
+// STICKS: nothing auto-folds a card they opened, and nothing auto-opens one
+// they closed. The override is recorded from the SUMMARY's click rather than
+// the `toggle` event, because `toggle` fires asynchronously and fires for
+// programmatic opens too, so it cannot tell a user's fold from a repaint's.
 //
 // Overrides are keyed rather than held on the element: the re-attach repair
 // branches and loadHistory rebuild the <details> nodes from the payload, and an
@@ -9100,15 +9107,13 @@ const TOOL_STATUS_GLYPH = { running: "", ok: "", error: "✗" };
 // numbered segment container), which survives the 400 ms poll but not a rebuild
 // of its turn.
 const cardOverrides = new Map();  // card key -> the open state the user chose
-let newestCard = null;            // { key, el } of the most recent card
 let cardSeq = 0;                  // numbers segment containers, for position keys
 
-// A fresh transcript is a fresh policy: a restored session must open with only
-// its LAST card unfolded, so an override from the conversation that was on
-// screen before cannot leak a card open in one the user has never touched.
+// A fresh transcript is a fresh policy: a restored session must open with every
+// card folded, so an override from the conversation that was on screen before
+// cannot leak a card open in one the user has never touched.
 function resetCardPolicy() {
   cardOverrides.clear();
-  newestCard = null;
 }
 
 // A card's identity for `cardOverrides` (see above for why tools and thinking
@@ -9118,18 +9123,17 @@ function cardKey(st, seg, i) {
                                              : st.seq + ":" + i;
 }
 
-// Adopt one <details> as the newest card, folding the one it replaces.
+// Wire one <details> to the override map and apply the standing policy: folded,
+// unless this is a card the user opened. Nothing here looks at the card's
+// position, so a re-render — the 400 ms poll, a repair branch, history replay —
+// puts every card back exactly where the reader left it.
 function registerCard(el, head, key) {
   head.addEventListener("click", () => {
     // Runs BEFORE the disclosure's own default action, so `el.open` is still
     // the state being left behind — the user is asking for its opposite.
     cardOverrides.set(key, !el.open);
   });
-  if (newestCard && newestCard.el !== el && !cardOverrides.has(newestCard.key)) {
-    newestCard.el.open = false;
-  }
-  el.open = cardOverrides.has(key) ? cardOverrides.get(key) : true;
-  newestCard = { key, el };
+  el.open = cardOverrides.has(key) ? cardOverrides.get(key) : false;
 }
 
 // How many lines of a diff a chip shows before it scrolls. Held together with
@@ -10856,7 +10860,7 @@ async function loadHistory(session_id) {
   sending = true;
   permCards.clear();
   notedSkills.clear();
-  resetCardPolicy();  // a restored transcript opens on its LAST card, nothing else
+  resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
   // Same reason as the two clears above: this transcript is about to be REPLACED,
   // so every per-transcript record has to go with it — including which scheduled
   // runs are on screen (scheduleResetForNewTranscript).
