@@ -544,8 +544,13 @@
     overflow-x: auto;
   }
   .term-body div { white-space: pre; }
+  /* Two prompts, deliberately distinct: `$` = the shell (Terminal itself),
+     `>` = typed INSIDE the running claude session. Drawing /login after a `$`
+     would teach the exact mistake D300's rewritten errors exist to prevent. */
   .term-body .in { color: var(--text); }
   .term-body .in::before { content: "$ "; color: var(--accent); font-weight: 600; }
+  .term-body .in2 { color: var(--text); }
+  .term-body .in2::before { content: "> "; color: var(--muted); font-weight: 600; }
   .term-body .ok::before { content: "✓ "; color: var(--accent); }
   .term-body .bot::before { content: "✦ "; color: var(--accent); }
 
@@ -769,9 +774,9 @@
         <div class="term-bar"><i></i><i></i><i></i><em>Terminal</em></div>
         <div class="term-body">
           <div class="in">claude</div>
-          <div class="in">/login</div>
+          <div class="in2">/login</div>
           <div class="ok">Signed in — your browser did the hard part</div>
-          <div class="in">hi</div>
+          <div class="in2">hi</div>
           <div class="bot">Hi! Ready when you are.</div>
         </div>
       </div></div></li>
@@ -862,7 +867,7 @@
             <div class="term-bar"><i></i><i></i><i></i><em>Terminal</em></div>
             <div class="term-body">
               <div class="in">claude</div>
-              <div class="in">/login</div>
+              <div class="in2">/login</div>
               <div class="ok">Signed in — you're done here</div>
             </div>
           </div>
