@@ -18,6 +18,7 @@ import { cancelScheduledMessage, restoreScheduledMessage } from "@platform/lib/a
 import type { ScheduledMessage } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import {
+  assignLanes,
   calendarEvents,
   describeRepeats,
   formatDue,
@@ -66,29 +67,6 @@ function sameDay(a: Date, b: Date): boolean {
     a.getMonth() === b.getMonth() &&
     a.getDate() === b.getDate()
   );
-}
-
-// Overlapping runs split the column side-by-side into equal lanes — Google
-// Calendar's week-view layout, copied deliberately (Akshil, 2026-08-14: the
-// earlier AgentCal-style cascade read as clutter). A chip is CHIP_MIN minutes
-// tall, so two runs overlap exactly when they are closer than that.
-const CHIP_MIN = 30;
-
-function assignLanes(events: Omit<CalEvent, "lane" | "lanes">[]): CalEvent[] {
-  const sorted = [...events].sort((a, b) => a.time.getTime() - b.time.getTime());
-  const out: CalEvent[] = [];
-  let clusterStart = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    const prev = out[i - 1];
-    const lane =
-      prev && sorted[i].time.getTime() - prev.time.getTime() < CHIP_MIN * 60000
-        ? prev.lane + 1
-        : 0;
-    if (lane === 0) clusterStart = i;
-    out.push({ ...sorted[i], lane, lanes: 1 });
-    for (let j = clusterStart; j <= i; j++) out[j].lanes = lane + 1;
-  }
-  return out;
 }
 
 // Small stroke icons, the GlobalSidebar recipe (16px, stroke=currentColor) at

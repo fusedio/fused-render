@@ -228,6 +228,12 @@
 
 .schedule-form-seg .btn:last-child {
   border-radius: 0 6px 6px 0;
+}
+
+/* EVERY adjacent pair overlaps its shared border, not just the last — with
+   three buttons the last-child-only version left a double border between the
+   first two (Bugbot, PR #538). */
+.schedule-form-seg .btn + .btn {
   margin-left: -1px;
 }
 

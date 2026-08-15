@@ -171,6 +171,49 @@ export function calendarEvents(
   return out;
 }
 
+// ---- Calendar lane packing ----------------------------------------------------
+// Overlapping chips split a day column side-by-side (Google's week view). A
+// chip occupies CHIP_MIN minutes of column; two chips overlap exactly when
+// they are closer than that. Lanes are REUSED the way an interval coloring
+// does — the first lane whose previous chip has ended takes the newcomer —
+// so a third event that only overlaps the second slides back to lane 0
+// instead of widening the whole cluster (Bugbot, PR #538). `lanes` is the
+// cluster's width: every chip in one overlapping run shares it, and a
+// cluster closes when a gap of CHIP_MIN goes by with nothing on screen.
+
+export const CHIP_MIN = 30;
+
+export function assignLanes<T extends { time: Date }>(
+  events: T[],
+): (T & { lane: number; lanes: number })[] {
+  const sorted = [...events].sort((a, b) => a.time.getTime() - b.time.getTime());
+  const out: (T & { lane: number; lanes: number })[] = [];
+  const laneEnds: number[] = [];
+  let clusterStart = 0;
+  let clusterEnd = -Infinity;
+  let clusterLanes = 0;
+  const closeCluster = (upto: number) => {
+    for (let j = clusterStart; j < upto; j++) out[j].lanes = clusterLanes;
+  };
+  for (let i = 0; i < sorted.length; i++) {
+    const t = sorted[i].time.getTime();
+    if (t >= clusterEnd && i > clusterStart) {
+      closeCluster(i);
+      clusterStart = i;
+      clusterLanes = 0;
+      laneEnds.length = 0;
+    }
+    let lane = laneEnds.findIndex((end) => t >= end);
+    if (lane === -1) lane = laneEnds.length;
+    laneEnds[lane] = t + CHIP_MIN * 60000;
+    clusterLanes = Math.max(clusterLanes, lane + 1);
+    clusterEnd = Math.max(clusterEnd, laneEnds[lane]);
+    out.push({ ...sorted[i], lane, lanes: 1 });
+  }
+  closeCluster(out.length);
+  return out;
+}
+
 // ---- Board (kanban) columns ---------------------------------------------------
 // The Schedule page's third view, mirroring the Inbox board's shape. Columns
 // derive strictly from fields that exist — `state` and `turn` — through the

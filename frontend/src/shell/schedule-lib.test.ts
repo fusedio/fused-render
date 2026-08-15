@@ -155,3 +155,27 @@ describe("dead-schedule skipped runs", () => {
     expect(events.length).toBe(1);
   });
 });
+
+// ---- lane packing reuses freed lanes -----------------------------------------
+import { assignLanes } from "./schedule-lib";
+
+describe("assignLanes", () => {
+  const at = (h: number, m: number) => ({ time: new Date(2026, 7, 14, h, m) });
+  it("slides back to a freed lane instead of widening the cluster", () => {
+    // 9:00 and 9:20 overlap; 9:40 only overlaps 9:20 — it reuses lane 0.
+    const packed = assignLanes([at(9, 0), at(9, 20), at(9, 40)]);
+    expect(packed.map((p) => p.lane)).toEqual([0, 1, 0]);
+    expect(packed.every((p) => p.lanes === 2)).toBe(true);
+  });
+  it("separate clusters do not share width", () => {
+    const packed = assignLanes([at(9, 0), at(9, 10), at(14, 0)]);
+    expect(packed[2].lane).toBe(0);
+    expect(packed[2].lanes).toBe(1);
+    expect(packed[0].lanes).toBe(2);
+  });
+  it("truly simultaneous chips fan out", () => {
+    const packed = assignLanes([at(9, 0), at(9, 0), at(9, 0)]);
+    expect(new Set(packed.map((p) => p.lane)).size).toBe(3);
+    expect(packed.every((p) => p.lanes === 3)).toBe(true);
+  });
+});

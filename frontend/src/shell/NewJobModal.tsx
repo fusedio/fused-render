@@ -36,6 +36,16 @@ const DEFAULT_TARGET_SUFFIX = "/Desktop/fused";
 // scheduling against a file is still possible by typing, but the picker's job
 // is the common case, and mixing files in doubled the list for nothing.
 
+// Forward slashes throughout, including for Windows drive paths — the same
+// normalization every other shell caller applies to `/api/config` values,
+// whose `home` is a raw expanduser and arrives with backslashes there. The
+// server accepts either separator; the PICKER's own string surgery (up(),
+// joins) only understands one.
+const normPath = (p: string) => p.replace(/\\/g, "/");
+
+// "/" — or a bare drive root like "C:/" — is where Up stops.
+const PATH_ROOT = /^([A-Za-z]:)?\/?$/;
+
 function FolderPicker({
   start,
   onPick,
@@ -45,7 +55,7 @@ function FolderPicker({
   onPick: (path: string) => void;
   onClose: () => void;
 }) {
-  const [path, setPath] = useState(start);
+  const [path, setPath] = useState(normPath(start));
   const [dirs, setDirs] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -84,14 +94,17 @@ function FolderPicker({
   const up = () => {
     const trimmed = path.replace(/\/+$/, "");
     const cut = trimmed.lastIndexOf("/");
-    setPath(cut > 0 ? trimmed.slice(0, cut) : "/");
+    if (cut < 0) return; // a bare drive letter has no parent to climb to
+    const parent = trimmed.slice(0, cut);
+    // A drive root keeps its slash ("C:/"), the POSIX root IS the slash.
+    setPath(/^[A-Za-z]:$/.test(parent) ? parent + "/" : parent || "/");
   };
 
   return (
     <div className="schedule-picker">
       <div className="schedule-picker-head">
         <button type="button" className="btn btn-secondary" onClick={up}
-                disabled={path === "/"} aria-label="Up one folder">‹</button>
+                disabled={PATH_ROOT.test(path)} aria-label="Up one folder">‹</button>
         <code title={path}>{path}</code>
       </div>
       <div className={"schedule-picker-list" + (loading ? " is-loading" : "")}>
@@ -199,7 +212,7 @@ export default function NewJobModal({
       (c) => {
         setHome(c.home);
         if (!editing) {
-          const fallback = c.home + DEFAULT_TARGET_SUFFIX;
+          const fallback = normPath(c.home) + DEFAULT_TARGET_SUFFIX;
           setTarget((prev) => (prev === "" ? fallback : prev));
           setInitial((prev) =>
             prev.target === "" ? { ...prev, target: fallback } : prev,
