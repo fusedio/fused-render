@@ -470,7 +470,14 @@ export default function NewJobModal({
               onChange={(e) => setTarget(e.target.value)}
             />
             {recentsOpen && (
-              <div className="schedule-recents">
+              // mousedown preventDefault: keep focus ON the input while a row
+              // is clicked. Safari never focuses <button> on click, so the
+              // blur handler's relatedTarget is null there and the list would
+              // unmount before its click fired (Bugbot, PR #541).
+              <div
+                className="schedule-recents"
+                onMouseDown={(e) => e.preventDefault()}
+              >
                 {recents.slice(0, RECENTS_SHOWN).map((p) => (
                   <button
                     key={p}
