@@ -197,3 +197,757 @@
   color: var(--error);
   border-color: currentColor;
 }
+
+/* -- Toolbar: view toggle + New job ------------------------------------------ */
+
+.schedule-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.schedule-toolbar .schedule-new {
+  margin-left: auto;
+}
+
+/* Segmented pair built from .btn-secondary: the active half gets the quiet
+   pressed look rather than a new component. Shared by the view toggle and the
+   New job form's Once / On a schedule choice. */
+.schedule-form-seg {
+  display: inline-flex;
+  gap: 0;
+}
+
+.schedule-form-seg .btn {
+  border-radius: 0;
+}
+
+.schedule-form-seg .btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.schedule-form-seg .btn:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+/* EVERY adjacent pair overlaps its shared border, not just the last — with
+   three buttons the last-child-only version left a double border between the
+   first two (Bugbot, PR #538). */
+.schedule-form-seg .btn + .btn {
+  margin-left: -1px;
+}
+
+.schedule-form-seg .btn.is-active {
+  background: var(--bg-alt);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--fg);
+  position: relative;
+  z-index: 1;
+}
+
+/* -- New job form -------------------------------------------------------------- */
+
+.schedule-form-row {
+  display: flex;
+  gap: 10px;
+}
+
+.schedule-form-row .field {
+  flex: 1;
+  min-width: 0;
+}
+
+.schedule-form-message {
+  resize: vertical;
+  min-height: 64px;
+}
+
+/* A hint that is refusing something (a past time), in the error voice. */
+.schedule-form-bad {
+  color: var(--error);
+}
+
+/* -- Week calendar --------------------------------------------------------------
+   The grid is one shared 8-column template (a fixed time gutter + 7 equal days)
+   used by BOTH the sticky day-header row and the scrollable body, so the columns
+   cannot drift out of line. Inside a day column everything is absolutely
+   positioned off the hour ruler: 1 hour = 44px (HOUR_H in ScheduleCalendar.tsx —
+   the two must move together). */
+
+.schedule-cal {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.schedule-cal-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.schedule-cal-nav {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* "August 2026" on the bar's right edge — controls on the left, where-you-are
+   on the right (Akshil, 2026-08-14). Body colour and a step larger than UI
+   text, because it is the page's orientation, not a control. */
+.schedule-cal-range {
+  margin-left: auto;
+  font-size: 16px;
+  color: var(--fg);
+}
+
+/* ‹ Today › read as REAL buttons — the borderless glyph version looked like
+   stray text. The chevrons only widen a touch for a decent hit target. */
+.schedule-cal-nav .btn {
+  min-width: 32px;
+  padding: 0 10px;
+}
+
+.schedule-cal-head {
+  display: grid;
+  grid-template-columns: 56px repeat(7, 1fr);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Google Calendar's day header, copied deliberately (Akshil, 2026-08-14):
+   tiny uppercase weekday over a large numeral, stacked and centred; today is
+   the numeral in a filled disc with the weekday taking the accent too. */
+.schedule-cal-day-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0 6px;
+  border-left: 1px solid transparent;
+}
+
+.schedule-cal-day-name {
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.schedule-cal-day-num {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--fg);
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+}
+
+.schedule-cal-day-head.is-today .schedule-cal-day-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.schedule-cal-day-head.is-today .schedule-cal-day-num {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 500;
+}
+
+.schedule-cal-scroll {
+  overflow-y: auto;
+  max-height: 560px;
+}
+
+.schedule-cal-grid {
+  display: grid;
+  grid-template-columns: 56px repeat(7, 1fr);
+  position: relative;
+}
+
+.schedule-cal-gutter {
+  position: relative;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.schedule-cal-hour {
+  position: absolute;
+  right: 8px;
+  transform: translateY(-50%);
+  background: var(--bg-alt);
+  padding: 0 2px;
+}
+
+.schedule-cal-col {
+  position: relative;
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  /* The hour ruler, painted rather than rendered: one hairline per 44px.
+     Hairlines and separators sit LIGHTER than the chrome border — Google's
+     grid recedes so the chips carry the page, and the first cut's full-weight
+     lines were half of what read as clutter. */
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 43px,
+    color-mix(in srgb, var(--border) 50%, transparent) 43px,
+    color-mix(in srgb, var(--border) 50%, transparent) 44px
+  );
+}
+
+.schedule-cal-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--error);
+  z-index: 5;
+  pointer-events: none;
+}
+
+.schedule-cal-now::before {
+  content: "";
+  position: absolute;
+  left: -4px;
+  top: -5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--error);
+}
+
+/* One run: a Google Calendar chip, copied deliberately (Akshil, 2026-08-14 —
+   the first cut's outlined boxes read as clutter). Solid accent fill, small
+   radius, dark text on the fill, one line of "what, then when". A button,
+   because it opens the popover — buttons get focus rings and Enter for free.
+
+   State is carried the way Google carries calendar colours — by the fill:
+   upcoming runs (projections included, exactly as Google draws future
+   recurrences) in the accent; already-ran in a quiet wash; the two failure
+   shapes in their colours. Past chips fade, like Google's. */
+.schedule-cal .schedule-cal-event {
+  position: absolute;
+  /* --lane is set inline per box; the z-index computed HERE rather than
+     inline is what lets the :hover rule below outrank it. */
+  z-index: calc(var(--lane, 0) + 1);
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+  height: 21px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: none;
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+  transition: filter 0.1s ease;
+}
+
+/* Emil's rule for a surface touched dozens of times a day: the hover is a
+   brightness nudge and a whisker of shadow, nothing moves. The z raise keeps
+   a chip readable over a same-slot neighbour the moment the pointer is on any
+   visible part of it.
+
+   The `button.` in the selector is load-bearing, not decoration: the settings
+   page ships `.prefs-section button:hover:not(:disabled)` at (0,3,1), which
+   outranked a (0,3,0) chip hover and repainted every hovered chip in the
+   grey button skin (QA 2026-08-14 — "the hover color is very bad"). The
+   element type lifts these to (0,4,1), and each tone restates its own fill so
+   nothing is left for the grey rule to win. */
+.schedule-cal button.schedule-cal-event:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event:focus-visible {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  filter: brightness(1.12);
+  box-shadow: 0 1px 4px var(--shadow-sm);
+  z-index: 8;
+}
+
+.schedule-cal button.schedule-cal-event--sent:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event--sent:focus-visible {
+  background: color-mix(in srgb, var(--success) 30%, var(--bg-alt));
+  color: var(--fg);
+}
+
+.schedule-cal button.schedule-cal-event--sending:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event--sending:focus-visible {
+  background: color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
+}
+
+.schedule-cal button.schedule-cal-event--missed:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event--missed:focus-visible {
+  background: color-mix(in srgb, var(--warning) 40%, var(--bg-alt));
+  color: var(--fg);
+}
+
+.schedule-cal button.schedule-cal-event--error:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event--error:focus-visible {
+  background: color-mix(in srgb, var(--error) 55%, var(--bg-alt));
+  color: var(--fg);
+}
+
+.schedule-cal button.schedule-cal-event--skipped:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event--skipped:focus-visible {
+  background: transparent;
+  color: var(--fg-muted);
+  filter: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedule-cal-event {
+    transition: none;
+  }
+}
+
+.schedule-cal .schedule-cal-event-text {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.schedule-cal .schedule-cal-event-time {
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* Already ran, ran fine: a quiet wash — the calendar's read is "that
+   happened", not a call to action. */
+.schedule-cal .schedule-cal-event--sent {
+  background: color-mix(in srgb, var(--success) 30%, var(--bg-alt));
+  color: var(--fg);
+}
+
+.schedule-cal .schedule-cal-event--sending {
+  background: color-mix(in srgb, var(--accent) 75%, var(--bg-alt));
+  color: var(--bg);
+}
+
+.schedule-cal .schedule-cal-event--missed {
+  background: color-mix(in srgb, var(--warning) 40%, var(--bg-alt));
+  color: var(--fg);
+}
+
+.schedule-cal .schedule-cal-event--error {
+  background: color-mix(in srgb, var(--error) 55%, var(--bg-alt));
+  color: var(--fg);
+}
+
+/* A skipped run stays ON the calendar, struck through — "this one was called
+   off, the schedule continues". Disappearing outright read as data loss. */
+.schedule-cal .schedule-cal-event--skipped {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-decoration: line-through;
+}
+
+/* The past recedes, exactly as Google fades what has already happened. */
+.schedule-cal .schedule-cal-event.is-past {
+  opacity: 0.55;
+}
+
+.schedule-cal .schedule-cal-event.is-past:hover,
+.schedule-cal .schedule-cal-event.is-past:focus-visible {
+  opacity: 0.8;
+}
+
+/* -- Details popover -------------------------------------------------------------
+   Reuses the card's inner vocabulary (.schedule-card-*) on a floating surface, so
+   a run reads the same whether met as a card or as a box on the grid. */
+
+.schedule-cal-popover {
+  position: fixed;
+  z-index: 1000;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  background: var(--bg-popover, var(--bg-alt));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 30px var(--shadow-sm);
+  /* One short settle from where the click happened — opened often enough that
+     anything slower than ~120ms would start to feel like waiting. */
+  transform-origin: top left;
+  animation: schedule-popover-in 0.12s ease-out;
+}
+
+@keyframes schedule-popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedule-cal-popover {
+    animation: none;
+  }
+}
+
+/* The prompt as the popover's headline: body colour, a step up, room to
+   wrap — scrolling only past a genuinely long prompt. */
+.schedule-pop-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 130px;
+  overflow-y: auto;
+}
+
+/* Icon-labelled fact rows, one per line — the Google event-card shape. The
+   icon column is fixed so the text edges align down the list. */
+.schedule-pop-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.schedule-pop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.schedule-pop-row svg {
+  flex: none;
+  transform: translateY(2px);
+  opacity: 0.75;
+}
+
+.schedule-pop-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Buttons with icons: the glyph sits on the text line with a small gap. */
+.schedule-card-actions .btn svg,
+.schedule-cal-popover .btn svg {
+  margin-right: 5px;
+  transform: translateY(2px);
+}
+
+/* The recurring rule's own pill (list view) and a projected run's (popover). */
+.schedule-state--recurring {
+  color: var(--accent-soft);
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+/* -- New task modal: Google Calendar's event card ------------------------------
+   A big borderless title, icon-led rows, everything else behind More options.
+   The title underlines on focus the way Google's does — the field reads as a
+   place to type, not a boxed form control. */
+
+.schedule-form-title {
+  font: inherit;
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 4px 2px 8px;
+  resize: none;
+  overflow-wrap: anywhere;
+}
+
+.schedule-form-title:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
+.schedule-form-title::placeholder {
+  color: var(--fg-muted);
+}
+
+/* One icon-led row: the icon column is fixed so rows align, like the popover's
+   fact rows — the modal and the popover describe the same object. */
+.schedule-form-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.schedule-form-line svg {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.schedule-form-line .field-control {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Sub-rows and hints hang from the row above them, indented past the icon
+   column (14px icon + 12px gap). */
+.schedule-form-line--sub,
+.schedule-form-sub {
+  margin-left: 26px;
+}
+
+.schedule-form-more summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.schedule-form-more summary:hover {
+  color: var(--fg);
+}
+
+.schedule-form-more[open] summary {
+  margin-bottom: 10px;
+}
+
+/* Reference-card refinements (Akshil, 2026-08-14, Google new-event screenshot):
+   thick accent bar under the title, quiet text-like controls that surface on
+   hover, a pill Save. */
+
+.schedule-form-title {
+  font-size: 24px;
+  border-bottom-width: 2px;
+}
+
+/* Controls stay VISIBLY controls. The first pass borrowed Google's
+   text-until-hovered treatment and it read as "not an input" (Akshil,
+   2026-08-14) — so the fields keep their box and only the focus ring takes
+   the accent. */
+.schedule-form .field-control:focus {
+  border-color: var(--accent);
+}
+
+/* "More options" as the reference card's text-button: accent, no chrome. */
+.schedule-form-more summary {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* -- Folder picker: a small in-modal directory browser ------------------- */
+
+.schedule-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.schedule-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.schedule-picker-head code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+/* Fixed height, not max-height: a panel that resizes to each folder's row
+   count makes the modal pump on every click. Scroll inside, never reflow out. */
+.schedule-picker-list {
+  height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-content: flex-start;
+  transition: opacity 0.1s ease;
+}
+
+/* Mid-navigation: the outgoing listing stays put, dimmed, until the next one
+   lands — steady geometry, visible progress. */
+.schedule-picker-list.is-loading {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .schedule-picker-list {
+    transition: none;
+  }
+}
+
+/* One folder row: full-width, quiet, hover surface — a listing, not a form. */
+.schedule-form .schedule-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.schedule-form .schedule-picker-row:hover {
+  background: var(--bg-alt);
+}
+
+.schedule-form .schedule-picker-row svg {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.schedule-picker-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.schedule-save {
+  border-radius: 999px;
+  padding: 0 22px;
+}
+
+/* The description hangs from a top-aligned icon (multi-line row), and grows
+   only by the user's hand. */
+.schedule-form-line--top {
+  align-items: flex-start;
+}
+
+.schedule-form-line--top svg {
+  margin-top: 9px;
+}
+
+.schedule-form-description {
+  resize: vertical;
+  min-height: 66px;
+}
+
+/* -- Board view: the Inbox board's shape over the scheduler's states ---------
+   Fixed-width columns, dot + count heads, compact cards — copied from
+   core_apps/sessions/inbox.html deliberately (Akshil, 2026-08-14), so a board
+   is a board wherever it appears. No drag here: these columns are the loop's
+   facts, not triage labels. */
+
+.schedule-board {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  overflow-x: auto;
+}
+
+.schedule-board-col {
+  width: 260px;
+  flex: none;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  max-height: 640px;
+}
+
+.schedule-board-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.schedule-board-count {
+  color: var(--fg-muted);
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.schedule-board-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+  background: var(--fg-muted);
+}
+
+.schedule-board-head--upcoming .schedule-board-dot { background: var(--accent); }
+.schedule-board-head--ran .schedule-board-dot { background: var(--success); }
+.schedule-board-head--attention .schedule-board-dot { background: var(--warning); }
+
+.schedule-board-cards {
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+/* A compact card, and a BUTTON (opens Edit / the Inbox). Doubled parent in the
+   selector for the usual reason: the settings page's `.prefs-section button`
+   skin out-specifies a single class. */
+.schedule-board .schedule-board-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  font: inherit;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.schedule-board .schedule-board-card:hover {
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
+}
+
+.schedule-board-card-name {
+  font-weight: 600;
+  font-size: 12px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.schedule-board-card-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+
+.schedule-board-card-time {
+  margin-left: auto;
+  white-space: nowrap;
+}

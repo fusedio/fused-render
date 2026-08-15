@@ -1770,6 +1770,81 @@
      --accent is a fill here, never text on its own tint. */
   .selpop-opt.on { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .selpop-opt.on:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+  /* ── the When pill's inline panels ("Pick a time…" and "Repeats…") ──
+     The two things a fixed vocabulary of presets cannot say: an exact instant,
+     and "every time". They are drawn BELOW the pill row and not inside it —
+     see the WHEN_OPTIONS note on why a datetime field was kept out of the row
+     in the first place. A whole row of its own, appearing only while one of the
+     two choices is selected, is the version of that field which does not stretch
+     the pills or re-flow the send button every time it shows up.
+     One panel at a time (renderWhenPanels), and none at all under "Send now",
+     so the composer's resting state is exactly what it was. */
+  .whenpanel {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+  /* Same story as .selpop: a `display` of our own outranks the UA's [hidden]. */
+  .whenpanel[hidden] { display: none; }
+  .whenpanel .lbl {
+    font-size: 12px;
+    line-height: 1;
+    color: var(--faint);
+    user-select: none;
+  }
+  /* NATIVE appearance, deliberately unlike .pill: a pill shows a value that is
+     already chosen, these are fields being filled in, and skinning a date field
+     into a caret-less capsule would hide the one affordance it has (its own
+     picker). Only the box around them is brought into the composer's palette. */
+  .whenfield {
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 3px 6px;
+    outline: none;
+  }
+  .whenfield:focus-visible { border-color: var(--border-strong); }
+  .whenfield[hidden] { display: none; }
+  /* A cron line is a payload, not prose (see .mono) — and `font: inherit` above
+     would have won on source order, so the family is restated here. */
+  .when-rep-cron {
+    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+    min-width: 130px;
+  }
+  /* The panel's own confirm. Bordered rather than filled: the composer already
+     has exactly one filled action (.send) and that is the one that commits. */
+  .whenok {
+    background-color: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    padding: 4px 10px;
+    cursor: pointer;
+    transition: background-color .12s, color .12s;
+  }
+  .whenok:hover:not(:disabled) { background-color: var(--surface-2); color: var(--fg); }
+  .whenok:disabled { opacity: .5; cursor: default; }
+  /* What will actually be sent, in the panel's own words: the resolved instant,
+     or the cron line the presets just built. Muted, because it is a receipt for
+     the fields above it and not a control. */
+  .whenhint {
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--faint);
+  }
+  .whenhint.bad { color: var(--error); }
+  .whenhint.cron { font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace; }
   .send {
     width: 32px;
     height: 32px;
@@ -2353,6 +2428,20 @@
     white-space: nowrap;
     flex: 1;
   }
+  /* The provenance tag on a row this chat did not start (source "cli"). Quiet
+     on purpose: it is a footnote about where a chat came from, not a category
+     the reader is meant to sort by — the rows are ONE list, which is the point
+     of merging them. Only those rows carry the span at all (addChatRow), so
+     there is no "template" styling for it to be consistent with. */
+  .chat-row .row-tag {
+    color: var(--faint);
+    font-size: 10.5px;
+    letter-spacing: .04em;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
 
   /* ── skeleton loading placeholders ── */
@@ -2645,6 +2734,11 @@
                 aria-label="More options" title="More options">⋮</button>
         <div id="kebabpop" role="menu" aria-label="More options" hidden>
           <button id="terminalopt" type="button" role="menuitem" class="kebab-opt"></button>
+          <!-- Scheduling moved HERE from a composer pill (Akshil, 2026-08-14):
+               planning a task is a step out of the conversation, and the menu
+               of ways out — the terminal above it — is where a step out
+               belongs. The composer keeps only what acts on THIS message. -->
+          <button id="schedopt" type="button" role="menuitem" class="kebab-opt">Schedule a task…</button>
         </div>
       </div>
       <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
@@ -2730,6 +2824,49 @@
               </svg>
             </button>
           </div>
+          <!-- The two When choices that need more than a label: an exact instant,
+               and a repeat rule. Hidden until the pill selects one of them
+               (renderWhenPanels), and duplicated on the home composer for the
+               same reason the pill is — a first message is exactly as schedulable
+               as a follow-up. No ids on the fields: the two copies are addressed
+               by class and kept value-for-value in step, like the pills. -->
+          <div class="whenpanel" data-when="at" hidden>
+            <span class="lbl">Send at</span>
+            <!-- No `min` attribute, though a past time is invalid here: `min`
+                 turns on native constraint validation, which silently blocks this
+                 form's submit BUTTON while leaving the Enter key (its own keydown
+                 handler, calling submitChat directly) untouched — two send paths
+                 disagreeing about whether a time is allowed, one of them with no
+                 message the user can act on. The past is rejected in JS instead,
+                 in the one place both paths pass through. -->
+            <input type="datetime-local" class="whenfield when-at"
+                   aria-label="Date and time to send this">
+            <button type="button" class="whenok when-at-ok"
+                    title="Check this time, then write your message">Use this time</button>
+            <span class="whenhint when-at-hint"></span>
+          </div>
+          <div class="whenpanel" data-when="repeat" hidden>
+            <span class="lbl">Repeat</span>
+            <select class="whenfield when-rep-preset" aria-label="How often this repeats">
+              <option value="hourly">Hourly</option>
+              <option value="daily" selected>Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="cron">Custom cron</option>
+            </select>
+            <!-- One field per question, shown only for the presets that ask it:
+                 hourly wants a minute past the hour, daily and weekly a time of
+                 day, weekly a weekday too, and Custom the line itself. The two
+                 long option lists are filled in JS (fillWhenPanelLists) rather
+                 than spelt out twice here. -->
+            <select class="whenfield when-rep-min" aria-label="Minutes past the hour" hidden></select>
+            <input type="time" class="whenfield when-rep-time" value="09:00"
+                   aria-label="Time of day">
+            <select class="whenfield when-rep-dow" aria-label="Day of the week" hidden></select>
+            <input type="text" class="whenfield when-rep-cron" placeholder="0 9 * * 1-5"
+                   spellcheck="false" data-gramm="false"
+                   aria-label="Cron line: minute hour day month weekday" hidden>
+            <span class="whenhint cron when-rep-hint"></span>
+          </div>
         </div>
       </div>
     </form>
@@ -2780,6 +2917,34 @@
                 <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/>
               </svg>
             </button>
+          </div>
+          <!-- The chat composer's copy carries the comments; this is the same
+               panel pair, because scheduling the FIRST message has to offer the
+               same two choices. -->
+          <div class="whenpanel" data-when="at" hidden>
+            <span class="lbl">Send at</span>
+            <input type="datetime-local" class="whenfield when-at"
+                   aria-label="Date and time to send this">
+            <button type="button" class="whenok when-at-ok"
+                    title="Check this time, then write your message">Use this time</button>
+            <span class="whenhint when-at-hint"></span>
+          </div>
+          <div class="whenpanel" data-when="repeat" hidden>
+            <span class="lbl">Repeat</span>
+            <select class="whenfield when-rep-preset" aria-label="How often this repeats">
+              <option value="hourly">Hourly</option>
+              <option value="daily" selected>Daily</option>
+              <option value="weekly">Weekly</option>
+              <option value="cron">Custom cron</option>
+            </select>
+            <select class="whenfield when-rep-min" aria-label="Minutes past the hour" hidden></select>
+            <input type="time" class="whenfield when-rep-time" value="09:00"
+                   aria-label="Time of day">
+            <select class="whenfield when-rep-dow" aria-label="Day of the week" hidden></select>
+            <input type="text" class="whenfield when-rep-cron" placeholder="0 9 * * 1-5"
+                   spellcheck="false" data-gramm="false"
+                   aria-label="Cron line: minute hour day month weekday" hidden>
+            <span class="whenhint cron when-rep-hint"></span>
           </div>
         </form>
         <!-- The two cross-session lists for this target, in ONE block: past
@@ -7462,18 +7627,29 @@ document.querySelectorAll(".perm-sel").forEach((el) =>
 // TO SAY. Everything a separate page would have to ask for again, this row
 // already has, so all it adds is the one word it was missing.
 //
-// PRESETS, not a date picker. The pill row is a fixed vocabulary — a
-// `datetime-local` field wedged between the pills would look like a different
-// app, and "later today / tomorrow morning" is what a scheduled prompt actually
-// wants. `/api/schedule` still takes an exact `due`, so nothing is lost for a
-// caller that needs 03:14.
+// PRESETS FIRST, and no date picker IN THE ROW. The pill row is a fixed
+// vocabulary — a `datetime-local` field wedged between the pills would look like
+// a different app, and "later today / tomorrow morning" is what a scheduled
+// prompt usually wants.
+//
+// The two things presets cannot say are 03:14 tomorrow and "every morning", and
+// both now have a choice of their own at the END of the list — "Pick a time…"
+// and "Repeats…", each revealing a panel BELOW the row (see .whenpanel) rather
+// than a field inside it. So the row keeps its shape, the common case is still
+// one click, and the exact/recurring cases stop being "use the API".
 //
 // Deliberately NOT persisted in `fused.params`, unlike the model/effort/approval
 // pills: those describe how this chat behaves and should outlive a reload, while
 // "send it at 6pm" is a property of ONE message. A scheduling choice that
 // survived its own send would silently defer the next thing the user typed.
 const WHEN_NOW = "now";
-const WHEN_OPTIONS = [WHEN_NOW, "5m", "1h", "3h", "evening", "tomorrow", "monday"];
+// The two panel-backed choices. Named constants because three places have to
+// agree about them: the option list, the `data-when` attribute on each panel,
+// and whenPlan's two special cases.
+const WHEN_AT = "at";
+const WHEN_REPEAT = "repeat";
+const WHEN_OPTIONS = [WHEN_NOW, "5m", "1h", "3h", "evening", "tomorrow", "monday",
+                      WHEN_AT, WHEN_REPEAT];
 const WHEN_LABELS = {
   [WHEN_NOW]: "Send now",
   // Short enough to watch happen, which makes it the one preset that is also how
@@ -7485,11 +7661,20 @@ const WHEN_LABELS = {
   "evening": "This evening",
   "tomorrow": "Tomorrow 9am",
   "monday": "Monday 9am",
+  // The ellipsis is the promise the other labels do not make: picking one of
+  // these asks a second question, in the panel it reveals, instead of being the
+  // whole answer on its own.
+  [WHEN_AT]: "Pick a time…",
+  [WHEN_REPEAT]: "Repeats…",
 };
 // Local wall-clock times, resolved at SEND time rather than when the pill was
 // touched — "tomorrow 9am" means tomorrow from the moment you commit to it.
 // Each returns a Date, or null when the preset has already gone by today (the
 // evening case), which the caller reports rather than silently shifting a day.
+//
+// WHEN_AT and WHEN_REPEAT are deliberately absent: a resolver's whole contract is
+// "a Date from nothing but the clock", and those two read fields (and one of them
+// produces no instant at all). They are whenPlan's two named cases instead.
 const WHEN_RESOLVERS = {
   "5m": () => new Date(Date.now() + 5 * 60e3),
   "1h": () => new Date(Date.now() + 3600e3),
@@ -7528,6 +7713,203 @@ function localDueString(d) {
 function whenChoice() {
   const el = document.querySelector(".when-sel");
   return el && WHEN_OPTIONS.includes(el.value) ? el.value : WHEN_NOW;
+}
+
+// ── the panels behind "Pick a time…" and "Repeats…" ──
+//
+// Both composers carry a copy of each panel (the pill is on both rows, so its
+// fields have to be too), and the two copies are kept identical the way the pills
+// are: READ THE FIRST, WRITE ALL. Only one composer is on screen at a time, so
+// "the first copy" and "the one in front of the user" are the same value — and a
+// time typed on home is still there if the send is refused and lands in the chat.
+const whenFieldValue = (cls) => {
+  const el = document.querySelector("." + cls);
+  return el ? el.value : "";
+};
+function whenFieldsSet(cls, value) {
+  document.querySelectorAll("." + cls).forEach((el) => { el.value = value; });
+}
+
+// The two long option lists, built once instead of spelt out twice in the markup.
+// The week starts on SUNDAY because cron's day-of-week does (0 = Sunday), so the
+// option order is the field's own numbering and no mapping is needed anywhere.
+const REP_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
+                  "Friday", "Saturday"];
+function fillWhenPanelLists() {
+  const add = (el, value, text) => {
+    const o = document.createElement("option");
+    o.value = String(value);
+    o.textContent = text;
+    el.appendChild(o);
+  };
+  // Fives, not every minute: a recurring job's minute is a choice about load and
+  // tidiness ("on the half hour"), and 60 rows to scroll is not that choice.
+  document.querySelectorAll(".when-rep-min").forEach((el) => {
+    for (let m = 0; m < 60; m += 5) add(el, m, `at :${String(m).padStart(2, "0")}`);
+  });
+  document.querySelectorAll(".when-rep-dow").forEach((el) => {
+    REP_DAYS.forEach((name, i) => add(el, i, name));
+    // Monday is the default day, though Sunday is 0: "every Sunday" is a stranger
+    // thing to offer first than the start of the working week.
+    el.value = "1";
+  });
+}
+fillWhenPanelLists();
+
+// The exact instant the "Pick a time…" panel currently names, or null.
+//
+// `new Date("YYYY-MM-DDTHH:mm")` — a datetime-local value, no zone — is parsed as
+// LOCAL time, which is the same reading the server gives the string when it goes
+// back out through localDueString. So the wall clock the user picked is the wall
+// clock that is stored, with no conversion at either end.
+function whenAtDate() {
+  const raw = whenFieldValue("when-at");
+  if (!raw) return null;
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// The 5-field cron line the repeat panel describes right now, or "" when the
+// fields do not make one yet.
+//
+// The panel stores no rule of its own — the fields ARE the rule, and this is the
+// one place that turns them into a line, so what the hint shows and what the POST
+// carries cannot drift apart.
+function repeatCron() {
+  const preset = whenFieldValue("when-rep-preset");
+  if (preset === "cron") return whenFieldValue("when-rep-cron").trim();
+  // "09" -> "9": leading zeros parse fine server-side, but a cron line nobody
+  // would type by hand reads as a bug in the line the panel shows you.
+  const n = (v) => String(parseInt(v, 10) || 0);
+  const time = whenFieldValue("when-rep-time");
+  if (preset !== "hourly" && !time) return "";   // a cleared time is not a rule
+  const [hh, mm] = time.split(":");
+  const hr = n(hh);
+  const min = preset === "hourly" ? n(whenFieldValue("when-rep-min")) : n(mm);
+  if (preset === "hourly") return `${min} * * * *`;
+  if (preset === "daily") return `${min} ${hr} * * *`;
+  const dow = n(whenFieldValue("when-rep-dow"));
+  return `${min} ${hr} * * ${dow}`;
+}
+
+// Why a line is not a cron line, or "" when it looks like one.
+//
+// A SHAPE CHECK, not a parser: fused_render/cron.py owns the grammar and answers
+// 400 naming the field it choked on, which the POST's error path already shows.
+// This exists so the two mistakes a text field invites — the wrong number of
+// fields, and a word where a number goes — are named under the field itself
+// instead of costing a round trip.
+function cronComplaint(expr) {
+  const parts = expr.split(/\s+/).filter(Boolean);
+  if (parts.length !== 5) {
+    return `expected 5 fields (minute hour day month weekday), got ${parts.length}`;
+  }
+  const bad = parts.find((p) => !/^[0-9*,\/-]+$/.test(p));
+  return bad ? `cannot read "${bad}"` : "";
+}
+
+// Show the panel the pill is asking for, hide the rest, and re-draw what the
+// visible one is currently promising. Called from syncSelects, which is the one
+// owner of pill state (see the note above scheduledPerm) — so every path that
+// changes the When value already comes through here.
+function renderWhenPanels() {
+  const choice = whenChoice();
+  document.querySelectorAll(".whenpanel").forEach((p) => {
+    p.hidden = p.dataset.when !== choice;
+  });
+
+  // "Pick a time…": the hint says which instant, and the confirm button is what
+  // refuses a past one. It has to be a refusal the user can SEE before sending,
+  // because the send button is shared with every other choice.
+  const at = whenAtDate();
+  const gone = !!at && at <= new Date();
+  document.querySelectorAll(".when-at-hint").forEach((el) => {
+    el.classList.toggle("bad", gone);
+    el.textContent = !at
+      ? "Pick a date and time, then send your message."
+      : gone
+        ? "That time has already gone by."
+        : `Sends ${at.toLocaleString()}.`;
+  });
+  document.querySelectorAll(".when-at-ok").forEach((el) => { el.disabled = !at || gone; });
+
+  // "Repeats…": each preset asks for different fields, and the hint under them is
+  // the generated line — the panel's presets are a way of WRITING cron, so the
+  // cron it wrote is shown rather than hidden, and a user who wants to tweak it
+  // can switch to Custom and see the same line waiting there.
+  const preset = whenFieldValue("when-rep-preset");
+  const shown = {
+    "when-rep-min": preset === "hourly",
+    "when-rep-time": preset === "daily" || preset === "weekly",
+    "when-rep-dow": preset === "weekly",
+    "when-rep-cron": preset === "cron",
+  };
+  for (const [cls, on] of Object.entries(shown)) {
+    document.querySelectorAll("." + cls).forEach((el) => { el.hidden = !on; });
+  }
+  const expr = repeatCron();
+  const bad = expr ? cronComplaint(expr) : "";
+  document.querySelectorAll(".when-rep-hint").forEach((el) => {
+    el.classList.toggle("bad", !!bad);
+    el.textContent = !expr ? "No rule yet." : bad ? bad : `runs ${expr}`;
+  });
+}
+
+// One listener for every field in both panels: mirror the value into the other
+// composer's copy (by the `when-…` class the two share) and re-draw. `input`
+// rather than `change` so the hint keeps up with typing in the cron field —
+// selects and date fields fire it too.
+document.querySelectorAll(".whenpanel .whenfield").forEach((el) => {
+  el.addEventListener("input", () => {
+    const cls = [...el.classList].find((c) => c.startsWith("when-"));
+    if (cls) whenFieldsSet(cls, el.value);
+    renderWhenPanels();
+  });
+});
+
+// The panel's confirm. It cannot SEND — the message may not be typed yet — so
+// what it confirms is the time: it is disabled while the value is empty or past
+// (the hint says which), and clicking it hands focus to the composer the panel
+// belongs to, which is the next thing that has to happen anyway.
+document.querySelectorAll(".when-at-ok").forEach((el) => {
+  el.addEventListener("click", () => {
+    renderWhenPanels();               // in case the clock moved past the value
+    if (el.disabled) return;
+    focusBox(el.closest("#card") ? homebox : box);
+  });
+});
+
+// What a deferred send should carry, decided from the choice and the panels:
+// `{ at, repeats }` for the wire, or `{ error }` for a note the user can act on.
+// One function so the two composers, and any later caller, cannot disagree about
+// what "Repeats…" with an empty cron field means.
+function whenPlan(choice) {
+  if (choice === WHEN_REPEAT) {
+    const expr = repeatCron();
+    if (!expr) return { error: "Fill in the repeat rule first — it is empty." };
+    const bad = cronComplaint(expr);
+    if (bad) return { error: `That repeat rule is not a cron line: ${bad}.` };
+    // No instant at all: the cron line says every time it means, and the server
+    // refuses a request that carries both (see the POST below).
+    return { at: null, repeats: expr };
+  }
+  if (choice === WHEN_AT) {
+    const at = whenAtDate();
+    if (!at) return { error: "Pick a date and time first, in the panel below." };
+    // Checked HERE and not with the field's own `min` attribute — see the markup
+    // for why native validation was left off — so the button path and the Enter
+    // path refuse the same times.
+    if (at <= new Date()) {
+      return { error: `${at.toLocaleString()} has already gone by — pick a later time.` };
+    }
+    return { at, repeats: "" };
+  }
+  const resolve = WHEN_RESOLVERS[choice];
+  const at = resolve ? resolve() : null;
+  if (!at) {
+    return { error: `${WHEN_LABELS[choice]} has already passed today — pick another time.` };
+  }
+  return { at, repeats: "" };
 }
 
 // The approvals mode a DEFERRED message will really run under, which is not always
@@ -7576,12 +7958,61 @@ function scheduledPerm(mode) {
 // outlive the message it was chosen for.
 function resetWhen() {
   document.querySelectorAll(".when-sel").forEach((el) => { el.value = WHEN_NOW; });
+  // The exact instant goes with it, for the same reason: it named ONE message, and
+  // a stale past time waiting in the panel is the next scheduled send refused for
+  // no visible reason. The REPEAT fields stay — a rule ("daily at 9am") is a shape
+  // that outlives the message, and the panel is hidden anyway until it is asked
+  // for again.
+  document.querySelectorAll(".when-at").forEach((el) => { el.value = ""; });
   // Through syncSelects, so the approvals pill is handed back to the user's own
   // mode and its options are re-enabled. Setting the value alone left the row
   // reading `auto` (with `prompt` still disabled) after a successful schedule,
   // while the next send-now would have used `prompt`.
   syncSelects();
 }
+
+// ── the Schedule button: hand this target to the Schedule page ──
+//
+// The pill's limit is that it defers ONE message, with no title, no
+// description, no repeat rule and no second thought. Everything past that is
+// the /scheduled page's form, and the only thing that page cannot know is the
+// one thing this template always knows: which folder. So the button carries
+// exactly that across, and nothing else — no message, no approvals mode, no
+// draft. Composing is the page's job; naming the subject is ours.
+//
+// `new=1` is what makes the hop feel like one control rather than two: it opens
+// the form immediately, so the click lands on a filled-in dialog instead of a
+// page with a button to press next. Scheduled.tsx consumes both params and
+// clears them (history.replaceState), so a reload of the resulting URL is just
+// the Schedule page.
+//
+// A TOP-WINDOW write, deliberately, and it is the same standard-break the
+// markdown/graph templates make for shell navigation (their `navigateShell`,
+// which this mirrors): the target is a shell ROUTE, not a param on this view
+// and not an fs path, and this page sets no param boundary — so fused.params
+// addresses the shell's query string but has nothing to say about its path.
+// pushState + "fused:navigate" is the in-app hop the React shell listens for
+// (platform/lib/router.ts navigateUrl does the same two lines); the href
+// assignment underneath is the fallback for a cross-origin or absent parent,
+// where reading `top.location.href` throws.
+const SCHEDULE_URL = "/scheduled";
+
+function openScheduler() {
+  const url = SCHEDULE_URL + "?new=1&target=" + encodeURIComponent(FILE);
+  try {
+    const host = window.top;
+    void host.location.href;   // throws when cross-origin
+    host.history.pushState(null, "", url);
+    host.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (err) { /* fall through to a real navigation */ }
+  try { window.top.location.href = url; } catch (err) { location.href = url; }
+}
+
+document.getElementById("schedopt").addEventListener("click", () => {
+  kebabClose();
+  openScheduler();
+});
 
 // An appearance:none select keeps the width of its WIDEST option, so a short
 // value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
@@ -7618,6 +8049,10 @@ function syncSelects() {
     el.value = deferred ? scheduledPerm(chosen) : chosen;
   });
   document.querySelectorAll(".model-sel, .effort-sel, .perm-sel, .when-sel").forEach(fitSelect);
+  // Two of the choices need a panel, and which one is showing is pill state like
+  // any other — so it is decided here rather than in a listener of its own, and
+  // every existing caller of syncSelects (resetWhen included) is right by default.
+  renderWhenPanels();
 }
 // The When pill keeps no params state (see WHEN_OPTIONS), so its only listener is
 // the width fit every pill needs, plus keeping the two composers' copies in step.
@@ -7628,8 +8063,18 @@ document.querySelectorAll(".when-sel").forEach((el) =>
       fitSelect(other);
     });
     // Picking a time can change which approvals mode actually applies, and
-    // syncSelects is what knows that — so the whole pill row is re-read.
+    // syncSelects is what knows that — so the whole pill row is re-read. It also
+    // reveals the panel for this choice, which is why the focus below can only
+    // happen after it.
     syncSelects();
+    // A panel that just appeared is where the next keystroke belongs: the pill
+    // asked a second question and the field is the answer. Through focusBox, like
+    // every other focus in this file, so previewing a file in the explorer's pane
+    // still does not steal focus from the listing.
+    const host = el.closest(".composer");
+    const panel = host && host.querySelector(`.whenpanel[data-when="${el.value}"]`);
+    const field = panel && !panel.hidden && panel.querySelector(".whenfield:not([hidden])");
+    if (field) focusBox(field);
   }));
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
@@ -10241,13 +10686,16 @@ let scheduling = false;
 // page, and by the time the message is sent the pane may show something else
 // entirely. A scheduled message is the words, and the pending notes stay pending.
 async function scheduleMessage(message, choice) {
-  const resolve = WHEN_RESOLVERS[choice];
-  const at = resolve ? resolve() : null;
-  if (!at) {
-    addNote(`${WHEN_LABELS[choice]} has already passed today — pick another time.`,
-            null, "◷");
+  // WHEN, in one step: a preset's resolved Date, the exact instant from the
+  // "Pick a time…" panel, or a cron line from the "Repeats…" one — and a reason
+  // when the choice cannot be turned into any of the three.
+  const plan = whenPlan(choice);
+  if (plan.error) {
+    addNote(plan.error, null, "◷");
     return false;
   }
+  const at = plan.at;              // null for a recurring job — the cron line is when
+  const repeats = plan.repeats;    // "" for a one-shot
   const perm = document.querySelector(".perm-sel");
   // The mode that will really run, not merely the one on screen — though while a
   // time is selected syncSelects keeps those the same thing, and this is the
@@ -10267,7 +10715,11 @@ async function scheduleMessage(message, choice) {
       body: JSON.stringify({
         target: FILE,
         message,
-        due: localDueString(at),
+        // EXACTLY ONE of the two ways to say when: a cron line already names every
+        // time it means, so the endpoint refuses a request carrying it alongside
+        // `due` (400). Spread rather than a `due: null`, which would be a request
+        // that half-means each.
+        ...(repeats ? { repeats } : { due: localDueString(at) }),
         session_id: session,
         // The approvals pill applies to the scheduled turn too — it is the same
         // question, and a message sent while nobody is watching is the case where
@@ -10284,7 +10736,17 @@ async function scheduleMessage(message, choice) {
     // one has to be disclosed (see scheduledPerm) — and where "it will act without
     // me" is worth reading even when nothing was substituted.
     const label = (PERMISSION_LABELS && PERMISSION_LABELS[mode]) || mode;
-    addNote(`Scheduled for ${at.toLocaleString()}`
+    // A recurring job has no single instant to name, so it is named by its rule —
+    // the cron line itself, which is what was sent and what the Inbox shows. The
+    // stored template's own `due` is the first occurrence the server worked out
+    // from that line, so the reader gets a date too, and can tell straight away
+    // whether the rule means what they thought it meant.
+    const stamp = repeats && data.entry && data.entry.due;
+    const first = stamp ? new Date(stamp).toLocaleString() : "";
+    const when = repeats
+      ? `— repeats: ${repeats}${first ? `, first on ${first}` : ""}`
+      : `for ${at.toLocaleString()}`;
+    addNote(`Scheduled ${when}`
             + `${session ? ", continuing this chat" : ""}, with approvals set to`
             + ` "${label}". It runs as long as fused-render is open, and appears`
             + ` here when it does — leave this open and you will see it happen.`,
@@ -10928,13 +11390,38 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
+// One row for one past chat, from EITHER store (agent.py `_sessions` merges
+// them and stamps `source`). There is deliberately no second row shape and no
+// second section: a chat about this folder is a chat about this folder, and
+// splitting the list by which surface started it would ask the reader to
+// remember something they have no reason to have kept.
+//
+// What the two do NOT share is the click, and only because they cannot: a
+// "cli" row is resumable when its transcript is in this cwd's project dir,
+// which is precisely where `_cli_sessions` found it — so the SAME `history`
+// read and the same `--resume` on the next send work on it untouched, and the
+// row needs no special case at all. See `_cli_sessions` for why that is true
+// rather than lucky.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
-  row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span><span class="row-sub"></span>';
+  row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
+                  '<span class="row-tag" hidden></span><span class="row-sub"></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
+  if (s.source === "cli") {
+    const tag = row.querySelector(".row-tag");
+    tag.hidden = false;
+    tag.textContent = "cli";
+    // The tag says three letters; the title says what they mean. All the
+    // sidecar can actually prove is that THIS chat did not start the session —
+    // a terminal run is the usual reason, a chat about a sibling file under the
+    // same cwd is the other one — so the wording claims only that. "here", not
+    // a noun, for the same reason the footnote says it: this sink derives no
+    // kind (setTargetNoun is the only writer that may name one).
+    tag.title = "Started outside this chat — a Claude Code session here";
+  }
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const open = async () => {
     fused.params.set("session_id", s.id);
