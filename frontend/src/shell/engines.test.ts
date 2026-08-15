@@ -77,7 +77,7 @@ describe("servingLine", () => {
 
   it("says so plainly when nothing serves the capability here", () => {
     const row = mac({ effective: null, effectiveLabel: null });
-    expect(servingLine(row)).toContain("Nothing on this machine");
+    expect(servingLine(row)).toContain("Not available");
   });
 });
 
@@ -90,16 +90,17 @@ describe("ignoredWarning", () => {
       .toBeNull();
   });
 
-  it("names the choice, the reason, and that the choice is KEPT", () => {
+  it("names the choice and the reason, in one sentence", () => {
     const warning = ignoredWarning(windows()) ?? "";
     expect(warning).toContain("MLX Whisper");
     // The registry's own sentence, passed through rather than reworded — the
     // page cannot know this and must not paraphrase it.
     expect(warning).toContain("needs Apple Silicon");
     expect(warning).toContain("windows/amd64");
-    // The half a user needs in order not to re-set it on the way back: a
-    // synced prefs.json is the reason this preference can be un-honourable.
-    expect(warning.toLowerCase()).toContain("kept");
+    // ONE sentence: this is a settings page, and the warning earns its place
+    // by being the only thing that contradicts the still-selected radio above
+    // it — not by explaining itself at length.
+    expect(warning.split(". ").length).toBe(1);
   });
 });
 
@@ -119,9 +120,13 @@ describe("choiceReason", () => {
     expect(reason).toBeTruthy();
   });
 
-  it("shows the note for an option that IS available", () => {
+  it("says nothing at all about an option that IS available", () => {
+    // The runner's note ("Transcribes on the GPU") is editorial and belongs on
+    // the AI Models page, where somebody is deciding what to download. Here it
+    // was one more sentence after every label on a settings page.
     const [mlx] = mac().choices;
-    expect(choiceReason(mlx)).toBe("Transcribes on the GPU.");
+    expect(mlx.note).toBeTruthy(); // the note exists…
+    expect(choiceReason(mlx)).toBeNull(); // …and this control does not use it
   });
 });
 

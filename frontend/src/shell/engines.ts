@@ -34,8 +34,8 @@ export function capabilityLabel(capability: string): string {
  *  choice you made; this line reports reality, and they are allowed to differ.
  */
 export function servingLine(row: CapabilityEngine): string {
-  if (!row.effective) return "Nothing on this machine can do this yet.";
-  return `Currently using ${row.effectiveLabel ?? row.effective}.`;
+  if (!row.effective) return "Not available on this machine.";
+  return `Using ${row.effectiveLabel ?? row.effective}.`;
 }
 
 /** Why the stored choice is not in force, or null when it is.
@@ -47,22 +47,31 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
   if (!row.ignoredReason) return null;
   const chosen = row.choices.find((c) => c.code === row.selected);
   const name = chosen?.label ?? row.selected;
-  // The choice is KEPT, and saying so matters: this is the machine that cannot
-  // honour it, not the end of it. A user who syncs prefs.json between a Mac and
-  // a Windows box should not have to set it again on the way back.
-  return `${name} is not being used here — ${row.ignoredReason}. The choice is kept for a machine that can run it.`;
+  // One sentence, and it survives the trim because it is the ONLY signal that
+  // a stored preference was dropped: the radio still shows the user's choice,
+  // so without this the page states something untrue. The reason is the
+  // registry's own and is passed through; what went is the second sentence
+  // about the choice being kept for another machine, which is reassurance
+  // rather than information — the radio being still selected says it.
+  return `${name} is not used here — ${row.ignoredReason}.`;
 }
 
-/** The tooltip/label suffix for one option. Null when there is nothing to add.
+/** Why one option cannot be picked — null when it can.
  *
  *  A disabled control with no explanation is the thing the greying-out rule
- *  exists to prevent, so an unavailable choice ALWAYS has a reason — the
- *  fallback exists because a null reason from the server would otherwise
- *  produce a silently dead radio.
+ *  exists to prevent, so an unavailable choice ALWAYS has a reason: the
+ *  fallback covers a null from the server, which would otherwise produce a
+ *  silently dead radio.
+ *
+ *  Deliberately says nothing about an AVAILABLE engine. It used to return the
+ *  runner's `note` — what using that backend is like — and the page rendered it
+ *  after every label; that is editorial copy on a settings page, and the note
+ *  still has a home on the AI Models page, where somebody is choosing what to
+ *  download and the sentence can change a decision.
  */
 export function choiceReason(choice: EngineChoice): string | null {
-  if (!choice.available) return choice.reason ?? "not available on this machine";
-  return choice.note;
+  if (choice.available) return null;
+  return choice.reason ?? "not available on this machine";
 }
 
 /** Whether picking `code` for `row` would change which backend actually runs.

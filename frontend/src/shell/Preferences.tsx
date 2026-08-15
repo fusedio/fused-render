@@ -444,11 +444,16 @@ function CapabilityEngineRow({
           onChange={() => choose(auto)}
         />
         <span>
-          <b>Automatic</b> — the best backend this machine can run.
+          <b>Automatic</b>
         </span>
       </label>
       {row.choices.map((choice) => {
-        const reason = choiceReason(choice);
+        // ONLY for a disabled option. A radio that cannot be clicked and says
+        // nothing about why is worse than the verbosity being cut here, and the
+        // sentence is the registry's — the page cannot know it. An available
+        // engine gets its name and nothing else: what it is LIKE ("transcribes
+        // on the GPU") is editorial, and this is a settings page.
+        const reason = choice.available ? null : choiceReason(choice);
         return (
           <label className="prefs-radio" key={choice.code}>
             <input
@@ -457,8 +462,7 @@ function CapabilityEngineRow({
               checked={row.selected === choice.code}
               // Unavailable backends are shown and not offered. Hidden, a user
               // on a Windows machine would have no way to learn that the MLX
-              // path exists and why it is not for them — and the reason is the
-              // registry's own sentence, which is the only place it is known.
+              // path exists and why it is not for them.
               disabled={busy || !choice.available}
               onChange={() => choose(choice.code)}
             />
@@ -471,19 +475,12 @@ function CapabilityEngineRow({
       })}
       <div className="deploy-muted">{servingLine(row)}</div>
       {warning && <div className="deploy-muted">{warning}</div>}
-      {changed && (
-        // Two consequences a user will otherwise meet as surprises, said once
-        // at the moment they are caused rather than left to be discovered: the
-        // resident model for this capability has just been unloaded (one
-        // capability holds one, and it belonged to the other backend), and the
-        // AI Models page now suggests different repos, because a suggestion is
-        // only meaningful for the backend that will load it.
-        <div className="deploy-muted">
-          Switched. Any model loaded for this was unloaded — it belonged to the
-          other backend — and the models suggested on the AI Models page have
-          changed to ones this engine can load.
-        </div>
-      )}
+      {/* The consequence, in four words. It stays because an unload is a real
+          thing that just happened to the user's machine and nothing else on
+          screen would report it — but the paragraph explaining WHY the model
+          was unloaded and how suggestion lists work was an essay after a radio
+          click. */}
+      {changed && <div className="deploy-muted">Switched. Loaded model unloaded.</div>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );
@@ -493,12 +490,15 @@ function EnginesPanel({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
   return (
     <section className="prefs-section">
       <h2>Inference engines</h2>
+      {/* One line. An earlier draft explained which backend wins on which
+          platform and what a switch costs; a settings page states what a
+          control does, and the rest is an essay the reader did not open this
+          tab for. What survives is only what cannot be inferred from the
+          controls themselves — that the choice is per capability, and what
+          Automatic means. */}
       <p className="deploy-muted">
-        Which backend runs local models for each kind of work. Some capabilities have more
-        than one — speech to text runs on Metal through MLX on Apple Silicon and on
-        CTranslate2 everywhere else — and <b>Automatic</b> picks the one this machine runs
-        best. Choosing a specific engine changes which models are suggested for it, and
-        unloads whatever is currently loaded for that capability.
+        Which backend runs local models. <b>Automatic</b> picks the best one this machine
+        can run.
       </p>
       {prefs.engines.capabilities.map((row) => (
         <CapabilityEngineRow
