@@ -1,0 +1,45 @@
+# The MLX transcription runner's environment (SPEC §40, PY-16).
+#
+# The Apple Silicon half of speech to text. `faster_whisper/` beside this one
+# serves every platform on CTranslate2, which has no Metal backend — so a Mac
+# transcribes on its CPU cores there and on its GPU here. Both folders exist
+# because neither dependency set belongs in the other's interpreter, let alone
+# in fused-render's: `mlx-whisper` is Metal-only and would not even install on
+# the Windows wheel.
+#
+# `envinstall` (PY-18) builds this on first use with the same detached
+# `uv sync`, progress record and verbatim errors any declaring folder gets.
+#
+# **No system ffmpeg**, and here that costs a dependency rather than coming
+# free. The rule is the one `faster_whisper/pyproject.toml` states: this app
+# bundles rclone, not ffmpeg, so a runner that shells out works on the machine
+# it was written on and fails on a user's with a subprocess error nobody can
+# act on. faster-whisper decodes through PyAV and so gets this for nothing;
+# `mlx_whisper.transcribe(path)` instead calls openai-whisper's `load_audio()`,
+# which SPAWNS `ffmpeg`. So this runner never hands it a path — `worker.py`
+# decodes with `av` itself and passes the waveform — and `av` is named here
+# rather than left to arrive as somebody else's transitive dependency.
+#
+# What each earns:
+#   mlx-whisper     the model and the decoder, on Metal. Pulls mlx and
+#                   huggingface_hub in itself; both are named where they are
+#                   load-bearing rather than assumed.
+#   huggingface_hub downloads
+#   psutil          the RSS half of "how much memory is this costing" — the
+#                   MLX half comes from mlx's own allocator (see `memory()`)
+#   av              the ffmpeg LIBRARIES, in-process, with no binary to find.
+#                   The reason `worker.py` never calls `subprocess`.
+[project]
+name = "fused-render-runner-mlx-whisper"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-whisper",
+    "huggingface_hub",
+    "psutil",
+    "av",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
