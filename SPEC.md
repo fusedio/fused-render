@@ -6456,6 +6456,35 @@ an AI Models page that could say what was on disk but not what was *running*.
   windows over a 198-second file. What that verification did NOT cover is
   transcription quality, the container formats users will point at it, and the
   behaviour of a recording long enough to matter.
+- **AI-10f** **`vad` means the same thing on both whisper engines** (D303).
+  `fused.ai.transcribe` has always taken the flag, and until now the two
+  runners answered it differently: faster-whisper runs a Silero VAD filter and
+  drops the silence, while the MLX runner could only map it onto mlx-whisper's
+  per-window `no_speech_threshold`. Same API, same argument, two behaviours —
+  which is the one thing AI-10c says a second runner may not be. The MLX runner
+  now runs Silero itself, from the ONNX export on `onnxruntime`: **not**
+  faster-whisper's copy (that would drag `ctranslate2` into a Metal-only venv,
+  defeating the folder split) and **not** the PyTorch one (gigabytes for a 2MB
+  model). The repo is ungated, which the download rule requires of everything
+  this app fetches and not only of models a user picks. **Silence is dropped and
+  each speech region is transcribed on its own**, with every timestamp mapped
+  back to original-recording time. That is chunking, which AI-10c rejects for
+  progress — and the difference is where the cut falls: a VAD boundary is by
+  construction half a second of silence, where a sentence has already ended,
+  whereas a fixed offset cuts through one. What is still lost is conditioning
+  ACROSS a gap (`condition_on_previous_text` works inside one call), and
+  carrying the previous region's text in as a prompt was rejected rather than
+  forgotten: it invites the model to continue a sentence that finished before
+  the pause, which is the known route to a repetition loop. **Progress stays in
+  seconds of the ORIGINAL recording**: the borrowed frame counter denominates
+  whatever waveform the library was handed, so once silence is removed it
+  counts seconds of SPEECH, and reporting that against a total of the whole file
+  would be two units in one bar — a 90-minute recording with 30 minutes of
+  silence finishing at 60/90 and stopping. The counter is mapped through the
+  same region table the timestamps are. **A detector that cannot be fetched
+  degrades to transcribing everything**, saying so on the row and in the log,
+  rather than failing a transcription that works without it — but it is fetched
+  during Download precisely so an offline machine still has it.
 - **AI-10e** **Which engine serves a capability is a user preference, and an
   unusable one is IGNORED rather than obeyed** (D301). Runner selection was
   implicit — first-match-wins over registry order, filtered by availability —

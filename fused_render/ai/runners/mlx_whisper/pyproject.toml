@@ -29,6 +29,12 @@
 #                   MLX half comes from mlx's own allocator (see `memory()`)
 #   av              the ffmpeg LIBRARIES, in-process, with no binary to find.
 #                   The reason `worker.py` never calls `subprocess`.
+#   onnxruntime     runs Silero VAD (`vad.py`), so `vad: true` means the same
+#                   thing here as it does on the CTranslate2 runner. Chosen
+#                   over the two alternatives that already contain this exact
+#                   model: importing faster-whisper's copy would drag
+#                   ctranslate2 into a Metal-only venv, and the PyTorch one
+#                   would cost gigabytes for a 2MB detector.
 [project]
 name = "fused-render-runner-mlx-whisper"
 version = "0.1.0"
@@ -38,6 +44,7 @@ dependencies = [
     "huggingface_hub",
     "psutil",
     "av",
+    "onnxruntime",
 ]
 
 # Not a distribution — a folder of scripts, not something to build and install.

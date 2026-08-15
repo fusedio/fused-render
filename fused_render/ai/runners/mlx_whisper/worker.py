@@ -18,6 +18,11 @@ being a library rather than a streaming decoder:
   waveform is what `transcribe()` is given. The library takes an ndarray on the
   same argument, which is what makes this a one-line difference rather than a
   fork.
+* **`vad: true` runs a real speech detector**, as it does on the CT2 runner —
+  Silero over ONNX Runtime (`vad.py`), on the waveform `av` already produced.
+  The silence is dropped, each speech region is transcribed on its own, and
+  every timestamp is mapped back to original-recording time. The cut is always
+  at a boundary the detector found in silence, never at a fixed offset.
 * **`transcribe()` is ONE blocking call, not a generator.** faster-whisper hands
   back a stream and progress falls out of consuming it. Here the whole
   transcript arrives at once, so the per-segment tick that carries progress AND
@@ -51,6 +56,13 @@ import time
 
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# …and THIS folder, for `vad`. Python already puts a script's own directory on
+# the path, so in production this line changes nothing — but the supervisor is
+# not the only thing that loads this file: the tests import it by path, where
+# sys.path[0] is whatever the test runner's is, and a sibling module that
+# resolves only under one of the two loaders is a test suite exercising a
+# different import than the one that ships.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
@@ -65,8 +77,29 @@ _loaded = {}
 
 
 def download(model_id):
-    """A Whisper repo is an ordinary multi-file snapshot — nothing clever."""
-    return worker_base.download_snapshot(model_id)
+    """The Whisper snapshot, and the 2MB speech detector beside it.
+
+    The detector is fetched HERE rather than lazily on the first transcription,
+    for the reason `diffusers_image/worker.py` gives about its GGUF recipe: a
+    "Download" that leaves a cache which cannot work offline has not done the
+    thing the button said it would. `vad` defaults to true, so a user who
+    downloads a model on wifi and transcribes on a train would otherwise find
+    the feature quietly degraded at exactly the wrong moment.
+
+    Best-effort, and deliberately so: the detector is an optimisation over a
+    transcription that works without it (see `_speech_regions`), so a Hub
+    hiccup while fetching 2MB must not fail an 8GB model download that has
+    already succeeded.
+    """
+    snapshot = worker_base.download_snapshot(model_id)
+    try:
+        import vad as vad_module
+
+        vad_module.model_path(worker_base.download_file)
+    except Exception as error:  # noqa: BLE001 - see the docstring
+        print(f"could not pre-fetch the speech detector: "
+              f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
+    return snapshot
 
 
 #: What an MLX conversion always has and neither of the other two Whisper
@@ -480,11 +513,14 @@ class _watch_progress:
 
     Two ways to keep the promise, and this is the cheaper one:
 
-    * **Chunk the audio here** and call `transcribe()` per chunk. Rejected: the
-      library's own window seeking is what makes Whisper accurate across a
-      boundary (it re-seeks to the last timestamp rather than cutting at a fixed
-      offset, and conditions each window on the previous text), so hand-rolled
-      chunking trades transcript quality for a progress bar. Wrong trade.
+    * **Chunk the audio here** and call `transcribe()` per chunk. Rejected as a
+      way of getting PROGRESS: the library's own window seeking is what makes
+      Whisper accurate across a boundary (it re-seeks to the last timestamp
+      rather than cutting at a fixed offset, and conditions each window on the
+      previous text), so chunking at arbitrary offsets trades transcript
+      quality for a progress bar. (The VAD path does cut the audio — but only
+      at boundaries the detector found IN SILENCE, where there is no sentence
+      to cut through. Different cut, different trade; see `_transcribe_regions`.)
     * **Read the counter the library already keeps.** `transcribe()` runs its
       window loop inside `tqdm.tqdm(total=content_frames, unit="frames")` and
       calls `update()` with each window it finishes. That is exactly the number
@@ -545,8 +581,21 @@ class _watch_progress:
         return False
 
 
-def _seconds_done(position):
-    """Where the decoder has got to, in seconds of audio — or None.
+def _seconds_done(position, offset=0.0, limit=None):
+    """Where the decoder has got to, in **seconds of the ORIGINAL recording**.
+
+    `offset` is where the clip being transcribed starts in that recording, and
+    `limit` is where it ends. Both exist because of the VAD: once silence is
+    dropped, the borrowed counter denominates seconds of SPEECH, and reporting
+    that against a `total` of the whole recording would be two different units
+    in one progress bar — a 90-minute file with 30 minutes of silence would
+    finish at 60/90 and stop. Mapping the counter back through the region is
+    what keeps `done`/`total` meaning what SPEC AI-10a says they mean.
+
+    `limit` clamps rather than trusting the counter: mlx-whisper's bar counts
+    the mel frames of a padded clip, so the last window of a region can report
+    a fraction of a second past its end, and a bar that overshoots into the
+    silence it skipped is a bar that can exceed its own total.
 
     None rather than 0 when there is no counter to read: a `done` of 0 is a
     claim that nothing has been transcribed, and `worker_base`/the job manager
@@ -554,7 +603,184 @@ def _seconds_done(position):
     """
     if not position.get("available"):
         return None
-    return round(position.get("frames", 0) / _FRAMES_PER_SECOND, 2)
+    done = offset + position.get("frames", 0) / _FRAMES_PER_SECOND
+    if limit is not None:
+        done = min(done, limit)
+    return round(done, 2)
+
+
+# ------------------------------------------------------------------------- VAD
+
+
+def _speech_regions(audio, total, job, row):
+    """Where the speech is, or `None` when the whole file should be decoded.
+
+    Returns a list of `(start, end)` in seconds. `None` — not an empty list —
+    means "do not filter", and the two are deliberately different answers:
+    an empty list is the detector saying there is no speech in this recording,
+    while None is this function saying it could not ask.
+
+    **A detector that cannot be fetched degrades to no filtering rather than
+    failing the transcription.** The trade is stated rather than assumed: the
+    VAD is an optimisation and a small quality nudge, and mlx-whisper still has
+    its own per-window `no_speech_threshold` underneath — so without Silero a
+    user gets a correct transcript that took longer, which is a much better
+    outcome than a feature that stops working offline. It is NOT silent: the
+    reason goes to the row the user is watching and to the worker log, because
+    a `vad: true` that quietly did nothing is exactly the kind of difference
+    between two engines this runner exists to eliminate.
+    """
+    import vad as vad_module
+
+    try:
+        sess = _loaded.get("vad")
+        if sess is None:
+            sess = vad_module.session(
+                vad_module.model_path(worker_base.download_file))
+            _loaded["vad"] = sess
+        worker_base.report(job=job, **row, state="running", done=0, total=total,
+                           detail="Finding speech…")
+        return vad_module.speech_regions(audio, sess)
+    except Exception as error:  # noqa: BLE001 - a missing detector must not cost the transcript
+        print(f"speech detection unavailable, transcribing the whole file: "
+              f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
+        worker_base.report(
+            job=job, **row, state="running", done=0, total=total,
+            detail="Speech detection unavailable — transcribing everything…")
+        return None
+
+
+def _regions_to_decode(audio, regions, total):
+    """The clips to transcribe, as `(start, end)` in original-recording time.
+
+    One region spanning everything is what "no VAD" looks like, and that is the
+    point of the shape: the filtered and unfiltered paths are ONE loop, so the
+    timestamp remap, the progress mapping and the cancel behaviour cannot drift
+    between them. `vad: false` is not a different code path, it is a region
+    list of length one.
+
+    A recording the detector finds NO speech in also decodes whole. Reporting
+    an empty transcript for a file nobody looked at would be the confident
+    version of a wrong answer — the detector is tuned for speech, not for
+    whispering, singing or a bad microphone, and Whisper's own no-speech
+    handling is the better final word.
+    """
+    if not regions:
+        return [(0.0, total)]
+    return list(regions)
+
+
+def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
+                        job, row, total, transcribing_since):
+    """Transcribe each clip and return `(segments, language)` in ORIGINAL time.
+
+    **The cut is at a VAD boundary, never at a fixed offset**, and that is what
+    makes this loop acceptable where the chunking `_watch_progress` rejects is
+    not. Whisper's accuracy across a boundary comes from re-seeking to the last
+    timestamp and conditioning each window on the previous text; cutting mid
+    sentence throws both away. A VAD boundary is by construction a stretch of
+    silence at least `MIN_SILENCE_S` long, which is where a sentence has already
+    ended.
+
+    **What is still lost is conditioning ACROSS the gap.** `condition_on_
+    previous_text` operates inside one `transcribe()` call, so region two starts
+    with no memory of region one — a proper noun established before a pause can
+    be spelled differently after it. Carrying the previous region's tail in as
+    `initial_prompt` was considered and NOT done: it invites the model to
+    continue a sentence that finished before the silence, which is the known way
+    to trigger a repetition loop, and it would make each region's output depend
+    on the previous region's errors. A caller's own `initial_prompt` goes to
+    EVERY region instead, since it is context about the recording as a whole
+    (names, jargon) rather than about a position in it.
+
+    **The language is detected once and then pinned.** With `language=None` each
+    call would detect independently, so a quiet region could come back as a
+    different language and the transcript would change tongue halfway down. The
+    first region's answer is used for the rest, which is also faster: detection
+    is a decode of its own.
+    """
+    module = _transcribe_module()
+    segments = []
+    detected = language
+
+    for index, (start, end) in enumerate(clips):
+        last = index == len(clips) - 1
+        clip = audio if (start, end) == (0.0, total) else _slice(audio, start, end)
+        if len(clip) < SAMPLE_RATE // 10:
+            # Under a tenth of a second. Whisper pads anything shorter than its
+            # 30s window anyway, so this is all padding and no signal — and a
+            # clip of a few hundred samples is where the decoder hallucinates a
+            # sentence out of nothing.
+            continue
+        position = {}
+
+        def progress(offset=start, limit=end):
+            done = _seconds_done(position, offset=offset, limit=limit)
+            if done is None:
+                # No counter to read (see `_watch_progress`). Honest
+                # indeterminate ticking rather than an invented percentage —
+                # the tick is here to be answered, not to move a bar.
+                return None, None, "Transcribing…"
+            elapsed = time.time() - transcribing_since
+            return done, total, "Transcribing — %s of %s%s" % (
+                _clock(done), _clock(total) if total else "?",
+                _eta(total - done if total else None, elapsed, done))
+
+        # A ✕ landing while a call RETURNS is not honoured for THAT call — its
+        # transcript is complete and that decoding is spent, exactly as
+        # `faster_whisper/worker.py` guards on its last segment. Whether it is
+        # honoured for the RUN depends on what is left: see below.
+        late_cancel = {}
+        with _watch_progress(position):
+            result = _call_with_ticks(
+                lambda: module.transcribe(
+                    clip, path_or_hf_repo=fetched, task=task, language=detected,
+                    initial_prompt=initial_prompt, verbose=False),
+                job, row, progress, cancelled=late_cancel)
+
+        detected = detected or result.get("language")
+        for segment in (result.get("segments") or []):
+            # The library's segments carry tokens, logprobs and temperatures
+            # too; only these three are published, because these three are the
+            # CT2 runner's shape and a page must not have to know which one ran.
+            #
+            # `+ start` is the remap: timestamps come back relative to the CLIP,
+            # and every consumer — the .json file, a caption track, a page
+            # seeking a player — reads them as positions in the FILE. Getting
+            # this wrong is silent: a transcript that looks perfect and whose
+            # every timestamp after the first gap is early.
+            segments.append({
+                "start": round(float(segment.get("start") or 0.0) + start, 2),
+                # Clamped to the region, because Whisper times against a padded
+                # 30s window and the last segment of a short clip can end past
+                # it — which would place speech inside the silence that was
+                # removed, and could reorder it against the next region.
+                "end": round(min(float(segment.get("end") or 0.0) + start, end), 2),
+                "text": str(segment.get("text") or "").strip(),
+            })
+        if late_cancel.get("late"):
+            # The rule the CT2 runner states: a cancel is worth honouring
+            # exactly while there is work left to stop. On the LAST clip there
+            # is none — the transcript is finished, and discarding it would be
+            # "an hour of decoding thrown away at 99%". On any earlier clip
+            # there are minutes of decoding still to come, so the ✕ stands, and
+            # it must: keeping the first region of five and writing it out
+            # would present a fifth of a transcript as a whole one, which is
+            # the worse of the two failures by a distance.
+            if not last:
+                raise worker_base.Cancelled()
+            break
+
+    return segments, detected
+
+
+def _slice(audio, start, end):
+    """One clip's samples. Only ever called for a REGION — the unfiltered path
+    passes the whole waveform through untouched — which is why importing the
+    detector's module here costs nothing on a machine that has no detector."""
+    import vad as vad_module
+
+    return vad_module.slice_samples(audio, (start, end), SAMPLE_RATE)
 
 
 # --------------------------------------------------------------- transcription
@@ -626,63 +852,21 @@ def generate(body):
     # read as wildly slower than it is.
     transcribing_since = time.time()
 
-    position = {}
+    # PHASE TWO — find the speech. Skipped entirely when the caller said not to,
+    # which is what `vad: false` now means: no Silero, and mlx-whisper's own
+    # per-window `no_speech_threshold` left at its default. That is closer to
+    # faster-whisper's `vad_filter=False` than the previous mapping (which
+    # disabled the threshold as a stand-in for a filter this runner did not
+    # have) — the two engines now mean the same thing by the same flag.
+    regions = _speech_regions(audio, total, job, row) if vad else None
+    clips = _regions_to_decode(audio, regions, total)
 
-    def progress():
-        done = _seconds_done(position)
-        if done is None:
-            # No counter to read (see `_watch_progress`). Honest indeterminate
-            # ticking rather than an invented percentage — the tick is here to
-            # be answered, not to move a bar.
-            return None, None, "Transcribing…"
-        elapsed = time.time() - transcribing_since
-        return done, total, "Transcribing — %s of %s%s" % (
-            _clock(done), _clock(total) if total else "?",
-            _eta(total - done if total else None, elapsed, done))
+    # PHASE THREE — transcribe each clip, ticked from here and watched from
+    # inside, with every timestamp mapped back to original-recording time.
+    segments, language = _transcribe_regions(
+        audio, clips, fetched, task, language, initial_prompt,
+        job, row, total, transcribing_since)
 
-    module = _transcribe_module()
-    # PHASE TWO — one blocking call, ticked from here and watched from inside.
-    #
-    # `verbose=False` is load-bearing twice over: it silences the transcript
-    # that `verbose=True` prints into the worker log, and it is what makes the
-    # library construct the progress bar `_watch_progress` borrows at all.
-    #
-    # `no_speech_threshold` is how `vad` is honoured. mlx-whisper has no
-    # separate VAD filter to switch off — silence handling is this threshold,
-    # applied per window — so `vad: false` becomes None (decode every window,
-    # including the silent ones) and the default is the library's own 0.6.
-    # Mapping it is the honest reading of the flag; accepting it and ignoring it
-    # would answer a request that was made.
-    #
-    # A ✕ landing while this call RETURNS is not honoured: the transcript is
-    # complete, the decoding is spent, and there is nothing left to stop —
-    # exactly the case `faster_whisper/worker.py` guards on its last segment.
-    # The files are written below as if no cancel had happened, because from
-    # the user's side that is the truth: the work finished. `_call_with_ticks`
-    # reports the flag rather than acting on it precisely so the two phases can
-    # answer this question differently. The flag is collected and deliberately
-    # not read: passing the dict is what turns the raise into a return, and
-    # there is nothing further to decide once it has.
-    late_cancel = {}
-    with _watch_progress(position):
-        result = _call_with_ticks(
-            lambda: module.transcribe(
-                audio, path_or_hf_repo=fetched, task=task, language=language,
-                initial_prompt=initial_prompt, verbose=False,
-                **({} if vad else {"no_speech_threshold": None})),
-            job, row, progress, cancelled=late_cancel)
-
-    segments = [
-        {
-            "start": round(float(segment.get("start") or 0.0), 2),
-            "end": round(float(segment.get("end") or 0.0), 2),
-            "text": str(segment.get("text") or "").strip(),
-        }
-        # The library's segments carry tokens, logprobs and temperatures too;
-        # only these three are published, because these three are the CT2
-        # runner's shape and a page must not have to know which one ran.
-        for segment in (result.get("segments") or [])
-    ]
     text = " ".join(s["text"] for s in segments).strip()
     payload = {
         "path": source,
@@ -690,7 +874,7 @@ def generate(body):
         "outputText": out_text,
         "model": body.get("model") or "",
         "task": task,
-        "language": result.get("language"),
+        "language": language,
         "duration": total,
         "seconds": round(time.time() - started, 2),
         "segments": segments,

@@ -192,7 +192,7 @@ Everything else worth knowing:
 - **Progress is `unit: "s"` — seconds of audio.** Not bytes (that is a download) and not steps (that is an image). `job.done` is the last decoded segment's end timestamp, `job.total` the audio duration, and the manager renders the pair as a clock (`12:00 / 1:30:00`).
 - `task`: `"transcribe"` (same language) or `"translate"` (into English). Anything else is a **400 naming both**, never a silent default.
 - `language` omitted means **auto-detect**, which is Whisper's own default. Pass one only if you know it.
-- `vad` (default `true`) skips silence. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — that is not an off-by-one to work around.
+- `vad` (default `true`) runs a Silero speech detector and skips the silence — the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — that is not an off-by-one to work around. Timestamps are always positions in the original file, never in the filtered audio.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
 - Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, or an unknown `task`).
 

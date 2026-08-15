@@ -797,24 +797,185 @@ def test_an_absent_language_means_auto_detect_not_an_empty_code(loaded, tmp_path
     assert transcribe.calls[0]["language"] is None
 
 
-def test_vad_false_is_HONOURED_as_the_no_speech_threshold(loaded, tmp_path):
-    """mlx-whisper has no separate VAD filter to switch off — silence handling
-    IS `no_speech_threshold`, applied per window. So the flag maps onto it
-    rather than being accepted and ignored, which would answer a request the
-    caller made with silence."""
-    worker, transcribe = loaded(windows=(100,))
-    worker.generate(_request(tmp_path, vad=False))
-    assert transcribe.calls[0]["no_speech_threshold"] is None
+def test_vad_false_means_the_DETECTOR_IS_NOT_RUN(monkeypatch, loaded, tmp_path):
+    """The flag now means what it means on the CT2 runner: run Silero, or do not.
 
+    It used to map onto mlx-whisper's per-window `no_speech_threshold`, which
+    was the closest thing available before this runner had a real filter — and
+    which left that threshold DISABLED on the false branch, something
+    `vad_filter=False` does not do over there. Both engines now answer the same
+    flag the same way, and neither touches the threshold.
+    """
+    asked = []
     worker, transcribe = loaded(windows=(100,))
-    worker.generate(_request(tmp_path, vad=True))
+    monkeypatch.setattr(worker, "_speech_regions",
+                        lambda *a, **k: asked.append(True) or [])
+
+    worker.generate(_request(tmp_path, vad=False))
+    assert asked == [], "the detector ran for a caller who said not to"
     assert "no_speech_threshold" not in transcribe.calls[0]
 
     # An explicit JSON null is "not specified", never False — the inversion the
-    # CT2 runner shipped once.
-    worker, transcribe = loaded(windows=(100,))
-    worker.generate(_request(tmp_path, vad=None))
-    assert "no_speech_threshold" not in transcribe.calls[0]
+    # CT2 runner shipped once. It means the default, which is ON.
+    worker.generate(_request(tmp_path, vad=None, out=str(tmp_path / "b.json"),
+                             outText=str(tmp_path / "b.txt")))
+    assert asked == [True]
+
+
+# -- the VAD filter, and what it does to time ------------------------------------
+#
+# The detector itself is `tests/test_ai_mlx_whisper_vad.py`'s. What is driven
+# here is the WIRING: how many calls the regions produce, where their timestamps
+# land, what the progress bar is denominated in, and what a cancel means once
+# there is more than one call to cancel between.
+
+
+def _regions(monkeypatch, worker, found):
+    """Stand in for the detector, with no onnxruntime and no model file."""
+    monkeypatch.setattr(worker, "_speech_regions", lambda *a, **k: list(found))
+
+
+def test_each_speech_region_is_transcribed_SEPARATELY(monkeypatch, loaded, tmp_path):
+    """Cutting at a VAD boundary is cutting in silence, which is where a
+    sentence has already ended — unlike the fixed-offset chunking this runner
+    refuses, which cuts through one."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=30.0)
+    _regions(monkeypatch, worker, [(0.0, 5.0), (20.0, 25.0)])
+
+    worker.generate(_request(tmp_path))
+
+    assert len(transcribe.calls) == 2
+    # Each call got ITS region's samples, not the whole recording.
+    assert [len(c["audio"]) for c in transcribe.calls] == [5 * 16000, 5 * 16000]
+
+
+def test_timestamps_are_mapped_back_to_ORIGINAL_recording_time(
+        monkeypatch, loaded, tmp_path):
+    """The silent failure this remap exists to prevent: a transcript that looks
+    perfect and whose every timestamp after the first gap is early. The library
+    times each clip from zero; every consumer reads the numbers as positions in
+    the FILE."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
+                                segments=[_segment(0.0, 2.0, "hello")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [
+        (0.0, 2.0), (30.0, 32.0)]
+
+
+def test_a_segment_running_past_its_region_is_CLAMPED(monkeypatch, loaded, tmp_path):
+    """Whisper times against a padded 30-second window, so the last segment of
+    a short clip can end past the clip. Unclamped it would place speech inside
+    the silence that was removed — and could overlap the next region, putting
+    the transcript out of order."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
+                                segments=[_segment(0.0, 29.0, "hello")])
+    _regions(monkeypatch, worker, [(10.0, 12.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert written["segments"][0]["end"] == 12.0
+
+
+def test_progress_is_seconds_of_the_ORIGINAL_audio_not_of_the_speech(
+        monkeypatch, loaded, base, tmp_path):
+    """The contract SPEC AI-10a and `runtime.js` both state, and the thing
+    filtering silence would quietly redefine.
+
+    The borrowed counter denominates seconds of whatever waveform was handed to
+    the library — once the silence is dropped, that is seconds of SPEECH. Left
+    alone, a 40-second recording with 30 seconds of silence would report
+    `done` climbing to 10 against a `total` of 40 and stop there: a bar that
+    can never finish, in a unit that is not the one the page was promised.
+    """
+    worker, transcribe = loaded(windows=(500,), seconds_per_window=0.1,
+                                audio_seconds=40.0)
+    # Five seconds of speech at the very end of a 40-second file.
+    _regions(monkeypatch, worker, [(35.0, 40.0)])
+
+    worker.generate(_request(tmp_path))
+
+    progress = [t for t in base.ticks if t.get("done")]
+    assert progress, "no progress was reported at all"
+    # Every position sits INSIDE the region, in original-recording time —
+    # never at 5s, which is where the speech-only counter would have put it.
+    assert all(35.0 <= t["done"] <= 40.0 for t in progress), progress
+    assert {t["total"] for t in progress} == {40.0}
+
+
+def test_a_recording_the_detector_finds_no_speech_in_is_still_transcribed(
+        monkeypatch, loaded, tmp_path):
+    """Reporting an empty transcript for a file nobody looked at is the
+    confident version of a wrong answer. The detector is tuned for speech, not
+    for whispering, singing or a bad microphone, and Whisper's own no-speech
+    handling is the better final word."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=12.0)
+    _regions(monkeypatch, worker, [])
+
+    worker.generate(_request(tmp_path))
+
+    assert len(transcribe.calls) == 1
+    assert len(transcribe.calls[0]["audio"]) == 12 * 16000
+
+
+def test_a_missing_DETECTOR_degrades_to_transcribing_everything_and_says_so(
+        monkeypatch, loaded, base, tmp_path, capsys):
+    """A `vad: true` that quietly did nothing is exactly the two-engines-one-flag
+    difference this runner exists to remove — but failing the transcription
+    outright would be worse: the VAD is an optimisation over a run that works
+    without it, and this is what an offline machine with no cached detector
+    looks like. So it degrades, and it says so on the row the user is watching.
+    """
+    worker, transcribe = loaded(windows=(100,), audio_seconds=8.0)
+    # Forced rather than left to the environment: onnxruntime is absent from
+    # the test venv today, so this path is taken for free — but the day
+    # somebody installs it for another reason, a test relying on that would
+    # start reaching for a 2MB download instead of asserting anything.
+    import vad as vad_module
+
+    monkeypatch.setattr(vad_module, "session",
+                        lambda path: (_ for _ in ()).throw(RuntimeError("no runtime")))
+    monkeypatch.setattr(vad_module, "model_path", lambda download: "/nowhere.onnx")
+
+    worker.generate(_request(tmp_path))
+
+    assert len(transcribe.calls) == 1, "it should have transcribed the whole file"
+    said = [t for t in base.ticks
+            if "unavailable" in str(t.get("detail"))]
+    assert said, "the degradation was silent"
+    assert "speech detection unavailable" in capsys.readouterr().err.lower()
+
+
+def test_a_cancel_between_REGIONS_is_honoured_and_writes_nothing(
+        monkeypatch, loaded, base, tmp_path):
+    """Keeping the first region of five and writing it out would present a
+    fifth of a transcript as a whole one. A cancel is worth honouring exactly
+    while there is work left to stop, and between regions there is."""
+    worker, transcribe = loaded(windows=(500,), seconds_per_window=0.15,
+                                audio_seconds=60.0,
+                                segments=[_segment(0.0, 1.0, "one")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (10.0, 15.0), (20.0, 25.0)])
+    request = _request(tmp_path)
+
+    real_report = base.report_or_cancel
+
+    def slow_tick(job=None, **fields):
+        if "Transcribing" in str(fields.get("detail") or ""):
+            assert transcribe.done.wait(5)
+            base.cancel_on_tick = len(base.ticks) + 1
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(base, "report_or_cancel", slow_tick)
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(request)
+    assert not os.path.exists(request["out"])
 
 
 def test_the_library_is_told_to_be_QUIET_and_to_keep_its_bar(loaded, tmp_path):
