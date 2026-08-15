@@ -1,4 +1,4 @@
-// What the Inference engines tab SAYS, separated from what it draws (D298).
+// What the Inference engines tab SAYS, separated from what it draws (D296).
 //
 // The rendering is four lines of JSX; the sentences are where this feature can
 // actually be wrong, and they are wrong in ways a screenshot does not reveal —

@@ -6253,9 +6253,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   choice is the point of the bullet: mlx-whisper would be quicker on Apple
   Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
   app whose local AI is something most users read about is not the app this is
-  meant to be. An `mlx_whisper` runner may be added later ABOVE this one — the
-  registry's first-match-wins ordering (AI-2) exists for exactly that, and this
-  would be the first capability to use it. Both Whisper directions ship:
+  meant to be. An `mlx_whisper` runner **has since been added ABOVE this one**
+  (AI-10c, D296) — the registry's first-match-wins ordering (AI-2) existed for
+  exactly that — so a Mac transcribes on Metal and every other platform still
+  arrives here. Both Whisper directions ship:
   `task: "transcribe"` (same language) and `task: "translate"` (into English)
   are one flag to the model, so omitting either would only buy a second change
   later — but the value is **named, never silently defaulted**, since
@@ -6385,6 +6386,73 @@ an AI Models page that could say what was on disk but not what was *running*.
   that PyAV opens the container formats users will point at it. A first real
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
+- **AI-10c** **Apple Silicon transcribes on the GPU: an `mlx_whisper` runner
+  ABOVE the CTranslate2 one, indistinguishable to a page** (D296). AI-10 chose
+  CTranslate2 so the capability would exist everywhere and said an MLX runner
+  could be added later above it; this is that addition, and it is the first use
+  AI-2's ordering has had for a capability that already worked. Macs take MLX;
+  Windows, Linux and Intel macOS are untouched, which is the property that had
+  to hold. **The result dict, the two output files, the job row and the
+  seconds-of-audio progress are identical**, because `fused.ai.transcribe` is
+  about audio and not about backends — a page must not be able to tell which
+  ran. Three things cost work to keep that promise. **The audio is decoded in
+  this process**: `mlx_whisper.transcribe(path)` calls openai-whisper's
+  `load_audio()`, which spawns `ffmpeg` — the binary this app deliberately does
+  not ship — so the runner decodes with `av` to 16 kHz mono float32 and passes
+  the WAVEFORM, which the library accepts on the same argument. This is the same
+  rule AI-10 states, at the one place where following it is not free.
+  **Progress is borrowed rather than invented**: `transcribe()` is one blocking
+  call, so there is no per-segment tick to carry `done` — and reporting nothing
+  would freeze a bar that AI-10a and `runtime.js` promise moves in seconds of
+  audio. Chunking the audio here was rejected (whisper's own window seeking is
+  what keeps it accurate across a boundary, so hand-rolled chunks trade
+  transcript quality for a progress bar); instead the library's internal frame
+  counter is read by swapping the `tqdm` binding in its module for the duration
+  of the call. That is a reach into another package's internals and is treated
+  as one — guarded, restored on every path, and degrading to honest
+  indeterminate ticks rather than a made-up percentage if a future version
+  stops keeping a bar. It is coarser than faster-whisper's (one update per
+  decoded window, up to 30s of audio) and never ahead of reality. It also makes
+  the ✕ better than the CT2 runner's: the hook sits inside the decode loop, so
+  an abandoned transcription raises at the next window instead of running the
+  file to its end. **Memory is MLX's own accounting**, not RSS — Metal's
+  unified buffers are real and RSS cannot see them (AI-8a's argument, and the
+  reason a resident model would otherwise be priced at nothing).
+- **AI-10d** **The MLX runner has never transcribed real audio under test
+  either, and its dependency on a library INTERNAL is the part to watch.**
+  AI-10b's caveat applies unchanged — no CI can run Metal — with one addition
+  specific to this runner: the progress hook depends on `mlx_whisper.transcribe`
+  keeping a module-level `tqdm` binding, which is not part of its API. Both
+  branches are tested (borrowed, and absent), and the contract was verified by
+  hand against mlx-whisper 0.4.3 on an Apple Silicon machine: an `av` decode of
+  a real recording fed straight into `transcribe`, whose counter reported seven
+  windows over a 198-second file. What that verification did NOT cover is
+  transcription quality, the container formats users will point at it, and the
+  behaviour of a recording long enough to matter.
+- **AI-10e** **Which engine serves a capability is a user preference, and an
+  unusable one is IGNORED rather than obeyed** (D296). Runner selection was
+  implicit — first-match-wins over registry order, filtered by availability —
+  which was a complete answer while the order was decided by hardware. With two
+  capabilities carrying two runners each, `prefs.json` gains `engines`:
+  capability → `"auto"` (the default, and the absence of a key, meaning exactly
+  the previous behaviour) or a runner code. `registry.resolve()` honours it, and
+  every consumer goes through that one call, so the supervisor, the catalog and
+  the API cannot disagree about which backend is in play. **A preference naming
+  a runner that cannot run HERE is dropped and the ordering decides**, with the
+  reason carried out for the page to show. That asymmetry is the design rather
+  than a safety net: prefs.json is a plain file in a home directory people sync,
+  copy and restore, so a preference set on a Mac must not arrive on a Windows
+  machine and take speech to text away — a preference that quietly does nothing
+  is recoverable, a capability that has silently vanished is a bug report. The
+  stored value is never corrected on read either, because a choice the user can
+  neither see nor restore is worse than one that is not in force today. Three
+  consequences are surfaced rather than left to be discovered: changing an
+  engine EVICTS that capability's resident model (one capability holds one, and
+  it belongs to the backend that loaded it), the AI Models suggestions change
+  with it (a suggestion is only meaningful for the backend that will load it,
+  AI-11a/D293), and the runner rows in `fused.ai.models.list()` now carry
+  `active` beside `available` — the same answer until a preference could sit
+  between them, and different the moment one can.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).

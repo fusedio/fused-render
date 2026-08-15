@@ -431,7 +431,7 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
         monkeypatch):
     """The ordering the table was built for, finally used by a second capability.
 
-    Apple Silicon transcribed on its CPU cores until D298 because CTranslate2
+    Apple Silicon transcribed on its CPU cores until D296 because CTranslate2
     has no Metal backend. The MLX row sits ABOVE the CT2 one, so a Mac takes it
     and no other platform loses anything — which is the property that had to
     hold before this could ship, since speech to text was deliberately the first
@@ -451,7 +451,7 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
             f"{system}/{machine} lost speech to text")
 
 
-# -- the engine preference (D298) ------------------------------------------------
+# -- the engine preference (D296) ------------------------------------------------
 #
 # `prefs.engine_for_capability` is patched rather than a prefs.json written,
 # because what is under test here is the RESOLUTION — which preference wins,
@@ -1317,7 +1317,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "mlx-text", "transformers-text", "diffusers-image", "faster-whisper",
         "mlx-whisper"}
     assert body["loaded"] == []
-    # Exactly one runner per capability is ACTIVE — the distinction D298 needed,
+    # Exactly one runner per capability is ACTIVE — the distinction D296 needed,
     # since with a preference in the middle "available" stopped meaning "this is
     # what serves me". A capability nothing can serve here has no active runner,
     # which is why this counts rather than requiring one.

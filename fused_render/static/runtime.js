@@ -47,6 +47,15 @@
  *     fires with the download-manager record, whose done/total are SECONDS OF
  *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
  *     `output` and its `url` outlive the tab.
+ *     Which engine transcribes depends on the machine and on the user's
+ *     preference (SPEC AI-10e) — MLX on Apple Silicon, CTranslate2 elsewhere —
+ *     and the reply is the same shape either way, so a page never has to ask.
+ *     The one thing that does differ is the RESOLUTION of that progress: the
+ *     MLX runner reports once per decoded window (up to 30s of audio) rather
+ *     than per segment, so `done` can sit still and then jump. It is always a
+ *     real position in the recording and never ahead of one. The MODEL is not
+ *     interchangeable between them — each engine loads its own format — so pick
+ *     a repo from fused.ai.models.catalog() rather than hardcoding one.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the

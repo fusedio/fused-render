@@ -1129,7 +1129,7 @@ export interface Prefs {
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
-  // Which local-model backend serves each capability (D298). A DIFFERENT thing
+  // Which local-model backend serves each capability (D296). A DIFFERENT thing
   // from `engine` above, however similar the word: that one is /api/run's
   // executor, this one is the inference runner behind fused.ai's local models.
   engines: EnginesPrefs;
@@ -2206,7 +2206,7 @@ export interface AiRunner {
   /** Why not, in words — "needs Apple Silicon…". Null when it is available. */
   reason: string | null;
   /** Whether this is the runner the capability is ACTUALLY using — which since
-   *  D298 is a different question from `available`. Two whisper runners are
+   *  D296 is a different question from `available`. Two whisper runners are
    *  available on an Apple Silicon machine and exactly one is active; a reader
    *  that only sees availability cannot say which engine served it. False for
    *  every runner of a capability nothing can serve. */

@@ -1059,7 +1059,7 @@ def evict_stale_engines() -> list[str]:
     """Unload any resident model whose capability now resolves to a DIFFERENT
     runner. Returns the models that were stopped.
 
-    Called when an engine preference changes (D298). One capability holds one
+    Called when an engine preference changes (D296). One capability holds one
     resident model (see the module docstring), and that model belongs to the
     backend that loaded it — a Whisper model resident in the CTranslate2 worker
     is not usable by the MLX one, they hold different formats and different

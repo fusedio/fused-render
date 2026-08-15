@@ -196,21 +196,23 @@ Everything else worth knowing:
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
 - Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, or an unknown `task`).
 
-**The model must be a CTranslate2 conversion.** `openai/whisper-large-v3` is the repo everyone reaches for and it will **not** load — the runner reads CTranslate2's `model.bin`, not transformers' safetensors, and the format is not in the task label so the AI Models page offers a Load button anyway. The load error names the cause and a repo that works. Defaults and suggestions (`deepdml/faster-whisper-large-v3-turbo-ct2`, `Systran/faster-whisper-medium`, `Systran/faster-whisper-small`) come from `fused.ai.models.catalog()`.
+**Take the model from `fused.ai.models.catalog()`, never from memory.** Whisper repos come in three mutually unloadable formats — CTranslate2 (`model.bin`), MLX (`weights.npz`), transformers (`model.safetensors`) — and which one loads depends on the engine serving this machine, not on the model being "the good one". `openai/whisper-large-v3` is the repo everyone reaches for and loads under **none** of the runners that ship, and because the format is not in the task label the AI Models page offers a Load button anyway. The load error names the format you have, the format that runner needs, and a repo that works. `catalog()` already answers per engine, so it is the only source that cannot be wrong: on Apple Silicon it offers `mlx-community/whisper-large-v3-turbo` and friends, elsewhere `deepdml/faster-whisper-large-v3-turbo-ct2` and friends.
+
+Progress resolution differs slightly by engine — the MLX runner reports once per decoded window (up to 30s of audio) rather than per segment, so `job.done` can sit still and then jump. It is always a real position in the recording. Everything else about the call is identical.
 
 ## What Actually Runs Locally Today
 
-Three runners ship. All take **Hugging Face repo ids**, and each needs its own machine support:
+Four runners ship, serving three capabilities. All take **Hugging Face repo ids**, and each needs its own machine support:
 
-| Capability | Runner | Reality |
+| Capability | Runners (best first) | Reality |
 |---|---|---|
-| `text-generation` | MLX | **Apple Silicon only.** Elsewhere: `unavailable` with the reason. |
+| `text-generation` | MLX, then Transformers (PyTorch) | **Everywhere.** MLX on Apple Silicon; torch on Windows, Linux, and as the Apple Silicon fallback. A CPU-only machine answers slowly but answers. |
 | `text-to-image` | Diffusers (PyTorch) | Broader, but heavy. |
-| `automatic-speech-recognition` | faster-whisper (CTranslate2) | **Everywhere** — macOS on both architectures, Linux, Windows. CPU is fine; the repo must be a CTranslate2 conversion. |
+| `automatic-speech-recognition` | MLX Whisper, then faster-whisper (CTranslate2) | **Everywhere.** MLX (on the GPU) for Apple Silicon; CTranslate2 for macOS on both architectures, Linux and Windows, where CPU is fine. |
 
 Those three strings are the capability vocabulary — they are what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
-So on a non-Mac, `fused.ai` without a slash (the Claude CLI) is the only text path — but transcription works there, which text generation and (in practice) image generation do not. Never hard-code the assumption — ask `fused.ai.models.list()` and let `unavailable` messages reach the user, since they explain *why*.
+**Which runner serves you is not purely a hardware fact.** Where a capability has two, the machine picks the better one by default — and the user can override that from Preferences → Inference engines, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is this the one serving the capability right now). Read `active` when you want to say what is running; read `available` when you want to say what this machine could do. Never hard-code either — and let `unavailable` messages reach the user, since they explain *why*.
 
 ## Surviving Export
 
@@ -243,9 +245,10 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Sending `temperature`/`history`/`raw` to the Claude path** → 400, by design. Branch on the destination, or only set them for a slashed model.
 - **`unload(selectedId)`** → often unloads nothing; use `{capability}`.
 - **Awaiting `models.load()` as if it returned a model** → it returns `{jobId}`.
-- **Assuming local text works everywhere** → MLX is Apple Silicon only. (Transcription *is* everywhere — don't gate it on the same check.)
+- **Assuming a capability's runner from the platform** → both text generation and transcription have two runners, and a user preference can pick either. Ask `fused.ai.models.list()` and read `active`.
 - **Expecting `transcribe` to hand back the words from the job** → the row only says when; the text is read off `output` from disk.
-- **Loading `openai/whisper-large-v3`** → not a CTranslate2 conversion, so it will not load however willingly the page offers the button.
+- **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads, however willingly the page offers the button. Take the id from `catalog()`.
+- **Carrying a Whisper repo id between machines** → the CT2 and MLX runners load different files; a repo that works on one engine is an unusable download on the other.
 - **Reading transcription progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
 - **Not disabling the submit button** → no stale-cancel; a double-click fires two calls.

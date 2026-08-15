@@ -42,7 +42,7 @@ will load it (`catalog.py`), and an MLX checkpoint on a Windows machine is a
 download that cannot be used.
 
 **A user can override that order, and the override is a REQUEST rather than an
-instruction** (D298). `resolve()` reads a per-capability preference — "auto", or
+instruction** (D296). `resolve()` reads a per-capability preference — "auto", or
 a runner code — from `shell/prefs.py`, and a named runner wins only if it can
 actually run here. An honoured preference is the whole story; an override naming
 a runner this machine cannot run is IGNORED and the ordering above decides, with
@@ -382,7 +382,7 @@ def preferred_code(capability: str) -> str:
 
 
 def _first_available(capability: str) -> Runner | None:
-    """Registry order, filtered by availability — the rule before D298, and
+    """Registry order, filtered by availability — the rule before D296, and
     still the rule whenever a preference is absent or unusable."""
     for runner in _RUNNERS:
         if runner.capability == capability and runner.available().ok:
@@ -500,7 +500,7 @@ def describe() -> list[dict]:
     not when it does not.
 
     **`available` and `active` are different questions, and they only became
-    different with D298.** Availability is a fact about the hardware: can this
+    different with D296.** Availability is a fact about the hardware: can this
     backend run at all. Active is a fact about this capability right now: is
     this the backend a load would use. They were the same answer while
     resolution was purely first-available — the first available runner was the
