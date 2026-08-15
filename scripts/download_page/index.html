@@ -414,17 +414,14 @@
      the guide stacks them — number chip inline-left, one step per row. */
   .guide .steps { grid-template-columns: 1fr; gap: 16px; }
   .guide .steps li {
-    max-width: 68ch;
     display: flex;
     align-items: baseline;
     gap: 14px;
   }
   .guide .steps li::before { margin-bottom: 0; flex: none; }
-  .guide .steps li > span { min-width: 0; }
-  .guide-shot {
-    margin: 26px 0 0;
-    max-width: 760px;
-  }
+  .guide .steps li > div { min-width: 0; flex: 1; }
+  .guide .steps .guide-shot { margin-top: 16px; }
+  .guide-shot { margin: 26px 0 0; }
   .guide-shot img {
     border: 1px solid var(--border);
     border-radius: 10px;
@@ -439,7 +436,7 @@
   .trouble-sec { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
   .trouble-sec h2 { margin: 0 0 6px; }
   .trouble-sec > p { color: var(--muted); margin: 0 0 26px; max-width: 62ch; }
-  .guide .steps code, .trouble code {
+  .guide .steps code, .tfix code {
     background: var(--code-bg);
     border: 1px solid var(--border);
     border-radius: 5px;
@@ -457,30 +454,58 @@
     line-height: 1.5;
     color: var(--text);
     margin: 14px 0 0;
-    max-width: 560px;
   }
   @media (max-width: 640px) {
     .guide pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   }
-  /* Troubleshooting: the exact error text users see, then the fix. */
-  .trouble { display: grid; gap: 14px; padding: 0; margin: 0; }
-  .trouble li {
-    list-style: none;
+  /* Troubleshooting: master–detail. Left, the exact error texts users see;
+     right, what the selected one means and how to clear it. */
+  .trouble-split {
+    display: grid;
+    grid-template-columns: minmax(260px, 380px) minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+  }
+  .trouble-list { display: grid; gap: 8px; align-content: start; }
+  .terr {
+    appearance: none;
+    text-align: left;
+    font: 600 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 10px;
-    background: var(--panel);
-    padding: 14px 16px;
-    font-size: 14.5px;
-    color: var(--muted);
-    max-width: 72ch;
+    padding: 13px 15px;
+    cursor: pointer;
+    transition: color 0.15s ease-out, border-color 0.15s ease-out;
   }
-  .trouble .err {
-    display: block;
-    font: 600 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  .terr:hover { color: var(--text); }
+  .terr.active {
     color: var(--text);
-    margin-bottom: 6px;
+    border-color: rgba(229, 255, 68, 0.45);
+    background: var(--accent-dim);
   }
-  .trouble b { color: var(--text); }
+  .trouble-detail {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 22px 24px;
+  }
+  .tfix { display: none; }
+  .tfix.active { display: block; }
+  .tfix h3 {
+    font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    margin: 22px 0 8px;
+  }
+  .tfix h3:first-child { margin-top: 0; }
+  .tfix p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .tfix p + p { margin-top: 8px; }
+  @media (max-width: 760px) {
+    .trouble-split { grid-template-columns: 1fr; }
+  }
 
   footer {
     text-align: center;
@@ -669,59 +694,92 @@
 
     <div class="gdl active" data-guide="claude">
     <ol class="steps">
-      <li><span><b>Install it.</b> Open Terminal and run the command below, or
-      <code>npm install -g @anthropic-ai/claude-code</code> if you prefer npm.</span></li>
-      <li><span><b>Log in.</b> Run <code>claude</code>, then type <code>/login</code>
-      and follow the browser prompt. A Claude.ai account works.</span></li>
-      <li><span><b>Test it.</b> Still inside <code>claude</code>, say
-      <code>hi</code>. A reply means you're ready.</span></li>
+      <li><div><b>Install it.</b> Open Terminal and run the command below, or
+      <code>npm install -g @anthropic-ai/claude-code</code> if you prefer npm.
+      <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre></div></li>
+      <li><div><b>Log in.</b> Run <code>claude</code>, then type <code>/login</code>
+      and follow the browser prompt. A Claude.ai account works.</div></li>
+      <li><div><b>Test it.</b> Still inside <code>claude</code>, say
+      <code>hi</code>. A reply means you're ready.</div></li>
     </ol>
-    <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
     </div>
 
     <div class="gdl" data-guide="app">
     <ol class="steps">
-      <li><span><b>Download the DMG</b> — the <a href="#downloads">Download for
+      <li><div><b>Download the DMG</b> — the <a href="#downloads">Download for
       macOS</a> button above grabs it directly. On the GitHub releases page
       instead? Scroll to <b>Assets</b> on the latest release and click
-      <code>FusedRender-&lt;version&gt;.dmg</code>.</span></li>
-      <li><span><b>Open it and drag</b> the Fused Render icon into the Applications
-      folder in the window that appears.</span></li>
-      <li><span><b>Launch it</b> from Applications (or Spotlight). It's signed and
-      notarized — it opens like any Mac app.</span></li>
+      <code>FusedRender-&lt;version&gt;.dmg</code>.
+      <figure class="guide-shot">
+        <img src="assets/guide_dmg_asset.jpg" loading="lazy"
+             alt="The GitHub release's Assets list with the FusedRender .dmg file highlighted — that is the one to click">
+        <figcaption>On the releases page: the highlighted <span class="mono">.dmg</span>
+        under <b>Assets</b> is the macOS download (your version number will be newer).</figcaption>
+      </figure></div></li>
+      <li><div><b>Open it and drag</b> the Fused Render icon into the Applications
+      folder in the window that appears.</div></li>
+      <li><div><b>Launch it</b> from Applications (or Spotlight). It's signed and
+      notarized — it opens like any Mac app.</div></li>
     </ol>
-    <figure class="guide-shot">
-      <img src="assets/guide_dmg_asset.jpg" loading="lazy"
-           alt="The GitHub release's Assets list with the FusedRender .dmg file highlighted — that is the one to click">
-      <figcaption>On the releases page: the highlighted <span class="mono">.dmg</span>
-      under <b>Assets</b> is the macOS download (your version number will be newer).</figcaption>
-    </figure>
     </div>
   </section>
 
   <section class="trouble-sec" id="troubleshooting">
     <h2>Troubleshooting</h2>
-    <p>The errors Fused Render shows when Claude Code needs attention, and
-    how to clear them.</p>
-    <ul class="trouble">
-      <li><span class="err">Invalid API key · Please run /login</span>
-      Claude Code isn't logged in. Open Terminal, run <code>claude</code>,
-      type <code>/login</code> and finish the browser sign-in, then retry in
-      Fused Render.</li>
-      <li><span class="err">Claude didn't start / claude not found</span>
-      Claude Code isn't installed, or the app can't find it. Install it with
-      the command in step 1, test it with <code>claude</code> in Terminal,
-      then restart Fused Render.</li>
-      <li><span class="err">Usage limit reached / session limit</span>
-      Your Claude plan's usage cap was hit. Wait for the limit to reset
-      (the error says when) or upgrade your plan at
-      <a rel="noopener" href="https://claude.ai/settings">claude.ai</a>.</li>
-      <li><span class="err">A raw error appears in the app</span>
-      Most raw errors trace back to one of the above. Fix the login or
-      install in Terminal first, then start a new chat in Fused Render.
-      Still stuck? <a rel="noopener" href="https://github.com/fusedio/fused-render/issues">Open an issue</a>
-      with the error text.</li>
-    </ul>
+    <p>Pick the error you're seeing — what it means and how to clear it is on
+    the right.</p>
+    <div class="trouble-split">
+      <div class="trouble-list" role="tablist" aria-orientation="vertical" aria-label="Common errors">
+        <button class="terr active" data-err="login" role="tab">Invalid API key · Please run /login</button>
+        <button class="terr" data-err="notfound" role="tab">Claude didn't start / claude not found</button>
+        <button class="terr" data-err="limit" role="tab">Usage limit reached / session limit</button>
+        <button class="terr" data-err="raw" role="tab">A raw error appears in the app</button>
+      </div>
+      <div class="trouble-detail">
+        <div class="tfix active" data-err="login">
+          <h3>What happened</h3>
+          <p>Claude Code is installed but isn't signed in (or the session
+          expired), so Fused Render couldn't start a Claude conversation.</p>
+          <h3>How to fix it</h3>
+          <p>Open Terminal and run <code>claude</code>, then type
+          <code>/login</code> and finish the sign-in in your browser. A
+          Claude.ai account works.</p>
+          <p>Back in Fused Render, start a new chat — the old one is stuck on
+          the failed login.</p>
+        </div>
+        <div class="tfix" data-err="notfound">
+          <h3>What happened</h3>
+          <p>Fused Render couldn't find the <code>claude</code> program on
+          this machine — Claude Code isn't installed, or it's somewhere the
+          app doesn't look.</p>
+          <h3>How to fix it</h3>
+          <p>Install it with the command in the guide's step 1 above, then
+          check that typing <code>claude</code> in Terminal starts it.</p>
+          <p>Restart Fused Render so it picks up the new install.</p>
+        </div>
+        <div class="tfix" data-err="limit">
+          <h3>What happened</h3>
+          <p>Your Claude plan's usage cap was hit — Claude Code works, it's
+          just out of budget for now.</p>
+          <h3>How to fix it</h3>
+          <p>Wait for the limit to reset (the error message says when), or
+          upgrade your plan at
+          <a rel="noopener" href="https://claude.ai/settings">claude.ai</a>.
+          Nothing to change in Fused Render.</p>
+        </div>
+        <div class="tfix" data-err="raw">
+          <h3>What happened</h3>
+          <p>The app hit an error it doesn't recognize and showed it as-is.
+          Most of these trace back to one of the other three.</p>
+          <h3>How to fix it</h3>
+          <p>Fix the login or install in Terminal first, then start a new
+          chat in Fused Render.</p>
+          <p>Still stuck?
+          <a rel="noopener" href="https://github.com/fusedio/fused-render/issues">Open an issue</a>
+          and paste the exact error text.</p>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="gallery" id="gallery">
@@ -885,6 +943,18 @@
     }
     document.querySelectorAll(".guide .tab").forEach((t) => {
       t.addEventListener("click", () => activate(t.dataset.guide));
+    });
+  })();
+
+  // Troubleshooting master–detail: clicking an error on the left shows its
+  // explanation + fix on the right.
+  (function () {
+    document.querySelectorAll(".terr").forEach((b) => {
+      b.addEventListener("click", () => {
+        document.querySelectorAll(".terr, .tfix").forEach((el) => {
+          el.classList.toggle("active", el.dataset.err === b.dataset.err);
+        });
+      });
     });
   })();
 
