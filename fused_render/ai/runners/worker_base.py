@@ -133,13 +133,22 @@ def describe_failure(exc):
     `__cause__` first, then `__context__`: an explicit `raise … from e` is the
     library telling us what it wrapped, and an implicit context is the next-best
     evidence when it did not bother.
+
+    `__suppress_context__` is honoured, which is the same rule `traceback`
+    itself follows and not a technicality here. `raise … from None` is a library
+    saying the exception it caught is NOT the explanation — the shape an
+    optional-dependency probe takes (`except ImportError: raise … from None`) —
+    and walking past it would let a deliberately hidden ImportError become our
+    "root cause", up to and including firing the stdlib hint about an
+    interpreter that is perfectly complete.
     """
     chain, seen = [], set()
     current = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         chain.append(current)
-        current = current.__cause__ or current.__context__
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__)
     text = f"{exc.__class__.__name__}: {exc}"
     if len(chain) > 1:
         root = chain[-1]

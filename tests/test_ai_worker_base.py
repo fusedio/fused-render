@@ -737,3 +737,24 @@ def test_a_generation_failure_is_described_the_same_way(base):
 
     assert payload["ok"] is False
     assert "filecmp" in payload["error"] and "STANDARD LIBRARY" in payload["error"]
+
+
+def test_a_suppressed_context_is_not_walked_past(base):
+    """`raise … from None` is a library saying "what I caught is not the
+    explanation", and the commonest thing hidden that way is an optional
+    dependency probe: `except ImportError: raise … from None`. Following it
+    anyway would report a deliberately hidden error as the root cause — and if
+    the probe happened to be for a stdlib module, would accuse an interpreter
+    that is perfectly complete."""
+    def load(model_id, fetched):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError:
+            raise RuntimeError("this backend is unavailable") from None
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert error == "RuntimeError: this backend is unavailable"
+    assert "filecmp" not in error
+    assert "STANDARD LIBRARY" not in error
