@@ -410,7 +410,17 @@
   }
   .gdl { display: none; padding: 28px 2px 4px; }
   .gdl.active { display: block; }
-  .guide .steps li { max-width: 46ch; }
+  /* Vertical steps: the 3-across grid read as unpartitioned columns here, so
+     the guide stacks them — number chip inline-left, one step per row. */
+  .guide .steps { grid-template-columns: 1fr; gap: 16px; }
+  .guide .steps li {
+    max-width: 68ch;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .guide .steps li::before { margin-bottom: 0; flex: none; }
+  .guide .steps li > span { min-width: 0; }
   .guide-shot {
     margin: 26px 0 0;
     max-width: 760px;
@@ -424,6 +434,11 @@
     font-size: 13px;
     color: var(--muted);
   }
+
+  /* ---------- troubleshooting ---------- */
+  .trouble-sec { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .trouble-sec h2 { margin: 0 0 6px; }
+  .trouble-sec > p { color: var(--muted); margin: 0 0 26px; max-width: 62ch; }
   .guide .steps code, .trouble code {
     background: var(--code-bg);
     border: 1px solid var(--border);
@@ -650,31 +665,30 @@
     <div class="tabs" role="tablist">
       <button class="tab active" data-guide="claude" role="tab"><span class="n" aria-hidden="true">1</span>Claude Code</button>
       <button class="tab" data-guide="app" role="tab"><span class="n" aria-hidden="true">2</span>Install the app</button>
-      <button class="tab" data-guide="help" role="tab"><span class="n" aria-hidden="true">?</span>Troubleshooting</button>
     </div>
 
     <div class="gdl active" data-guide="claude">
     <ol class="steps">
-      <li><b>Install it.</b> Open Terminal and run the command below, or
-      <code>npm install -g @anthropic-ai/claude-code</code> if you prefer npm.</li>
-      <li><b>Log in.</b> Run <code>claude</code>, then type <code>/login</code>
-      and follow the browser prompt. A Claude.ai account works.</li>
-      <li><b>Test it.</b> Still inside <code>claude</code>, say
-      <code>hi</code>. A reply means you're ready.</li>
+      <li><span><b>Install it.</b> Open Terminal and run the command below, or
+      <code>npm install -g @anthropic-ai/claude-code</code> if you prefer npm.</span></li>
+      <li><span><b>Log in.</b> Run <code>claude</code>, then type <code>/login</code>
+      and follow the browser prompt. A Claude.ai account works.</span></li>
+      <li><span><b>Test it.</b> Still inside <code>claude</code>, say
+      <code>hi</code>. A reply means you're ready.</span></li>
     </ol>
     <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
     </div>
 
     <div class="gdl" data-guide="app">
     <ol class="steps">
-      <li><b>Download the DMG</b> — the <a href="#downloads">Download for
+      <li><span><b>Download the DMG</b> — the <a href="#downloads">Download for
       macOS</a> button above grabs it directly. On the GitHub releases page
       instead? Scroll to <b>Assets</b> on the latest release and click
-      <code>FusedRender-&lt;version&gt;.dmg</code>.</li>
-      <li><b>Open it and drag</b> the Fused Render icon into the Applications
-      folder in the window that appears.</li>
-      <li><b>Launch it</b> from Applications (or Spotlight). It's signed and
-      notarized — it opens like any Mac app.</li>
+      <code>FusedRender-&lt;version&gt;.dmg</code>.</span></li>
+      <li><span><b>Open it and drag</b> the Fused Render icon into the Applications
+      folder in the window that appears.</span></li>
+      <li><span><b>Launch it</b> from Applications (or Spotlight). It's signed and
+      notarized — it opens like any Mac app.</span></li>
     </ol>
     <figure class="guide-shot">
       <img src="assets/guide_dmg_asset.jpg" loading="lazy"
@@ -683,8 +697,12 @@
       under <b>Assets</b> is the macOS download (your version number will be newer).</figcaption>
     </figure>
     </div>
+  </section>
 
-    <div class="gdl" data-guide="help" id="troubleshooting">
+  <section class="trouble-sec" id="troubleshooting">
+    <h2>Troubleshooting</h2>
+    <p>The errors Fused Render shows when Claude Code needs attention, and
+    how to clear them.</p>
     <ul class="trouble">
       <li><span class="err">Invalid API key · Please run /login</span>
       Claude Code isn't logged in. Open Terminal, run <code>claude</code>,
@@ -704,7 +722,6 @@
       Still stuck? <a rel="noopener" href="https://github.com/fusedio/fused-render/issues">Open an issue</a>
       with the error text.</li>
     </ul>
-    </div>
   </section>
 
   <section class="gallery" id="gallery">
@@ -858,9 +875,8 @@
     }
   })();
 
-  // Guide tabs: one panel at a time. The app's error messages deep-link to
-  // #troubleshooting, whose panel is hidden until its tab is active — honor
-  // the hash by opening that tab and scrolling the guide into view.
+  // Guide tabs: one panel at a time. Troubleshooting is its own always-visible
+  // section, so the app's #troubleshooting deep links are plain anchors.
   (function () {
     function activate(g) {
       document.querySelectorAll(".guide .tab, .gdl").forEach((el) => {
@@ -870,13 +886,6 @@
     document.querySelectorAll(".guide .tab").forEach((t) => {
       t.addEventListener("click", () => activate(t.dataset.guide));
     });
-    function honorHash() {
-      if (location.hash !== "#troubleshooting") return;
-      activate("help");
-      document.getElementById("guide").scrollIntoView();
-    }
-    window.addEventListener("hashchange", honorHash);
-    honorHash();
   })();
 
   // Download tabs: click to switch; auto-select the visitor's OS.
