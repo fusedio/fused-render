@@ -1055,6 +1055,41 @@ def unload(model: str | None = None, capability: str | None = None) -> bool:
     return bool(targets)
 
 
+def evict_stale_engines() -> list[str]:
+    """Unload any resident model whose capability now resolves to a DIFFERENT
+    runner. Returns the models that were stopped.
+
+    Called when an engine preference changes (D298). One capability holds one
+    resident model (see the module docstring), and that model belongs to the
+    backend that loaded it — a Whisper model resident in the CTranslate2 worker
+    is not usable by the MLX one, they hold different formats and different
+    weights. So switching a capability's engine while a model is loaded leaves a
+    process holding gigabytes for a backend nothing will route to again: the
+    memory stays spent, the AI Models page shows it as the resident model for
+    that capability, and the next transcription starts a second worker beside
+    it. Eviction is what makes the switch mean something.
+
+    **Stated as a reconciliation rather than as "undo what that PUT did"**, and
+    that is deliberate: the caller then needs no before/after bookkeeping, the
+    call is idempotent, and it is correct for every other way the resolution can
+    move under a resident model — a runner folder finishing its build, a
+    preference edited into prefs.json by hand.
+
+    Deliberately NOT touching `_downloads`: a weights-only fetch holds no memory
+    and evicts nothing, and the bytes it is pulling stay useful — a user who
+    switches engines mid-download almost certainly wants the download.
+    """
+    with _lock:
+        stale = []
+        for worker in list(_workers.values()):
+            resolved = registry.for_capability(worker.capability)
+            if resolved is not None and resolved.code != worker.runner_code:
+                stale.append(worker)
+    for worker in stale:
+        unload(model=worker.model, capability=worker.capability)
+    return [worker.model for worker in stale]
+
+
 def unload_all() -> None:
     """Server shutdown: nothing may outlive the app.
 

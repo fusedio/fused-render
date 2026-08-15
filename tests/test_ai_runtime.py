@@ -427,6 +427,178 @@ def test_resolution_skips_a_runner_that_cannot_run(monkeypatch):
     assert resolved is not None and resolved.code == "mlx-text"
 
 
+def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
+        monkeypatch):
+    """The ordering the table was built for, finally used by a second capability.
+
+    Apple Silicon transcribed on its CPU cores until D298 because CTranslate2
+    has no Metal backend. The MLX row sits ABOVE the CT2 one, so a Mac takes it
+    and no other platform loses anything — which is the property that had to
+    hold before this could ship, since speech to text was deliberately the first
+    capability that worked everywhere (AI-10).
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
+    assert resolved is not None and resolved.code == "mlx-whisper"
+
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64"),
+                            ("Darwin", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
+        assert resolved is not None and resolved.code == "faster-whisper", (
+            f"{system}/{machine} lost speech to text")
+
+
+# -- the engine preference (D298) ------------------------------------------------
+#
+# `prefs.engine_for_capability` is patched rather than a prefs.json written,
+# because what is under test here is the RESOLUTION — which preference wins,
+# and what happens to one that cannot. The file half is
+# `tests/test_shell_prefs.py`'s, driven through the endpoint.
+
+
+def _prefer(monkeypatch, capability, code):
+    monkeypatch.setattr(
+        registry, "preferred_code",
+        lambda asked, cap=capability, chosen=code: chosen if asked == cap
+        else registry.AUTO)
+
+
+def test_an_engine_preference_overrides_the_registry_order(monkeypatch):
+    """The whole point of the feature: a Mac that would resolve to MLX can be
+    told to use CTranslate2 instead — for a language it handles better, or to
+    compare the two — and that choice is what LOADS, not just what is stored."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.runner.code == "faster-whisper"
+    assert resolution.honoured and resolution.ignored_reason == ""
+    # And it is the same answer every consumer gets — the supervisor, the
+    # catalog and the API all go through this one call (D293's fix, which a
+    # second copy of the preference logic would undo).
+    assert registry.for_capability(registry.SPEECH_TO_TEXT).code == "faster-whisper"
+    assert catalog._runner_for(registry.SPEECH_TO_TEXT).code == "faster-whisper"
+
+
+def test_a_preference_for_a_runner_that_cannot_run_HERE_is_ignored(monkeypatch):
+    """The rule that makes this safe to store at all.
+
+    prefs.json travels: it is a plain file in a home directory people sync,
+    copy between machines and restore from backups. A preference for MLX
+    Whisper set on a Mac and honoured on a Windows box would take speech to
+    text away entirely — a capability silently gone is a bug report, while a
+    preference that quietly does nothing is recoverable. So the ordering
+    decides instead, and the REASON comes back so the page can say so.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "mlx-whisper")
+
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.runner.code == "faster-whisper", "the capability survived"
+    assert resolution.requested == "mlx-whisper", "the choice is not rewritten"
+    assert not resolution.honoured
+    # The registry's own words, not a second copy written for the page.
+    assert "Apple Silicon" in resolution.ignored_reason
+    assert "windows" in resolution.ignored_reason
+
+
+def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypatch):
+    """A prefs.json written by a NEWER build and opened by an older one, or
+    hand-edited. Not an assert: an unreadable preference must cost the
+    preference, never the capability."""
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "whisper-9000")
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.runner is not None
+    assert "not a runner this build knows" in resolution.ignored_reason
+
+
+def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
+    """Runner codes are global and capabilities are not, so a stale or
+    hand-edited file can pair them wrongly. Loading a Whisper runner for text
+    generation would fail at the first `/generate` with something unreadable."""
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "faster-whisper")
+    resolution = registry.resolve(registry.TEXT_GENERATION)
+    assert resolution.runner is not None
+    assert resolution.runner.capability == registry.TEXT_GENERATION
+    assert "does not do" in resolution.ignored_reason
+
+
+def test_a_broken_preferences_file_costs_the_preference_and_nothing_else(
+        monkeypatch):
+    """`preferred_code` is on the path of every load, download and page render.
+    A preferences store that cannot be read must not make local inference
+    unavailable — the capability is a property of the machine, not of a JSON
+    file."""
+    def _explode(capability):
+        raise OSError("prefs.json is a directory")
+
+    monkeypatch.setattr("fused_render.shell.prefs.engine_for_capability", _explode)
+    assert registry.preferred_code(registry.SPEECH_TO_TEXT) == registry.AUTO
+    assert registry.for_capability(registry.SPEECH_TO_TEXT) is not None
+
+
+def test_auto_is_honoured_by_definition(monkeypatch):
+    """"Ignored" has to mean something, so the default must not report itself as
+    overruled — a page that showed "your preference was ignored" on every fresh
+    machine would teach the user to ignore the message."""
+    resolution = registry.resolve(registry.SPEECH_TO_TEXT)
+    assert resolution.requested == registry.AUTO
+    assert resolution.honoured and resolution.ignored_reason == ""
+
+
+def test_describe_tells_AVAILABLE_apart_from_ACTIVE(monkeypatch):
+    """The distinction the public API needed (`fused.ai.models.list()`).
+
+    Availability is a fact about the hardware; active is a fact about this
+    capability right now. They were the same answer while resolution was purely
+    first-available, so every reader took "available" to mean "this is what
+    serves me". On an Apple Silicon machine BOTH whisper runners are available
+    and exactly one is active — a page that cannot tell them apart cannot say
+    which engine transcribed for it.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    rows = {row["code"]: row for row in registry.describe()}
+    assert rows["mlx-whisper"]["available"] and rows["faster-whisper"]["available"]
+    assert rows["mlx-whisper"]["active"] is True
+    assert rows["faster-whisper"]["active"] is False
+
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+    rows = {row["code"]: row for row in registry.describe()}
+    assert rows["mlx-whisper"]["active"] is False
+    assert rows["faster-whisper"]["active"] is True
+    # Availability did not move — it is not the thing the preference changes.
+    assert rows["mlx-whisper"]["available"] is True
+
+
+def test_describe_engines_carries_every_choice_with_its_own_reason(monkeypatch):
+    """What the Preferences page renders. The greyed-out control's explanation
+    comes from the registry (`available().reason`) rather than being written
+    again in the UI, because the UI cannot know it — it is a fact about this
+    machine and this backend."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    rows = {row["capability"]: row for row in registry.describe_engines()}
+    speech = rows[registry.SPEECH_TO_TEXT]
+
+    assert speech["selected"] == registry.AUTO
+    assert speech["effective"] == "faster-whisper"
+    assert speech["ignoredReason"] is None
+    choices = {choice["code"]: choice for choice in speech["choices"]}
+    assert set(choices) == {"mlx-whisper", "faster-whisper"}
+    assert choices["mlx-whisper"]["available"] is False
+    assert "Apple Silicon" in choices["mlx-whisper"]["reason"]
+    assert choices["faster-whisper"]["reason"] is None
+    # Every capability is listed, servable here or not — a preference the user
+    # cannot see is one they cannot fix.
+    assert set(rows) == set(registry.capabilities())
+
+
 def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatch):
     """A capability with two runners must not answer for only the first of them.
 
@@ -1142,8 +1314,18 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
-        "mlx-text", "transformers-text", "diffusers-image", "faster-whisper"}
+        "mlx-text", "transformers-text", "diffusers-image", "faster-whisper",
+        "mlx-whisper"}
     assert body["loaded"] == []
+    # Exactly one runner per capability is ACTIVE — the distinction D298 needed,
+    # since with a preference in the middle "available" stopped meaning "this is
+    # what serves me". A capability nothing can serve here has no active runner,
+    # which is why this counts rather than requiring one.
+    for capability in {r["capability"] for r in body["runners"]}:
+        active = [r for r in body["runners"]
+                  if r["capability"] == capability and r["active"]]
+        assert len(active) <= 1, active
+        assert all(r["available"] for r in active)
 
 
 def test_every_mutating_route_carries_the_guard(client):

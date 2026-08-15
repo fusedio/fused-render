@@ -17,10 +17,18 @@ than one platform.** A suggestion is only meaningful for the backend that will
 load it: `mlx-community/Qwen3-8B-4bit` is packed for Metal kernels and is
 unloadable rubbish on a Windows box, while `Qwen/Qwen3-4B-Instruct-2507` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
-two runners (text generation, since D293) therefore has two lists, and the
-registry's first-match-wins resolution decides which one a machine sees — the
-same mechanism, asked the same question, so the page cannot offer a model the
-loader would then refuse.
+two runners (text generation since D293, speech to text since D298) therefore
+has two lists, and the registry's resolution decides which one a machine sees —
+the same mechanism, asked the same question, so the page cannot offer a model
+the loader would then refuse.
+
+**Which means the suggestion list now moves when a PREFERENCE moves**, not only
+when the hardware differs: a user who switches speech to text from MLX to
+CTranslate2 on the Preferences page is shown four different repos next time they
+open the AI Models page, and the ones they may already have downloaded stop
+being offered. That is correct — a suggestion is only meaningful for the backend
+that will load it — but it must not be silent, which is why `describe()` reports
+the resolved runner's LABEL beside every list and the page shows it.
 
 Sizes are the on-disk download, and the notes are frank about the trade — "tight
 on 16GB" is the sentence that stops someone starting an 8GB pull they will regret.
@@ -145,6 +153,53 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "size_gb": 2.6,
             "note": "Quantized transformer (Q4_K_M) instead of the ~8GB bf16 "
                     "original — the full-precision one OOMs on 16GB machines.",
+        },
+    ],
+    # MLX conversions ONLY, and this is the third mutually unloadable Whisper
+    # list in the app: a `mlx-community` repo carries `weights.npz` (or
+    # `weights.safetensors`), which is neither CTranslate2's `model.bin` nor
+    # transformers' `model.safetensors`. Suggesting across the line is exactly
+    # the trap `faster_whisper/worker.py` had to write an error message about,
+    # now with three ways to fall into it.
+    #
+    # These are the repos an Apple Silicon machine sees, and it sees them
+    # BECAUSE it resolves to this runner — which since D298 is a user's choice
+    # and not only a hardware fact. Switching the engine on the Preferences page
+    # changes this list, which is correct and must not be silent; the page says
+    # so (`describe`'s `runnerLabel`).
+    #
+    # Sizes use the same full-snapshot Hub metadata estimate as the lists above
+    # (2026-08-15). **One line each**, per the rule the transformers list
+    # states: a shortlist is read by sweeping it.
+    "mlx-whisper": [
+        {
+            "id": "mlx-community/whisper-large-v3-turbo",
+            "label": "Whisper large-v3 turbo (MLX)",
+            "size_gb": 1.6,
+            "note": "The one to start with: large-v3 accuracy at a fraction of "
+                    "its decoding cost, and faster than real time by a wide "
+                    "margin on Metal.",
+        },
+        {
+            "id": "mlx-community/whisper-large-v3-mlx",
+            "label": "Whisper large-v3 (MLX)",
+            "size_gb": 3.1,
+            "note": "The full model, for a recording turbo handles badly — "
+                    "twice the disk and several times the decoding.",
+        },
+        {
+            "id": "mlx-community/whisper-medium-mlx",
+            "label": "Whisper medium (MLX)",
+            "size_gb": 1.5,
+            "note": "The middle option. Slower than turbo for no gain in "
+                    "English; worth trying on a language turbo struggles with.",
+        },
+        {
+            "id": "mlx-community/whisper-small-mlx",
+            "label": "Whisper small (MLX)",
+            "size_gb": 0.5,
+            "note": "Light and quick, and noticeably weaker — it drops names "
+                    "and punctuation the larger models get right.",
         },
     ],
     # CTranslate2 conversions ONLY. `openai/whisper-large-v3` is the repo

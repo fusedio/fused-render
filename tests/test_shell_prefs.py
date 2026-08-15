@@ -621,3 +621,187 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
         expected_retention = retention if call_log.retention_days_override() is not None else None
         assert calls["enabled_forced_by"] == expected_capture, (capture, retention)
         assert calls["retention_forced_by"] == expected_retention, (capture, retention)
+
+
+# -- the inference engine preference (D298) -------------------------------------
+#
+# Driven through the ENDPOINT, because what is under test here is the STORE: what
+# a PUT accepts, what it refuses, what a GET reports back, and what a stored
+# value does to a resident model. WHICH runner a preference resolves to, and what
+# happens to one this machine cannot honour, is `tests/test_ai_runtime.py`'s.
+
+
+def test_the_engines_payload_starts_at_auto_for_every_capability(tmp_path, monkeypatch):
+    """The default is "the registry decides", which is exactly today's
+    behaviour — the feature has to be invisible until somebody uses it."""
+    from fused_render.ai import registry
+
+    client, _ = _client(tmp_path, monkeypatch)
+    engines = client.get("/api/prefs").json()["engines"]
+
+    assert engines["auto"] == "auto"
+    rows = {row["capability"]: row for row in engines["capabilities"]}
+    assert set(rows) == set(registry.capabilities())
+    assert all(row["selected"] == "auto" for row in rows.values())
+    # Every capability carries its own choices, each with the availability
+    # reason a disabled control shows — the page writes none of this copy.
+    for row in rows.values():
+        assert row["choices"], row
+        assert all("available" in choice for choice in row["choices"])
+
+
+def test_the_auto_literal_agrees_with_the_registrys():
+    """Spelled in both modules rather than imported (prefs is on `calls.py`'s
+    hot path and must not drag the AI registry in behind it). A drift would read
+    as a preference for a runner named "auto" and be dropped as unknown."""
+    from fused_render.ai import registry
+
+    assert prefs_mod.AUTO_ENGINE == registry.AUTO
+
+
+def test_an_engine_choice_round_trips_and_persists(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put(
+        "/api/prefs",
+        json={"engines": {"automatic-speech-recognition": "faster-whisper"}},
+        headers=FUSED).json()
+
+    rows = {row["capability"]: row for row in body["engines"]["capabilities"]}
+    assert rows["automatic-speech-recognition"]["selected"] == "faster-whisper"
+    stored = json.loads((home / "prefs.json").read_text())
+    assert stored["engines"] == {"automatic-speech-recognition": "faster-whisper"}
+    # The PUT's reply is the new state, so the page re-renders from it rather
+    # than re-fetching — the two must be the same answer.
+    assert (client.get("/api/prefs").json()["engines"]["capabilities"]
+            == body["engines"]["capabilities"])
+
+
+def test_setting_one_capabilitys_engine_leaves_the_others_alone(tmp_path, monkeypatch):
+    """The partial-update rule this handler follows everywhere else, applied one
+    level down: the page changes one capability and must not have to echo the
+    rest, or two open tabs would each undo the other."""
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"engines": {"text-generation": "transformers-text"}},
+               headers=FUSED)
+    client.put("/api/prefs",
+               json={"engines": {"automatic-speech-recognition": "mlx-whisper"}},
+               headers=FUSED)
+
+    stored = json.loads((home / "prefs.json").read_text())
+    assert stored["engines"] == {"text-generation": "transformers-text",
+                                 "automatic-speech-recognition": "mlx-whisper"}
+
+
+def test_auto_is_a_value_you_can_write_BACK(tmp_path, monkeypatch):
+    """Undo has to be reachable. "Auto" is a choice the control offers, so it
+    has to be a choice the endpoint accepts — not merely the absence of a key,
+    which the page has no way to send."""
+    client, _ = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs",
+               json={"engines": {"automatic-speech-recognition": "mlx-whisper"}},
+               headers=FUSED)
+    body = client.put("/api/prefs",
+                      json={"engines": {"automatic-speech-recognition": "auto"}},
+                      headers=FUSED).json()
+    rows = {row["capability"]: row for row in body["engines"]["capabilities"]}
+    assert rows["automatic-speech-recognition"]["selected"] == "auto"
+
+
+def test_a_preference_this_MACHINE_cannot_honour_is_still_stored(tmp_path, monkeypatch):
+    """Legal is a weaker claim than usable, deliberately.
+
+    A user with a Mac and a Windows box shares one prefs.json through a synced
+    home directory. Refusing to STORE a choice the current machine cannot run
+    would make the file un-shareable, and rewriting it on read would make the
+    choice un-restorable. The resolution is what drops it, per machine, with the
+    reason shown — so this asserts the trio: stored as chosen, not in force, and
+    said out loud.
+    """
+    from fused_render.ai import registry
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    client, _ = _client(tmp_path, monkeypatch)
+
+    body = client.put(
+        "/api/prefs",
+        json={"engines": {"automatic-speech-recognition": "mlx-whisper"}},
+        headers=FUSED).json()
+    speech = {row["capability"]: row
+              for row in body["engines"]["capabilities"]}["automatic-speech-recognition"]
+    assert speech["selected"] == "mlx-whisper"
+    assert speech["effective"] == "faster-whisper"
+    assert "Apple Silicon" in speech["ignoredReason"]
+
+
+def test_a_MEANINGLESS_engine_choice_is_refused(tmp_path, monkeypatch):
+    """What can never be honoured on ANY machine is refused at the door: an
+    unknown capability, an unknown runner, or a runner paired with a capability
+    it does not serve. Those are not choices with a story to tell — there is
+    nothing for a page to explain about them, and nothing a different machine
+    would make true."""
+    client, home = _client(tmp_path, monkeypatch)
+    for payload in ({"automatic-speech-recognition": "whisper-9000"},
+                    {"speech-to-text": "faster-whisper"},
+                    {"text-generation": "faster-whisper"},
+                    {"automatic-speech-recognition": 7},
+                    "faster-whisper"):
+        response = client.put("/api/prefs", json={"engines": payload}, headers=FUSED)
+        assert response.status_code == 400, payload
+    assert not (home / "prefs.json").exists(), "a refused PUT wrote nothing"
+
+
+def test_changing_an_engine_EVICTS_the_resident_model_for_that_capability(
+        tmp_path, monkeypatch):
+    """One capability holds one resident model, and it belongs to the backend
+    that loaded it — a Whisper model resident in the CTranslate2 worker is not
+    usable by the MLX one. Left alone it would hold gigabytes for a runner
+    nothing routes to again, show as that capability's resident model, and have
+    the next transcription start a second worker beside it."""
+    from fused_render.ai import registry, supervisor
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    client, _ = _client(tmp_path, monkeypatch)
+
+    stopped = []
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: stopped.append(worker))
+    worker = supervisor.Worker(model="mlx-community/whisper-large-v3-turbo",
+                               capability=registry.SPEECH_TO_TEXT,
+                               runner_code="mlx-whisper", state="ready")
+    supervisor._workers[registry.SPEECH_TO_TEXT] = worker
+    try:
+        client.put("/api/prefs",
+                   json={"engines": {"automatic-speech-recognition": "faster-whisper"}},
+                   headers=FUSED)
+        assert [w.model for w in stopped] == [worker.model]
+        assert registry.SPEECH_TO_TEXT not in supervisor._workers
+    finally:
+        supervisor.reset()
+
+
+def test_a_resident_model_the_switch_does_not_affect_is_LEFT_ALONE(
+        tmp_path, monkeypatch):
+    """Eviction is a reconciliation, not a blanket unload: changing the speech
+    engine must not throw away the chat model somebody is mid-conversation
+    with."""
+    from fused_render.ai import registry, supervisor
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    client, _ = _client(tmp_path, monkeypatch)
+
+    stopped = []
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: stopped.append(worker))
+    text = supervisor.Worker(model="mlx-community/Qwen3-8B-4bit",
+                             capability=registry.TEXT_GENERATION,
+                             runner_code="mlx-text", state="ready")
+    supervisor._workers[registry.TEXT_GENERATION] = text
+    try:
+        client.put("/api/prefs",
+                   json={"engines": {"automatic-speech-recognition": "faster-whisper"}},
+                   headers=FUSED)
+        assert stopped == []
+        assert supervisor._workers[registry.TEXT_GENERATION] is text
+    finally:
+        supervisor.reset()
