@@ -202,12 +202,12 @@ Progress resolution differs slightly by engine — the MLX runner reports once p
 
 ## What Actually Runs Locally Today
 
-Five runners ship, serving three capabilities. All take **Hugging Face repo ids**, and each needs its own machine support:
+Six runners ship, serving three capabilities. All take **Hugging Face repo ids**, and each needs its own machine support:
 
 | Capability | Runners (best first) | Reality |
 |---|---|---|
 | `text-generation` | MLX, then Transformers (PyTorch) | **Everywhere.** MLX on Apple Silicon; torch on Windows, Linux, and as the Apple Silicon fallback. A CPU-only machine answers slowly but answers. |
-| `text-to-image` | Diffusers (PyTorch) | Broader, but heavy. |
+| `text-to-image` | Diffusers (PyTorch), then MLX FLUX | **Everywhere**, on Diffusers. MLX FLUX is Apple-Silicon-only and — unusually — is registered BELOW: faster and a smaller download, but it reserves much more memory, so it is opt-in from Preferences rather than the default. |
 | `automatic-speech-recognition` | MLX Whisper, then faster-whisper (CTranslate2) | **Everywhere.** MLX (on the GPU) for Apple Silicon; CTranslate2 for macOS on both architectures, Linux and Windows, where CPU is fine. |
 
 Those three strings are the capability vocabulary — they are what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.

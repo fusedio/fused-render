@@ -155,6 +155,22 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "original — the full-precision one OOMs on 16GB machines.",
         },
     ],
+    # The same model, converted for MLX — and unloadable by the runner above,
+    # which is the now-familiar shape: a repo belongs to a backend, not to a
+    # capability. `size_gb` is the whole snapshot, because unlike the diffusers
+    # recipe there is nothing skipped and no second repo: every component is
+    # already 4-bit. (2026-08-15 Hub metadata sums to 4.62e9 bytes. D302's
+    # benchmark says 4.3GB for the same download — that is GiB; this field is
+    # decimal GB, as D295 defines it, and the two numbers agree.)
+    "mflux-image": [
+        {
+            "id": "mlx-community/FLUX.2-Klein-4B-4bit",
+            "label": "FLUX.2 klein 4B (MLX 4-bit)",
+            "size_gb": 4.6,
+            "note": "One repo instead of the Diffusers split, and quicker per "
+                    "image — but it reserves far more memory while running.",
+        },
+    ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
     # list in the app: a `mlx-community` repo carries `weights.npz` (or
     # `weights.safetensors`), which is neither CTranslate2's `model.bin` nor

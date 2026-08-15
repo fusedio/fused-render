@@ -223,6 +223,28 @@ _RUNNERS: tuple[Runner, ...] = (
         label="Diffusers (PyTorch)",
         _available=_always,
     ),
+    # The one place in this table where the Apple Silicon runner is BELOW the
+    # cross-platform one, and it is deliberate (D302). Everywhere else the MLX
+    # row goes first because it is both faster and lighter on the machine it
+    # serves. Here it is faster and lighter on DISK — one 4.6GB repo against a
+    # ~10.1GB two-repo split, ~8x quicker to load, ~15-20% quicker per image —
+    # but MLX's allocator reserved a ~23.6GB high-water pool doing it, on a
+    # 34GB machine that was already several GB into swap, and nothing has been
+    # run on the 16GB Macs this app's own catalog says full-precision FLUX
+    # already OOMs. Promoting it would silently change what every Mac user's
+    # image generation does on the strength of one machine's benchmark. So it
+    # ships available and opt-in, which is the case the engine preference
+    # (D301) exists to serve, and moving this row up later is a one-line change
+    # once there is evidence from a smaller machine.
+    Runner(
+        code="mflux-image",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "mflux_image"),
+        label="MLX FLUX (Apple Silicon)",
+        note="Faster and a smaller download, but reserves much more memory. "
+             "Untested below 32GB.",
+        _available=_apple_silicon,
+    ),
     # Speech to text, and the capability that finally USED the two-runner
     # ordering this table was built for. MLX takes the Macs; CTranslate2 below
     # it keeps every other platform — and keeps the Macs too whenever the MLX

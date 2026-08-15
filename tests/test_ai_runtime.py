@@ -451,6 +451,51 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
             f"{system}/{machine} lost speech to text")
 
 
+def test_image_generation_stays_on_DIFFUSERS_even_on_apple_silicon(monkeypatch):
+    """The one inversion in the table, and it is deliberate (D302).
+
+    Everywhere else the MLX runner is registered ABOVE the cross-platform one,
+    because on the machine it serves it is both faster and lighter. mflux is
+    faster and smaller on disk too — but it reserved a ~23.6GB allocator pool
+    doing it on a 34GB machine, and nothing has been run on the 16GB Macs this
+    app's own catalog says full-precision FLUX already OOMs. Promoting it would
+    change what every Mac user's image generation does on one machine's
+    benchmark, so it ships available and opt-in.
+
+    Pinned as a test because the ordering is invisible in a diff of the table:
+    a future reader tidying the rows into "MLX first, always" would flip the
+    default for every Mac and break nothing that fails.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+
+    resolved = registry.for_capability(registry.IMAGE_GENERATION)
+    assert resolved is not None and resolved.code == "diffusers-image"
+    # …and mflux is genuinely AVAILABLE, which is what makes this a choice
+    # rather than an absence — the preference below is the way to it.
+    assert registry.by_code("mflux-image").available().ok is True
+
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    resolution = registry.resolve(registry.IMAGE_GENERATION)
+    assert resolution.runner.code == "mflux-image" and resolution.honoured
+    # Opting in also moves the suggestion list, since a repo belongs to a
+    # backend: the MLX conversion is unloadable by diffusers and vice versa.
+    assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
+        "mlx-community/FLUX.2-Klein-4B-4bit"]
+
+
+def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch):
+    """The same synced-prefs.json rule as the whisper runners: an image
+    preference set on a Mac must not take image generation away on a PC."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+
+    resolution = registry.resolve(registry.IMAGE_GENERATION)
+    assert resolution.runner.code == "diffusers-image"
+    assert "Apple Silicon" in resolution.ignored_reason
+
+
 # -- the engine preference (D301) ------------------------------------------------
 #
 # `prefs.engine_for_capability` is patched rather than a prefs.json written,
@@ -1314,8 +1359,8 @@ def test_the_worker_stderr_never_goes_to_an_undrained_pipe():
 def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
-        "mlx-text", "transformers-text", "diffusers-image", "faster-whisper",
-        "mlx-whisper"}
+        "mlx-text", "transformers-text", "diffusers-image", "mflux-image",
+        "faster-whisper", "mlx-whisper"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D301 needed,
     # since with a preference in the middle "available" stopped meaning "this is

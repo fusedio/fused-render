@@ -6224,6 +6224,33 @@ an AI Models page that could say what was on disk but not what was *running*.
   how a 2.6GB fetch came to read as a fraction of 30GB and then jump to
   complete; the reported figure is also capped at the total, since the disk walk
   sees siblings the download was never fetching.
+- **AI-9d** **Image generation has an MLX runner too, and it is the one place
+  where the Apple Silicon backend is registered BELOW the cross-platform one**
+  (D302). `mflux_image` renders FLUX on Metal from a single `mlx-community`
+  conversion whose components are all already 4-bit — so where the torch path
+  needs AI-9b's recipe (a ~2.4GB GGUF transformer plus the ~7.7GB bf16 base repo
+  for everything else), this is one ~4.6GB snapshot with nothing skipped. On the
+  machine it was measured on it loads ~8x faster, halves cold time-to-first-image
+  and is ~15-20% quicker per image. **It is still not the default**, and the
+  inversion is the decision rather than an oversight: MLX's allocator reserved a
+  ~23.6GB high-water pool during those renders — larger than torch's driver
+  allocation for the same picture — on a 34GB machine already several GB into
+  swap, and nothing has been run on the 16GB Macs that AI-9b's own note says
+  full-precision FLUX already OOMs. Promoting it would change what every Mac
+  user's image generation does on the strength of one machine's benchmark, so it
+  ships available and opt-in through the engine preference (AI-10e), which is
+  the case that mechanism exists to serve. Everything a page can see is
+  unchanged: same `/generate` body, same reply, same denoising-step row, same ✕,
+  and the SAME DEFAULTS (28 steps, guidance 4.0 — diffusers' numbers, not
+  mflux's own 4 and 1.0), because switching engines is a performance decision and
+  must not silently change what an unparameterised render means. Two mechanical
+  differences are worth naming: progress comes from mflux's per-model CALLBACK
+  REGISTRY rather than a callback argument, so the hook is registered once at
+  load and reads the live request from a slot (registering per call appends, and
+  the tenth render would report ten times); and the PNG is saved with
+  `overwrite=True`, because mflux's default resolves a collision by writing
+  somewhere else, and the server has already told the caller where the image
+  will be.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows
