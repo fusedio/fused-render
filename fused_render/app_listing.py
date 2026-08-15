@@ -409,14 +409,17 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
             if not is_app_folder:
                 # An ancestor the walk must descend THROUGH: never a symlink
                 # or a package, and (below depth 1) never a folder whose own
-                # entry is index.html — that folder owns its subtree.
+                # entry is index.html — that folder owns its subtree. The
+                # entry probe runs at EVERY depth, depth 1 included, because
+                # the walk resolves each candidate's entry before descending
+                # and an unlistable folder ends its subtree there — only the
+                # index-ownership rule is depth-gated.
                 if os.path.islink(dir_path) or lowered.endswith(PACKAGE_DIR_SUFFIXES):
                     return False
-                if i + 1 >= 2:
-                    ancestor_entry = app_entry(dir_path)
-                    if (ancestor_entry is not None
-                            and os.path.basename(ancestor_entry).lower() == "index.html"):
-                        return False
+                ancestor_entry = app_entry(dir_path)
+                if (i + 1 >= 2 and ancestor_entry is not None
+                        and os.path.basename(ancestor_entry).lower() == "index.html"):
+                    return False
             else:
                 # The app folder itself: a symlink or `.app` package here
                 # still LISTS when it holds a page, so only the entry rule

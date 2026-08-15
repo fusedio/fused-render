@@ -726,6 +726,24 @@ def test_entry_check_false_in_pruned_and_hidden_dirs(tmp_path):
     assert _assert_parity(tmp_path, vend / "index.html") is False
 
 
+def test_entry_check_false_under_an_unlistable_shelf(tmp_path):
+    """The walk resolves each candidate's entry before descending, so an
+    unlistable (execute-only) depth-1 shelf ends its subtree there — the
+    helper must probe listability at every depth, not just where the index
+    rule applies."""
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("needs POSIX directory permissions and a non-root user")
+    shelf = tmp_path / "shelf"
+    app = shelf / "app"
+    app.mkdir(parents=True)
+    (app / "index.html").write_text("<html></html>", encoding="utf-8")
+    shelf.chmod(0o111)
+    try:
+        assert _assert_parity(tmp_path, app / "index.html") is False
+    finally:
+        shelf.chmod(0o755)
+
+
 def test_entry_check_false_past_a_symlinked_ancestor(tmp_path):
     """A symlinked dir LISTS if it holds a page, but is never walked past."""
     real = tmp_path / "outside"

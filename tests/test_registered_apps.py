@@ -261,6 +261,25 @@ def test_entry_check_false_when_the_page_went_away(client, tmp_path):
     assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
 
 
+def test_entry_check_false_for_a_symlink_alias_of_the_workspace(
+    client, tmp_path, workspace
+):
+    """A hand-edited registry entry that is a symlink into the workspace is
+    skipped by the listing — its page must not count as a registered entry
+    either, or the open would be hidden from the file recents with nothing
+    recording it."""
+    ws_app = workspace / "local" / "demo"
+    ws_app.mkdir(parents=True)
+    (ws_app / "index.html").write_text("<html></html>")
+    link = tmp_path / "elsewhere" / "ws-link"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(ws_app, link)
+    registered_apps.write_entries(
+        [{"path": str(link), "openedAt": "2026-01-01T00:00:00+00:00"}]
+    )
+    assert registered_apps.is_registered_app_entry(str(link / "index.html")) is False
+
+
 def test_entry_check_tracks_the_entry_rule(client, tmp_path):
     """The entry moves when index.html appears — the check must follow the
     same rule registered_apps() reports."""

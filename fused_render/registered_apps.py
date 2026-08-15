@@ -211,6 +211,12 @@ def is_registered_app_entry(fs_path: str) -> bool:
     # registry is user-writable and everything in it feeds syscalls.
     if MountGuard().blocks(parent):
         return False
+    # Same post-guard resolve as registered_apps(): a registry folder that is
+    # a symlink alias of the workspace is skipped by the listing, so its page
+    # is not a registered entry either — treating it as one would hide the
+    # open from the file recents with nothing recording it.
+    if _resolves_into_workspace(parent):
+        return False
     try:
         entry = app_listing.app_entry(parent)
     except OSError:
