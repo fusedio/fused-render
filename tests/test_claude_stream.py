@@ -423,3 +423,62 @@ def test_a_skill_name_never_reaches_the_log_as_markup(html):
     body = html[start:html.index("\nasync function answerAppState(", start)]
     assert "addNote(" in body
     assert "innerHTML" not in body
+
+
+# ------------------------------------------------ login / plan-limit errors
+
+def test_a_logged_out_claude_explains_the_login_fix(agent, run_dir):
+    """The raw CLI text ("Invalid API key · Please run /login") names a fix
+    that only makes sense INSIDE claude; the user is looking at fused-render.
+    Spell out where to run it and keep the original for bug reports."""
+    data = _poll(agent, run_dir,
+                 [_failed("Invalid API key · Please run /login")], alive=False)
+    assert "isn't logged in" in data["error"]
+    assert "/login" in data["error"]
+    assert "render.fused.io/#troubleshooting-login" in data["error"]
+    assert "Invalid API key" in data["error"]
+
+
+def test_an_expired_oauth_token_reads_as_a_login_problem(agent, run_dir):
+    data = _poll(agent, run_dir,
+                 [_failed("OAuth token has expired. Please obtain a new token "
+                          "or refresh your existing token.")], alive=False)
+    assert "isn't logged in" in data["error"]
+
+
+def test_a_login_error_on_stderr_is_rewritten_too(agent, run_dir):
+    """A logged-out claude sometimes dies without a `result` row; the abnormal
+    exit path reads err.log and must tell the same story."""
+    (run_dir / "out.jsonl").write_text("", encoding="utf-8")
+    (run_dir / "err.log").write_text("Invalid API key · Please run /login\n",
+                                     encoding="utf-8")
+    agent.RUNS = str(run_dir.parent)
+    agent._alive = lambda _run_dir: False
+    data = agent._poll("run")
+    assert "isn't logged in" in data["error"]
+
+
+def test_a_plan_limit_error_explains_the_wait(agent, run_dir):
+    data = _poll(agent, run_dir,
+                 [_failed("Claude AI usage limit reached|1755264000")],
+                 alive=False)
+    assert "usage limit" in data["error"]
+    assert "render.fused.io/#troubleshooting-limit" in data["error"]
+    assert "Claude AI usage limit reached" in data["error"]
+
+
+def test_an_unrelated_error_gains_no_login_story(agent, run_dir):
+    data = _poll(agent, run_dir, [_failed("Edit failed: string not found")],
+                 alive=False)
+    assert data["error"] == "Edit failed: string not found"
+
+
+def test_a_run_that_died_mid_retry_keeps_the_overload_story(agent, run_dir):
+    """A 429 whose text mentions a usage limit, arriving with a retry still in
+    flight, is API-health news: the overload rewrite wins and _account_error
+    must not re-match inside its parenthesized original."""
+    rows = [_retry(2, status=429, error="rate_limited"),
+            _failed("Claude AI usage limit reached|1755264000")]
+    data = _poll(agent, run_dir, rows, alive=False)
+    assert "rate limited" in data["error"]
+    assert "Your Claude plan" not in data["error"]

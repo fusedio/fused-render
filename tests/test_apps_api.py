@@ -546,6 +546,27 @@ def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
     assert "FileNotFoundError: claude" in err
 
 
+def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
+        tmp_path, workspace, monkeypatch):
+    """_claude_bin's FileNotFoundError is a multi-line message, so the helper's
+    last-stderr-line report used to surface its "Also looked in: ..." tail —
+    accurate, but with the actual instruction cut off. The mapped message says
+    what to do and where the guide is."""
+    def fake_run(cmd, **kwargs):
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr":
+                              "Traceback (most recent call last):\n"
+                              "FileNotFoundError: claude CLI not found — "
+                              "install Claude Code, put `claude` on the PATH\n"
+                              "of the environment that launched fused-render. "
+                              "Also looked in: /opt/foo"})()
+
+    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
+    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
+    assert run_id is None
+    assert "Claude Code isn't installed" in err
+    assert "render.fused.io/#troubleshooting-notfound" in err
+
+
 @pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
 def test_spawn_really_delivers_the_prompt_to_the_claude_process(
         tmp_path, workspace, monkeypatch):
