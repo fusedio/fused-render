@@ -878,7 +878,7 @@ def test_no_piece_of_chrome_hardcodes_the_targets_kind():
     # The kind-free wording the markup ships instead, for all of them.
     assert 'placeholder="Ask Claude…"' in page
     assert ">Claude can read and edit files here." in page
-    assert 'aria-label="Annotate the preview"' in page
+    assert 'aria-label="Comment on the preview"' in page
     # One writer, and it writes every piece.
     setter = page[page.index("const setTargetNoun = (noun) => {"):]
     setter = setter[:setter.index("\n};")]
@@ -923,7 +923,7 @@ def test_no_chrome_sink_hardcodes_a_kind_noun():
 
     First the composer placeholder said "this project" for all three kinds.
     Fixing that missed the footnote. Fixing the footnote missed "app": the
-    annotate switch announced "Annotate the app" over a markdown preview, the
+    annotate switch announced "Comment on the app" over a markdown preview, the
     now-deleted pane-shot pills offered "a screenshot of the app pane", and —
     worse than any of the visible ones — `appStateBlock` told the MODEL "app pane"
     while `agent.py`'s file prompt was telling it that same pane is *our viewer,
@@ -1327,7 +1327,7 @@ def test_the_narrow_layout_keeps_the_view_toggle_reachable_from_both_views():
     """The Chat ⇄ Preview toggle lives in #anntools, which is a child of #chat —
     so hiding the chat column in Preview mode would take the toggle with it and
     strand the user in the preview with no way back. Preview mode collapses #chat
-    to that one strip instead, which is also where the Annotate switch stays
+    to that one strip instead, which is also where the Comment switch stays
     reachable while the preview owns the screen."""
     block = _media_block()
     assert "body.view-preview #chat > *:not(#anntools) { display: none; }" in block
@@ -1446,7 +1446,7 @@ def test_the_view_toggle_names_the_annotate_surface_it_navigates_to():
     """The toggle read "Preview" outbound and "Chat" on the return, which named
     the destination but not what the destination is FOR: the preview column is
     where the annotation tools live, and that is the only reason a person leaves
-    the conversation for it. So it reads "Annotate preview" and "Back to chat".
+    the conversation for it. So it reads "Comment on preview" and "Back to chat".
 
     It stays NAVIGATION, not a mode: `#annbtn` is still what arms annotate once
     you are there, and the two controls are deliberately not merged — one moves
@@ -1456,12 +1456,12 @@ def test_the_view_toggle_names_the_annotate_surface_it_navigates_to():
     wording, so the two cannot drift apart.
     """
     page = _pane_source()
-    assert 'const viewLabel = preview ? "Back to chat" : "Annotate preview";' in page
+    assert 'const viewLabel = preview ? "Back to chat" : "Comment on preview";' in page
     assert "viewBtn.textContent = viewLabel;" in page
     assert 'viewBtn.setAttribute("aria-label", viewLabel);' in page
     # The markup ships the outbound label, since Chat is the default view.
-    assert 'aria-label="Annotate preview"' in page
-    assert ">Annotate preview</button>" in page
+    assert 'aria-label="Comment on preview"' in page
+    assert ">Comment on preview</button>" in page
     # The old wording must not survive as a second answer.
     assert 'viewBtn.textContent = preview ? "Chat" : "Preview";' not in page
 
