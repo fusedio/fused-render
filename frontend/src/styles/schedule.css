@@ -476,6 +476,25 @@
   color: var(--fg);
 }
 
+/* A projected future run of a recurring rule: dashed outline, no fill — a
+   forecast, not a commitment, exactly how Google draws future recurrences.
+   The class shipped in the markup with NO rule behind it, so ghosts rendered
+   identical to real pending chips (QA 2026-08-15, third sighting). Hover
+   restates everything for the usual `.prefs-section button:hover` reason. */
+.schedule-cal .schedule-cal-event--ghost {
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--accent) 70%, var(--border));
+  color: var(--fg-muted);
+}
+
+.schedule-cal button.schedule-cal-event--ghost:hover:not(:disabled),
+.schedule-cal button.schedule-cal-event--ghost:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent) 70%, var(--border));
+  color: var(--fg);
+  filter: none;
+}
+
 /* A skipped run stays ON the calendar, struck through — "this one was called
    off, the schedule continues". Disappearing outright read as data loss. */
 .schedule-cal .schedule-cal-event--skipped {
@@ -834,6 +853,287 @@
   font-weight: 500;
 }
 
+/* -- Google-style when-row: date + time fields with dropdowns -------------- */
+
+.schedule-when {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  gap: 8px;
+}
+
+.schedule-pop-wrap {
+  position: relative;
+  display: flex;
+}
+
+.schedule-pop-wrap:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The fields read as quiet filled chips (Google's), not boxed inputs. */
+.schedule-when-field,
+.prefs-section button.schedule-when-field,
+.prefs-section .schedule-when-field {
+  height: 32px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.schedule-when-time {
+  width: 96px;
+  flex: none;
+}
+
+.schedule-when-field:hover:not(:disabled),
+.prefs-section .schedule-when-field:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg-muted) 14%, var(--bg-alt));
+  border-color: transparent;
+}
+
+.schedule-when-field:focus,
+.prefs-section .schedule-when-field:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg-alt);
+}
+
+/* The floating panel both dropdowns share. */
+.schedule-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--shadow-sm);
+  padding: 10px;
+}
+
+.schedule-pop--time {
+  padding: 4px;
+}
+
+/* Month grid, Google's anatomy: title + chevrons, S-M-T-W-T-F-S, discs. */
+.schedule-mini-cal {
+  width: 232px;
+  user-select: none;
+}
+
+.schedule-mini-cal-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.schedule-mini-cal-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.schedule-mini-cal-nav,
+.prefs-section .schedule-mini-cal-nav {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.schedule-mini-cal-nav:hover:not(:disabled),
+.prefs-section .schedule-mini-cal-nav:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+.schedule-mini-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 32px);
+  justify-items: center;
+  row-gap: 2px;
+}
+
+.schedule-mini-cal-dow {
+  font-size: 10px;
+  color: var(--fg-muted);
+  line-height: 24px;
+}
+
+.schedule-mini-cal-day,
+.prefs-section .schedule-mini-cal-day {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.schedule-mini-cal-day:hover:not(:disabled),
+.prefs-section .schedule-mini-cal-day:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: transparent;
+}
+
+.schedule-mini-cal-day.is-today,
+.prefs-section .schedule-mini-cal-day.is-today {
+  color: var(--accent-soft, var(--accent));
+  font-weight: 600;
+}
+
+.schedule-mini-cal-day.is-selected,
+.prefs-section .schedule-mini-cal-day.is-selected {
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+/* 15-minute list; the selected slot is centred on open by the component. */
+.schedule-time-list {
+  width: 120px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.schedule-time-slot,
+.prefs-section .schedule-time-slot {
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  align-self: stretch;
+  width: 100%;
+}
+
+.schedule-time-slot:hover:not(:disabled),
+.prefs-section .schedule-time-slot:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: transparent;
+}
+
+.schedule-time-slot.is-selected,
+.prefs-section .schedule-time-slot.is-selected {
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+/* -- Custom recurrence (Google's dialog) ----------------------------------- */
+
+.schedule-recur {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.schedule-recur-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.schedule-recur-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.schedule-recur-n {
+  width: 64px;
+  flex: none;
+}
+
+.schedule-recur-unit {
+  width: auto;
+  flex: none;
+}
+
+.schedule-recur-circles {
+  display: flex;
+  gap: 6px;
+}
+
+/* The seven weekday discs. aria-pressed carries the state; the fill says it. */
+.schedule-recur-day,
+.prefs-section .schedule-recur-day {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: var(--bg-alt);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.schedule-recur-day.is-on,
+.prefs-section .schedule-recur-day.is-on {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.schedule-recur-ends {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.schedule-recur-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 4px;
+}
+
+.schedule-recur-end input[type="date"] {
+  width: auto;
+}
+
 /* -- Folder picker: a small in-modal directory browser ------------------- */
 
 .schedule-picker {
@@ -846,30 +1146,64 @@
   padding: 10px;
 }
 
-.schedule-picker-head {
+/* Crumbs replace the old ‹-plus-path head: every ancestor is a click, the
+   current folder is the bold unclickable tail (Akshil, 2026-08-15 — the
+   single Up chevron read as "ugly and not intuitive"). */
+.schedule-picker-crumbs {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.schedule-picker-crumb-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   min-width: 0;
 }
 
-/* The Up control is a way back, not an action — glyph-sized, quiet next to
-   the breadcrumb (Akshil, 2026-08-15, "back button is too big"). Doubled
-   with .prefs-section to outrank the .btn base's 32px height. */
-.schedule-picker-head .btn,
-.prefs-section .schedule-picker-head .btn {
-  height: 22px;
-  min-width: 22px;
-  padding: 0 5px;
-  font-size: 13px;
-  border-radius: 5px;
+.schedule-picker-crumb-sep {
+  color: var(--fg-muted);
 }
 
-.schedule-picker-head code {
+.schedule-picker-crumb,
+.prefs-section .schedule-picker-crumb {
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.schedule-picker-crumb:hover:not(:disabled),
+.prefs-section .schedule-picker-crumb:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: transparent;
+  color: var(--fg);
+}
+
+/* The tail is where you ARE — not a control, so it reads as the heading. */
+.schedule-picker-crumb:disabled,
+.prefs-section .schedule-picker-crumb:disabled {
+  color: var(--fg);
+  font-weight: 600;
+  opacity: 1;
+  cursor: default;
+}
+
+.schedule-picker-filter {
   font-size: 12px;
+  height: 28px;
 }
 
 /* Fixed height, not max-height: a panel that resizes to each folder's row
@@ -929,10 +1263,23 @@
 /* A folder named by a build hash must not wrap the row — one line, ellipsis,
    full name in the title. */
 .schedule-picker-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The › on each row says "this descends" — the affordance the flat rows
+   lacked. Quiet until the row is hovered. */
+.schedule-picker-enter {
+  flex: none;
+  color: var(--fg-muted);
+  opacity: 0;
+}
+
+.schedule-form .schedule-picker-row:hover .schedule-picker-enter {
+  opacity: 1;
 }
 
 .schedule-picker-foot {

@@ -47,7 +47,7 @@ import {
   BOARD_COLUMNS,
   boardColumn,
   canUnskip,
-  describeRepeats,
+  entryRepeatText,
   formatDue,
   isLive,
   relativeDue,
@@ -127,7 +127,7 @@ function ScheduleBoard({
                       </span>
                       <span className="schedule-board-card-time">
                         {e.state === "recurring"
-                          ? describeRepeats(e.repeats || "")
+                          ? entryRepeatText(e)
                           : relativeDue(isLive(e) || !e.fired ? e.due : e.fired)}
                       </span>
                     </span>
@@ -201,7 +201,7 @@ function EntryCard({
         </span>
         <span className="schedule-card-when" title={stampTitle}>
           {/* A recurring rule has no single "when" — its rule is the when. */}
-          {entry.state === "recurring" ? describeRepeats(entry.repeats || "") : relativeDue(stamp)}
+          {entry.state === "recurring" ? entryRepeatText(entry) : relativeDue(stamp)}
         </span>
       </div>
 
