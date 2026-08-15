@@ -352,6 +352,89 @@ def _walk_apps(dir_path: str, root: str, depth: int, apps: list[dict],
             _walk_apps(path, root, depth + 1, apps, guard)
 
 
+def is_workspace_app_entry(fs_path: str, root: str) -> bool:
+    """Whether `fs_path` is the ENTRY PAGE of a listed workspace app — i.e.
+    whether `workspace_apps(root)` would report it as some app's `entry`.
+
+    The explorer's recents filter (shell/recents.py) asks this at record time
+    and on every GET: opening an app's entry page is already recorded in the
+    APP recents store (server/routers/apps.py), and the same open landing in
+    the file recents too put every app in both sidebar lists.
+
+    A targeted re-derivation of the walk, not a `workspace_apps` membership
+    test: the walk pays `entry_title`/`preview_image`/`metadata.json` reads
+    per app on every call, and this runs per recents record (including the
+    500 ms param-churn re-records) and per GET entry. Cost here is bounded
+    string work plus at most three listdirs on the LOCAL workspace.
+
+    The error asymmetry decides every ambiguous case: True hides the file
+    from the file recents, so anything indeterminate (OSError, mount-backed
+    root, outside the workspace) answers False — a duplicate row is today's
+    behavior, a file missing from both lists is a new bug. Parity with the
+    walk is held by tests (test_app_listing.py), same as the shared-template
+    copy of `app_entry`.
+    """
+    guard = MountGuard()
+    root = os.path.abspath(root)
+    if guard.blocks(root):
+        return False  # workspace_apps lists nothing under a mount
+    path = os.path.abspath(fs_path)
+    try:
+        rel = os.path.relpath(path, root)
+    except ValueError:
+        return False  # Windows cross-drive: not inside the workspace
+    if rel == "." or rel.startswith(".."):
+        return False
+    segments = rel.split(os.sep)
+    # The file sits directly in an app folder, so its own depth is the
+    # folder's + 1; folders list at depths 1..MAX_APP_DEPTH only.
+    parent_depth = len(segments) - 1
+    if not 1 <= parent_depth <= MAX_APP_DEPTH:
+        return False
+    # Reachability: every ancestor DIRECTORY must be one the walk descends
+    # into (or, for the app folder itself, one it lists). The name rules
+    # apply to all of them; descent rules apply to the ancestors ABOVE the
+    # app folder — a symlinked or `.app`-package app folder still LISTS, but
+    # a symlinked/package ancestor is never walked past.
+    for i, seg in enumerate(segments[:-1]):
+        lowered = seg.lower()
+        if (seg.startswith(".") or lowered in PRUNE_DIR_NAMES
+                or lowered.endswith(OPAQUE_DIR_SUFFIXES)):
+            return False
+        is_app_folder = i == parent_depth - 1
+        dir_path = os.path.join(root, *segments[:i + 1])
+        if guard.blocks(dir_path):
+            return False
+        try:
+            if not is_app_folder:
+                # An ancestor the walk must descend THROUGH: never a symlink
+                # or a package, and (below depth 1) never a folder whose own
+                # entry is index.html — that folder owns its subtree.
+                if os.path.islink(dir_path) or lowered.endswith(PACKAGE_DIR_SUFFIXES):
+                    return False
+                if i + 1 >= 2:
+                    ancestor_entry = app_entry(dir_path)
+                    if (ancestor_entry is not None
+                            and os.path.basename(ancestor_entry).lower() == "index.html"):
+                        return False
+            else:
+                # The app folder itself: a symlink or `.app` package here
+                # still LISTS when it holds a page, so only the entry rule
+                # applies.
+                entry = app_entry(dir_path)
+        except OSError:
+            return False  # unreadable anywhere: the walk skips it — record
+    if entry is None:
+        return False
+    if os.path.normcase(entry) != os.path.normcase(path):
+        return False
+    # Depth-3 apps require a literal index.html; app_entry prefers it, so a
+    # non-index entry at depth 3 means the folder is not an app at all.
+    if parent_depth == MAX_APP_DEPTH and os.path.basename(entry).lower() != "index.html":
+        return False
+    return True
+
+
 def entry_title(entry_html: str) -> str | None:
     """The <title> of an entry file, from its first 4 KiB — cheap enough to run
     per app on every listing. None when absent, empty, or unreadable."""
