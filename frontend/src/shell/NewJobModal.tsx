@@ -10,7 +10,7 @@
 // Google's: the REPEAT choices are derived from the picked date-time ("Weekly
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -29,6 +29,38 @@ import { ICON_CLOCK, ICON_FOLDER, ICON_REPEAT } from "./ScheduleCalendar";
 // changing it a click, and a machine without the folder gets the server's
 // clear 400 naming the path.
 const DEFAULT_TARGET_SUFFIX = "/Desktop/fused";
+
+// ---- Recent paths --------------------------------------------------------
+// The path field's dropdown offers the last folders the user actually used —
+// picked in the browser or saved on a task — newest first, five shown. Stored
+// in localStorage so "the folder I always schedule against" survives reloads.
+// try/catch throughout: storage can be denied (private mode), and a corrupt
+// value must read as "no recents", never crash the modal (Bugbot, PR #538
+// pattern).
+const RECENTS_KEY = "fused-render:recent-paths";
+const RECENTS_SHOWN = 5;
+
+function readRecents(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((p): p is string => typeof p === "string" && p !== "")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecent(path: string) {
+  const p = path.trim();
+  if (!p) return;
+  try {
+    const next = [p, ...readRecents().filter((r) => r !== p)].slice(0, 8);
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+  } catch {
+    // Storage denied — recents just don't persist.
+  }
+}
 
 // ---- Folder picker -----------------------------------------------------------
 // A small in-modal directory browser: descend by clicking, one Up control,
@@ -114,15 +146,17 @@ function FolderPicker({
         )}
         {!error && dirs?.map((name) => (
           <button key={name} type="button" className="schedule-picker-row"
-                  disabled={loading}
+                  disabled={loading} title={name}
                   onClick={() => setPath(path.replace(/\/+$/, "") + "/" + name)}>
-            {ICON_FOLDER} {name}
+            {ICON_FOLDER} <span className="schedule-picker-name">{name}</span>
           </button>
         ))}
       </div>
       <div className="schedule-picker-foot">
+        {/* "Back", not "Cancel": the picker is a level below the recents
+            dropdown, and this returns there (Akshil, 2026-08-15). */}
         <button type="button" className="btn btn-secondary" onClick={onClose}>
-          Cancel
+          Back
         </button>
         <button type="button" className="btn btn-primary"
                 onClick={() => { onPick(path); onClose(); }}>
@@ -161,6 +195,7 @@ export default function NewJobModal({
   initialTarget,
   editing,
   permissionModes,
+  recentTargets,
   onClose,
   onCreated,
 }: {
@@ -175,6 +210,11 @@ export default function NewJobModal({
   // replacement first, then withdraws this one — see submit().
   editing?: ScheduledMessage | null;
   permissionModes: string[];
+  // Folders existing tasks already point at, newest first — the parent reads
+  // them off the schedule it has anyway. They pad the dropdown out on a
+  // machine whose localStorage hasn't seen this form yet (QA 2026-08-15 —
+  // the first open showed nothing but Browse).
+  recentTargets?: string[];
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -199,6 +239,36 @@ export default function NewJobModal({
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [home, setHome] = useState("");
+  // The path field's recents dropdown: what this form remembers being used
+  // (localStorage, first — the user's own picks outrank inference), padded
+  // with the folders existing tasks point at. Read once per open — the
+  // stored list only changes through this same modal.
+  const [recentsOpen, setRecentsOpen] = useState(false);
+  const [recents] = useState(() => {
+    const seen = new Set<string>();
+    return [...readRecents(), ...(recentTargets ?? [])].filter((p) => {
+      if (!p || seen.has(p)) return false;
+      seen.add(p);
+      return true;
+    });
+  });
+
+  // The description wears the title's clothes but grows like a note: with the
+  // text, up to the CSS max-height (~5 lines), then scrolls. Measured on every
+  // change because "auto then scrollHeight" is the one reflow-safe way to
+  // shrink back when lines are deleted.
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const pathRef = useRef<HTMLInputElement>(null);
+  // Whether the picker is closing because a folder was chosen (done — stay
+  // closed) or backed out of (return to the recents dropdown). onPick runs
+  // just before onClose, so a ref is enough to tell the two closes apart.
+  const pickedFromBrowser = useRef(false);
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [message]);
 
   // The default target, filled once the server says where home is — and only
   // into a still-empty field, so it never clobbers an edit or the user's own
@@ -288,6 +358,7 @@ export default function NewJobModal({
         // change, or the edit silently turns it into a fresh session.
         ...(editing?.session_id ? { session_id: editing.session_id } : {}),
       });
+      rememberRecent(target);
       if (editing) {
         // Replacement first, THEN withdraw — a failed create must never leave
         // the user with neither task. A 404 here is the fine race: the old
@@ -354,6 +425,7 @@ export default function NewJobModal({
             description made people write the same thing twice (Akshil,
             2026-08-14). */}
         <textarea
+          ref={titleRef}
           className="schedule-form-title"
           rows={2}
           placeholder="Add description"
@@ -362,29 +434,89 @@ export default function NewJobModal({
           autoFocus
         />
 
+        {/* The path is a combobox, Google-style: focusing it drops the last
+            few folders the user scheduled against, with Browse as the
+            dropdown's last row (Akshil, 2026-08-15 — the standalone Browse
+            button next to the field moved in here). Blur closes it, but only
+            when focus truly leaves the wrap — clicking a row moves focus INTO
+            the dropdown, and closing on that blur would eat the click. */}
         <div className="schedule-form-line">
           {ICON_FOLDER}
-          <input
-            type="text"
-            className="field-control"
-            placeholder="Add folder or file"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-          />
-          <button type="button" className="btn btn-secondary"
-                  aria-expanded={picking}
-                  onClick={() => setPicking((p) => !p)}>
-            Browse
-          </button>
+          <div
+            className="schedule-recents-wrap"
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setRecentsOpen(false);
+              }
+            }}
+          >
+            <input
+              ref={pathRef}
+              type="text"
+              className="field-control"
+              placeholder="Add folder or file"
+              role="combobox"
+              aria-expanded={recentsOpen}
+              value={target}
+              onFocus={() => setRecentsOpen(true)}
+              onClick={() => setRecentsOpen(true)}
+              onKeyDown={(e) => {
+                // Escape closes the dropdown, not the modal — stop it here.
+                if (e.key === "Escape" && recentsOpen) {
+                  e.stopPropagation();
+                  setRecentsOpen(false);
+                }
+              }}
+              onChange={(e) => setTarget(e.target.value)}
+            />
+            {recentsOpen && (
+              <div className="schedule-recents">
+                {recents.slice(0, RECENTS_SHOWN).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    className="schedule-picker-row"
+                    onClick={() => {
+                      setTarget(p);
+                      setRecentsOpen(false);
+                    }}
+                  >
+                    {ICON_FOLDER} <span className="schedule-recents-path" title={p}>{p}</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="schedule-picker-row schedule-recents-browse"
+                  onClick={() => {
+                    setRecentsOpen(false);
+                    setPicking(true);
+                  }}
+                >
+                  Browse…
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         {picking && (
-          <div className="schedule-form-line--sub">
-            <FolderPicker
-              start={target.trim() || home || "/"}
-              onPick={setTarget}
-              onClose={() => setPicking(false)}
-            />
-          </div>
+          // Full row width, like every other line of the card — the sub-row
+          // indent left the picker narrower than the field it serves
+          // (Akshil, 2026-08-15).
+          <FolderPicker
+            start={target.trim() || home || "/"}
+            onPick={(p) => {
+              pickedFromBrowser.current = true;
+              setTarget(p);
+              rememberRecent(p);
+            }}
+            onClose={() => {
+              setPicking(false);
+              // Back (no pick) returns to the level above: refocusing the
+              // field is what reopens the recents dropdown.
+              if (!pickedFromBrowser.current) pathRef.current?.focus();
+              pickedFromBrowser.current = false;
+            }}
+          />
         )}
 
         {/* Google's when-row: the date-time line, with the repeat rule as the

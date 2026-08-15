@@ -187,10 +187,17 @@ function EntryCard({
     : `Due ${formatDue(entry.due)} · ran ${formatDue(entry.fired)}`;
 
   return (
-    <div className={`schedule-card schedule-card--${stateTone(entry)}`}>
-      <div className="schedule-card-head">
+    // The Inbox's row anatomy, copied deliberately (Akshil, 2026-08-15 — the
+    // card grid "is not a list view"): pill + bold one-line title + time on
+    // the right, a muted meta line under it, quiet actions last. Full-width
+    // rows, so the eye scans down one column.
+    <div className={`schedule-row schedule-row--${stateTone(entry)}`}>
+      <div className="schedule-row-line">
         <span className={`schedule-state schedule-state--${stateTone(entry)}`}>
           {stateLabel(entry)}
+        </span>
+        <span className="schedule-row-title" title={entry.message}>
+          {entry.message}
         </span>
         <span className="schedule-card-when" title={stampTitle}>
           {/* A recurring rule has no single "when" — its rule is the when. */}
@@ -198,17 +205,9 @@ function EntryCard({
         </span>
       </div>
 
-      {/* The prompt is the card's subject — what the reader scans to find the one
-          they mean — so it gets the body colour and the room. Clamped rather than
-          scrolled: a card grid wants even heights, and the full text is one hover
-          away in the title. */}
-      <p className="schedule-card-message" title={entry.message}>
-        {entry.message}
-      </p>
-
-      {/* Only what departs from the default earns a line: continuing a
+      {/* Only what departs from the default earns a mention: continuing a
           session, or a non-auto mode. The default case says nothing. */}
-      <p className="schedule-card-meta">
+      <p className="schedule-row-meta">
         <code title={entry.target}>{entry.target}</code>
         {(entry.session_id || entry.permission_mode !== "auto") && (
           <span>
@@ -222,9 +221,7 @@ function EntryCard({
       {entry.error && <p className="schedule-card-why">{entry.error}</p>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
 
-      {/* Actions last and pinned to the foot, so cards of different text lengths
-          still line their buttons up across a row. */}
-      <div className="schedule-card-actions">
+      <div className="schedule-row-actions">
         {(entry.state === "pending" || entry.state === "recurring") && (
           <>
             <button
@@ -436,7 +433,7 @@ export default function Scheduled() {
               {live.length === 0 ? (
                 <p className="deploy-muted">No upcoming tasks</p>
               ) : (
-                <div className="schedule-cards">
+                <div className="schedule-list">
                   {live.map((e) => (
                     <EntryCard key={e.id} entry={e} unskippable={canUnskip(e, entries)}
                                onCancelled={reload} onEdit={edit} />
@@ -449,7 +446,7 @@ export default function Scheduled() {
                       run in opposite directions on purpose (see
                       schedule.list_entries); do not re-sort what it gives. */}
                   <h2>Past</h2>
-                  <div className="schedule-cards">
+                  <div className="schedule-list">
                     {past.map((e) => (
                       <EntryCard key={e.id} entry={e} unskippable={canUnskip(e, entries)}
                                onCancelled={reload} onEdit={edit} />
@@ -468,6 +465,9 @@ export default function Scheduled() {
           initialTarget={newTarget}
           editing={editing}
           permissionModes={state.permission_modes}
+          // Newest-first fallback recents: past entries arrive newest first,
+          // and the modal dedupes against what localStorage already knows.
+          recentTargets={entries.map((e) => e.target)}
           // `newTarget` is cleared with the rest: it described the ONE form the
           // deep link opened, and left standing it would prefill the next
           // "+ New task" with a folder the user arrived from some time ago.
