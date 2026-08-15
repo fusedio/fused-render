@@ -394,16 +394,36 @@
   }
 
   /* ---------- user guide ---------- */
+  /* Same tab component as the downloads section (data-guide instead of
+     data-os so the two switchers never cross-activate). One panel at a time:
+     the three blocks as one long scroll read as a wall of text. */
   .guide { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
   .guide h2 { margin: 0 0 6px; }
-  .guide > p { color: var(--muted); margin: 0 0 26px; max-width: 62ch; }
-  .guide h3 {
-    font-size: 17px;
-    letter-spacing: -0.01em;
-    margin: 34px 0 14px;
+  .guide > p { color: var(--muted); margin: 0 0 22px; max-width: 62ch; }
+  .guide .tab .n {
+    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--accent);
+    border: 1px solid rgba(229, 255, 68, 0.35);
+    border-radius: 5px;
+    padding: 3px 6px;
+    margin-right: 7px;
   }
-  .guide h3:first-of-type { margin-top: 0; }
+  .gdl { display: none; padding: 28px 2px 4px; }
+  .gdl.active { display: block; }
   .guide .steps li { max-width: 46ch; }
+  .guide-shot {
+    margin: 26px 0 0;
+    max-width: 760px;
+  }
+  .guide-shot img {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .guide-shot figcaption {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
   .guide .steps code, .trouble code {
     background: var(--code-bg);
     border: 1px solid var(--border);
@@ -627,7 +647,13 @@
     <a rel="noopener" href="https://code.claude.com/docs/en/overview">Claude Code</a>
     installed and logged in.</p>
 
-    <h3>1. Install Claude Code</h3>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-guide="claude" role="tab"><span class="n" aria-hidden="true">1</span>Claude Code</button>
+      <button class="tab" data-guide="app" role="tab"><span class="n" aria-hidden="true">2</span>Install the app</button>
+      <button class="tab" data-guide="help" role="tab"><span class="n" aria-hidden="true">?</span>Troubleshooting</button>
+    </div>
+
+    <div class="gdl active" data-guide="claude">
     <ol class="steps">
       <li><b>Install it.</b> Open Terminal and run the command below, or
       <code>npm install -g @anthropic-ai/claude-code</code> if you prefer npm.</li>
@@ -637,18 +663,28 @@
       <code>hi</code>. A reply means you're ready.</li>
     </ol>
     <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
+    </div>
 
-    <h3>2. Install Fused Render on macOS</h3>
+    <div class="gdl" data-guide="app">
     <ol class="steps">
-      <li><b>Download the DMG</b> from the <a href="#downloads">downloads
-      section</a> above.</li>
+      <li><b>Download the DMG</b> — the <a href="#downloads">Download for
+      macOS</a> button above grabs it directly. On the GitHub releases page
+      instead? Scroll to <b>Assets</b> on the latest release and click
+      <code>FusedRender-&lt;version&gt;.dmg</code>.</li>
       <li><b>Open it and drag</b> the Fused Render icon into the Applications
       folder in the window that appears.</li>
       <li><b>Launch it</b> from Applications (or Spotlight). It's signed and
       notarized — it opens like any Mac app.</li>
     </ol>
+    <figure class="guide-shot">
+      <img src="assets/guide_dmg_asset.jpg" loading="lazy"
+           alt="The GitHub release's Assets list with the FusedRender .dmg file highlighted — that is the one to click">
+      <figcaption>On the releases page: the highlighted <span class="mono">.dmg</span>
+      under <b>Assets</b> is the macOS download (your version number will be newer).</figcaption>
+    </figure>
+    </div>
 
-    <h3 id="troubleshooting">Troubleshooting</h3>
+    <div class="gdl" data-guide="help" id="troubleshooting">
     <ul class="trouble">
       <li><span class="err">Invalid API key · Please run /login</span>
       Claude Code isn't logged in. Open Terminal, run <code>claude</code>,
@@ -668,6 +704,7 @@
       Still stuck? <a rel="noopener" href="https://github.com/fusedio/fused-render/issues">Open an issue</a>
       with the error text.</li>
     </ul>
+    </div>
   </section>
 
   <section class="gallery" id="gallery">
@@ -821,14 +858,37 @@
     }
   })();
 
+  // Guide tabs: one panel at a time. The app's error messages deep-link to
+  // #troubleshooting, whose panel is hidden until its tab is active — honor
+  // the hash by opening that tab and scrolling the guide into view.
+  (function () {
+    function activate(g) {
+      document.querySelectorAll(".guide .tab, .gdl").forEach((el) => {
+        el.classList.toggle("active", el.dataset.guide === g);
+      });
+    }
+    document.querySelectorAll(".guide .tab").forEach((t) => {
+      t.addEventListener("click", () => activate(t.dataset.guide));
+    });
+    function honorHash() {
+      if (location.hash !== "#troubleshooting") return;
+      activate("help");
+      document.getElementById("guide").scrollIntoView();
+    }
+    window.addEventListener("hashchange", honorHash);
+    honorHash();
+  })();
+
   // Download tabs: click to switch; auto-select the visitor's OS.
   (function () {
+    // Scoped to the downloads section: the guide has its own .tab bar, and a
+    // blanket ".tab" toggle here would strip its active state on every click.
     function activate(os) {
-      document.querySelectorAll(".tab, .dl").forEach((el) => {
+      document.querySelectorAll(".downloads .tab, .dl").forEach((el) => {
         el.classList.toggle("active", el.dataset.os === os);
       });
     }
-    document.querySelectorAll(".tab").forEach((t) => {
+    document.querySelectorAll(".downloads .tab").forEach((t) => {
       t.addEventListener("click", () => activate(t.dataset.os));
     });
     const ua = navigator.userAgent;
