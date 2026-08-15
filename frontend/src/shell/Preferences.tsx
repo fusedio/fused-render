@@ -12,7 +12,7 @@
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
 //   Inference engines  — which local-model backend serves each capability
-//     (SPEC §40, D296). A tab rather than a section on the render tab, and
+//     (SPEC §40, D301). A tab rather than a section on the render tab, and
 //     that is a deliberate call in a page whose whole comment block is about
 //     not adding tabs lightly: this is the one control here that is about
 //     MODELS rather than about rendering, its rows are per-capability and

@@ -6254,7 +6254,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
   app whose local AI is something most users read about is not the app this is
   meant to be. An `mlx_whisper` runner **has since been added ABOVE this one**
-  (AI-10c, D296) — the registry's first-match-wins ordering (AI-2) existed for
+  (AI-10c, D301) — the registry's first-match-wins ordering (AI-2) existed for
   exactly that — so a Mac transcribes on Metal and every other platform still
   arrives here. Both Whisper directions ship:
   `task: "transcribe"` (same language) and `task: "translate"` (into English)
@@ -6387,7 +6387,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
 - **AI-10c** **Apple Silicon transcribes on the GPU: an `mlx_whisper` runner
-  ABOVE the CTranslate2 one, indistinguishable to a page** (D296). AI-10 chose
+  ABOVE the CTranslate2 one, indistinguishable to a page** (D301). AI-10 chose
   CTranslate2 so the capability would exist everywhere and said an MLX runner
   could be added later above it; this is that addition, and it is the first use
   AI-2's ordering has had for a capability that already worked. Macs take MLX;
@@ -6430,7 +6430,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   transcription quality, the container formats users will point at it, and the
   behaviour of a recording long enough to matter.
 - **AI-10e** **Which engine serves a capability is a user preference, and an
-  unusable one is IGNORED rather than obeyed** (D296). Runner selection was
+  unusable one is IGNORED rather than obeyed** (D301). Runner selection was
   implicit — first-match-wins over registry order, filtered by availability —
   which was a complete answer while the order was decided by hardware. With two
   capabilities carrying two runners each, `prefs.json` gains `engines`:
