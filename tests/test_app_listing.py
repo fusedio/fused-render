@@ -744,6 +744,22 @@ def test_entry_check_false_under_an_unlistable_shelf(tmp_path):
         shelf.chmod(0o755)
 
 
+def test_entry_check_false_under_an_unlistable_root(tmp_path):
+    """The walk's first act is listdir(root) — an execute-only workspace root
+    lists no apps, so the helper must answer False for anything under it."""
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("needs POSIX directory permissions and a non-root user")
+    root = tmp_path / "ws"
+    app = root / "app"
+    app.mkdir(parents=True)
+    (app / "index.html").write_text("<html></html>", encoding="utf-8")
+    root.chmod(0o111)
+    try:
+        assert _assert_parity(root, app / "index.html") is False
+    finally:
+        root.chmod(0o755)
+
+
 def test_entry_check_false_past_a_symlinked_ancestor(tmp_path):
     """A symlinked dir LISTS if it holds a page, but is never walked past."""
     real = tmp_path / "outside"

@@ -378,6 +378,13 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     root = os.path.abspath(root)
     if guard.blocks(root):
         return False  # workspace_apps lists nothing under a mount
+    # The walk's first act is listdir(root), and an unlistable root lists
+    # nothing — the same probe here keeps parity (an execute-only root must
+    # not make a descendant "an app's entry" the walk would never emit).
+    try:
+        os.listdir(root)
+    except OSError:
+        return False
     path = os.path.abspath(fs_path)
     try:
         rel = os.path.relpath(path, root)
