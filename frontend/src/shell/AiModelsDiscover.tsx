@@ -252,8 +252,18 @@ function Suggested({
                 completely between them — so a heading that said only "text
                 generation" left the reader with no way to tell which list they
                 were looking at, or why it was not the one in the docs. */}
+            {/* …and since D296 that backend can be a CHOICE rather than only a
+                hardware fact, which makes this list something the user can
+                move. The title says where from: "my suggested models changed"
+                is otherwise an unexplainable event, and the page that caused it
+                is two clicks away with no signpost. */}
             {group.available && group.runnerLabel && (
-              <span className="am-suggested-runner">via {group.runnerLabel}</span>
+              <span
+                className="am-suggested-runner"
+                title="Chosen in Preferences → Inference engines. Each backend loads its own model format, so this list changes with it."
+              >
+                via {group.runnerLabel}
+              </span>
             )}
             {/* Shown even when it cannot run here, with the reason: hiding a
                 capability leaves someone hunting for a feature that never was. */}
