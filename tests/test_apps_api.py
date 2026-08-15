@@ -564,7 +564,7 @@ def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
     run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
     assert run_id is None
     assert "Claude Code isn't installed" in err
-    assert "render.fused.io/#troubleshooting" in err
+    assert "render.fused.io/#troubleshooting-notfound" in err
 
 
 @pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")

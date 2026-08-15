@@ -1708,6 +1708,9 @@ def _overload_error(error: str, info) -> str:
             % (what, spent, "y" if spent == 1 else "ies", error))
 
 
+# The download page's troubleshooting anchor, used with a suffix per error
+# (-login, -notfound, -limit) so the page opens the matching panel rather
+# than always showing the login fix.
 GUIDE_URL = "https://render.fused.io/#troubleshooting"
 
 
@@ -1731,10 +1734,10 @@ def _account_error(error: str) -> str:
             or "not logged in" in low or "authentication_error" in low):
         return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
                 "type /login and finish the sign-in, then start a new chat "
-                "here. Help: %s (%s)" % (GUIDE_URL, error))
+                "here. Help: %s-login (%s)" % (GUIDE_URL, error))
     if "usage limit reached" in low or "session limit" in low:
         return ("Your Claude plan's usage limit was reached. Wait for it to "
-                "reset, or upgrade the plan, then try again. Help: %s (%s)"
+                "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
                 % (GUIDE_URL, error))
     return error
 

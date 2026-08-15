@@ -435,7 +435,7 @@ def test_a_logged_out_claude_explains_the_login_fix(agent, run_dir):
                  [_failed("Invalid API key · Please run /login")], alive=False)
     assert "isn't logged in" in data["error"]
     assert "/login" in data["error"]
-    assert "render.fused.io/#troubleshooting" in data["error"]
+    assert "render.fused.io/#troubleshooting-login" in data["error"]
     assert "Invalid API key" in data["error"]
 
 
@@ -463,7 +463,7 @@ def test_a_plan_limit_error_explains_the_wait(agent, run_dir):
                  [_failed("Claude AI usage limit reached|1755264000")],
                  alive=False)
     assert "usage limit" in data["error"]
-    assert "render.fused.io/#troubleshooting" in data["error"]
+    assert "render.fused.io/#troubleshooting-limit" in data["error"]
     assert "Claude AI usage limit reached" in data["error"]
 
 

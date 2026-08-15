@@ -150,7 +150,8 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
             return {"error":
                     "Claude Code isn't installed (or couldn't be found). "
                     "Install it, check that `claude` runs in a terminal, then "
-                    "try again. Help: https://render.fused.io/#troubleshooting"}
+                    "try again. Help: "
+                    "https://render.fused.io/#troubleshooting-notfound"}
         tail = stderr.splitlines()
         return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
     return json.loads(proc.stdout)

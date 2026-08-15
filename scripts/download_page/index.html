@@ -947,15 +947,27 @@
   })();
 
   // Troubleshooting master–detail: clicking an error on the left shows its
-  // explanation + fix on the right.
+  // explanation + fix on the right. The app's error messages deep-link with a
+  // per-error suffix (#troubleshooting-login/-notfound/-limit) — honor it, or
+  // a plan-limit user would land on a panel telling them to run /login. The
+  // suffix is not an element id, so the scroll is ours to do too.
   (function () {
-    document.querySelectorAll(".terr").forEach((b) => {
-      b.addEventListener("click", () => {
-        document.querySelectorAll(".terr, .tfix").forEach((el) => {
-          el.classList.toggle("active", el.dataset.err === b.dataset.err);
-        });
+    function activate(err) {
+      document.querySelectorAll(".terr, .tfix").forEach((el) => {
+        el.classList.toggle("active", el.dataset.err === err);
       });
+    }
+    document.querySelectorAll(".terr").forEach((b) => {
+      b.addEventListener("click", () => activate(b.dataset.err));
     });
+    function honorHash() {
+      const m = location.hash.match(/^#troubleshooting-(\w+)$/);
+      if (!m || !document.querySelector('.terr[data-err="' + m[1] + '"]')) return;
+      activate(m[1]);
+      document.getElementById("troubleshooting").scrollIntoView();
+    }
+    window.addEventListener("hashchange", honorHash);
+    honorHash();
   })();
 
   // Download tabs: click to switch; auto-select the visitor's OS.
