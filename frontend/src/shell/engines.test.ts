@@ -149,6 +149,16 @@ describe("wouldChangeEngine", () => {
     expect(wouldChangeEngine(windows(), AUTO, AUTO)).toBe(false);
   });
 
+  it("is false when clearing an override that names what auto picks anyway", () => {
+    // The common case on the machine the preference was SET on: a Mac user
+    // explicitly picks mlx-whisper, which is also what registry order resolves
+    // to. Going back to Automatic stores a different value and changes nothing
+    // — no worker is stale, so nothing is unloaded, and the suggestion list is
+    // identical. Claiming otherwise teaches the user the message means nothing.
+    const row = mac({ selected: "mlx-whisper" });
+    expect(wouldChangeEngine(row, AUTO, AUTO)).toBe(false);
+  });
+
   it("is true when clearing an override that WAS in force", () => {
     const row = mac({
       selected: "faster-whisper",

@@ -202,7 +202,7 @@ Progress resolution differs slightly by engine — the MLX runner reports once p
 
 ## What Actually Runs Locally Today
 
-Four runners ship, serving three capabilities. All take **Hugging Face repo ids**, and each needs its own machine support:
+Five runners ship, serving three capabilities. All take **Hugging Face repo ids**, and each needs its own machine support:
 
 | Capability | Runners (best first) | Reality |
 |---|---|---|

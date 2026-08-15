@@ -72,16 +72,39 @@ export function choiceReason(choice: EngineChoice): string | null {
  *  model and changes the suggested models on the AI Models page, and neither
  *  should be a surprise. Choosing an unusable runner changes what is stored and
  *  nothing else, so it earns no warning.
+ *
+ *  **The question is always "does the EFFECTIVE runner move", never "does the
+ *  stored value move".** Those come apart in both directions, and getting it
+ *  wrong is not harmless in either: a missing warning hides an unload, and a
+ *  spurious one claims a model was evicted and a list rewritten when the server
+ *  did nothing at all — which teaches the user that the message means nothing.
  */
 export function wouldChangeEngine(row: CapabilityEngine, code: string, auto: string): boolean {
   if (code === row.selected) return false;
   if (code === auto) {
-    // Back to automatic: it changes things only if the stored preference was
-    // the thing in force. An override that was ALREADY being ignored resolves
-    // to the automatic answer today, so clearing it moves nothing.
-    return row.ignoredReason === null && row.selected !== auto;
+    // Back to automatic. `effective` is what auto would resolve to whenever the
+    // stored override is NOT in force, so an ignored override moves nothing —
+    // and an HONOURED one moves nothing either when it happens to name the
+    // runner auto would have picked anyway, which is the common case on the
+    // machine the preference was set on (a Mac that chose mlx-whisper, the same
+    // runner the registry order puts first). Comparing against the ordering's
+    // own answer is the only way to tell those apart, so `auto` is the one
+    // option whose consequence cannot be decided from `selected` alone.
+    return row.ignoredReason === null && row.selected !== auto
+      && !isFirstAvailable(row, row.selected);
   }
   const choice = row.choices.find((c) => c.code === code);
   if (!choice?.available) return false;
   return code !== row.effective;
+}
+
+/** Is `code` what the registry's ordering would pick on its own?
+ *
+ *  The server's rows arrive in registry order and carry each runner's
+ *  availability, so "what auto resolves to" is derivable here rather than
+ *  needing a second field — first-match-wins over the same list the server
+ *  filters, which is the rule `registry._first_available` implements.
+ */
+function isFirstAvailable(row: CapabilityEngine, code: string): boolean {
+  return row.choices.find((c) => c.available)?.code === code;
 }

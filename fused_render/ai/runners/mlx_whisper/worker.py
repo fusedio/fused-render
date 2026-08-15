@@ -325,7 +325,7 @@ def _await_orphan(job, row):
     _orphan["thread"] = None
 
 
-def _call_with_ticks(call, job, row, progress):
+def _call_with_ticks(call, job, row, progress, cancelled=None):
     """Run `call()` on a thread, ticking once a second until it returns.
 
     `progress()` is asked, on every tick, what to say: it returns
@@ -339,6 +339,24 @@ def _call_with_ticks(call, job, row, progress):
     Same shape as `worker_base.fetch_with_progress`, and for the same reason:
     the poll IS the progress and the cancellation point. `report_or_cancel` is
     what carries a ✕ back — a plain `report` cannot.
+
+    **A ✕ that lands while the work is FINISHING does not discard it.** `cancelled`
+    is the caller's flag, set to `{"late": True}` when the ✕ arrived but `call()`
+    had already returned; the value is handed back normally and the caller
+    decides what a cancel means at that point. Without it there is a window of up
+    to `worker_base.JOB_TIMEOUT_S` (3s) — the round trip of the very tick that
+    carries the ✕ — in which a completed transcription is thrown away: liveness
+    was read BEFORE the report, so a `transcribe()` that returned during it still
+    took the cancel branch, orphaned a thread that had already finished, and
+    raised with `result["value"]` in hand and nothing written to disk. That is
+    the failure `faster_whisper/worker.py` documents as "an hour of decoding
+    discarded at 99%", reached by a different route: there the race is a cancel
+    on the last SEGMENT, here it is a cancel during the last REPORT.
+
+    Only a value is salvaged. A call that finished by RAISING has nothing worth
+    keeping, so the cancel stands and is the better answer — the user asked to
+    stop, and reporting the failure of work they abandoned sends them looking
+    for a fault that does not matter.
     """
     result = {}
 
@@ -361,18 +379,41 @@ def _call_with_ticks(call, job, row, progress):
             if not worker_base.CANCEL.is_set():
                 continue
         except BaseException:
+            # The report itself carried the ✕ back (or failed). Liveness is
+            # re-read HERE rather than trusted from before the call, because the
+            # call is where the time went — see the docstring's window.
+            if _finished(thread, result):
+                if cancelled is not None:
+                    cancelled["late"] = True
+                break
             # Handing the thread over BEFORE unwinding, so the next request
             # waits for it — and asking it to stop on the way past, which is
             # what usually makes that wait instant.
             _STOP.set()
             _orphan["thread"] = thread
             raise
+        if _finished(thread, result):
+            if cancelled is not None:
+                cancelled["late"] = True
+            break
         _STOP.set()
         _orphan["thread"] = thread
         raise worker_base.Cancelled()
     if "error" in result:
         raise result["error"]
     return result["value"]
+
+
+def _finished(thread, result):
+    """Has the work already produced a value? — the last-second cancel guard.
+
+    Both halves are needed and neither implies the other: a thread can be gone
+    from `is_alive()` a moment before `run()`'s assignment is visible on this
+    one, and `result` can hold an `error` from a call that finished with nothing
+    to salvage. Asking for a VALUE from a thread that has stopped is the only
+    state in which a cancel has arrived too late to be worth honouring.
+    """
+    return not thread.is_alive() and "value" in result
 
 
 # ------------------------------------------------------------------- progress
@@ -563,8 +604,18 @@ def generate(body):
     # it is not free: a 90-minute recording is a real decode, and it is the one
     # phase with no progress hook inside it, so its ticks carry no numbers and
     # exist to keep the row alive and the ✕ answerable.
+    decode_cancel = {}
     audio = _call_with_ticks(lambda: _decode_audio(source), job, row,
-                             lambda: (None, None, "Decoding audio…"))
+                             lambda: (None, None, "Decoding audio…"),
+                             cancelled=decode_cancel)
+    if decode_cancel.get("late"):
+        # The ✕ landed as the DECODE finished, so nothing was lost by letting it
+        # complete — but the transcription has not started, and that is all of
+        # the work. A cancel is worth honouring exactly while there is work left
+        # to stop (the CT2 runner's rule), and here there is essentially all of
+        # it, so the salvage is refused rather than turned into a run the user
+        # asked not to have.
+        raise worker_base.Cancelled()
     # The duration is OURS here, not the decoder's: we hold the samples, so it
     # is exact rather than a container's declared length. It is also available
     # before the model sees a thing, which is what lets the very first
@@ -602,13 +653,24 @@ def generate(body):
     # including the silent ones) and the default is the library's own 0.6.
     # Mapping it is the honest reading of the flag; accepting it and ignoring it
     # would answer a request that was made.
+    #
+    # A ✕ landing while this call RETURNS is not honoured: the transcript is
+    # complete, the decoding is spent, and there is nothing left to stop —
+    # exactly the case `faster_whisper/worker.py` guards on its last segment.
+    # The files are written below as if no cancel had happened, because from
+    # the user's side that is the truth: the work finished. `_call_with_ticks`
+    # reports the flag rather than acting on it precisely so the two phases can
+    # answer this question differently. The flag is collected and deliberately
+    # not read: passing the dict is what turns the raise into a return, and
+    # there is nothing further to decide once it has.
+    late_cancel = {}
     with _watch_progress(position):
         result = _call_with_ticks(
             lambda: module.transcribe(
                 audio, path_or_hf_repo=fetched, task=task, language=language,
                 initial_prompt=initial_prompt, verbose=False,
                 **({} if vad else {"no_speech_threshold": None})),
-            job, row, progress)
+            job, row, progress, cancelled=late_cancel)
 
     segments = [
         {

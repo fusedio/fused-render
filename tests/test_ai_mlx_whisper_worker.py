@@ -91,6 +91,10 @@ class FakeTranscribeModule(types.ModuleType):
         self.language = language
         self.seconds_per_window = seconds_per_window
         self.max_concurrent = 0
+        #: Set when `transcribe` RETURNS, so a test can land a cancel in the
+        #: window between the work finishing and the tick that carries the ✕
+        #: being answered — the race the last-second guard is about.
+        self.done = threading.Event()
         self._live = 0
         self._lock = threading.Lock()
 
@@ -128,6 +132,7 @@ class FakeTranscribeModule(types.ModuleType):
         finally:
             with self._lock:
                 self._live -= 1
+            self.done.set()
 
 
 class _NoBar:
@@ -490,6 +495,129 @@ def test_a_cancel_while_transcribing_is_honoured_and_writes_nothing(
 
     assert not os.path.exists(request["out"])
     assert not os.path.exists(request["outText"])
+
+
+def test_a_cancel_that_lands_as_the_transcript_FINISHES_still_writes_it(
+        monkeypatch, loaded, base, tmp_path):
+    """The race, driven directly: the ✕ arrives during the very tick that
+    carries it, while `transcribe()` is returning.
+
+    Liveness is read before the report and the report is a round trip to the
+    server — up to `JOB_TIMEOUT_S`, 3 seconds — so a transcription that finished
+    inside that window used to take the cancel branch anyway: it orphaned a
+    thread that had already stopped and raised with the finished transcript in
+    hand and nothing on disk. An hour of decoding discarded at 99%, which is the
+    failure the CT2 runner documents on its last SEGMENT, reached here through
+    the last REPORT.
+
+    The double `is_alive()` — before the report, and again after it — is what
+    tells "still working" from "finished while we were asking", so the fake
+    tick below finishes the work IN THE MIDDLE of the report, which is the only
+    way to exercise the guard rather than the clean-cancel path beside it.
+    """
+    worker, transcribe = loaded(windows=(500,), seconds_per_window=0.05,
+                                segments=[_segment(0.0, 1.5, "hello"),
+                                          _segment(1.5, 3.0, "world")])
+    request = _request(tmp_path)
+
+    # The tick that carries the ✕ waits for the work to finish before answering
+    # — which is what a slow round trip does by accident, and the only way to
+    # land a cancel in the window this guard is about.
+    real_report = base.report_or_cancel
+
+    def slow_tick(job=None, **fields):
+        if "Transcribing" in str(fields.get("detail") or ""):
+            assert transcribe.done.wait(5), "the fake decode never finished"
+            base.cancel_on_tick = len(base.ticks) + 1
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(base, "report_or_cancel", slow_tick)
+
+    result = worker.generate(request)
+
+    # The transcript survived, in both files, exactly as an uncancelled run.
+    assert result["segments"] == 2
+    assert json.load(open(request["out"], encoding="utf-8"))["text"] == "hello world"
+    assert open(request["outText"], encoding="utf-8").read() == "hello world\n"
+    # And nothing was orphaned: there was never a live thread to abandon, and a
+    # phantom orphan would make the NEXT transcription wait on it.
+    assert worker._orphan["thread"] is None
+
+
+def test_a_cancel_as_the_AUDIO_DECODE_finishes_is_still_honoured(
+        monkeypatch, base, tmp_path):
+    """The other side of the same guard, and the reason the decision belongs to
+    the CALLER rather than to `_call_with_ticks`.
+
+    A ✕ landing as the decode returns has lost nothing — but the transcription
+    has not started, and that is all of the work. So the salvage is refused
+    here: a cancel is worth honouring exactly while there is work left to stop,
+    and letting a completed decode carry on into a run the user asked not to
+    have would be the rule upside down.
+    """
+    av_module = make_av(seconds=5.0)
+    real_open = av_module.open
+
+    def _slow_open(path):
+        time.sleep(0.15)
+        return real_open(path)
+
+    av_module.open = _slow_open
+    transcribe = FakeTranscribeModule(windows=(500,))
+    worker = load_worker(monkeypatch, base, transcribe_module=transcribe,
+                         av_module=av_module)
+    worker._loaded["path"] = str(tmp_path / "snap")
+    worker._TICK_S = 0.02
+    request = _request(tmp_path)
+
+    # The tick answers only once the decode has finished — the same window the
+    # test above exercises, on the phase where the answer must be different.
+    real_report = base.report_or_cancel
+
+    def slow_tick(job=None, **fields):
+        if "Decoding" in str(fields.get("detail") or ""):
+            time.sleep(0.3)
+            base.cancel_on_tick = len(base.ticks) + 1
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(base, "report_or_cancel", slow_tick)
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(request)
+    assert not transcribe.calls, "a cancelled run still went on to transcribe"
+    assert not os.path.exists(request["out"])
+
+
+def test_work_that_FAILED_as_the_cancel_landed_stays_cancelled(
+        monkeypatch, base, tmp_path):
+    """Only a VALUE is salvaged. Work that finished by RAISING has nothing worth
+    keeping, so the ✕ is the outcome — reporting the failure of a run the user
+    abandoned sends them looking for a fault that does not matter."""
+    av_module = make_av(seconds=5.0)
+
+    def _explode(path):
+        time.sleep(0.15)
+        raise RuntimeError("moov atom not found")
+
+    av_module.open = _explode
+    transcribe = FakeTranscribeModule(windows=(500,))
+    worker = load_worker(monkeypatch, base, transcribe_module=transcribe,
+                         av_module=av_module)
+    worker._loaded["path"] = str(tmp_path / "snap")
+    worker._TICK_S = 0.02
+
+    real_report = base.report_or_cancel
+
+    def slow_tick(job=None, **fields):
+        if "Decoding" in str(fields.get("detail") or ""):
+            time.sleep(0.3)  # the decode raises during this
+            base.cancel_on_tick = len(base.ticks) + 1
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(base, "report_or_cancel", slow_tick)
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
 
 
 def test_a_cancel_STOPS_the_decode_rather_than_letting_it_run_the_file_out(
