@@ -141,6 +141,16 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
         capture_output=True, text=True, timeout=60, close_fds=False,
     )
     if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()
+        stderr = (proc.stderr or "").strip()
+        # _claude_bin's FileNotFoundError arrives here as a traceback whose
+        # last line is the "Also looked in: ..." tail of a multi-line message
+        # — useless on its own. Recognize it and say the one thing the user
+        # can act on instead.
+        if "claude CLI not found" in stderr:
+            return {"error":
+                    "Claude Code isn't installed (or couldn't be found). "
+                    "Install it, check that `claude` runs in a terminal, then "
+                    "try again. Help: https://render.fused.io/#troubleshooting"}
+        tail = stderr.splitlines()
         return {"error": "session helper failed: " + (tail[-1] if tail else "unknown")}
     return json.loads(proc.stdout)

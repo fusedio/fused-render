@@ -393,6 +393,60 @@
     }
   }
 
+  /* ---------- user guide ---------- */
+  .guide { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .guide h2 { margin: 0 0 6px; }
+  .guide > p { color: var(--muted); margin: 0 0 26px; max-width: 62ch; }
+  .guide h3 {
+    font-size: 17px;
+    letter-spacing: -0.01em;
+    margin: 34px 0 14px;
+  }
+  .guide h3:first-of-type { margin-top: 0; }
+  .guide .steps li { max-width: 46ch; }
+  .guide .steps code, .trouble code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 6px;
+    font-size: 13px;
+  }
+  .guide pre {
+    position: relative;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 46px 10px 12px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    margin: 14px 0 0;
+    max-width: 560px;
+  }
+  @media (max-width: 640px) {
+    .guide pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  }
+  /* Troubleshooting: the exact error text users see, then the fix. */
+  .trouble { display: grid; gap: 14px; padding: 0; margin: 0; }
+  .trouble li {
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 14px 16px;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 72ch;
+  }
+  .trouble .err {
+    display: block;
+    font: 600 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .trouble b { color: var(--text); }
+
   footer {
     text-align: center;
     color: var(--muted);
@@ -446,6 +500,7 @@
     <nav>
       <a href="#gallery">Examples</a>
       <a href="#how">How it works</a>
+      <a href="#guide">User guide</a>
       <a href="about.html">Why we built it</a>
     </nav>
   </div>
@@ -565,6 +620,56 @@
     </div>
   </section>
 
+  <section class="guide" id="guide">
+    <h2>User guide</h2>
+    <p>Everything you need to go from download to your first rendered file.
+    Browsing works out of the box; building apps with Claude needs
+    <a rel="noopener" href="https://code.claude.com/docs/en/overview">Claude Code</a>
+    installed and logged in.</p>
+
+    <h3>1. Install Claude Code</h3>
+    <ol class="steps">
+      <li><b>Install it.</b> Open Terminal and run the command below, or
+      <code>npm install -g @anthropic-ai/claude-code</code> if you prefer npm.</li>
+      <li><b>Log in.</b> Run <code>claude</code>, then type <code>/login</code>
+      and follow the browser prompt. A Claude.ai account works.</li>
+      <li><b>Test it.</b> Still inside <code>claude</code>, say
+      <code>hi</code>. A reply means you're ready.</li>
+    </ol>
+    <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
+
+    <h3>2. Install Fused Render on macOS</h3>
+    <ol class="steps">
+      <li><b>Download the DMG</b> from the <a href="#downloads">downloads
+      section</a> above.</li>
+      <li><b>Open it and drag</b> the Fused Render icon into the Applications
+      folder in the window that appears.</li>
+      <li><b>Launch it</b> from Applications (or Spotlight). It's signed and
+      notarized — it opens like any Mac app.</li>
+    </ol>
+
+    <h3 id="troubleshooting">Troubleshooting</h3>
+    <ul class="trouble">
+      <li><span class="err">Invalid API key · Please run /login</span>
+      Claude Code isn't logged in. Open Terminal, run <code>claude</code>,
+      type <code>/login</code> and finish the browser sign-in, then retry in
+      Fused Render.</li>
+      <li><span class="err">Claude didn't start / claude not found</span>
+      Claude Code isn't installed, or the app can't find it. Install it with
+      the command in step 1, test it with <code>claude</code> in Terminal,
+      then restart Fused Render.</li>
+      <li><span class="err">Usage limit reached / session limit</span>
+      Your Claude plan's usage cap was hit. Wait for the limit to reset
+      (the error says when) or upgrade your plan at
+      <a rel="noopener" href="https://claude.ai/settings">claude.ai</a>.</li>
+      <li><span class="err">A raw error appears in the app</span>
+      Most raw errors trace back to one of the above. Fix the login or
+      install in Terminal first, then start a new chat in Fused Render.
+      Still stuck? <a rel="noopener" href="https://github.com/fusedio/fused-render/issues">Open an issue</a>
+      with the error text.</li>
+    </ul>
+  </section>
+
   <section class="gallery" id="gallery">
     <div class="gallery-head">
       <h2>Built with Fused Render</h2>
@@ -600,6 +705,7 @@
 
   <footer>
     <a href="about.html">Why we built it</a>
+    · <a href="#guide">User guide</a>
     · <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
     · <a rel="noopener" href="https://github.com/fusedio/fused-render-examples">Examples</a>
     · <a rel="noopener" href="https://www.fused.io">fused.io</a>
