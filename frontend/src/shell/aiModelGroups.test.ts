@@ -201,10 +201,21 @@ describe("why Load is refused", () => {
     expect(loadRefusal(QWEN_NO_ENGINE)).toContain("format");
   });
 
+  // The refusal has to agree with the heading the card is sitting under. Both
+  // repos have `engine: null`, and one sentence for both told the reader that
+  // the Wespeaker orphan had a format problem somebody had diagnosed — under a
+  // heading saying nothing here recognises it at all.
+  it("does not blame the format for a repo it cannot identify at all", () => {
+    const why = loadRefusal(WESPEAKER) ?? "";
+    expect(why).toContain("Nothing here recognises");
+    expect(why).not.toContain("format");
+  });
+
   it("names the owner for a component, and does not call it a model", () => {
     const why = loadRefusal(GGUF_COMPONENT);
     expect(why).toContain("FLUX.2 klein 4B");
     expect(why).toContain("not a model");
+    expect(why).toContain("quantized transformer");
   });
 
   // The registry's own sentence, quoted rather than paraphrased: it is the only

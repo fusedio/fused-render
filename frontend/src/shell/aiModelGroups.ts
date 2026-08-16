@@ -151,7 +151,7 @@ export function loadRefusal(repo: AiModelRepo): string | null {
     // a model. Naming the owner is what makes that checkable by the reader.
     return (
       `Part of ${repo.component.owner}, not a model — a ${repo.component.part} ` +
-      "the engine fetched for itself. There is nothing here to load."
+      "this app downloaded for it. There is nothing here to load."
     );
   }
   if (repo.kind !== "model") {
@@ -160,6 +160,19 @@ export function loadRefusal(repo: AiModelRepo): string | null {
     return `This is a ${repo.kind}, not a model — nothing here loads one.`;
   }
   if (!repo.engine) {
+    // Two different nothings, and blaming the FORMAT for both is what put the
+    // Wespeaker orphan and a perfectly identifiable Qwen checkpoint behind the
+    // same sentence. With a capability we know what the repo is FOR and the
+    // format really is the obstacle; without one we know nothing about it at
+    // all, and saying "no engine reads this format" implies a diagnosis nobody
+    // made. This second sentence has to agree with the Unrecognised heading
+    // above the card, or the group and the button contradict each other.
+    if (repo.capability === null) {
+      return (
+        "Nothing here recognises this repo — not a model this app can load, " +
+        "and not part of one. There is nothing to load it as."
+      );
+    }
     return (
       "No local engine reads this repo's weight format. The formats are not " +
       "interchangeable — a Whisper repo comes as CTranslate2, MLX or " +
