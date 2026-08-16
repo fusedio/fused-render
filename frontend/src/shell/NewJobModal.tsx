@@ -461,6 +461,7 @@ function Dropdown({
           aria-label={ariaLabel}
           style={popStyle(btnRef.current, options.length * 34 + 10, true)}
           onMouseDown={(e) => e.preventDefault()}
+          onMouseLeave={() => setActive(-1)}
         >
           {options.map((o, i) => (
             <button

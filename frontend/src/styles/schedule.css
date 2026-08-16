@@ -32,7 +32,9 @@
    kinds of content in it: text you read a line at a time, and surfaces you
    scan. tests/test_schedule_css.py pins the pairing. */
 .schedule-page > .prefs-section {
-  max-width: 1120px;
+  /* Full width (Akshil, 2026-08-16) — the calendar, list and board all use
+     whatever the window gives them; only prose keeps the reading measure. */
+  max-width: none;
 }
 
 .schedule-page .prefs-section > p {
@@ -1124,15 +1126,14 @@ input.schedule-when-field {
   text-overflow: ellipsis;
 }
 
-/* Hover paints NOTHING here — the cursor (.is-active, kept in sync by
-   onMouseEnter) is the single source of the wash, and arrows can park it
-   away from the pointer; a hover wash of its own made two lit rows again
-   (Bugbot, PR #548). The rule still exists to beat the .deploy-body button
-   hover skin to transparent. */
+/* The menus mirror the TIME LIST exactly (Akshil, 2026-08-16): hover wash
+   follows the pointer; the selection is lit when nothing is hovered and
+   yields while something is. The keyboard cursor resets on mouse-leave in
+   the component, so the two sources never light two rows. */
 .schedule-menu-item:hover:not(:disabled),
 .deploy-body .schedule-menu-item:hover:not(:disabled),
 .prefs-section .schedule-menu-item:hover:not(:disabled) {
-  background: transparent;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: transparent;
 }
 
@@ -1145,7 +1146,13 @@ input.schedule-when-field {
 .schedule-menu-item.is-selected,
 .deploy-body .schedule-menu-item.is-selected,
 .prefs-section .schedule-menu-item.is-selected {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   font-weight: 600;
+}
+
+.schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover):not(.is-active),
+.deploy-body .schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover):not(.is-active) {
+  background: transparent;
 }
 
 .schedule-time-list:has(.schedule-time-slot:hover) .schedule-time-slot.is-selected:not(:hover),

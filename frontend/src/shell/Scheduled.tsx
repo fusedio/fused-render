@@ -407,6 +407,11 @@ export default function Scheduled() {
           state's own wording ("skipped") — not as standing copy. */}
       <header>
         <h1>Schedule</h1>
+        {/* One quiet line, no mechanics essay (Akshil, 2026-08-16: "one small
+            line of description wouldn't hurt anybody"). */}
+        <p className="deploy-muted">
+          Tasks Claude runs for you, at the times you choose.
+        </p>
       </header>
 
       {loadError && <ErrorBanner>Failed to load scheduled messages: {loadError}</ErrorBanner>}

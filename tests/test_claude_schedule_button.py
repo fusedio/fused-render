@@ -158,7 +158,7 @@ def test_the_confirm_says_what_travels(source):
     pop = source[source.index('<div id="schedpop"'):]
     pop = pop[:pop.index("\n  </div>")]
     assert "Schedule this as a task?" in pop
-    assert "The description and folder come along." in pop
+    assert "This task will be scheduled to run at a specific time." in pop
     assert ">Continue<" in pop and ">Cancel<" in pop
     # the primary is the one that commits, like .send in the composer
     assert 'class="schedpop-btn go"' in pop

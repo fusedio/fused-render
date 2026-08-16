@@ -54,7 +54,9 @@ def test_the_sections_opt_out_of_the_prose_column():
     assert granted, (
         "the schedule sections must opt out of the .prefs-page content column; "
         "without this rule the calendar and board inherit 760px")
-    assert int(re.match(r"(\d+)px", granted).group(1)) > 760
+    # Full width now (Akshil, 2026-08-16): the opt-out is `none`, or any cap
+    # comfortably past the 760px prose column.
+    assert granted == "none" or int(re.match(r"(\d+)px", granted).group(1)) > 760
 
 
 def test_the_page_actually_carries_the_class_that_rule_hangs_off():
