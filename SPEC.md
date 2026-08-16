@@ -6528,12 +6528,17 @@ world from one the user typed.
     body: it sends things, and every test that builds an app would otherwise
     spawn whatever the developer's store held) and does not sleep before its
     first pass.
-  - **SCH-3b** **A bound on how late is still worth sending**
-    (`FUSED_RENDER_SCHEDULE_MAX_LATE`, default 24h). Unbounded catch-up is its
-    own bug: a message meant for Tuesday's standup, fired unattended on Friday
-    against a repo that has moved on, is worse than one that never fired. Past
-    the bound an entry becomes `missed` — visible, never sent. `GET /api/schedule`
-    reports the bound, because the page cannot explain a `missed` entry without it.
+  - **SCH-3b** **Missed work QUEUES and runs when the app next opens; there is no
+    bound by default.** The earlier design bounded catch-up at 24h on the reasoning
+    that a message meant for Tuesday's standup, fired unattended on Friday, is worse
+    than one that never fired. That reasoning was sound about *unattended* firing and
+    is answered directly now rather than by a timer: the queue is visible before it
+    runs (the Calendar's Queued strip), every entry in it can be cancelled, and a
+    running one carries its own cancel. Given a cancel affordance, a bound only
+    throws work away silently. `FUSED_RENDER_SCHEDULE_MAX_LATE` still reinstates a
+    bound where an operator wants one, and only then does an entry become `missed`.
+    `GET /api/schedule` reports `max_late_seconds: null` when unbounded — the page
+    must read null as "no bound", never as zero.
 - **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
   *before* the helper is launched, so a process that dies mid-spawn leaves it
   `sending` rather than `pending` and the next boot does not resend it; a sweep
@@ -6814,11 +6819,15 @@ world from one the user typed.
   computed from the latest occurrence ever created (never earlier than now).
   Everything downstream — claim-before-spawn, job rows, the event log, the
   watcher — handles only one-shots, unchanged.
-- **SCH-13** **A missed recurring run is SKIPPED, never caught up.** Occurrences
-  carry `max_late: 120` where one-shots keep the day-long global bound: replaying
-  "daily at 9am" at 2pm is not what the words meant, and the next run is already
-  coming. The two minutes absorb tick jitter only. The missed verdict is worded
-  as "skipped", and the next materialization rolls past every missed slot.
+- **SCH-13** **A recurring backlog COALESCES to its latest run, never replays.**
+  Where a one-shot missed by a week still runs (SCH-3b), a repeat missed five times
+  runs **once** — replaying "daily at 9am" five times into one thread is not what
+  the words meant. `_coalesce` walks the recurrence before `_materialize`, keeps the
+  most recent missed occurrence and counts the rest onto it as `skipped` /
+  `skipped_note`, announced as a single event ("4 earlier runs skipped") rather than
+  four. Occurrences no longer carry `max_late: 120`; a legacy one is cleared by the
+  coalescer. `count`/`until` budgets are spent by skipped runs, following the same
+  rule `create` already applies.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at
