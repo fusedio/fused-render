@@ -356,6 +356,25 @@
   color: var(--fg-muted);
 }
 
+/* The facts the card's face gave up: file count, revision count, branch,
+   added date. A middot-separated run rather than a table, because it is the
+   same sentence the footer used to hold — it has just moved somewhere it is
+   read one repo at a time instead of a dozen at once. The separator belongs to
+   the item that follows it, so an absent branch leaves no dangling middot. */
+.am-drawer-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  padding: 6px 0 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.am-drawer-facts > span + span::before {
+  content: "·";
+  margin: 0 8px;
+}
+
 .am-rev {
   display: flex;
   align-items: center;

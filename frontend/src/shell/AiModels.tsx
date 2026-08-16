@@ -328,10 +328,15 @@ function RepoCard({
   onLoad: () => void;
   onUnload: () => void;
 }) {
-  // Whether the revisions drawer has anything to show. Read twice — by the
-  // expander and by the drawer's own guard below — from one name, so the two
-  // cannot come apart.
+  // Whether the drawer has a REVISION list in it. The drawer itself always has
+  // something to show now (the facts the card's face no longer carries), so
+  // this no longer gates the expander — only the list inside it.
   const hasRevisions = repo.revisions > 1;
+  // Whether the ENGINE tag is the one actually drawn on this card — a
+  // component wears "part of X" instead, and a dataset wears nothing. Read by
+  // the format chip below, which exists only to answer a question the engine
+  // tag already answered when it is there.
+  const showsEngineTag = !repo.component && repo.kind === "model" && !!repo.engine;
   const when = timeAgo(repo.lastUsed ?? repo.mtime);
   // "added", not "released": the Hub's release date isn't on this disk (see the
   // endpoint), so the card states the date this machine actually knows.
@@ -524,19 +529,32 @@ function RepoCard({
             {repo.quantization}
           </span>
         )}
-        {repo.library && <span className="am-card-library">{repo.library}</span>}
+        {/* The weight FORMAT, and only where nothing else on the row already
+            said it. An engine tag IS a format claim — "MLX LM" is exactly the
+            statement that these weights are mlx — so printing both put the
+            word "MLX" on the card three times (tag, format, `mlx-community/`
+            in the name) and told the reader nothing on the second and third.
+            A repo with no engine tag is the case this survives for: there the
+            library is the only evidence of what the download actually is. */}
+        {repo.library && !showsEngineTag && (
+          <span className="am-card-library">{repo.library}</span>
+        )}
       </div>
       {/* What this model is doing RIGHT NOW, as opposed to what it is. Absent
           when the answer is "sitting on disk", which is what every card would
           otherwise say — a row of identical chips carries no information. */}
       {(loaded || job) && <RuntimeChip loaded={loaded} job={job} />}
       <div className="cc-mdcard-foot">
-        <span className="cc-mdcard-meta">
-          {repo.files} {repo.files === 1 ? "file" : "files"}
-          {repo.revisions > 1 ? ` · ${repo.revisions} revisions` : ""}
-          {repo.refs.length ? ` · ${repo.refs.join(", ")}` : ""}
-          {when ? ` · used ${when}` : ""}
-          {added ? ` · added ${added}` : ""}
+        {/* ONE fact, not five. "15 files · main · used 4h ago · added 4h ago"
+            was four numbers competing for the same glance, and only one of
+            them is ever the reason someone is looking at this grid: how long
+            it has been since anything read this. The file count, the branch
+            and the added date are still HERE — they moved into the drawer the
+            chevron beside this already opens (see below), because they are
+            answers to a question about one repo rather than facts to sweep a
+            grid with. */}
+        <span className="cc-mdcard-meta" title={added ? `Added ${added}` : undefined}>
+          {when ? `used ${when}` : ""}
         </span>
         <span className="cc-mdcard-actions">
           {/* Load / Unload — the one control on this page that costs MEMORY
@@ -631,31 +649,17 @@ function RepoCard({
               <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
             </svg>
           </a>
-          {/* Disabled at a single revision, not removed. It does nothing there
-              — deleting "the revision" and deleting the repo are the same act,
-              and two controls for it would only ask the user to tell them apart
-              — but a chevron that is present on some cards and absent on others
-              is a difference the reader has to notice and then explain, and the
-              explanation is a fact about the repo worth stating outright. */}
+          {/* No longer ever disabled: every card has details to open now (the
+              file count, the branch and the added date the face gave up), and
+              a repo with more than one revision gets its revision list under
+              them. It used to be dead at a single revision, which was honest
+              while "revisions" was the only thing behind it. */}
           <button
             type="button"
             className={"cc-iconbtn" + (expanded ? " cc-btn-on" : "")}
-            disabled={!hasRevisions}
-            title={
-              hasRevisions
-                ? expanded
-                  ? "Hide revisions"
-                  : "Show revisions"
-                : `${repo.id} has one revision, so there is nothing to expand — deleting it and deleting the repo are the same act.`
-            }
-            aria-label={
-              hasRevisions
-                ? `${expanded ? "Hide" : "Show"} revisions of ${repo.id}`
-                : `Revisions of ${repo.id} — only one, nothing to expand`
-            }
-            /* Only where it describes something. A disabled control that
-               announces itself as collapsed invites the reader to expand it. */
-            aria-expanded={hasRevisions ? expanded : undefined}
+            title={expanded ? `Hide details of ${repo.id}` : `Show details of ${repo.id}`}
+            aria-label={`${expanded ? "Hide" : "Show"} details of ${repo.id}`}
+            aria-expanded={expanded}
             onClick={onToggle}
           >
             <svg
@@ -669,7 +673,7 @@ function RepoCard({
               strokeLinejoin="round"
               aria-hidden="true"
             >
-              <path d={expanded && hasRevisions ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+              <path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
             </svg>
           </button>
           <button
@@ -696,12 +700,23 @@ function RepoCard({
           </button>
         </span>
       </div>
-      {/* Kept even though the expander is now always rendered: the expander
-          being DISABLED at one revision is not the same as this drawer being
-          closed, and a repo that drops to one revision under a deletion must
-          collapse itself rather than strand an open drawer above a control that
-          can no longer close it. */}
-      {expanded && hasRevisions && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
+      {/* The drawer. Everything the card's face used to state in a four-clause
+          meta line, plus the revision list when there is more than one — the
+          facts are not gone, they are one click away instead of on every card
+          in the grid at once. */}
+      {expanded && (
+        <>
+          <div className="am-drawer-facts">
+            <span>
+              {repo.files} {repo.files === 1 ? "file" : "files"}
+            </span>
+            {repo.revisions > 1 && <span>{repo.revisions} revisions</span>}
+            {repo.refs.length > 0 && <span>{repo.refs.join(", ")}</span>}
+            {added && <span>added {added}</span>}
+          </div>
+          {hasRevisions && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
+        </>
+      )}
     </div>
   );
 }
@@ -1138,10 +1153,13 @@ export default function AiModels() {
               {grouped.components.repos.length > 0 && (
                 <section className="am-section">
                   <SectionHead title="Fetched by engines" size={grouped.components.size} />
+                  {/* One sentence. The three it replaced said WHY these are
+                      listed at all, which the heading and the "part of X" tag
+                      on every card already answer — what only prose can carry
+                      is that deleting one is safe, and that is what is left. */}
                   <p className="am-group-note">
-                    Downloaded by a runner to do its job — nobody chose these. They are listed
-                    and deletable because they eat the same disk as everything above; delete one
-                    and the next run that needs it fetches it again.
+                    Nobody chose these — a runner fetched them to do its job, and deleting one
+                    only means the next run that needs it fetches it again.
                   </p>
                   <div className="cc-mdgrid am-grid">{grouped.components.repos.map(card)}</div>
                 </section>
