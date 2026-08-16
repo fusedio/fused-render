@@ -374,6 +374,120 @@ def test_fetch_with_progress_re_raises_on_the_calling_thread(base, monkeypatch):
         base.fetch_with_progress("org/m", boom, total=None)
 
 
+# -- a fetch that happens inside a REQUEST, on a row with a live ✕ ---------------
+#
+# These fetches used to own a model-load row, whose ✕ the supervisor answers by
+# killing the process — so a plain `report` was enough. A component model pulled
+# during a transcription reports into a row whose `cancellable` is True and
+# whose ✕ has to stop THIS work, and the reply to the tick is the only channel
+# that reaches a thread parked inside huggingface_hub.
+
+
+def _slow_fetch(seconds=0.2):
+    def call():
+        time.sleep(seconds)
+        return "/snap"
+    return call
+
+
+def test_a_fetch_honours_the_cross_pressed_on_the_row_it_reports_to(base, monkeypatch):
+    """`cancel_requested` comes back on the reply to the tick we were sending
+    anyway. Without this the user pressed ✕, the manager recorded it, and 33MB
+    carried on downloading behind a row that went on saying "running"."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    # `report` rather than `_send`: `report` short-circuits to None unless
+    # `JOB_URL` is a real http address, so a `_send` stub is never reached here
+    # and the test would pass against a fetch that ignores cancellation.
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: {"cancel_requested": True})
+
+    with pytest.raises(base.Cancelled):
+        base.fetch_with_progress("org/m", _slow_fetch(), total=1024,
+                                 job="sys:ai-transcribe:x")
+
+
+def test_a_fetch_honours_the_cancel_ROUTE_when_it_is_inside_a_request(base, monkeypatch):
+    """The supervisor POSTs `/cancel` as well as setting the row's flag, and a
+    fetch that read only one of the two channels would honour a ✕ or not
+    depending on which arrived first."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    base.CANCEL.set()
+    try:
+        with pytest.raises(base.Cancelled):
+            base.fetch_with_progress("org/m", _slow_fetch(), total=1024,
+                                     job="sys:ai-transcribe:x")
+    finally:
+        base.CANCEL.clear()
+
+
+def test_a_model_DOWNLOAD_ignores_a_cancel_flag_left_by_an_earlier_generation(
+        base, monkeypatch):
+    """`CANCEL` belongs to whatever holds `GENERATE_LOCK` and is cleared by
+    `_single`/`_stream` on the way in — so it means THIS fetch exactly when this
+    fetch is inside a request. `_bring_up` runs on its own thread with no such
+    lock, and reading the flag there would abort a download nobody asked to
+    stop because some earlier generation was cancelled. Hence the `job` gate:
+    no job, no route-flag reading. The row's own ✕ still works, via the reply."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    base.CANCEL.set()
+    try:
+        assert base.fetch_with_progress("org/m", _slow_fetch(), total=1024) == "/snap"
+    finally:
+        base.CANCEL.clear()
+
+
+def test_a_cross_that_lands_as_the_fetch_FINISHES_keeps_the_bytes(base, monkeypatch):
+    """The same rule `_call_with_ticks` states about a finished decode: the
+    bytes are on the disk, and raising here would make the next attempt
+    re-download what this one already has. The final report is a plain
+    `report`, and the loop does not tick for a thread that has already ended."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1024)
+    # Returns immediately, so the ✕ can only be seen by the first report (before
+    # any bytes moved) or the last (after they all did). The first is honoured;
+    # the last is not, and this pins that the completed value comes back.
+    calls = {"n": 0}
+
+    def reporting(job=None, **fields):
+        calls["n"] += 1
+        # Not cancelled until the fetch is done — the late-cancel window.
+        return {"cancel_requested": calls["n"] > 1}
+
+    monkeypatch.setattr(base, "report", reporting)
+    assert base.fetch_with_progress("org/m", lambda: "/snap", total=1024,
+                                    job="sys:ai-transcribe:x") == "/snap"
+
+
+def test_every_fetch_tick_can_rebuild_the_row_it_reports_to(base, monkeypatch):
+    """A component fetch lands on a row the manager can evict at any tick, and
+    a report with no `title` is refused outright — which kills the row for good.
+    The identity has to ride on EVERY tick, not just the first."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 512)
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    row = {"title": "meeting.m4a", "kind": "task", "cancellable": True, "unit": "s"}
+
+    base.fetch_with_progress("org/m", _slow_fetch(1.2), total=1024,
+                             job="sys:ai-transcribe:x", row=row)
+
+    assert len(ticks) >= 3, ticks
+    for tick in ticks:
+        assert tick["title"] == "meeting.m4a", tick
+        assert tick["cancellable"] is True, tick
+        assert tick["state"] == "running", tick
+        # …and for the duration of a download the row IS one: `kind`/`unit` are
+        # this function's own and override the row's, so the manager draws
+        # bytes rather than a seconds clock over a byte count.
+        assert tick["kind"] == "download" and tick["unit"] == "bytes", tick
+
+
 # -- the shipped runners actually use it ----------------------------------------
 
 

@@ -1279,13 +1279,43 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     for the length of the fetch the row IS a download and 6MB of 26MB is what a
     person wants to see. The next tick from the work itself restates the row's
     own pair, so the flip is for the duration and not a rename.
+
+    **The tick carries the ✕ back**, and that became load-bearing the moment a
+    fetch could land on a transcription row. It ticked with a plain `report`
+    while these fetches owned a model-load row, whose ✕ the supervisor answers
+    by killing the process — so nothing here had to. A component fetch reports
+    into a row whose `cancellable` is True and whose ✕ must stop THIS work, and
+    with a plain `report` the user pressed it, the manager set
+    `cancel_requested`, and 33MB carried on downloading behind a row that went
+    on saying "running". The reply to the tick we were sending anyway is the
+    only channel that reaches a thread parked inside huggingface_hub.
+
+    `CANCEL` is consulted too, but ONLY when `job` was passed. That flag is the
+    `/cancel` route's, it belongs to the generation holding `GENERATE_LOCK`, and
+    it is cleared by `_single`/`_stream` on the way in — so it means this fetch
+    exactly when this fetch is inside a request. A model download runs on
+    `_bring_up`'s own thread with no such lock, where a flag left set by an
+    earlier cancelled generation would abort a download nobody asked to stop.
+
+    **A ✕ that lands as the fetch FINISHES is not honoured**, which is the same
+    rule `_call_with_ticks` states: the bytes are on the disk, and throwing them
+    away would make the next attempt re-download what this one already has. So
+    the final report is a plain `report`. The abandoned fetch thread is a
+    daemon nobody waits for — it finishes into a result that is discarded, and
+    huggingface_hub resumes partial files, so the bytes are not lost either.
     """
     folder = repo_folder(model_id)
     if total is None:
         total = repo_total_bytes(model_id)
     identity = {**(row or {}), "kind": "download", "unit": "bytes"}
-    report(job=job, state="running", **identity,
-           detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
+
+    def tick(**fields):
+        """One progress report that can carry a ✕ back. See the docstring."""
+        report_or_cancel(job=job, **identity, state="running", **fields)
+        if job is not None and CANCEL.is_set():
+            raise Cancelled()
+
+    tick(detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
 
     result = {}
 
@@ -1299,9 +1329,12 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     thread.start()
     while thread.is_alive():
         thread.join(timeout=1.0)
-        report(job=job, **identity, state="running",
-               done=_capped(bytes_on_disk(folder), total), total=total,
-               detail=detail)
+        if not thread.is_alive():
+            # Finished during the join. Ticking now would be the late-cancel
+            # the docstring refuses — the bytes are already on the disk.
+            break
+        tick(done=_capped(bytes_on_disk(folder), total), total=total,
+             detail=detail)
     if "error" in result:
         raise result["error"]
     # Land on the total rather than on the last walk: the snapshot symlinks are

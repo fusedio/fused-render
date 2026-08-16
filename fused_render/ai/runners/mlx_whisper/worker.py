@@ -161,12 +161,23 @@ def download(model_id):
     transcription that works without it (see `_speech_regions`), so a Hub
     hiccup while fetching 2MB must not fail an 8GB model download that has
     already succeeded.
+
+    **Best-effort stops at the ✕.** `Cancelled` is now something a fetch really
+    raises — the tick carries it back (`worker_base.fetch_with_progress`), where
+    it used to be latent — and it is the one exception here that is not a Hub
+    hiccup. Absorbed, it would print "could not pre-fetch the speech detector:
+    Cancelled" and report the download DONE, so a user who pressed stop would
+    watch the row finish successfully. Re-raised first, and before the broad
+    catch, because `Cancelled` is an ordinary `Exception` and order is the whole
+    of the distinction.
     """
     snapshot = worker_base.download_snapshot(model_id)
     try:
         import vad as vad_module
 
         vad_module.model_path(worker_base.download_file)
+    except worker_base.Cancelled:
+        raise
     except Exception as error:  # noqa: BLE001 - see the docstring
         print(f"could not pre-fetch the speech detector: "
               f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
@@ -764,9 +775,11 @@ def _speech_regions(audio, total, job, row):
     "Speech detection unavailable", a sentence that reads like a flaky network
     and sends nobody to the defect. They propagate and fail the transcription,
     which is how they get found. `worker_base.Cancelled` is also an `Exception`
-    and is excluded by the same narrowing — no download reports through
-    `report_or_cancel` today, so a swallowed ✕ is latent rather than live, but a
-    catch that COULD swallow one is not a catch worth leaving in place.
+    and is excluded by the same narrowing — which is no longer a precaution: the
+    fetch below ticks through `report_or_cancel` now that it reports into a
+    transcription row with a live ✕, so a ✕ pressed while the 2MB detector is
+    downloading raises HERE, and a wider catch would answer it by transcribing
+    the whole file for the user who asked to stop.
     """
     import vad as vad_module
 
@@ -1121,16 +1134,24 @@ def generate(body):
     # before the model sees a thing, which is what lets the very first
     # transcribing tick carry a `total`.
     total = round(len(audio) / SAMPLE_RATE, 2) or None
-    # The ETA's clock starts HERE, not at `started`: the audio decode produced
-    # no transcript, so charging its seconds to the first window makes the rate
-    # read as wildly slower than it is.
-    transcribing_since = time.time()
 
     # PHASE ONE-AND-A-HALF — who is speaking, over the whole waveform. Before
     # the VAD and independent of it (see `_speaker_turns`), and a fast pre-pass:
     # seconds on a recording that will take minutes to transcribe, which is why
     # it gets its own `detail` line rather than a share of the transcript's bar.
     turns = _speaker_turns(audio, speakers, job, row) if diarizing else None
+
+    # The ETA's clock starts HERE, not at `started`: the audio decode produced
+    # no transcript, so charging its seconds to the first window makes the rate
+    # read as wildly slower than it is. **Below the diarization for the same
+    # reason, not by accident.** `_transcribe_regions` divides `elapsed` by
+    # seconds of speech decoded, so every second charged to this clock before a
+    # word exists inflates the whole first minute of ETAs — and on a 90-minute
+    # recording the pre-pass is minutes. Started above it, the first tick priced
+    # the transcript at the diarization's wall time plus its own, which is the
+    # exact failure this variable exists to prevent, reintroduced one phase
+    # later. `faster_whisper/worker.py` starts its clock after both pre-passes.
+    transcribing_since = time.time()
 
     # PHASE TWO — find the speech. Skipped entirely when the caller said not to,
     # which is what `vad: false` now means: no Silero, and mlx-whisper's own
