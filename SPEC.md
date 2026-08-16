@@ -7000,14 +7000,23 @@ the installation, and the mark that says so.
   `/api/config` at boot; left there, the badge for a fix you just watched happen
   would show up on your next launch. So the chip polls at two cadences — 60s
   always, 5s for 30 minutes after a fix STARTS — keyed off a `localStorage`
-  timestamp (`fused-render:selffix-ping`) written at start. **Two channels, and
-  neither is redundant**: `storage` fires in every same-origin document EXCEPT
-  the one that wrote the value, so it reaches a chip in another tab and never
-  this one — while the surface that starts the fix (a download-manager row) is
-  normally in the SAME document as the chip. A `fused:selffix-started` window
-  event, dispatched after the write so a listener re-reading the stamp sees the
-  new one, covers exactly that gap; without it the common case waits out a full
-  idle interval, which is the delay the two cadences exist to remove. A clock that has gone backwards past the stamp reads as *not*
+  timestamp (`fused-render:selffix-ping`) written at start.
+- **SF-12a** **A state change is nudged on TWO channels, and neither is
+  redundant**: `storage` (`fused-render:selffix-changed`) fires in every
+  same-origin document EXCEPT the one that wrote it, so it reaches other tabs
+  and never this one; a `fused:selffix-changed` window event reaches this one
+  and no other. Both surfaces that change the state — the download-manager row
+  that STARTS a fix and the Preferences tab that DISMISSES a badge — are
+  normally in the very document the chip lives in, so either channel alone
+  leaves the badge stale for a full idle interval in exactly the case the user
+  is looking straight at it. **One nudge for both events**, because the
+  listener's response is identical (cancel the timer, re-read) and the cadence
+  is decided separately from the stamp above: a "started" nudge dispatched on a
+  dismiss would be a lie, and a second event with the same handler would be
+  ceremony. The stamp is written BEFORE the nudge, so a listener re-reading the
+  cadence sees this start rather than the previous one; a dismiss moves the
+  nudge and never the stamp, or every tab would enter the 5s lane for half an
+  hour over a state change that is already over. A clock that has gone backwards past the stamp reads as *not*
   watching: a badge a minute late costs nothing, a permanent 5s poll costs a
   request every 5s for the life of the app.
 - **SF-14** **The other way in is Preferences → "Fix this app"**, because most
@@ -7018,7 +7027,12 @@ the installation, and the mark that says so.
   and waiting for a release. The tab takes a SENTENCE (`note` on the same
   `POST /api/selffix/start`; one of `message`/`note`/`title` is required,
   because a session handed nothing reads code at random and then reports on
-  having done so). A free-text box and not a form: the user does not know which
+  having done so). **Which brief a session gets turns on whether the user
+  DESCRIBED it — the presence of `note` — and never on whether error text came
+  with it**: a failed job row is allowed to carry an empty `message` (the
+  manager renders a bare "Failed"), and keying off the text handed that row the
+  Preferences brief, which claims nothing crashed and steers the session away
+  from tracing a failure that really happened. A free-text box and not a form: the user does not know which
   subsystem is at fault — that is the session's job — and a dropdown of our
   subsystem names asks them to guess it before they may ask for help.
 - **SF-14a** **With no traceback, the incident carries different evidence.** The

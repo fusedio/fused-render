@@ -171,8 +171,17 @@ def api_selffix_start(body: dict = Body(default={}),
         return guard
     if not isinstance(body, dict):
         return _error("request body must be a JSON object")
-    reported_error = bool(str(body.get("message") or "").strip())
-    if not (reported_error or str(body.get("note") or "").strip()
+    # WHICH BRIEF the session gets, and it turns on whether the USER DESCRIBED
+    # this — not on whether an error text came with it. A failed job row is
+    # allowed to carry an empty `message` (jobs.py leaves it ""; the manager
+    # renders a bare "Failed"), and keying off the message would hand that row
+    # the Preferences brief: "NOTHING CRASHED, the user opened Preferences and
+    # described something" — false on both counts, and it steers the session
+    # away from tracing a failure that really happened. A `note` is the one
+    # thing only the describe path produces.
+    described = bool(str(body.get("note") or "").strip())
+    reported_error = not described
+    if not (described or str(body.get("message") or "").strip()
             or str(body.get("title") or "").strip()):
         return _error(
             "say what is wrong — a fix session needs either a failure to read "
