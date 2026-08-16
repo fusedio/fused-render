@@ -1124,10 +1124,15 @@ input.schedule-when-field {
   text-overflow: ellipsis;
 }
 
+/* Hover paints NOTHING here — the cursor (.is-active, kept in sync by
+   onMouseEnter) is the single source of the wash, and arrows can park it
+   away from the pointer; a hover wash of its own made two lit rows again
+   (Bugbot, PR #548). The rule still exists to beat the .deploy-body button
+   hover skin to transparent. */
 .schedule-menu-item:hover:not(:disabled),
 .deploy-body .schedule-menu-item:hover:not(:disabled),
 .prefs-section .schedule-menu-item:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: transparent;
   border-color: transparent;
 }
 
