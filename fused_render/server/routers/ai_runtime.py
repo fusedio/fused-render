@@ -42,7 +42,7 @@ from fused_render.ai import catalog, registry, supervisor
 # The `speakers` rule, imported rather than restated. It is the SAME module the
 # two whisper runners import out of their own venvs — which is why every heavy
 # import inside it is deferred, and why reading the rule here costs nothing.
-from fused_render.ai.runners import diarize
+from fused_render.ai.runners import diarize, partial
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability`. It imports nothing from here.
@@ -484,6 +484,14 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         **({"speakers": speakers} if diarizing else {}),
         "out": out_base + ".json",
         "outText": out_base + ".txt",
+        # …and where the segments land AS they are decoded, so a page has a
+        # transcript to render before the run finishes. Derived through
+        # `partial.partial_path` rather than spelled here, because the worker
+        # that writes this file and the reply that advertises it must name the
+        # same one — and a second spelling of the suffix is how they come to
+        # disagree. A sibling of the other two for the same reason they are
+        # siblings: the server owns where user files go.
+        "outPartial": partial.partial_path(out_base + ".json"),
     }
     try:
         supervisor.start_transcribe(model, request, job)
@@ -497,6 +505,11 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "path": canonical_fs_path(source),
         "output": canonical_fs_path(request["out"]),
         "outputText": canonical_fs_path(request["outText"]),
+        # The progressive transcript, canonicalised like its two siblings —
+        # `runtime.js` tails it through `/api/fs/raw`, so it is the same URL
+        # with the same Windows hazard, and a third path that skipped this
+        # would be the one that broke there.
+        "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "task": task,
     }

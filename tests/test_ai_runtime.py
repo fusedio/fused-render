@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
-from fused_render.ai.runners import formats
+from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
@@ -1840,6 +1840,41 @@ def test_the_transcribe_reply_settles_the_request_before_anything_runs(
     assert reply["output"].endswith(".json")
     assert os.path.dirname(reply["output"]).endswith(os.path.join("ai", "transcripts"))
     _wait_job(reply["jobId"])
+
+
+def test_the_reply_names_the_PARTIAL_transcript_too(
+        client, fake_transcribe_runner, recording):
+    """A page tailing the transcript must not have to string-munge one path out
+    of another — that is the rule `outputText` already follows, and it is the
+    same rule for the same reason: the derivation lives in one place
+    (`runners/partial.py`), and a page that reimplemented it would break
+    silently the day the suffix changed."""
+    reply = _post_transcribe(client, path=recording).json()
+
+    assert reply["outputPartial"] == reply["output"][:-len(".json")] + ".partial.jsonl"
+    assert reply["outputPartial"] == partial.partial_path(reply["output"])
+    _wait_job(reply["jobId"])
+
+
+def test_the_partial_path_reaches_the_WORKER_as_well_as_the_page(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """Advertising a path nothing writes would be worse than not advertising
+    one: a page would tail a file that never appears and show an empty
+    transcript for the whole run, with no error anywhere to explain it."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+
+    reply = _post_transcribe(client, path=recording).json()
+    _wait_job(reply["jobId"])
+
+    assert seen["outPartial"] == reply["outputPartial"]
+    # A SIBLING of the two the request already named, not a third location:
+    # `_transcripts_dir()` is where the server decided user files go.
+    assert (os.path.dirname(seen["outPartial"])
+            == os.path.dirname(seen["out"]) == os.path.dirname(seen["outText"]))
 
 
 def test_transcribing_needs_a_file_that_actually_exists(
