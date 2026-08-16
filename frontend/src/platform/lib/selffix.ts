@@ -136,16 +136,30 @@ export interface FailureContext {
 // because the surface that starts the session (a download-manager row) and the
 // surface that shows the badge (the sidebar chip) can be in different tabs, and
 // because a reload during a long session must not drop back to the slow poll.
+// THE STAMP: when a fix last started. Read to pick the cadence, and persisted
+// rather than held in memory so a reload mid-session comes back in the fast lane.
 export const SELFFIX_PING_KEY = "fused-render:selffix-ping";
 
-// ...and the SAME-document half of that ping, which the storage key cannot be.
-// `storage` fires in every same-origin document EXCEPT the one that wrote the
-// value — and the surface that starts a fix (a download-manager row) is
-// normally in the SAME document as the chip, so the localStorage write alone
-// covers only the rarer case. Without this the badge for a fix you started in
-// this very tab waits out the running idle timer: up to POLL_IDLE_MS, which is
-// precisely the delay the two cadences exist to remove.
-export const SELFFIX_PING_EVENT = "fused:selffix-started";
+// THE NUDGE: "self-fix state changed — re-read now", on two channels, because
+// neither reaches everyone.
+//
+//   the KEY    fires `storage` in every same-origin document EXCEPT the writer,
+//              so it reaches other tabs and never this one.
+//   the EVENT  reaches this document and no other.
+//
+// Both are needed and neither is redundant, and getting that wrong is not a
+// corner case in either direction: the surface that STARTS a fix (a
+// download-manager row) and the one that DISMISSES a badge (the Preferences
+// tab) are both normally in the very document the chip lives in, so the storage
+// write alone would leave the badge stale for a full idle interval in exactly
+// the cases the user is looking straight at it.
+//
+// ONE nudge for both events rather than two, because the listener's response is
+// identical — cancel the pending timer, re-read now — and the cadence is decided
+// separately, from the stamp above. A "started" nudge dispatched on a dismiss
+// would be a lie; a second event with the same handler would be ceremony.
+export const SELFFIX_CHANGED_KEY = "fused-render:selffix-changed";
+export const SELFFIX_CHANGED_EVENT = "fused:selffix-changed";
 
 // How long after a start the fast poll stays on. A session that takes longer
 // than this has stopped being something the user is watching.
@@ -153,26 +167,37 @@ export const WATCH_WINDOW_MS = 30 * 60_000;
 export const POLL_IDLE_MS = 60_000;
 export const POLL_WATCH_MS = 5_000;
 
-// Announce a started fix to every chip that might be watching — in this
-// document and in any other tab. BOTH channels are needed and neither is
-// redundant: `storage` reaches other tabs and skips this one, the event reaches
-// this one and no other.
-export function noteFixStarted(now = Date.now()): void {
+/** Whether a `storage` event is one of ours. Exported so the guard is pinned by
+    a test rather than by a condition in a component: a guard that accepted only
+    one of the two keys would silently swallow the other channel, which is a
+    thing no screenshot shows. */
+export function isSelfFixStorageKey(key: string | null): boolean {
+  return key === SELFFIX_PING_KEY || key === SELFFIX_CHANGED_KEY;
+}
+
+/** "Something about self-fix changed — re-read." Both channels, always. */
+export function notifySelfFixChanged(now = Date.now()): void {
   try {
-    // Cross-tab. Same mechanism as the job manager's ping (lib/jobs'
-    // JOB_PING_KEY), and it also persists the stamp the cadence is computed
-    // from, so a reload mid-session comes back in the fast lane.
-    localStorage.setItem(SELFFIX_PING_KEY, String(now));
+    localStorage.setItem(SELFFIX_CHANGED_KEY, String(now));
   } catch {
     /* private mode / disabled storage — the idle poll is the floor */
   }
   try {
-    // Same document. Dispatched AFTER the write, so a listener that re-reads
-    // `lastFixStartedAt()` sees the new stamp rather than the previous one.
-    window.dispatchEvent(new Event(SELFFIX_PING_EVENT));
+    window.dispatchEvent(new Event(SELFFIX_CHANGED_EVENT));
   } catch {
     /* no window (a test, a worker) — the idle poll is still the floor */
   }
+}
+
+export function noteFixStarted(now = Date.now()): void {
+  try {
+    // The stamp goes down FIRST: the nudge below makes listeners re-read the
+    // cadence, and they must see this start rather than the previous one.
+    localStorage.setItem(SELFFIX_PING_KEY, String(now));
+  } catch {
+    /* private mode / disabled storage — the idle poll is the floor */
+  }
+  notifySelfFixChanged(now);
 }
 
 export function lastFixStartedAt(): number {
@@ -250,8 +275,16 @@ export function getSelfFix(): Promise<SelfFixSnapshot> {
   return getJson<SelfFixSnapshot>("/api/selffix");
 }
 
-export function clearSelfFix(): Promise<{ cleared: boolean }> {
-  return postJson<{ cleared: boolean }>("/api/selffix/clear", {});
+// Dismissing is a state change like any other, and it can be made from EITHER
+// surface — the chip's own popover or the Preferences tab. Nudging here rather
+// than at each call site is what stops the two disagreeing: a dismiss from
+// Preferences used to clear the marker and refresh that page while the sidebar
+// chip stayed amber until its next idle poll, which reads as a dismiss that
+// did not work.
+export async function clearSelfFix(): Promise<{ cleared: boolean }> {
+  const result = await postJson<{ cleared: boolean }>("/api/selffix/clear", {});
+  notifySelfFixChanged();
+  return result;
 }
 
 // Where the user lands once the session is running: the INSTALL FOLDER, with

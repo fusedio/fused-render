@@ -53,11 +53,14 @@ const {
   issueUrl,
   lastFixStartedAt,
   modifiedSummary,
+  isSelfFixStorageKey,
   noteFixStarted,
+  notifySelfFixChanged,
   selffixPollInterval,
   POLL_IDLE_MS,
   POLL_WATCH_MS,
-  SELFFIX_PING_EVENT,
+  SELFFIX_CHANGED_EVENT,
+  SELFFIX_CHANGED_KEY,
   SELFFIX_PING_KEY,
   WATCH_WINDOW_MS,
 } = await import("./selffix");
@@ -221,8 +224,35 @@ test("the fast lane expires, so a stale stamp cannot poll forever", () => {
 test("starting a fix announces it on BOTH channels", () => {
   const { types } = captureDispatch(() => noteFixStarted(1_700_000_000_000));
 
-  expect(lastFixStartedAt()).toBe(1_700_000_000_000); // cross-tab: the storage write
-  expect(types).toContain(SELFFIX_PING_EVENT); // same-document: the event
+  expect(lastFixStartedAt()).toBe(1_700_000_000_000); // the stamp, for the cadence
+  expect(types).toContain(SELFFIX_CHANGED_EVENT); // same-document nudge
+});
+
+test("a dismiss is a state change too, on the same two channels", () => {
+  // The Preferences tab and the chip's own popover can both dismiss. Without a
+  // nudge, dismissing from Preferences cleared the marker and refreshed that
+  // page while the sidebar chip stayed amber for a full idle interval — which
+  // reads as a dismiss that did not work.
+  const { types } = captureDispatch(() => notifySelfFixChanged(1_700_000_000_000));
+  expect(types).toContain(SELFFIX_CHANGED_EVENT);
+  expect(localStorage.getItem(SELFFIX_CHANGED_KEY)).toBe("1700000000000");
+});
+
+test("a dismiss does NOT move the fast-poll stamp", () => {
+  // Cadence and "re-read now" are different questions. Reusing the start stamp
+  // for a dismiss would put every tab into the 5s lane for half an hour for a
+  // state change that is already over.
+  noteFixStarted(1_600_000_000_000);
+  notifySelfFixChanged(1_900_000_000_000);
+  expect(lastFixStartedAt()).toBe(1_600_000_000_000);
+});
+
+test("the storage guard accepts both of our keys and nothing else", () => {
+  // A guard that let only one through would silently swallow a whole channel.
+  expect(isSelfFixStorageKey(SELFFIX_PING_KEY)).toBe(true);
+  expect(isSelfFixStorageKey(SELFFIX_CHANGED_KEY)).toBe(true);
+  expect(isSelfFixStorageKey("fused-render:jobs-ping")).toBe(false);
+  expect(isSelfFixStorageKey(null)).toBe(false);
 });
 
 test("the stamp is written before the same-document event fires", () => {
@@ -238,12 +268,6 @@ test("the stamp is written before the same-document event fires", () => {
     win.dispatchEvent = real;
   }
   expect(seen).toBe(1_800_000_000_000);
-});
-
-test("the ping key and event are distinct names", () => {
-  // They are read by two different listeners on the same component; one name
-  // for both would make the storage guard silently swallow the event.
-  expect(SELFFIX_PING_KEY).not.toBe(SELFFIX_PING_EVENT);
 });
 
 test("a stamp from the future reads as not watching, not as watching forever", () => {

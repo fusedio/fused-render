@@ -385,6 +385,28 @@ def test_a_missing_log_is_not_worth_a_word(install, monkeypatch):
     assert "Recent app log" not in open(incident, encoding="utf-8").read()
 
 
+def test_a_failed_row_with_no_message_still_gets_the_failure_brief(client,
+                                                                   monkeypatch):
+    """A job row may be `state: error` with an empty `message` (jobs.py leaves
+    it "" and the manager renders a bare "Failed"). Keying the brief off the
+    error TEXT handed that row the Preferences one — "nothing crashed, the user
+    opened Preferences and described something" — which is false twice over and
+    steers the session away from a failure that really happened."""
+    seen = {}
+    monkeypatch.setattr(selffix_routes, "_spawn_helper",
+                        lambda t, p, m: seen.update(prompt=p) or {"run_id": "r"})
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
+    monkeypatch.setattr(selffix_routes, "_record_session_when_ready", lambda *a, **k: None)
+
+    res = post(client, "/api/selffix/start",
+               {"job_id": "sys:ai-model:x", "title": "FLUX.2-klein-4B",
+                "state": "error", "kind": "download", "message": "",
+                "source": "download manager"})
+    assert res.status_code == 200
+    assert "NOTHING CRASHED" not in seen["prompt"]
+    assert "trace the failure" in seen["prompt"]
+
+
 def test_start_refuses_a_session_with_nothing_to_look_at(client, monkeypatch):
     """Not validation for its own sake: a session handed no failure, no
     description and no name would read code at random and then report on having

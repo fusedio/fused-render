@@ -26,9 +26,9 @@ import {
   issueUrl,
   lastFixStartedAt,
   modifiedSummary,
+  isSelfFixStorageKey,
   selffixPollInterval,
-  SELFFIX_PING_EVENT,
-  SELFFIX_PING_KEY,
+  SELFFIX_CHANGED_EVENT,
   type ModifiedInstall,
   type SelfFixSnapshot,
 } from "@platform/lib/selffix";
@@ -296,30 +296,28 @@ function useModifiedInstall(
       timer = window.setTimeout(poll, selffixPollInterval(lastFixStartedAt()));
     }
 
-    // A fix just started: re-arm NOW so the cadence switches immediately
-    // instead of after the running idle timer expires.
+    // Self-fix state changed somewhere — a fix started, or a badge was
+    // dismissed: re-arm NOW so the answer changes immediately instead of after
+    // the running idle timer expires.
     //
-    // Two listeners for one announcement, because one channel cannot carry it.
-    // `storage` fires in every same-origin document EXCEPT the writer, so it
-    // covers a chip in another tab and never this one — and the download
-    // manager that starts the fix is normally in THIS document. The event
-    // covers exactly the gap. (Both firing is harmless: `poll` cancels the
-    // pending timer before it re-arms.)
+    // Two listeners for one nudge, because one channel cannot carry it (see
+    // lib/selffix). Both firing is harmless: `rearm` cancels the pending timer
+    // before it polls.
     const rearm = () => {
       window.clearTimeout(timer);
       poll();
     };
     const onPing = (e: StorageEvent) => {
-      if (e.key === SELFFIX_PING_KEY) rearm();
+      if (isSelfFixStorageKey(e.key)) rearm();
     };
     timer = window.setTimeout(poll, selffixPollInterval(lastFixStartedAt()));
     window.addEventListener("storage", onPing);
-    window.addEventListener(SELFFIX_PING_EVENT, rearm);
+    window.addEventListener(SELFFIX_CHANGED_EVENT, rearm);
     return () => {
       disposed = true;
       window.clearTimeout(timer);
       window.removeEventListener("storage", onPing);
-      window.removeEventListener(SELFFIX_PING_EVENT, rearm);
+      window.removeEventListener(SELFFIX_CHANGED_EVENT, rearm);
     };
   }, []);
 
