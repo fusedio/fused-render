@@ -772,6 +772,154 @@ def test_BOTH_engines_fetch_the_SAME_two_component_repos(worker, base, tmp_path,
     ]
 
 
+# -- the progressive transcript --------------------------------------------------
+#
+# `runners/partial.py` owns the line shape, the flush rule and the lifecycle,
+# and `tests/test_ai_partial_transcript.py` drives all three directly. What is
+# proved HERE is only what that file cannot see: that this engine actually
+# feeds it, at the right moment, and that doing so leaves the transcript it
+# always wrote untouched.
+
+
+def _partial_lines(path):
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def test_a_segment_is_on_disk_BEFORE_the_run_that_produced_it_ends(
+        worker, base, tmp_path):
+    """The whole feature in one assertion. Read from inside the decode — the
+    tick that follows each segment is the only moment a test can observe a run
+    that is still going — so this fails if the writer buffers, if it is fed
+    after the loop, or if it is fed at all only on the way out."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 1.0, "one"), FakeSegment(1.0, 2.0, "two")],
+        duration=2.0)
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+    mid_run = []
+    ticked = base.report_or_cancel
+
+    def peek(job=None, **fields):
+        mid_run.append([line["text"] for line in _partial_lines(request["outPartial"])])
+        return ticked(job=job, **fields)
+
+    base.report_or_cancel = peek
+
+    worker.generate(request)
+
+    # One line after the first segment, two after the second — the transcript
+    # accumulating, not appearing at the end.
+    assert mid_run == [["one"], ["one", "two"]]
+
+
+def test_the_partial_file_is_GONE_once_the_real_transcript_lands(
+        worker, base, tmp_path):
+    """It is duplicate bytes from the moment the `.json` exists, in a directory
+    (`ai/transcripts/`) the user browses."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")], duration=1.0)
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+
+    worker.generate(request)
+
+    assert os.path.exists(request["out"])
+    assert not os.path.exists(request["outPartial"])
+
+
+def test_a_run_that_DIES_leaves_what_it_had_decoded(worker, base, tmp_path):
+    """The only salvage there is. A 90-minute recording that fails at minute 80
+    writes no `.json` at all, and without this the 80 minutes go with it."""
+    def dying():
+        yield FakeSegment(0.0, 1.0, "one")
+        yield FakeSegment(1.0, 2.0, "two")
+        raise RuntimeError("the container is truncated")
+
+    worker._loaded["model"] = FakeModel(dying(), duration=90.0)
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+
+    with pytest.raises(RuntimeError):
+        worker.generate(request)
+
+    assert not os.path.exists(request["out"]), "no half transcript as a whole one"
+    assert [line["text"] for line in _partial_lines(request["outPartial"])] == [
+        "one", "two"]
+
+
+def test_a_CANCELLED_run_leaves_no_partial_file_either(worker, base, tmp_path):
+    """A ✕ means the user does not want this transcript, and the run already
+    refuses to write a partial one as `out` (the test above this section). The
+    salvage file would quietly contradict that."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 1.0, "one"), FakeSegment(1.0, 2.0, "two"),
+         FakeSegment(2.0, 3.0, "three")],
+        duration=3.0)
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+    base.cancel_on_tick = 2  # the first segment, with two still to decode
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(request)
+
+    assert not os.path.exists(request["out"])
+    assert not os.path.exists(request["outPartial"])
+
+
+def test_the_FINAL_files_are_byte_identical_with_and_without_a_partial_one(
+        worker, base, tmp_path):
+    """The promise that makes this additive. Everything a caller has ever read
+    off `output`/`outputText` is unchanged, down to the bytes — not "the same
+    fields", which a reordered key or a different indent would also satisfy."""
+    def run(**over):
+        """The same request twice into the same directory — the second run
+        overwrites the first — so the only difference between the two readings
+        is `outPartial`, and not the absolute paths the transcript records."""
+        worker._loaded["model"] = FakeModel(
+            [FakeSegment(0.0, 1.5, " hello"), FakeSegment(1.5, 3.0, " wörld ")],
+            duration=3.0)
+        request = _request(tmp_path, **over)
+        worker.generate(request)
+        written = json.loads(open(request["out"], encoding="utf-8").read())
+        # `seconds` is wall time and would differ between two runs whatever the
+        # code did, so it is the one key blanked rather than pinned. Re-dumped
+        # with the writer's own arguments, so a changed `indent` or a reordered
+        # key still shows up as a byte difference.
+        blank = json.dumps(written | {"seconds": 0}, ensure_ascii=False,
+                           indent=1).encode()
+        return blank, open(request["outText"], "rb").read()
+
+    plain = run()
+    progressive = run(outPartial=str(tmp_path / "out.partial.jsonl"))
+    assert plain == progressive
+
+
+def test_a_DIARIZED_partial_line_carries_the_speaker_it_will_end_up_with(
+        worker, base, tmp_path, monkeypatch):
+    """The turns exist before a word is decoded (D309), so a page tailing the
+    file gets labels immediately rather than a transcript that gains speakers
+    at the end. It is the same arithmetic, so the label does not change under
+    the reader when the final file lands."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 2.0, "mine"), FakeSegment(6.0, 7.0, "yours")],
+        duration=7.0)
+    _decoder(monkeypatch)
+    _diarizes(monkeypatch, [(0.0, 5.0, 0), (5.0, 10.0, 1)])
+    request = _request(tmp_path, diarize=True, speakers=2,
+                       outPartial=str(tmp_path / "out.partial.jsonl"))
+    seen = []
+    ticked = base.report_or_cancel
+
+    def peek(job=None, **fields):
+        seen[:] = _partial_lines(request["outPartial"])
+        return ticked(job=job, **fields)
+
+    base.report_or_cancel = peek
+
+    worker.generate(request)
+
+    assert [(line["text"], line["speaker"]) for line in seen] == [
+        ("mine", "Speaker 1"), ("yours", "Speaker 2")]
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1", "Speaker 2"]
+
+
 # -- the format trap ------------------------------------------------------------
 
 

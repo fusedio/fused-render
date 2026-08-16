@@ -1480,6 +1480,97 @@ def test_generating_with_no_model_loaded_says_so(monkeypatch, base, tmp_path):
         worker.generate(_request(tmp_path))
 
 
+# -- the progressive transcript --------------------------------------------------
+#
+# The writer, its line shape and its lifecycle are `runners/partial.py`'s and
+# are driven directly in `tests/test_ai_partial_transcript.py`; the lifecycle is
+# driven end-to-end through a whole `generate()` in `tests/test_ai_whisper_
+# worker.py`. What is proved HERE is what only this engine can get wrong: that
+# it feeds the sink at all, and that it feeds it the REMAPPED timestamps rather
+# than the clip-relative ones the library hands back.
+
+
+def _partial_lines(path):
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def test_segments_reach_the_partial_file_in_ORIGINAL_recording_time(
+        monkeypatch, loaded, tmp_path):
+    """The remap is per-region and happens after the library returns, so a sink
+    fed one line earlier — inside `_decode_clip`, say — would publish `0.0-2.0`
+    for speech that is 30 seconds into the file. A page seeking a player off
+    that lands in the wrong minute, and the final `.json` would disagree with
+    the lines the same page had already rendered."""
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(0.0, 2.0, "hello")])
+    _regions(monkeypatch, worker, [(0.0, 5.0), (30.0, 35.0)])
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+    seen = []
+    monkeypatch.setattr(
+        worker.partial.Sink, "add",
+        lambda self, segment, _real=worker.partial.Sink.add: (
+            _real(self, segment),
+            seen.append(_partial_lines(self.path)[-1]))[0])
+
+    worker.generate(request)
+
+    assert [(line["start"], line["end"]) for line in seen] == [
+        (0.0, 2.0), (30.0, 32.0)]
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [
+        (0.0, 2.0), (30.0, 32.0)]
+    assert not os.path.exists(request["outPartial"])
+
+
+def test_a_segment_the_remap_DROPS_never_reaches_the_partial_file(
+        monkeypatch, loaded, tmp_path):
+    """A segment starting past its region is omitted from the transcript (it
+    would run backwards, or claim speech inside silence that was cut). A page
+    tailing the file must not be shown a line the final transcript will not
+    have — there is no retraction in an append-only stream."""
+    worker, _ = loaded(windows=(100,), audio_seconds=40.0,
+                       segments=[_segment(0.0, 1.0, "real"),
+                                 _segment(15.0, 20.0, "padding")])
+    _regions(monkeypatch, worker, [(10.0, 12.0)])
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+    seen = []
+    monkeypatch.setattr(
+        worker.partial.Sink, "add",
+        lambda self, segment, _real=worker.partial.Sink.add: (
+            _real(self, segment), seen.append(dict(segment)))[0])
+
+    worker.generate(request)
+
+    assert [line["text"] for line in seen] == ["real"]
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [s["text"] for s in written["segments"]] == ["real"]
+
+
+def test_this_engine_writes_the_SAME_final_bytes_with_and_without_one(
+        monkeypatch, loaded, tmp_path):
+    """The additive promise, pinned on this engine too — `outPartial` is the
+    only difference between the two runs, and the transcript is not allowed to
+    notice it."""
+    def run(**over):
+        worker, _ = loaded(windows=(100,), audio_seconds=20.0,
+                           segments=[_segment(0.0, 1.5, " hello"),
+                                     _segment(1.5, 3.0, " wörld ")])
+        request = _request(tmp_path, **over)
+        worker.generate(request)
+        written = json.loads(open(request["out"], encoding="utf-8").read())
+        # `seconds` is wall time and differs between any two runs; re-dumped
+        # with the writer's own arguments so a reordered key or a changed
+        # indent still reads as a byte difference.
+        return (json.dumps(written | {"seconds": 0}, ensure_ascii=False,
+                           indent=1).encode(),
+                open(request["outText"], "rb").read())
+
+    plain = run()
+    progressive = run(outPartial=str(tmp_path / "out.partial.jsonl"))
+    assert plain == progressive
+
+
 # -- loading ---------------------------------------------------------------------
 
 
