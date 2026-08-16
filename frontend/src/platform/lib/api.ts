@@ -2066,6 +2066,31 @@ export interface AiModelRepo {
     available: boolean;
     reason: string | null;
   } | null;
+  /**
+   * Set when this repo is not a model at all but a PART of one — the quantized
+   * transformer the Diffusers recipe swaps in, the Silero detector the MLX
+   * whisper engine filters silence with. This app downloaded it; the user never
+   * chose it, and nothing can load it on its own. Null for everything else.
+   *
+   * The card wears it instead of the engine tag: those repos read
+   * `engine: null` and wore "no engine", which is true and explains nothing
+   * about a 2.4GB row somebody is about to delete.
+   */
+  component: {
+    /** This repo's own id, so the object is self-contained. */
+    id: string;
+    /** The repo it belongs to, or null when it belongs to an ENGINE (the VAD
+     *  serves every transcription, whatever model is loaded). */
+    of: string | null;
+    /** What it is part of, in the words the rest of the UI uses. */
+    owner: string;
+    /** The noun: "quantized transformer", "speech detector". */
+    part: string;
+    /** The whole story, including what deleting it costs. */
+    what: string;
+    /** The one file fetched out of it. */
+    file: string;
+  } | null;
   revisions: number;
   refs: string[];
 }

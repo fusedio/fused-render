@@ -1037,6 +1037,15 @@ def cached_capability(repo_id: str) -> CacheReading:
         if len(found) == 1:
             capability = found.pop()
 
+    component = formats.component(repo_id)
+    if component:
+        # A component is nobody's `load()` target, and the refusal reads much
+        # better naming what it actually is: "a speech detector that belongs to
+        # MLX Whisper" rather than "a model repo".
+        return CacheReading(
+            True, None,
+            f"{_article(component['part'])} {component['part']} that belongs to "
+            f"{component['owner']}")
     if meta.task:
         looks_like = f"{_article(meta.task)} {meta.task} model"
     elif meta.library:
@@ -1056,14 +1065,24 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
     meta = _repo_meta(repo_dir)
+    repo_id = _repo_id_of(dirname)
+    # A repo the USER never chose: the GGUF transformer the diffusers recipe
+    # swaps in, the Silero detector the MLX whisper runner filters silence with.
+    # Both land in this cache like any model and neither is one, so the engine
+    # join is not asked at all — its two answers here would be "no engine" (true,
+    # and no explanation of a 2.4GB row) or, if a component ever came in a
+    # loadable shape, a Load button for something nothing serves.
+    component = formats.component(repo_id)
     capability = (
-        _ai_registry.capability_for_task(meta.task) if kind == "model" else None
+        _ai_registry.capability_for_task(meta.task)
+        if kind == "model" and component is None else None
     )
     engine, capability = (
-        _engine(meta, capability) if kind == "model" else (None, None)
+        _engine(meta, capability) if kind == "model" and component is None
+        else (None, None)
     )
     return {
-        "id": _repo_id_of(dirname),
+        "id": repo_id,
         # The cache folder name, which is what a delete request names (never a
         # path — see the module docstring).
         "dir": dirname,
@@ -1108,6 +1127,14 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # format — the fact a card most needs and the one it did not have. See
         # `_engine`: null and an unavailable runner are different answers.
         "engine": engine,
+        # …or what this is a PART of, when it is not a model at all. Null for
+        # everything a user downloaded on purpose. The bytes stay on the page
+        # and stay deletable — this page's job includes showing what is eating
+        # the disk, and hiding a 2.4GB row would be the opposite of that — but
+        # the card says whose it is and does not offer a Load. See
+        # `runners/formats.COMPONENT_REPOS`, which is where the ids live because
+        # they are named inside runner venvs this process cannot import.
+        "component": dict(component, id=repo_id) if component else None,
         "revisions": _revisions(repo_dir),
         "refs": _ref_names(repo_dir),
     }

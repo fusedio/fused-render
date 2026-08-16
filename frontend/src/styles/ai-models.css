@@ -194,6 +194,15 @@
   opacity: 0.85;
 }
 
+/* "part of FLUX.2 klein 4B" — a repo this app fetched as a piece of something
+   else. Quiet like the dead end above, because it is a fact about the repo and
+   not a warning; SOLID-bordered unlike it, because nothing is missing here —
+   the dashes on the other two mean "this cannot load", and this one was never
+   supposed to. Same two channels, the other way round. */
+.am-card-engine-component {
+  color: var(--fg-muted);
+}
+
 /* Sentence case, not Title Case: `capitalize` would render the Hub's
    "text-to-image" as "Text To Image". inline-block is what makes ::first-letter
    apply to a span at all. */

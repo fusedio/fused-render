@@ -1665,3 +1665,70 @@ def test_a_dataset_has_no_engine(client, hub):
     _snapshot_file(data, "c1", "config.json",
                    json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
     assert _repo_row(client, "org/corpus")["engine"] is None
+
+
+# -- repos the user never chose --------------------------------------------------
+
+
+@requires_symlinks
+def test_a_component_repo_says_what_it_is_a_part_of(client, hub):
+    """The GGUF transformer the diffusers recipe fetches is 2.4GB of somebody
+    else's model sitting in the cache under its own name. It read `cached=True,
+    capability=None` and wore the quiet "no engine" tag — so the page gave a
+    user reclaiming disk no way to tell that deleting it breaks the image model
+    that needs it."""
+    _repo(hub, "models--unsloth--FLUX.2-klein-4B-GGUF", blobs={"w": 10},
+          snapshots={"c1": {"flux-2-klein-4b-Q4_K_M.gguf": "w"}},
+          refs={"main": "c1"})
+
+    row = _repo_row(client, "unsloth/FLUX.2-klein-4B-GGUF")
+
+    assert row["component"]["owner"] == "FLUX.2 klein 4B"
+    assert row["component"]["part"] == "quantized transformer"
+    assert row["component"]["of"] == "black-forest-labs/FLUX.2-klein-4B"
+    assert "Deleting it" in row["component"]["what"]
+    # Not loadable, and never was — but now the card can say why, and the size
+    # is still on the page, because "what is eating my disk" is why it exists.
+    assert row["engine"] is None and row["capability"] is None
+    assert row["size"] > 0
+
+
+@requires_symlinks
+def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
+    """Silero is 2MB and ours, not the user's. The same treatment has to make
+    sense at that scale: it had no task, no library and no engine, so its card
+    carried NO explanation at all."""
+    _repo(hub, "models--onnx-community--silero-vad", blobs={"w": 10},
+          snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
+
+    row = _repo_row(client, "onnx-community/silero-vad")
+
+    assert row["component"]["owner"] == "MLX Whisper"
+    assert row["component"]["part"] == "speech detector"
+    # An engine's component, not a model's — nothing to point at, and the prose
+    # says the cost of deleting it is a slower transcription rather than a
+    # broken model.
+    assert row["component"]["of"] is None
+    assert "slower" in row["component"]["what"]
+
+
+@requires_symlinks
+def test_an_ordinary_model_is_not_a_component(client, hub):
+    repo = _repo(hub, "models--org--m", blobs={"w": 10},
+                 snapshots={"c1": {"model.bin": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-to-image\n---\n")
+    assert _repo_row(client, "org/m")["component"] is None
+
+
+@requires_symlinks
+def test_loading_a_component_is_refused_by_name(client, hub):
+    """`cached_capability` is what the load route refuses with (D307). "a
+    speech detector that belongs to MLX Whisper" is a far more useful sentence
+    than the "model repo" reading it used to produce."""
+    _repo(hub, "models--onnx-community--silero-vad", blobs={"w": 10},
+          snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
+
+    reading = ai_models_mod.cached_capability("onnx-community/silero-vad")
+
+    assert reading.cached is True and reading.capability is None
+    assert reading.looks_like == "a speech detector that belongs to MLX Whisper"

@@ -377,7 +377,25 @@ function RepoCard({
           is what stops a metadata-less card collapsing and taking its
           neighbours' footers out of line. */}
       <div className="am-card-what">
-        {repo.kind === "model" &&
+        {/* A repo the user never downloaded on purpose wears WHOSE it is,
+            instead of an engine tag. "no engine" was true of both of these and
+            explained neither: the 2.4GB GGUF is FLUX's transformer and deleting
+            it breaks that model, the 2MB Silero is the whisper engine's speech
+            detector and deleting it only costs speed. The tag states the fact
+            ("part of FLUX.2 klein 4B") and the hover carries the consequence —
+            which is prose nothing else on the card repeats, so it earns the tab
+            stop the same way the unavailable engine tag does. */}
+        {repo.component ? (
+          <span
+            className="am-card-engine am-card-engine-component"
+            tabIndex={0}
+            aria-label={`Part of ${repo.component.owner} — ${repo.component.what}`}
+            title={repo.component.what}
+          >
+            part of {repo.component.owner}
+          </span>
+        ) : (
+          repo.kind === "model" &&
           (repo.engine ? (
             <span
               className={
@@ -431,7 +449,8 @@ function RepoCard({
             >
               no engine
             </span>
-          ))}
+          ))
+        )}
         {repo.task && (
           // The hover answers both questions the label raises: what the task
           // MEANS ("image + text to text" is jargon until someone says it

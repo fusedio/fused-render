@@ -6202,6 +6202,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   disagree cost more than the accuracy a no-model call gives up. Reordering a
   list so the "best" model leads is therefore a REGRESSION of this requirement,
   not a fix; `tests/test_ai_runtime.py` asserts the sort and the four defaults.
+- **AI-7e** **A repo THIS APP downloaded as part of something else says whose it
+  is, and is never offered a Load** (D308). Two repos land in the Hub cache that
+  no user chose — `unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer
+  AI-9b's recipe swaps in (2.4GB), and `onnx-community/silero-vad`, the speech
+  detector AI-10f pre-fetches (2MB). Both listed as peers of real models with the
+  quiet "no engine" tag, which is true and explains nothing: deleting the first
+  breaks the image model that needs it, deleting the second costs a slower
+  transcription. The listing carries `component` (`owner`, `part`, `of`, `what`)
+  and the card wears "part of FLUX.2 klein 4B" instead of an engine tag, with the
+  consequence in its hover. **They stay on the page and stay deletable**: this
+  page's job includes showing what is eating the disk, so hiding 2.4GB would be
+  the opposite of it. The registry is `runners/formats.py`'s `COMPONENT_REPOS`,
+  for the reason `MFLUX_VARIANTS` is there — the ids are named inside runner
+  folders that are separate venvs the server cannot import, the workers read the
+  FILENAME back out of it rather than keeping a second copy, and a test asserts
+  every recipe's component repo appears there, so a new recipe cannot
+  reintroduce an unexplained row.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second
