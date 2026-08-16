@@ -80,6 +80,7 @@ import re
 import shutil
 import stat
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from fastapi import APIRouter, Body, Header
 
@@ -980,6 +981,75 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
         "available": False,
         "reason": reason,
     }, capability
+
+
+class CacheReading(NamedTuple):
+    """What the local cache says a repo is, for a caller that is not this page.
+
+    `cached` is whether there is a revision to read at all; `capability` is what
+    a load of it would be (None when nothing here can tell); `looks_like` is the
+    same evidence in words, for an error message.
+    """
+
+    cached: bool
+    capability: str | None
+    looks_like: str | None
+
+
+def cached_capability(repo_id: str) -> CacheReading:
+    """Which capability `repo_id` would load as, read off the local snapshot.
+
+    **Exported, and read by the load route** (`ai_runtime.py`, D307). A load
+    that omitted `capability` used to mean text generation unconditionally, so
+    an MLX diffusion repo went to mlx-lm and came back as a FileNotFoundError
+    about a `config.json` that repo has never had. The evidence that settles it
+    is the evidence this page already draws its Load button from — so it is
+    asked HERE rather than re-derived there, because a card that offers Load and
+    a load that then refuses must not be able to disagree.
+
+    Local only: `_repo_meta` reads the snapshot directory and nothing else, so
+    this adds no network call to a path that had none. A repo with no revision
+    on disk is `cached=False` — an interrupted download leaves a folder behind,
+    and a folder is not evidence.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    # Built from a request body, so it is checked to be one path segment, the
+    # same way `_segment` checks a delete target. Anything else reads as "not
+    # cached" rather than as a path to go looking at.
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return CacheReading(False, None, None)
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
+        return CacheReading(False, None, None)
+
+    meta = _repo_meta(repo_dir)
+    # The page's own join, in the page's own order: the task label first, then
+    # the decisive formats, which is what `_engine` exists to combine.
+    _row, capability = _engine(meta, _ai_registry.capability_for_task(meta.task))
+    if capability is None and meta.loaders:
+        # Nothing DECISIVE, but the runners that read this format may still
+        # agree about what it is: a bare directory of safetensors is read only
+        # by the two TEXT runners, and their shared capability is a fact about
+        # the format rather than a guess about the model. This is what keeps
+        # every existing `load(id)` on an unlabelled chat repo working.
+        found = {r.capability for r in _ai_registry.all_runners()
+                 if r.code in meta.loaders}
+        if len(found) == 1:
+            capability = found.pop()
+
+    if meta.task:
+        looks_like = f"{_article(meta.task)} {meta.task} model"
+    elif meta.library:
+        looks_like = f"{_article(meta.library)} {meta.library} repo"
+    else:
+        looks_like = None
+    return CacheReading(True, capability, looks_like)
+
+
+def _article(word: str) -> str:
+    """"a" or "an". A label this reads wrong ("a image to image model") is a
+    sentence a page author is meant to act on, so it is worth the four lines."""
+    return "an" if word[:1].lower() in "aeiou" else "a"
 
 
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:

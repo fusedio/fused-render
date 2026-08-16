@@ -414,6 +414,27 @@ def all_suggested_ids() -> set[str]:
     return {entry["id"] for entries in SUGGESTIONS.values() for entry in entries}
 
 
+def capability_of(repo_id: str) -> str | None:
+    """The capability a SUGGESTED repo belongs to, or None for anything not here.
+
+    The cheap pre-cache signal a load needs (D307): inferring a capability from
+    the weight layout requires a snapshot on disk, and a cold load has none —
+    but for every repo this app itself recommends, the curation already knows,
+    and knowing costs a dict lookup rather than a Hub round trip.
+
+    Keyed by RUNNER like the rest of the file, so the capability comes from the
+    registry rather than being restated here — one repo id belongs to exactly
+    one runner's list, and three mutually unloadable Whisper conversions are why
+    that list is per-backend in the first place.
+    """
+    for code, entries in SUGGESTIONS.items():
+        if any(entry["id"] == repo_id for entry in entries):
+            runner = registry.by_code(code)
+            if runner is not None:
+                return runner.capability
+    return None
+
+
 def describe() -> list[dict]:
     """The catalog grouped by capability, with each capability's availability.
 

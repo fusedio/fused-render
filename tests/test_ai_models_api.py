@@ -1595,6 +1595,69 @@ def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, h
     assert engine["code"] == "transformers-text" and engine["available"] is True
 
 
+# -- and the same reading answers a load that omitted one (D307) -----------------
+# `cached_capability` is this page's join, exported for `ai_runtime.py`: a load
+# with no `capability` used to mean text generation whatever was on disk, which
+# sent an MLX diffusion repo to mlx-lm. The card and the load must agree, so
+# there is one reading and both read it.
+
+
+@requires_symlinks
+def test_the_card_and_a_load_without_a_capability_agree(client, hub):
+    """Every repo the PAGE offers a capability for resolves to that same
+    capability when a load leaves it out. The forbidden direction is a card
+    promising a load that then goes somewhere else."""
+    text = _repo(hub, "models--org--chat", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(text, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
+    image = _repo(hub, "models--org--sd", blobs={"w": 10},
+                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(image, "c1", "model_index.json",
+                   json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
+    for row in _get(client)["repos"]:
+        if row["capability"] is None:
+            continue
+        assert ai_models_mod.cached_capability(row["id"]).capability == row["capability"]
+
+
+def test_a_repo_that_is_not_cached_says_so(client, hub):
+    """`cached=False` is what lets the load route fall back to the catalog and
+    then to the old default, instead of refusing a cold load."""
+    assert ai_models_mod.cached_capability("org/never-downloaded") == (False, None, None)
+    # A folder with no revision in it is an interrupted download, not evidence.
+    (hub / "models--org--empty").mkdir()
+    assert ai_models_mod.cached_capability("org/empty").cached is False
+
+
+def test_a_repo_id_can_never_become_a_path(hub):
+    """The lookup builds a cache folder name out of a request body's string."""
+    for hostile in ("../../etc", "..", "a/../../b", "org\\evil"):
+        assert ai_models_mod.cached_capability(hostile) == (False, None, None)
+
+
+@requires_symlinks
+def test_an_unreadable_cached_repo_reports_what_it_looks_like(client, hub):
+    """The sentence the load route refuses with is built from this."""
+    repo = _repo(hub, "models--org--tts", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: text-to-speech\n---\n")
+    reading = ai_models_mod.cached_capability("org/tts")
+    assert reading.cached is True and reading.capability is None
+    assert reading.looks_like == "a text to speech model"
+
+
+@requires_symlinks
+def test_what_it_looks_like_reads_as_a_sentence(client, hub):
+    """"a image to image model" is the kind of thing that makes a generated
+    error look machine-written, in the one message meant to be acted on."""
+    repo = _repo(hub, "models--org--img2img", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
+    assert ai_models_mod.cached_capability("org/img2img").looks_like == (
+        "an image to image model")
+
+
 @requires_symlinks
 def test_a_dataset_has_no_engine(client, hub):
     data = _repo(hub, "datasets--org--corpus", blobs={"w": 10},

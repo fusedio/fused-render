@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai.runners import formats
 from fused_render.server import create_app
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
@@ -2928,3 +2929,163 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     # payload the NON-streaming reply returns.
     assert set(done) == {"type", "ok", "result"}
     assert set(done["result"]) == {"text", "model", "usage"}
+
+
+# -- which capability a load without one gets (D307) ---------------------------
+# The trap this closes: an omitted `capability` used to mean TEXT GENERATION
+# unconditionally, so `fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit")`
+# went to mlx-lm and surfaced as a FileNotFoundError about a config.json the repo
+# has never had. It fired twice — a whisper repo did the same thing through
+# Preload — because a silent default turns "you omitted an argument" into a wrong
+# runner that reports itself as a corrupt model.
+
+
+@pytest.fixture()
+def hub(tmp_path, monkeypatch):
+    """An empty hub cache, pointed at by HF_HUB_CACHE — the same fixture
+    `test_ai_models_api.py` uses, because the load route now reads the very
+    listing that page reads. Every other HF var is cleared so a developer
+    machine's real cache cannot answer for the test's."""
+    for var in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    d = tmp_path / "hub"
+    d.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(d))
+    return d
+
+
+def _cached_repo(hub, repo_id, *, files=(), dirs=(), config=None):
+    """One cached repo with a `main` revision holding `files` and `dirs`."""
+    repo = hub / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo / "snapshots" / "c0ffee"
+    snapshot.mkdir(parents=True)
+    for name in files:
+        (snapshot / name).write_bytes(b"")
+    for name in dirs:
+        (snapshot / name).mkdir()
+    if config is not None:
+        (snapshot / "config.json").write_text(json.dumps(config))
+    refs = repo / "refs"
+    refs.mkdir(parents=True)
+    (refs / "main").write_text("c0ffee")
+    return repo
+
+
+@pytest.fixture()
+def dispatched(monkeypatch):
+    """Records what the route asked the supervisor to load, without loading.
+
+    The question every test below asks is WHICH CAPABILITY the route resolved,
+    and that is decided before any process exists — so the supervisor is a
+    recorder here rather than a fake worker.
+    """
+    calls = []
+
+    def fake_load(model, capability, *, weights_only=False):
+        calls.append({"model": model, "capability": capability,
+                      "weightsOnly": weights_only})
+        return {"jobId": "job", "model": model, "state": "loading"}
+
+    monkeypatch.setattr(supervisor, "load", fake_load)
+    return calls
+
+
+def _load(client, body):
+    return client.post("/api/ai/runtime/load", json=body, headers={"X-Fused": "1"})
+
+
+def test_a_load_without_a_capability_reads_the_cached_repos_format(
+        client, hub, dispatched):
+    """The reported bug. An mflux conversion has no config.json at all, so the
+    old default sent it to mlx-lm; its component folders say image generation
+    beyond doubt."""
+    repo_id = next(iter(formats.MFLUX_VARIANTS))
+    _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
+    assert _load(client, {"model": repo_id}).status_code == 200
+    assert dispatched == [{"model": repo_id, "capability": registry.IMAGE_GENERATION,
+                           "weightsOnly": False}]
+
+
+def test_a_cached_text_repo_without_a_capability_still_loads_as_text(
+        client, hub, dispatched):
+    """The back-compat half, and the reason this is inference rather than a
+    required argument: every page that calls `load(id)` for a chat model today
+    keeps working."""
+    _cached_repo(hub, "org/chat", files=("model.safetensors",),
+                 config={"architectures": ["LlamaForCausalLM"]})
+    assert _load(client, {"model": "org/chat"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_repo_with_no_task_but_readable_weights_is_text(
+        client, hub, dispatched):
+    """A directory of safetensors says nothing about the modality — but the only
+    runners that read one are the two TEXT runners, so their shared capability
+    is the answer rather than a guess."""
+    _cached_repo(hub, "org/mystery", files=("model.safetensors",))
+    assert _load(client, {"model": "org/mystery"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_an_uncached_suggested_repo_takes_the_catalogs_capability(
+        client, hub, dispatched):
+    """Nothing on disk to read, and no network call added to this path: the
+    catalog already knows what every repo this app RECOMMENDS is for, which is
+    the whole of the whisper-Preload case."""
+    assert _load(client, {"model": "Systran/faster-whisper-small"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.SPEECH_TO_TEXT
+
+
+def test_an_uncached_unknown_repo_still_defaults_to_text_generation(
+        client, hub, dispatched):
+    """The one case inference cannot answer without bytes. It keeps the old
+    default rather than refusing a cold load, and the runner's own format check
+    is what names the mismatch if the guess was wrong."""
+    assert _load(client, {"model": "org/never-seen"}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_a_cached_repo_no_engine_reads_is_refused_by_name(client, hub, dispatched):
+    """Not a FileNotFoundError from inside a library, and not a bare "unknown
+    capability": the repo, what it looks like, and what to pass."""
+    _cached_repo(hub, "org/gguf-only", files=("model.gguf", "README.md"))
+    response = _load(client, {"model": "org/gguf-only"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "org/gguf-only" in message
+    assert "gguf" in message
+    assert "capability" in message
+    assert registry.IMAGE_GENERATION in message and registry.SPEECH_TO_TEXT in message
+    assert dispatched == []
+
+
+def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
+    """Inference governs the OMITTED case only. A caller who names a capability
+    gets it, right or wrong — that is what makes this additive."""
+    repo_id = next(iter(formats.MFLUX_VARIANTS))
+    _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
+    assert _load(client, {"model": repo_id,
+                          "capability": registry.TEXT_GENERATION}).status_code == 200
+    assert dispatched[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
+    """`/download` takes the same default through the same helper, so it had the
+    same bug: a Download on the AI Models page fetched an image model into the
+    text runner's idea of what to fetch."""
+    repo_id = next(iter(formats.MFLUX_VARIANTS))
+    _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
+    response = client.post("/api/ai/runtime/download", json={"model": repo_id},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    assert dispatched == [{"model": repo_id, "capability": registry.IMAGE_GENERATION,
+                           "weightsOnly": True}]
+
+
+def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched):
+    _cached_repo(hub, "org/gguf-only", files=("model.gguf",))
+    response = client.post("/api/ai/runtime/download", json={"model": "org/gguf-only"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "org/gguf-only" in response.json()["error"]
+    assert dispatched == []

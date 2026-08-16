@@ -6073,6 +6073,33 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than destructive), no per-segment UI, and no cache lock — the etag names
   the content, so two instances write identical bytes at identical offsets and
   the loser of a rename race falls back rather than corrupting anything.
+- **AI-5j** **A load that omits `capability` INFERS it, and refuses rather than
+  guessing when it cannot.** The omitted argument used to mean text generation
+  unconditionally, which is a wrong-runner dispatch wearing a library error:
+  `fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit")` reached mlx-lm and
+  raised `FileNotFoundError: config.json` — a file that repo has never had —
+  while `/api/ai/image` rendered from the same snapshot, because that route is
+  capability-bound by construction and this one was not. The same shape had
+  already fired once through Preload with a whisper repo. `POST
+  /api/ai/runtime/load` and `/download` now resolve an absent capability in four
+  steps: (1) the LOCAL SNAPSHOT, read through the AI Models page's own
+  `cached_capability` — the same join of task label, decisive format
+  (`runners/formats.py`) and registry that the page draws its Load button from,
+  so a card offering Load and a load refusing cannot disagree — plus one
+  addition, that a non-decisive format whose readers all share one capability
+  answers with it (a bare directory of safetensors is read only by the two TEXT
+  runners, which is what keeps every existing `load(id)` on an unlabelled chat
+  repo working); (2) `catalog.capability_of`, since every repo this app
+  RECOMMENDS belongs to a runner and knowing costs a dict lookup rather than a
+  Hub round trip; (3) text generation, unchanged, for an id that is neither —
+  a cold load cannot be classified without downloading it, refusing one would
+  break every page that preloads a chat model, and a wrong guess is bounded by
+  the runner's own format check; (4) a **400 naming the repo, what it looks like
+  and what to pass**, for the one case with no excuse: the repo IS cached and
+  nothing here reads it. **No network call is added to either route** — every
+  step reads the local cache or a module constant. An explicitly passed
+  capability is validated and used unchanged, so this governs only the omitted
+  case.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was

@@ -126,14 +126,23 @@ Generation itself needs **nothing new** — a repo id in `fused.ai({model})` alr
 |---|---|
 | `fused.ai.models.list()` | What is loaded right now, its memory, and which runners exist on this machine. |
 | `fused.ai.models.catalog()` | Suggested models per capability, with what this machine can run. |
-| `fused.ai.models.load(id, opts?)` | `{jobId}` — **not a loaded model.** |
-| `fused.ai.models.download(id, opts?)` | `{jobId}` — weights only, no load. |
+| `fused.ai.models.load(id, {capability}?)` | `{jobId}` — **not a loaded model.** |
+| `fused.ai.models.download(id, {capability}?)` | `{jobId}` — weights only, no load. |
 | `fused.ai.models.unload(idOrCapability)` | `{stopped, ...}` |
 | `fused.ai.cancel(capability?)` | `boolean` — stops generation, **keeps the weights**. |
 
 **Every list `catalog()` returns is ordered smallest download first, and each capability's `default` is simply that list's first entry** — so omitting `model` on an image or transcription call gets the *smallest* model, not the best one. Read the list and pick deliberately whenever quality matters.
 
 `load`/`download` hand back a **job, not a result**: a cold load is multi-GB and nothing waits on it. Watch with `fused.watchJob(jobId)`.
+
+**Pass `{capability}` to `load`/`download` whenever you know it, and you almost always do.** `capability` says which runner gets the repo — one of the three strings below. Left out, the server *infers* it: from the repo's cached files if they are on disk, then from `catalog()`'s curation, and only then falls back to `"text-generation"` for an id it has never seen. That fallback is the trap this argument avoids — a whisper or diffusion repo that is not downloaded yet has nothing to read, so an omitted capability sends it to the text runner, and what comes back is the *library's* complaint about a missing `config.json` or missing safetensors, which reads as a corrupt model rather than as a wrong-runner dispatch:
+
+```js
+fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit", { capability: "text-to-image" });
+fused.ai.models.load("mlx-community/whisper-large-v3-turbo", { capability: "automatic-speech-recognition" });
+```
+
+A repo that *is* cached and that no engine here reads is refused with a sentence naming the repo, what it looks like, and what to pass — never a library traceback.
 
 **Unload by capability, not by id.** A page's Unload button means "release whatever is resident", and the page does **not** reliably know what that is — another page or the AI Models tab may have loaded something else. Passing your dropdown's id unloads nothing and leaves the real model in memory:
 
@@ -253,6 +262,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Sending `temperature`/`history`/`raw` to the Claude path** → 400, by design. Branch on the destination, or only set them for a slashed model.
 - **`unload(selectedId)`** → often unloads nothing; use `{capability}`.
 - **Awaiting `models.load()` as if it returned a model** → it returns `{jobId}`.
+- **Omitting `{capability}` on `load`/`download` for a repo that is not a chat model** → inference has nothing to read before the download lands, so an uncached whisper or diffusion repo still falls back to text generation and fails inside mlx-lm. Name it.
 - **Assuming a capability's runner from the platform** → both text generation and transcription have two runners, and a user preference can pick either. Ask `fused.ai.models.list()` and read `active`.
 - **Expecting `transcribe` to hand back the words from the job** → the row only says when; the text is read off `output` from disk.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads, however willingly the page offers the button. Take the id from `catalog()`.
