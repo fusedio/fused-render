@@ -57,39 +57,62 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # shopping around: there is no text-only conversion of Qwen3.5 on the Hub,
     # every 4-bit variant of it measured the same. So the sizes below are
     # honest about the download and quietly larger than a text-only model of
-    # the same class — Qwen3.5 9B is 6.0GB against the Qwen3 8B it replaces at
-    # 4.6GB, and 1.4GB of that difference is weights this app cannot currently
-    # run. Under this file's own "sized for the machine that will actually run
-    # them" rule that is a real cost, and it is why the ceiling here came DOWN
-    # (the largest entry was 8.1GB, now 6.1GB) rather than up.
+    # the same class, and under this file's own "sized for the machine that
+    # will actually run them" rule that is a real cost paid on every entry.
     #
-    # **`mlx-community/gemma-4-12B-it-4bit` is deliberately absent**, and it is
-    # the entry a future reader is most likely to try to add: it is newer than
-    # everything here, 6.8GB, ungated, and — measured, not assumed — 1.3GB
-    # SMALLER than the Gemma 3 12B this list used to carry. It does not load.
-    # Its `model_type` is `gemma4_unified`, mlx-lm resolves a checkpoint by
-    # importing `mlx_lm.models.<model_type>`, and 0.31.3 ships `gemma4.py` and
-    # `gemma4_text.py` and no `gemma4_unified.py` — so the load ends in
-    # "Model type gemma4_unified not supported." The `e4b`/`e2b` siblings below
-    # are `gemma4` and do load. Recheck when mlx-lm is next bumped.
+    # **OptiQ quants where they exist, and ONE ENTRY PER BASE MODEL.** The
+    # `-OptiQ-4bit` repos are mixed precision: a sensitivity pass puts the
+    # layers that need it at 8-bit and leaves the rest at 4-bit, written as a
+    # per-layer map in the config's `quantization` dict. That is ordinary
+    # mlx-lm mixed-precision format — they load on the runner as it ships, with
+    # no new package and no pyproject change — and they are tagged
+    # `text-generation`, while the `-MLX-4bit` siblings they replace are
+    # `mlx-vlm` conversions tagged `image-text-to-text` whose own model cards
+    # say a better conversion may exist elsewhere. Listing both would put one
+    # base model on the page twice, distinguished by a suffix a reader cannot
+    # interpret, which is a worse shortlist rather than a longer one.
     #
-    # Sizes are the whole-snapshot Hub byte sum on 2026-08-16 (D295), and every
-    # entry is ungated. **One line each**, per the rule the transformers list
-    # states below.
+    # **The OptiQ premium is real and the model cards understate it.** They say
+    # "within ~5% of a stock uniform 4-bit quant"; measured, the 9B is 8.22GB
+    # against the uniform conversion's 5.98GB, which is 37% — 132 of its 248
+    # layers sit at 8-bit, and a multi-token-prediction file (~0.19GB) and a
+    # higher-precision vision tower ride along. The sizes here are the measured
+    # ones, because a user picking "the better 9B" and finding two extra
+    # gigabytes downloading is the surprise this column exists to prevent.
+    # Their configs also carry keys mlx-lm ignores (`mtp_file`, `optiq_vision`,
+    # `mlx_lm_extra_tensors`); nothing here reads them, and the `group_size`
+    # and `bits` that `runners/formats.py` keys on are present at the top level
+    # exactly as in a uniform quant — checked, not assumed.
+    #
+    # **Both `mlx-community/gemma-4-12B-it-4bit` and its OptiQ sibling are
+    # deliberately absent**, and they are the entries a future reader is most
+    # likely to try to add: newer than everything here, ungated, and the plain
+    # one is — measured, not assumed — 1.3GB SMALLER than the Gemma 3 12B this
+    # list used to carry. Neither loads. Their `model_type` is `gemma4_unified`,
+    # mlx-lm resolves a checkpoint by importing `mlx_lm.models.<model_type>`,
+    # and 0.31.3 ships `gemma4.py` and `gemma4_text.py` and no
+    # `gemma4_unified.py` — so the load ends in "Model type gemma4_unified not
+    # supported." The `e4b`/`e2b` siblings below are `gemma4` and do load.
+    # Recheck when mlx-lm is next bumped.
+    #
+    # Ordered SAFEST first rather than biggest first, which is what "the one to
+    # start with" means and what the transformers list below already does — its
+    # 16.4GB entry is last, not first. Sizes are the whole-snapshot Hub byte sum
+    # on 2026-08-16 (D295), and every entry is ungated. **One line each.**
     "mlx-text": [
         {
-            "id": "mlx-community/Qwen3.5-9B-MLX-4bit",
-            "label": "Qwen3.5 9B (MLX 4-bit)",
-            "size_gb": 6.0,
+            "id": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            "label": "Qwen3.5 4B (OptiQ 4-bit)",
+            "size_gb": 4.0,
             "note": "The one to start with: strong on reasoning and code, and "
                     "comfortable on 16GB.",
         },
         {
-            "id": "mlx-community/Qwen3.5-4B-MLX-4bit",
-            "label": "Qwen3.5 4B (MLX 4-bit)",
-            "size_gb": 3.1,
-            "note": "Half the download and quicker to answer, for a machine "
-                    "with other things open.",
+            "id": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+            "label": "Qwen3.5 9B (OptiQ 4-bit)",
+            "size_gb": 8.2,
+            "note": "Better answers than the 4B for twice the download — tight "
+                    "on 16GB, so close other heavy apps first.",
         },
         {
             "id": "mlx-community/gemma-4-e4b-it-4bit",
@@ -114,9 +137,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # KEPT through the 2026-08 refresh, and re-argued rather than assumed:
         # it still loads (`model_type` is `qwen3_5`, which mlx-lm ships), and it
         # is still the only way to have a 27B-class model inside this list's
-        # size budget. What changed is the comparison its note used to make —
-        # Gemma 3 12B has left the list, and against the 9B above it is no
-        # longer the cheaper download, only the bigger model for the same money.
+        # size budget — the other 27B below is 20GB. What changed is the
+        # comparison its note used to make: Gemma 3 12B has left the list, so
+        # the note now measures it against the 9B above.
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
@@ -127,9 +150,24 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # a suggestion that overstates by 2.4GB is the one figure someone
             # plans a download around.
             "size_gb": 6.1,
-            "note": "27B for what the 9B above costs on disk. Ternary "
+            "note": "27B for less than the 9B above costs on disk. Ternary "
                     "quantization is new, so measure it against a 4-bit model "
                     "you already trust.",
+        },
+        # LAST, and the only entry here that is not a 16GB-machine model. The
+        # ordering rule above (safest first) and this file's sizing rule both
+        # put it at the bottom rather than at the top where its quality would
+        # otherwise rank it: 20GB of weights resident is a 32GB Mac, and the
+        # note says so instead of leaving someone to find out after the
+        # download. Its 35B-A3B MoE sibling is omitted for the reason D303
+        # gives about mflux — 24.7GB resident on a 34GB machine already several
+        # GB into swap is not something to suggest on one machine's evidence.
+        {
+            "id": "mlx-community/Qwen3.6-27B-OptiQ-4bit",
+            "label": "Qwen3.6 27B (OptiQ 4-bit)",
+            "size_gb": 20.0,
+            "note": "The best answers here, and it needs 32GB — on a 16GB "
+                    "machine this swaps rather than runs.",
         },
     ],
     # Text generation on Windows and Linux, plus the Apple Silicon fallback
