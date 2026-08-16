@@ -2422,7 +2422,7 @@ def test_a_restored_turn_renders_its_picture_from_the_path_in_the_wire(html):
         "every picture the turn carried, not just the first"
     # wired into the restore loop, on the turn addUser just appended
     load = _between(html, "      if (t.role === \"user\") {", "      } else addAssistantTurn")
-    assert "addUser(stripBlocks(t.text));" in load
+    assert "addUser(stripBlocks(t.text), t.uuid);" in load
     assert "shotRestoreReceipt(turns[turns.length - 1], t.text);" in load
     # a pruned temp file says so instead of showing a broken-image glyph
     receipt = _between(html, "function shotReceipt(sum, shot)", "\n}\n")
