@@ -1803,7 +1803,8 @@ def test_the_rollback_releases_the_thumbnails_it_just_removed(html):
 def test_the_annotate_control_is_a_labelled_switch(html):
     """The annotate control is ONE labelled left-right sliding switch — plain
     label text plus track + knob, no icon, no filled pill, no accent border. The
-    state is spelled out ("Annotating" / "Annotate") and the only colour it ever
+    label is the static "Comment" in BOTH states (a label that changed width made
+    the right-anchored row shuffle on every toggle) and the only colour it ever
     shows is the accent-filled track while armed. The old second switch (#annvis,
     pin visibility) is gone: pins follow the mode."""
     btn = _between(html, "#annbtn {", "}")
@@ -1826,7 +1827,10 @@ def test_the_annotate_control_is_a_labelled_switch(html):
     assert 'id="annbtn"' in view and 'aria-label="' in view, view
     assert 'class="lbl"' in view, view
     assert "<svg" not in view, "simple text + switch, no glyph: " + view
-    assert 'annBtn.querySelector(".lbl").textContent' in html
+    # the label is baked into the markup and NEVER rewritten — one wording,
+    # both states; the track alone shows armed
+    assert 'class="lbl">Comment</span>' in view, view
+    assert 'annBtn.querySelector(".lbl").textContent' not in html
     # the second switch is gone entirely
     assert "annvis" not in html and "annVisBtn" not in html
     assert "✎" not in html, "the pencil glyph is gone from the template"

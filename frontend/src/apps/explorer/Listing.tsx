@@ -38,7 +38,7 @@ import {
 import { createPortal } from "react-dom";
 import { IS_PANEL_PANE, IS_SNAPSHOT, navigate, replaceSearch } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
-import { prefetchListDir } from "@platform/lib/api";
+import { getAppEntry } from "@platform/lib/api";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { isMod } from "@platform/lib/platform";
 import { formatSize, formatMtime, formatMtimeFull } from "@platform/lib/format";
@@ -112,17 +112,10 @@ function inSearchSlot(slot: HTMLElement | null, row: ReactNode): ReactNode {
 // The reasoning is at `tightFlipRef` and at the layout effect it guards.
 const FLIP_BUDGET = 2;
 
-// The entry page of a folder, given its rows: literally `index.html`,
-// case-insensitive and a FILE — a directory of that name is a real shape (an
-// exported site tree). The narrow reading of the owner's "the open button simply
-// opens the index.html", and the first clause of the server's own entry rule
-// (`app_listing.app_entry`), which is deliberately NOT re-derived here: this decides
-// whether to offer a button, where being wrong costs a click, not which page a
-// folder IS, where the server and the templates must agree to the letter.
-function entryHtmlIn(entries: { name: string; is_dir: boolean }[], dir: string): string | null {
-  const hit = entries.find((e) => !e.is_dir && e.name.toLowerCase() === "index.html");
-  return hit ? dir + "/" + hit.name : null;
-}
+// (The folder-entry rule is the SERVER's — `app_listing.app_entry`, D301: the
+// first top-level page carrying `<meta name="fused-app">`. A filename tells
+// the client nothing under the marker rule, so the "Open app" button asks
+// GET /api/apps/entry instead of re-deriving anything from row names.)
 
 export default function Listing({
   fsPath,
@@ -851,41 +844,44 @@ export default function Listing({
   const paneSubjectDir =
     paneRow?.isDir ? paneRow.path : sel.paths.length === 0 ? base : null;
 
-  // The open folder's rows are ALREADY IN HAND — this bar sits on them — so that
-  // half is a lookup and costs no request. Recomputed on a dir-watch refresh like
-  // any other derived row value.
-  const openFolderEntry = useMemo(() => entryHtmlIn(sortedEntries, base), [sortedEntries, base]);
-
-  // A folder ROW's children are not in hand, so that half is the one request this
-  // feature costs — and it hangs off the SETTLED subject and nothing else, which is
-  // the whole reason it was deferred: keyed on `paneSubjectDir`, an arrow-key walk
-  // re-keys only when the selection settles (useSettledLead's 250 ms gate), so a
-  // walk down a listing of folders issues nothing per row. `prefetchListDir` caches
-  // per directory, so a revisit is free and the pane's own embedded peek of the same
-  // folder shares the answer.
+  // The subject's entry page comes from the server (GET /api/apps/entry — the
+  // one copy of the rule, see the note above), one request per SETTLED subject:
+  // keyed on `paneSubjectDir`, an arrow-key walk re-keys only when the
+  // selection settles (useSettledLead's 250 ms gate), so a walk down a listing
+  // of folders issues nothing per row.
   //
   // Cleared to null on every subject change BEFORE the fetch: the button must never
   // point at the previous subject while the new one resolves, which is the "whatever
   // it points at is what the pane says it is about" rule. Hidden-then-shown is the
   // acceptable shape of that; pointing at the wrong row is not.
-  const [rowEntry, setRowEntry] = useState<string | null>(null);
+  const [appEntryPath, setAppEntryPath] = useState<string | null>(null);
   useEffect(() => {
-    if (paneSubjectDir === null || paneSubjectDir === base) return;
+    if (paneSubjectDir === null) {
+      setAppEntryPath(null);
+      return;
+    }
     let alive = true;
-    setRowEntry(null);
-    prefetchListDir(paneSubjectDir).then(
-      (res) => alive && setRowEntry(entryHtmlIn(res.entries, paneSubjectDir)),
+    setAppEntryPath(null);
+    getAppEntry(paneSubjectDir).then(
+      (res) => alive && setAppEntryPath(res.entry),
       // An unreadable folder is "no entry page", never an error of its own: the
       // button simply does not appear.
-      () => alive && setRowEntry(null),
+      () => alive && setAppEntryPath(null),
     );
     return () => {
       alive = false;
     };
-  }, [paneSubjectDir, base]);
+  }, [paneSubjectDir]);
 
-  const appEntryPath =
-    paneSubjectDir === null ? null : paneSubjectDir === base ? openFolderEntry : rowEntry;
+  // The ONE "Open app" click, shared by the pane strip's button and its
+  // shut-pane fallback in the bar so they can't drift. The click just
+  // navigates: recording the open — recents for a workspace app, /apps hub
+  // registration for an external folder — is the SERVER's, done by GET /render
+  // when it serves the marker-carrying page this navigation renders (D301).
+  const openAppEntry = () => {
+    if (!appEntryPath || !paneSubjectDir) return;
+    navigate(appEntryPath, { isDir: false });
+  };
 
   const paneSides = paneSideList(sideEntries);
   // UNDECIDED — a folder row whose companion probes have not answered (pane-side's
@@ -1721,7 +1717,7 @@ export default function Listing({
                   type="button"
                   className="bar-ctl bar-ctl-strong"
                   title={"Open " + appEntryPath.slice(appEntryPath.lastIndexOf("/") + 1)}
-                  onClick={() => navigate(appEntryPath, { isDir: false })}
+                  onClick={openAppEntry}
                 >
                   Open app
                 </button>
@@ -1898,9 +1894,7 @@ export default function Listing({
                 selCount={sel.paths.length}
                 undecided={paneUndecided}
                 appEntry={appEntryPath}
-                onOpenApp={() =>
-                  appEntryPath && navigate(appEntryPath, { isDir: false })
-                }
+                onOpenApp={openAppEntry}
                 folder={fsPath}
                 side={paneSide}
                 sideEntries={sideEntries}

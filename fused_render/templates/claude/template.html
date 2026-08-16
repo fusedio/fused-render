@@ -207,8 +207,12 @@
   #annbtn:hover { color: var(--fg); }
   #annbtn.on { color: var(--fg); }
   /* Where the row's shrinking actually happens — on the TEXT, not on the track,
-     which stays 28px (a knob that slid off its rail would stop being a switch). */
-  #annbtn .lbl { overflow: hidden; text-overflow: ellipsis; }
+     which stays 28px (a knob that slid off its rail would stop being a switch).
+     `line-height` re-widened here: the button's `line-height: 1` plus this
+     `overflow: hidden` sliced the descender off any label with one (the old
+     "Commenting" lost its g's tail) — the clip box must clear the font's
+     descent, not just its em box. */
+  #annbtn .lbl { overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
   /* The slider: knob left = off, knob right = on. Off is drawn in the quiet
      currentColor; the on-state fills the track with the accent — the only
      colour the control ever shows, and only while armed. */
@@ -441,7 +445,7 @@
   .kebab-opt:hover, .kebab-opt:focus-visible { background: var(--surface-2); }
   .kebab-opt[disabled] { color: var(--dim); cursor: default; }
 
-  /* "Annotate preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
+  /* "Comment on preview" ⇄ "Back to chat" toggle. Exists for the NARROW layout only
      (see the 800px block at the end of this stylesheet): while both columns are on
      screen there is nothing to toggle, so it is display:none here and the media
      query is the only thing that reveals it. Drawn like #back (bordered, quiet)
@@ -963,6 +967,21 @@
      the cursor still have to say that a second click will not start a second one
      (shotBusy is the half that enforces it). */
   .viewshot:disabled { opacity: .45; cursor: default; }
+  /* The composer's calendar button, immediately left of Send. Same box as
+     .viewshot above and for the same three reasons — an icon-only control in a
+     row that wraps, a monochrome inline svg on `currentColor` so it stays as
+     quiet as its neighbours, and `.pill`'s own padding kept so the hover paints
+     the shape the rest of the row paints. Spelled out rather than folded into
+     the .viewshot selector: the two buttons share a look, not a fate, and
+     .viewshot's other two rules (hidden with the pane, disabled mid-capture) are
+     about photographing something this one never touches. */
+  .schedbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.65em;
+  }
+  .schedbtn svg { display: block; }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -1766,6 +1785,56 @@
      --accent is a fill here, never text on its own tint. */
   .selpop-opt.on { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .selpop-opt.on:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+  /* ── the Schedule button's confirm, over the composer ──
+     The FOURTH popup in this file and deliberately the same box as the other
+     three (#leftmodepop, #kebabpop, .selpop): panel, --border-strong, 10px, one
+     shadow. A menu and a confirm ask different questions, but a reader should
+     not have to learn a second surface to answer one of them.
+     There IS a confirm because the click LEAVES: it replaces the chat with the
+     Schedule page, carrying whatever is half-typed in the box with it, and that
+     is not something to do on a pointer that missed Send by 34px. It also says
+     what travels, which is the part a user cannot see from the icon.
+     `position: fixed` for .selpop's reason — the composer clips (overflow) and
+     sits at the very bottom of a pane, so an in-flow popup would be cut off. */
+  .schedpop {
+    position: fixed;
+    z-index: 40;
+    width: 260px;
+    padding: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--shadow);
+  }
+  /* Same story as .selpop: a `display` of our own outranks the UA's [hidden]. */
+  .schedpop[hidden] { display: none; }
+  .schedpop-title { font-size: 13px; line-height: 1.4; color: var(--fg-strong); }
+  /* The one line the icon cannot say: this hop is not a dead end, the draft and
+     the folder go with it. Muted, because it is a receipt and not a control. */
+  .schedpop-sub { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--faint); }
+  .schedpop-row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+  .schedpop-btn {
+    background-color: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1;
+    padding: 5px 11px;
+    cursor: pointer;
+    transition: background-color .12s, color .12s, filter .12s;
+  }
+  .schedpop-btn:hover { background-color: var(--surface-2); color: var(--fg); }
+  /* The one filled thing in this box, for the same reason .send is the one filled
+     thing in the composer: exactly one control here commits, and it is the one
+     that navigates. */
+  .schedpop-btn.go {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--on-accent);
+  }
+  .schedpop-btn.go:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.1); }
   .send {
     width: 32px;
     height: 32px;
@@ -2349,6 +2418,20 @@
     white-space: nowrap;
     flex: 1;
   }
+  /* The provenance tag on a row this chat did not start (source "cli"). Quiet
+     on purpose: it is a footnote about where a chat came from, not a category
+     the reader is meant to sort by — the rows are ONE list, which is the point
+     of merging them. Only those rows carry the span at all (addChatRow), so
+     there is no "template" styling for it to be consistent with. */
+  .chat-row .row-tag {
+    color: var(--faint);
+    font-size: 10.5px;
+    letter-spacing: .04em;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
   .chat-row .row-sub { color: var(--faint); font-size: 12px; flex-shrink: 0; }
 
   /* ── skeleton loading placeholders ── */
@@ -2541,7 +2624,7 @@
        `visibility: visible` anywhere under #left would float it over the chat. */
 
     /* Preview view: the chat column collapses to its #anntools strip, so the
-       Annotate switch and this toggle stay reachable while the preview owns the
+       Comment switch and this toggle stay reachable while the preview owns the
        screen. #anntools is a child of #chat (it is the chat pane's top row in
        the wide layout, and moving it out of there in the DOM would rework a
        layout that is correct), so the strip is kept by hiding #chat's OTHER
@@ -2616,7 +2699,7 @@
     <div id="anntools">
       <!-- The way back to the chat list, at the strip's left end. It lived at
            the right end of #topbar; it sits HERE so the strip reads
-           [← Chats … Annotate] on one line, with the topbar below carrying only
+           [← Chats … Comment] on one line, with the topbar below carrying only
            the session's identity. Hidden on the home view (there is no chat to
            leave) and in the narrow preview view (the view it returns to is off
            screen there) — both rules are in the stylesheet, where the topbar's
@@ -2625,11 +2708,11 @@
       <!-- Kind-free wording, and rewritten by applyPaneNoun once stat says what
            the pane is: "the app" for an app folder, "the preview" for a file. It
            said "the app" unconditionally, so a screen-reader user on `notes.md`
-           heard "Annotate the app" over a markdown preview — the same bug the
+           heard "Comment on the app" over a markdown preview — the same bug the
            footnote and the frame's own title had. -->
-      <button id="annbtn" type="button" aria-pressed="false" aria-label="Annotate the preview"
-              title="Annotate the preview, then send the notes to Claude"><span
-        class="lbl">Annotate</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
+      <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
+              title="Comment on the preview, then send the notes to Claude"><span
+        class="lbl">Comment</span><span class="track" aria-hidden="true"><span class="knob"></span></span></button>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
            (kebabOpen) because it names what the copied command will do —
@@ -2639,6 +2722,11 @@
       <div id="kebab">
         <button id="kebabbtn" type="button" aria-haspopup="menu" aria-expanded="false"
                 aria-label="More options" title="More options">⋮</button>
+        <!-- Scheduling was briefly a second item here (Akshil, 2026-08-14) and is
+             back in the composer as a button of its own (2026-08-16): the menu
+             could offer the FOLDER and nothing else, so the user retyped on the
+             Schedule page the message they had already written. The composer
+             holds the draft, so the composer is what can hand it over. -->
         <div id="kebabpop" role="menu" aria-label="More options" hidden>
           <button id="terminalopt" type="button" role="menuitem" class="kebab-opt"></button>
         </div>
@@ -2668,8 +2756,8 @@
       <!-- Chat ⇄ Preview, for the narrow single-view layout only (hidden by CSS
            until the 800px media query reveals it). It sits in THIS strip
            because the strip is the one row that both views keep on screen. -->
-      <button id="viewbtn" type="button" aria-label="Annotate preview"
-              title="Switch between the chat and the preview pane, where the annotation tools are">Annotate preview</button>
+      <button id="viewbtn" type="button" aria-label="Comment on preview"
+              title="Switch between the chat and the preview pane, where the annotation tools are">Comment on preview</button>
     </div>
     <!-- chat view -->
     <div id="topbar">
@@ -2696,10 +2784,6 @@
             <select id="model" class="pill model-sel" aria-label="Model"></select>
             <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
-            <!-- Scheduling lives HERE, in the composer, and not on a settings
-                 page: this row already knows the folder and already holds the
-                 message, so "later" is the only thing left to say. -->
-            <select id="when" class="pill when-sel" aria-label="When to send this"></select>
             <span class="spacer"></span>
             <!-- Takes the picture NOW and hangs it above the composer as a chip;
                  see the shotAttachPane section. The spoken strings are rewritten
@@ -2717,6 +2801,16 @@
             <button id="viewshot" class="pill viewshot" type="button"
                     aria-label="Screenshot the preview and attach it to this message"
                     title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
+            <!-- IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these
+                 two are the ways this draft leaves the box — now, or as a task —
+                 so they sit together, after the spacer, apart from the three
+                 selects that only describe how a run behaves.
+                 A calendar and not a clock: what it opens is a task with a date
+                 on it, not a delay on this message (see openScheduler for what
+                 the composer stopped trying to do on its own). -->
+            <button id="schedbtn" class="pill schedbtn" type="button"
+                    aria-label="Schedule this as a task"
+                    title="Schedule this as a task"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="10.6" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.6h12M5.4 1.8v2.6M10.6 1.8v2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2759,7 +2853,6 @@
             <select id="hmodel" class="pill model-sel" aria-label="Model"></select>
             <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
-            <select id="hwhen" class="pill when-sel" aria-label="When to send this"></select>
             <span class="spacer"></span>
             <!-- The home card's copy, in the same seat beside Send. Both composers
                  carry one because the chips row above them is the same row
@@ -2768,6 +2861,16 @@
             <button id="hviewshot" class="pill viewshot" type="button"
                     aria-label="Screenshot the preview and attach it to this message"
                     title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
+            <!-- The chat composer's copy, in the same seat. Both rows carry one
+                 for the reason both carry a screenshot button: a FIRST message is
+                 exactly as schedulable as a follow-up, and which of the two you
+                 are writing must not decide whether the control exists. The
+                 difference is what rides along — there is no session yet here, so
+                 the hop carries an empty `session_id` and the task starts a chat
+                 of its own. -->
+            <button id="hschedbtn" class="pill schedbtn" type="button"
+                    aria-label="Schedule this as a task"
+                    title="Schedule this as a task"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="10.6" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.6h12M5.4 1.8v2.6M10.6 1.8v2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2855,6 +2958,23 @@
        specificity, and the "hidden" viewer sat over the whole pane swallowing
        every click. Caught in the browser, never in the source — a full-bleed
        scrim looks like the app when the app is what is behind it. -->
+  <!-- The Schedule button's confirm. ONE of them for both composers, a sibling of
+       the layout rather than a child of either: #chat sets `overflow: hidden`, so
+       a popup living inside it would be clipped by the column it hangs over, and
+       only one composer is ever on screen anyway (openSchedConfirm anchors it to
+       whichever button was pressed).
+       Not a <dialog>: this is a 260px note pinned to a 32px button, and a modal
+       would dim a chat the user is about to be shown again if they say Cancel. -->
+  <div id="schedpop" class="schedpop" role="dialog" aria-modal="false"
+       aria-labelledby="schedpop-title" hidden>
+    <div class="schedpop-title" id="schedpop-title">Schedule this as a task?</div>
+    <div class="schedpop-sub">This task will be scheduled to run at a specific time.</div>
+    <div class="schedpop-row">
+      <button id="schedpop-no" class="schedpop-btn" type="button">Cancel</button>
+      <button id="schedpop-go" class="schedpop-btn go" type="button">Continue</button>
+    </div>
+  </div>
+
   <div id="shotview" hidden>
     <div id="shotview-scrim"></div>
     <figure id="shotview-box">
@@ -3528,9 +3648,9 @@ const PANE_SKIP_MODES = new Set(["claude"]);
 
 // What the left pane should frame. TWO shapes and a NO-PANE case (D235, D239):
 //
-//   * an APP FOLDER — the app's entry html (index.html, or its single top-level
-//     html — the same rule as the shell's "Open as app" button), resolved by
-//     ./app.py;
+//   * an APP FOLDER — the app's entry html (its first top-level page carrying
+//     `<meta name="fused-app">`, D301 — the same rule as the shell's "Open as
+//     app" button), resolved by ./app.py;
 //   * a FILE — the file in its OWN default view, i.e. exactly what the
 //     explorer's preview pane would show it in: `.py` in `code`, `.parquet`
 //     in `duckdb`, an `.html` page rendered as itself. That is what makes the
@@ -3650,7 +3770,7 @@ let paneNoun = "preview";
 // and — live, because they are built per message — the chip's label, the receipt
 // thumbnail's `alt` and the two block preambles further down.
 function applyPaneNoun() {
-  annBtn.setAttribute("aria-label", "Annotate the " + paneNoun);
+  annBtn.setAttribute("aria-label", "Comment on the " + paneNoun);
   // Not written directly: annSetMode rewrites this title on every disarm, so the
   // idle wording has to have exactly one definition or the noun comes back wrong
   // the first time the user toggles the switch off. That is how it broke here.
@@ -4000,7 +4120,7 @@ function applyLeftMode() {
 //
 // Removed rather than hidden, because there is no state in which any of it is
 // wanted again: the target's kind does not change mid-session (a folder that
-// grows an index.html gets its pane on the next open, which is where the
+// grows a tagged entry page gets its pane on the next open, which is where the
 // predicate is read). Two subtrees go whole:
 //   * #left — the frame, the pins, the highlight and the note popover;
 //   * #divider — no two columns, no ratio to drag;
@@ -5098,7 +5218,7 @@ annTa.addEventListener("keydown", (e) => {
 // It was a literal in both places, so the kind-correct noun applyPaneNoun had just
 // written was thrown away by the first toggle-off. One definition, two callers.
 const annIdleTitle = () =>
-  "Annotate the " + paneNoun + ", then send the notes to Claude";
+  "Comment on the " + paneNoun + ", then send the notes to Claude";
 
 // The one way in and out of annotate mode. Extracted because Escape leaves the
 // mode too, and a second copy of this would be a second chance for the banner's
@@ -5141,17 +5261,19 @@ function annSetMode(on) {
   }
   annBtn.classList.toggle("on", annOn);
   annBtn.setAttribute("aria-pressed", String(annOn));
-  annBtn.querySelector(".lbl").textContent = annOn ? "Annotating" : "Annotate";
+  // The label is the static markup "Comment" in BOTH states — the track's
+  // accent fill is what says armed. It used to flip to "Commenting", but a
+  // label that changes width makes the whole right-anchored row shuffle on
+  // every toggle, and one mode wearing two names reads as two features.
   // Pins follow the mode, so a toggle must repaint them (show on arm, hide on
   // disarm) — renderAnn gates on `annOn` now.
   renderAnn();
-  // No label in either state — the icon never changes size or position, so nothing
-  // here can cover more of the app than the idle button already does. The tooltip
-  // is where the instruction and BOTH ways out live, because it has no width limit
-  // and costs no space. The visible signals are the accent fill and the highlight
-  // box that tracks the pointer over the app (the strongest of the two: it only
-  // appears in annotate mode and it follows what the user is aiming at).
-  annBtn.title = annOn ? "Annotating — click an element to add a note · Esc or click this button to stop"
+  // The tooltip is where the instruction and BOTH ways out live, because it has
+  // no width limit and costs no space. The visible signals are the accent fill
+  // and the highlight box that tracks the pointer over the app (the strongest
+  // of the two: it only appears in comment mode and it follows what the user
+  // is aiming at).
+  annBtn.title = annOn ? "Comment mode on — click an element to add a note · Esc or click this button to stop"
                        : annIdleTitle();
   // The ring can be gone rather than merely hidden: hosted, it lives in the
   // target's document and that document may have been replaced (or unmarked)
@@ -5217,7 +5339,7 @@ function annPollTarget() {
   }
   // A target that has just ARRIVED re-applies the boot default, because the boot
   // itself may have run before the host stamped anything — the switch would then
-  // read "Annotate" while the URL says the mode is on. Through annSetMode, the
+  // read "Comment" while the URL says the mode is on. Through annSetMode, the
   // one door, so the label, aria-pressed, the param and the pins agree.
   if (has) annSetMode(fused.params.get("annmode") !== "0");
   // And a target that has GONE disarms without writing the param: annSetMode
@@ -5421,7 +5543,7 @@ if (CHAT_ONLY) {
   // second set of listeners — but both objects are the host's and outlive us,
   // so to the NEXT sidebar instance they read as "already adopted" and its
   // annWatchTarget/annWireTarget never run. That was the armed-but-dead
-  // switch: "Annotating" on, no hover ring, no click, because the only wiring
+  // switch: "Comment" armed, no hover ring, no click, because the only wiring
   // the target ever had belonged to a torn-down document whose handlers the
   // browser no longer runs. Cleared here, the next instance re-adopts and
   // re-wires; the dead listeners it cannot remove stay inert for the same
@@ -5492,7 +5614,7 @@ function applyNarrowView() {
   // ONE string for the label and the aria-label: a second wording is a second
   // thing to keep in step, and there is nothing the screen reader needs that the
   // visible text does not already say.
-  const viewLabel = preview ? "Back to chat" : "Annotate preview";
+  const viewLabel = preview ? "Back to chat" : "Comment on preview";
   viewBtn.textContent = viewLabel;
   viewBtn.setAttribute("aria-label", viewLabel);
   // ARRIVING AT THE NARROW CHAT VIEW DISARMS annotate mode — by flipping there
@@ -7449,133 +7571,187 @@ document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS,
 document.querySelectorAll(".perm-sel").forEach((el) =>
   fillSelect(el, PERMISSION_MODES, "Approvals", PERMISSION_LABELS));
 
-// ── the When pill: send this message now, or leave it for later ──
+// ── the Schedule button: hand this draft to the Schedule page ──
 //
-// Scheduling is the composer's business because the composer is where the two
-// hard parts already are: WHICH FOLDER (this template is bound to one) and WHAT
-// TO SAY. Everything a separate page would have to ask for again, this row
-// already has, so all it adds is the one word it was missing.
+// The composer used to try to schedule on its own (the "Send now" pill, deleted
+// 2026-08-16): it could defer ONE message and nothing else — no title, no
+// description, no repeat rule, no second thought — which meant a row of send-later
+// presets sitting permanently in front of every user to serve the rarest thing
+// they do with a draft. Everything past a bare deferral is the /scheduled page's
+// form, so the whole job here is the HANDOFF, and the handoff is one button.
 //
-// PRESETS, not a date picker. The pill row is a fixed vocabulary — a
-// `datetime-local` field wedged between the pills would look like a different
-// app, and "later today / tomorrow morning" is what a scheduled prompt actually
-// wants. `/api/schedule` still takes an exact `due`, so nothing is lost for a
-// caller that needs 03:14.
+// What travels is what the page cannot know and this template always does: the
+// FOLDER it is bound to, the words already in the box, and the conversation they
+// were written in. What does NOT travel is how this chat is configured — model,
+// effort, approvals — because a task runs unattended and the page owns those
+// answers for its own reasons. The rule the deleted pill carried is one of them:
+// "ask every time" cannot work with nobody watching (nothing polls `decide`, so
+// the first tool call parks until the permission timeout denies it), and that is
+// now the Schedule page's to apply rather than this row's to substitute.
 //
-// Deliberately NOT persisted in `fused.params`, unlike the model/effort/approval
-// pills: those describe how this chat behaves and should outlive a reload, while
-// "send it at 6pm" is a property of ONE message. A scheduling choice that
-// survived its own send would silently defer the next thing the user typed.
-const WHEN_NOW = "now";
-const WHEN_OPTIONS = [WHEN_NOW, "5m", "1h", "3h", "evening", "tomorrow", "monday"];
-const WHEN_LABELS = {
-  [WHEN_NOW]: "Send now",
-  // Short enough to watch happen, which makes it the one preset that is also how
-  // you TRY scheduling: pick it, and the whole path (store, tick, spawn, job row,
-  // toast) plays out while you are still looking at the screen.
-  "5m": "In 5 minutes",
-  "1h": "In 1 hour",
-  "3h": "In 3 hours",
-  "evening": "This evening",
-  "tomorrow": "Tomorrow 9am",
-  "monday": "Monday 9am",
-};
-// Local wall-clock times, resolved at SEND time rather than when the pill was
-// touched — "tomorrow 9am" means tomorrow from the moment you commit to it.
-// Each returns a Date, or null when the preset has already gone by today (the
-// evening case), which the caller reports rather than silently shifting a day.
-const WHEN_RESOLVERS = {
-  "5m": () => new Date(Date.now() + 5 * 60e3),
-  "1h": () => new Date(Date.now() + 3600e3),
-  "3h": () => new Date(Date.now() + 3 * 3600e3),
-  "evening": () => {
-    const d = new Date();
-    d.setHours(18, 0, 0, 0);
-    return d > new Date() ? d : null;
-  },
-  "tomorrow": () => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    d.setHours(9, 0, 0, 0);
-    return d;
-  },
-  "monday": () => {
-    const d = new Date();
-    // 1 = Monday; always the NEXT one, so choosing it on a Monday means a week.
-    d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7));
-    d.setHours(9, 0, 0, 0);
-    return d;
-  },
-};
-document.querySelectorAll(".when-sel").forEach((el) =>
-  fillSelect(el, WHEN_OPTIONS, "Send", WHEN_LABELS));
+// `new=1` is what makes the hop feel like one control rather than two: it opens
+// the form immediately, so the click lands on a filled-in dialog instead of a
+// page with a button to press next. Scheduled.tsx consumes the params and clears
+// them (history.replaceState), so a reload of the resulting URL is just the
+// Schedule page.
+//
+// A TOP-WINDOW write, deliberately, and it is the same standard-break the
+// markdown/graph templates make for shell navigation (their `navigateShell`,
+// which this mirrors): the target is a shell ROUTE, not a param on this view
+// and not an fs path, and this page sets no param boundary — so fused.params
+// addresses the shell's query string but has nothing to say about its path.
+// pushState + "fused:navigate" is the in-app hop the React shell listens for
+// (platform/lib/router.ts navigateUrl does the same two lines); the href
+// assignment underneath is the fallback for a cross-origin or absent parent,
+// where reading `top.location.href` throws.
+const SCHEDULE_URL = "/scheduled";
 
-// The naive local `YYYY-MM-DDTHH:mm` the server reads as local time
-// (schedule.parse_due) — so the time the user picked is the time that is stored,
-// with no timezone arithmetic on either side of the wire.
-function localDueString(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-    + `T${p(d.getHours())}:${p(d.getMinutes())}`;
+// Where "Back to chat" has to land. The TOP window's path when it is readable,
+// this document's otherwise — the same split every other navigation in this file
+// makes, for the same reason: framed by the React shell, `location` here is the
+// view's own inner URL, and a Back button pointing at it would return the reader
+// to a bare template outside the app they left from.
+function backHere() {
+  try {
+    const host = window.top;
+    return host.location.pathname + host.location.search;
+  } catch (err) {
+    return location.pathname + location.search;
+  }
 }
 
-function whenChoice() {
-  const el = document.querySelector(".when-sel");
-  return el && WHEN_OPTIONS.includes(el.value) ? el.value : WHEN_NOW;
+// `draft` is whatever is typed right now, and an EMPTY one is fine: the page's
+// form is where the description gets written, and arriving there with a blank
+// field is exactly what "+ New task" already does. Nothing is validated here —
+// this navigates, it does not create.
+function openScheduler(draft) {
+  // The draft SURVIVES the trip: leaving for the schedule page unloads this
+  // document, and coming back rebuilt the composer empty — the message the
+  // user had half-written was gone (Akshil, 2026-08-16). sessionStorage, not
+  // local: a draft is a fact about this tab's errand, not about the machine.
+  try { sessionStorage.setItem("fused:chatdraft:" + FILE, draft || ""); }
+  catch (err) { /* storage denied — the draft just doesn't survive the trip */ }
+  const url = SCHEDULE_URL + "?new=1"
+    + "&target=" + encodeURIComponent(FILE)
+    + "&message=" + encodeURIComponent(draft || "")
+    // The chat this task was thought of in, so the page can offer to continue it.
+    // "" on the landing page, which is correct rather than missing: there is no
+    // session yet, and the store reads "" as "start a new one".
+    + "&session_id=" + encodeURIComponent(fused.params.get("session_id") || "")
+    + "&back=" + encodeURIComponent(backHere());
+  try {
+    const host = window.top;
+    void host.location.href;   // throws when cross-origin
+    host.history.pushState(null, "", url);
+    host.dispatchEvent(new Event("fused:navigate"));
+    return;
+  } catch (err) { /* fall through to a real navigation */ }
+  try { window.top.location.href = url; } catch (err) { location.href = url; }
 }
 
-// The approvals mode a DEFERRED message will really run under, which is not always
-// the one the pill was showing when the user picked a time.
+// ── the confirm in front of it ──
 //
-// "ask every time" cannot work unattended, and the failure is silent: nobody is
-// polling `decide` for a scheduled turn, so the first tool call parks a request in
-// the run's perm dir and blocks until PERMISSION_WAIT expires and the server
-// denies it on the user's behalf — a message that "sent" and did nothing (the
-// same trap agent.py's `_APP_SESSION_PERMISSION_MODE` note describes). So a
-// scheduled send under `prompt` becomes `auto`, the broadest the template offers,
-// where the CLI's own classifier approves what it judges safe and still parks the
-// rest for the folder's chat.
+// The button sits 34px from Send and the click LEAVES the conversation, so a
+// miss is expensive in a way a mistyped pill never was. One short question, and
+// a sub-line naming what rides along — the two things the icon cannot say.
 //
-// SUBSTITUTED VISIBLY, never quietly: the pill switches to show `auto` the moment
-// a time is chosen, so what is on screen is what will be used, and the user can
-// override it or go back to "Send now". That disclosure is the whole point — this
-// loosens approvals, and loosening them behind the user's back would be worse
-// than the parked turn it avoids.
-//
-// `plan` and `acceptEdits` pass through untouched. Both can still park a card, but
-// neither does so on EVERY call the way `prompt` does, and each is a deliberate
-// choice a user may well want waiting for them.
-function scheduledPerm(mode) {
-  return mode === "prompt" ? "auto" : mode;
+// Modelled on .selpop's dismissal contract (outside press, Escape, window blur)
+// rather than on a modal's: this is a note pinned to a button, and dimming a
+// chat the reader may be about to come straight back to would be the heavier
+// gesture of the two.
+const schedPop = document.getElementById("schedpop");
+// Which composer's button opened it — the draft comes from that composer's box,
+// read at CONTINUE time and not at open time, so a paste made with the confirm
+// already up still travels.
+let schedPopFor = null;
+
+function closeSchedConfirm() {
+  if (!schedPopFor) return;
+  schedPop.hidden = true;
+  schedPopFor = null;
 }
 
-// NOTE: the deferral's effect on the approvals pill lives inside `syncSelects`,
-// not in a second function beside it. The first cut had `syncPermForWhen` running
-// after each `syncSelects`, and every desync came from the same place — a caller
-// that ran one and not the other:
-//
-//   * `resetWhen` put the pill back to "Send now" without restoring approvals, so
-//     after a successful schedule the row still read `auto` (with `prompt` still
-//     disabled) while the next send-now would have used `prompt`;
-//   * a model or effort change — or `defaults`/prefs landing asynchronously —
-//     called `syncSelects` alone, writing the params value back over the
-//     substitution, so the pill could read "ask every time" for a message that
-//     was going to run as `auto`.
-//
-// Both are "two functions, one state" bugs, so the state has ONE owner. Every
-// existing caller of `syncSelects` is now correct without knowing scheduling
-// exists.
-
-// Back to "Send now" after every send. See the note above: a deferral must not
-// outlive the message it was chosen for.
-function resetWhen() {
-  document.querySelectorAll(".when-sel").forEach((el) => { el.value = WHEN_NOW; });
-  // Through syncSelects, so the approvals pill is handed back to the user's own
-  // mode and its options are re-enabled. Setting the value alone left the row
-  // reading `auto` (with `prompt` still disabled) after a successful schedule,
-  // while the next send-now would have used `prompt`.
-  syncSelects();
+function openSchedConfirm(btn) {
+  schedPopFor = btn;
+  // Laid out before it is measured: the height decides which side it opens on.
+  schedPop.style.left = "0px";
+  schedPop.style.top = "0px";
+  schedPop.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const h = schedPop.offsetHeight;
+  const w = schedPop.offsetWidth;
+  // ABOVE by default, like every other popup here: the composer is pinned to the
+  // bottom of the pane, so below is usually off screen. Flip down only when there
+  // is no room up there, and clamp either way.
+  const up = r.top - h - 6;
+  const top = up >= 4 ? up : Math.min(r.bottom + 6, window.innerHeight - h - 4);
+  schedPop.style.top = `${Math.max(4, top)}px`;
+  // Right-aligned to the button, not left: it hangs off the last control before
+  // Send, and a 260px box growing rightwards from there leaves the pane.
+  schedPop.style.left = `${Math.max(4, Math.min(r.right - w, window.innerWidth - w - 4))}px`;
+  document.getElementById("schedpop-go").focus({ preventScroll: true });
 }
+
+document.querySelectorAll(".schedbtn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    // A second press on the same button closes, rather than closing on the
+    // document handler below and reopening here.
+    const same = schedPopFor === btn;
+    closeSchedConfirm();
+    if (!same) openSchedConfirm(btn);
+  });
+});
+
+document.getElementById("schedpop-go").addEventListener("click", () => {
+  // The box belonging to the composer that was clicked, not "the visible one":
+  // only one composer is on screen at a time, but reading the button's own form
+  // is what keeps that a fact about the layout rather than an assumption here.
+  const host = schedPopFor && schedPopFor.closest("#card");
+  const draft = (host ? homebox : box).value.trim();
+  closeSchedConfirm();
+  openScheduler(draft);
+});
+// The other half of the round trip: a draft stashed by openScheduler is put
+// back the moment the composer exists again — into an EMPTY box only, never
+// over something newer — and the stash is spent either way.
+try {
+  const savedDraft = sessionStorage.getItem("fused:chatdraft:" + FILE);
+  if (savedDraft !== null) {
+    sessionStorage.removeItem("fused:chatdraft:" + FILE);
+    if (savedDraft) {
+      if (box && !box.value) box.value = savedDraft;
+      if (homebox && !homebox.value) homebox.value = savedDraft;
+    }
+  }
+} catch (err) { /* storage denied — nothing to restore */ }
+
+document.getElementById("schedpop-no").addEventListener("click", () => {
+  const btn = schedPopFor;
+  closeSchedConfirm();
+  // Focus goes back where the reader was, not where the confirm was: the draft is
+  // the thing they were in the middle of.
+  focusBox(btn && btn.closest("#card") ? homebox : box);
+});
+document.addEventListener("pointerdown", (ev) => {
+  if (schedPopFor && !schedPop.contains(ev.target) && !ev.composedPath().includes(schedPopFor)) {
+    closeSchedConfirm();
+  }
+});
+// Capture phase, and the event is CONSUMED — same discipline as .selpop's
+// Escape: the document-level binding kills a live run, and dismissing a confirm
+// must not also do that.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !schedPopFor) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  closeSchedConfirm();
+}, true);
+// A click into the preview iframe never reaches this document but does blur this
+// window, and with a pane on screen that is the ordinary case.
+window.addEventListener("blur", closeSchedConfirm);
+// Nothing repositions an open popup: a scroll or resize under it would leave it
+// pointing at a button that has moved, so it goes away instead.
+window.addEventListener("resize", closeSchedConfirm);
 
 // An appearance:none select keeps the width of its WIDEST option, so a short
 // value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
@@ -7599,32 +7775,14 @@ function syncSelects() {
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = curEffort(); });
   const perm = fused.params.get("permission");
   const chosen = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
-  // A DEFERRED message cannot honour every mode (see scheduledPerm), so while a
-  // time is selected the pill shows the one that will actually run and stops
-  // offering the ones that will not. Decided HERE, inside the one function that
-  // owns pill state, so a caller cannot get it half-right — see the note above
-  // scheduledPerm for the desyncs that came of splitting this in two.
-  const deferred = whenChoice() !== WHEN_NOW;
-  document.querySelectorAll(".perm-sel").forEach((el) => {
-    for (const opt of el.options) {
-      opt.disabled = deferred && opt.value !== scheduledPerm(opt.value);
-    }
-    el.value = deferred ? scheduledPerm(chosen) : chosen;
-  });
-  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel, .when-sel").forEach(fitSelect);
+  // Every mode is offered, always. The disabling that used to live here belonged
+  // to a DEFERRED send ("ask every time" cannot work with nobody watching) and
+  // went with the pill: this row now only ever describes a run the user is
+  // sitting in front of, and the unattended case is the Schedule page's to rule
+  // on — where the answer is picked for a task rather than borrowed from a chat.
+  document.querySelectorAll(".perm-sel").forEach((el) => { el.value = chosen; });
+  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach(fitSelect);
 }
-// The When pill keeps no params state (see WHEN_OPTIONS), so its only listener is
-// the width fit every pill needs, plus keeping the two composers' copies in step.
-document.querySelectorAll(".when-sel").forEach((el) =>
-  el.addEventListener("change", () => {
-    document.querySelectorAll(".when-sel").forEach((other) => {
-      other.value = el.value;
-      fitSelect(other);
-    });
-    // Picking a time can change which approvals mode actually applies, and
-    // syncSelects is what knows that — so the whole pill row is re-read.
-    syncSelects();
-  }));
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
 document.querySelectorAll(".effort-sel").forEach((el) =>
@@ -8712,7 +8870,7 @@ function buildPlanCard(p, run_id) {
 //     path), i.e. a fork of the thing whose whole job is to be read carefully
 //     before it is answered;
 //   * leaving Preview is honest and reversible: the run cannot continue without
-//     the user's attention, "Back to chat"/"Annotate preview" is one click either
+//     the user's attention, "Back to chat"/"Comment on preview" is one click either
 //     way, and the notes and pins survive the trip (applyNarrowView re-measures
 //     them). We only take the screen for a HARD BLOCK, never for ordinary
 //     progress — the working line and errors still go to the hidden #log, and
@@ -9077,20 +9235,21 @@ function makeTyper(bodyEl) {
 // centre instead of its own.
 const TOOL_STATUS_GLYPH = { running: "", ok: "", error: "✗" };
 
-// ── which disclosures are open: the newest one, and nothing else ──
+// ── which disclosures are open: the ones the reader opened, and no others ──
 // Every collapsible card in the transcript — a tool chip, a thinking block —
-// ships COLLAPSED except the most recent one, which is open. A single turn can
-// make twenty tool calls, and twenty open bodies is a log where the reply is
-// somewhere far below, whereas the one card whose body is still news is always
-// the one that just arrived. So a new card opens and the card it replaced folds
-// itself back up.
+// ships COLLAPSED, and that now includes the newest card and the one still
+// streaming. A single turn can make twenty tool calls, and a transcript that
+// opens bodies on its own is a transcript that MOVES under the reader while the
+// run is live: each arriving card pushes everything above it up the screen, and
+// the next arrival a second later folds it again. Closed by default makes the
+// log scannable — one summary line per step, so the shape of the turn is
+// readable at a glance and the reply stays where the eye left it.
 //
-// The user's own click OUTRANKS that, in both directions and permanently: a
-// card they opened is never auto-folded, and one they closed is never
-// auto-opened — not even while it is the newest. The override is recorded from
-// the SUMMARY's click rather than the `toggle` event, because `toggle` fires
-// asynchronously and fires for programmatic opens too, so it cannot tell a
-// user's fold from this policy's.
+// The user's click is therefore the ONLY thing that opens a card, and it
+// STICKS: nothing auto-folds a card they opened, and nothing auto-opens one
+// they closed. The override is recorded from the SUMMARY's click rather than
+// the `toggle` event, because `toggle` fires asynchronously and fires for
+// programmatic opens too, so it cannot tell a user's fold from a repaint's.
 //
 // Overrides are keyed rather than held on the element: the re-attach repair
 // branches and loadHistory rebuild the <details> nodes from the payload, and an
@@ -9100,15 +9259,13 @@ const TOOL_STATUS_GLYPH = { running: "", ok: "", error: "✗" };
 // numbered segment container), which survives the 400 ms poll but not a rebuild
 // of its turn.
 const cardOverrides = new Map();  // card key -> the open state the user chose
-let newestCard = null;            // { key, el } of the most recent card
 let cardSeq = 0;                  // numbers segment containers, for position keys
 
-// A fresh transcript is a fresh policy: a restored session must open with only
-// its LAST card unfolded, so an override from the conversation that was on
-// screen before cannot leak a card open in one the user has never touched.
+// A fresh transcript is a fresh policy: a restored session must open with every
+// card folded, so an override from the conversation that was on screen before
+// cannot leak a card open in one the user has never touched.
 function resetCardPolicy() {
   cardOverrides.clear();
-  newestCard = null;
 }
 
 // A card's identity for `cardOverrides` (see above for why tools and thinking
@@ -9118,18 +9275,17 @@ function cardKey(st, seg, i) {
                                              : st.seq + ":" + i;
 }
 
-// Adopt one <details> as the newest card, folding the one it replaces.
+// Wire one <details> to the override map and apply the standing policy: folded,
+// unless this is a card the user opened. Nothing here looks at the card's
+// position, so a re-render — the 400 ms poll, a repair branch, history replay —
+// puts every card back exactly where the reader left it.
 function registerCard(el, head, key) {
   head.addEventListener("click", () => {
     // Runs BEFORE the disclosure's own default action, so `el.open` is still
     // the state being left behind — the user is asking for its opposite.
     cardOverrides.set(key, !el.open);
   });
-  if (newestCard && newestCard.el !== el && !cardOverrides.has(newestCard.key)) {
-    newestCard.el.open = false;
-  }
-  el.open = cardOverrides.has(key) ? cardOverrides.get(key) : true;
-  newestCard = { key, el };
+  el.open = cardOverrides.has(key) ? cardOverrides.get(key) : false;
 }
 
 // How many lines of a diff a chip shows before it scrolls. Held together with
@@ -10220,78 +10376,6 @@ function setRunningUi(on) {
   });
 }
 
-// True while a schedule POST is in flight. A separate flag from `sending`, which
-// belongs to the run path (and is also held by loadHistory and resumeRun's probe):
-// a scheduled message starts no run, so it must neither consult nor occupy that
-// one. It needs its own because the box is cleared only on SUCCESS — the draft has
-// to survive a refusal — so without a guard a second Enter during the round trip
-// stores a second copy of the same unattended job.
-let scheduling = false;
-
-// Hand the composer's message to the scheduler instead of starting a run now.
-// Returns true when it was stored, false when it was not (and has said why), so
-// the caller knows whether to clear the box.
-//
-// Annotations are deliberately NOT folded in, unlike sendMessage: a note is a
-// crop of what is on screen RIGHT NOW plus a pointer into this render of the
-// page, and by the time the message is sent the pane may show something else
-// entirely. A scheduled message is the words, and the pending notes stay pending.
-async function scheduleMessage(message, choice) {
-  const resolve = WHEN_RESOLVERS[choice];
-  const at = resolve ? resolve() : null;
-  if (!at) {
-    addNote(`${WHEN_LABELS[choice]} has already passed today — pick another time.`,
-            null, "◷");
-    return false;
-  }
-  const perm = document.querySelector(".perm-sel");
-  // The mode that will really run, not merely the one on screen — though while a
-  // time is selected syncSelects keeps those the same thing, and this is the
-  // backstop that means a desync could never send under a mode nobody saw.
-  const mode = scheduledPerm(perm ? perm.value : "");
-  // CONTINUE THIS CONVERSATION when there is one. Scheduling from an open chat is
-  // "and then do this next", so a fresh session would throw away the thread the
-  // prompt was written against — the very context that made it worth deferring
-  // from here rather than from a page. Empty on the home view, which is correct:
-  // there is no session yet, and the store reads "" as "start a new one".
-  const session = fused.params.get("session_id") || "";
-  try {
-    const res = await fetch("/api/schedule", {
-      method: "POST",
-      // X-Fused is the D3 write guard; without it the endpoint answers 403.
-      headers: { "Content-Type": "application/json", "X-Fused": "1" },
-      body: JSON.stringify({
-        target: FILE,
-        message,
-        due: localDueString(at),
-        session_id: session,
-        // The approvals pill applies to the scheduled turn too — it is the same
-        // question, and a message sent while nobody is watching is the case where
-        // the answer matters most.
-        permission_mode: mode,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      addNote(`Could not schedule: ${data.error || res.status}`, null, "◷");
-      return false;
-    }
-    // The mode is named at the moment of commitment, which is where a substituted
-    // one has to be disclosed (see scheduledPerm) — and where "it will act without
-    // me" is worth reading even when nothing was substituted.
-    const label = (PERMISSION_LABELS && PERMISSION_LABELS[mode]) || mode;
-    addNote(`Scheduled for ${at.toLocaleString()}`
-            + `${session ? ", continuing this chat" : ""}, with approvals set to`
-            + ` "${label}". It runs as long as fused-render is open, and appears`
-            + ` here when it does — leave this open and you will see it happen.`,
-            null, "◷");
-    return true;
-  } catch (e) {
-    addNote(`Could not schedule: ${e.message}`, null, "◷");
-    return false;
-  }
-}
-
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
@@ -10495,9 +10579,9 @@ async function sendMessage(message) {
 // here ever set `activeRun` and the turn happened entirely off-screen. A chat
 // left open past its own scheduled time sat on "Scheduled for 12:20" while the
 // session ran, finished, and edited files — with the page's only route to the
-// truth being a reload. Reported from use, and it made the composer a worse place
-// to schedule from than the settings page it replaced: at least there, nobody
-// expected the conversation to be on screen.
+// truth being a reload. Reported from use, and it outlived the composer pill that
+// prompted it: a task made on the Schedule page for THIS folder still fires into
+// this conversation, and a chat left open is still where the user watches it.
 //
 // `resumeRun` already does the hard half. It is written for exactly this shape —
 // a run this frame did not start and may have missed the end of — and handles
@@ -10713,32 +10797,12 @@ async function resumeRun(run_id, opts) {
 }
 
 function submitChat() {
-  // DEFERRED FIRST, above the live-run branch below. Scheduling is a store write,
-  // not a send, so it does not care whether a turn is running — and putting this
-  // check second meant a message the user had deferred to tomorrow was instead
-  // PARKED by the queue and fired the moment the current turn ended, which is the
-  // one outcome the pill exists to prevent.
-  const when = whenChoice();
-  if (when !== WHEN_NOW) {
-    const draft = box.value.trim();
-    // A scheduled message must have WORDS — there is nothing to defer in a bare
-    // annotation, whose whole meaning is the screen it was drawn on.
-    if (!draft) {
-      addNote("A scheduled message needs some text — a note on its own only "
-              + "means anything now.", null, "◷");
-      return;
-    }
-    if (scheduling) return;  // see `scheduling`: a second Enter must not store a second copy
-    scheduling = true;
-    scheduleMessage(draft, when).then((ok) => {
-      scheduling = false;
-      if (!ok) return;       // refused: the draft stays in the box, unharmed
-      box.value = "";
-      growBox();
-      resetWhen();
-    });
-    return;
-  }
+  // Send is a send, always. Deferral used to be decided HERE, above the queue
+  // branch, and the whole question left the composer with the When pill — so what
+  // this key does no longer depends on a dropdown two controls away, which was
+  // most of what that pill cost to read. Scheduling is the calendar button beside
+  // it now, and it navigates rather than sending anything.
+  //
   // A live run queues instead of refusing: the text is parked and fired when
   // the turn ends. Gated on activeRun, NOT `sending` — `sending` is also held
   // by loadHistory and resumeRun's probe, and a message typed while browsing
@@ -10783,35 +10847,6 @@ document.getElementById("card").onsubmit = (e) => {
   // notes alone are sendable, and so is a bare picture (captured, pasted or
   // dropped) with no words at all
   if (!message && !annPending().length && !shotAttached.length) return;
-  const when = whenChoice();
-  if (when !== WHEN_NOW) {
-    if (!message) {
-      enterChat();
-      addNote("A scheduled message needs some text — a note on its own only "
-              + "means anything now.", null, "◷");
-      return;
-    }
-    if (scheduling) return;  // one Enter, one stored message (see `scheduling`)
-    scheduling = true;
-    // enterChat FIRST: addNote writes into the transcript, which the home view
-    // hides, so a confirmation left on this screen would be invisible. Landing in
-    // the chat is also the honest destination — it is where the message will
-    // appear when it runs.
-    enterChat();
-    homebox.value = "";
-    growHome();
-    scheduleMessage(message, when).then((ok) => {
-      scheduling = false;
-      if (ok) { resetWhen(); return; }
-      // REFUSED, and the user is now looking at the chat — so the draft goes into
-      // the composer in front of them rather than staying in the home box this
-      // navigation just hid, where it reads as lost.
-      box.value = message;
-      growBox();
-      focusBox(box);
-    });
-    return;
-  }
   homebox.value = "";
   growHome();
   enterChat();
@@ -10856,7 +10891,7 @@ async function loadHistory(session_id) {
   sending = true;
   permCards.clear();
   notedSkills.clear();
-  resetCardPolicy();  // a restored transcript opens on its LAST card, nothing else
+  resetCardPolicy();  // ...and the overrides: every card of the restored transcript starts folded
   // Same reason as the two clears above: this transcript is about to be REPLACED,
   // so every per-transcript record has to go with it — including which scheduled
   // runs are on screen (scheduleResetForNewTranscript).
@@ -10924,13 +10959,38 @@ function sessionTitle(s) {
   return text || carried.join(MARKER_JOIN) || (s && s.id) || "";
 }
 
+// One row for one past chat, from EITHER store (agent.py `_sessions` merges
+// them and stamps `source`). There is deliberately no second row shape and no
+// second section: a chat about this folder is a chat about this folder, and
+// splitting the list by which surface started it would ask the reader to
+// remember something they have no reason to have kept.
+//
+// What the two do NOT share is the click, and only because they cannot: a
+// "cli" row is resumable when its transcript is in this cwd's project dir,
+// which is precisely where `_cli_sessions` found it — so the SAME `history`
+// read and the same `--resume` on the next send work on it untouched, and the
+// row needs no special case at all. See `_cli_sessions` for why that is true
+// rather than lucky.
 function addChatRow(list, s) {
   const row = document.createElement("div");
   row.className = "chat-row";
   row.setAttribute("role", "button");
   row.tabIndex = 0;
-  row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span><span class="row-sub"></span>';
+  row.innerHTML = '<span class="dot">⏺</span><span class="row-title"></span>' +
+                  '<span class="row-tag" hidden></span><span class="row-sub"></span>';
   row.querySelector(".row-title").textContent = sessionTitle(s);
+  if (s.source === "cli") {
+    const tag = row.querySelector(".row-tag");
+    tag.hidden = false;
+    tag.textContent = "cli";
+    // The tag says three letters; the title says what they mean. All the
+    // sidecar can actually prove is that THIS chat did not start the session —
+    // a terminal run is the usual reason, a chat about a sibling file under the
+    // same cwd is the other one — so the wording claims only that. "here", not
+    // a noun, for the same reason the footnote says it: this sink derives no
+    // kind (setTargetNoun is the only writer that may name one).
+    tag.title = "Started outside this chat — a Claude Code session here";
+  }
   row.querySelector(".row-sub").textContent = ago(s.last_used || s.created_at || 0);
   const open = async () => {
     fused.params.set("session_id", s.id);

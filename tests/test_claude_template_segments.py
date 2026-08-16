@@ -482,9 +482,9 @@ def test_edit_chip_renders_a_line_classed_diff(probe):
     got = probe.render([_tool(
         "Edit", {"file_path": "/a.py", "old_string": "old", "new_string": "new"})])
     chip = _by_class(got["tree"], "toolchip")[0]
-    # Open because it is the NEWEST card, which is the only reason any card is
-    # open now — see the collapse-policy probes below.
-    assert chip["open"] is True
+    # Folded, like every card the user has not opened — the diff below is built
+    # either way, it is just not expanded. See the collapse-policy probes below.
+    assert chip["open"] is False
     pre = [n for n in _nodes(chip) if n["tag"] == "pre"][0]
     assert "diff" in pre["cls"].split()
     # Colouring is per-line CSS classes, never inline styles.
@@ -767,12 +767,13 @@ def test_thinking_is_a_details_rendered_as_markdown(probe):
                for n in _nodes(block))
 
 
-# --- default-collapse policy: the newest card, and the user's override -------
+# --- default-collapse policy: everything folded, the user's click excepted ---
 #
-# The rule the page implements: every collapsible card (tool chip, thinking
-# block) is folded except the most recent one in the log. A new card opens and
-# folds the one it replaced — unless the user has touched that one, because a
-# click outranks the policy in BOTH directions and forever.
+# The rule the page implements: EVERY collapsible card (tool chip, thinking
+# block) is folded, including the newest one and the one still streaming, so the
+# transcript does not reflow under the reader while a run is live. The only
+# thing that opens a card is the user opening it, and that choice sticks across
+# every re-render — the poll, a repair branch, history replay.
 
 
 _POLICY_HARNESS = """
@@ -798,19 +799,21 @@ def _policy(probe, body):
                      + "\nconsole.log(JSON.stringify(out));\n")
 
 
-def test_only_the_newest_card_of_a_turn_is_open(probe):
+def test_every_card_of_a_turn_ships_folded(probe):
     got = _policy(probe, """
 const c = mkContainer();
 render(c, [tool("a"), think(), tool("b"), {kind: "text", text: "done"}]);
 out.opens = opens(c);
 """)
-    assert got["opens"] == [False, False, True], (
-        "a turn with three disclosures must show one open body — the last")
+    assert got["opens"] == [False, False, False], (
+        "a turn with three disclosures must show no open body at all — the "
+        "last one included")
 
 
-def test_a_new_card_opens_and_folds_the_one_it_replaces(probe):
-    # The live case: the poll grows the segment list mid-turn, so each arriving
-    # chip is the newest and the chip before it goes away by itself.
+def test_an_arriving_card_opens_nothing_and_folds_nothing(probe):
+    # The live case: the poll grows the segment list mid-turn. The newest chip
+    # is the one still streaming and it stays shut like the rest, so the
+    # transcript does not reflow every time the agent calls another tool.
     got = _policy(probe, """
 const c = mkContainer();
 render(c, [tool("a")]);
@@ -820,44 +823,60 @@ out.two = opens(c);
 render(c, [tool("a"), tool("b"), think()]);
 out.three = opens(c);
 """)
-    assert got["one"] == [True]
-    assert got["two"] == [False, True]
-    assert got["three"] == [False, False, True]
+    assert got["one"] == [False]
+    assert got["two"] == [False, False]
+    assert got["three"] == [False, False, False]
 
 
 def test_a_card_the_user_opened_is_never_auto_folded(probe):
+    # The user's open is the ONLY open in the log, and later arrivals leave it
+    # alone — nothing in registerCard folds a card any more.
     got = _policy(probe, """
 const c = mkContainer();
-render(c, [tool("a"), tool("b")]);   // a folded, b open
-clickSummary(cards(c)[0]);            // the user opens a
+render(c, [tool("a"), tool("b")]);   // both folded
+clickSummary(cards(c)[0]);           // the user opens a
 render(c, [tool("a"), tool("b"), tool("c")]);
 out.opens = opens(c);
 """)
-    assert got["opens"] == [True, False, True], (
-        "the user's open must survive the next card's arrival; the untouched "
-        "b must not")
+    assert got["opens"] == [True, False, False], (
+        "the user's open must survive the next card's arrival, and the "
+        "untouched cards must stay shut")
 
 
-def test_a_card_the_user_folded_is_never_auto_opened(probe):
-    # Including when it IS the newest, and including across a rebuild of its
-    # turn from the payload — the re-attach repair branches and loadHistory both
-    # throw the <details> away and build a new one, so the override cannot live
-    # on the element. A tool call's key is its tool_use id.
+def test_a_users_open_survives_a_rebuild_of_its_turn(probe):
+    # The re-attach repair branches and loadHistory both throw the <details>
+    # away and build a new one, so the override cannot live on the element. A
+    # tool call's key is its tool_use id, which is stable across the rebuild.
     got = _policy(probe, """
 const c = mkContainer();
-render(c, [tool("a")]);
-clickSummary(cards(c)[0]);           // the user folds the newest card
-out.folded = opens(c);
-render(c, [tool("a"), tool("b")]);   // a newer card must not reopen it
-out.grown = opens(c);
+render(c, [tool("a"), tool("b")]);
+clickSummary(cards(c)[1]);           // the user opens b
+out.first = opens(c);
 const rebuilt = mkContainer();       // the turn re-rendered from its segments
 render(rebuilt, [tool("b"), tool("a")]);
 out.rebuilt = opens(rebuilt);
 """)
-    assert got["folded"] == [False]
-    assert got["grown"] == [False, True]
-    assert got["rebuilt"] == [False, False], (
-        "chip a is the newest in the rebuilt turn, but the user closed it")
+    assert got["first"] == [False, True]
+    assert got["rebuilt"] == [True, False], (
+        "b is keyed by its tool_use id, so the user's open follows it into the "
+        "rebuilt turn wherever it lands")
+
+
+def test_a_card_the_user_closed_again_is_never_auto_opened(probe):
+    # Closing is an override too, not a return to "unset" — but since the
+    # default is already closed, what this pins is that the second click does
+    # not leave the card open and no later render reopens it.
+    got = _policy(probe, """
+const c = mkContainer();
+render(c, [tool("a")]);
+clickSummary(cards(c)[0]);           // open...
+clickSummary(cards(c)[0]);           // ...and shut again
+out.closed = opens(c);
+render(c, [tool("a"), tool("b")]);   // a newer card must not reopen it
+out.grown = opens(c);
+""")
+    assert got["closed"] == [False]
+    assert got["grown"] == [False, False]
 
 
 def test_a_poll_tick_over_unchanged_segments_leaves_the_user_alone(probe):
@@ -865,45 +884,43 @@ def test_a_poll_tick_over_unchanged_segments_leaves_the_user_alone(probe):
 const c = mkContainer();
 const segs = [tool("a"), tool("b")];
 render(c, segs);
-clickSummary(cards(c)[1]);   // the user folds the open newest card
+clickSummary(cards(c)[1]);   // the user opens the last card
 render(c, segs);             // ...and the next 400 ms tick arrives
 out.opens = opens(c);
 """)
-    assert got["opens"] == [False, False]
+    assert got["opens"] == [False, True]
 
 
-def test_a_restored_transcript_opens_on_its_last_card_only(probe):
+def test_a_restored_transcript_opens_no_card_at_all(probe):
     # History replay renders turn after turn through the same renderSegments, so
-    # the policy needs no separate history branch: the last card built is the
-    # last card in the log.
+    # the policy needs no separate history branch: a restored conversation is a
+    # column of summary lines and nothing is expanded.
     got = _policy(probe, """
-// Snapshot AFTER the whole replay: an earlier turn's card is folded by the
-// turn that comes after it, which is the fact under test.
 const turns = [[tool("a"), think()], [tool("b")], [think(), tool("c")]]
   .map((segs) => { const c = mkContainer(); render(c, segs); return c; });
 out.opens = turns.map(opens);
 """)
-    assert got["opens"] == [[False, False], [False], [False, True]]
+    assert got["opens"] == [[False, False], [False], [False, False]]
 
 
 def test_reset_card_policy_drops_the_overrides_with_the_transcript(probe):
     got = _policy(probe, """
 const c = mkContainer();
 render(c, [tool("a")]);
-clickSummary(cards(c)[0]);   // folded in the transcript being left behind
+clickSummary(cards(c)[0]);   // opened in the transcript being left behind
 resetCardPolicy();
 const fresh = mkContainer();
 render(fresh, [tool("a")]);
 out.opens = opens(fresh);
 """)
-    assert got["opens"] == [True], (
-        "a loaded transcript opens on its last card; an override from the "
-        "conversation before it must not leak in")
+    assert got["opens"] == [False], (
+        "a loaded transcript starts fully folded; an override from the "
+        "conversation before it must not leak a card open")
 
 
 def test_the_log_wipes_reset_the_collapse_policy(source):
     # Two places replace the whole visible transcript: the Back-to-chats handler
-    # and loadHistory. Both must drop the overrides, or a card stays folded in a
+    # and loadHistory. Both must drop the overrides, or a card sits open in a
     # session the user has never touched.
     back = _block(source, 'document.getElementById("back").onclick = () => {',
                   "loadRecent();")
@@ -913,10 +930,28 @@ def test_the_log_wipes_reset_the_collapse_policy(source):
     assert "resetCardPolicy()" in hist
 
 
+def test_register_card_defaults_to_closed_and_tracks_no_newest(source):
+    """The whole of the policy, read off the source: the default is `false`, the
+    override is the only other answer, and nothing in the function folds a
+    second element — so there is no newest-card bookkeeping left to keep."""
+    reg = _block(source, "function registerCard(el, head, key) {", "\n}")
+    assert "el.open = cardOverrides.has(key) ? cardOverrides.get(key) : false;" in reg
+    # Exactly one write to `.open`: the card being registered. A second one
+    # would be the old "fold the card I replaced" arm coming back.
+    assert re.findall(r"\.open\s*=", reg) == [".open ="], reg
+    # The newest-card tracking is GONE, not merely unread — a live variable
+    # nothing consults is the next reader's false lead.
+    assert "newestCard" not in source
+    # resetCardPolicy has one job left: drop the overrides.
+    reset = _block(source, "function resetCardPolicy() {", "\n}")
+    assert "cardOverrides.clear();" in reset
+    assert "=" not in reset.replace("cardOverrides.clear();", ""), reset
+
+
 def test_no_tool_name_opens_its_own_chip_any_more(source):
-    # The policy is positional, not per-tool: an Edit chip is open because it is
-    # the newest card, never because it is an Edit. A name list here would fight
-    # the policy on every turn that ends on something else.
+    # Nothing opens a chip on its own any more — not a tool name, not its
+    # position. An Edit chip is open only if the user opened it, so a name list
+    # here would be the one thing in the page fighting the policy.
     assert "TOOL_OPEN_BY_DEFAULT" not in source
     chip = _block(source, "function buildToolChip(seg, key) {",
                   "  update(seg);\n  return { kind: \"tool\", el, update };\n}")

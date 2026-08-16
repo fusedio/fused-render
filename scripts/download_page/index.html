@@ -353,6 +353,32 @@
   @media (max-width: 640px) {
     .dl pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   }
+  /* Copy icon button pinned inside the command block. The pre gets right
+     padding so a long command scrolls under its own edge, not under the icon. */
+  .dl pre { position: relative; padding-right: 46px; }
+  .copy-cmd {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    right: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .copy-cmd svg { width: 14px; height: 14px; display: block; }
+  .copy-cmd:hover { color: var(--text); border-color: var(--accent); }
+  /* Feedback state after a successful copy: the icon flips to a check. */
+  .copy-cmd.copied { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+  .copy-cmd .check { display: none; }
+  .copy-cmd.copied .check { display: block; }
+  .copy-cmd.copied .sheets { display: none; }
   /* Mobile visitors can't install a desktop app; say so before they tap a
      .dmg onto their phone. */
   .mobile-note { display: none; }
@@ -365,6 +391,187 @@
       color: var(--muted);
       font-size: 14px;
     }
+  }
+
+  /* ---------- user guide ---------- */
+  /* Same tab component as the downloads section (data-guide instead of
+     data-os so the two switchers never cross-activate). One panel at a time:
+     the three blocks as one long scroll read as a wall of text. */
+  .guide { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .guide h2 { margin: 0 0 6px; }
+  .guide > p { color: var(--muted); margin: 0 0 22px; max-width: 62ch; }
+  .guide .tab .n {
+    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--accent);
+    border: 1px solid rgba(229, 255, 68, 0.35);
+    border-radius: 5px;
+    padding: 3px 6px;
+    margin-right: 7px;
+  }
+  .gdl { display: none; padding: 28px 2px 4px; }
+  .gdl.active { display: block; }
+  /* Vertical steps: the 3-across grid read as unpartitioned columns here, so
+     the guide stacks them — number chip inline-left, one step per row. */
+  .guide .steps { grid-template-columns: 1fr; gap: 16px; }
+  .guide .steps li {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .guide .steps li::before { margin-bottom: 0; flex: none; }
+  .guide .steps li > div { min-width: 0; flex: 1; }
+  .guide .steps .guide-shot { margin-top: 16px; }
+  .guide-shot { margin: 26px 0 0; }
+  .guide-shot img {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .guide-shot figcaption {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  /* ---------- troubleshooting ---------- */
+  .trouble-sec { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .trouble-sec h2 { margin: 0 0 6px; }
+  .trouble-sec > p { color: var(--muted); margin: 0 0 26px; max-width: 62ch; }
+  .guide .steps code, .tfix code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 6px;
+    font-size: 13px;
+  }
+  .guide pre {
+    position: relative;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 46px 10px 12px;
+    overflow-x: auto;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    margin: 14px 0 0;
+  }
+  @media (max-width: 640px) {
+    .guide pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  }
+  /* Troubleshooting: master–detail. Left, the exact error texts users see;
+     right, what the selected one means and how to clear it. */
+  .trouble-split {
+    display: grid;
+    grid-template-columns: minmax(260px, 380px) minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+  }
+  .trouble-list { display: grid; gap: 8px; align-content: start; }
+  .terr {
+    appearance: none;
+    text-align: left;
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 13px 15px;
+    cursor: pointer;
+    transition: color 0.15s ease-out, border-color 0.15s ease-out;
+  }
+  /* Plain-words title first; the exact on-screen error underneath, small,
+     so a user can match it without having to parse it. */
+  .terr b { display: block; color: var(--text); font-weight: 600; }
+  .terr .raw {
+    display: block;
+    margin-top: 4px;
+    font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .terr:hover { color: var(--text); }
+  .terr.active {
+    color: var(--text);
+    border-color: rgba(229, 255, 68, 0.45);
+    background: var(--accent-dim);
+  }
+  .trouble-detail {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    padding: 22px 24px;
+  }
+  .tfix { display: none; }
+  .tfix.active { display: block; }
+  .tfix h3 {
+    font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent);
+    margin: 22px 0 8px;
+  }
+  .tfix h3:first-child { margin-top: 0; }
+  .tfix p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .tfix p + p { margin-top: 8px; }
+  .tfix ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14.5px; }
+  .tfix ol li { margin: 6px 0; }
+  .tfix ol li::marker { color: var(--accent); font-weight: 600; }
+
+  /* Mini terminal window: shows what typing the fix actually looks like.
+     Drawn in HTML so it stays crisp and on-palette — not a screenshot. */
+  .term {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 18px 0 0;
+    max-width: 640px;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .term-bar i { width: 9px; height: 9px; border-radius: 50%; background: #3a3a3e; }
+  .term-bar em {
+    font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-style: normal;
+    color: var(--muted);
+    margin-left: 6px;
+  }
+  .term-body {
+    padding: 12px 16px 14px;
+    font: 12.5px/2 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted);
+    overflow-x: auto;
+  }
+  .term-body div { white-space: pre; }
+  /* Two prompts, deliberately distinct: `$` = the shell (Terminal itself),
+     `>` = typed INSIDE the running claude session. Drawing /login after a `$`
+     would teach the exact mistake D300's rewritten errors exist to prevent. */
+  .term-body .in { color: var(--text); }
+  .term-body .in::before { content: "$ "; color: var(--accent); font-weight: 600; }
+  .term-body .in2 { color: var(--text); }
+  .term-body .in2::before { content: "> "; color: var(--muted); font-weight: 600; }
+  .term-body .ok::before { content: "✓ "; color: var(--accent); }
+  .term-body .bot::before { content: "✦ "; color: var(--accent); }
+
+  /* Mock of the error message as the app shows it, so the panel opens with
+     the thing the user is looking at. */
+  .mock-err {
+    border: 1px solid rgba(255, 122, 122, 0.35);
+    background: rgba(255, 122, 122, 0.07);
+    border-radius: 10px;
+    padding: 11px 14px;
+    margin: 0 0 18px;
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #ff9d9d;
+    max-width: 640px;
+  }
+
+  /* DMG → Applications illustration (inline SVG next to the install steps). */
+  .dmg-art { margin: 18px 0 0; max-width: 640px; }
+  .dmg-art svg { width: 100%; height: auto; display: block; }
+  @media (max-width: 760px) {
+    .trouble-split { grid-template-columns: 1fr; }
   }
 
   footer {
@@ -420,6 +627,7 @@
     <nav>
       <a href="#gallery">Examples</a>
       <a href="#how">How it works</a>
+      <a href="#guide">User guide</a>
       <a href="about.html">Why we built it</a>
     </nav>
   </div>
@@ -519,7 +727,11 @@
            upgraded to the direct DMG link once the manifest loads. -->
       <a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
       <p>Signed and notarized, macOS 11+. Bundles Python, the fused CLI and rclone.</p>
-      <pre>brew install --cask fusedio/tap/fused-render</pre>
+      <!-- The button sits INSIDE the <pre> (absolutely positioned) so the text
+           node stays exactly the command — selecting the block by hand grabs
+           the command and nothing else. Icon-only; the aria-label carries the
+           name and the check icon carries the feedback. -->
+      <pre>brew install --cask fusedio/tap/fused-render<button class="copy-cmd" type="button" aria-label="Copy the brew command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
     </div>
     <div class="dl" data-os="win">
       <!-- Usable before/without latest.json: falls back to the releases page,
@@ -532,6 +744,193 @@
            upgraded to the direct AppImage link once the manifest loads. -->
       <a class="btn" id="linux-appimage" href="https://github.com/fusedio/fused-render/releases">Download for Linux</a>
       <p>AppImage (x86_64): make it executable and run. Bundles Python and the fused CLI.</p>
+    </div>
+  </section>
+
+  <section class="guide" id="guide">
+    <h2>User guide</h2>
+    <p>Everything you need to go from download to your first rendered file.
+    Browsing works out of the box; building apps with Claude needs
+    <a rel="noopener" href="https://code.claude.com/docs/en/overview">Claude Code</a>
+    installed and logged in.</p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-guide="claude" role="tab"><span class="n" aria-hidden="true">1</span>Claude Code</button>
+      <button class="tab" data-guide="app" role="tab"><span class="n" aria-hidden="true">2</span>Install the app</button>
+    </div>
+
+    <div class="gdl active" data-guide="claude">
+    <ol class="steps">
+      <li><div><b>Install it.</b> Open the Terminal app (press
+      <code>⌘ Space</code>, type <b>Terminal</b>, press Return), paste the
+      command below and press Return.
+      <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre></div></li>
+      <li><div><b>Sign in.</b> Type <code>claude</code> and press Return, then
+      type <code>/login</code> — your browser opens so you can sign in with
+      your Claude account (the one you use at claude.ai).</div></li>
+      <li><div><b>Say hi.</b> Type <code>hi</code> and press Return. If Claude
+      replies, you're all set. The whole thing looks like this:
+      <div class="term" aria-hidden="true">
+        <div class="term-bar"><i></i><i></i><i></i><em>Terminal</em></div>
+        <div class="term-body">
+          <div class="in">claude</div>
+          <div class="in2">/login</div>
+          <div class="ok">Signed in — your browser did the hard part</div>
+          <div class="in2">hi</div>
+          <div class="bot">Hi! Ready when you are.</div>
+        </div>
+      </div></div></li>
+    </ol>
+    </div>
+
+    <div class="gdl" data-guide="app">
+    <ol class="steps">
+      <li><div><b>Download the DMG</b> — the <a href="#downloads">Download for
+      macOS</a> button above grabs it directly. On the GitHub releases page
+      instead? Scroll to <b>Assets</b> on the latest release and click
+      <code>FusedRender-&lt;version&gt;.dmg</code>.
+      <figure class="guide-shot">
+        <img src="assets/guide_dmg_asset.jpg" loading="lazy"
+             alt="The GitHub release's Assets list with the FusedRender .dmg file highlighted — that is the one to click">
+        <figcaption>On the releases page: the highlighted <span class="mono">.dmg</span>
+        under <b>Assets</b> is the macOS download (your version number will be newer).</figcaption>
+      </figure></div></li>
+      <li><div><b>Drag it in.</b> Double-click the downloaded file — a window
+      opens. Drag the Fused Render icon onto the Applications folder, like
+      this:
+      <div class="dmg-art" aria-hidden="true">
+        <svg viewBox="0 0 640 200" fill="none">
+          <rect x="10" y="14" width="270" height="172" rx="14" stroke="#2e2e31" fill="#1b1b1d"/>
+          <circle cx="30" cy="34" r="4.5" fill="#3a3a3e"/>
+          <circle cx="46" cy="34" r="4.5" fill="#3a3a3e"/>
+          <circle cx="62" cy="34" r="4.5" fill="#3a3a3e"/>
+          <text x="145" y="39" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="#b9b9bf">FusedRender.dmg</text>
+          <line x1="10" y1="52" x2="280" y2="52" stroke="#2e2e31"/>
+          <rect x="85" y="80" width="64" height="64" rx="15" fill="#141414" stroke="#e5ff44"/>
+          <text x="117" y="122" text-anchor="middle" font-size="30" fill="#e5ff44">✦</text>
+          <text x="117" y="166" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#b9b9bf">Fused Render</text>
+          <path d="M300 112 h96" stroke="#e5ff44" stroke-width="2.5" stroke-dasharray="7 7"/>
+          <path d="M388 102 l14 10 -14 10" stroke="#e5ff44" stroke-width="2.5" fill="none"/>
+          <rect x="430" y="14" width="200" height="172" rx="14" stroke="#2e2e31" fill="#1b1b1d"/>
+          <path d="M495 84 h22 l7 8 h44 a6 6 0 0 1 6 6 v38 a6 6 0 0 1 -6 6 h-73 a6 6 0 0 1 -6 -6 v-46 a6 6 0 0 1 6 -6 z" fill="#141414" stroke="#b9b9bf" stroke-width="2"/>
+          <text x="530" y="166" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#b9b9bf">Applications</text>
+        </svg>
+      </div></div></li>
+      <li><div><b>Open it.</b> Find Fused Render in your Applications folder
+      (or press <code>⌘ Space</code> and type its name). It opens like any
+      other Mac app — no warnings, it's signed and notarized.</div></li>
+    </ol>
+    </div>
+  </section>
+
+  <section class="trouble-sec" id="troubleshooting">
+    <h2>Troubleshooting</h2>
+    <p>Something not working? Pick what's happening on the left — the fix is
+    on the right.</p>
+    <div class="trouble-split">
+      <div class="trouble-list" role="tablist" aria-orientation="vertical" aria-label="Common errors">
+        <button class="terr active" data-err="login" role="tab">
+          <b>You're not signed in to Claude</b>
+          <span class="raw">Invalid API key · Please run /login</span>
+        </button>
+        <button class="terr" data-err="notfound" role="tab">
+          <b>The app can't find Claude</b>
+          <span class="raw">Claude didn't start / claude not found</span>
+        </button>
+        <button class="terr" data-err="limit" role="tab">
+          <b>You've used up your Claude limit</b>
+          <span class="raw">Usage limit reached / session limit</span>
+        </button>
+        <button class="terr" data-err="raw" role="tab">
+          <b>Some other error message</b>
+          <span class="raw">A technical error appears in the app</span>
+        </button>
+      </div>
+      <div class="trouble-detail">
+        <div class="tfix active" data-err="login">
+          <h3>The error you'll see</h3>
+          <div class="mock-err">Invalid API key · Please run /login</div>
+          <h3>What happened</h3>
+          <p>Fused Render uses Claude on your computer to build things.
+          Claude is installed, but it isn't signed in to your account yet —
+          so nothing can run.</p>
+          <h3>How to fix it</h3>
+          <ol>
+            <li>Open the Terminal app: press <code>⌘ Space</code>, type
+            <b>Terminal</b>, press Return.</li>
+            <li>Type <code>claude</code> and press Return.</li>
+            <li>Type <code>/login</code> and press Return. Your browser opens
+            — sign in with your Claude account (the same one you use at
+            claude.ai).</li>
+            <li>Come back to Fused Render and start a new chat.</li>
+          </ol>
+          <div class="term" aria-hidden="true">
+            <div class="term-bar"><i></i><i></i><i></i><em>Terminal</em></div>
+            <div class="term-body">
+              <div class="in">claude</div>
+              <div class="in2">/login</div>
+              <div class="ok">Signed in — you're done here</div>
+            </div>
+          </div>
+        </div>
+        <div class="tfix" data-err="notfound">
+          <h3>The error you'll see</h3>
+          <div class="mock-err">Claude Code isn't installed (or couldn't be found)</div>
+          <h3>What happened</h3>
+          <p>Fused Render needs a free helper called Claude Code to build
+          things, and it couldn't find it on this Mac. Either it was never
+          installed, or it's somewhere the app can't see.</p>
+          <h3>How to fix it</h3>
+          <ol>
+            <li>Install Claude Code — the <a href="#guide">guide above</a>
+            walks you through it (step 1).</li>
+            <li>Check it worked: open Terminal (<code>⌘ Space</code>, type
+            <b>Terminal</b>), type <code>claude</code>, press Return. It
+            should start.</li>
+            <li>Quit Fused Render and open it again.</li>
+          </ol>
+          <div class="term" aria-hidden="true">
+            <div class="term-bar"><i></i><i></i><i></i><em>Terminal</em></div>
+            <div class="term-body">
+              <div class="in">claude</div>
+              <div class="ok">Claude starts — Fused Render will find it now</div>
+            </div>
+          </div>
+        </div>
+        <div class="tfix" data-err="limit">
+          <h3>The error you'll see</h3>
+          <div class="mock-err">Your Claude plan's usage limit was reached</div>
+          <h3>What happened</h3>
+          <p>Your Claude plan includes a set amount of use, and you've used
+          it up for now. Nothing is broken — you just have to wait.</p>
+          <h3>How to fix it</h3>
+          <ol>
+            <li>Wait for your limit to reset — the error message tells you
+            when.</li>
+            <li>In a hurry? Upgrade your plan at
+            <a rel="noopener" href="https://claude.ai/settings">claude.ai</a>.</li>
+            <li>Nothing to change in Fused Render — try again after the
+            reset.</li>
+          </ol>
+        </div>
+        <div class="tfix" data-err="raw">
+          <h3>The error you'll see</h3>
+          <div class="mock-err">Error: something long and technical…</div>
+          <h3>What happened</h3>
+          <p>The app ran into a problem it doesn't have a friendly
+          explanation for, so it showed the technical message as-is. Usually
+          it's really one of the other three issues underneath.</p>
+          <h3>How to fix it</h3>
+          <ol>
+            <li>Check the sign-in and install fixes above — they clear most
+            of these.</li>
+            <li>Start a new chat in Fused Render and try again.</li>
+            <li>Still stuck?
+            <a rel="noopener" href="https://github.com/fusedio/fused-render/issues">Tell us here</a>
+            and paste the exact error text — we'll help.</li>
+          </ol>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -570,6 +969,7 @@
 
   <footer>
     <a href="about.html">Why we built it</a>
+    · <a href="#guide">User guide</a>
     · <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
     · <a rel="noopener" href="https://github.com/fusedio/fused-render-examples">Examples</a>
     · <a rel="noopener" href="https://www.fused.io">fused.io</a>
@@ -622,6 +1022,25 @@
     } catch (e) { /* cross-origin parent: not the shell */ }
   }
 
+  // Copy buttons on command blocks. The command is the <pre>'s text nodes only
+  // — the button is a child of the pre, so a plain textContent read would drag
+  // in whatever the button holds (today an <svg>, empty; tomorrow, who knows).
+  // navigator.clipboard needs a secure context — true on https and on the
+  // app's 127.0.0.1 — so no execCommand fallback. "Copied" confirms, then the
+  // label resets so the button reads as pressable again.
+  document.querySelectorAll(".copy-cmd").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const cmd = Array.from(btn.parentElement.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.nodeValue).join("").trim();
+      navigator.clipboard.writeText(cmd).then(() => {
+        // The .copied class swaps the sheets icon for a check (CSS above).
+        btn.classList.add("copied");
+        setTimeout(() => btn.classList.remove("copied"), 1600);
+      }).catch(() => { /* clipboard permission denied: leave the button as-is */ });
+    });
+  });
+
   // Fill version + direct artifact links from the release manifest.
   fetch("/latest.json", { cache: "no-cache" })
     .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
@@ -666,14 +1085,53 @@
     }
   })();
 
+  // Guide tabs: one panel at a time. Troubleshooting is its own always-visible
+  // section, so the app's #troubleshooting deep links are plain anchors.
+  (function () {
+    function activate(g) {
+      document.querySelectorAll(".guide .tab, .gdl").forEach((el) => {
+        el.classList.toggle("active", el.dataset.guide === g);
+      });
+    }
+    document.querySelectorAll(".guide .tab").forEach((t) => {
+      t.addEventListener("click", () => activate(t.dataset.guide));
+    });
+  })();
+
+  // Troubleshooting master–detail: clicking an error on the left shows its
+  // explanation + fix on the right. The app's error messages deep-link with a
+  // per-error suffix (#troubleshooting-login/-notfound/-limit) — honor it, or
+  // a plan-limit user would land on a panel telling them to run /login. The
+  // suffix is not an element id, so the scroll is ours to do too.
+  (function () {
+    function activate(err) {
+      document.querySelectorAll(".terr, .tfix").forEach((el) => {
+        el.classList.toggle("active", el.dataset.err === err);
+      });
+    }
+    document.querySelectorAll(".terr").forEach((b) => {
+      b.addEventListener("click", () => activate(b.dataset.err));
+    });
+    function honorHash() {
+      const m = location.hash.match(/^#troubleshooting-(\w+)$/);
+      if (!m || !document.querySelector('.terr[data-err="' + m[1] + '"]')) return;
+      activate(m[1]);
+      document.getElementById("troubleshooting").scrollIntoView();
+    }
+    window.addEventListener("hashchange", honorHash);
+    honorHash();
+  })();
+
   // Download tabs: click to switch; auto-select the visitor's OS.
   (function () {
+    // Scoped to the downloads section: the guide has its own .tab bar, and a
+    // blanket ".tab" toggle here would strip its active state on every click.
     function activate(os) {
-      document.querySelectorAll(".tab, .dl").forEach((el) => {
+      document.querySelectorAll(".downloads .tab, .dl").forEach((el) => {
         el.classList.toggle("active", el.dataset.os === os);
       });
     }
-    document.querySelectorAll(".tab").forEach((t) => {
+    document.querySelectorAll(".downloads .tab").forEach((t) => {
       t.addEventListener("click", () => activate(t.dataset.os));
     });
     const ua = navigator.userAgent;

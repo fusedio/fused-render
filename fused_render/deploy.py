@@ -151,7 +151,7 @@ def _now_iso() -> str:
 # `==` is what makes pip install a pre-release at all. Move it to `2.9.3` when that
 # lands; the string is duplicated in pyproject's `[fused]` extra and its bundled-deps
 # list, and tests hold all three equal.
-PINNED_FUSED_REQUIREMENT = "fused==2.9.3b3"
+PINNED_FUSED_REQUIREMENT = "fused==2.9.3b4"
 # The release's own environment marker (python_version >= "3.11"), enforced here
 # because pip is handed the marker-free requirement above.
 FUSED_MIN_PYTHON = (3, 11)

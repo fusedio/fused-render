@@ -343,7 +343,9 @@ def test_the_mcp_server_gets_its_own_app_state_directory(agent, tmp_path,
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
-    (project / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    (project / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head><p>hi</p></html>',
+        encoding="utf-8")
     _cmd, run_dir = _spawn(agent, monkeypatch, project)
     cfg = json.load(open(os.path.join(run_dir, "mcp.json"), encoding="utf-8"))
     args = cfg["mcpServers"][agent.PERMISSION_SERVER]["args"]
@@ -356,8 +358,9 @@ def test_a_no_pane_target_gets_no_app_state_channel_and_no_pre_allowance(
         agent, tmp_path, monkeypatch):
     """The spawn side of D239, and both halves have to agree.
 
-    An ordinary folder (no `index.html`, no single top-level `.html` — the same
-    `app_entry.entry_html` predicate the pane and the prompt read) has no left
+    An ordinary folder (no top-level page carrying `<meta name="fused-app">` —
+    the same `app_entry.entry_html` predicate the pane and the prompt read,
+    D301) has no left
     pane. So: no app-state directory in the server's argv, which is what makes
     the tool absent from the roster, and no pre-allowance naming a tool that does
     not exist. The permission bridge itself is untouched — approvals are not
@@ -379,7 +382,9 @@ def test_a_no_pane_target_gets_no_app_state_channel_and_no_pre_allowance(
     # thing that decides, so both answers are pinned in one place.
     app = tmp_path / "proj"
     app.mkdir()
-    (app / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    (app / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head><p>hi</p></html>',
+        encoding="utf-8")
     cmd2, run2 = _spawn(agent, monkeypatch, app)
     assert tool in cmd2[cmd2.index("--allowed-tools") + 1]
     assert os.path.isdir(os.path.join(run2, "appstate"))
@@ -396,7 +401,9 @@ def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
     agent.RUNS = str(tmp_path / "runs")
     project = tmp_path / "proj"
     project.mkdir()
-    (project / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    (project / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head><p>hi</p></html>',
+        encoding="utf-8")
     cmd, _run_dir = _spawn(agent, monkeypatch, project)
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.APP_STATE_TOOL)
     allowed = cmd[cmd.index("--allowed-tools") + 1].split(",")
@@ -417,7 +424,11 @@ def test_reading_the_users_own_screen_does_not_raise_a_card(agent, tmp_path,
 def _app_dir(tmp_path, name="proj"):
     d = tmp_path / name
     d.mkdir()
-    (d / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    # The marker is what makes the page an app entry (D301) — a bare filename
+    # no longer does.
+    (d / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head><p>hi</p></html>',
+        encoding="utf-8")
     return d
 
 
@@ -502,7 +513,9 @@ def test_a_folder_whose_html_appears_later_gets_the_project_prompt(
     d.mkdir()
     cmd, _run_dir = _spawn(agent, monkeypatch, d)
     assert "fused-render project" not in cmd[cmd.index("--append-system-prompt") + 1]
-    (d / "index.html").write_text("<p>hi</p>", encoding="utf-8")
+    (d / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head><p>hi</p></html>',
+        encoding="utf-8")
     cmd, _run_dir = _spawn(agent, monkeypatch, d)
     assert "fused-render project" in cmd[cmd.index("--append-system-prompt") + 1]
 

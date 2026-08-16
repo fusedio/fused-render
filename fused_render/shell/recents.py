@@ -4,6 +4,8 @@ The sidebar's "Recents" section: the last files opened in the shell, each with
 the last params they carried (the entry url is updated live while the file is
 open — see frontend lib/recents.ts). Files only: directory navigation and
 sentinel routes (`_panel`, `_prefs`, any `_`-prefixed view) are never recorded.
+App ENTRY pages (workspace or registered) aren't either — rendering one IS
+the open and GET /render records it (D301), see _is_app_entry.
 
 File shape:
 
@@ -127,6 +129,26 @@ def _file_path_from_url(url: str) -> str | None:
     return fs_path if exists else None
 
 
+def _is_app_entry(fs_path: str) -> bool:
+    """Whether `fs_path` is an app's ENTRY page — a workspace app's or a
+    registered (linked) one's. Those never appear in the FILE recents: the
+    open is already recorded by GET /render when it serves the marker-carrying
+    page (D301 — server/routers/render.py feeds the app recents store and the
+    registry), and the same open landing in both sidebar lists is the
+    duplication this filters. Applied at record time AND as a GET filter
+    (entries recorded before this rule, hide-not-delete like the missing-file
+    filter). Fails toward False — an indeterminate answer must record/keep
+    the row, never hide a file from both lists."""
+    from fused_render import app_listing, registered_apps
+    from fused_render.shell.seed import fused_dir
+
+    try:
+        return (app_listing.is_workspace_app_entry(fs_path, fused_dir())
+                or registered_apps.is_registered_app_entry(fs_path))
+    except Exception:
+        return False
+
+
 def _local_exists(fs_path: str) -> bool:
     """Existence of a LOCAL (non-mount-backed) path. A plain os.path.isfile is
     safe and cheap here — the mount-wedging GETATTR concern only applies under a
@@ -201,6 +223,11 @@ async def get_recents():
     open) — a possibly-dead row beats a stalled sidebar."""
     data = _read()
     raw = [e for e in data["entries"] if isinstance(e.get("url"), str)]
+    # App entry pages are hidden (never deleted) — they live in the app
+    # recents instead. Synchronous, unlike the existence fan-out: the check
+    # only ever touches the LOCAL workspace (see _is_app_entry).
+    raw = [e for e in raw
+           if (p := _decoded_fs_path(e["url"])) is None or not _is_app_entry(p)]
     keeps = [True] * len(raw)  # default keep (fail open on timeout/cancel)
     if raw:
         tasks = [asyncio.ensure_future(_keep_entry(e["url"])) for e in raw]
@@ -235,6 +262,12 @@ def post_recent_open(
     # naming. Optional: absent until the preview iframe reports one.
     title_raw = payload.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+    if _is_app_entry(fs_path):
+        # An app's entry page belongs to the APP recents, not this store.
+        # No forwarding needed: rendering the page IS the open, and GET
+        # /render already recorded it (D301) — recording here too would list
+        # every app in both sidebar sections.
+        return {"recorded": False}
     data = _read()
     # Dedupe by DECODED target fs path — existence-blind, so a dead entry for
     # the same path (file deleted and recreated since) is replaced rather than

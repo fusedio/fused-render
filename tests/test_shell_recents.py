@@ -395,3 +395,105 @@ def test_corrupt_file_reads_as_defaults(tmp_path, monkeypatch):
     f = _make_file(tmp_path)
     client.post("/api/recents/open", json={"url": _view_url(f)}, headers=FUSED)
     assert len(client.get("/api/recents").json()["entries"]) == 1
+
+
+# ---------------------------------------------------------- app entry filter
+#
+# An app's ENTRY page never lands in the file recents — rendering the page IS
+# the open and GET /render records it into the app stores (D301), so one open
+# in both sidebar lists is the duplication the filter removes. The marker
+# (`<meta name="fused-app">`) is what makes a folder an app.
+
+TAGGED = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
+
+
+def _workspace_app(tmp_path, monkeypatch):
+    """A workspace (FUSED_RENDER_DIR) holding one app, `local/demo/index.html`."""
+    ws = tmp_path / "Fused"
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
+    d = ws / "local" / "demo"
+    d.mkdir(parents=True)
+    entry = d / "index.html"
+    entry.write_text(TAGGED, encoding="utf-8")
+    return ws, entry
+
+
+def test_app_entry_open_is_not_recorded(tmp_path, monkeypatch):
+    ws, entry = _workspace_app(tmp_path, monkeypatch)
+    client, home = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/recents/open", json={"url": _view_url(entry)}, headers=FUSED)
+    assert resp.status_code == 200
+    assert resp.json() == {"recorded": False}
+    assert client.get("/api/recents").json()["entries"] == []
+    assert not (home / "recents.json").exists()
+
+
+def test_non_entry_page_in_an_app_still_records(tmp_path, monkeypatch):
+    ws, entry = _workspace_app(tmp_path, monkeypatch)
+    other = entry.parent / "other.html"
+    other.write_text(TAGGED, encoding="utf-8")  # tagged, but index.html wins by name
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/recents/open", json={"url": _view_url(other)}, headers=FUSED)
+    assert resp.json() == {"recorded": True}
+
+
+def test_untagged_index_html_still_records(tmp_path, monkeypatch):
+    """The marker is the only app signal (D301): an untagged index.html is an
+    ordinary file and records in the file recents."""
+    ws, _ = _workspace_app(tmp_path, monkeypatch)
+    d = ws / "local" / "plain"
+    d.mkdir(parents=True)
+    page = d / "index.html"
+    page.write_text("<html></html>", encoding="utf-8")
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/recents/open", json={"url": _view_url(page)}, headers=FUSED)
+    assert resp.json() == {"recorded": True}
+
+
+def test_workspace_file_outside_an_app_still_records(tmp_path, monkeypatch):
+    ws, _ = _workspace_app(tmp_path, monkeypatch)
+    loose = ws / "notes.html"
+    loose.write_text("<html></html>", encoding="utf-8")
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/recents/open", json={"url": _view_url(loose)}, headers=FUSED)
+    assert resp.json() == {"recorded": True}
+
+
+def test_legacy_app_entry_rows_are_hidden_from_get_not_deleted(tmp_path, monkeypatch):
+    """Entries recorded before the filter existed: GET hides them (the store
+    keeps them on disk, same hide-not-delete posture as the missing-file
+    filter)."""
+    ws, entry = _workspace_app(tmp_path, monkeypatch)
+    f = _make_file(tmp_path)
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "recents.json").write_text(json.dumps({"collapsed": False, "entries": [
+        {"url": _view_url(entry), "openedAt": "2026-01-01T00:00:00+00:00"},
+        {"url": _view_url(f), "openedAt": "2026-01-01T00:00:00+00:00"},
+    ]}), encoding="utf-8")
+    entries = client.get("/api/recents").json()["entries"]
+    assert [e["url"] for e in entries] == [_view_url(f)]
+    saved = json.loads((home / "recents.json").read_text(encoding="utf-8"))
+    assert len(saved["entries"]) == 2  # hidden, never deleted
+
+
+def test_registered_app_entry_open_is_not_recorded(tmp_path, monkeypatch):
+    """A registered (linked) app's entry page is filtered exactly like a
+    workspace app's — its open is the registry's record, not this store's."""
+    ws, _ = _workspace_app(tmp_path, monkeypatch)
+    ext = tmp_path / "elsewhere" / "ext"
+    ext.mkdir(parents=True)
+    entry = ext / "index.html"
+    entry.write_text(TAGGED, encoding="utf-8")
+    other = ext / "other.html"
+    other.write_text(TAGGED, encoding="utf-8")
+    client, _ = _client(tmp_path, monkeypatch)
+    # Register the external folder (the render-time record's registration).
+    assert client.post("/api/apps/recents/open", json={"path": str(ext)},
+                       headers=FUSED).json()["recorded"]
+
+    resp = client.post("/api/recents/open", json={"url": _view_url(entry)}, headers=FUSED)
+    assert resp.json() == {"recorded": False}
+    # A non-entry page in the same registered folder still records.
+    resp = client.post("/api/recents/open", json={"url": _view_url(other)}, headers=FUSED)
+    assert resp.json() == {"recorded": True}
