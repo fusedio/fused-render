@@ -189,9 +189,9 @@ def is_registered_app_entry(fs_path: str) -> bool:
     """Whether `fs_path` is the ENTRY page of a registered app — i.e. whether
     `registered_apps()` would report it as some entry's `entry`. The file
     recents' question (shell/recents.py), asked beside its workspace twin
-    `app_listing.is_workspace_app_entry`: opening a registered app is already
-    the registry's record (`record_open`), so the same open must not land in
-    the file recents too.
+    `app_listing.is_workspace_app_entry`: rendering a registered app's page
+    already records the open into this registry (GET /render → `record_open`,
+    D301), so the same open must not land in the file recents too.
 
     Targeted like the workspace check rather than a full `registered_apps()`
     membership test — that pays `entry_title`/`preview_image`/`metadata.json`
