@@ -1161,7 +1161,13 @@ export interface CapabilityEngine {
   // What is actually resolving. Null when nothing can serve the capability
   // here. Differs from `selected` whenever a preference could not be honoured.
   effective: string | null;
+  /** The FULL name, qualifier and all — for anything that has to match the
+   *  engine picker's options word for word. */
   effectiveLabel: string | null;
+  /** The same backend without the platform qualifier ("MLX LM"), for the
+   *  summary line under the picker: it sits directly beneath options that
+   *  already carry the qualifier, so repeating it there says nothing. */
+  effectiveShortLabel: string | null;
   // Why the selection is not in force, in the registry's own words — null when
   // it is (including "auto", which is honoured by definition). A control whose
   // value does nothing, with nothing saying why, is what this field prevents.
@@ -2053,7 +2059,10 @@ export interface AiModelRepo {
    *  back with `available: false` and the registry's reason. */
   engine: {
     code: string;
+    /** The FULL name, for anything that must match the Preferences picker. */
     label: string;
+    /** Without the platform qualifier — what the card's tag shows. */
+    shortLabel: string;
     available: boolean;
     reason: string | null;
   } | null;
@@ -2214,7 +2223,13 @@ export function getHubTasks(): Promise<{ tasks: HubTask[] }> {
 export interface AiRunner {
   code: string;
   capability: string;
+  /** The FULL name — "MLX LM (Apple Silicon)". `label` means the full one
+   *  everywhere on the wire; a surface that wants the short one asks for
+   *  `shortLabel` by name rather than getting a quietly different string. */
   label: string;
+  /** Without the platform qualifier — "MLX LM". What every surface but the
+   *  Preferences engine picker shows. */
+  shortLabel: string;
   /** What using this backend is like, when there is something worth saying. */
   note: string | null;
   available: boolean;
@@ -2289,6 +2304,10 @@ export interface AiCatalogCapability {
    *  One capability can have more than one runner (text generation has two
    *  since D293), so which one this machine resolved is worth naming. */
   runnerLabel: string | null;
+  /** The same, without the platform qualifier — what the Discover heading
+   *  shows ("via MLX Whisper"). That caption says which backend these
+   *  suggestions belong to, not which backend to pick. */
+  runnerShortLabel: string | null;
   /** What using that backend is LIKE, when there is something worth saying —
    *  the CPU-speed warning for PyTorch. A standing fact about the runner, not a
    *  claim about this machine: the device a model actually got is on the loaded

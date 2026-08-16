@@ -96,8 +96,25 @@ class Runner:
     #: process the supervisor starts). Both are read from here and nowhere else.
     folder: str
     #: What this backend is, in one line, for the page that has to explain a
-    #: capability the machine cannot serve.
+    #: capability the machine cannot serve. The FULL name, qualifier and all
+    #: ("MLX LM (Apple Silicon)"), and it has exactly one home: the Preferences
+    #: engine picker, where the reader is choosing between backends and the
+    #: qualifier is the difference between the options.
     label: str
+    #: The same backend without the qualifier ("MLX LM"), for everywhere else.
+    #:
+    #: A FIELD, not the label with the brackets stripped off. A regex would make
+    #: the short name a side effect of how someone punctuated the long one, and
+    #: the first runner whose name legitimately contains brackets would lose
+    #: half of it with nothing failing. It is also the vocabulary this app
+    #: already speaks informally — `skills/fused-render-ai/SKILL.md`'s runner
+    #: table has been writing these six names for as long as it has existed.
+    #:
+    #: The qualifier is noise anywhere the reader is not CHOOSING: a card
+    #: saying "MLX FLUX (Apple Silicon)" tells someone on a Mac nothing they did
+    #: not know, and costs roughly double the width of a tag that has to fit
+    #: beside the task and the size.
+    short_label: str = ""
     #: What using this backend is LIKE, for the page to say before anything is
     #: loaded. A standing fact about the runner, never a claim about this
     #: machine — the device a model actually got is the worker's to report
@@ -121,8 +138,19 @@ class Runner:
         is a claim; this is the check that makes it true.
         """
         if not os.path.isfile(self.worker):
-            return Availability(False, f"the {self.label} runner is not built yet")
+            return Availability(False, f"the {self.short} runner is not built yet")
         return self._available()
+
+    @property
+    def short(self) -> str:
+        """`short_label`, falling back to the full one.
+
+        The fallback is for a Runner built somewhere that has no opinion about
+        display — a test's stand-in, mostly. A REGISTERED runner must set it,
+        which `test_every_runner_has_both_names` requires: degrading to the long
+        name is a cosmetic wart, degrading to "" would be a blank tag.
+        """
+        return self.short_label or self.label
 
     @property
     def worker(self) -> str:
@@ -196,6 +224,7 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "mlx_text"),
         label="MLX LM (Apple Silicon)",
+        short_label="MLX LM",
         _available=_apple_silicon,
     ),
     Runner(
@@ -203,6 +232,7 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "transformers_text"),
         label="Transformers (PyTorch)",
+        short_label="Transformers",
         # ONE LINE, and that is a hard constraint rather than a summary: this
         # sits above the cards where it is read on the way past, and anything
         # that wraps is something nobody finishes. Everything that used to
@@ -235,6 +265,7 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "mflux_image"),
         label="MLX FLUX (Apple Silicon)",
+        short_label="MLX FLUX",
         # ONE LINE, per the rule the transformers row states. It now describes
         # the DEFAULT rather than an opt-in, so the memory caveat leads: the
         # reader it exists for is someone on a small Mac deciding whether to
@@ -248,6 +279,7 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
         label="Diffusers (PyTorch)",
+        short_label="Diffusers",
         _available=_always,
     ),
     # Speech to text, and the capability that finally USED the two-runner
@@ -259,6 +291,7 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=SPEECH_TO_TEXT,
         folder=os.path.join(RUNNERS_DIR, "mlx_whisper"),
         label="MLX Whisper (Apple Silicon)",
+        short_label="MLX Whisper",
         note="Transcribes on the GPU. Several times quicker than the CPU path "
              "on the same Mac.",
         _available=_apple_silicon,
@@ -268,6 +301,7 @@ _RUNNERS: tuple[Runner, ...] = (
         capability=SPEECH_TO_TEXT,
         folder=os.path.join(RUNNERS_DIR, "faster_whisper"),
         label="faster-whisper (CTranslate2)",
+        short_label="faster-whisper",
         # `_always`, and that is why speech to text SHIPPED on CTranslate2
         # rather than on MLX: text generation was already Apple-Silicon-only,
         # and a second capability that existed on a Mac and nowhere else would
@@ -449,11 +483,11 @@ def resolve(capability: str) -> Resolution:
                               f"{requested} is not a runner this build knows")
         if runner.capability != capability:
             return Resolution(_first_available(capability), requested,
-                              f"{runner.label} does not do {capability}")
+                              f"{runner.short} does not do {capability}")
         status = runner.available()
         if not status.ok:
             return Resolution(_first_available(capability), requested,
-                              status.reason or f"{runner.label} cannot run here")
+                              status.reason or f"{runner.short} cannot run here")
         return Resolution(runner, requested)
     return Resolution(_first_available(capability), AUTO)
 
@@ -546,7 +580,14 @@ def describe() -> list[dict]:
             {
                 "code": runner.code,
                 "capability": runner.capability,
+                # BOTH names, and the field names say which is which. `label`
+                # keeps meaning the full one everywhere on the wire — a
+                # consumer that reads it after this change gets exactly what it
+                # got before — and a surface that wants the qualifier-free name
+                # asks for it. The alternative, quietly shortening `label`,
+                # would be a change no reader of the payload could see.
                 "label": runner.label,
+                "shortLabel": runner.short,
                 "note": runner.note or None,
                 "available": status.ok,
                 "reason": status.reason or None,
@@ -582,6 +623,13 @@ def describe_engines() -> list[dict]:
                 "selected": resolution.requested,
                 "effective": resolution.runner.code if resolution.runner else None,
                 "effectiveLabel": resolution.runner.label if resolution.runner else None,
+                # The summary line under the picker ("Using MLX LM.") reads the
+                # short one: it sits directly beneath the options, which carry
+                # the qualifier a line above, and repeating it there says
+                # nothing the reader has not just read. The picker itself, and
+                # the sentence that names a chosen option back to the user
+                # (`ignoredWarning`), stay on `label`.
+                "effectiveShortLabel": resolution.runner.short if resolution.runner else None,
                 # Null when the selection is in force (including "auto", which
                 # is honoured by definition). A sentence when it is not, and the
                 # UI is expected to show it — a control whose value does nothing,

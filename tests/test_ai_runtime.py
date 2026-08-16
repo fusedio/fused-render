@@ -720,13 +720,18 @@ def test_the_unavailable_reason_names_EVERY_runner_not_just_the_first(monkeypatc
     # capability unservable on a machine MLX has already turned down.
     ghost = registry.Runner(
         code="transformers-text", capability=registry.TEXT_GENERATION,
-        folder="/nowhere", label="Transformers (PyTorch)")
+        folder="/nowhere", label="Transformers (PyTorch)",
+        short_label="Transformers")
     monkeypatch.setattr(
         registry, "_RUNNERS", (registry.by_code("mlx-text"), ghost))
 
     reason = registry.unavailable_reason(registry.TEXT_GENERATION)
     assert "not built yet" in reason, reason
-    assert "Transformers (PyTorch)" in reason, reason
+    # The SHORT name. This sentence is read wherever a capability has to
+    # explain itself — a card, a job row, an API error — and none of those is
+    # the engine picker, which is the one surface that keeps the qualifier.
+    assert "Transformers" in reason, reason
+    assert "(PyTorch)" not in reason, reason
     # The supervisor raises the same sentence rather than deriving its own.
     with pytest.raises(supervisor.SupervisorError) as caught:
         supervisor.load("org/x", registry.TEXT_GENERATION)
@@ -761,6 +766,51 @@ def test_a_capability_nothing_can_serve_still_resolves_to_nothing(monkeypatch):
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("mlx-text"),))
     assert registry.for_capability(registry.TEXT_GENERATION) is None
+
+
+def test_every_runner_has_both_names_and_they_differ_only_by_the_qualifier():
+    """Two names per backend, and a registered runner must set both.
+
+    `Runner.short` falls back to the long name so a stand-in built in a test
+    renders as something, and that fallback is exactly what would hide a
+    forgotten `short_label` on a real row — the tag would silently go back to
+    "MLX FLUX (Apple Silicon)" with nothing failing. So it is required here.
+
+    The shape is also pinned: the short name is a PREFIX of the long one and
+    the remainder is a parenthetical. That is not how the value is derived —
+    deriving it would make the name a side effect of someone's punctuation —
+    but it is what makes the pair one backend rather than two, and a row whose
+    two names disagree about what the thing is called is worth a failure.
+    """
+    for runner in registry.all_runners():
+        assert runner.short_label, f"{runner.code} has no short name"
+        assert runner.short == runner.short_label
+        rest = runner.label[len(runner.short_label):].strip()
+        assert runner.label.startswith(runner.short_label) and (
+            rest == "" or (rest.startswith("(") and rest.endswith(")"))), (
+            f"{runner.code}: {runner.label!r} is not {runner.short_label!r} "
+            f"plus a qualifier")
+
+
+def test_the_picker_keeps_the_qualifier_and_everything_else_drops_it():
+    """The one surface that shows a platform qualifier is the engine picker.
+
+    That is the whole point of the split: on the picker the reader is CHOOSING
+    between backends and "(Apple Silicon)" is the difference between two
+    options; everywhere else they are being told what is happening on a machine
+    they are already sitting at.
+    """
+    engines = registry.describe_engines()
+    choices = [c for row in engines for c in row["choices"]]
+    assert any("(" in c["label"] for c in choices), choices
+    # …and the summary line beside it, and the runner rows every other surface
+    # reads, carry the short one.
+    for row in engines:
+        if row["effective"]:
+            assert "(" not in (row["effectiveShortLabel"] or "")
+    for row in registry.describe():
+        assert "(" not in row["shortLabel"], row
+        assert row["label"].startswith(row["shortLabel"])
 
 
 def test_every_suggested_model_names_a_runner_that_exists():
@@ -865,6 +915,8 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     assert text["available"] is True and text["reason"] is None
     assert text["runner"] == "transformers-text"
     assert text["runnerLabel"] == "Transformers (PyTorch)"
+    # Both names travel, and the Discover heading uses the short one.
+    assert text["runnerShortLabel"] == "Transformers"
     assert not any(m["id"].startswith("mlx-community/") for m in text["models"])
     # …and the default a bare `fused.ai.image()`-style call would reach for is
     # the loadable one, not the first entry of some other machine's list.

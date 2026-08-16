@@ -17,6 +17,7 @@ function mac(over: Partial<CapabilityEngine> = {}): CapabilityEngine {
     selected: AUTO,
     effective: "mlx-whisper",
     effectiveLabel: "MLX Whisper (Apple Silicon)",
+    effectiveShortLabel: "MLX Whisper",
     ignoredReason: null,
     choices: [
       {
@@ -45,6 +46,7 @@ function windows(): CapabilityEngine {
     selected: "mlx-whisper",
     effective: "faster-whisper",
     effectiveLabel: "faster-whisper (CTranslate2)",
+    effectiveShortLabel: "faster-whisper",
     ignoredReason:
       "needs Apple Silicon — MLX runs on Metal only (this is windows/amd64)",
     choices: [
@@ -71,12 +73,16 @@ describe("servingLine", () => {
     // The control shows the choice; this line reports reality. They differ
     // whenever a preference could not be honoured, and the line that matters
     // is the one saying what actually transcribes.
-    expect(servingLine(windows())).toContain("faster-whisper (CTranslate2)");
+    // The SHORT name: this line sits under the picker, which is the one
+    // surface that keeps the platform qualifier. What the test is about is
+    // WHICH runner gets named, and that is unchanged.
+    expect(servingLine(windows())).toContain("faster-whisper");
+    expect(servingLine(windows())).not.toContain("CTranslate2");
     expect(servingLine(windows())).not.toContain("MLX");
   });
 
   it("says so plainly when nothing serves the capability here", () => {
-    const row = mac({ effective: null, effectiveLabel: null });
+    const row = mac({ effective: null, effectiveLabel: null, effectiveShortLabel: null });
     expect(servingLine(row)).toContain("Not available");
   });
 });
@@ -175,6 +181,7 @@ describe("wouldChangeEngine", () => {
       selected: "faster-whisper",
       effective: "faster-whisper",
       effectiveLabel: "faster-whisper (CTranslate2)",
+      effectiveShortLabel: "faster-whisper",
     });
     expect(wouldChangeEngine(row, AUTO, AUTO)).toBe(true);
   });

@@ -35,7 +35,12 @@ export function capabilityLabel(capability: string): string {
  */
 export function servingLine(row: CapabilityEngine): string {
   if (!row.effective) return "Not available on this machine.";
-  return `Using ${row.effectiveLabel ?? row.effective}.`;
+  // The SHORT name. This line sits directly under the picker, whose options
+  // carry "(Apple Silicon)" and "(PyTorch)" because that is where the reader
+  // is choosing between backends; saying it again one line below is the
+  // repetition the qualifier-free name exists to remove. `ignoredWarning`
+  // below is the opposite case and stays long — it quotes an option back.
+  return `Using ${row.effectiveShortLabel ?? row.effectiveLabel ?? row.effective}.`;
 }
 
 /** Why the stored choice is not in force, or null when it is.

@@ -637,7 +637,7 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         return envinstall.venv_python_for(runner.folder)
 
     worker.state = "venv"
-    _report(job, state="running", kind="download", detail=f"Preparing {runner.label}…",
+    _report(job, state="running", kind="download", detail=f"Preparing {runner.short}…",
             done=None, total=None)
 
     # ROUNDS, because an install is not always one install. On a machine with no
@@ -668,12 +668,12 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
                     raise SupervisorError(str(record["error"]))
                 break
             _report(job,
-                    detail=f"Preparing {runner.label} — {record.get('stage') or 'installing'}…")
+                    detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
             time.sleep(0.5)
         worker.install_key = ""
         if envinstall.is_installed(runner.folder):
             return envinstall.venv_python_for(runner.folder)
-    raise SupervisorError(f"the environment for {runner.label} did not build")
+    raise SupervisorError(f"the environment for {runner.short} did not build")
 
 
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:

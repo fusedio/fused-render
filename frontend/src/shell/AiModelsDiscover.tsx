@@ -257,12 +257,12 @@ function Suggested({
                 move. The title says where from: "my suggested models changed"
                 is otherwise an unexplainable event, and the page that caused it
                 is two clicks away with no signpost. */}
-            {group.available && group.runnerLabel && (
+            {group.available && group.runnerShortLabel && (
               <span
                 className="am-suggested-runner"
                 title="Chosen in Preferences → Inference engines. Each backend loads its own model format, so this list changes with it."
               >
-                via {group.runnerLabel}
+                via {group.runnerShortLabel}
               </span>
             )}
             {/* Shown even when it cannot run here, with the reason: hiding a

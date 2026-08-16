@@ -887,7 +887,11 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
         status = serving.available()
         return {
             "code": serving.code,
+            # Both, named so a reader cannot pick the wrong one by accident: the
+            # card's tag wears the short name, and the full one stays here for
+            # anything that has to match the Preferences picker word for word.
             "label": serving.label,
+            "shortLabel": serving.short,
             "available": status.ok,
             "reason": status.reason or None,
         }, capability
@@ -899,13 +903,14 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
     status = runner.available()
     reason = status.reason or None
     if status.ok and serving is not None:
-        reason = (f"{capability} is set to {serving.label}, which does not read "
+        reason = (f"{capability} is set to {serving.short}, which does not read "
                   f"this format — switch it in Preferences → Inference engines")
     elif status.ok:
         reason = f"nothing serves {capability} on this machine"
     return {
         "code": runner.code,
         "label": runner.label,
+        "shortLabel": runner.short,
         "available": False,
         "reason": reason,
     }, capability

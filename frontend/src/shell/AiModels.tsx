@@ -379,11 +379,11 @@ function RepoCard({
               }
               title={
                 repo.engine.available
-                  ? `Loads in the ${repo.engine.label} engine — read from the weight format on disk, which is the same check that engine makes before it loads.`
-                  : `This is a ${repo.engine.label} model, and that engine cannot run here: ${repo.engine.reason ?? "unavailable"}.`
+                  ? `Loads in the ${repo.engine.shortLabel} engine — read from the weight format on disk, which is the same check that engine makes before it loads.`
+                  : `This is a ${repo.engine.shortLabel} model, and that engine cannot run here: ${repo.engine.reason ?? "unavailable"}.`
               }
             >
-              {repo.engine.available ? repo.engine.label : `needs ${repo.engine.label}`}
+              {repo.engine.available ? repo.engine.shortLabel : `needs ${repo.engine.shortLabel}`}
             </span>
           ) : (
             <span

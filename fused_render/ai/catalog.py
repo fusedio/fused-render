@@ -373,6 +373,11 @@ def describe() -> list[dict]:
                 # two runners per capability the code alone stopped being
                 # something a page could show a person.
                 "runnerLabel": runner.label if runner else None,
+                # …and the qualifier-free one, which is what the Discover
+                # heading uses ("via MLX Whisper"): that caption says which
+                # backend these suggestions belong to, not which backend to
+                # pick, so the platform half is noise there.
+                "runnerShortLabel": runner.short if runner else None,
                 # …and what using it is LIKE, which is the sentence someone
                 # wants BEFORE they start an 8GB download rather than after.
                 "runnerNote": runner.note or None if runner else None,
