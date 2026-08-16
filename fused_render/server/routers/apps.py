@@ -3,16 +3,16 @@ and scaffold new ones.
 
 Apps live ONE TO THREE levels under the workspace (``fused_dir()``,
 ~/Documents/Fused), found by a bounded recursive walk whose per-level rules are
-written down in ``app_listing.workspace_apps``: A PAGE IS WHAT MAKES A FOLDER AN
-APP — any ``*.html`` at depth 1 or 2, an ``index.html`` at depth 3, nothing
-deeper. A page-less folder is a SHELF: it is never a card, but it IS walked, which
-is how the apps inside it are found. A "tag" is the FIRST path segment — there is
-no registry or whitelist, so a new tag is just a new folder, discovered on the
-next listing, and a third-level app files under the same tag as its second-level
-neighbours. An app's entry is its
-``index.html``, else the first non-hidden direct-child ``.html`` in name order
-— the shared entry rule (D269), so the card, the preview pane and the templates
-all resolve one folder to one page.
+written down in ``app_listing.workspace_apps``: A DECLARED PAGE IS WHAT MAKES A
+FOLDER AN APP — its entry is the first non-hidden direct-child ``.html``
+carrying ``<meta name="fused-app">``, the one signal at every depth (D301;
+filenames, ``index.html`` included, declare nothing). A page-less folder is a
+SHELF: it is never a card, but it IS walked, which is how the apps inside it
+are found. A "tag" is the FIRST path segment — there is no registry or
+whitelist, so a new tag is just a new folder, discovered on the next listing,
+and a third-level app files under the same tag as its second-level neighbours.
+The entry rule is shared (D269), so the card, the preview pane and the
+templates all resolve one folder to one page.
 
 The walk itself lives in ``fused_render/app_listing.py``, which also defines
 what one listed app looks like. Each app reports its entry twice: ``entry`` is
@@ -176,6 +176,28 @@ def _app_folder_exists(rel: str) -> bool:
     return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
 
+@router.get("/api/apps/entry")
+def api_app_entry(path: str):
+    """The folder's app entry (its first tagged top-level page — the one rule,
+    `app_listing.app_entry`) or null. The explorer's "Open app" button asks
+    THIS instead of re-deriving the rule from filenames client-side: under the
+    marker rule (D301) a name tells the client nothing, and a second copy of
+    the rule in the shell is a copy that drifts. Any folder may be asked,
+    workspace or not; an unreadable or entry-less one is `entry: null`."""
+    from fused_render.index.ignore import MountGuard
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return {"entry": None}
+    if MountGuard().blocks(path):
+        return {"entry": None}
+    try:
+        if not os.path.isdir(path):
+            return {"entry": None}
+        return {"entry": app_listing.app_entry(path)}
+    except OSError:
+        return {"entry": None}
+
+
 @router.get("/api/apps/recents")
 def api_app_recents():
     entries = [
@@ -184,35 +206,28 @@ def api_app_recents():
     return {"entries": entries}
 
 
-@router.post("/api/apps/recents/open")
-def api_app_recent_open(
-    body: dict = Body(...), x_fused: str | None = Header(default=None)
-):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
+def record_app_open(path: str, title: str | None = None) -> bool:
+    """Record that the app folder at absolute `path` was just opened.
+
+    THE CALLER IS GET /render (D301): a page carrying the fused-app marker
+    being rendered IS the open — every surface that shows an app renders it,
+    so recording here needs no cooperation from any button or client post
+    (the shell's "Open app" flow, D297, no longer records anything). Inside
+    the workspace the open lands in the recents store (keyed workspace-
+    relative); outside, opening IS registering — `registered_apps.record_open`
+    puts the folder on the /apps hub and stores the open time itself.
+    """
     from fused_render.shell import storage
 
-    path = body.get("path")
-    if not isinstance(path, str) or not path:
-        return _error("path required", 400)
-    # The client sends the app's absolute `path` from the listing; the store
-    # keys on the workspace-relative form. Only real app folders inside the
-    # workspace are recorded — same benign no-op posture as the explorer's
-    # POST /api/recents/open for a non-file url.
     rel = _workspace_rel(fused_dir(), path)
     if rel is None:
-        # Outside the workspace: an external app folder. Opening IS
-        # registering — the registry stores the open time itself, so these
-        # entries never touch the workspace recents store. Validation
-        # (exists, has a page, not behind a wedged mount) is the module's.
+        # Validation (exists, has a declared entry, not behind a wedged mount)
+        # is the module's.
         from fused_render import registered_apps
 
-        return {"recorded": registered_apps.record_open(path)}
+        return registered_apps.record_open(path)
     if not _app_folder_exists(rel):
-        return {"recorded": False}
-    title_raw = body.get("title")
-    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+        return False
     data = _read_app_recents()
     # Dedupe by path; a title-less re-record keeps the last known title.
     existing_title = None
@@ -234,7 +249,24 @@ def api_app_recent_open(
         entry["title"] = existing_title
     data["entries"] = [entry, *kept][:APP_RECENTS_CAP]
     storage.write_json(_app_recents_path(), data)
-    return {"recorded": True}
+    return True
+
+
+@router.post("/api/apps/recents/open")
+def api_app_recent_open(
+    body: dict = Body(...), x_fused: str | None = Header(default=None)
+):
+    # Kept for older clients: the shell no longer posts here (D301 — the open
+    # is recorded by GET /render when it serves a marker-carrying page).
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path")
+    if not isinstance(path, str) or not path:
+        return _error("path required", 400)
+    title_raw = body.get("title")
+    title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
+    return {"recorded": record_app_open(path, title)}
 
 
 # ------------------------------------------------------------------ creation

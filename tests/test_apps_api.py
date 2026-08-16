@@ -45,9 +45,9 @@ def _app_dir(workspace, name, htmls=("index.html",), title=None, tag="local"):
     d = workspace / tag / name
     d.mkdir(parents=True)
     for i, h in enumerate(htmls):
-        body = "<html><body>hi</body></html>"
+        body = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
         if title is not None and i == 0:
-            body = f"<html><head><title>{title}</title></head></html>"
+            body = f"<html><head><meta name=\"fused-app\" /><title>{title}</title></head></html>"
         (d / h).write_text(body)
     return d
 
@@ -65,8 +65,8 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     _app_dir(workspace, "one")                                 # exactly one html
     _app_dir(workspace, "none", htmls=())                      # zero htmls
     _app_dir(workspace, "many", htmls=("b.html", "a.html"))    # first in NAME order
-    _app_dir(workspace, "indexed", htmls=("a.html", "index.html"))  # index wins
-    (workspace / "loose.html").write_text("<html></html>")     # a file, not a tag dir
+    _app_dir(workspace, "indexed", htmls=("a.html", "index.html"))  # first tagged wins
+    (workspace / "loose.html").write_text('<html><head><meta name="fused-app" /></head></html>')     # a file, not a tag dir
 
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
     # `none` is absent: a page is what makes a folder an app, so a folder with no
@@ -74,8 +74,10 @@ def test_lists_only_top_level_dirs_with_entry_resolution(client, workspace):
     assert set(apps) == {"one", "many", "indexed"}
     assert apps["one"]["entry_html"] == str(workspace / "local" / "one" / "index.html")
     assert apps["many"]["entry_html"] == str(workspace / "local" / "many" / "a.html")
+    # `index.html` has no special status (D301): among tagged pages, first in
+    # name order wins.
     assert apps["indexed"]["entry_html"] == str(
-        workspace / "local" / "indexed" / "index.html"
+        workspace / "local" / "indexed" / "a.html"
     )
     # `entry` — the file a card OPENS — is the same file, so the card and the
     # /render iframe cannot disagree about which page the folder is.
@@ -122,10 +124,10 @@ def test_sorted_by_tag_then_name(client, workspace):
 def test_hidden_dirs_and_hidden_htmls_are_skipped(client, workspace):
     hidden_tag_app = workspace / ".hidden-tag" / "app"
     hidden_tag_app.mkdir(parents=True)
-    (hidden_tag_app / "index.html").write_text("<html></html>")
+    (hidden_tag_app / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     _app_dir(workspace, ".hidden-app")  # hidden project dir inside a real tag
     v = _app_dir(workspace, "app", htmls=("view.html",))
-    (v / ".draft.html").write_text("<html></html>")  # hidden: doesn't make it ambiguous
+    (v / ".draft.html").write_text('<html><head><meta name="fused-app" /></head></html>')  # hidden: doesn't make it ambiguous
 
     apps = client.get("/api/apps").json()["apps"]
     assert [a["name"] for a in apps] == ["app"]
@@ -138,7 +140,7 @@ def test_entry_match_is_non_recursive(client, workspace):
     all; the nested page surfaces as its own app instead (the depth-3 rule)."""
     d = _app_dir(workspace, "app", htmls=())
     (d / "sub").mkdir()
-    (d / "sub" / "index.html").write_text("<html></html>")
+    (d / "sub" / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     apps = client.get("/api/apps").json()["apps"]
     assert [a["name"] for a in apps] == ["sub"]
     assert apps[0]["entry_html"] == str(d / "sub" / "index.html")
@@ -162,7 +164,8 @@ def test_title_parsed_from_entry_head(client, workspace):
 def test_title_beyond_first_4kb_is_null_not_an_error(client, workspace):
     d = workspace / "local" / "big"
     d.mkdir(parents=True)
-    (d / "index.html").write_text("<!--" + "x" * 5000 + "--><title>late</title>")
+    (d / "index.html").write_text(
+        '<html><meta name="fused-app" /><!--' + "x" * 5000 + "--><title>late</title>")
     apps = client.get("/api/apps").json()["apps"]
     assert apps[0]["title"] is None
 
@@ -425,11 +428,11 @@ def test_open_records_at_every_depth_and_shelves_do_not_collide(
     (1-3) must record, and opening one same-named app must not stamp the other."""
     # depth 1: the folder is its own tag; depth 3: index.html under tag/shelf/app.
     (workspace / "solo").mkdir()
-    (workspace / "solo" / "page.html").write_text("<html></html>")
+    (workspace / "solo" / "page.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     for shelf in ("a", "b"):
         d = workspace / "deep" / shelf / "twin"
         d.mkdir(parents=True)
-        (d / "index.html").write_text("<html></html>")
+        (d / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     for p in ("solo", "deep/a/twin"):
         r = client.post("/api/apps/recents/open",
                         json={"path": str(workspace / p)},
@@ -497,7 +500,7 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     permission mode "auto", and a fresh session."""
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
-    entry.write_text("<html></html>")
+    entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     seen = {}
 
     def fake_run(cmd, **kwargs):
@@ -581,7 +584,7 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     that; a stub that is never executed writes no files and fails here."""
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
-    entry.write_text("<html></html>")
+    entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     argv_log, stdin_log = tmp_path / "argv.txt", tmp_path / "stdin.txt"
     stub = tmp_path / "claude"
     stub.write_text(
@@ -625,7 +628,7 @@ def test_agent_start_stdin_mode_keeps_message_out_of_argv(tmp_path, monkeypatch)
     spec.loader.exec_module(agent)
 
     target = tmp_path / "index.html"
-    target.write_text("<html></html>")
+    target.write_text('<html><head><meta name="fused-app" /></head></html>')
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
@@ -659,7 +662,7 @@ def test_agent_start_default_still_passes_message_in_argv(tmp_path, monkeypatch)
     spec.loader.exec_module(agent)
 
     target = tmp_path / "index.html"
-    target.write_text("<html></html>")
+    target.write_text('<html><head><meta name="fused-app" /></head></html>')
     monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     seen = {}
@@ -744,7 +747,7 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
         pytest.skip("/bin/sh stub claude is POSIX-only")
     entry = workspace / "app" / "index.html"
     entry.parent.mkdir()
-    entry.write_text("<html></html>")
+    entry.write_text('<html><head><meta name="fused-app" /></head></html>')
     stub = tmp_path / "claude"
     # the stream-json rows poll parses: an init row carrying the session id, a
     # streamed text delta, and the terminating result row
@@ -777,3 +780,79 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     # ...and the session lists in the entry file's sidecar, so a later visit
     # without a `run` param still finds the conversation
     assert agent._sessions(str(entry))["sessions"][0]["id"] == "sid-live"
+
+
+# --------------------------------------------- opens recorded by GET /render
+#
+# D301: rendering a page that carries the fused-app marker IS the open — the
+# server records recency (workspace apps) or registers the folder (/apps hub,
+# external folders) right in GET /render. No client post is involved; the shell
+# stopped sending one.
+
+
+def _opened_at(client, name):
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    return apps.get(name, {}).get("opened_at")
+
+
+def test_rendering_a_workspace_app_records_its_open(client, workspace, recents_home):
+    d = _app_dir(workspace, "sine")
+    assert _opened_at(client, "sine") is None
+    r = client.get("/render", params={"path": str(d / "index.html")})
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is not None
+
+
+def test_a_preview_render_records_nothing(client, workspace, recents_home):
+    # `_preview=1` is the card/preview iframes saying "thumbnail, not an open" —
+    # without it every visit to the /apps grid would mark every app just-opened.
+    d = _app_dir(workspace, "sine")
+    r = client.get("/render",
+                   params={"path": str(d / "index.html"), "_preview": "1"})
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+
+
+def test_rendering_an_unmarked_page_records_nothing(client, workspace, tmp_path, recents_home):
+    # Templates and plain html render through /render too; no marker, no record.
+    p = tmp_path / "plain.html"
+    p.write_text("<html><body>hi</body></html>")
+    r = client.get("/render", params={"path": str(p)})
+    assert r.status_code == 200
+    assert client.get("/api/apps").json()["apps"] == []
+    from fused_render import registered_apps
+    assert registered_apps.read_entries() == []
+
+
+def test_app_entry_endpoint_answers_by_the_marker_rule(client, workspace, tmp_path):
+    # The explorer's "Open app" button asks the server instead of re-deriving
+    # the rule from filenames (D301) — any folder may be asked, workspace or not.
+    d = _app_dir(workspace, "sine", htmls=("main.html",))
+    r = client.get("/api/apps/entry", params={"path": str(d)})
+    assert r.json() == {"entry": str(d / "main.html")}
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "index.html").write_text("<html></html>")  # untagged: no entry
+    assert client.get("/api/apps/entry",
+                      params={"path": str(plain)}).json() == {"entry": None}
+    assert client.get("/api/apps/entry",
+                      params={"path": "relative/nope"}).json() == {"entry": None}
+    assert client.get("/api/apps/entry",
+                      params={"path": str(tmp_path / "gone")}).json() == {"entry": None}
+
+
+def test_rendering_an_external_marked_page_registers_the_folder(
+        client, tmp_path, workspace, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    ext = tmp_path / "elsewhere" / "myapp"
+    ext.mkdir(parents=True)
+    (ext / "main.html").write_text(
+        '<html><head><meta name="fused-app" /></head><body>x</body></html>')
+    r = client.get("/render", params={"path": str(ext / "main.html")})
+    assert r.status_code == 200
+    from fused_render import registered_apps
+    (entry,) = registered_apps.read_entries()
+    assert entry["path"] == str(ext)
+    # ...and the folder now lists on the hub under the reserved tag.
+    apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
+    assert apps["myapp"]["tag"] == registered_apps.REGISTERED_TAG
