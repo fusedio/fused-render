@@ -377,17 +377,46 @@ function RepoCard({
               className={
                 "am-card-engine" + (repo.engine.available ? "" : " am-card-engine-off")
               }
+              /* Focusable only in the state that has something to say. The
+                 unavailable tag reads the same as the available one now, so
+                 its reason is carried by the hover — and a hover on a span
+                 nothing can focus does not exist for a keyboard or a screen
+                 reader. The available tag's title is a nicety, not the only
+                 copy of anything, so it does not earn a tab stop on every
+                 card. */
+              tabIndex={repo.engine.available ? undefined : 0}
+              /* Says the STATE in words, because the tag's own text no longer
+                 does and colour must not be the only signal. It opens with the
+                 visible label so the accessible name still contains what is on
+                 screen (WCAG 2.5.3), which is what keeps "click the Diffusers
+                 tag" a workable instruction for voice control. */
+              aria-label={
+                repo.engine.available
+                  ? undefined
+                  : `${repo.engine.shortLabel} — cannot be loaded here: ${repo.engine.reason ?? "unavailable"}`
+              }
               title={
                 repo.engine.available
                   ? `Loads in the ${repo.engine.shortLabel} engine — read from the weight format on disk, which is the same check that engine makes before it loads.`
-                  : `This is a ${repo.engine.shortLabel} model, and that engine cannot run here: ${repo.engine.reason ?? "unavailable"}.`
+                  /* "cannot be loaded here", NOT "that engine cannot run
+                     here": unavailable covers two different situations and the
+                     second one is a preference, not a platform. A Diffusers
+                     repo on a Mac whose image engine is set to MLX FLUX gets
+                     `available: false` with a reason that ends "switch it in
+                     Preferences" — Diffusers runs on that machine perfectly
+                     well. Asserting the platform verdict in the prose flatly
+                     contradicted the reason printed straight after it. */
+                  : `This is a ${repo.engine.shortLabel} model, and it cannot be loaded here: ${repo.engine.reason ?? "unavailable"}.`
               }
             >
-              {repo.engine.available ? repo.engine.shortLabel : `needs ${repo.engine.shortLabel}`}
+              {repo.engine.shortLabel}
             </span>
           ) : (
             <span
               className="am-card-engine am-card-engine-none"
+              /* Same reasoning as above: "no engine" states its condition in
+                 words, but WHY is hover-only, so it gets a tab stop too. */
+              tabIndex={0}
               title={
                 "No local engine reads this repo's weight format. The formats are not " +
                 "interchangeable — a Whisper repo comes as CTranslate2, MLX or " +

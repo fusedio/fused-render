@@ -159,12 +159,31 @@
   text-overflow: ellipsis;
 }
 
-/* "This is a Mac's model, on a PC" — the engine exists and cannot run here.
+/* "This is a Mac's model, on a PC" — or a model whose engine runs here fine
+   and is not the one selected. Either way it will not load right now.
    Deliberately not the same as "nothing reads this": the download was not a
-   mistake, and the hover carries the registry's own reason. */
+   mistake, and the hover carries the registry's own reason.
+
+   **The tag reads the same in both states, so this styling is the signal.**
+   It used to say "needs Diffusers"; the word went because on a card the
+   reader is being told a fact, not given an instruction. What carries the
+   state now is the warning hue AND the dashed border — two channels, which is
+   the point: the dash survives greyscale, a monochrome display and every form
+   of colour blindness, so nothing here depends on distinguishing yellow from
+   the accent green beside it. `--warning-soft` is the stylesheet's existing
+   attention token and measures 8.4:1 on the card in dark and 4.9:1 in light,
+   both past AA for text this size. */
 .am-card-engine-off {
   color: var(--warning-soft);
   border-style: dashed;
+}
+
+/* The reason lives in the title attribute, and a tag nobody can focus is a
+   tooltip that only exists for a mouse. The unavailable states take a tab stop
+   (see AiModels.tsx) and this is what makes landing on one visible. */
+.am-card-engine:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* And the honest dead end. Quiet, because it is a fact about the repo rather
