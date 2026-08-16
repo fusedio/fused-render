@@ -7,14 +7,76 @@
    have no answer for — the size figure that is the whole point of the page, the
    "Explore" link, the revision drawer a card opens, and the Discover tab. */
 
-/* The Engines tab. Capped at the same 760px the Preferences page caps its own
-   content column at, because that is what it IS — a settings surface that moved
-   pages, not a grid. Uncapped it would set a paragraph and a <select> across
-   the full width of a four-card layout, which reads as a form somebody forgot
-   to lay out. */
+/* -- the Engines tab --------------------------------------------------------
+   Capped at the same 760px the Preferences page caps its own content column
+   at, because that is what it IS — a settings surface that moved pages, not a
+   grid. Uncapped, three selects would sit at the left edge of a four-card
+   layout with a page of empty space beside them.
+
+   The cards are .cc-mdcard, the same ones the other two tabs list models in.
+   The tab shipped in the Preferences page's `.prefs-*` vocabulary and it read
+   as three bare native controls adrift on an empty page; a setting is not made
+   more serious by being the only thing in the app that looks unfinished. */
 .am-engines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   max-width: 760px;
   font-size: 13px;
+}
+
+/* The one sentence above the cards: what "Automatic" means. */
+.am-engines-note {
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* Capability, control, reality — one line, wrapping to two on a narrow window
+   rather than squeezing the select. `align-items: center` and not `baseline`:
+   the select is a 32px box and the two text runs beside it should sit on its
+   middle, not hang off the text baseline inside it. */
+.am-engine-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+/* A fixed-ish column so the three selects line up down the page — a ragged
+   left edge on a stack of identical controls reads as a layout accident. It is
+   a min rather than a width, so a longer capability name pushes rather than
+   truncates. */
+.am-engine-cap {
+  flex: 0 0 auto;
+  min-width: 128px;
+  font-weight: 600;
+}
+
+/* .field-control carries the app's canonical select skin (styles/fields.css) —
+   its own chevron, its own metrics — which is what makes this control look
+   like every other select in the app instead of like the platform's. What is
+   left here is only how it behaves in this row. */
+.am-engine-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* What is actually serving the capability. Muted, because the control beside
+   it is the thing being read and this is the confirmation. */
+.am-engine-serving {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-muted);
+}
+
+/* The second lines a card sometimes grows: why a stored choice is not in
+   force, and what a switch just did. Under the row rather than in it — both
+   are sentences about an event, not part of the control. */
+.am-engine-note {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* -- the Local tab's two sections ------------------------------------------

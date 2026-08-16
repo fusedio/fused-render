@@ -21,10 +21,16 @@
 // `switchOutcome`: on Preferences the consequences of a switch were on another
 // page and arriving here refetched them, and now they are the tab next door.
 //
-// The `.prefs-*` classes come with it. They are the app's settings vocabulary
-// rather than the Preferences page's private one (Mounts uses them too), and
-// re-dressing a moved control in card classes would make a switch that unloads
-// a model look like one more thing on an inventory page.
+// **The `.prefs-*` classes did NOT survive the move, and the argument for
+// keeping them did not survive contact with the rendered page.** It was that a
+// switch which unloads a model should not look like one more thing on an
+// inventory page. What it produced was three bare native `<select>`s adrift on
+// an empty page, each under a heading and beside a repeated "Engine" label,
+// with its resolved status stranded on a line below — a form somebody forgot to
+// lay out, in an app where the two tabs beside it are made of cards. The
+// setting is not made less consequential by sharing the page's vocabulary; it
+// is made findable. One card per capability, one row inside it: the name, the
+// control, the reality.
 import { useEffect, useState } from "react";
 import { getPrefs, putEngineForCapability } from "@platform/lib/api";
 import type { CapabilityEngine, Prefs } from "@platform/lib/api";
@@ -76,6 +82,7 @@ function CapabilityEngineRow({
   const [error, setError] = useState<string | null>(null);
   const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
   const warning = ignoredWarning(row);
+  const label = capabilityLabel(row.capability);
 
   const choose = async (code: string) => {
     if (busy || code === row.selected) return;
@@ -104,11 +111,24 @@ function CapabilityEngineRow({
   };
 
   return (
-    <div className="prefs-field">
-      <h3>{capabilityLabel(row.capability)}</h3>
-      <label>
-        Engine{" "}
-        <select value={row.selected} disabled={busy} onChange={(e) => choose(e.target.value)}>
+    <div className="cc-mdcard am-engine-card">
+      {/* Capability, control, reality — one row, in that order. The three used
+          to be three stacked blocks, which is what made "Engine" a visible
+          label at all: a select on its own line has to say what it is for.
+          Beside the capability's own name it does not, and the repeated word
+          down a column of three was the loudest thing on the tab. The name
+          IS the label, so it is a <label> and the select has no other. */}
+      <div className="am-engine-row">
+        <label className="am-engine-cap" htmlFor={`engine-${row.capability}`}>
+          {label}
+        </label>
+        <select
+          id={`engine-${row.capability}`}
+          className="field-control am-engine-select"
+          value={row.selected}
+          disabled={busy}
+          onChange={(e) => choose(e.target.value)}
+        >
           {/* First, and the only option with no engine behind it. */}
           <option value={auto}>Automatic</option>
           {row.choices.map((choice) => {
@@ -127,9 +147,13 @@ function CapabilityEngineRow({
             );
           })}
         </select>
-      </label>
-      <div className="deploy-muted">{servingLine(row)}</div>
-      {warning && <div className="deploy-muted">{warning}</div>}
+        {/* What is ACTUALLY serving this capability, beside the control rather
+            than under it: the select shows the choice, this reports reality,
+            and they are allowed to differ — which only reads as a pair when
+            they are on one line. */}
+        <span className="am-engine-serving">{servingLine(row)}</span>
+      </div>
+      {warning && <div className="am-engine-note">{warning}</div>}
       {/* The consequence, in four words at most. It stays because an unload is
           a real thing that just happened to the user's machine and nothing else
           on screen would report it — but the paragraph explaining WHY the model
@@ -140,7 +164,7 @@ function CapabilityEngineRow({
           not a weaker version of the longer: "Switched." is the whole truth
           when the engine moved and no model was resident to lose. */}
       {changed && (
-        <div className="deploy-muted">
+        <div className="am-engine-note">
           {changed === "unloaded" ? "Switched. Loaded model unloaded." : "Switched."}
         </div>
       )}
@@ -176,17 +200,16 @@ export default function AiModelsEngines({ onSwitched }: { onSwitched: () => void
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {!prefs && !error && <SkeletonLines rows={3} label="Loading engines" />}
       {prefs && (
-        <section className="prefs-section">
-          <h2>Inference engines</h2>
-          {/* One line. An earlier draft explained which backend wins on which
-              platform and what a switch costs; a settings surface states what a
-              control does, and the rest is an essay the reader did not open
-              this tab for. What survives is only what cannot be inferred from
-              the controls themselves — that the choice is per capability, and
-              what Automatic means. */}
-          <p className="deploy-muted">
-            Which backend runs local models. <b>Automatic</b> picks the best one this machine
-            can run.
+        <>
+          {/* ONE line, and no heading. The page's own head already says "AI
+              Models" over "Which backend runs each kind of local model", so an
+              <h2> reading "Inference engines" above a paragraph reading "Which
+              backend runs local models" was the tab restating its own chrome
+              twice before saying anything. What cannot be inferred from three
+              labelled selects is what the first option in each of them means,
+              and that is all this says. */}
+          <p className="am-engines-note">
+            <b>Automatic</b> picks the best engine this machine can run.
           </p>
           {prefs.engines.capabilities.map((row) => (
             <CapabilityEngineRow
@@ -197,7 +220,7 @@ export default function AiModelsEngines({ onSwitched }: { onSwitched: () => void
               onSwitched={onSwitched}
             />
           ))}
-        </section>
+        </>
       )}
     </div>
   );
