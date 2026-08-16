@@ -706,7 +706,11 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         cmd = ["explorer", win_path] if is_dir else f'explorer /select,"{win_path}"'
     else:
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # close_fds=False → posix_spawn, skipping PROJ's crashing atfork handler;
+    # see executor.py's run call for the full story.
+    subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=False
+    )
     return JSONResponse({"ok": True})
 
 
