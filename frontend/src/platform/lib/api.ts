@@ -2,6 +2,7 @@
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
+import type { ModifiedInstall } from "@platform/lib/selffix";
 
 export interface Config {
   start_dir: string;
@@ -28,6 +29,13 @@ export interface Config {
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
+  // A Claude session changed this installation (fused_render/selffix.py) — the
+  // sidebar's version chip turns amber and leads to its report. PRESENT ONLY
+  // WHEN MODIFIED: there is no `modified: false` shape, because the ordinary
+  // state of an installation is that nobody has touched it, and a field that is
+  // always there invites a truthiness check that a `{modified: false}` object
+  // would silently pass.
+  modified_install?: ModifiedInstall;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable

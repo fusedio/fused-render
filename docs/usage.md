@@ -410,3 +410,52 @@ third party, the map templates' tile daemons (they serve the browser directly),
 and `fused.rawUrl()` used as an `<img>`/`<embed>` source — a plain URL has
 nowhere to carry the attribution header. It is a diagnostic for your own pages,
 not an audit trail.
+
+## Fixing a failure on your own machine
+
+When something the app is doing fails — a model download, a long job, anything
+that shows up in the download manager at the bottom right — the failed row
+carries a **Fix this** button beside its ✕.
+
+It opens a Claude Code session **on the fused-render installation itself**, with
+what went wrong already written down for it, and drops you into that
+conversation in the explorer's chat sidebar. You watch it work and answer its
+permission requests; nothing happens to your copy of the app unattended.
+
+A few things worth knowing:
+
+- **Python changes need a restart.** Quit and reopen fused-render before
+  deciding whether the fix worked.
+- **It can only fix some things.** The session is working on installed files:
+  Python, templates, and shipped assets. Anything that needs a rebuilt frontend
+  or a new release, it will tell you about rather than attempt.
+- **If the app is installed somewhere you can't write to**, the button says so
+  instead of starting a session that could not change anything.
+
+### The modified badge
+
+If the session changes anything, the version number in the sidebar turns amber
+with a **✳** beside it. That is the app being honest: you are running the
+release it names *plus* a local change, so the version alone no longer describes
+what is on your disk.
+
+Click it and you get:
+
+- **the report** the session wrote — what went wrong, what it found, what it
+  changed, and how to check it. It opens as an ordinary markdown file in the
+  app;
+- **a way to send it to us.** Please do. A fix that only exists on your machine
+  helps nobody else; the report is what lets it ship for everyone. The button
+  opens a pre-filled GitHub issue, and there is a **Copy report** button beside
+  it for pasting the text in (or attach the file);
+- **how to reinstall**, worded for how *this* copy was installed —
+  `brew reinstall --cask fused-render`, the DMG, the installer, or
+  `pip install --force-reinstall`.
+
+**Reinstalling always clears the badge.** The mark lives inside the installation
+folder, so replacing that folder removes it — there is nothing to remember to
+reset. Upgrading to a newer version clears it too.
+
+If you would rather keep the change and stop being reminded about it, the panel
+has a quiet **Dismiss this badge**. It clears the mark only — the report files
+stay where they are.

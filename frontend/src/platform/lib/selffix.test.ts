@@ -1,0 +1,191 @@
+// Self-fix's pure parts (SPEC §42). Everything here is a decision that is
+// wrong in a way no screenshot shows: a handoff URL that drops the run id
+// lands the user in an empty chat beside a session that is already working, an
+// issue URL that forgets the version is a bug report nobody can act on, and a
+// poll cadence that never leaves its fast lane is a request every five seconds
+// for the life of the app.
+import { expect, test } from "bun:test";
+
+// fixSessionUrl pulls urlForFsPath from router.ts, which reads `location` at
+// MODULE scope (IS_EMBED). Bun's runtime has no DOM and a static import is
+// hoisted above any shim, so the stub goes first and the module comes in
+// dynamically after it — the same dance as appEntry.test.ts.
+(globalThis as { location?: unknown }).location ??= {
+  pathname: "/",
+  search: "",
+  href: "http://localhost/",
+};
+(globalThis as { history?: unknown }).history ??= {
+  state: null,
+  pushState() {},
+  replaceState() {},
+};
+
+const {
+  failureContextFromJob,
+  fixSessionUrl,
+  issueUrl,
+  modifiedSummary,
+  selffixPollInterval,
+  POLL_IDLE_MS,
+  POLL_WATCH_MS,
+  WATCH_WINDOW_MS,
+} = await import("./selffix");
+
+type Snapshot = Parameters<typeof issueUrl>[0];
+type Marker = Parameters<typeof modifiedSummary>[0];
+
+const marker = (over: Partial<Marker> = {}): Marker => ({
+  modified: true,
+  version: "0.4.18",
+  install_root: "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/fused_render",
+  state_dir: "/i/.fused-render-selffix",
+  first_modified_at: 1_700_000_000,
+  modified_at: 1_700_000_000,
+  fixes: [],
+  latest_report: null,
+  ...over,
+});
+
+const snapshot = (over: Partial<Snapshot> = {}): Snapshot => ({
+  modified: true,
+  version: "0.4.18",
+  install_root: "/opt/fused_render",
+  writable: true,
+  marker: marker({ latest_report: "/opt/fused_render/.x/reports/r.md" }),
+  reports: [],
+  reinstall: { method: "dmg", headline: "h", command: "", note: "n", url: "u" },
+  issues_url: "https://github.com/fusedio/fused-render/issues/new",
+  machine: { platform: "macOS-15.0", python: "3.12.3" },
+  ...over,
+});
+
+// -- the handoff --------------------------------------------------------------
+
+test("the session url opens the install folder with the chat sidebar on the run", () => {
+  const url = fixSessionUrl({ target: "/opt/fused_render", run_id: "run-7" });
+  expect(url).toBe("/explorer/view/opt/fused_render?_side=claude&run=run-7");
+});
+
+test("a trailing separator does not become an empty path segment", () => {
+  // Comes off a server path join; an empty segment would encode as "//" and
+  // the codec's own filter would then silently drop it — same value, two
+  // spellings, and the recents/bookmark stores would hold both.
+  expect(fixSessionUrl({ target: "/opt/fused_render/", run_id: "r" })).toBe(
+    "/explorer/view/opt/fused_render?_side=claude&run=r"
+  );
+});
+
+test("a windows install path is normalised the way every other fs url is", () => {
+  const url = fixSessionUrl({
+    target: "C:\\Program Files\\fused-render\\fused_render",
+    run_id: "r",
+  });
+  expect(url).toBe(
+    "/explorer/view/C%3A/Program%20Files/fused-render/fused_render?_side=claude&run=r"
+  );
+});
+
+test("the run id is escaped rather than pasted into the query", () => {
+  const url = fixSessionUrl({ target: "/o", run_id: "a b&_side=git" });
+  expect(url).toContain("run=a+b%26_side%3Dgit");
+  // ...and the mode it would otherwise have overridden is still ours.
+  expect(url.match(/_side=/g)).toHaveLength(1);
+});
+
+// -- what the session is told -------------------------------------------------
+
+test("a failed row becomes the session's brief, attribution included", () => {
+  const context = failureContextFromJob({
+    id: "sys:ai-model:flux",
+    title: "FLUX.2-klein-4B",
+    detail: "transformer.gguf",
+    kind: "download",
+    state: "error",
+    message: "OSError(28): No space left on device",
+    page: "/models.html",
+  });
+  expect(context).toEqual({
+    job_id: "sys:ai-model:flux",
+    title: "FLUX.2-klein-4B",
+    detail: "transformer.gguf",
+    kind: "download",
+    state: "error",
+    message: "OSError(28): No space left on device",
+    page: "/models.html",
+    source: "download manager",
+  });
+});
+
+// -- telling the developers ---------------------------------------------------
+
+test("the issue url carries the version, the platform and where the report is", () => {
+  const url = new URL(issueUrl(snapshot()));
+  expect(url.origin + url.pathname).toBe(
+    "https://github.com/fusedio/fused-render/issues/new"
+  );
+  expect(url.searchParams.get("title")).toBe("Self-fix report — v0.4.18");
+  const body = url.searchParams.get("body") ?? "";
+  expect(body).toContain("/opt/fused_render/.x/reports/r.md");
+  expect(body).toContain("v0.4.18");
+  expect(body).toContain("macOS-15.0");
+});
+
+test("the report itself is never inlined into the issue url", () => {
+  // A report is a document — thousands of words — and a URL that long is
+  // refused long before it reaches GitHub. The panel copies it to the
+  // clipboard instead; the URL carries only what the user would otherwise be
+  // asked for twice.
+  const url = issueUrl(snapshot());
+  expect(url.length).toBeLessThan(1500);
+});
+
+test("an issue can still be filed when no report was written", () => {
+  const url = new URL(issueUrl(snapshot({ marker: marker(), reports: [] })));
+  expect(url.searchParams.get("body")).toContain("(none written)");
+});
+
+// -- the summary line ---------------------------------------------------------
+
+test("the summary says when, because that is the first thing anyone asks", () => {
+  const now = 1_700_000_000_000;
+  expect(modifiedSummary(marker({ modified_at: now / 1000 }), now)).toContain("today");
+  expect(
+    modifiedSummary(marker({ modified_at: now / 1000 - 86400 }), now)
+  ).toContain("yesterday");
+  expect(
+    modifiedSummary(marker({ modified_at: now / 1000 - 5 * 86400 }), now)
+  ).toContain("5 days ago");
+});
+
+test("more than one session is counted, not collapsed", () => {
+  const fixes = [
+    { at: 1, updated_at: 1, run_id: "a", session_id: "", title: "", report: null, incident: null },
+    { at: 2, updated_at: 2, run_id: "b", session_id: "", title: "", report: null, incident: null },
+  ];
+  expect(modifiedSummary(marker({ fixes }))).toContain("2 fix sessions");
+});
+
+// -- the two-speed poll -------------------------------------------------------
+
+test("no fix has ever been started here: the slow lane", () => {
+  expect(selffixPollInterval(0)).toBe(POLL_IDLE_MS);
+});
+
+test("a fix just started: fast enough to see the badge appear", () => {
+  const now = 1_700_000_000_000;
+  expect(selffixPollInterval(now - 1000, now)).toBe(POLL_WATCH_MS);
+});
+
+test("the fast lane expires, so a stale stamp cannot poll forever", () => {
+  const now = 1_700_000_000_000;
+  expect(selffixPollInterval(now - WATCH_WINDOW_MS - 1, now)).toBe(POLL_IDLE_MS);
+});
+
+test("a stamp from the future reads as not watching, not as watching forever", () => {
+  // A suspend or a manual clock change puts `now` behind the stamp. The safe
+  // direction is the slow lane: a badge a minute late costs nothing, a
+  // permanent 5s poll costs a request every 5s for the life of the app.
+  const now = 1_700_000_000_000;
+  expect(selffixPollInterval(now + 60_000, now)).toBe(POLL_IDLE_MS);
+});

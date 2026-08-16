@@ -56,3 +56,10 @@ cmux-assets/
 # dev.sh's core_apps reload poke (scripts/dev.sh core_apps watcher)
 core_apps/.dev-reload-trigger.py
 docs/superpowers/plans/
+
+# Self-fix state (fused_render/selffix.py): a Claude session's report + the
+# marker saying this INSTALLATION was changed. It lives inside the install tree
+# on purpose — that is what makes a reinstall clear it — and a source checkout
+# is an installation like any other, so the dir can appear here too. Never
+# committed: it describes one machine's copy, not the release.
+fused_render/.fused-render-selffix/

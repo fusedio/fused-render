@@ -33,6 +33,10 @@
   --accent-rgb: 229, 255, 68;
   --error-rgb: 255, 107, 107;
   --fg-muted-rgb: 154, 160, 166;
+  /* --warning's triple, for the modified-installation chip's wash (SPEC §42):
+     that badge is a caveat rather than an error, so it is tinted with the
+     warning hue rather than with the neutral --tint every other wash uses. */
+  --warning-rgb: 210, 153, 34;
 
   /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
      dark page but as dirt against a light one, hence the light overrides. */
@@ -130,6 +134,7 @@
   --accent-rgb: 95, 115, 0;
   --error-rgb: 198, 40, 40;
   --fg-muted-rgb: 97, 101, 108;
+  --warning-rgb: 143, 106, 16;
 
   --shadow-sm: rgba(0, 0, 0, 0.1);
   --shadow-md: rgba(0, 0, 0, 0.14);

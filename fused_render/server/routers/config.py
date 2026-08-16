@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from fused_render import __version__
 from fused_render import calls as shell_calls
+from fused_render import selffix
 from fused_render.installed import installed_version
 from fused_render.server import dirpicker
 from fused_render.server.common import get_start_dir
@@ -104,6 +105,14 @@ def api_config(
 
     if (update_manager := mac_update.manager()) is not None:
         config["update"] = update_manager.status()
+    # A Claude session changed this installation (selffix.py, SPEC §42) — the
+    # sidebar's version chip turns amber and leads to the report. Rides this
+    # endpoint rather than getting a poll of its own, like `update` above; it is
+    # one small JSON read, and the PANEL's contents (report list, reinstall
+    # instructions, which cost a directory walk and a brew probe) are a separate
+    # GET /api/selffix the shell makes only when the chip is clicked.
+    if (modified := selffix.status()) is not None:
+        config["modified_install"] = modified
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:
