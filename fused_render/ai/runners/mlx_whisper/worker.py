@@ -86,19 +86,39 @@ def _pin_stream():
     The weights are primed on the bring-up thread (`worker_base.serve` runs
     `load` on one), each request arrives on a `ThreadingTCPServer` thread, and
     each decode runs on a fresh thread of its own (`_call_with_ticks`). Under
-    0.32 a thread that touches MLX gets its own default stream, an array
-    remembers the stream it was made on, and evaluating it anywhere else does
-    not raise a Python exception — it throws `std::runtime_error("There is no
-    Stream(gpu, 1) in current thread")` out of `metal::get_command_encoder`,
-    which is an UNCAUGHT C++ exception and aborts the process.
+    0.32 a thread that touches MLX gets its own default stream — and an
+    UNEVALUATED array is a graph pinned to the stream it was built on, so
+    forcing it from another thread does not raise a Python exception. It throws
+    `std::runtime_error("There is no Stream(gpu, 1) in current thread")` out of
+    `metal::get_command_encoder`, which is an UNCAUGHT C++ exception and aborts
+    the process.
 
-    That is not a hypothetical: it is what "the transcription process did not
-    answer: Remote end closed connection without response" was. The weights
-    `ModelHolder.get_model` primes here are lazy — `load_model` evaluates them
-    on the LOAD thread — and the first thing `transcribe()` does on the decode
-    thread is `detect_language`, which touches them. Every MLX Whisper
-    transcription died there, on every model, with only a `libc++abi:` line in
-    the worker log to say so.
+    **The exact leak, because "loaded on another thread" alone is not it.** An
+    array that has been EVALUATED travels between threads perfectly well —
+    measured, in every direction, including from a thread that has since exited.
+    `mlx_whisper.load_model` ends on `mx.eval(model.parameters())`, so the
+    weights are fine. What it misses is that `nn.Module.valid_parameter_filter`
+    **skips keys beginning with an underscore**, and this model derives two
+    tensors at construction and stores them under exactly such names:
+    `TextEncoder._positional_embedding` (a `sinusoids(...)` graph) and
+    `TextDecoder._mask` (a causal mask). `parameters()` does not report them,
+    `mx.eval` therefore never forces them, and they reach the decode thread as
+    live graphs owned by the loading thread. The first thing `transcribe()` does
+    there is `detect_language`, whose encoder pass adds `_positional_embedding`
+    — so every MLX Whisper transcription died on its first decode, on every
+    model, leaving only a `libc++abi:` line in the worker log and "the
+    transcription process did not answer: Remote end closed connection without
+    response" on the job row.
+
+    Confirmed by removing only that one difference: pre-evaluating those two
+    tensors on the loading thread, with no stream pinning at all, transcribes
+    cleanly; without it the same script aborts. Pinning is still the fix worth
+    shipping — it holds for whatever the NEXT version of this library leaves
+    lazy, where a list of two attribute names would not.
+
+    The invariant this protects, and the one to test any sibling runner against:
+    **nothing lazy may survive the loading thread.** `mflux_image/worker.py`
+    documents why it satisfies that already and needs no pin.
 
     `new_thread_unsafe_stream` is mlx's own answer: a stream not owned by the
     thread that made it. "Unsafe" means it must not be driven by two threads AT

@@ -124,6 +124,34 @@ def load(model_id, fetched):
     # network — which matters because `download` has already reported those
     # bytes to the job row, and a second fetch inside `load` would be an
     # unreported download the user watches as a stalled "Loading…".
+    # **This runner is threaded exactly like `mlx_whisper/worker.py` and needs
+    # no `_pin_stream`, and here is why — because "same shape, but fine" is the
+    # claim that rots silently when a dependency moves.**
+    #
+    # The shape: mlx 0.32 gives every thread its own default stream, `load` runs
+    # on `worker_base`'s bring-up thread (which then exits), and `generate` runs
+    # on a `ThreadingTCPServer` request thread. An UNEVALUATED array is a graph
+    # owned by the stream it was built on, so forcing one from another thread
+    # throws out of `metal::get_command_encoder` — an uncaught C++ exception
+    # that aborts the worker with no Python traceback. That is what took out
+    # every MLX Whisper transcription; the whisper runner's `_pin_stream`
+    # docstring has the mechanism in full.
+    #
+    # Why it does not reach here: an EVALUATED array crosses threads freely, and
+    # nothing in this construction stays lazy. Every array in the model arrives
+    # through `WeightLoader` → `mx.load(...)`, which returns materialised
+    # safetensors data rather than a graph, and `WeightApplier` installs it with
+    # `model.update(...)`. On a pre-quantized repo — which is all this runner
+    # loads — `apply_and_quantize` takes the `stored_q is not None` branch, so
+    # `nn.quantize` runs FIRST and the loaded weights then overwrite what it
+    # computed. Nothing is derived-and-kept the way whisper's underscored
+    # `_positional_embedding` and `_mask` are, and those were the whole leak.
+    #
+    # Measured, not reasoned: building this variant on a thread that then exits
+    # and forcing `mx.eval` over all 1558 arrays reachable in the model — every
+    # attribute, underscored ones included — from a second thread evaluates
+    # cleanly; and a real 4-step 256² render through this worker, load thread
+    # gone, returned a PNG. Re-run both if mflux or mlx is bumped.
     model = variant_cls(model_config=model_config, model_path=fetched)
     # ONE registration, at load time. `CallbackRegistry.register` APPENDS, and
     # the registry belongs to the model rather than to a call — so registering
