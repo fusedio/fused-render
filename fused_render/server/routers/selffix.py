@@ -89,15 +89,17 @@ _load_agent = claude_spawn.load_agent
 _record_session_when_ready = claude_spawn.record_session_when_ready
 
 
-def _watch_fix(run_id: str, incident: str, report: str, title: str) -> None:
+def _watch_fix(run_id: str, incident: str, report: str, title: str,
+               before: str) -> None:
     """Follow the fix session and stamp the installation if it changed.
 
     Two jobs the session cannot do for itself. The FIRST is the stamp — see
-    `selffix.settle` for why the app decides that rather than the model. The
-    SECOND is the one every detached session in this codebase needs: nobody
-    polls a run started from an HTTP request, and a run nobody polls never
-    reaches its sidecar, so the conversation would not be listed when the user
-    later opens that folder's chat.
+    `selffix.settle` for why the app decides that rather than the model, and why
+    it is measured against `before` (the tree as THIS session found it) rather
+    than against the release. The SECOND is the one every detached session in
+    this codebase needs: nobody polls a run started from an HTTP request, and a
+    run nobody polls never reaches its sidecar, so the conversation would not be
+    listed when the user later opens that folder's chat.
 
     Every failure is swallowed. A fix that landed but whose badge did not is a
     bad outcome; a background thread that raises into the server is a worse one.
@@ -106,7 +108,8 @@ def _watch_fix(run_id: str, incident: str, report: str, title: str) -> None:
 
     def stamp() -> None:
         try:
-            selffix.settle(run_id=run_id, session_id=state["session_id"],
+            selffix.settle(before=before, run_id=run_id,
+                           session_id=state["session_id"],
                            report=report, incident=incident, title=title)
         except Exception:  # noqa: BLE001 — bookkeeping, never fatal
             logger.debug("self-fix stamp failed", exc_info=True)
@@ -179,10 +182,12 @@ def api_selffix_start(body: dict = Body(default={}),
 
     try:
         incident, report = selffix.record_incident(body)
-        # Taken BEFORE the session starts and never after: this is the last
-        # moment the tree is still what the release shipped. (The incident write
-        # above cannot disturb it — the state dir is outside the digest.)
-        selffix.ensure_baseline()
+        # BEFORE the session starts and never after. Two digests, not one: the
+        # release's (for `reconcile`) and the tree as this session finds it
+        # (what `settle` measures against) — see `selffix.begin_session`. The
+        # incident write above cannot disturb either; the state dir is outside
+        # the digest.
+        _, before = selffix.begin_session()
     except OSError as exc:
         _release_active()
         return _error(f"could not write the incident file: {exc}", status=500)
@@ -202,7 +207,8 @@ def api_selffix_start(body: dict = Body(default={}),
     _set_active_run(str(run_id))
     title = str(body.get("title") or "").strip()
     try:
-        threading.Thread(target=_watch_fix, args=(str(run_id), incident, report, title),
+        threading.Thread(target=_watch_fix,
+                         args=(str(run_id), incident, report, title, before),
                          daemon=True, name="fused-render-selffix-watch").start()
     except Exception:  # noqa: BLE001 — the session is already running
         # Nothing will stamp and nothing will free the slot, so do both now: a

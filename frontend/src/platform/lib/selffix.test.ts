@@ -21,14 +21,44 @@ import { expect, test } from "bun:test";
   replaceState() {},
 };
 
+// `noteFixStarted` writes localStorage and dispatches on `window`; neither
+// exists in bun's runtime. Minimal stand-ins, shared like the two above.
+const store = new Map<string, string>();
+(globalThis as { localStorage?: unknown }).localStorage ??= {
+  getItem: (k: string) => store.get(k) ?? null,
+  setItem: (k: string, v: string) => void store.set(k, v),
+};
+(globalThis as { window?: unknown }).window ??= { dispatchEvent: () => true };
+
+// Record what `noteFixStarted` dispatches, by swapping the method IN THE TEST
+// rather than by owning the `window` stub: bun shares globals across suites and
+// several set `window` themselves (one of them unconditionally), so which
+// object is live here depends on file order. Swapping the method works whichever
+// one won.
+function captureDispatch<T>(body: () => T): { result: T; types: string[] } {
+  const win = globalThis.window as unknown as { dispatchEvent: (e: unknown) => unknown };
+  const real = win.dispatchEvent;
+  const types: string[] = [];
+  win.dispatchEvent = (e: unknown) => types.push((e as Event).type);
+  try {
+    return { result: body(), types };
+  } finally {
+    win.dispatchEvent = real;
+  }
+}
+
 const {
   failureContextFromJob,
   fixSessionUrl,
   issueUrl,
+  lastFixStartedAt,
   modifiedSummary,
+  noteFixStarted,
   selffixPollInterval,
   POLL_IDLE_MS,
   POLL_WATCH_MS,
+  SELFFIX_PING_EVENT,
+  SELFFIX_PING_KEY,
   WATCH_WINDOW_MS,
 } = await import("./selffix");
 
@@ -180,6 +210,40 @@ test("a fix just started: fast enough to see the badge appear", () => {
 test("the fast lane expires, so a stale stamp cannot poll forever", () => {
   const now = 1_700_000_000_000;
   expect(selffixPollInterval(now - WATCH_WINDOW_MS - 1, now)).toBe(POLL_IDLE_MS);
+});
+
+// A started fix has to reach a chip in THIS document as well as in other tabs,
+// and the two channels are exclusive: `storage` fires everywhere except the
+// document that wrote the value. Missing the same-document half is not a corner
+// case — the download manager that starts the fix is normally in the very
+// document the chip lives in, so the badge would wait out a full idle interval
+// in the ordinary case, which is exactly what the fast cadence exists to avoid.
+test("starting a fix announces it on BOTH channels", () => {
+  const { types } = captureDispatch(() => noteFixStarted(1_700_000_000_000));
+
+  expect(lastFixStartedAt()).toBe(1_700_000_000_000); // cross-tab: the storage write
+  expect(types).toContain(SELFFIX_PING_EVENT); // same-document: the event
+});
+
+test("the stamp is written before the same-document event fires", () => {
+  // A listener re-reads lastFixStartedAt() to pick its cadence; dispatching
+  // first would hand it the PREVIOUS stamp and leave it in the slow lane.
+  let seen = -1;
+  const win = globalThis.window as unknown as { dispatchEvent: (e: unknown) => unknown };
+  const real = win.dispatchEvent;
+  win.dispatchEvent = () => (seen = lastFixStartedAt());
+  try {
+    noteFixStarted(1_800_000_000_000);
+  } finally {
+    win.dispatchEvent = real;
+  }
+  expect(seen).toBe(1_800_000_000_000);
+});
+
+test("the ping key and event are distinct names", () => {
+  // They are read by two different listeners on the same component; one name
+  // for both would make the storage guard silently swallow the event.
+  expect(SELFFIX_PING_KEY).not.toBe(SELFFIX_PING_EVENT);
 });
 
 test("a stamp from the future reads as not watching, not as watching forever", () => {

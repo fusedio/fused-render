@@ -6932,10 +6932,21 @@ the installation, and the mark that says so.
   patch. So the server takes a **content digest** of the install tree before the
   spawn (`ensure_baseline` — the last moment it is still what we shipped; nothing
   runs at install time, so there is no earlier hook), and the watcher re-hashes
-  on the session's `done` tick and every ~16s in between. Different from the
-  baseline ⇒ marked. Content, never mtimes: a reinstall rewrites every mtime
-  without changing a byte. `__pycache__` and `.pyc` are excluded, or every
-  installation would be "modified" the first time it ran.
+  on the session's `done` tick and every ~16s in between. Content, never
+  mtimes: a reinstall rewrites every mtime without changing a byte.
+  `__pycache__` and `.pyc` are excluded, or every installation would be
+  "modified" the first time it ran.
+- **SF-7b** **The comparison is against the tree AS THIS SESSION FOUND IT**, not
+  against the release (`begin_session` returns both digests; `settle` measures
+  the former). They are the same on a clean install and differ the moment an
+  earlier session has changed something — and there, measuring against the
+  release answers *"is this install modified?"*, which was already true before
+  the new session did anything. A session that edited NOTHING would be recorded
+  as a fix, and its own do-nothing report would become the `latest_report` the
+  badge points at, sending the user to a document that explains none of the
+  changes it is warning them about. On a dismissed badge it would also re-light
+  it — overturning a decision the user had explicitly made, on the strength of a
+  session that did nothing.
 - **SF-7a** **Only a self-fix session ever sets it.** There is deliberately no
   continuous verification. What is recorded is a *provenance* claim — "Claude
   changed this installation while fixing something, here is its report" — and not
@@ -6989,9 +7000,14 @@ the installation, and the mark that says so.
   `/api/config` at boot; left there, the badge for a fix you just watched happen
   would show up on your next launch. So the chip polls at two cadences — 60s
   always, 5s for 30 minutes after a fix STARTS — keyed off a `localStorage`
-  timestamp (`fused-render:selffix-ping`) written at start, which also crosses
-  tabs through the `storage` event, the same mechanism the download manager's own
-  ping uses. A clock that has gone backwards past the stamp reads as *not*
+  timestamp (`fused-render:selffix-ping`) written at start. **Two channels, and
+  neither is redundant**: `storage` fires in every same-origin document EXCEPT
+  the one that wrote the value, so it reaches a chip in another tab and never
+  this one — while the surface that starts the fix (a download-manager row) is
+  normally in the SAME document as the chip. A `fused:selffix-started` window
+  event, dispatched after the write so a listener re-reading the stamp sees the
+  new one, covers exactly that gap; without it the common case waits out a full
+  idle interval, which is the delay the two cadences exist to remove. A clock that has gone backwards past the stamp reads as *not*
   watching: a badge a minute late costs nothing, a permanent 5s poll costs a
   request every 5s for the life of the app.
 - **SF-13** **A read-only installation is refused BEFORE the spawn** (409, with

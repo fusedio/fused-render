@@ -210,7 +210,7 @@ def _write_json(path: str, data: dict) -> None:
 # -------------------------------------------------------------------- baseline
 
 
-def ensure_baseline(*, now: float | None = None) -> dict:
+def ensure_baseline(*, digest: str = "", now: float | None = None) -> dict:
     """The pristine digest this installation started from, computed once.
 
     Taken when the FIRST fix session on this version starts — the last moment
@@ -220,7 +220,9 @@ def ensure_baseline(*, now: float | None = None) -> dict:
     upgrade legitimately replaced the tree it described.
 
     Returned rather than merely written so the caller can put the digest in the
-    marker without a second walk.
+    marker without a second walk. `digest` is the caller's already-computed hash
+    of the same tree (`begin_session` has one in hand), reused rather than
+    re-walked; omit it and this takes its own.
     """
     now = time.time() if now is None else now
     with _lock:
@@ -230,7 +232,7 @@ def ensure_baseline(*, now: float | None = None) -> dict:
         record = {
             "schema": SCHEMA,
             "version": __version__,
-            "digest": tree_digest(),
+            "digest": digest or tree_digest(),
             "at": now,
         }
         try:
@@ -386,9 +388,31 @@ def mark_modified(*, run_id: str = "", session_id: str = "", report: str = "",
         return _public(record)
 
 
-def settle(*, run_id: str = "", session_id: str = "", report: str = "",
-           incident: str = "", title: str = "", now: float | None = None) -> bool:
-    """Compare the tree against its baseline and mark it modified if it moved.
+def begin_session(*, now: float | None = None) -> tuple[str, str]:
+    """Open a fix session's bookkeeping: `(pristine baseline, tree as found)`.
+
+    TWO digests, because there are two questions and only one of them is about
+    the session that is starting:
+
+      baseline   what the RELEASE shipped. Never changes for the life of a
+                 version, and it is what `reconcile` compares against to notice
+                 that an installation has been put back.
+      before     what THIS session finds on disk. Equal to the baseline on a
+                 clean install, and NOT equal on one an earlier session already
+                 changed — which is the case the two used to be conflated in.
+
+    One walk: the tree is hashed here and handed to `ensure_baseline`, which
+    only needs it on the first session of a version.
+    """
+    before = tree_digest()
+    baseline = ensure_baseline(digest=before, now=now)
+    return str(baseline.get("digest") or ""), before
+
+
+def settle(*, before: str, run_id: str = "", session_id: str = "",
+           report: str = "", incident: str = "", title: str = "",
+           now: float | None = None) -> bool:
+    """Did THIS session change the installation? If so, record it.
 
     THE decision point of the whole feature, and it is made by this process
     rather than by the model. A session that is asked to stamp its own work is
@@ -397,15 +421,28 @@ def settle(*, run_id: str = "", session_id: str = "", report: str = "",
     asked only for the REPORT (which nobody else can write) and the app decides
     for itself whether anything changed.
 
-    Returns whether the installation is modified.
+    **Against `before`, not against the pristine baseline** (`begin_session`).
+    Those differ the moment an earlier session has already changed something,
+    and comparing to the baseline then answers "is this install modified?" —
+    which is true before this session did anything at all. A session that edits
+    NOTHING would have been recorded as a fix, with its own do-nothing report
+    becoming the `latest_report` the badge points at, so the panel would send
+    the user to a document that explains none of the changes it is warning them
+    about. On a dismissed badge it would also re-light it, overriding a decision
+    the user had explicitly made, on the strength of a session that did nothing.
+
+    Returns whether this session changed anything.
     """
-    baseline = ensure_baseline(now=now)
     current = tree_digest()
-    if current == baseline.get("digest"):
+    if current == before:
         return False
+    # The pristine digest for the record — read back rather than re-walked; the
+    # baseline file is written by `begin_session` before any session starts.
+    baseline = (_read_json(baseline_path()) or {})
+    pristine = baseline.get("digest") if baseline.get("version") == __version__ else ""
     mark_modified(run_id=run_id, session_id=session_id, report=report,
                   incident=incident, title=title, digest=current,
-                  baseline_digest=str(baseline.get("digest") or ""), now=now)
+                  baseline_digest=str(pristine or ""), now=now)
     return True
 
 

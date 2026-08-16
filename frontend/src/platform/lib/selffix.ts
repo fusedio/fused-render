@@ -128,20 +128,40 @@ export interface FailureContext {
 // because a reload during a long session must not drop back to the slow poll.
 export const SELFFIX_PING_KEY = "fused-render:selffix-ping";
 
+// ...and the SAME-document half of that ping, which the storage key cannot be.
+// `storage` fires in every same-origin document EXCEPT the one that wrote the
+// value — and the surface that starts a fix (a download-manager row) is
+// normally in the SAME document as the chip, so the localStorage write alone
+// covers only the rarer case. Without this the badge for a fix you started in
+// this very tab waits out the running idle timer: up to POLL_IDLE_MS, which is
+// precisely the delay the two cadences exist to remove.
+export const SELFFIX_PING_EVENT = "fused:selffix-started";
+
 // How long after a start the fast poll stays on. A session that takes longer
 // than this has stopped being something the user is watching.
 export const WATCH_WINDOW_MS = 30 * 60_000;
 export const POLL_IDLE_MS = 60_000;
 export const POLL_WATCH_MS = 5_000;
 
+// Announce a started fix to every chip that might be watching — in this
+// document and in any other tab. BOTH channels are needed and neither is
+// redundant: `storage` reaches other tabs and skips this one, the event reaches
+// this one and no other.
 export function noteFixStarted(now = Date.now()): void {
   try {
-    // Writing fires `storage` in every OTHER same-origin document — which is
-    // how a chip in a second tab learns to speed up too. Same mechanism as the
-    // job manager's ping (lib/jobs' JOB_PING_KEY).
+    // Cross-tab. Same mechanism as the job manager's ping (lib/jobs'
+    // JOB_PING_KEY), and it also persists the stamp the cadence is computed
+    // from, so a reload mid-session comes back in the fast lane.
     localStorage.setItem(SELFFIX_PING_KEY, String(now));
   } catch {
     /* private mode / disabled storage — the idle poll is the floor */
+  }
+  try {
+    // Same document. Dispatched AFTER the write, so a listener that re-reads
+    // `lastFixStartedAt()` sees the new stamp rather than the previous one.
+    window.dispatchEvent(new Event(SELFFIX_PING_EVENT));
+  } catch {
+    /* no window (a test, a worker) — the idle poll is still the floor */
   }
 }
 
