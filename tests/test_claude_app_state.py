@@ -358,8 +358,9 @@ def test_a_no_pane_target_gets_no_app_state_channel_and_no_pre_allowance(
         agent, tmp_path, monkeypatch):
     """The spawn side of D239, and both halves have to agree.
 
-    An ordinary folder (no `index.html`, no single top-level `.html` — the same
-    `app_entry.entry_html` predicate the pane and the prompt read) has no left
+    An ordinary folder (no top-level page carrying `<meta name="fused-app">` —
+    the same `app_entry.entry_html` predicate the pane and the prompt read,
+    D301) has no left
     pane. So: no app-state directory in the server's argv, which is what makes
     the tool absent from the roster, and no pre-allowance naming a tool that does
     not exist. The permission bridge itself is untouched — approvals are not
