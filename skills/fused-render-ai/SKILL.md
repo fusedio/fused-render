@@ -16,6 +16,8 @@ description: Use when a fused-render page needs an AI model — calling fused.ai
 
 That one rule (`"/" in model`) is the whole seam. A page swapping `model: "opus"` for `model: "mlx-community/Qwen3-8B-4bit"` changes nothing else — same call, same resolved shape.
 
+**The slashed ids in this file illustrate the rule; they are not ids to copy.** `mlx-community/Qwen3-8B-4bit` is MLX-packed, so it is an unusable download on Windows or Linux — and on a Mac switched to Transformers from Preferences, where the suggestions are unquantized safetensors (`Qwen/Qwen3-8B` and friends). A repo belongs to a backend, not to a capability, for every capability here. Take the id from `fused.ai.models.catalog()`.
+
 Both destinations are **local-only**: there is no hosted path. An exported page has neither a CLI nor a worker, so the exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11) — matched textually, so gating at runtime is not enough (see "Surviving export").
 
 ## When to Use
@@ -162,6 +164,7 @@ Options: `prompt` (required), `model`, `width`, `height`, `steps`, `guidance`, `
 - **`seed` comes back whether or not you passed one** — invented server-side, so "make that one again" is always one call away.
 - **Minutes, not seconds.** `onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops it (the work is the server's, not the page's).
 - Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message).
+- **`model` comes from `catalog()` here too.** The Diffusers and MLX FLUX runners take *different repos for the same model* — `black-forest-labs/FLUX.2-klein-4B` against `mlx-community/FLUX.2-Klein-4B-4bit` — so a hard-coded id becomes an unloadable download the moment the other one is serving.
 
 ## Transcription: `fused.ai.transcribe({path, ...})`
 
@@ -213,6 +216,8 @@ Six runners ship, serving three capabilities. All take **Hugging Face repo ids**
 Those three strings are the capability vocabulary — they are what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
 **Which runner serves you is not purely a hardware fact.** Where a capability has two, the machine picks the better one by default — and the user can override that from Preferences → Inference engines, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is this the one serving the capability right now). Read `active` when you want to say what is running; read `available` when you want to say what this machine could do. Never hard-code either — and let `unavailable` messages reach the user, since they explain *why*.
+
+**And a switch EVICTS.** A model resident under the outgoing engine is unloaded as the preference is written — it belongs to the backend that loaded it, so leaving it would spend gigabytes nothing will route to again. A page holding that model therefore gets `model_loading` on its next `fused.ai()` call — the cold-start path it already handles, not a new failure to code for. The artefact calls reload inside their own job and just take longer.
 
 ## Surviving Export
 
