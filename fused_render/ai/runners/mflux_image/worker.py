@@ -100,7 +100,7 @@ def load(model_id, fetched):
             "loads mflux's own MLX conversions, and each one needs a variant "
             "class this build has to name explicitly. Try "
             "mlx-community/FLUX.2-Klein-4B-4bit, or switch this capability to "
-            "the Diffusers engine in Preferences → Inference engines.")
+            "the Diffusers engine on the AI Models page's Engines tab.")
     # …and this one is about the DOWNLOAD: a repo of the right name in the wrong
     # format, which is what a torch or GGUF image repo looks like from here.
     missing = [name for name in _MLX_COMPONENTS

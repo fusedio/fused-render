@@ -7,6 +7,16 @@
    have no answer for — the size figure that is the whole point of the page, the
    "Explore" link, the revision drawer a card opens, and the Discover tab. */
 
+/* The Engines tab. Capped at the same 760px the Preferences page caps its own
+   content column at, because that is what it IS — a settings surface that moved
+   pages, not a grid. Uncapped it would set a paragraph and a <select> across
+   the full width of a four-card layout, which reads as a form somebody forgot
+   to lay out. */
+.am-engines {
+  max-width: 760px;
+  font-size: 13px;
+}
+
 /* -- the Local tab's two sections ------------------------------------------
    "Models" (by capability) and "Fetched by engines". The bucketing itself is
    shell/aiModelGroups.ts; what is here is the hierarchy that makes it readable

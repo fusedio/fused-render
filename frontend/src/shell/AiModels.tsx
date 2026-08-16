@@ -29,6 +29,7 @@
 // the size figure, the Explore link, the revision drawer, and the tab strip.
 import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
+import AiModelsEngines from "./AiModelsEngines";
 import { ModelProgress } from "./AiProgress";
 import { groupRepos, loadRefusal } from "@shell/aiModelGroups";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
@@ -70,15 +71,21 @@ type Load =
 // "cached" describes the mechanism (a Hugging Face cache directory) rather than
 // the thing. Discover is the other half of the same question — what it could
 // have — and "local vs discover" is the pair that reads.
-export type AiModelsTab = "local" | "discover";
+//
+// Engines is the third, moved here from Preferences (D302 shipped it there).
+// It is a setting, but every consequence of it is on this page — which cards
+// can be loaded, what their engine tags say, what Discover suggests — and the
+// question it answers ("why can't I load this?") is asked with the unloadable
+// card on screen. `/preferences?tab=engines` is rewritten to it
+// (`rewriteLegacyUrl`), so nobody's bookmark lands on a tab that is gone.
+export type AiModelsTab = "local" | "discover" | "engines";
 
 /** The tab the URL asks for. An unknown value falls back to the default
  *  silently, the same forgiving posture the shell takes for an unknown `_mode`
  *  (PT-9): a stale link should open the page, not an error. */
 function tabFromUrl(): AiModelsTab {
-  return new URLSearchParams(location.search).get("tab") === "discover"
-    ? "discover"
-    : "local";
+  const asked = new URLSearchParams(location.search).get("tab");
+  return asked === "discover" || asked === "engines" ? asked : "local";
 }
 
 // What the confirmation is about. Every destructive action becomes one of these
@@ -966,6 +973,11 @@ export default function AiModels() {
             <div className="cc-caption cc-mono">
               {tab === "discover" ? (
                 "Models on the Hugging Face Hub"
+              ) : tab === "engines" ? (
+                // Not the cache path: this tab is not about the disk, and a
+                // caption naming a directory over a panel of engine pickers is
+                // the page's chrome contradicting its content.
+                "Which backend runs each kind of local model"
               ) : data ? (
                 <>
                   {/* The path is a DESTINATION, not a label. It is the one
@@ -1036,6 +1048,16 @@ export default function AiModels() {
               >
                 Discover
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "engines"}
+                className={"am-tab" + (tab === "engines" ? " active" : "")}
+                onClick={() => setTab("engines")}
+                title="Which backend runs each kind of local model"
+              >
+                Engines
+              </button>
             </div>
           </div>
         </div>
@@ -1051,6 +1073,7 @@ export default function AiModels() {
             jobByModel={jobByModel}
           />
         )}
+        {tab === "engines" && <AiModelsEngines />}
         {tab === "local" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
         {tab === "local" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
         {tab === "local" && failures.length > 0 && (

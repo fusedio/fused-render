@@ -1,5 +1,10 @@
 // What the Inference engines tab SAYS, separated from what it draws (D302).
 //
+// The tab is the Engines tab of /ai-models (shell/AiModelsEngines.tsx); it was
+// a Preferences tab when this module was written, and the move is exactly what
+// this split made cheap — the page that draws these sentences changed and not
+// one of them did, which is what `engines.test.ts` passing untouched proves.
+//
 // The rendering is four lines of JSX; the sentences are where this feature can
 // actually be wrong, and they are wrong in ways a screenshot does not reveal —
 // a preference reported as in force when it is not, an option greyed out with
@@ -85,9 +90,9 @@ export function choiceReason(choice: EngineChoice): string | null {
 
 /** Whether picking `code` for `row` would change which backend actually runs.
  *
- *  The Preferences page uses it to decide whether to WARN before writing: a
- *  switch that changes the effective engine unloads that capability's resident
- *  model and changes the suggested models on the AI Models page, and neither
+ *  The Engines tab uses it to decide whether to WARN before writing: a switch
+ *  that changes the effective engine unloads that capability's resident model
+ *  and rewrites the suggestions on the Discover tab beside it, and neither
  *  should be a surprise. Choosing an unusable runner changes what is stored and
  *  nothing else, so it earns no warning.
  *

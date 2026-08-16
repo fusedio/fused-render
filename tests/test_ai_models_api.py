@@ -1462,7 +1462,11 @@ def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkey
     engine = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
     assert engine["code"] == "diffusers-image"
     assert engine["available"] is False
-    assert "MLX FLUX" in engine["reason"] and "Preferences" in engine["reason"]
+    # Names the ENGINES TAB, which is on this same page since the engine picker
+    # moved off Preferences. Asserted on the destination rather than loosened to
+    # "there is a remedy in here somewhere": the whole value of the sentence is
+    # that it points somewhere real, and a stale direction is worse than none.
+    assert "MLX FLUX" in engine["reason"] and "Engines tab" in engine["reason"]
 
 
 @requires_symlinks

@@ -1,5 +1,6 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Two tabs (D125):
+// from the sidebar's bottom-left gear. Its tabs (D125), the count deliberately
+// not stated here since it has been wrong three times:
 //   Render preferences — Appearance, Default model (which Claude model the
 //     chat and fused.ai reach for when nothing else has said), Call log
 //     (capture/redaction/retention for
@@ -11,21 +12,18 @@
 //     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
 //     second "Logs" heading next to the Call log section only ever read as the
 //     call log's own settings.
-//   Inference engines  — which local-model backend serves each capability
-//     (SPEC §40, D302). A tab rather than a section on the render tab, and
-//     that is a deliberate call in a page whose whole comment block is about
-//     not adding tabs lightly: this is the one control here that is about
-//     MODELS rather than about rendering, its rows are per-capability and
-//     grow with the registry, and each row carries an availability
-//     explanation of its own. Folded into "Render preferences" it would have
-//     been the longest section on the page and the least related to its
-//     neighbours. Always present, like Indexing — an engine you cannot see is
-//     one you cannot fix, and the tab is where "why did my suggested models
-//     change?" is answered.
 //   Fused account       — the account/sign-in/environments panel (formerly
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
 //     the only reason this app cares about a Fused account.
+// **Inference engines used to be a tab here and is not any more** — it is the
+// Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
+// on this page about MODELS rather than about rendering, and every consequence
+// of changing it — which cached models can be loaded, what their engine tags
+// say, what Discover suggests — is on that page, where the question it answers
+// is actually asked. `/preferences?tab=engines` is rewritten to the new url in
+// `platform/lib/router.rewriteLegacyUrl`, so an old bookmark still lands on the
+// control rather than on this page's default tab.
 // Deliberately NOT a third tab: the Claude Config panel (apps/claude_config)
 // briefly sat here, and a settings page hosting a second settings app — with
 // its own section nav and scroll containers — inside one of its tabs never read
@@ -41,10 +39,9 @@ import {
   putCallsRetentionDays,
   putDefaultModel,
   putDeployEnabled,
-  putEngineForCapability,
   putReaderEnabled,
 } from "@platform/lib/api";
-import type { CallsParamsMode, CapabilityEngine, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { notifyPrefsChanged } from "@platform/lib/prefs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -52,15 +49,8 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { AccountPanel } from "@shell/Account";
 import { IndexingPanel } from "@shell/Indexing";
-import {
-  capabilityLabel,
-  choiceReason,
-  ignoredWarning,
-  servingLine,
-  wouldChangeEngine,
-} from "@shell/engines";
 
-type PrefsTab = "render" | "engines" | "indexing" | "account";
+type PrefsTab = "render" | "indexing" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -392,146 +382,6 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   );
 }
 
-// One capability's engine: a <select> holding Automatic and every backend.
-//
-// A dropdown rather than a radio list, so that a machine with three engines for
-// one capability is one line high instead of four — and so this section reads
-// like the rest of the page, where every other choice-of-several (Model,
-// Parameters, Keep for) is a select.
-//
-// **The reason an unavailable engine cannot be picked is folded into its own
-// option label**, which is the whole difficulty a dropdown has here and the
-// reason this was radios first. A greyed-out radio carries its explanation
-// beside it permanently; a disabled <option> is invisible until the menu is
-// opened, and its `title` is not reliably shown at all. So the sentence — the
-// registry's own, which the page cannot synthesise — goes in the text: "MLX
-// Whisper (Apple Silicon) — needs Apple Silicon (this is windows/amd64)". It is
-// the idiom the retention select already uses (`describeRetention`): state that
-// would otherwise need a line of prose beside the control goes into the option
-// labels, so the control still explains itself when it is read.
-//
-// Unavailable engines stay in the menu, disabled. Hidden, a Windows user would
-// have no way to learn that the MLX path exists and why it is not for them —
-// and a stored preference for one is what the select still SHOWS as its value,
-// because "your choice, and why it is not in force" is exactly what the muted
-// lines underneath go on to explain.
-function CapabilityEngineRow({
-  row,
-  auto,
-  onChange,
-}: {
-  row: CapabilityEngine;
-  auto: string;
-  onChange: (p: Prefs) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
-  const warning = ignoredWarning(row);
-
-  const choose = async (code: string) => {
-    if (busy || code === row.selected) return;
-    // Worked out BEFORE the write, from the state that is about to be
-    // replaced: afterwards the server's answer is the new reality and there is
-    // nothing left to compare it against.
-    const consequential = wouldChangeEngine(row, code, auto);
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putEngineForCapability(row.capability, code);
-      onChange(next);
-      // **Whether a model was unloaded is the SERVER's answer, not a guess from
-      // here.** Nothing in this payload says what is resident, and the usual
-      // case is that nothing is: a fresh app has loaded no model until the
-      // first transcription, so switching engines evicts nothing — and the page
-      // was announcing an eviction that had not happened. `consequential` still
-      // decides whether the switch is worth mentioning at all, because it
-      // answers a different question (did the effective engine move, which also
-      // rewrites the AI Models suggestions); the server decides which sentence.
-      const unloaded = (next.engines.unloaded?.length ?? 0) > 0;
-      setChanged(unloaded ? "unloaded" : consequential ? "switched" : null);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="prefs-field">
-      <h3>{capabilityLabel(row.capability)}</h3>
-      <label>
-        Engine{" "}
-        <select
-          value={row.selected}
-          disabled={busy}
-          onChange={(e) => choose(e.target.value)}
-        >
-          {/* First, and the only option with no engine behind it. */}
-          <option value={auto}>Automatic</option>
-          {row.choices.map((choice) => {
-            // Null for an engine that CAN be picked, which is the whole of what
-            // this adds to a label: what a backend is LIKE ("transcribes on the
-            // GPU") is editorial and lives on the AI Models page. What is left
-            // is the registry's sentence about why a greyed-out option is
-            // greyed out, and in a menu the only place it can be read is here.
-            const reason = choiceReason(choice);
-            return (
-              <option key={choice.code} value={choice.code} disabled={busy || !choice.available}>
-                {choice.label}
-                {reason ? ` — ${reason}` : ""}
-              </option>
-            );
-          })}
-        </select>
-      </label>
-      <div className="deploy-muted">{servingLine(row)}</div>
-      {warning && <div className="deploy-muted">{warning}</div>}
-      {/* The consequence, in four words at most. It stays because an unload is
-          a real thing that just happened to the user's machine and nothing else
-          on screen would report it — but the paragraph explaining WHY the model
-          was unloaded and how suggestion lists work was an essay after picking
-          a menu item.
-
-          TWO sentences because there are two outcomes, and the shorter one is
-          not a weaker version of the longer: "Switched." is the whole truth
-          when the engine moved and no model was resident to lose. */}
-      {changed && (
-        <div className="deploy-muted">
-          {changed === "unloaded" ? "Switched. Loaded model unloaded." : "Switched."}
-        </div>
-      )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </div>
-  );
-}
-
-function EnginesPanel({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  return (
-    <section className="prefs-section">
-      <h2>Inference engines</h2>
-      {/* One line. An earlier draft explained which backend wins on which
-          platform and what a switch costs; a settings page states what a
-          control does, and the rest is an essay the reader did not open this
-          tab for. What survives is only what cannot be inferred from the
-          controls themselves — that the choice is per capability, and what
-          Automatic means. */}
-      <p className="deploy-muted">
-        Which backend runs local models. <b>Automatic</b> picks the best one this machine
-        can run.
-      </p>
-      {prefs.engines.capabilities.map((row) => (
-        <CapabilityEngineRow
-          key={row.capability}
-          row={row}
-          auto={prefs.engines.auto}
-          onChange={onChange}
-        />
-      ))}
-    </section>
-  );
-}
-
 function DeploymentsSection({
   prefs,
   onChange,
@@ -579,13 +429,11 @@ export default function Preferences() {
   // a tab with no button pointing at it.
   const requested = new URLSearchParams(location.search).get("tab");
   const requestedTab: PrefsTab =
-    requested === "account"
-      ? "account"
-      : requested === "indexing"
-        ? "indexing"
-        : requested === "engines"
-          ? "engines"
-          : "render";
+    requested === "account" ? "account" : requested === "indexing" ? "indexing" : "render";
+  // `?tab=engines` never reaches here: `rewriteLegacyUrl` sends it to
+  // /ai-models?tab=engines before this page renders, which is why an unknown
+  // tab falling back to "render" is not the answer for that one — a bookmark
+  // pointing at the engine picker should land ON the engine picker.
   const tab: PrefsTab =
     requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {
@@ -624,18 +472,6 @@ export default function Preferences() {
             >
               Indexing
             </button>
-            {/* Inference engines — which local-model backend serves each
-                capability. Always present for the same reason Indexing is: a
-                machine with only one usable backend per capability still
-                benefits from being able to SEE that, and it is where "why did
-                the suggested models change?" is answered. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "engines" ? " active" : "")}
-              onClick={() => setTab("engines")}
-            >
-              Inference engines
-            </button>
             {prefs.deploy.enabled && (
               <button
                 type="button"
@@ -660,7 +496,6 @@ export default function Preferences() {
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
               </>
             )}
-            {tab === "engines" && <EnginesPanel prefs={prefs} onChange={setPrefs} />}
             {tab === "indexing" && <IndexingPanel />}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
