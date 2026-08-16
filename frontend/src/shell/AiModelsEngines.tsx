@@ -17,8 +17,9 @@
 //
 // The rendering is four lines of JSX per row; the SENTENCES are where this can
 // be wrong, and they live in `@shell/engines` with `engines.test.ts` driving
-// them. That module did not move and did not change — if its tests needed
-// touching, something moved that was supposed to move unchanged.
+// them. Not one of them changed in the move. What the move DID add there is
+// `switchOutcome`: on Preferences the consequences of a switch were on another
+// page and arriving here refetched them, and now they are the tab next door.
 //
 // The `.prefs-*` classes come with it. They are the app's settings vocabulary
 // rather than the Preferences page's private one (Mounts uses them too), and
@@ -34,7 +35,7 @@ import {
   choiceReason,
   ignoredWarning,
   servingLine,
-  wouldChangeEngine,
+  switchOutcome,
 } from "@shell/engines";
 
 // One capability's engine: a <select> holding Automatic and every backend.
@@ -63,10 +64,13 @@ function CapabilityEngineRow({
   row,
   auto,
   onChange,
+  onSwitched,
 }: {
   row: CapabilityEngine;
   auto: string;
   onChange: (p: Prefs) => void;
+  /** A switch that changed something the rest of the page is showing. */
+  onSwitched: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,26 +79,23 @@ function CapabilityEngineRow({
 
   const choose = async (code: string) => {
     if (busy || code === row.selected) return;
-    // Worked out BEFORE the write, from the state that is about to be
-    // replaced: afterwards the server's answer is the new reality and there is
-    // nothing left to compare it against.
-    const consequential = wouldChangeEngine(row, code, auto);
     setBusy(true);
     setError(null);
     try {
       const next = await putEngineForCapability(row.capability, code);
+      // `row` is still the row this closure captured, i.e. the one the PUT
+      // replaced — which is the only state the "did anything move" half of the
+      // outcome can be measured against. Read `switchOutcome` for what each of
+      // the two halves is answering and who answers it.
+      const outcome = switchOutcome(row, code, auto, next);
       onChange(next);
-      // **Whether a model was unloaded is the SERVER's answer, not a guess from
-      // here.** Nothing in this payload says what is resident, and the usual
-      // case is that nothing is: a fresh app has loaded no model until the
-      // first transcription, so switching engines evicts nothing — and the page
-      // was announcing an eviction that had not happened. `consequential` still
-      // decides whether the switch is worth mentioning at all, because it
-      // answers a different question (did the effective engine move, which also
-      // rewrites the Local tab's engine tags and Discover's suggestions); the
-      // server decides which sentence.
-      const unloaded = (next.engines.unloaded?.length ?? 0) > 0;
-      setChanged(unloaded ? "unloaded" : consequential ? "switched" : null);
+      setChanged(outcome);
+      // The Local tab is one tab click away and is STILL MOUNTED behind this
+      // one: its listing was fetched under the preference that just changed, so
+      // anything the switch moved has to reach it now. Nothing else would tell
+      // it — this page no longer remounts on the way here (it was a Preferences
+      // tab, and the navigation back is what used to refetch).
+      if (outcome) onSwitched();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -156,7 +157,7 @@ function CapabilityEngineRow({
  *  request nothing on it uses. The tab is not mounted until it is selected, so
  *  the fetch happens on the click.
  */
-export default function AiModelsEngines() {
+export default function AiModelsEngines({ onSwitched }: { onSwitched: () => void }) {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -193,6 +194,7 @@ export default function AiModelsEngines() {
               row={row}
               auto={prefs.engines.auto}
               onChange={setPrefs}
+              onSwitched={onSwitched}
             />
           ))}
         </section>

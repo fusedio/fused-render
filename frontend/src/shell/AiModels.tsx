@@ -771,10 +771,15 @@ export default function AiModels() {
   // already gone). A banner rather than a toast: it names things the user asked
   // for and did not get.
   const [failures, setFailures] = useState<string[]>([]);
-  // Bumped to re-walk the cache. Not a Refresh button (D256) — the two writers
-  // are both the app noticing that the disk really changed: a finished download
-  // is a new repo, and a page still showing "not downloaded" beside a finished
-  // pull is the same lie the ✓-on-click bug was.
+  // Bumped to re-walk the cache. Not a Refresh button (D256) — every writer is
+  // the app noticing that the listing it is holding is no longer true. Two of
+  // them are the disk really changing: a finished download is a new repo, and a
+  // page still showing "not downloaded" beside a finished pull is the same lie
+  // the ✓-on-click bug was. The third is an engine switch on the tab next door,
+  // where the disk is untouched and the ANSWER about it changed instead —
+  // `repo.engine` is the registry's verdict under the current preference
+  // (`ai_models._engine`), so a switch rewrites a tag and a Load refusal on
+  // every card without moving a byte (see `onEnginesSwitched`).
   const [scan, setScan] = useState(0);
   // Models whose pull has ended but whose confirming walk has not landed. For
   // that moment they are in neither the runtime's downloading list nor the
@@ -799,11 +804,12 @@ export default function AiModels() {
       alive = false;
     };
     // Scanning is a disk walk over every blob, so it runs once per mount and
-    // then only when the disk is KNOWN to have changed — never on a focus/return
+    // then only when the listing is KNOWN to be wrong — never on a focus/return
     // tick, which would re-walk tens of thousands of files every time the user
     // alt-tabbed back, and never behind a Refresh button, which asked the user
     // to know when a re-walk was worth it. A delete answers with the fresh
-    // listing itself; a finished download bumps `scan`.
+    // listing itself; a finished download and a consequential engine switch
+    // bump `scan`.
   }, [scan]);
 
   const anyBusy = isBusy(runtime);
@@ -903,6 +909,19 @@ export default function AiModels() {
     } catch (e) {
       setRuntimeError((e as Error).message);
     }
+  };
+
+  // The Engines tab changed something this page is showing. It is the same pair
+  // of refreshes a load or a delete does, for the same reason and through the
+  // same two channels: the listing is re-read by bumping `scan` (one loader,
+  // one rule for when it runs — this is a trigger, not a second fetch), and the
+  // runtime is re-read because a switch can EVICT, and a Loaded badge on a
+  // model the server just unloaded is the page asserting a process that is
+  // gone. Called only for a switch that moved something (`switchOutcome`), so
+  // re-picking the engine already in force costs no disk walk.
+  const onEnginesSwitched = () => {
+    setScan((n) => n + 1);
+    refreshAiRuntime();
   };
 
   const runUnload = async (repo: AiModelRepo) => {
@@ -1075,7 +1094,7 @@ export default function AiModels() {
             jobByModel={jobByModel}
           />
         )}
-        {tab === "engines" && <AiModelsEngines />}
+        {tab === "engines" && <AiModelsEngines onSwitched={onEnginesSwitched} />}
         {tab === "local" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
         {tab === "local" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
         {tab === "local" && failures.length > 0 && (

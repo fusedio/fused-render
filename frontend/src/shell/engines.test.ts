@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import type { CapabilityEngine } from "@platform/lib/api";
+import type { CapabilityEngine, Prefs } from "@platform/lib/api";
 import {
   capabilityLabel,
   choiceReason,
   ignoredWarning,
   servingLine,
+  switchOutcome,
   wouldChangeEngine,
 } from "@shell/engines";
 
@@ -184,6 +185,48 @@ describe("wouldChangeEngine", () => {
       effectiveShortLabel: "Faster Whisper",
     });
     expect(wouldChangeEngine(row, AUTO, AUTO)).toBe(true);
+  });
+});
+
+// What a PUT did, which the page turns into two things: the sentence under the
+// control, and whether the Local tab one click away is now showing an answer
+// the switch invalidated — stale engine tags, stale Load refusals, and a Loaded
+// badge on a model the server has just evicted.
+describe("switchOutcome", () => {
+  // Only the field this reads. A whole Prefs here would be forty unrelated
+  // settings, each one a thing to edit when some other preference is added.
+  function reply(unloaded?: string[]): Prefs {
+    return { engines: { capabilities: [], auto: AUTO, unloaded } } as unknown as Prefs;
+  }
+
+  it("reports the eviction the SERVER reported, not one guessed from here", () => {
+    const row = mac();
+    expect(switchOutcome(row, "faster-whisper", AUTO, reply(["mlx-community/whisper"]))).toBe(
+      "unloaded",
+    );
+  });
+
+  it("is a plain switch when the engine moved and nothing was resident", () => {
+    // The usual case on a fresh app: no transcription has run, so there is no
+    // worker to evict — and the page must not claim there was one.
+    const row = mac();
+    expect(switchOutcome(row, "faster-whisper", AUTO, reply([]))).toBe("switched");
+    expect(switchOutcome(row, "faster-whisper", AUTO, reply())).toBe("switched");
+  });
+
+  // The null is the whole reason the page can afford to re-read on the other
+  // two: the listing is a walk over every blob in the cache, and a switch that
+  // moved nothing must not pay for one.
+  it("is null when the stored value moved and the effective engine did not", () => {
+    const row = mac({ selected: "mlx-whisper" });
+    expect(switchOutcome(row, AUTO, AUTO, reply())).toBeNull();
+  });
+
+  it("still reports an eviction the page had no way to predict", () => {
+    // Residency is in no other field of the payload, so `unloaded` outranks
+    // this side's reading of the switch rather than being checked against it.
+    const row = mac({ selected: "mlx-whisper" });
+    expect(switchOutcome(row, AUTO, AUTO, reply(["mlx-community/whisper"]))).toBe("unloaded");
   });
 });
 

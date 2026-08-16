@@ -3,7 +3,11 @@
 // The tab is the Engines tab of /ai-models (shell/AiModelsEngines.tsx); it was
 // a Preferences tab when this module was written, and the move is exactly what
 // this split made cheap — the page that draws these sentences changed and not
-// one of them did, which is what `engines.test.ts` passing untouched proves.
+// one of them did. What the move added is `switchOutcome` at the bottom: a
+// switch used to be two navigations from anything it affected, and is now a tab
+// click from all of it, so the page has to know when a switch changed
+// something. Still a plain function over the payload, still driven by
+// `engines.test.ts`.
 //
 // The rendering is four lines of JSX; the sentences are where this feature can
 // actually be wrong, and they are wrong in ways a screenshot does not reveal —
@@ -16,7 +20,7 @@
 // Silicon — MLX runs on Metal only (this is windows/amd64)") come from the
 // registry and are passed through untouched: the page cannot know them, and a
 // second copy would drift from the one the AI Models page shows.
-import type { CapabilityEngine, EngineChoice } from "@platform/lib/api";
+import type { CapabilityEngine, EngineChoice, Prefs } from "@platform/lib/api";
 
 // The capability vocabulary is the Hub's own tags, which are exact and not
 // especially readable. Keyed off the server's list rather than replacing it —
@@ -119,6 +123,38 @@ export function wouldChangeEngine(row: CapabilityEngine, code: string, auto: str
   const choice = row.choices.find((c) => c.code === code);
   if (!choice?.available) return false;
   return code !== row.effective;
+}
+
+/** What a completed engine PUT actually did — null when it did nothing anyone
+ *  can see.
+ *
+ *  Two questions with two different answerers, and the page needs both. Whether
+ *  a model was EVICTED is the server's answer (`unloaded`), because residency is
+ *  in no other field of this payload and the usual case is that nothing was
+ *  resident at all. Whether the effective engine MOVED is `wouldChangeEngine`
+ *  over the row the PUT replaced, and it is the question that decides whether
+ *  the switch is worth mentioning at all.
+ *
+ *  It returns one value because the caller has one decision to make twice over:
+ *  which sentence to show, and whether the /ai-models listing the page is
+ *  holding has gone stale. Both follow from the same outcome — every card's
+ *  `engine` field is the registry's answer under the preference this PUT just
+ *  replaced, so a switch that moved the effective engine rewrote every engine
+ *  tag and every Load refusal on the Local tab, and an eviction falsified a
+ *  Loaded badge. A null outcome changed neither, and must not cost a disk walk.
+ *
+ *  `row` is the PRE-write row: the comparison only means anything against the
+ *  state the PUT replaced, and afterwards the server's answer is the new
+ *  reality with nothing left to compare it against.
+ */
+export function switchOutcome(
+  row: CapabilityEngine,
+  code: string,
+  auto: string,
+  next: Prefs,
+): "unloaded" | "switched" | null {
+  if ((next.engines.unloaded?.length ?? 0) > 0) return "unloaded";
+  return wouldChangeEngine(row, code, auto) ? "switched" : null;
 }
 
 /** Is `code` what the registry's ordering would pick on its own?
