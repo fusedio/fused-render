@@ -15,8 +15,14 @@ import pytest
 from fused_render import app_listing
 
 
-def _app(tag_dir, name, entry: str | None = "index.html",
-         body="<html><body>hi</body></html>"):
+# Entry pages in these fixtures carry the fused-app marker by default: the
+# marker is the ONLY thing that makes a folder an app (D301). Tests about
+# untagged pages pass a plain body explicitly.
+TAGGED = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
+PLAIN = "<html><body>hi</body></html>"
+
+
+def _app(tag_dir, name, entry: str | None = "index.html", body=TAGGED):
     d = tag_dir / name
     d.mkdir(parents=True)
     if entry:
@@ -39,7 +45,7 @@ def test_a_loose_file_in_a_tag_folder_is_not_an_app(tmp_path):
     tag = tmp_path / "local"
     _app(tag, "real")
     (tag / "notes.txt").write_text("scratch", encoding="utf-8")
-    (tag / "index.html").write_text("<html></html>", encoding="utf-8")
+    (tag / "index.html").write_text(TAGGED, encoding="utf-8")
 
     # `local` lists too — it has a page (that `index.html`), which is what makes
     # a top-level folder an app; `notes.txt` is a file, so it is nothing.
@@ -105,8 +111,7 @@ def test_a_top_level_folder_with_a_page_lists_and_is_still_walked(tmp_path):
     "simplified" away on its own.
     """
     _app(tmp_path / "showcase", "bar")
-    (tmp_path / "showcase" / "index.html").write_text("<html></html>",
-                                                      encoding="utf-8")
+    (tmp_path / "showcase" / "index.html").write_text(TAGGED, encoding="utf-8")
 
     apps = {a["name"]: a for a in app_listing.workspace_apps(tmp_path)}
     assert set(apps) == {"showcase", "bar"}
@@ -115,7 +120,8 @@ def test_a_top_level_folder_with_a_page_lists_and_is_still_walked(tmp_path):
 
 
 def test_a_third_level_folder_with_an_index_html_is_an_app(tmp_path):
-    """Depth 3 lists — but only on an explicit `index.html` (see the next two
+    """Depth 3 lists on a TAGGED page like every other depth (the fixture's
+    index.html carries the marker; its name buys nothing — see the next two
     tests). The tag is still the FIRST path segment, so a third-level app files
     under the same Repo chip as its second-level neighbours."""
     _app(tmp_path / "showcase" / "sub", "bar")
@@ -127,21 +133,22 @@ def test_a_third_level_folder_with_an_index_html_is_an_app(tmp_path):
     assert apps["bar"]["entry"].endswith(os.path.join("sub", "bar", "index.html"))
 
 
-def test_a_third_level_folder_with_another_html_is_not_an_app(tmp_path):
-    """The permissive "any top-level html" rule stops before depth 3. A code
+def test_an_untagged_html_is_not_an_app_at_any_depth(tmp_path):
+    """The marker is the only signal (D301) — an untagged page, `index.html`
+    included, makes nothing an app. A code
     repo checked out into the workspace is full of third-level folders holding
-    some .html file; only `index.html` is an author saying "this is a page"."""
-    _app(tmp_path / "repo" / "docs", "guide", entry="other.html")
+    some .html file; only the marker is an author saying "this is a page"."""
+    _app(tmp_path / "repo" / "docs", "guide", entry="other.html", body=PLAIN)
+    _app(tmp_path / "repo" / "docs2", "site", body=PLAIN)  # untagged index.html
 
-    # `repo` and `docs` are page-less shelves, and `guide`'s page is not an
-    # index — so this tree has no app in it at all.
+    # `repo` and the `docs*` are page-less shelves, and neither `guide` nor
+    # `site` declared a page — so this tree has no app in it at all.
     assert _names(tmp_path) == []
 
 
 def test_a_third_level_folder_with_no_html_is_not_an_app(tmp_path):
     """And a page-less third-level folder is nothing at all — same answer the
-    shallower levels give, reached by a stricter rule: at depth 3 even a page is
-    not enough unless it is `index.html`."""
+    shallower levels give."""
     _app(tmp_path / "repo" / "src", "utils", entry=None)
 
     assert _names(tmp_path) == []
@@ -172,30 +179,30 @@ def test_an_apps_own_subfolder_is_not_a_second_app(tmp_path):
 def test_a_stray_html_at_the_second_level_does_not_hide_the_apps_below_it(tmp_path):
     """A page-named-anything must NOT claim the folder's whole subtree.
 
-    Only `index.html` is an author declaring "this folder IS the page and what is
-    below it is my assets". A repo cloned to `<ws>/local/<repo>/` routinely ships
-    a `coverage.html`, a `docs.html`, a report — and treating one of those as that
-    declaration deleted EVERY app in the repo from the grid, which is the exact
-    failure the depth-1 always-descend exception exists to prevent, one level
-    further down where user-cloned repos actually land.
+    Only a DECLARED page ("this folder IS the page and what is below it is my
+    assets") claims a subtree. A repo cloned to `<ws>/local/<repo>/` routinely
+    ships a `coverage.html`, a `docs.html`, an `index.html` — none of them
+    tagged, so none of them a declaration — and treating one as that
+    declaration deleted EVERY app in the repo from the grid.
     """
     repo = tmp_path / "local" / "repo"
     _app(repo, "dash")
     _app(repo, "maps")
-    (repo / "coverage.html").write_text("<html></html>", encoding="utf-8")
+    (repo / "coverage.html").write_text(PLAIN, encoding="utf-8")
+    (repo / "index.html").write_text(PLAIN, encoding="utf-8")
 
-    # The repo itself is a card (depth 2 lists anything, and it does have a
-    # page), and its two apps are still there.
-    assert _names(tmp_path) == ["repo", "dash", "maps"]
+    # The repo itself is not a card (no declared page), and its two apps are
+    # still there.
+    assert _names(tmp_path) == ["dash", "maps"]
 
 
-def test_an_index_html_at_the_second_level_does_claim_the_subtree(tmp_path):
-    """The other side of the rule: rename that page to `index.html` and the
-    folder owns what is below it. This is the pair — the two tests together are
-    the whole rule, and either one alone reads as an arbitrary choice."""
+def test_a_tagged_page_at_the_second_level_does_claim_the_subtree(tmp_path):
+    """The other side of the rule: tag that page and the folder owns what is
+    below it. This is the pair — the two tests together are the whole rule, and
+    either one alone reads as an arbitrary choice."""
     repo = tmp_path / "local" / "repo"
     _app(repo, "dash")
-    (repo / "index.html").write_text("<html></html>", encoding="utf-8")
+    (repo / "main.html").write_text(TAGGED, encoding="utf-8")
 
     assert _names(tmp_path) == ["repo"]
 
@@ -617,3 +624,48 @@ def test_malformed_or_missing_category_degrades_to_none(tmp_path, body):
 
     (app,) = app_listing.workspace_apps(tmp_path)
     assert app["category"] is None
+
+
+# ------------------------------------------------- the fused-app meta marker
+
+
+META = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
+
+
+def test_a_third_level_folder_with_a_tagged_html_is_an_app(tmp_path):
+    """The declarative marker makes the same claim as the `index.html` NAME —
+    "this page is the app" — so it satisfies the depth-3 requirement too. That
+    is the marker's whole point: an app three levels down no longer has to be
+    named a particular way to exist."""
+    _app(tmp_path / "repo" / "sub", "bar", entry="dash.html", body=META)
+
+    apps = {a["name"]: a for a in app_listing.workspace_apps(tmp_path)}
+    assert set(apps) == {"bar"}
+    assert apps["bar"]["entry"].endswith("dash.html")
+
+
+def test_the_entry_is_the_first_tagged_page_in_name_order(tmp_path):
+    """Among tagged pages, first in NAME order — deterministic, never readdir
+    order. Untagged siblings never win, `index.html` included: the name has no
+    special status, not even as a tiebreaker (D301)."""
+    d = tmp_path / "local" / "app"
+    d.mkdir(parents=True)
+    (d / "index.html").write_text(PLAIN, encoding="utf-8")
+    (d / "zzz.html").write_text(META, encoding="utf-8")
+
+    assert app_listing.app_entry(str(d)).endswith("zzz.html")
+    (d / "kk.html").write_text(META, encoding="utf-8")
+    assert app_listing.app_entry(str(d)).endswith("kk.html")
+
+
+def test_the_marker_is_only_read_from_the_head_bytes(tmp_path):
+    """Detection reads the first 4 KiB, deliberately (the walk must stay a
+    bounded scan) — a marker buried past that is not a marker."""
+    p = tmp_path / "page.html"
+    p.write_text("<html><head>" + " " * 5000 + '<meta name="fused-app" />'
+                 + "</head></html>", encoding="utf-8")
+    assert not app_listing.has_fused_meta(str(p))
+    q = tmp_path / "top.html"
+    q.write_text('<html><head><meta NAME="fused-app"></head></html>',
+                 encoding="utf-8")
+    assert app_listing.has_fused_meta(str(q))
