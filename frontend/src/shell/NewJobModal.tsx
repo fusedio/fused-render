@@ -29,7 +29,7 @@ import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
 // form). Home-relative so it composes on any machine; the picker makes
 // changing it a click, and a machine without the folder gets the server's
 // clear 400 naming the path.
-const DEFAULT_TARGET_SUFFIX = "/Desktop/fused";
+const DEFAULT_TARGET_SUFFIX = "/Documents/Fused";
 
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used —
@@ -124,14 +124,36 @@ const ICON_FILE = (
   </svg>
 );
 
+// Both side panels (Browse, Custom recurrence) borrow the dialog's own rect
+// so they read as siblings of the card in geometry — see the comment inside.
+function useDialogBox() {
+  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const dialog = document.querySelector<HTMLElement>(".modal-dialog");
+      if (!dialog) return;
+      const r = dialog.getBoundingClientRect();
+      setBox({ top: r.top, height: Math.max(r.height, 480) });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+  return box;
+}
+
 function ExplorerPanel({
   start,
   onPick,
   onClose,
+  closing,
 }: {
   start: string;
   onPick: (path: string) => void;
   onClose: () => void;
+  // Mounted-but-leaving: paints the exit animation while the parent waits to
+  // unmount, so the way out mirrors the way in.
+  closing?: boolean;
 }) {
   // A file target starts the panel in its PARENT — listing a file's "children"
   // is a guaranteed error banner.
@@ -202,18 +224,7 @@ function ExplorerPanel({
   // nothing expanded) from shrinking the listing back to the "too small to see
   // anything" it was rescued from. Modal exposes no ref for its dialog, hence
   // the querySelector; recomputed while open because a resize moves both.
-  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
-  useLayoutEffect(() => {
-    const measure = () => {
-      const dialog = document.querySelector<HTMLElement>(".modal-dialog");
-      if (!dialog) return;
-      const r = dialog.getBoundingClientRect();
-      setBox({ top: r.top, height: Math.max(r.height, 480) });
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, []);
+  const box = useDialogBox();
 
   const go = (p: string) => {
     setPath(p);
@@ -239,7 +250,7 @@ function ExplorerPanel({
   }, []);
 
   return (
-    <div className="schedule-explorer" role="dialog" aria-label="Choose a folder or file"
+    <div className={"schedule-explorer" + (closing ? " is-closing" : "")} role="dialog" aria-label="Choose a folder or file"
          style={box ? { top: box.top, height: box.height } : undefined}>
       <div className="schedule-explorer-head">
         <span className="schedule-explorer-title">Choose a folder or file</span>
@@ -657,12 +668,28 @@ function CustomRecurrence({
   anchor,
   onDone,
   onCancel,
+  closing,
 }: {
   initial: RecurrenceRule | null;
   anchor: Date;
   onDone: (rule: RecurrenceRule) => void;
   onCancel: () => void;
+  closing?: boolean;
 }) {
+  const box = useDialogBox();
+  // Escape dismisses the PANEL (as Cancel), captured before the modal's own
+  // document-level Escape — same contract as the explorer beside it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopImmediatePropagation();
+        onCancel();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [freq, setFreq] = useState<RecurrenceRule["freq"]>(initial?.freq ?? "week");
   const [interval, setIntervalN] = useState(initial?.interval ?? 1);
   const [byday, setByday] = useState<number[]>(
@@ -712,7 +739,9 @@ function CustomRecurrence({
     // A SECTION of the form, not a dialog: it has no scrim, no focus trap and
     // the card behind it stays live, so announcing role="dialog" promised a
     // modality that does not exist (audit 2026-08-16).
-    <section className="schedule-recur" aria-label="Custom recurrence">
+    <section className={"schedule-recur" + (closing ? " is-closing" : "")}
+             aria-label="Custom recurrence"
+             style={box ? { top: box.top, maxHeight: box.height + 140 } : undefined}>
       <p className="schedule-recur-title">Custom recurrence</p>
 
       <div className="schedule-recur-row">
@@ -985,6 +1014,31 @@ export default function NewJobModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  // Leaving states: the panel stays mounted for its 180ms exit animation —
+  // popping off while the card glided back read as a glitch (Akshil,
+  // 2026-08-16). Guarded so a double-close cannot double-arm the timer.
+  const [pickingOut, setPickingOut] = useState(false);
+  const [recurOut, setRecurOut] = useState(false);
+  const closePicker = () => {
+    setPickingOut((out) => {
+      if (out) return out;
+      window.setTimeout(() => {
+        setPicking(false);
+        setPickingOut(false);
+      }, 180);
+      return true;
+    });
+  };
+  const closeRecur = () => {
+    setRecurOut((out) => {
+      if (out) return out;
+      window.setTimeout(() => {
+        setRecurOpen(false);
+        setRecurOut(false);
+      }, 180);
+      return true;
+    });
+  };
   const [home, setHome] = useState("");
   // The path field's recents dropdown: what this form remembers being used
   // (localStorage, first — the user's own picks outrank inference), padded
@@ -1407,6 +1461,7 @@ export default function NewJobModal({
                   className="schedule-picker-row schedule-recents-browse"
                   onClick={() => {
                     setRecentsOpen(false);
+                    setRecurOpen(false);
                     setPicking(true);
                   }}
                 >
@@ -1437,9 +1492,10 @@ export default function NewJobModal({
               rememberRecent(p);
             }}
             onClose={() => {
-              setPicking(false);
+              closePicker();
               pickedFromBrowser.current = false;
             }}
+            closing={pickingOut}
           />
         )}
 
@@ -1559,8 +1615,10 @@ export default function NewJobModal({
             onPick={(v) => {
               if (v === "custom") {
                 // The dialog answers what "Custom…" means; the choice only
-                // commits once Done says so.
+                // commits once Done says so. One side panel at a time — the
+                // recurrence panel takes Browse's spot beside the card.
                 repeatBefore.current = repeat;
+                setPicking(false);
                 setRecurOpen(true);
                 setRepeat("custom");
               } else {
@@ -1575,14 +1633,15 @@ export default function NewJobModal({
             anchor={pickedOk ? picked : new Date()}
             onDone={(r) => {
               setCustomRule(r);
-              setRecurOpen(false);
+              closeRecur();
             }}
             onCancel={() => {
-              setRecurOpen(false);
+              closeRecur();
               // No rule was committed: fall back to whatever was chosen
               // before "Custom…" was tried.
               if (!customRule) setRepeat(repeatBefore.current);
             }}
+            closing={recurOut}
           />
         )}
 

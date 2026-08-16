@@ -7625,6 +7625,12 @@ function backHere() {
 // field is exactly what "+ New task" already does. Nothing is validated here —
 // this navigates, it does not create.
 function openScheduler(draft) {
+  // The draft SURVIVES the trip: leaving for the schedule page unloads this
+  // document, and coming back rebuilt the composer empty — the message the
+  // user had half-written was gone (Akshil, 2026-08-16). sessionStorage, not
+  // local: a draft is a fact about this tab's errand, not about the machine.
+  try { sessionStorage.setItem("fused:chatdraft:" + FILE, draft || ""); }
+  catch (err) { /* storage denied — the draft just doesn't survive the trip */ }
   const url = SCHEDULE_URL + "?new=1"
     + "&target=" + encodeURIComponent(FILE)
     + "&message=" + encodeURIComponent(draft || "")
@@ -7705,6 +7711,20 @@ document.getElementById("schedpop-go").addEventListener("click", () => {
   closeSchedConfirm();
   openScheduler(draft);
 });
+// The other half of the round trip: a draft stashed by openScheduler is put
+// back the moment the composer exists again — into an EMPTY box only, never
+// over something newer — and the stash is spent either way.
+try {
+  const savedDraft = sessionStorage.getItem("fused:chatdraft:" + FILE);
+  if (savedDraft !== null) {
+    sessionStorage.removeItem("fused:chatdraft:" + FILE);
+    if (savedDraft) {
+      if (box && !box.value) box.value = savedDraft;
+      if (homebox && !homebox.value) homebox.value = savedDraft;
+    }
+  }
+} catch (err) { /* storage denied — nothing to restore */ }
+
 document.getElementById("schedpop-no").addEventListener("click", () => {
   const btn = schedPopFor;
   closeSchedConfirm();

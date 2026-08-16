@@ -1005,6 +1005,24 @@ input.schedule-when-field {
   border-color: var(--border);
 }
 
+/* The modal skin ships `transition: all`, which turns every hover repaint —
+   a border rule losing to another, a background swap — into a visible fade
+   flash (Akshil, 2026-08-16, "hover on dropdown css visual glitches"). Pin
+   every schedule control to the one property that should ease. */
+.deploy-body .schedule-when-field,
+.deploy-body .schedule-select,
+.deploy-body .schedule-menu-item,
+.deploy-body .schedule-time-slot,
+.deploy-body .schedule-mini-cal-day,
+.deploy-body .schedule-mini-cal-nav,
+.deploy-body .schedule-recur-day,
+.deploy-body .schedule-picker-row,
+.deploy-body .schedule-picker-crumb,
+.deploy-body .schedule-form-seg .btn,
+.prefs-section .schedule-form-seg .btn {
+  transition: background-color 0.08s ease;
+}
+
 .schedule-when-field:focus,
 .deploy-body .schedule-when-field:focus,
 .prefs-section .schedule-when-field:focus {
@@ -1289,26 +1307,26 @@ input.schedule-when-field {
 
 /* -- Custom recurrence (Google's dialog) ----------------------------------- */
 
-/* An inline SECTION of the form, not a dialog (it has no scrim, no focus trap
-   and the card behind it stays live) — so it announces itself the way a
-   revealed section does: a 120ms settle in place. */
+/* A side panel like Browse's, not a section inside the card — "this also
+   should be like browse, come to the side" (Akshil, 2026-08-16). Same
+   geometry contract as .schedule-explorer: top set inline off the dialog's
+   own rect, slide-in from the right, the card shifted left by the :has()
+   rule below. */
 .schedule-recur {
+  position: fixed;
+  top: 10vh;
+  left: calc(50% + 4px);
+  width: min(380px, 38vw);
+  z-index: 50;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 14px;
+  padding: 14px 16px 16px;
+  background: var(--bg-popover, var(--bg-alt));
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg);
-  transform-origin: top;
-  animation: schedule-recur-in 0.12s ease-out;
-}
-
-@keyframes schedule-recur-in {
-  from {
-    opacity: 0;
-    transform: scale(0.98);
-  }
+  box-shadow: 0 12px 40px var(--shadow-lg);
+  animation: schedule-explorer-in 0.18s ease-out;
 }
 
 .schedule-recur-title {
@@ -1468,7 +1486,8 @@ input.schedule-when-field {
   transition: left 0.18s ease-out;
 }
 
-.modal-dialog:has(.schedule-explorer) {
+.modal-dialog:has(.schedule-explorer:not(.is-closing)),
+.modal-dialog:has(.schedule-recur:not(.is-closing)) {
   position: relative;
   left: -240px;
 }
@@ -1500,6 +1519,22 @@ input.schedule-when-field {
 
 @keyframes schedule-explorer-in {
   from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+/* The way out mirrors the way in — the panel popping off while the card
+   glided back read as a glitch (Akshil, 2026-08-16). `forwards` holds the
+   faded end state for the frames between animation end and unmount. */
+.schedule-explorer.is-closing,
+.schedule-recur.is-closing {
+  animation: schedule-explorer-out 0.18s ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes schedule-explorer-out {
+  to {
     opacity: 0;
     transform: translateX(24px);
   }
