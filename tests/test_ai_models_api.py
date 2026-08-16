@@ -1372,6 +1372,27 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
 
 
 @requires_symlinks
+def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkeypatch):
+    """A capability holds one resident model and the registry picks which
+    backend loads it — so on a Mac, whose image engine is MLX FLUX, a Diffusers
+    repo is not loadable today however available the Diffusers runner is. The
+    Load would reach mflux, which refuses it by name.
+
+    The reason names the remedy, because there is one and it is one switch
+    away: this is not a machine that cannot run the model."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    engine = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert engine["code"] == "diffusers-image"
+    assert engine["available"] is False
+    assert "MLX FLUX" in engine["reason"] and "Preferences" in engine["reason"]
+
+
+@requires_symlinks
 def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch):
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")

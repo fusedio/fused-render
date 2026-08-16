@@ -2045,6 +2045,18 @@ export interface AiModelRepo {
    *  serves it (a dataset, an embedding model, a VLM). Decided server-side so
    *  the page holds no second copy of the task→capability mapping. */
   capability: string | null;
+  /** Which BACKEND would load this repo, read from the format on disk — the
+   *  same check the runner's own `load()` makes, so the tag cannot promise a
+   *  load that then fails. Null when nothing that ships reads this format
+   *  (`openai/whisper-large-v3`, a GGUF-only repo), which is a different
+   *  answer from a runner that exists and cannot run HERE — that one comes
+   *  back with `available: false` and the registry's reason. */
+  engine: {
+    code: string;
+    label: string;
+    available: boolean;
+    reason: string | null;
+  } | null;
   revisions: number;
   refs: string[];
 }

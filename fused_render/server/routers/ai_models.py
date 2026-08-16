@@ -854,19 +854,39 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
         # `openai/whisper-large-v3` — a speech model, and unloadable by both
         # speech runners that ship.
         return None, capability
-    # The one that would actually serve, when it is among them — so the tag
-    # says what a Load would do rather than what could in principle.
+    # **The engine that would SERVE, not merely one that could read it.** A
+    # capability holds one resident model and the registry picks which backend
+    # loads it, so a repo readable by the OTHER backend is not loadable today
+    # however available that backend is: `black-forest-labs/FLUX.2-klein-4B` is
+    # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
+    # reaches a runner that refuses it by name. That is the exact promise this
+    # field exists to stop the page making.
     serving = _ai_registry.for_capability(capability)
-    runner = next(
-        (r for r in candidates if serving is not None and r.code == serving.code),
-        None,
-    ) or next((r for r in candidates if r.available().ok), None) or candidates[0]
+    if serving is not None and any(r.code == serving.code for r in candidates):
+        status = serving.available()
+        return {
+            "code": serving.code,
+            "label": serving.label,
+            "available": status.ok,
+            "reason": status.reason or None,
+        }, capability
+    # Otherwise: name the backend that DOES read it, and say what stands in the
+    # way. Both reasons are actionable and they are different actions — one is
+    # "this needs another machine", the other "this needs the other engine,
+    # which is one switch away in Preferences".
+    runner = next((r for r in candidates if r.available().ok), candidates[0])
     status = runner.available()
+    reason = status.reason or None
+    if status.ok and serving is not None:
+        reason = (f"{capability} is set to {serving.label}, which does not read "
+                  f"this format — switch it in Preferences → Inference engines")
+    elif status.ok:
+        reason = f"nothing serves {capability} on this machine"
     return {
         "code": runner.code,
         "label": runner.label,
-        "available": status.ok,
-        "reason": status.reason or None,
+        "available": False,
+        "reason": reason,
     }, capability
 
 

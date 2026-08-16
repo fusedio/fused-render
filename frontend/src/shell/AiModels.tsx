@@ -363,56 +363,87 @@ function RepoCard({
           evidence for either, rather than rendered as an empty line: a repo
           whose weights are a .bin pickle and whose card never came down really
           is a repo we can only name. */}
-      {(repo.task || repo.params) && (
-        <div className="am-card-what">
-          {repo.task && (
-            // The hover answers both questions the label raises: what the task
-            // MEANS ("image + text to text" is jargon until someone says it
-            // takes a picture and a prompt), and where it came from — a
-            // pipeline_tag is the Hub's own answer while an architecture is our
-            // reading of one, which matters when the label looks wrong.
+      {/* Always rendered, and that is deliberate twice over. The ENGINE line is
+          the one fact this page could not answer — a repo belongs to a backend,
+          not to a capability — and "nothing here reads this" is its most useful
+          state rather than an edge case worth hiding. Rendering it
+          unconditionally also gives every card the same number of rows, which
+          is what stops a metadata-less card collapsing and taking its
+          neighbours' footers out of line. */}
+      <div className="am-card-what">
+        {repo.kind === "model" &&
+          (repo.engine ? (
             <span
-              className="am-card-task"
+              className={
+                "am-card-engine" + (repo.engine.available ? "" : " am-card-engine-off")
+              }
               title={
-                [repo.taskHelp, repo.taskSource && `Read from ${repo.taskSource}.`]
-                  .filter(Boolean)
-                  .join(" ") || undefined
+                repo.engine.available
+                  ? `Loads in the ${repo.engine.label} engine — read from the weight format on disk, which is the same check that engine makes before it loads.`
+                  : `This is a ${repo.engine.label} model, and that engine cannot run here: ${repo.engine.reason ?? "unavailable"}.`
               }
             >
-              {repo.task}
+              {repo.engine.available ? repo.engine.label : `needs ${repo.engine.label}`}
             </span>
-          )}
-          {repo.params !== null && (
+          ) : (
             <span
-              className="am-card-params"
+              className="am-card-engine am-card-engine-none"
               title={
-                repo.paramsEstimated
-                  ? `≈${repo.params.toLocaleString()} parameters — unpacked from ${repo.quantization} weights, so it rests on the width the checkpoint declares`
-                  : `${repo.params.toLocaleString()} parameters`
+                "No local engine reads this repo's weight format. The formats are not " +
+                "interchangeable — a Whisper repo comes as CTranslate2, MLX or " +
+                "transformers, and each engine loads exactly one of them."
               }
             >
-              {/* The "≈" is doing real work: for a packed checkpoint the count
-                  is recovered arithmetic, not a measurement of unpacked
-                  shapes. */}
-              {repo.paramsEstimated ? "≈" : ""}
-              {formatParams(repo.params)} params
+              no engine
             </span>
-          )}
-          {repo.quantization && (
-            <span
-              className="am-card-quant"
-              title={
-                `Weights are stored at ${repo.quantization} each instead of the usual 16, ` +
-                "so the download is a fraction of the full-precision one — cheaper to run, " +
-                "slightly less accurate."
-              }
-            >
-              {repo.quantization}
-            </span>
-          )}
-          {repo.library && <span className="am-card-library">{repo.library}</span>}
-        </div>
-      )}
+          ))}
+        {repo.task && (
+          // The hover answers both questions the label raises: what the task
+          // MEANS ("image + text to text" is jargon until someone says it
+          // takes a picture and a prompt), and where it came from — a
+          // pipeline_tag is the Hub's own answer while an architecture is our
+          // reading of one, which matters when the label looks wrong.
+          <span
+            className="am-card-task"
+            title={
+              [repo.taskHelp, repo.taskSource && `Read from ${repo.taskSource}.`]
+                .filter(Boolean)
+                .join(" ") || undefined
+            }
+          >
+            {repo.task}
+          </span>
+        )}
+        {repo.params !== null && (
+          <span
+            className="am-card-params"
+            title={
+              repo.paramsEstimated
+                ? `≈${repo.params.toLocaleString()} parameters — unpacked from ${repo.quantization} weights, so it rests on the width the checkpoint declares`
+                : `${repo.params.toLocaleString()} parameters`
+            }
+          >
+            {/* The "≈" is doing real work: for a packed checkpoint the count
+                is recovered arithmetic, not a measurement of unpacked
+                shapes. */}
+            {repo.paramsEstimated ? "≈" : ""}
+            {formatParams(repo.params)} params
+          </span>
+        )}
+        {repo.quantization && (
+          <span
+            className="am-card-quant"
+            title={
+              `Weights are stored at ${repo.quantization} each instead of the usual 16, ` +
+              "so the download is a fraction of the full-precision one — cheaper to run, " +
+              "slightly less accurate."
+            }
+          >
+            {repo.quantization}
+          </span>
+        )}
+        {repo.library && <span className="am-card-library">{repo.library}</span>}
+      </div>
       {/* What this model is doing RIGHT NOW, as opposed to what it is. Absent
           when the answer is "sitting on disk", which is what every card would
           otherwise say — a row of identical chips carries no information. */}
@@ -706,15 +737,13 @@ export default function AiModels() {
   const jobByModel = new Map(
     jobs.filter((j) => j.owner === "server").map((j) => [j.title, j]),
   );
-  // Loadable means TWO things, and conflating them was a bug: this repo has a
-  // capability at all (a dataset, an embedding model or a vision-language model
-  // has none), and a runner here serves that capability. The repo's capability
-  // comes from the server, which owns both vocabularies.
-  const servable = new Set(
-    runtime.runners.filter((r) => r.available).map((r) => r.capability),
-  );
-  const canLoad = (repo: AiModelRepo) =>
-    !!repo.capability && servable.has(repo.capability);
+  // Loadable is now ONE question, asked of the server: is there an engine that
+  // reads this repo's format and runs on this machine. It used to be asked of
+  // the capability alone — this repo has one, and some runner here serves it —
+  // which is true of `openai/whisper-large-v3` on every machine and false of
+  // every repo whose card was missing a task label. The format is the half that
+  // was missing, and `repo.engine` carries both halves (see `_engine`).
+  const canLoad = (repo: AiModelRepo) => !!repo.engine?.available;
   // What Discover means by "you already have this one". A MATERIALISED snapshot,
   // not merely a folder: huggingface_hub creates `models--org--name/` the moment
   // a pull starts, so a set built from folder names alone flipped a suggestion

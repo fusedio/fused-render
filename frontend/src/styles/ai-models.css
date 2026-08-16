@@ -7,11 +7,24 @@
    have no answer for — the size figure that is the whole point of the page, the
    "Explore" link, the revision drawer a card opens, and the Discover tab. */
 
-/* Cards keep their natural height: with the grid's default `stretch`, opening
-   one card's revision drawer stretched whatever card shared its row into a
-   matching column of empty space. */
+/* Cards in a row are the SAME height, and their footers line up.
+   `align-items: start` was here to stop an open revision drawer stretching the
+   card beside it — but it paid for that with a permanently ragged grid: a repo
+   with no metadata line (a CTranslate2 conversion had none until its layout
+   became evidence) is a visibly shorter card whose footer floats mid-row.
+   Ragged is the state the page is in ALL the time; a stretched neighbour is the
+   state it is in while a drawer is open, and `margin-top: auto` on the footer
+   below makes that case read as deliberate rather than as a hole. */
 .am-grid {
-  align-items: start;
+  align-items: stretch;
+}
+
+/* …which is the other half of it: the facts sit under the head, and the
+   footer sits on the floor of whatever height the row settled on. Without
+   this, stretching a card only moves its bottom edge and leaves the footer
+   under the text. */
+.am-card .cc-mdcard-foot {
+  margin-top: auto;
 }
 
 /* The two destinations named in the page's captions: the cache directory this
@@ -120,6 +133,46 @@
   gap: 4px 10px;
   font-size: 12px;
   color: var(--fg-muted);
+  /* One line's worth, reserved. The row is rendered for every card now (the
+     engine tag is a fact about all of them), and a dataset with nothing to say
+     in it must hold its slot rather than collapse and shorten the card. */
+  min-height: 16px;
+}
+
+/* -- which engine loads it -------------------------------------------------- */
+/* The card's most load-bearing tag: in this app a repo belongs to a BACKEND,
+   not to a capability, and the three formats of Whisper are mutually
+   unloadable. It wears the same outline as .am-card-quant beside it — one
+   vocabulary of small facts — with the ACCENT reserved for the state that
+   answers "can I press Load": an engine that runs here. */
+.am-card-engine {
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: nowrap;
+  /* A long label in a narrow column ellipsizes rather than pushing the card's
+     other facts onto a third line. The title attribute carries the full one. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "This is a Mac's model, on a PC" — the engine exists and cannot run here.
+   Deliberately not the same as "nothing reads this": the download was not a
+   mistake, and the hover carries the registry's own reason. */
+.am-card-engine-off {
+  color: var(--warning-soft);
+  border-style: dashed;
+}
+
+/* And the honest dead end. Quiet, because it is a fact about the repo rather
+   than a warning to act on — there is nothing to press. */
+.am-card-engine-none {
+  color: var(--fg-muted);
+  border-style: dashed;
+  opacity: 0.85;
 }
 
 /* Sentence case, not Title Case: `capitalize` would render the Hub's
