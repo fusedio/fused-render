@@ -17,7 +17,7 @@ than one platform.** A suggestion is only meaningful for the backend that will
 load it: `mlx-community/Qwen3-8B-4bit` is packed for Metal kernels and is
 unloadable rubbish on a Windows box, while `Qwen/Qwen3-4B-Instruct-2507` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
-two runners (text generation since D293, speech to text since D301) therefore
+two runners (text generation since D293, speech to text since D302) therefore
 has two lists, and the registry's resolution decides which one a machine sees —
 the same mechanism, asked the same question, so the page cannot offer a model
 the loader would then refuse.
@@ -159,7 +159,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # which is the now-familiar shape: a repo belongs to a backend, not to a
     # capability. `size_gb` is the whole snapshot, because unlike the diffusers
     # recipe there is nothing skipped and no second repo: every component is
-    # already 4-bit. (2026-08-15 Hub metadata sums to 4.62e9 bytes. D302's
+    # already 4-bit. (2026-08-15 Hub metadata sums to 4.62e9 bytes. D303's
     # benchmark says 4.3GB for the same download — that is GiB; this field is
     # decimal GB, as D295 defines it, and the two numbers agree.)
     "mflux-image": [
@@ -179,7 +179,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # now with three ways to fall into it.
     #
     # These are the repos an Apple Silicon machine sees, and it sees them
-    # BECAUSE it resolves to this runner — which since D301 is a user's choice
+    # BECAUSE it resolves to this runner — which since D302 is a user's choice
     # and not only a hardware fact. Switching the engine on the Preferences page
     # changes this list, which is correct and must not be silent; the page says
     # so (`describe`'s `runnerLabel`).

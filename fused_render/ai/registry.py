@@ -42,7 +42,7 @@ will load it (`catalog.py`), and an MLX checkpoint on a Windows machine is a
 download that cannot be used.
 
 **A user can override that order, and the override is a REQUEST rather than an
-instruction** (D301). `resolve()` reads a per-capability preference — "auto", or
+instruction** (D302). `resolve()` reads a per-capability preference — "auto", or
 a runner code — from `shell/prefs.py`, and a named runner wins only if it can
 actually run here. An honoured preference is the whole story; an override naming
 a runner this machine cannot run is IGNORED and the ordering above decides, with
@@ -224,7 +224,7 @@ _RUNNERS: tuple[Runner, ...] = (
         _available=_always,
     ),
     # The one place in this table where the Apple Silicon runner is BELOW the
-    # cross-platform one, and it is deliberate (D302). Everywhere else the MLX
+    # cross-platform one, and it is deliberate (D303). Everywhere else the MLX
     # row goes first because it is both faster and lighter on the machine it
     # serves. Here it is faster and lighter on DISK — one 4.6GB repo against a
     # ~10.1GB two-repo split, ~8x quicker to load, ~15-20% quicker per image —
@@ -234,7 +234,7 @@ _RUNNERS: tuple[Runner, ...] = (
     # already OOMs. Promoting it would silently change what every Mac user's
     # image generation does on the strength of one machine's benchmark. So it
     # ships available and opt-in, which is the case the engine preference
-    # (D301) exists to serve, and moving this row up later is a one-line change
+    # (D302) exists to serve, and moving this row up later is a one-line change
     # once there is evidence from a smaller machine.
     Runner(
         code="mflux-image",
@@ -404,7 +404,7 @@ def preferred_code(capability: str) -> str:
 
 
 def _first_available(capability: str) -> Runner | None:
-    """Registry order, filtered by availability — the rule before D301, and
+    """Registry order, filtered by availability — the rule before D302, and
     still the rule whenever a preference is absent or unusable."""
     for runner in _RUNNERS:
         if runner.capability == capability and runner.available().ok:
@@ -522,7 +522,7 @@ def describe() -> list[dict]:
     not when it does not.
 
     **`available` and `active` are different questions, and they only became
-    different with D301.** Availability is a fact about the hardware: can this
+    different with D302.** Availability is a fact about the hardware: can this
     backend run at all. Active is a fact about this capability right now: is
     this the backend a load would use. They were the same answer while
     resolution was purely first-available — the first available runner was the

@@ -11,7 +11,7 @@ desktop tray's "Open app logs" already covers that. Since the call store moved t
 settings rather than as a separate thing.
 
 **engines** is persisted too — the per-capability INFERENCE engine choice
-(D301), which is a different thing from the execution engine below however
+(D302), which is a different thing from the execution engine below however
 similar the word is: it says which local-model backend serves a capability when
 more than one can, and `"auto"` (the default, and the absence of a key) means
 the registry's own ordering decides. See ``inference_engines``; the resolution,
@@ -161,7 +161,7 @@ def default_model() -> str:
 
 
 def inference_engines() -> dict:
-    """The per-capability INFERENCE engine preferences, as stored (D301).
+    """The per-capability INFERENCE engine preferences, as stored (D302).
 
     A different thing entirely from ``selected_engine()`` above, which is about
     /api/run — this one says which local-model backend serves a capability when
@@ -318,7 +318,7 @@ def _prefs_response() -> dict:
         # so the Preferences page renders the options the server will accept
         # rather than a second copy of this list that can drift from it.
         "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
-        # Which local-model backend serves each capability (D301). The STORED
+        # Which local-model backend serves each capability (D302). The STORED
         # choice, what is actually resolving, and — when those differ — why, in
         # the registry's own words. Same discipline as `engine` above and
         # `calls` below: the control shows the choice, a line beside it reports

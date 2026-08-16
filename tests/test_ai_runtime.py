@@ -431,7 +431,7 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
         monkeypatch):
     """The ordering the table was built for, finally used by a second capability.
 
-    Apple Silicon transcribed on its CPU cores until D301 because CTranslate2
+    Apple Silicon transcribed on its CPU cores until D302 because CTranslate2
     has no Metal backend. The MLX row sits ABOVE the CT2 one, so a Mac takes it
     and no other platform loses anything — which is the property that had to
     hold before this could ship, since speech to text was deliberately the first
@@ -452,7 +452,7 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
 
 
 def test_image_generation_stays_on_DIFFUSERS_even_on_apple_silicon(monkeypatch):
-    """The one inversion in the table, and it is deliberate (D302).
+    """The one inversion in the table, and it is deliberate (D303).
 
     Everywhere else the MLX runner is registered ABOVE the cross-platform one,
     because on the machine it serves it is both faster and lighter. mflux is
@@ -496,7 +496,7 @@ def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch):
     assert "Apple Silicon" in resolution.ignored_reason
 
 
-# -- the engine preference (D301) ------------------------------------------------
+# -- the engine preference (D302) ------------------------------------------------
 #
 # `prefs.engine_for_capability` is patched rather than a prefs.json written,
 # because what is under test here is the RESOLUTION — which preference wins,
@@ -1362,7 +1362,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "mlx-text", "transformers-text", "diffusers-image", "mflux-image",
         "faster-whisper", "mlx-whisper"}
     assert body["loaded"] == []
-    # Exactly one runner per capability is ACTIVE — the distinction D301 needed,
+    # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
     # what serves me". A capability nothing can serve here has no active runner,
     # which is why this counts rather than requiring one.

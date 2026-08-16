@@ -6226,7 +6226,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   sees siblings the download was never fetching.
 - **AI-9d** **Image generation has an MLX runner too, and it is the one place
   where the Apple Silicon backend is registered BELOW the cross-platform one**
-  (D302). `mflux_image` renders FLUX on Metal from a single `mlx-community`
+  (D303). `mflux_image` renders FLUX on Metal from a single `mlx-community`
   conversion whose components are all already 4-bit — so where the torch path
   needs AI-9b's recipe (a ~2.4GB GGUF transformer plus the ~7.7GB bf16 base repo
   for everything else), this is one ~4.6GB snapshot with nothing skipped. On the
@@ -6281,7 +6281,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   Silicon and would have made ASR a *third* Apple-Silicon-only feature, and an
   app whose local AI is something most users read about is not the app this is
   meant to be. An `mlx_whisper` runner **has since been added ABOVE this one**
-  (AI-10c, D301) — the registry's first-match-wins ordering (AI-2) existed for
+  (AI-10c, D302) — the registry's first-match-wins ordering (AI-2) existed for
   exactly that — so a Mac transcribes on Metal and every other platform still
   arrives here. Both Whisper directions ship:
   `task: "transcribe"` (same language) and `task: "translate"` (into English)
@@ -6414,7 +6414,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   transcription is the outstanding verification, and until it happens this
   section describes a design that is proven only down to the model's door.
 - **AI-10c** **Apple Silicon transcribes on the GPU: an `mlx_whisper` runner
-  ABOVE the CTranslate2 one, indistinguishable to a page** (D301). AI-10 chose
+  ABOVE the CTranslate2 one, indistinguishable to a page** (D302). AI-10 chose
   CTranslate2 so the capability would exist everywhere and said an MLX runner
   could be added later above it; this is that addition, and it is the first use
   AI-2's ordering has had for a capability that already worked. Macs take MLX;
@@ -6456,7 +6456,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   windows over a 198-second file. What that verification did NOT cover is
   transcription quality, the container formats users will point at it, and the
   behaviour of a recording long enough to matter.
-- **AI-10f** **`vad` means the same thing on both whisper engines** (D303).
+- **AI-10f** **`vad` means the same thing on both whisper engines** (D304).
   `fused.ai.transcribe` has always taken the flag, and until now the two
   runners answered it differently: faster-whisper runs a Silero VAD filter and
   drops the silence, while the MLX runner could only map it onto mlx-whisper's
@@ -6486,7 +6486,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   rather than failing a transcription that works without it — but it is fetched
   during Download precisely so an offline machine still has it.
 - **AI-10e** **Which engine serves a capability is a user preference, and an
-  unusable one is IGNORED rather than obeyed** (D301). Runner selection was
+  unusable one is IGNORED rather than obeyed** (D302). Runner selection was
   implicit — first-match-wins over registry order, filtered by availability —
   which was a complete answer while the order was decided by hardware. With two
   capabilities carrying two runners each, `prefs.json` gains `engines`:

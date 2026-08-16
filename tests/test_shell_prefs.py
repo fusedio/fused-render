@@ -623,7 +623,7 @@ def test_forced_by_flags_track_the_writers_override_resolvers(tmp_path, monkeypa
         assert calls["retention_forced_by"] == expected_retention, (capture, retention)
 
 
-# -- the inference engine preference (D301) -------------------------------------
+# -- the inference engine preference (D302) -------------------------------------
 #
 # Driven through the ENDPOINT, because what is under test here is the STORE: what
 # a PUT accepts, what it refuses, what a GET reports back, and what a stored

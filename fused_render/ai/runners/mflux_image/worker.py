@@ -29,7 +29,7 @@ What is genuinely different is underneath:
   `mlx_whisper/worker.py`, whose library call has no per-step hook at all).
 
 **Registered BELOW `diffusers-image` in the registry, so it is opt-in.** The
-speed case is measured and real (D302), but it is measured on ONE 34GB machine,
+speed case is measured and real (D303), but it is measured on ONE 34GB machine,
 and MLX's allocator reserved a ~23.6GB high-water pool there — larger than
 torch's driver allocation on the same render. Nothing has been tried on a 16GB
 Mac, which is exactly the machine this app's own catalog note says full-precision
@@ -144,7 +144,7 @@ def memory():
     """What MLX itself says it is holding, in bytes.
 
     `get_active_memory`, deliberately — NOT `get_cache_memory`, which on this
-    model reads roughly 23.6GB against an active figure of about 14.1GB (D302's
+    model reads roughly 23.6GB against an active figure of about 14.1GB (D303's
     benchmark). The difference is MLX's allocator pool: buffers it has reserved
     from Metal and not returned, kept precisely so the next generation does not
     have to ask again. Reporting the pool would tell the AI Models page that one
@@ -155,7 +155,7 @@ def memory():
 
     `worker_base` takes the larger of this and RSS, so a wrong answer in either
     direction is corrected by the other. The pool is still worth knowing about
-    and is written down in D302, because it is a fact about MEMORY PRESSURE even
+    and is written down in D303, because it is a fact about MEMORY PRESSURE even
     though it is not a fact about this model's size.
     """
     import mlx.core as mx
