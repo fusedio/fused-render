@@ -1131,7 +1131,9 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # everything a user downloaded on purpose. The bytes stay on the page
         # and stay deletable — this page's job includes showing what is eating
         # the disk, and hiding a 2.4GB row would be the opposite of that — but
-        # the card says whose it is and does not offer a Load. See
+        # the page files these under their own "Fetched by engines" heading, the
+        # card says whose it is, and its Load is disabled with that as the
+        # reason (never absent: a control that vanishes teaches nothing). See
         # `runners/formats.COMPONENT_REPOS`, which is where the ids live because
         # they are named inside runner venvs this process cannot import.
         "component": dict(component, id=repo_id) if component else None,

@@ -178,17 +178,46 @@
   text-decoration: none;
 }
 
-/* The DESTRUCTIVE actions are quiet until the card is hovered or one of them is
-   focused: a grid of ✕ buttons reads as a page about deleting, and this one is
-   about looking. "Explore" is exempt — it is the card's other destination, and
-   an affordance you have to hover to discover is one most people never find. */
-.am-card .cc-mdcard-actions .cc-iconbtn:not(.am-card-explore) {
-  opacity: 0;
+/* A card's controls are ALWAYS visible — the delete ✕ and the revisions
+   chevron included, which were hidden at `opacity: 0` until the card was
+   hovered or focused.
+
+   The argument for hiding them was that a grid of ✕ buttons reads as a page
+   about deleting. What it actually produced was an icon that appeared on
+   exactly one card at a time, following the mouse rather than describing a
+   repo: in a screenshot, in a screen share, or to anyone scanning the grid
+   before touching the pointer, eleven cards had no controls and one did. That
+   is not a quieter page, it is a page whose controls have to be discovered
+   one at a time, and it made "which of these can I delete?" unanswerable
+   without hovering all of them.
+
+   Quieting them stays, by COLOUR rather than by presence: `.cc-iconbtn` is
+   already muted at rest and lights on hover, which says "secondary" without
+   saying "absent". Delete is still confirmed through the modal, so a
+   permanently visible ✕ cannot destroy anything by itself. */
+
+/* A disabled icon button, now that "at rest" is a state the user actually sees.
+   It must not read as merely muted — the enabled ones are muted too — so it
+   drops further and takes the pointer with it, and `cursor: not-allowed` is
+   what makes a hover that changes nothing legible as a refusal rather than as a
+   dead page. The `title` on every one of them says why. */
+.am-card .cc-iconbtn:disabled,
+.am-rev .cc-iconbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.am-card:hover .cc-mdcard-actions .cc-iconbtn,
-.am-card:focus-within .cc-mdcard-actions .cc-iconbtn {
-  opacity: 1;
+/* …and it must not LIGHT UP under the pointer. `.cc-iconbtn:hover` carries no
+   `:not(:disabled)` guard, which never mattered while a disabled one was
+   invisible; now that every card shows its full control set, a dead ✕ that
+   washes accent on hover promises an action it will not perform. Fixed here
+   rather than on the shared class: the base rule is wrong on every surface, but
+   this page is the one that made it visible, and widening it would restyle
+   pages nothing in this change has looked at. */
+.am-card .cc-iconbtn:disabled:hover,
+.am-rev .cc-iconbtn:disabled:hover {
+  background: none;
+  color: var(--fg-muted);
 }
 
 /* -- what the model is for -------------------------------------------------- */
@@ -348,17 +377,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* A drawer row's ✕ follows the drawer row it belongs to, not the whole card. */
+/* A drawer row's ✕ is smaller than a card's, and — like the card's — always
+   there rather than revealed by hovering the row it belongs to. Same reason:
+   the drawer is a list of revisions to compare, and one visible ✕ chasing the
+   pointer down it says nothing about which of them can be deleted. */
 .am-rev .cc-iconbtn {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  opacity: 0;
-}
-
-.am-rev:hover .cc-iconbtn,
-.am-rev .cc-iconbtn:focus-visible {
-  opacity: 1;
 }
 
 /* -- Local / Discover, and the Discover tab itself --------------------------
@@ -660,9 +686,13 @@
   background: var(--bg-alt);
 }
 
+/* `not-allowed`, not `default`. This used to mean "busy for a moment" and now
+   means "this repo cannot be loaded here" on cards that will never offer it —
+   the button is permanently visible and permanently disabled there, so the
+   pointer has to say refused rather than idle. The `title` says why. */
 .am-card-power:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
 }
 
 .am-card-power-on {

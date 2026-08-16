@@ -30,7 +30,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import { ModelProgress } from "./AiProgress";
-import { groupRepos } from "@shell/aiModelGroups";
+import { groupRepos, loadRefusal } from "@shell/aiModelGroups";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
@@ -294,7 +294,7 @@ function RepoCard({
   job,
   busy,
   fetching,
-  canLoad,
+  refusal,
   onToggle,
   onDeleteRepo,
   onDeleteRevision,
@@ -310,16 +310,21 @@ function RepoCard({
   busy: boolean;
   /** True while a weights-only fetch for this repo is in flight. */
   fetching: boolean;
-  /** False when no runner here serves this kind of model. It gates LOADING
-   *  only: a button that always fails is worse than no button, but a model that
-   *  is already RESIDENT must always be releasable — see the render below. */
-  canLoad: boolean;
+  /** Why Load is refused for this repo, or null when it can be loaded
+   *  (`aiModelGroups.loadRefusal`). It DISABLES the button and becomes its
+   *  title; it never removes it. A model that is already RESIDENT must still be
+   *  releasable whatever this says — see the render below. */
+  refusal: string | null;
   onToggle: () => void;
   onDeleteRepo: () => void;
   onDeleteRevision: (revision: AiModelRevision) => void;
   onLoad: () => void;
   onUnload: () => void;
 }) {
+  // Whether the revisions drawer has anything to show. Read twice — by the
+  // expander and by the drawer's own guard below — from one name, so the two
+  // cannot come apart.
+  const hasRevisions = repo.revisions > 1;
   const when = timeAgo(repo.lastUsed ?? repo.mtime);
   // "added", not "released": the Hub's release date isn't on this disk (see the
   // endpoint), so the card states the date this machine actually knows.
@@ -390,10 +395,15 @@ function RepoCard({
             instead of an engine tag. "no engine" was true of both of these and
             explained neither: the 2.4GB GGUF is FLUX's transformer and deleting
             it breaks that model, the 2MB Silero is the whisper engine's speech
-            detector and deleting it only costs speed. The tag states the fact
-            ("part of FLUX.2 klein 4B") and the hover carries the consequence —
-            which is prose nothing else on the card repeats, so it earns the tab
-            stop the same way the unavailable engine tag does. */}
+            detector and deleting it only costs speed.
+
+            The tag no longer has to carry the whole distinction on its own —
+            these cards sit under "Fetched by engines" now, and that heading is
+            what stops a component reading as a model. What the tag adds is WHICH
+            one it belongs to, and the hover adds what deleting THIS one costs,
+            which differs per component and is not in the heading. That is prose
+            nothing else on the card repeats, so it keeps its tab stop the same
+            way the unavailable engine tag does. */}
         {repo.component ? (
           <span
             className="am-card-engine am-card-engine-component"
@@ -521,16 +531,25 @@ function RepoCard({
         </span>
         <span className="cc-mdcard-actions">
           {/* Load / Unload — the one control on this page that costs MEMORY
-              rather than disk. Only offered for a capability this machine can
-              actually serve: on a Windows box the text runner is unavailable,
-              and a button that always fails is worse than no button. */}
-          {/* `loaded` FIRST, and `canLoad` only for the Load half. Residency is a
-              FACT the runtime reported; the task label is an INFERENCE from
-              model-card metadata, and the two can disagree — FLUX.2 klein's card
-              says "image to image", which no runner serves, while the model is
-              sitting in memory loaded as text-to-image. Gating both halves on
-              the inference stranded it: the card said Loaded and offered no way
-              to get the memory back. What is resident can always be unloaded. */}
+              rather than disk.
+
+              **Always rendered, disabled when it cannot be pressed.** It used
+              to disappear for a repo no engine here can load, and a control
+              that vanishes teaches nothing: comparing two cards, a user cannot
+              tell "this model cannot be loaded" from "I misremembered where the
+              button was", and the row's width shifted card to card so the eye
+              never learned where to look. `refusal` carries the reason — and
+              there are four different ones, which is the other half of the
+              argument: a disabled button with no explanation is the same dead
+              end as a missing one. */}
+          {/* `loaded` FIRST, and the refusal only for the Load half. Residency
+              is a FACT the runtime reported; the refusal rests on an INFERENCE
+              from model-card metadata and the format on disk, and the two can
+              disagree — FLUX.2 klein's card says "image to image", which no
+              runner serves, while the model is sitting in memory loaded as
+              text-to-image. Gating both halves on the inference stranded it: the
+              card said Loaded and offered no way to get the memory back. What is
+              resident can always be unloaded. */}
           {loaded ? (
             <button
               type="button"
@@ -541,17 +560,25 @@ function RepoCard({
             >
               Unload
             </button>
-          ) : canLoad ? (
+          ) : (
             <button
               type="button"
               className="am-card-power"
-              disabled={busy || !!job}
-              title={`Load ${repo.id} into memory so it can answer`}
+              disabled={busy || !!job || !!refusal}
+              title={refusal ?? `Load ${repo.id} into memory so it can answer`}
+              /* The reason again, in the accessible name. A `title` is a hover,
+                 and a disabled button is one a pointer user may never think to
+                 hover — while a screen reader reads the name and nothing else.
+                 It opens with the visible label so the name still contains
+                 what is on screen (WCAG 2.5.3). */
+              aria-label={
+                refusal ? `Load ${repo.id} — unavailable: ${refusal}` : `Load ${repo.id}`
+              }
               onClick={onLoad}
             >
               {job ? "Loading…" : "Load"}
             </button>
-          ) : null}
+          )}
           {/* The local door: the model card view (SPEC §38), read from this
               folder's own files. A real <a href> so middle-click and copy-link
               work, with left-click intercepted for client-side navigation like
@@ -595,34 +622,47 @@ function RepoCard({
               <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
             </svg>
           </a>
-          {/* Only offered where it means something: with a single revision,
-              deleting "the revision" and deleting the repo are the same act,
-              and two controls for it would just ask the user to tell them
-              apart. */}
-          {repo.revisions > 1 && (
-            <button
-              type="button"
-              className={"cc-iconbtn" + (expanded ? " cc-btn-on" : "")}
-              title={expanded ? "Hide revisions" : "Show revisions"}
-              aria-label={`${expanded ? "Hide" : "Show"} revisions of ${repo.id}`}
-              aria-expanded={expanded}
-              onClick={onToggle}
+          {/* Disabled at a single revision, not removed. It does nothing there
+              — deleting "the revision" and deleting the repo are the same act,
+              and two controls for it would only ask the user to tell them apart
+              — but a chevron that is present on some cards and absent on others
+              is a difference the reader has to notice and then explain, and the
+              explanation is a fact about the repo worth stating outright. */}
+          <button
+            type="button"
+            className={"cc-iconbtn" + (expanded ? " cc-btn-on" : "")}
+            disabled={!hasRevisions}
+            title={
+              hasRevisions
+                ? expanded
+                  ? "Hide revisions"
+                  : "Show revisions"
+                : `${repo.id} has one revision, so there is nothing to expand — deleting it and deleting the repo are the same act.`
+            }
+            aria-label={
+              hasRevisions
+                ? `${expanded ? "Hide" : "Show"} revisions of ${repo.id}`
+                : `Revisions of ${repo.id} — only one, nothing to expand`
+            }
+            /* Only where it describes something. A disabled control that
+               announces itself as collapsed invites the reader to expand it. */
+            aria-expanded={hasRevisions ? expanded : undefined}
+            onClick={onToggle}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
-              </svg>
-            </button>
-          )}
+              <path d={expanded && hasRevisions ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+            </svg>
+          </button>
           <button
             type="button"
             className="cc-iconbtn cc-iconbtn-danger"
@@ -647,10 +687,12 @@ function RepoCard({
           </button>
         </span>
       </div>
-      {/* Same predicate as the expander above, so a repo that drops to one
-          revision under a deletion collapses itself rather than stranding an
-          open drawer with no control left to close it. */}
-      {expanded && repo.revisions > 1 && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
+      {/* Kept even though the expander is now always rendered: the expander
+          being DISABLED at one revision is not the same as this drawer being
+          closed, and a repo that drops to one revision under a deletion must
+          collapse itself rather than strand an open drawer above a control that
+          can no longer close it. */}
+      {expanded && hasRevisions && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
     </div>
   );
 }
@@ -819,13 +861,17 @@ export default function AiModels() {
   const jobByModel = new Map(
     jobs.filter((j) => j.owner === "server").map((j) => [j.title, j]),
   );
-  // Loadable is now ONE question, asked of the server: is there an engine that
+  // Loadable is ONE question, asked of the server: is there an engine that
   // reads this repo's format and runs on this machine. It used to be asked of
   // the capability alone — this repo has one, and some runner here serves it —
   // which is true of `openai/whisper-large-v3` on every machine and false of
   // every repo whose card was missing a task label. The format is the half that
   // was missing, and `repo.engine` carries both halves (see `_engine`).
-  const canLoad = (repo: AiModelRepo) => !!repo.engine?.available;
+  //
+  // Asked through `loadRefusal` rather than as a boolean here, because the
+  // button now needs the SENTENCE and not just the verdict — and one function
+  // answering both is what stops a card that is disabled for one reason
+  // explaining itself with another.
   // What Discover means by "you already have this one". A MATERIALISED snapshot,
   // not merely a folder: huggingface_hub creates `models--org--name/` the moment
   // a pull starts, so a set built from folder names alone flipped a suggestion
@@ -902,7 +948,7 @@ export default function AiModels() {
       job={jobByModel.get(r.id)}
       busy={busy}
       fetching={downloading.has(r.id)}
-      canLoad={canLoad(r)}
+      refusal={loadRefusal(r)}
       onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
       onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
       onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
