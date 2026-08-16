@@ -14,6 +14,7 @@ machine and the disk-measured download behaves the way the supervisor assumes.
 import importlib.util
 import json
 import os
+import sys
 import threading
 import time
 import urllib.error
@@ -639,3 +640,152 @@ def test_a_finished_row_is_never_re_reported(base, monkeypatch):
         time.sleep(0.1)
 
     assert sent == [], "a finished row was kept alive by its own heartbeat"
+
+
+# -- what a failure SAYS ---------------------------------------------------------
+#
+# The load path is the one place a user meets a library's own error text, and
+# the libraries a runner loads all re-raise. Reporting the top frame is how a
+# missing stdlib module reached the AI Models page as a sentence about a model.
+
+
+def test_a_wrapped_failure_reports_the_ROOT_cause_not_the_wrapper(base):
+    """transformers' lazy-module machinery wraps every import failure, so what
+    arrived on the page was `Could not import module 'AutoTokenizer'` — beside
+    the name of a Qwen repo that was downloaded correctly — while the exception
+    it was raised `from` said `No module named 'filecmp'`. One of those is
+    actionable."""
+    def load(model_id, fetched):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError as cause:
+            raise RuntimeError("Could not import module 'AutoTokenizer'") from cause
+
+    base._bring_up("mlx-community/Qwen3-8B-4bit", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "Could not import module 'AutoTokenizer'" in error, "the wrapper still shows"
+    assert "No module named 'filecmp'" in error, "and so does the cause"
+
+
+def test_a_missing_STDLIB_module_is_named_as_an_interpreter_problem(base):
+    """The distinction that decides what the user does next: a third-party
+    package is fixed by rebuilding the environment, a stdlib module is baked
+    into the interpreter the environment was built FROM — so rebuilding
+    reproduces it exactly, forever."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "STANDARD LIBRARY" in error
+    assert "rebuilding the environment" in error
+    assert sys.base_prefix in error, "name the interpreter, so it can be reported"
+
+
+def test_a_missing_THIRD_PARTY_module_gets_no_stdlib_hint(base):
+    """The hint must not fire for the ordinary case, or it is noise on every
+    genuinely missing dependency."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'mlx_lm'", name="mlx_lm")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "mlx_lm" in error
+    assert "STANDARD LIBRARY" not in error
+
+
+def test_an_unchained_failure_reads_exactly_as_before(base):
+    """No `from`, no context, nothing to add — the message must not grow a
+    dangling "caused by"."""
+    assert base.describe_failure(RuntimeError("no metal for you")) == (
+        "RuntimeError: no metal for you")
+
+
+def test_a_cycle_in_the_exception_chain_terminates(base):
+    """`__context__` can point back into a chain already walked (an except block
+    that re-raises something it caught earlier). The walk is bounded by identity
+    rather than by trust."""
+    first = RuntimeError("first")
+    second = RuntimeError("second")
+    first.__context__ = second
+    second.__context__ = first
+
+    assert "first" in base.describe_failure(first)
+
+
+def test_a_generation_failure_is_described_the_same_way(base):
+    """The load path is not special: a generate that dies inside a library gets
+    the same treatment, since the same wrapping happens there."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+
+    def generate(body):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError as cause:
+            raise RuntimeError("Could not import module 'AutoTokenizer'") from cause
+
+    server = _serve(base, generate)
+    try:
+        with _call(server, "/generate", {}) as response:
+            payload = json.loads(response.read())
+    finally:
+        server.shutdown()
+
+    assert payload["ok"] is False
+    assert "filecmp" in payload["error"] and "STANDARD LIBRARY" in payload["error"]
+
+
+def test_a_suppressed_context_is_not_walked_past(base):
+    """`raise … from None` is a library saying "what I caught is not the
+    explanation", and the commonest thing hidden that way is an optional
+    dependency probe: `except ImportError: raise … from None`. Following it
+    anyway would report a deliberately hidden error as the root cause — and if
+    the probe happened to be for a stdlib module, would accuse an interpreter
+    that is perfectly complete."""
+    def load(model_id, fetched):
+        try:
+            raise ModuleNotFoundError("No module named 'filecmp'", name="filecmp")
+        except ModuleNotFoundError:
+            raise RuntimeError("this backend is unavailable") from None
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert error == "RuntimeError: this backend is unavailable"
+    assert "filecmp" not in error
+    assert "STANDARD LIBRARY" not in error
+
+
+def test_a_name_error_inside_a_present_stdlib_package_is_not_blamed_on_the_interpreter(base):
+    """`from email import nope` raises a plain ImportError whose `.name` is
+    `email` — a package that is present and working. Keying the hint on
+    ImportError would accuse a complete interpreter of missing part of its
+    stdlib and tell the user that rebuilding cannot help: the exact class of
+    confidently-wrong cause this whole change exists to stop."""
+    def load(model_id, fetched):
+        from email import definitely_not_a_real_name  # noqa: F401
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "definitely_not_a_real_name" in error, "the real error still reaches the user"
+    assert "STANDARD LIBRARY" not in error
+    assert "rebuilding the environment" not in error
+
+
+def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
+    """A partially-shipped stdlib fails as `No module named 'email.mime'`, and
+    `sys.stdlib_module_names` holds only top-level names — so the top level is
+    what decides, while the full name is what gets reported."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'email.mime'", name="email.mime")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "email.mime" in error
+    assert "STANDARD LIBRARY" in error
