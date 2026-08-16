@@ -2316,6 +2316,18 @@ export type ScheduledState =
   // job appears here twice: once as the rule, once as the next concrete run.
   | "recurring";
 
+// Structured recurrence — the server's recur.py schema, mirrored. Anchor is
+// the entry's `due`: the first run, and the date every derived part (weekday,
+// day-of-month, nth) is read from.
+export interface RecurrenceRule {
+  freq: "day" | "week" | "month" | "year";
+  interval?: number; // 1..99, default 1
+  byday?: number[]; // week only; 0=Sunday
+  monthly?: "day" | "nth-weekday"; // month only, default "day"
+  until?: string; // "YYYY-MM-DD", local, inclusive
+  count?: number; // total occurrences; exclusive with until
+}
+
 export interface ScheduledMessage {
   id: string;
   target: string;
@@ -2342,6 +2354,12 @@ export interface ScheduledMessage {
   claude_session_id?: string;
   // The 5-field cron line on a `recurring` template; "" (or absent) elsewhere.
   repeats?: string;
+  // The structured recurrence on a `recurring` template — the Google-Calendar
+  // vocabulary cron cannot say (every 2 weeks, the second Wednesday, ends
+  // after N). A template carries `repeats` OR `rule`, never both.
+  rule?: RecurrenceRule;
+  // On a rule template: occurrences materialized so far (drives `count` ends).
+  made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
   // On a `recurring` template in GET /api/schedule only: projected occurrence
@@ -2372,6 +2390,9 @@ export function scheduleMessage(body: {
   due?: string;
   delay_seconds?: number;
   repeats?: string;
+  // Structured recurrence: requires `due` (the anchor/first run), exclusive
+  // with `repeats` and `delay_seconds`.
+  rule?: RecurrenceRule;
   session_id?: string;
   permission_mode?: string;
 }): Promise<{ entry: ScheduledMessage }> {

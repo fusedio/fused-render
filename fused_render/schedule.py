@@ -70,7 +70,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import claude_spawn, cron
+from fused_render import claude_spawn, cron, recur
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,14 @@ CANCELLED = "cancelled"
 # materializes its next run as an ordinary `pending` occurrence (carrying
 # `template_id`), so everything downstream — claiming, job rows, events, the
 # watcher — only ever handles one-shots. See `_materialize`.
+#
+# TWO kinds of template share this state, and deliberately so: a cron one
+# (`repeats`, a 5-field line) and a structured one (`rule` + `anchor` + `made`,
+# see recur.py). Everything between the template and the send is identical for
+# both — only "when is the next one" differs, which is `_next_template_due` and
+# nothing else. A third state for the new kind would have made every consumer
+# (the listing's live/handled split, cancel's cascade, restore's guard, the
+# router's projection) grow a second branch to say the same thing twice.
 RECURRING = "recurring"
 STATES = (PENDING, SENDING, SENT, MISSED, ERROR, CANCELLED, RECURRING)
 
@@ -461,13 +469,21 @@ def _from_local(when: datetime) -> datetime:
 
 
 def create(target: str, message: str, due=None, session_id: str = "",
-           permission_mode: str = "", repeats: str = "") -> dict:
+           permission_mode: str = "", repeats: str = "",
+           rule: dict | None = None) -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     With `repeats` (a 5-field cron expression) the stored entry is a RECURRING
     template instead: `due` is ignored — the cron line already says every time
     it means — and the first occurrence is materialized immediately, so the
     wake stub knows about it before this returns.
+
+    With `rule` (a structured repeat, see recur.py) the entry is also a
+    RECURRING template, and the one difference from the cron case is that `due`
+    is REQUIRED rather than ignored: a rule counts from an anchor, and the
+    anchor is that first run. It is kept in its own field because `due` is
+    rewritten on every materialization to mirror the next occurrence, and a
+    series numbered from a moving anchor would renumber itself every tick.
 
     Raises ValueError for everything a caller can get wrong (the router maps it
     to a 400). The one validation deliberately NOT here is "is this path
@@ -483,11 +499,31 @@ def create(target: str, message: str, due=None, session_id: str = "",
         raise ValueError(f"target: no such file or directory: {target}")
 
     repeats = (repeats or "").strip()
-    if repeats:
+    if rule is not None and repeats:
+        raise ValueError("rule: cannot be combined with `repeats` — a message "
+                         "repeats one way or the other, not both")
+    spec = None
+    if rule is not None:
+        # Validated here as well as in the router, because the router is not the
+        # only caller and a rule that reaches the store unreadable becomes a
+        # template that stops firing with nobody to tell.
+        spec = recur.validate_rule(rule)
+        if due is None:
+            raise ValueError("rule: needs `due` — the date and time of the "
+                             "first run, which is what the repeat counts from")
+        when = due if isinstance(due, datetime) else parse_due(due)
+        if when.tzinfo is None:
+            when = when.astimezone()
+        when = when.astimezone(timezone.utc)
+        # NO catch-up-bound refusal here, unlike a one-shot below. An anchor in
+        # the past is a perfectly ordinary way to say "every other Monday, on
+        # the phase that started last Monday" — nothing fires late for it,
+        # because materialization only ever asks for occurrences after `now`.
+    elif repeats:
         # Parse errors surface here, at creation, with the field named —
         # never later in the loop against a stored line nobody can see.
-        rule = cron.parse(repeats)
-        when = _from_local(rule.next_after(_local_naive(_now())))
+        line = cron.parse(repeats)
+        when = _from_local(line.next_after(_local_naive(_now())))
     else:
         when = due if isinstance(due, datetime) else parse_due(due)
         if when.tzinfo is None:
@@ -515,10 +551,14 @@ def create(target: str, message: str, due=None, session_id: str = "",
         "due": when.isoformat(),
         "session_id": session_id or "",
         "permission_mode": mode,
-        "state": RECURRING if repeats else PENDING,
+        "state": RECURRING if (repeats or spec is not None) else PENDING,
         # "" on a one-shot; the cron line on a template. An OCCURRENCE never
         # carries it — the link runs the other way, through `template_id`.
         "repeats": repeats,
+        # None on a one-shot and on a cron template; the structured repeat on a
+        # rule template. Carried beside `repeats` rather than instead of it so
+        # an existing store keeps reading exactly as it did.
+        "rule": spec,
         "created": _now().isoformat(),
         "fired": "",
         "run_id": "",
@@ -537,12 +577,24 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # with — that app addresses a session by this id and nothing else.
         "claude_session_id": "",
     }
+    if spec is not None:
+        # The first run of the series, kept where materialization cannot move
+        # it — see the docstring. Every occurrence is "the anchor plus k steps",
+        # so this is the field the whole schedule hangs off.
+        entry["anchor"] = when.isoformat()
+        # How many occurrences this template has MATERIALIZED, which is what
+        # `count` is measured against. Skipped ones count: "ends after 13
+        # occurrences" is a promise about the runs the schedule puts on the
+        # calendar, and deciding to skip one is a decision about a run that was
+        # scheduled. Counting only the ones that fired would quietly extend the
+        # series every time the app was closed at the wrong moment.
+        entry["made"] = 0
     with _lock:
         entries = _read()
         entries.append(entry)
         _write(entries)
     _sync_wake()
-    if repeats:
+    if repeats or spec is not None:
         # First occurrence, immediately — so the schedule the user just wrote
         # is visible (and wake-synced) without waiting for the next tick.
         _materialize(_now())
@@ -969,6 +1021,46 @@ def _busy_sessions(entries: list[dict]) -> set[str]:
     return busy
 
 
+def _made(entry: dict) -> int:
+    """How many occurrences a rule template has materialized. Read defensively:
+    the store is a JSON file a human can edit, and a `made` that came back as a
+    string must not stop the schedule."""
+    value = entry.get("made")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _next_template_due(entry: dict, base: datetime) -> datetime | None:
+    """The next occurrence for one live template, or None when it is spent.
+
+    THE one place the two kinds of template differ. Everything else — claiming,
+    firing, skipping, restoring, reporting — is written once for both, which is
+    the whole reason the structured rule reuses the RECURRING state rather than
+    bringing its own lifecycle.
+
+    None means the series is over: `count` reached, or `until` passed, or off
+    the end of the calendar. A cron line never returns it — a standing rule has
+    no end — so this is the seam that "ends after 13 occurrences" arrives
+    through, and the caller's answer to it is to do nothing, which leaves the
+    template `recurring` with nothing ahead of it.
+
+    Raises ValueError when the stored schedule no longer reads (a hand-edited
+    store); the caller turns that into a loud `error`, because silently never
+    firing again is the one outcome this feature must not have."""
+    spec = entry.get("rule")
+    if isinstance(spec, dict):
+        spec = recur.validate_rule(spec)
+        count = spec.get("count")
+        if isinstance(count, int) and _made(entry) >= count:
+            return None
+        # `anchor` falls back to `due` only for a store written before the field
+        # existed; on a live template the two differ from the first tick.
+        anchor = parse_due(entry.get("anchor") or entry.get("due"))
+        when = recur.next_occurrence(spec, _local_naive(anchor), _local_naive(base))
+        return _from_local(when) if when is not None else None
+    line = cron.parse(str(entry.get("repeats") or ""))
+    return _from_local(line.next_after(_local_naive(base)))
+
+
 def _materialize(now: datetime) -> None:
     """Ensure every live recurring template has exactly ONE pending occurrence.
 
@@ -980,7 +1072,12 @@ def _materialize(now: datetime) -> None:
     `now`, so a run finishing early can never pull the next one earlier, and a
     cancelled occurrence stays skipped instead of being re-offered.
 
-    A template whose cron line no longer parses (a hand-edited store) is moved
+    Both kinds of template come through here identically; `_next_template_due`
+    is the only line that knows whether it is reading a cron expression or a
+    structured rule, and it is also where a rule's `count` and `until` end the
+    series (by answering None, which materializes nothing).
+
+    A template whose schedule no longer parses (a hand-edited store) is moved
     to `error` and announced — silently never firing again is the one outcome
     this feature must not have."""
     announce: list[tuple[str, dict, str]] = []
@@ -1007,13 +1104,21 @@ def _materialize(now: datetime) -> None:
                     continue
                 base = max(base, when)
             try:
-                rule = cron.parse(str(entry.get("repeats") or ""))
-                next_due = _from_local(rule.next_after(_local_naive(base)))
+                next_due = _next_template_due(entry, base)
             except ValueError as exc:
                 entry["state"] = ERROR
                 entry["error"] = f"recurring schedule stopped: {exc}"
                 announce.append((EVENT_FAILED, dict(entry), entry["error"]))
                 changed = True
+                continue
+            if next_due is None:
+                # The series is over (its `count` is used up, or its `until` has
+                # passed). The template stays RECURRING with nothing ahead of it
+                # rather than acquiring a new state: it is still a schedule, it
+                # has simply run out of dates, and `upcoming` says so by being
+                # empty. A terminal state here would also make the row jump from
+                # the live half of the listing to the handled half at a moment
+                # nothing actually happened.
                 continue
             occurrence = {
                 "id": next_due.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex(),
@@ -1038,6 +1143,12 @@ def _materialize(now: datetime) -> None:
             # The template's own `due` mirrors its next occurrence — it is what
             # the listing sorts and shows for the recurring row.
             entry["due"] = next_due.isoformat()
+            if isinstance(entry.get("rule"), dict):
+                # Incremented HERE, with the occurrence, and never anywhere
+                # else: `made` is "how many did this template put on the
+                # calendar", so the write that creates one is the only write
+                # that may move it.
+                entry["made"] = _made(entry) + 1
             changed = True
         if changed:
             entries.extend(fresh)
@@ -1048,11 +1159,74 @@ def _materialize(now: datetime) -> None:
         _sync_wake()
 
 
+def _upcoming_rule(entry: dict, spec: dict, horizon_days: int,
+                   limit: int) -> list[str]:
+    """`upcoming` for a structured rule. Same contract, different arithmetic —
+    and one real difference, which is how an END is honoured.
+
+    `until` needs nothing special: the walk stops at it. `count` must agree
+    with MATERIALIZATION, which spends the budget only on occurrences it
+    actually creates — theoretical runs between a past anchor and now were
+    never made and cost nothing (a past anchor is a legitimate phase, per
+    create()). So the projection is built the way the store will act: the
+    latest materialized occurrence (mirrored on the template's own `due`)
+    when it is still ahead, then exactly the `count - made` occurrences the
+    sweep will still create after it. Numbering the theoretical series from
+    the anchor looked equivalent and was not (Bugbot, PR #541): with a past
+    anchor it billed the budget for runs that never existed and the calendar
+    under-drew the series' tail."""
+    try:
+        anchor = _local_naive(parse_due(entry.get("anchor") or entry.get("due")))
+    except ValueError:
+        return []
+    now = _local_naive(_now())
+    end = now + timedelta(days=horizon_days)
+    count = spec.get("count")
+    times: list[str] = []
+    if isinstance(count, int):
+        made = _made(entry)
+        remaining = max(0, count - made)
+        # The template's `due` mirrors its latest occurrence (written at
+        # materialize). Ahead of now it IS the next run and leads the
+        # projection; the ghost dedupe on the client drops it again if that
+        # occurrence was skipped, so including it cannot double-draw.
+        latest = None
+        if made:
+            try:
+                latest = _local_naive(parse_due(entry.get("due")))
+            except ValueError:
+                latest = None
+        if latest is not None and now < latest <= end:
+            times.append(_from_local(latest).isoformat())
+        if remaining == 0:
+            # occurrences() clamps limit AFTER appending, so a 0 must not
+            # reach it — and a spent series has nothing to walk for anyway.
+            return times
+        after = latest if (latest is not None and latest > now) else now
+        for when in recur.occurrences(spec, anchor, after, remaining):
+            if when <= after:
+                continue
+            if when > end or len(times) >= limit:
+                break
+            times.append(_from_local(when).isoformat())
+        return times
+    for when in recur.occurrences(spec, anchor, now, limit):
+        if when <= now:
+            continue  # a run already behind us; the store has its own record
+        if when > end:
+            break
+        times.append(_from_local(when).isoformat())
+        if len(times) >= limit:
+            break
+    return times
+
+
 def upcoming(entry: dict, horizon_days: int = 14, limit: int = 500) -> list[str]:
     """Projected occurrence times (UTC ISO) for a recurring template, `now`
     forward — what lets the calendar draw future runs without the client
-    growing a cron parser. Projection only: nothing here is stored, and an
-    unparseable line projects as nothing rather than raising into a listing.
+    growing a cron parser (or, now, a recurrence engine). Projection only:
+    nothing here is stored, and an unreadable schedule projects as nothing
+    rather than raising into a listing.
 
     The cap must clear the horizon for the schedules the FORM offers, or the
     calendar lies: hourly over 14 days is 336 instants, and the first cut's
@@ -1060,6 +1234,13 @@ def upcoming(entry: dict, horizon_days: int = 14, limit: int = 500) -> list[str]
     with room; a deliberately denser custom line (every minute) hits the cap
     early, which is the honest trade against a megabyte of ISO strings on a
     listing poll."""
+    spec = entry.get("rule")
+    if isinstance(spec, dict):
+        try:
+            spec = recur.validate_rule(spec)
+        except ValueError:
+            return []
+        return _upcoming_rule(entry, spec, horizon_days, limit)
     try:
         rule = cron.parse(str(entry.get("repeats") or ""))
     except ValueError:
