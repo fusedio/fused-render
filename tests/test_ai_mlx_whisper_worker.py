@@ -66,6 +66,12 @@ class FakeBase:
     def download_snapshot(self, model_id, **kwargs):
         return f"/snapshots/{model_id}"
 
+    def download_file(self, repo_id, filename, detail=None):
+        # Present because `_speech_regions` reads it off the base to hand to
+        # `vad.model_path`, and a base that lacks it makes every VAD test fail
+        # as an AttributeError from a line that is not what is under test.
+        return f"/snapshots/{repo_id}/{filename}"
+
     def serve(self, **kwargs):
         return None
 
@@ -835,6 +841,13 @@ def _regions(monkeypatch, worker, found):
     monkeypatch.setattr(worker, "_speech_regions", lambda *a, **k: list(found))
 
 
+def _raise(error):
+    """A stand-in for a `vad` function that fails with `error`."""
+    def fail(*_args, **_kwargs):
+        raise error
+    return fail
+
+
 def test_each_speech_region_is_transcribed_SEPARATELY(monkeypatch, loaded, tmp_path):
     """Cutting at a VAD boundary is cutting in silence, which is where a
     sentence has already ended — unlike the fixed-offset chunking this runner
@@ -937,11 +950,14 @@ def test_a_missing_DETECTOR_degrades_to_transcribing_everything_and_says_so(
     # the test venv today, so this path is taken for free — but the day
     # somebody installs it for another reason, a test relying on that would
     # start reaching for a 2MB download instead of asserting anything.
+    #
+    # An OSError because that is the shape the real failure has: every
+    # huggingface_hub download error worth degrading on is one (HfHubHTTPError
+    # is declared `(HTTPError, OSError)`), as is a socket that never connected.
     import vad as vad_module
 
-    monkeypatch.setattr(vad_module, "session",
-                        lambda path: (_ for _ in ()).throw(RuntimeError("no runtime")))
-    monkeypatch.setattr(vad_module, "model_path", lambda download: "/nowhere.onnx")
+    monkeypatch.setattr(vad_module, "model_path", _raise(
+        OSError("could not reach huggingface.co")))
 
     worker.generate(_request(tmp_path))
 
@@ -950,6 +966,66 @@ def test_a_missing_DETECTOR_degrades_to_transcribing_everything_and_says_so(
             if "unavailable" in str(t.get("detail"))]
     assert said, "the degradation was silent"
     assert "speech detection unavailable" in capsys.readouterr().err.lower()
+
+
+def test_a_BROKEN_onnx_session_degrades_too(monkeypatch, loaded, base, tmp_path):
+    """The other half of "could not be obtained": the file arrived and the
+    runtime refused it. A truncated 2MB download is a corrupt model file, which
+    is the same story for the user as never having got one."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=8.0)
+    import vad as vad_module
+
+    monkeypatch.setattr(vad_module, "model_path", lambda download: "/nowhere.onnx")
+    monkeypatch.setattr(vad_module, "session", _raise(
+        FileNotFoundError("the speech detector is missing at /nowhere.onnx")))
+
+    worker.generate(_request(tmp_path))
+
+    assert len(transcribe.calls) == 1, "it should have transcribed the whole file"
+    assert [t for t in base.ticks if "unavailable" in str(t.get("detail"))]
+
+
+@pytest.mark.parametrize("attribute, error", [
+    ("session", TypeError("session() got an unexpected keyword argument")),
+    ("model_path", AttributeError("module 'vad' has no attribute 'REPO'")),
+    ("speech_regions", ValueError("cannot reshape array of size 512 into (1, 480)")),
+])
+def test_a_BUG_in_the_detector_is_not_degraded_away(monkeypatch, loaded, tmp_path,
+                                                    attribute, error):
+    """The degrade above is for a detector that could not be OBTAINED, and it is
+    the whole reason this catch has to stay narrow: a `TypeError` from `vad.py`
+    absorbed by it would reach the user as "Speech detection unavailable" — a
+    sentence that reads like a flaky network and sends nobody to the bug.
+
+    `speech_regions` is in the list because it is where a detector bug actually
+    lives (a bad tensor shape, a state threaded wrong), and it used to sit
+    inside the same `try` as the fetch.
+    """
+    worker, _transcribe = loaded(windows=(100,), audio_seconds=8.0)
+    import vad as vad_module
+
+    monkeypatch.setattr(vad_module, "model_path", lambda download: "/nowhere.onnx")
+    monkeypatch.setattr(vad_module, "session", lambda path: object())
+    monkeypatch.setattr(vad_module, attribute, _raise(error))
+
+    with pytest.raises(type(error), match=r"."):
+        worker.generate(_request(tmp_path))
+
+
+def test_a_CANCEL_during_the_detector_fetch_is_not_degraded_away(
+        monkeypatch, loaded, base, tmp_path):
+    """`worker_base.Cancelled` is an `Exception`, so the catch that used to be
+    here could have eaten a ✕ and gone on to transcribe the whole file the user
+    had just stopped. Latent rather than live — no download reports through
+    `report_or_cancel` today — and pinned so it stays that way if one does.
+    """
+    worker, _transcribe = loaded(windows=(100,), audio_seconds=8.0)
+    import vad as vad_module
+
+    monkeypatch.setattr(vad_module, "model_path", _raise(base.Cancelled()))
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path))
 
 
 def test_a_cancel_between_REGIONS_is_honoured_and_writes_nothing(

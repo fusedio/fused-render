@@ -86,7 +86,12 @@ def session(path):
     import onnxruntime
 
     if not os.path.isfile(path):
-        raise RuntimeError(f"the speech detector is missing at {path}")
+        # `FileNotFoundError` rather than a bare `RuntimeError`, because
+        # `worker.py` sorts this function's failures into two piles by TYPE: a
+        # detector that could not be obtained degrades to transcribing
+        # everything, and a bug in this file fails loudly. A missing file after
+        # a download is the first kind, and an `OSError` is how it says so.
+        raise FileNotFoundError(f"the speech detector is missing at {path}")
     options = onnxruntime.SessionOptions()
     # One thread. This runs while nothing else in the process is doing anything,
     # so the pool would only be threads to create and tear down — and

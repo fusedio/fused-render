@@ -46,6 +46,7 @@ is up to 30 seconds of audio away and the phase before it (`av` decoding) has no
 hook at all.
 """
 
+import http.client
 import importlib
 import json
 import math
@@ -612,6 +613,53 @@ def _seconds_done(position, offset=0.0, limit=None):
 # ------------------------------------------------------------------------- VAD
 
 
+#: What "the detector could not be obtained" is allowed to arrive as.
+#:
+#: `OSError` is almost all of the FETCH: a socket that never connected, a DNS
+#: name that did not resolve, a TLS handshake, a timeout and a full disk all
+#: arrive as one — and so does every huggingface_hub failure worth degrading on,
+#: because `HfHubHTTPError` is declared `(HTTPError, OSError)`, the offline guard
+#: derives from `ConnectionError` and the local-cache miss from
+#: `FileNotFoundError` (which is also what `vad.session` raises when the download
+#: left no file). `http.client.HTTPException` is the one shape that is NOT an
+#: `OSError`: a response malformed rather than merely unhappy.
+#:
+#: `ImportError` is here because onnxruntime is imported inside `vad.session`,
+#: and a venv without it is the same outcome for the user as a detector that
+#: would not download: this runner transcribes perfectly well without one, and
+#: onnxruntime is the dependency in this folder most likely to have no wheel for
+#: some future interpreter. It is still not silent — the reason goes to stderr
+#: and to the row — and it costs absorbing a misspelt import inside `session`,
+#: a four-line function whose only import is a constant.
+#:
+#: Deliberately NOT `ValueError`: hf raises `HFValidationError(ValueError)` for a
+#: repo id that is not a repo id, and the id is a constant in `vad.py` — so that
+#: one is a typo in this codebase, not a bad day on the network.
+_FETCH_FAILED = (OSError, http.client.HTTPException, ImportError)
+
+
+def _onnx_failures():
+    """Every exception ONNX Runtime's C++ layer can raise loading a model.
+
+    Named as "the module that contains exactly these and nothing else" rather
+    than as a list, because there is nothing else to name: onnxruntime registers
+    each of its fifteen error types from pybind with `Exception` as the base, so
+    there is no `OrtError` to catch and no shared ancestor short of `Exception`
+    itself. Enumerating `Fail`, `InvalidProtobuf`, `NoSuchFile`, … here would
+    quietly stop covering a runtime that adds a sixteenth.
+
+    `()` when onnxruntime is absent, which needs no special case: the
+    `ImportError` that then comes out of `vad.session` is degradable on its own
+    account (see `_FETCH_FAILED`).
+    """
+    try:
+        from onnxruntime.capi import onnxruntime_pybind11_state as ort_errors
+    except ImportError:
+        return ()
+    return tuple(value for value in vars(ort_errors).values()
+                 if isinstance(value, type) and issubclass(value, Exception))
+
+
 def _speech_regions(audio, total, job, row):
     """Where the speech is, or `None` when the whole file should be decoded.
 
@@ -629,25 +677,39 @@ def _speech_regions(audio, total, job, row):
     reason goes to the row the user is watching and to the worker log, because
     a `vad: true` that quietly did nothing is exactly the kind of difference
     between two engines this runner exists to eliminate.
+
+    **"Could not be fetched" is the whole of what degrades**, and the shape of
+    this function is what keeps it that way. Only OBTAINING the detector — the
+    download and the session that loads the file — sits inside the `try`; the
+    detection itself runs after it. A `TypeError` out of `vad.py`, a tensor
+    reshaped wrong, a state threaded to the wrong argument: those are bugs in
+    this repository, and absorbed here each of them would reach the user as
+    "Speech detection unavailable", a sentence that reads like a flaky network
+    and sends nobody to the defect. They propagate and fail the transcription,
+    which is how they get found. `worker_base.Cancelled` is also an `Exception`
+    and is excluded by the same narrowing — no download reports through
+    `report_or_cancel` today, so a swallowed ✕ is latent rather than live, but a
+    catch that COULD swallow one is not a catch worth leaving in place.
     """
     import vad as vad_module
 
-    try:
-        sess = _loaded.get("vad")
-        if sess is None:
+    sess = _loaded.get("vad")
+    if sess is None:
+        try:
             sess = vad_module.session(
                 vad_module.model_path(worker_base.download_file))
-            _loaded["vad"] = sess
-        worker_base.report(job=job, **row, state="running", done=0, total=total,
-                           detail="Finding speech…")
-        return vad_module.speech_regions(audio, sess)
-    except Exception as error:  # noqa: BLE001 - a missing detector must not cost the transcript
-        print(f"speech detection unavailable, transcribing the whole file: "
-              f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
-        worker_base.report(
-            job=job, **row, state="running", done=0, total=total,
-            detail="Speech detection unavailable — transcribing everything…")
-        return None
+        except _FETCH_FAILED + _onnx_failures() as error:
+            print(f"speech detection unavailable, transcribing the whole file: "
+                  f"{error.__class__.__name__}: {error}", file=sys.stderr,
+                  flush=True)
+            worker_base.report(
+                job=job, **row, state="running", done=0, total=total,
+                detail="Speech detection unavailable — transcribing everything…")
+            return None
+        _loaded["vad"] = sess
+    worker_base.report(job=job, **row, state="running", done=0, total=total,
+                       detail="Finding speech…")
+    return vad_module.speech_regions(audio, sess)
 
 
 def _regions_to_decode(audio, regions, total):
