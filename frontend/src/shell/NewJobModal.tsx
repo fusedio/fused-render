@@ -178,7 +178,11 @@ function ExplorerPanel({
         const cut = path.replace(/\/+$/, "").lastIndexOf("/");
         if (!climbed.current && cut >= 0) {
           climbed.current = true;
-          setPath(path.replace(/\/+$/, "").slice(0, cut) || "/");
+          const parent = path.replace(/\/+$/, "").slice(0, cut);
+          // A drive root keeps its slash — bare "C:" reads as cwd-relative
+          // elsewhere in the shell, not as the root (Bugbot, PR #548; the
+          // same trap the old picker's up() fixed in PR #541).
+          setPath(/^[A-Za-z]:$/.test(parent) ? parent + "/" : parent || "/");
           return;
         }
         setError(e.message);
