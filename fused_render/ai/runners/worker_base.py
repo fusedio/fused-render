@@ -165,10 +165,23 @@ def _stdlib_hint(chain):
     fixed by rebuilding the runner's venv, while a missing stdlib module is
     baked into the interpreter that venv was created from, so rebuilding
     reproduces it exactly. Told the first story, a user retries forever.
+
+    **`ModuleNotFoundError`, not `ImportError`**, and that is not pedantry:
+    `from email import nope` raises a plain ImportError whose `.name` is
+    `email` — a package that is present and fine — so keying on ImportError
+    would accuse a complete interpreter of missing part of its stdlib and tell
+    the user a rebuild cannot help. That is the exact class of confidently
+    wrong cause this function exists to stop, which makes it worth being
+    strict: only "the module was not found" earns the accusation.
+
+    The TOP-LEVEL name decides, because `sys.stdlib_module_names` holds only
+    top-level names while a partial stdlib fails as `No module named
+    'email.mime'`. The full name is what gets reported — it is the thing that
+    is actually missing.
     """
     for exc in chain:
-        name = getattr(exc, "name", None)
-        if isinstance(exc, ImportError) and name in sys.stdlib_module_names:
+        name = getattr(exc, "name", None) or ""
+        if isinstance(exc, ModuleNotFoundError) and name.partition(".")[0] in sys.stdlib_module_names:
             return (
                 f"\n\n`{name}` is part of the PYTHON STANDARD LIBRARY, so this is "
                 f"the interpreter this environment was built on ({sys.base_prefix}) "

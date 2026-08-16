@@ -758,3 +758,34 @@ def test_a_suppressed_context_is_not_walked_past(base):
     assert error == "RuntimeError: this backend is unavailable"
     assert "filecmp" not in error
     assert "STANDARD LIBRARY" not in error
+
+
+def test_a_name_error_inside_a_present_stdlib_package_is_not_blamed_on_the_interpreter(base):
+    """`from email import nope` raises a plain ImportError whose `.name` is
+    `email` — a package that is present and working. Keying the hint on
+    ImportError would accuse a complete interpreter of missing part of its
+    stdlib and tell the user that rebuilding cannot help: the exact class of
+    confidently-wrong cause this whole change exists to stop."""
+    def load(model_id, fetched):
+        from email import definitely_not_a_real_name  # noqa: F401
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "definitely_not_a_real_name" in error, "the real error still reaches the user"
+    assert "STANDARD LIBRARY" not in error
+    assert "rebuilding the environment" not in error
+
+
+def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
+    """A partially-shipped stdlib fails as `No module named 'email.mime'`, and
+    `sys.stdlib_module_names` holds only top-level names — so the top level is
+    what decides, while the full name is what gets reported."""
+    def load(model_id, fetched):
+        raise ModuleNotFoundError("No module named 'email.mime'", name="email.mime")
+
+    base._bring_up("org/m", lambda m: None, load)
+    error = base.snapshot()["error"]
+
+    assert "email.mime" in error
+    assert "STANDARD LIBRARY" in error
