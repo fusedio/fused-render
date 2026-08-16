@@ -56,10 +56,15 @@ export interface ReinstallAdvice {
   // brew | dmg | windows | linux | source | pip
   method: string;
   headline: string;
-  // Empty when there is nothing to type — a DMG is dragged, not run.
+  // Empty when there is nothing to type — a DMG is dragged, not run. The panel
+  // reads that as "the link IS the instruction" and promotes the link to the
+  // section's primary action; see reinstall_advice's docstring.
   command: string;
   note: string;
   url: string;
+  // Wording for the link, from the server (which already words the rest per
+  // method). Older servers omit it — fall back to the bare URL.
+  url_label?: string;
 }
 
 export interface SelfFixReport {

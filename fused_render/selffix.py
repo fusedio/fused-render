@@ -726,6 +726,14 @@ def reinstall_advice() -> dict:
     replacement removes the state dir along with the tree, so reinstalling
     clears the badge. That is a property of where the marker lives (module
     docstring), not of anything the installer does on our behalf.
+
+    **`command` empty means the link IS the instruction**, and the panel styles
+    it as the section's primary action rather than as a footnote. That is the
+    DMG case — the most common end-user install, where "reinstall" means "go to
+    the download page and drag it over" and there is nothing to type. Wording
+    the link is this function's job too (`url_label`): the branches already say
+    everything else per method, and a raw URL printed as the only call to
+    action reads as a citation, not as a button.
     """
     method = install_method()
     if method == "brew":
@@ -739,6 +747,7 @@ def reinstall_advice() -> dict:
                     "Homebrew manages this copy, so the app never swaps it out "
                     "on its own.",
             "url": DOWNLOAD_URL,
+            "url_label": "Download page",
         }
     if method == "dmg":
         return {
@@ -749,6 +758,7 @@ def reinstall_advice() -> dict:
                     "Applications, replacing the copy that is there. Then quit "
                     "and reopen it.",
             "url": DOWNLOAD_URL,
+            "url_label": "Download the latest version",
         }
     if method in ("windows", "linux"):
         return {
@@ -758,6 +768,7 @@ def reinstall_advice() -> dict:
             "note": "Download the latest installer and run it over this "
                     "install, then restart fused-render.",
             "url": DOWNLOAD_URL,
+            "url_label": "Download the latest version",
         }
     if method == "source":
         return {
@@ -768,6 +779,7 @@ def reinstall_advice() -> dict:
                     "tree — review it, keep it or revert it. The badge clears "
                     "once the tree matches what the release ships.",
             "url": RELEASES_URL,
+            "url_label": "Latest release",
         }
     return {
         "method": "pip",
@@ -777,6 +789,7 @@ def reinstall_advice() -> dict:
                 "--force-reinstall is what replaces the files that were "
                 "changed here.",
         "url": RELEASES_URL,
+        "url_label": "Latest release notes",
     }
 
 
