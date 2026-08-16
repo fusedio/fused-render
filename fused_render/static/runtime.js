@@ -2892,6 +2892,20 @@
             const err = new Error("the transcription job is no longer being reported");
             err.type = "ai_error";
             err.jobId = started.jobId;
+            // The salvage, on the path a long run is most likely to take. A
+            // transcription long enough to fail at minute 80 is long enough
+            // for its row to age out while the tab sleeps, and reaching here
+            // means `done()` could not read the transcript — so this IS a
+            // failed run, with a `.partial.jsonl` sitting beside where the
+            // `.json` should have been. Without these the caller is told the
+            // run is gone and given nothing to salvage it from, which is the
+            // same gap the live `error` branch below closes.
+            //
+            // Not derived from a naming rule: these are the paths the POST
+            // reply named, held since the run opened, so this never points a
+            // caller at a file the server never confirmed.
+            err.output = started.output;
+            err.outputPartial = started.outputPartial;
             throw err;
           });
         }

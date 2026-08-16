@@ -3276,6 +3276,32 @@ def test_a_CANCELLED_run_also_stops_calling_onSegment_once_it_rejects():
     assert run["segmentsAtSettle"] == len(run["segments"]), run
 
 
+def test_a_failure_that_AGED_OUT_still_says_where_the_salvage_is():
+    """The gap the live `error` path already closed, on the path a long run is
+    most likely to take.
+
+    A transcription long enough to fail at minute 80 is long enough for its row
+    to be dropped after retention while the tab sleeps, and then `watch`
+    resolves null and `done()` fails because there is no `.json` — a failed
+    run. That fallback rejection carried no paths at all, so the caller could
+    not name the `.partial.jsonl` the worker deliberately left behind, in
+    precisely the case the file exists for. The paths are not guessed here:
+    they are the ones the POST reply named, held in `started` since the run
+    opened.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one)], {"text": "", "segments": []},
+        terminal="null",
+        readfile='Promise.reject(new Error("no transcript"))')
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert run["settled"]["type"] == "ai_error"
+    assert "no longer being reported" in run["settled"]["message"]
+    assert run["settled"]["output"] == "/t/out.json"
+    assert run["settled"]["outputPartial"] == "/t/out.partial.jsonl"
+
+
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
     """The page half, pinned as an INVARIANT rather than an instance.
 

@@ -249,7 +249,9 @@ try {
 }
 ```
 
-`err.output` and `err.outputPartial` are on `cancelled` rejections too, where the file is already gone — one shape for both, so you check the read rather than the rejection type. Nothing cleans a salvaged file up for you: delete it once the page has what it needs.
+`err.output` and `err.outputPartial` are on `cancelled` rejections too, where the file is already gone — one shape for both, so you check the read rather than the rejection type. They are also on the "job is no longer being reported" rejection, which is what a run long enough to salvage most often hits: its job row is dropped after retention while the tab sleeps, and the transcript is not there either. Nothing cleans a salvaged file up for you: delete it once the page has what it needs.
+
+`onSegment` stops when the promise does — the last reads in flight are delivered *before* the rejection, never after it, so a `catch` that clears the transcript pane keeps it clear.
 
 ### Who said it: `diarize` + `speakers`
 
