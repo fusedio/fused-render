@@ -20,7 +20,7 @@ import { navigateUrl } from "@platform/lib/router";
 import {
   assignLanes,
   calendarEvents,
-  describeRepeats,
+  entryRepeatText,
   formatDue,
   stateLabel,
   stateTone,
@@ -152,7 +152,7 @@ function Popover({
   const cancel = (id: string) => act(cancelScheduledMessage, id);
   const unskip = (id: string) => act(restoreScheduledMessage, id);
 
-  const repeats = entry.repeats || "";
+  const repeats = entry.rule || entry.repeats ? entryRepeatText(entry) : "";
   const skipped = !event.ghost && entry.state === "cancelled" && !!entry.template_id;
 
   // What can still be changed: anything that has not acted yet — a waiting
@@ -189,7 +189,7 @@ function Popover({
         {repeats && (
           <span className="schedule-pop-row">
             {ICON_REPEAT}
-            <span>Repeats {describeRepeats(repeats)}</span>
+            <span>Repeats {repeats}</span>
           </span>
         )}
         <span className="schedule-pop-row">

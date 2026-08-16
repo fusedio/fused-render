@@ -3,7 +3,7 @@
 // it send) and `turn` (how did the session go) — collapses into one label and
 // one tone. Split out of Scheduled.tsx when the calendar arrived, so the two
 // views cannot drift into describing the same entry differently.
-import type { ScheduledMessage, ScheduledState } from "@platform/lib/api";
+import type { RecurrenceRule, ScheduledMessage, ScheduledState } from "@platform/lib/api";
 
 export function formatDue(iso: string): string {
   const d = new Date(iso);
@@ -261,4 +261,116 @@ export function describeRepeats(repeats: string): string {
     }
   }
   return repeats;
+}
+
+// ---- Structured recurrence wording (Google Calendar's, copied deliberately) --
+// The cron sentences above ("daily at 09:00") read as machine output; Google's
+// read as answers to "when does this happen?" (Akshil, 2026-08-15). These are
+// pure so the select's labels, the cards and the popover all say the same words.
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+const NTH_NAMES = ["first", "second", "third", "fourth", "fifth"];
+
+// Which Wednesday of its month a date is — the 12th is the SECOND Wednesday.
+export function nthOfMonth(d: Date): number {
+  return Math.floor((d.getDate() - 1) / 7) + 1;
+}
+
+// "Nov 11, 2026" — how an end date reads in a repeat sentence.
+function shortDate(ymd: string): string {
+  const [y, m, day] = ymd.split("-").map(Number);
+  if (!y || !m || !day) return ymd;
+  return `${MONTH_NAMES[m - 1].slice(0, 3)} ${day}, ${y}`;
+}
+
+const WEEKDAYS_1_TO_5 = [1, 2, 3, 4, 5];
+
+export function describeRule(rule: RecurrenceRule, anchor: Date): string {
+  const n = rule.interval ?? 1;
+  const every = (unit: string) => (n === 1 ? "" : `Every ${n} ${unit}s`);
+  let base: string;
+  switch (rule.freq) {
+    case "day":
+      base = n === 1 ? "Daily" : every("day");
+      break;
+    case "week": {
+      const days = (rule.byday?.length ? rule.byday : [anchor.getDay()])
+        .slice()
+        .sort((a, b) => a - b);
+      const names = days.map((d) => DAY_NAMES[d]).join(", ");
+      if (n === 1 && days.length === 5 && days.every((d, i) => d === WEEKDAYS_1_TO_5[i])) {
+        base = "Every weekday (Monday to Friday)";
+      } else if (n === 1) {
+        base = `Weekly on ${names}`;
+      } else {
+        base = `${every("week")} on ${names}`;
+      }
+      break;
+    }
+    case "month": {
+      const what =
+        rule.monthly === "nth-weekday"
+          ? `the ${NTH_NAMES[nthOfMonth(anchor) - 1]} ${DAY_NAMES[anchor.getDay()]}`
+          : `day ${anchor.getDate()}`;
+      base = n === 1 ? `Monthly on ${what}` : `${every("month")} on ${what}`;
+      break;
+    }
+    case "year": {
+      const what = `${MONTH_NAMES[anchor.getMonth()]} ${anchor.getDate()}`;
+      base = n === 1 ? `Annually on ${what}` : `${every("year")} on ${what}`;
+      break;
+    }
+  }
+  if (rule.until) return `${base}, until ${shortDate(rule.until)}`;
+  if (rule.count) return `${base}, ${rule.count} ${rule.count === 1 ? "time" : "times"}`;
+  return base;
+}
+
+// One sentence for whatever kind of repeat an entry carries — the rule's
+// Google wording when it has one, the legacy cron reading otherwise.
+export function entryRepeatText(entry: ScheduledMessage): string {
+  if (entry.rule) return describeRule(entry.rule, new Date(entry.due));
+  return describeRepeats(entry.repeats || "");
+}
+
+// The repeat select's derived choices, Google's list verbatim: every label is
+// read off the picked date, so recurrence needs no fields of its own until
+// Custom. Returned as data so the modal renders and the tests read the same
+// list.
+export interface RepeatChoice {
+  key: string;
+  label: string;
+  rule: RecurrenceRule | null; // null = does not repeat
+}
+
+export function repeatChoicesFor(picked: Date): RepeatChoice[] {
+  const dow = picked.getDay();
+  return [
+    { key: "none", label: "Does not repeat", rule: null },
+    { key: "daily", label: "Daily", rule: { freq: "day" } },
+    {
+      key: "weekly",
+      label: `Weekly on ${DAY_NAMES[dow]}`,
+      rule: { freq: "week", byday: [dow] },
+    },
+    {
+      key: "monthly",
+      label: `Monthly on the ${NTH_NAMES[nthOfMonth(picked) - 1]} ${DAY_NAMES[dow]}`,
+      rule: { freq: "month", monthly: "nth-weekday" },
+    },
+    {
+      key: "annually",
+      label: `Annually on ${MONTH_NAMES[picked.getMonth()]} ${picked.getDate()}`,
+      rule: { freq: "year" },
+    },
+    {
+      key: "weekday",
+      label: "Every weekday (Monday to Friday)",
+      rule: { freq: "week", byday: WEEKDAYS_1_TO_5 },
+    },
+    { key: "custom", label: "Custom…", rule: null },
+  ];
 }
