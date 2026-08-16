@@ -2926,7 +2926,8 @@ def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
 
 def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
                                partial_path='"/t/out.partial.jsonl"',
-                               ranged=True, on_segment=True, slow_ms=0):
+                               ranged=True, on_segment=True, slow_ms=0,
+                               terminal='{state: "done"}', readfile=None):
     """Drive `aiTranscribe` through a real poll loop over a growing file.
 
     `lines` is a list of JS strings, one per tick: the WHOLE partial file as it
@@ -2936,8 +2937,15 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
     whole file, which is the behaviour a proxy in front of `/api/fs/raw` could
     impose and which must not duplicate a single segment.
 
-    Returns `{settled, segments, fetches}` — the outcome, every `onSegment`
-    argument in the order it arrived, and every request the bridge made.
+    `terminal` is the record `watch` finally resolves with — `null` for a row
+    that aged out, an `error`/`cancelled` row for the failure paths — and
+    `readfile` overrides what `readFile` does, so a failure can be driven all
+    the way through with the poll loop and the tail both real.
+
+    Returns `{settled, segments, segmentsAtSettle, fetches}` — the outcome,
+    every `onSegment` argument in the order it arrived, how many of them had
+    arrived at the moment the promise settled, and every request the bridge
+    made.
     """
     import shutil
     import subprocess
@@ -2958,7 +2966,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
       const aiPost = () => Promise.resolve(started);
       const rawUrl = (p) => "/api/fs/raw?path=" + p;
       const callHeaders = (extra) => Object.assign({"X-Fused-Call": "1"}, extra);
-      const readFile = () => Promise.resolve(JSON.stringify(FINAL));
+      const readFile = () => READFILE;
       const RANGED = IS_RANGED;
       const HISTORY = LINES;
       const fetches = [];
@@ -2989,16 +2997,21 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
                   slice.byteOffset, slice.byteOffset + slice.byteLength)};
       };
       const watchJob = () => ({
-        // The real loop's shape: onUpdate every tick, then the terminal record.
+        // The real loop's shape, down to the last callback: `watch` reports
+        // EVERY record it sees and only then returns the terminal one (see
+        // watchJob's `onUpdate(record)` above `if (record.state !== "running")`),
+        // so the terminal tick starts a tail of its own. A row that aged out is
+        // the one case with nothing to report — the record is null.
         watch: async (onUpdate) => {
           for (const state of HISTORY) {
             onDisk = state;
             if (typeof onUpdate === "function") onUpdate({state: "running", done: 1});
             await new Promise((r) => setTimeout(r, 5));
           }
-          return {state: "done"};
+          if (TERMINAL && typeof onUpdate === "function") onUpdate(TERMINAL);
+          return TERMINAL;
         },
-        get: () => Promise.resolve({state: "done"}),
+        get: () => Promise.resolve(TERMINAL),
         stop() {}, cancel: () => Promise.resolve(true),
       });
       const heard = [];
@@ -3007,20 +3020,30 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
                .replace("SLOW_MS", str(int(slow_ms)))
                .replace("IS_RANGED", "true" if ranged else "false")
                .replace("LINES", json.dumps(lines))
-               .replace("FINAL", json.dumps(final)))
+               .replace("TERMINAL", terminal)
+               .replace("READFILE",
+                        readfile or "Promise.resolve(%s)" % json.dumps(json.dumps(final))))
     # The report is taken AFTER a settle window, not at resolution. A read
     # still in flight when the promise resolves would otherwise deliver its
     # segments into `heard` after the snapshot was printed — so a bridge that
     # let the drain race the tail would look clean here, which is the one
     # failure this harness exists to see.
     call = """
-      const report = (payload) => setTimeout(
-        () => console.log(JSON.stringify(
-          Object.assign(payload, {segments: heard, fetches}))), 120);
+      const report = (payload) => {
+        // Counted the instant the promise settles, and printed after the
+        // window below: the gap between the two is a segment that arrived
+        // AFTER the caller was already told the run was over.
+        const atSettle = heard.length;
+        setTimeout(() => console.log(JSON.stringify(
+          Object.assign(payload, {segments: heard, segmentsAtSettle: atSettle,
+                                  fetches}))), 120);
+      };
       const options = Object.assign(OPTS, LISTENER);
       aiTranscribe(options).then(
         (value) => report({settled: {ok: true, value}}),
-        (err) => report({settled: {ok: false, message: err.message, type: err.type}}),
+        (err) => report({settled: {ok: false, message: err.message, type: err.type,
+                                   output: err.output,
+                                   outputPartial: err.outputPartial}}),
       );
     """.replace("OPTS", opts).replace(
         "LISTENER",
@@ -3182,8 +3205,11 @@ def test_a_caller_with_NO_onSegment_makes_exactly_the_requests_it_always_did():
     assert quiet["fetches"] == []
 
     # …and with `onSegment`, one tail per tick and no more — no second loop.
+    # Three ticks, not two: `watch` reports the terminal record as well, and
+    # that last tail is what carries the segments written between the final
+    # running tick and the row finishing.
     loud = _run_ai_transcribe_tailing(history, final)
-    assert len([f for f in loud["fetches"] if f["range"]]) == 2
+    assert len([f for f in loud["fetches"] if f["range"]]) == 3
 
 
 def test_the_bridge_tails_the_path_the_ROUTE_advertised(client,
@@ -3201,6 +3227,53 @@ def test_the_bridge_tails_the_path_the_ROUTE_advertised(client,
         partial_path=json.dumps(reply["outputPartial"]))
     assert run["segments"] == [one]
     assert run["fetches"][0]["url"].endswith(reply["outputPartial"])
+
+
+def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
+    """`onSegment` must stop when the promise settles, and the failure path is
+    the one that did not honour that.
+
+    `watch` reports the terminal record too, so an `error` or `cancelled` row
+    starts one last tail — and a tail from the tick before it can still be in
+    flight anyway. The success path settles `tailChain` before it drains, but
+    the failure path threw straight out of the `.then`, so those reads landed
+    afterwards and called `onSegment` on a promise the caller had already seen
+    reject. A page that clears its transcript pane on the rejection then gets a
+    cue painted into the cleared pane, from a run it was told was over.
+
+    Waiting is the right answer rather than suppressing: those segments are
+    real — they decoded before the run died — and delivering them BEFORE the
+    rejection is exactly the salvage this feature is for.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        # The segment lands on the last running tick, and the read over it is
+        # still in flight when the row goes `error` under it.
+        ["", _jsonl(one)], {"text": "", "segments": []},
+        terminal='{state: "error", message: "the decoder exploded"}',
+        readfile='Promise.reject(new Error("no transcript"))',
+        slow_ms=30)
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert run["settled"]["type"] == "ai_error"
+    assert run["segments"] == [one], run["segments"]
+    # The whole assertion: nothing arrived after the caller was told it failed.
+    assert run["segmentsAtSettle"] == len(run["segments"]), run
+
+
+def test_a_CANCELLED_run_also_stops_calling_onSegment_once_it_rejects():
+    """Same rule on the other terminal state. A page cancels a transcription
+    to make it stop; a cue arriving after `cancel()` resolved is the one thing
+    a Stop button must not do."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        ["", _jsonl(one)], {"text": "", "segments": []},
+        terminal='{state: "cancelled"}',
+        readfile='Promise.reject(new Error("no transcript"))',
+        slow_ms=30)
+
+    assert run["settled"]["ok"] is False and run["settled"]["type"] == "cancelled"
+    assert run["segmentsAtSettle"] == len(run["segments"]), run
 
 
 def test_both_artefact_bridges_survive_a_row_that_aged_out():

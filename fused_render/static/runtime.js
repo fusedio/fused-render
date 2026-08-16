@@ -2914,7 +2914,19 @@
         // caller having to know which rejection populates them.
         err.output = started.output;
         err.outputPartial = started.outputPartial;
-        throw err;
+        // Settled FIRST, for the same reason `done()` settles it: `watch`
+        // reports the terminal record before it returns, so an `error` or
+        // `cancelled` row starts one last tail — and a read from the tick
+        // before it can still be in flight regardless. Thrown straight from
+        // here, those reads land AFTER the caller's promise has rejected and
+        // call `onSegment` on a run the page has already been told is over,
+        // painting a cue into a pane it just cleared.
+        //
+        // Waited on rather than suppressed, because those segments are the
+        // salvage: they decoded before the run died, and the two fields above
+        // are pointing at the same file they came out of. So they arrive
+        // before the rejection, and after it nothing does.
+        return tailChain.then(() => { throw err; });
       });
     });
   }
