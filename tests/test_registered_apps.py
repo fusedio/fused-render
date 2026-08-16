@@ -41,9 +41,9 @@ def _folder(tmp_path, name, htmls=("index.html",), title=None):
     d = tmp_path / "elsewhere" / name
     d.mkdir(parents=True)
     for i, h in enumerate(htmls):
-        body = "<html><body>hi</body></html>"
+        body = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
         if title is not None and i == 0:
-            body = f"<html><head><title>{title}</title></head></html>"
+            body = f"<html><head><meta name=\"fused-app\" /><title>{title}</title></head></html>"
         (d / h).write_text(body)
     return d
 
@@ -98,7 +98,7 @@ def test_workspace_paths_still_go_to_recents_not_the_registry(
 ):
     d = workspace / "local" / "demo"
     d.mkdir(parents=True)
-    (d / "index.html").write_text("<html></html>")
+    (d / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     assert _open(client, d) is True
 
     assert registered_apps.read_entries() == []
@@ -110,8 +110,8 @@ def test_workspace_paths_still_go_to_recents_not_the_registry(
 def test_workspace_and_ancestor_entries_are_refused_and_filtered(
     client, tmp_path, workspace
 ):
-    (workspace / "index.html").write_text("<html></html>")
-    (tmp_path / "index.html").write_text("<html></html>")
+    (workspace / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
+    (tmp_path / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     # An ancestor of the workspace would be a card for the whole disk.
     assert _open(client, tmp_path) is False
     # A hand-edited registry can't smuggle either shape past the read filter.
@@ -132,7 +132,7 @@ def test_symlink_alias_of_workspace_is_refused_and_filtered(
     would double-list the walk's own apps under `linked`."""
     ws_app = workspace / "local" / "demo"
     ws_app.mkdir(parents=True)
-    (ws_app / "index.html").write_text("<html></html>")
+    (ws_app / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     link = tmp_path / "elsewhere" / "ws-link"
     link.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(ws_app, link)
@@ -213,7 +213,7 @@ def test_external_and_workspace_apps_merge_in_one_listing(
 ):
     ws = workspace / "local" / "demo"
     ws.mkdir(parents=True)
-    (ws / "index.html").write_text("<html></html>")
+    (ws / "index.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     ext = _folder(tmp_path, "notes")
     assert _open(client, ext)
 
@@ -270,7 +270,8 @@ def test_entry_check_false_for_a_symlink_alias_of_the_workspace(
     recording it."""
     ws_app = workspace / "local" / "demo"
     ws_app.mkdir(parents=True)
-    (ws_app / "index.html").write_text("<html></html>")
+    (ws_app / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head></html>')
     link = tmp_path / "elsewhere" / "ws-link"
     link.parent.mkdir(parents=True, exist_ok=True)
     os.symlink(ws_app, link)
@@ -281,11 +282,15 @@ def test_entry_check_false_for_a_symlink_alias_of_the_workspace(
 
 
 def test_entry_check_tracks_the_entry_rule(client, tmp_path):
-    """The entry moves when index.html appears — the check must follow the
-    same rule registered_apps() reports."""
+    """The entry is the first TAGGED page in name order (D301) — the check
+    must follow the same rule registered_apps() reports: an untagged
+    index.html changes nothing, an earlier-in-name-order tagged page wins."""
     d = _folder(tmp_path, "ext", htmls=("page.html",))
     assert _open(client, d)
     assert registered_apps.is_registered_app_entry(str(d / "page.html")) is True
-    (d / "index.html").write_text("<html></html>")
+    (d / "index.html").write_text("<html></html>")  # untagged: no app claim
+    assert registered_apps.is_registered_app_entry(str(d / "page.html")) is True
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
+    (d / "aaa.html").write_text('<html><head><meta name="fused-app" /></head></html>')
     assert registered_apps.is_registered_app_entry(str(d / "page.html")) is False
-    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is True
+    assert registered_apps.is_registered_app_entry(str(d / "aaa.html")) is True

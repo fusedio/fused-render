@@ -236,6 +236,11 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     from fused_render import community
 
     community.refresh_in_background()
+    # One-time migration: stamp `<meta name="fused-app">` into pre-existing
+    # workspace apps (meta_migration's docstring carries the rules).
+    from fused_render import meta_migration
+
+    meta_migration.run_once_in_background(start_dir)
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.

@@ -445,6 +445,8 @@ def _claude_bin() -> str:
         resolved = os.path.expanduser(os.path.expandvars(candidate))
         if os.path.isfile(resolved):
             return resolved
+    # claude_spawn.py recognizes this failure by the "claude CLI not found"
+    # substring — keep the two in step if the wording changes.
     raise FileNotFoundError(
         "claude CLI not found — install Claude Code, put `claude` on the PATH "
         "of the environment that launched fused-render, or set "
@@ -1706,6 +1708,40 @@ def _overload_error(error: str, info) -> str:
             % (what, spent, "y" if spent == 1 else "ies", error))
 
 
+# The download page's troubleshooting anchor, used with a suffix per error
+# (-login, -notfound, -limit) so the page opens the matching panel rather
+# than always showing the login fix.
+GUIDE_URL = "https://render.fused.io/#troubleshooting"
+
+
+def _account_error(error: str) -> str:
+    """Login and plan-limit failures rewritten to say what to do about them.
+
+    The raw CLI text ("Invalid API key · Please run /login") names a fix that
+    only works INSIDE an interactive claude session, while the user is looking
+    at fused-render — so it reads as a bug in this app with no way out. Say
+    where to run the fix and link the guide; the original rides along in
+    parentheses because it is the part a bug report can be matched on.
+
+    Substring matching over the error text is deliberate: these strings come
+    from the CLI's own `result` row or stderr, never from model output, so a
+    false positive would need the CLI itself to phrase an unrelated failure in
+    login words."""
+    if not error:
+        return error
+    low = error.lower()
+    if ("invalid api key" in low or "/login" in low or "oauth token" in low
+            or "not logged in" in low or "authentication_error" in low):
+        return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
+                "type /login and finish the sign-in, then start a new chat "
+                "here. Help: %s-login (%s)" % (GUIDE_URL, error))
+    if "usage limit reached" in low or "session limit" in low:
+        return ("Your Claude plan's usage limit was reached. Wait for it to "
+                "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
+                % (GUIDE_URL, error))
+    return error
+
+
 def _skill_calls(row: dict) -> list:
     """The Skill invocations in one FINALIZED `assistant` row.
 
@@ -2183,7 +2219,12 @@ def _poll(run_id: str) -> dict:
     # flight then THAT is the story and the raw text does not tell it. `retry`
     # covers the abnormal exit — a process killed mid-backoff never writes the
     # `result` row that would have moved it into `gave_up`.
-    error = _overload_error(error, gave_up or retry)
+    # Overload first, and it WINS: a run that died mid-retry is an API-health
+    # story even when the underlying 429 text mentions a usage limit, and
+    # letting _account_error re-match inside the overload message's
+    # parenthesized original would bury the retries already spent.
+    rewritten = _overload_error(error, gave_up or retry)
+    error = rewritten if rewritten != error else _account_error(error)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was

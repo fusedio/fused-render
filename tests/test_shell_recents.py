@@ -399,9 +399,12 @@ def test_corrupt_file_reads_as_defaults(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------- app entry filter
 #
-# A workspace app's ENTRY page never lands in the file recents — opening it is
-# the APP recents store's record (server/routers/apps.py), and one open in
-# both sidebar lists is the duplication the filter removes.
+# An app's ENTRY page never lands in the file recents — rendering the page IS
+# the open and GET /render records it into the app stores (D301), so one open
+# in both sidebar lists is the duplication the filter removes. The marker
+# (`<meta name="fused-app">`) is what makes a folder an app.
+
+TAGGED = '<html><head><meta name="fused-app" /></head><body>hi</body></html>'
 
 
 def _workspace_app(tmp_path, monkeypatch):
@@ -411,7 +414,7 @@ def _workspace_app(tmp_path, monkeypatch):
     d = ws / "local" / "demo"
     d.mkdir(parents=True)
     entry = d / "index.html"
-    entry.write_text("<html></html>", encoding="utf-8")
+    entry.write_text(TAGGED, encoding="utf-8")
     return ws, entry
 
 
@@ -428,9 +431,22 @@ def test_app_entry_open_is_not_recorded(tmp_path, monkeypatch):
 def test_non_entry_page_in_an_app_still_records(tmp_path, monkeypatch):
     ws, entry = _workspace_app(tmp_path, monkeypatch)
     other = entry.parent / "other.html"
-    other.write_text("<html></html>", encoding="utf-8")
+    other.write_text(TAGGED, encoding="utf-8")  # tagged, but index.html wins by name
     client, _ = _client(tmp_path, monkeypatch)
     resp = client.post("/api/recents/open", json={"url": _view_url(other)}, headers=FUSED)
+    assert resp.json() == {"recorded": True}
+
+
+def test_untagged_index_html_still_records(tmp_path, monkeypatch):
+    """The marker is the only app signal (D301): an untagged index.html is an
+    ordinary file and records in the file recents."""
+    ws, _ = _workspace_app(tmp_path, monkeypatch)
+    d = ws / "local" / "plain"
+    d.mkdir(parents=True)
+    page = d / "index.html"
+    page.write_text("<html></html>", encoding="utf-8")
+    client, _ = _client(tmp_path, monkeypatch)
+    resp = client.post("/api/recents/open", json={"url": _view_url(page)}, headers=FUSED)
     assert resp.json() == {"recorded": True}
 
 
@@ -468,11 +484,11 @@ def test_registered_app_entry_open_is_not_recorded(tmp_path, monkeypatch):
     ext = tmp_path / "elsewhere" / "ext"
     ext.mkdir(parents=True)
     entry = ext / "index.html"
-    entry.write_text("<html></html>", encoding="utf-8")
+    entry.write_text(TAGGED, encoding="utf-8")
     other = ext / "other.html"
-    other.write_text("<html></html>", encoding="utf-8")
+    other.write_text(TAGGED, encoding="utf-8")
     client, _ = _client(tmp_path, monkeypatch)
-    # Register the external folder (the "Open app" click's record).
+    # Register the external folder (the render-time record's registration).
     assert client.post("/api/apps/recents/open", json={"path": str(ext)},
                        headers=FUSED).json()["recorded"]
 
@@ -481,36 +497,3 @@ def test_registered_app_entry_open_is_not_recorded(tmp_path, monkeypatch):
     # A non-entry page in the same registered folder still records.
     resp = client.post("/api/recents/open", json={"url": _view_url(other)}, headers=FUSED)
     assert resp.json() == {"recorded": True}
-
-
-def test_workspace_app_entry_open_forwards_to_app_recents(tmp_path, monkeypatch):
-    """An entry opened through the file tree must bump the app's recency —
-    the app store is otherwise fed only by /apps card clicks, and a skipped
-    file record with no forward would land the open in NEITHER list."""
-    ws, entry = _workspace_app(tmp_path, monkeypatch)
-    client, home = _client(tmp_path, monkeypatch)
-    resp = client.post("/api/recents/open",
-                       json={"url": _view_url(entry), "title": "Demo"}, headers=FUSED)
-    assert resp.json() == {"recorded": False}
-    saved = json.loads((home / "app_recents.json").read_text(encoding="utf-8"))
-    assert [(e["path"], e.get("title")) for e in saved["entries"]] == [("local/demo", "Demo")]
-    (app,) = client.get("/api/apps").json()["apps"]
-    assert isinstance(app["opened_at"], float)
-
-
-def test_registered_app_entry_open_refreshes_the_registry(tmp_path, monkeypatch):
-    from fused_render import registered_apps
-
-    ws, _ = _workspace_app(tmp_path, monkeypatch)
-    ext = tmp_path / "elsewhere" / "ext"
-    ext.mkdir(parents=True)
-    (ext / "index.html").write_text("<html></html>", encoding="utf-8")
-    client, _ = _client(tmp_path, monkeypatch)
-    assert client.post("/api/apps/recents/open", json={"path": str(ext)},
-                       headers=FUSED).json()["recorded"]
-    first = registered_apps.read_entries()[0]["openedAt"]
-    time.sleep(0.01)
-    resp = client.post("/api/recents/open",
-                       json={"url": _view_url(ext / "index.html")}, headers=FUSED)
-    assert resp.json() == {"recorded": False}
-    assert registered_apps.read_entries()[0]["openedAt"] > first

@@ -4,8 +4,8 @@ The sidebar's "Recents" section: the last files opened in the shell, each with
 the last params they carried (the entry url is updated live while the file is
 open — see frontend lib/recents.ts). Files only: directory navigation and
 sentinel routes (`_panel`, `_prefs`, any `_`-prefixed view) are never recorded.
-Workspace app ENTRY pages aren't either — opening one is recorded in the app
-recents store instead (server/routers/apps.py), see _is_app_entry.
+App ENTRY pages (workspace or registered) aren't either — rendering one IS
+the open and GET /render records it (D301), see _is_app_entry.
 
 File shape:
 
@@ -129,31 +129,24 @@ def _file_path_from_url(url: str) -> str | None:
     return fs_path if exists else None
 
 
-def _app_entry_kind(fs_path: str) -> str | None:
-    """Which app list owns `fs_path` as its ENTRY page: "workspace" (the
-    walk's apps), "registered" (the linked-apps registry), or None (an
-    ordinary file). App entries never appear in the FILE recents — one open
-    landing in both sidebar lists is the duplication this filters — and the
-    kind tells POST which app store to forward the open into instead.
-    Applied at record time AND as a GET filter (entries recorded before this
-    rule, hide-not-delete like the missing-file filter). Fails toward None —
-    an indeterminate answer must record/keep the row, never hide a file from
-    both lists."""
+def _is_app_entry(fs_path: str) -> bool:
+    """Whether `fs_path` is an app's ENTRY page — a workspace app's or a
+    registered (linked) one's. Those never appear in the FILE recents: the
+    open is already recorded by GET /render when it serves the marker-carrying
+    page (D301 — server/routers/render.py feeds the app recents store and the
+    registry), and the same open landing in both sidebar lists is the
+    duplication this filters. Applied at record time AND as a GET filter
+    (entries recorded before this rule, hide-not-delete like the missing-file
+    filter). Fails toward False — an indeterminate answer must record/keep
+    the row, never hide a file from both lists."""
     from fused_render import app_listing, registered_apps
     from fused_render.shell.seed import fused_dir
 
     try:
-        if app_listing.is_workspace_app_entry(fs_path, fused_dir()):
-            return "workspace"
-        if registered_apps.is_registered_app_entry(fs_path):
-            return "registered"
+        return (app_listing.is_workspace_app_entry(fs_path, fused_dir())
+                or registered_apps.is_registered_app_entry(fs_path))
     except Exception:
-        pass
-    return None
-
-
-def _is_app_entry(fs_path: str) -> bool:
-    return _app_entry_kind(fs_path) is not None
+        return False
 
 
 def _local_exists(fs_path: str) -> bool:
@@ -269,27 +262,11 @@ def post_recent_open(
     # naming. Optional: absent until the preview iframe reports one.
     title_raw = payload.get("title")
     title = title_raw.strip() if isinstance(title_raw, str) and title_raw.strip() else None
-    app_kind = _app_entry_kind(fs_path)
-    if app_kind is not None:
-        # An app's entry page belongs to the APP recents, not this store —
-        # recording it here too would list every app in both sidebar
-        # sections. FORWARD the open there instead of dropping it: the app
-        # stores are otherwise fed only by /apps card clicks, and an entry
-        # opened through the file tree must still bump the app's recency or
-        # the open lands in neither list. Best-effort: a failed forward is
-        # still not this store's record.
-        folder = os.path.dirname(fs_path)
-        try:
-            if app_kind == "workspace":
-                from fused_render import app_recents
-
-                app_recents.record_open(folder, title)
-            else:
-                from fused_render import registered_apps
-
-                registered_apps.record_open(folder)
-        except Exception:
-            pass
+    if _is_app_entry(fs_path):
+        # An app's entry page belongs to the APP recents, not this store.
+        # No forwarding needed: rendering the page IS the open, and GET
+        # /render already recorded it (D301) — recording here too would list
+        # every app in both sidebar sections.
         return {"recorded": False}
     data = _read()
     # Dedupe by DECODED target fs path — existence-blind, so a dead entry for
