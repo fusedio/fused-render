@@ -1127,14 +1127,14 @@ input.schedule-when-field {
 .schedule-menu-item:hover:not(:disabled),
 .deploy-body .schedule-menu-item:hover:not(:disabled),
 .prefs-section .schedule-menu-item:hover:not(:disabled) {
-  background: var(--bg-alt);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: transparent;
 }
 
 .schedule-menu-item.is-selected,
 .deploy-body .schedule-menu-item.is-selected,
 .prefs-section .schedule-menu-item.is-selected {
-  background: var(--bg-alt);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   font-weight: 600;
 }
 
@@ -1226,7 +1226,7 @@ input.schedule-when-field {
 .schedule-mini-cal-day:hover:not(:disabled),
 .deploy-body .schedule-mini-cal-day:hover:not(:disabled),
 .prefs-section .schedule-mini-cal-day:hover:not(:disabled) {
-  background: var(--bg-alt);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: transparent;
 }
 
@@ -1294,14 +1294,14 @@ input.schedule-when-field {
 .schedule-time-slot:hover:not(:disabled),
 .deploy-body .schedule-time-slot:hover:not(:disabled),
 .prefs-section .schedule-time-slot:hover:not(:disabled) {
-  background: var(--bg-alt);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: transparent;
 }
 
 .schedule-time-slot.is-selected,
 .deploy-body .schedule-time-slot.is-selected,
 .prefs-section .schedule-time-slot.is-selected {
-  background: var(--bg-alt);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   font-weight: 600;
 }
 
@@ -1710,7 +1710,7 @@ input.schedule-when-field {
 }
 
 .schedule-form .schedule-picker-row:hover {
-  background: var(--bg-alt);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .schedule-form .schedule-picker-row svg {
