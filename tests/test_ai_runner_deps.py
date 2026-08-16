@@ -40,9 +40,48 @@ the table below. The from-scratch rebuild is therefore a MANUAL check, and D309
 records both what it verified and that it is manual.
 """
 import os
-import tomllib
 
 import pytest
+
+
+def _import_toml():
+    """tomllib (3.11+) or the tomli dependency that covers 3.10.
+
+    Same shape as `tests/test_template_locks.py`'s and
+    `tests/test_bundle_contents.py`'s, and copied rather than shared for the
+    reason the first of those states by cross-referencing the second: the
+    duplication is deliberate and acknowledged in place. `tests/` does have a
+    convention for shared helpers (`_git_repo.py`, `_theme_sources.py`, …), so
+    extracting a `tests/_toml.py` would be a reasonable cleanup — but it would
+    edit two suites unrelated to this branch, and `test_engine.py`'s version is
+    a skipif MARKER rather than a parser accessor and would not migrate anyway.
+
+    **A bare `import tomllib` is what this exists to prevent, and writing one
+    here is what shipped a red CI.** `requires-python` is >=3.10, tomllib is
+    3.11+ stdlib, and on 3.10 the bare import raises ModuleNotFoundError at
+    COLLECTION — which errors the whole module out rather than skipping it, so a
+    dependency-integrity suite silently stops running on the interpreter version
+    it is most likely to catch a packaging bug on. Local runs are on 3.12 and
+    cannot see it.
+
+    `tomli>=2.0; python_version < '3.11'` is a declared dependency of this
+    project (`pyproject.toml`), so on 3.10 these tests RUN — the skip is only
+    for an install that genuinely has neither. `allow_module_level=True`
+    because this is called at import time, where a plain `pytest.skip` is an
+    error rather than a skip.
+    """
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            pytest.skip("needs tomllib (3.11+) or the tomli package",
+                        allow_module_level=True)
+    return tomllib
+
+
+tomllib = _import_toml()
 
 RUNNERS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
