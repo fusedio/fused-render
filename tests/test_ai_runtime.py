@@ -1193,6 +1193,45 @@ def test_a_download_that_throws_reports_the_failure_too(fake_runner, monkeypatch
     assert supervisor.describe()["downloading"] == []
 
 
+def test_a_download_the_WORKER_stopped_reports_cancelled_not_error(
+        fake_runner, monkeypatch):
+    """Both sides of a download watch for the ✕, and the worker can win.
+
+    This loop polls every 0.5s; the worker's fetch ticks every 1s and learns
+    about the ✕ from the reply, raises `Cancelled` and exits non-zero. When that
+    lands first — a quarter of cancels, on the two loops' periods alone — the
+    `proc.poll() is None` guard drops straight through to the exit code without
+    ever asking about the ✕, and the user who pressed Cancel was told their
+    download had FAILED, with the worker's traceback as the reason.
+
+    Driven through a process that is already gone, because that is exactly the
+    state the race leaves behind and the only one that reproduces it every time.
+    """
+    job = supervisor.JOB_PREFIX + "org-stopped"
+    jobs.upsert({"id": job, "title": "org/stopped", "kind": "download",
+                 "state": "running", "cancellable": True}, server=True)
+    jobs.request_cancel(job)
+
+    class AlreadyExited:
+        """The worker noticed the ✕ and was gone before our first poll."""
+
+        pid = -1
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen",
+                        lambda *args, **kwargs: AlreadyExited())
+
+    supervisor._fetch_only(fake_runner, "org/stopped", job)
+
+    row = next(j for j in jobs.list_jobs() if j["id"] == job)
+    assert row["state"] == "cancelled"
+    # And no traceback dressed up as an explanation on a row nobody needs one for.
+    assert not row.get("message")
+
+
 def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path):
     """`envinstall.start()` names its own key, and it is not always ours.
 

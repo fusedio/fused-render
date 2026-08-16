@@ -1474,6 +1474,22 @@ def _bring_up(model_id, download, load):
         # of the model has not been touched yet. `/health` re-measures on every
         # poll, which is what the number on screen actually comes from.
         report(state="done", detail="Model loaded")
+    except Cancelled:
+        # **A ✕ is not a failure, and saying it is costs more than a wrong word.**
+        # A terminal `state="error"` on the row CLEARS `cancel_requested`
+        # (`jobs.upsert`: a finished job cannot be cancelled) — so the
+        # supervisor's own poll, which is the thing that would have written the
+        # right verdict half a second later, can no longer see the ✕ that caused
+        # this at all. It then reads /health, finds "error", and reports the
+        # download the user stopped as a load that crashed.
+        #
+        # The health state stays "error" because that is the only non-ready
+        # terminal this contract has, and the supervisor's post-spawn loop is
+        # watching for exactly it; `error="cancelled"` is the literal string
+        # `_failure_text`/`_bring_up` switch on, so the supervisor's independent
+        # verdict AGREES with the row instead of overwriting it.
+        set_state(state="error", error="cancelled")
+        report(state="cancelled")
     except BaseException as e:  # noqa: BLE001 - this thread's only job is to explain a failure
         # Deliberately broad and deliberately last: this thread is the only
         # thing that can say why a load failed, and an unhandled exception here
@@ -1648,6 +1664,15 @@ def serve(download, load, generate, streaming=False, memory=None, argv=None):
     if args.download_only:
         try:
             download(args.model)
+        except Cancelled:
+            # Still non-zero — the weights are not on the disk and a zero would
+            # report the download DONE — but not a traceback: `_fetch_only`
+            # tails this log for the message it puts on a failed row, and a
+            # stack trace for something the user deliberately pressed is the
+            # noise that made a cancel look like a crash. The supervisor tells
+            # the two apart by the row's own ✕, not by what is written here.
+            sys.stderr.write("cancelled\n")
+            sys.exit(1)
         except BaseException as e:  # noqa: BLE001 - stderr is the supervisor's report
             traceback.print_exc(file=sys.stderr)
             sys.stderr.write(f"\n{e.__class__.__name__}: {e}\n")
