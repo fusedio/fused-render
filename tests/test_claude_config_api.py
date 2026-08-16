@@ -26,6 +26,8 @@ import ast
 import json
 import os
 import subprocess
+import sys
+import time
 from unittest import mock
 
 import pytest
@@ -675,6 +677,25 @@ def _spreads_kwargs(keywords):
     return False
 
 
+#: Keywords that take `subprocess` off `posix_spawn` no matter what else the
+#: call passes — read straight off CPython's own condition in
+#: `Popen._execute_child`. `cwd` is in here for the same reason `app_git.py`
+#: bans it independently: `git -C <dir>` is the spelling that does not fork.
+_FORK_FORCING = ("start_new_session", "preexec_fn", "pass_fds", "process_group", "cwd")
+
+
+def _forces_fork(keywords):
+    """Which fork-forcing keywords this call passes, ignoring explicit no-ops."""
+    found = []
+    for kw in keywords:
+        if kw.arg not in _FORK_FORCING:
+            continue
+        if isinstance(kw.value, ast.Constant) and kw.value.value in (None, False):
+            continue  # `cwd=None` says "no cwd"; it does not force anything
+        found.append(kw.arg)
+    return found
+
+
 def _keyword_is(keywords, name, value):
     return any(
         kw.arg == name and isinstance(kw.value, ast.Constant) and kw.value.value is value
@@ -698,11 +719,22 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
 
     A call may spread SUBPROCESS_KWARGS or pass close_fds=False itself
     (archive_zip has to: it reads binary, so it cannot take the text half).
+
+    **And close_fds=False is necessary, not sufficient.** CPython's fast path
+    requires `not close_fds` AND `not start_new_session` AND no `preexec_fn`,
+    `pass_fds`, `process_group` or `cwd` — so a call that spread the safe
+    kwargs and then asked for a new session forked anyway, while reading as
+    guarded both here and to anyone maintaining it. `claude_cli_detached` did
+    exactly that, and this test passed over it: the spread was accepted as
+    proof of the property it no longer had. A fork-forcing keyword now
+    disqualifies a call however well-guarded the rest of it looks; the way to
+    have both is `os.posix_spawn(..., setsid=True)`, which is what that
+    function does now.
     """
     assert lib.SUBPROCESS_KWARGS == {
         "close_fds": False, "text": True, "encoding": "utf-8", "errors": "replace",
     }
-    no_spawn_guard, bare_text = [], []
+    no_spawn_guard, forced_fork, bare_text = [], [], []
     calls = 0
     for name, src in _package_sources():
         for lineno, keywords in _spawn_calls(src):
@@ -710,12 +742,142 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
             guarded = _spreads_kwargs(keywords) or _keyword_is(keywords, "close_fds", False)
             if not guarded:
                 no_spawn_guard.append(f"{name}:{lineno}")
+            forcing = _forces_fork(keywords)
+            if forcing:
+                forced_fork.append(f"{name}:{lineno} ({', '.join(forcing)})")
             if _keyword_is(keywords, "text", True):
                 bare_text.append(f"{name}:{lineno}")
     assert no_spawn_guard == []
+    assert forced_fork == [], (
+        "these keywords put CPython back on fork()+exec whatever close_fds says"
+    )
     assert bare_text == []
     # A guard that silently matched nothing would pass forever.
     assert calls >= 6
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows keeps subprocess")
+def test_a_detached_launch_really_leads_its_own_session(tmp_path, monkeypatch):
+    """End to end, because both halves of this call are behavioural.
+
+    `mcp login` opens a browser and outlives the request, so the child must be
+    detached — and it must be detached WITHOUT `start_new_session`, which is
+    what put this call back on fork()+exec while the SUBPROCESS_KWARGS spread
+    made it read as guarded. Spawning a real child and asking it for its own
+    session id is the only way to check we still get the property the keyword
+    was there for.
+    """
+    out = tmp_path / "who.txt"
+    script = (f"import os; open({str(out)!r}, 'w')"
+              ".write('%d %d' % (os.getpid(), os.getsid(0)))")
+    monkeypatch.setattr(lib, "_resolve_claude", lambda path_env: sys.executable)
+
+    spawned = []
+    real_spawn = os.posix_spawn
+    monkeypatch.setattr(os, "posix_spawn",
+                        lambda *a, **k: (spawned.append(k), real_spawn(*a, **k))[1])
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda *a, **k: pytest.fail("a detached launch must not fork"))
+
+    assert lib.claude_cli_detached("-c", script) == {"ok": True, "launched": True}
+    assert spawned and spawned[0].get("setsid") is True
+
+    deadline = time.time() + 10
+    while time.time() < deadline and not out.exists():
+        time.sleep(0.05)
+    assert out.exists(), "the child never ran"
+    pid, sid = out.read_text().split()
+    assert pid == sid, "the child must lead its own session, as start_new_session did"
+
+    lib._reap_launched()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows keeps subprocess")
+def test_a_platform_without_SETSID_falls_back_to_a_process_group(monkeypatch):
+    """`POSIX_SPAWN_SETSID` is not universal, and the answer to its absence is
+    the process GROUP the docstring always described the detachment as — never
+    a quiet return to forking."""
+    monkeypatch.setattr(lib, "_resolve_claude", lambda path_env: "/bin/true")
+    calls = []
+
+    def _no_setsid(path, argv, env, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("setsid"):
+            raise NotImplementedError("setsid is not supported on this platform")
+        return 424242
+
+    monkeypatch.setattr(os, "posix_spawn", _no_setsid)
+    monkeypatch.setattr(lib, "_reap_launched", lambda: None)
+
+    assert lib.claude_cli_detached("mcp", "login", "x")["ok"] is True
+    assert [k.get("setsid") for k in calls] == [True, None]
+    assert calls[1]["setpgroup"] == 0
+    lib._LAUNCHED.discard(424242)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX detachment; Windows keeps subprocess")
+def test_detached_launches_do_not_pile_up_zombies(tmp_path, monkeypatch):
+    """`posix_spawn` returns a pid and no `Popen`, so nothing in `subprocess`
+    sweeps these up: without the opportunistic reap, every `mcp login` would
+    leave a zombie for the life of the server."""
+    monkeypatch.setattr(lib, "_resolve_claude", lambda path_env: sys.executable)
+    monkeypatch.setattr(lib, "_LAUNCHED", set())
+
+    lib.claude_cli_detached("-c", "pass")
+    assert len(lib._LAUNCHED) == 1
+    pid = next(iter(lib._LAUNCHED))
+
+    deadline = time.time() + 10
+    while time.time() < deadline and lib._LAUNCHED:
+        lib._reap_launched()
+        time.sleep(0.05)
+    assert lib._LAUNCHED == set(), f"pid {pid} was never reaped"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the preview runs `sh -c`")
+def test_the_statusline_preview_still_runs_in_claude_dir_without_cwd(claude_dir):
+    """The `cwd=` that had to go was carrying real behaviour, so it moves rather
+    than disappears: a statusline command reads files beside `settings.json`
+    (`cat .claude-version`, `git -C . …`) and is documented to run there.
+
+    Written against a REAL `sh`, because the property is the shell's, not the
+    call's: the directory arrives as a separate argv entry, the user's command
+    is never interpolated into the script text, and the command still gets a
+    fresh shell with no positional arguments of its own.
+    """
+    from fused_render.claude_config import statusline
+
+    (claude_dir / "marker.txt").write_text("hello")
+    (claude_dir / "settings.json").write_text(json.dumps({
+        "statusLine": {"type": "command",
+                       "command": 'pwd; cat marker.txt; echo "args=$#"'}}))
+
+    out = statusline.main(action="preview")
+
+    assert out["ok"], out
+    assert os.path.realpath(lib.CLAUDE_DIR) in os.path.realpath(
+        out["output"].splitlines()[0]), out["output"]
+    assert "hello" in out["output"], "a relative read must resolve in CLAUDE_DIR"
+    assert "args=0" in out["output"], "the command must not inherit our own argv"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the preview runs `sh -c`")
+def test_a_statusline_command_with_quotes_and_spaces_is_not_reparsed(claude_dir):
+    """The command travels as ONE argv entry, so nothing in it can be read as
+    part of the `cd` prelude — the failure a string-concatenated `cd … && …`
+    would have introduced."""
+    from fused_render.claude_config import statusline
+
+    (claude_dir / "settings.json").write_text(json.dumps({
+        "statusLine": {"type": "command",
+                       "command": 'echo "a  b"; echo \'$1 && pwd\'; echo done'}}))
+
+    out = statusline.main(action="preview")
+
+    assert out["ok"], out
+    assert "a  b" in out["output"], "inner quoting must survive"
+    assert "$1 && pwd" in out["output"], "single-quoted text is data, not script"
+    assert "done" in out["output"]
 
 
 def test_git_runs_with_dash_c_rather_than_cwd():

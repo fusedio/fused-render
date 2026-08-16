@@ -504,23 +504,79 @@ def claude_cli(*args: str, timeout: int = 25) -> dict:
         return {"ok": False, "stdout": "", "stderr": f"claude {args[0]} timed out"}
 
 
+#: Pids of detached launches nobody is waiting on, reaped opportunistically by
+#: the next one. `os.posix_spawn` hands back a pid and no `Popen` object, so
+#: unlike every other spawn in this module there is no `subprocess._active` to
+#: sweep it up: without this, each `mcp login` leaves a zombie for the life of
+#: the server.
+_LAUNCHED: set[int] = set()
+
+
+def _reap_launched() -> None:
+    for pid in list(_LAUNCHED):
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                _LAUNCHED.discard(pid)
+        except ChildProcessError:
+            _LAUNCHED.discard(pid)  # already reaped; never wait on it again
+        except OSError:
+            pass
+
+
 def claude_cli_detached(*args: str) -> dict:
     """Spawn the `claude` binary in its OWN session and return immediately (mcp.md §3).
-    For interactive commands (OAuth `mcp login`) that open a browser and block past the
-    request: start_new_session=True detaches the child from this process's process
-    group so it survives after the response is sent. Best-effort — success means
-    'launched', not 'finished'; the outcome is observed via a later `mcp list` refresh."""
+
+    For interactive commands (OAuth `mcp login`) that open a browser and block
+    past the request: the child leads its own session, so it survives after the
+    response is sent. Best-effort — success means 'launched', not 'finished';
+    the outcome is observed via a later `mcp list` refresh.
+
+    **`os.posix_spawn` on POSIX, because `start_new_session=True` defeated the
+    very guard this module is built around.** `SUBPROCESS_KWARGS` sets
+    `close_fds=False` precisely to keep CPython on `posix_spawn` (read the
+    module comment: PROJ's atfork handler kills a forked child before exec, in
+    0.0s, with empty stderr) — but `Popen`'s fast path requires BOTH
+    `not close_fds` AND `not start_new_session`, so spreading the safe kwargs
+    and then asking for a session put this one call back on `fork()+exec` while
+    looking protected. The test that pins the discipline accepted the spread as
+    proof, so nothing caught it.
+
+    `posix_spawn` gives both at once: no fork, and `setsid=True` for the
+    detachment. Where the platform has no `POSIX_SPAWN_SETSID`, a new process
+    GROUP is what the detachment was actually documented to be for, so that is
+    the fallback rather than a return to forking.
+
+    Windows keeps `Popen`: there is no fork to avoid, `start_new_session` is
+    silently ignored there anyway, and `subprocess` degrades to `CreateProcess`
+    where a hand-rolled `posix_spawn` would raise (`app_git.py`'s argument for
+    preferring `subprocess`, honoured by leaving that platform alone).
+    """
     path_env = _augmented_path()
     binary = _resolve_claude(path_env)
     if binary is None:
         return {"ok": False, "error": "claude CLI not found (looked on PATH and in "
                                       f"{', '.join(_CLAUDE_BIN_DIRS)})"}
     env = {**os.environ, "PATH": path_env}
-    subprocess.Popen(
-        [binary, *args],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True, env=env, **SUBPROCESS_KWARGS,
-    )
+    if os.name == "nt":
+        subprocess.Popen(
+            [binary, *args],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env=env, **SUBPROCESS_KWARGS,
+        )
+        return {"ok": True, "launched": True}
+    _reap_launched()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    try:
+        actions = [(os.POSIX_SPAWN_DUP2, devnull, fd) for fd in (0, 1, 2)]
+        try:
+            pid = os.posix_spawn(binary, [binary, *args], env,
+                                 file_actions=actions, setsid=True)
+        except NotImplementedError:
+            pid = os.posix_spawn(binary, [binary, *args], env,
+                                 file_actions=actions, setpgroup=0)
+    finally:
+        os.close(devnull)
+    _LAUNCHED.add(pid)
     return {"ok": True, "launched": True}
 
 
