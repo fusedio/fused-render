@@ -451,37 +451,44 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
             f"{system}/{machine} lost speech to text")
 
 
-def test_image_generation_stays_on_DIFFUSERS_even_on_apple_silicon(monkeypatch):
-    """The one inversion in the table, and it is deliberate (D303).
+def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
+        monkeypatch):
+    """Image generation is arranged like the other two: MLX takes the Macs (D303).
 
-    Everywhere else the MLX runner is registered ABOVE the cross-platform one,
-    because on the machine it serves it is both faster and lighter. mflux is
-    faster and smaller on disk too — but it reserved a ~23.6GB allocator pool
-    doing it on a 34GB machine, and nothing has been run on the 16GB Macs this
-    app's own catalog says full-precision FLUX already OOMs. Promoting it would
-    change what every Mac user's image generation does on one machine's
-    benchmark, so it ships available and opt-in.
+    One 4.6GB repo instead of the ~10.1GB two-repo split, ~8x quicker to load
+    and ~15-20% quicker per image. The memory ceiling behind the old inversion
+    is a known accepted risk, not a resolved one — a ~23.6GB allocator pool on a
+    34GB machine, and nothing run on a 16GB Mac — and the way back is the engine
+    preference, which is why the Diffusers half of this test matters as much as
+    the MLX half.
 
     Pinned as a test because the ordering is invisible in a diff of the table:
-    a future reader tidying the rows into "MLX first, always" would flip the
-    default for every Mac and break nothing that fails.
+    it decides what every Mac's image generation does, and nothing else fails
+    when a row moves.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
 
     resolved = registry.for_capability(registry.IMAGE_GENERATION)
-    assert resolved is not None and resolved.code == "diffusers-image"
-    # …and mflux is genuinely AVAILABLE, which is what makes this a choice
-    # rather than an absence — the preference below is the way to it.
-    assert registry.by_code("mflux-image").available().ok is True
+    assert resolved is not None and resolved.code == "mflux-image"
+    # …and Diffusers is still AVAILABLE on the same machine, which is what makes
+    # the preference below a way BACK rather than a setting with nowhere to go.
+    assert registry.by_code("diffusers-image").available().ok is True
 
-    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image")
     resolution = registry.resolve(registry.IMAGE_GENERATION)
-    assert resolution.runner.code == "mflux-image" and resolution.honoured
-    # Opting in also moves the suggestion list, since a repo belongs to a
+    assert resolution.runner.code == "diffusers-image" and resolution.honoured
+    # Switching also moves the suggestion list, since a repo belongs to a
     # backend: the MLX conversion is unloadable by diffusers and vice versa.
     assert [m["id"] for m in catalog.for_capability(registry.IMAGE_GENERATION)] == [
-        "mlx-community/FLUX.2-Klein-4B-4bit"]
+        "black-forest-labs/FLUX.2-klein-4B"]
+
+    # Windows and Linux never see the MLX row at all, preference or none.
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        assert registry.for_capability(
+            registry.IMAGE_GENERATION).code == "diffusers-image"
 
 
 def test_the_mflux_preference_is_dropped_off_apple_silicon(monkeypatch):

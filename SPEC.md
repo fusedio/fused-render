@@ -6224,22 +6224,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   how a 2.6GB fetch came to read as a fraction of 30GB and then jump to
   complete; the reported figure is also capped at the total, since the disk walk
   sees siblings the download was never fetching.
-- **AI-9d** **Image generation has an MLX runner too, and it is the one place
-  where the Apple Silicon backend is registered BELOW the cross-platform one**
-  (D303). `mflux_image` renders FLUX on Metal from a single `mlx-community`
+- **AI-9d** **Image generation has an MLX runner too, and like the other two
+  multi-runner capabilities it takes the Macs by default** (D303). `mflux_image`
+  renders FLUX on Metal from a single `mlx-community`
   conversion whose components are all already 4-bit — so where the torch path
   needs AI-9b's recipe (a ~2.4GB GGUF transformer plus the ~7.7GB bf16 base repo
   for everything else), this is one ~4.6GB snapshot with nothing skipped. On the
   machine it was measured on it loads ~8x faster, halves cold time-to-first-image
-  and is ~15-20% quicker per image. **It is still not the default**, and the
-  inversion is the decision rather than an oversight: MLX's allocator reserved a
+  and is ~15-20% quicker per image. **Its memory ceiling is an accepted risk
+  rather than a resolved one**, and is recorded because the failure it would
+  produce will not look like an ordering decision: MLX's allocator reserved a
   ~23.6GB high-water pool during those renders — larger than torch's driver
   allocation for the same picture — on a 34GB machine already several GB into
   swap, and nothing has been run on the 16GB Macs that AI-9b's own note says
-  full-precision FLUX already OOMs. Promoting it would change what every Mac
-  user's image generation does on the strength of one machine's benchmark, so it
-  ships available and opt-in through the engine preference (AI-10e), which is
-  the case that mechanism exists to serve. Everything a page can see is
+  full-precision FLUX already OOMs. The way back is the engine preference
+  (AI-10e), which serves this case in both directions, and the runner's `note`
+  names the ceiling before a download starts. Everything a page can see is
   unchanged: same `/generate` body, same reply, same denoising-step row, same ✕,
   and the SAME DEFAULTS (28 steps, guidance 4.0 — diffusers' numbers, not
   mflux's own 4 and 1.0), because switching engines is a performance decision and

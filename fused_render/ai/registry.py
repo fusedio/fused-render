@@ -184,12 +184,12 @@ def _transformers_platform() -> Availability:
 
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
-# below it serves Windows and Linux plus the Apple Silicon fallback. Both
-# multi-runner capabilities (text generation, speech to text) are arranged that
-# way. The ordering is the whole mechanism, so the rows are not sorted
-# alphabetically and must not be — it is also the DEFAULT that a user's engine
-# preference overrides, so a re-order silently re-decides every machine set to
-# "auto", which is all of them until somebody chooses otherwise.
+# below it serves Windows and Linux plus the Apple Silicon fallback. All three
+# multi-runner capabilities (text generation, image generation, speech to text)
+# are arranged that way. The ordering is the whole mechanism, so the rows are
+# not sorted alphabetically and must not be — it is also the DEFAULT that a
+# user's engine preference overrides, so a re-order silently re-decides every
+# machine set to "auto", which is all of them until somebody chooses otherwise.
 _RUNNERS: tuple[Runner, ...] = (
     Runner(
         code="mlx-text",
@@ -216,34 +216,39 @@ _RUNNERS: tuple[Runner, ...] = (
         # is not a distribution target.
         _available=_transformers_platform,
     ),
+    # Image generation is arranged like the other two: MLX takes the Macs
+    # (D303). One 4.6GB repo against the ~10.1GB two-repo split the torch
+    # recipe needs, ~8x quicker to load, ~15-20% quicker per image, measured
+    # same model, prompt and seed.
+    #
+    # **The memory ceiling is a KNOWN, ACCEPTED risk rather than an unknown.**
+    # MLX's allocator reported a ~23.6GB `get_cache_memory` high-water doing
+    # those renders — larger than torch's ~19.1GB Metal allocation for the same
+    # picture — on a 34GB machine already several GB into swap, and nothing has
+    # been run on the 16GB Macs this app's own catalog says full-precision FLUX
+    # already OOMs. The evidence is one machine's benchmark; the decision was to
+    # take the speed and let a user who hits the ceiling move back to Diffusers
+    # from Preferences, which is the case the engine preference (D302) exists to
+    # serve in both directions. The `note` says so before a download starts.
+    Runner(
+        code="mflux-image",
+        capability=IMAGE_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "mflux_image"),
+        label="MLX FLUX (Apple Silicon)",
+        # ONE LINE, per the rule the transformers row states. It now describes
+        # the DEFAULT rather than an opt-in, so the memory caveat leads: the
+        # reader it exists for is someone on a small Mac deciding whether to
+        # switch AWAY, not someone deciding whether to try it.
+        note="Reserves much more memory than Diffusers and is untested below "
+             "32GB, but loads far quicker from a smaller download.",
+        _available=_apple_silicon,
+    ),
     Runner(
         code="diffusers-image",
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "diffusers_image"),
         label="Diffusers (PyTorch)",
         _available=_always,
-    ),
-    # The one place in this table where the Apple Silicon runner is BELOW the
-    # cross-platform one, and it is deliberate (D303). Everywhere else the MLX
-    # row goes first because it is both faster and lighter on the machine it
-    # serves. Here it is faster and lighter on DISK — one 4.6GB repo against a
-    # ~10.1GB two-repo split, ~8x quicker to load, ~15-20% quicker per image —
-    # but MLX's allocator reserved a ~23.6GB high-water pool doing it, on a
-    # 34GB machine that was already several GB into swap, and nothing has been
-    # run on the 16GB Macs this app's own catalog says full-precision FLUX
-    # already OOMs. Promoting it would silently change what every Mac user's
-    # image generation does on the strength of one machine's benchmark. So it
-    # ships available and opt-in, which is the case the engine preference
-    # (D302) exists to serve, and moving this row up later is a one-line change
-    # once there is evidence from a smaller machine.
-    Runner(
-        code="mflux-image",
-        capability=IMAGE_GENERATION,
-        folder=os.path.join(RUNNERS_DIR, "mflux_image"),
-        label="MLX FLUX (Apple Silicon)",
-        note="Faster and a smaller download, but reserves much more memory. "
-             "Untested below 32GB.",
-        _available=_apple_silicon,
     ),
     # Speech to text, and the capability that finally USED the two-runner
     # ordering this table was built for. MLX takes the Macs; CTranslate2 below
