@@ -36,7 +36,8 @@
  *     the download-manager record, and that row's ✕ really stops it. Rejects
  *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
  *     this machine — the reason is in the message).
- *   fused.ai.transcribe({path, model, language, task, diarize, speakers, onProgress})
+ *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
+ *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
@@ -47,6 +48,14 @@
  *     fires with the download-manager record, whose done/total are SECONDS OF
  *     AUDIO, and that row's ✕ really stops it. The transcript is a file, so
  *     `output` and its `url` outlive the tab.
+ *     onSegment(segment) gives the transcript AS IT DECODES — every segment,
+ *     in order, exactly once, without the page implementing any of it. It
+ *     rides the poll onProgress already costs (no second loop, and no extra
+ *     request at all for a caller that does not pass it), reading a
+ *     `.partial.jsonl` the worker appends to; whatever that misses is
+ *     delivered from the finished transcript, so the promise holds even for a
+ *     run that ended before the first poll. Segments arrive in the same shape
+ *     `segments` has, `speaker` included when diarizing.
  *     Which engine transcribes depends on the machine and on the user's
  *     preference (SPEC AI-10e) — MLX on Apple Silicon, CTranslate2 elsewhere —
  *     and the reply is the same shape either way, so a page never has to ask.
@@ -2672,6 +2681,17 @@
       }
     }
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    // The PROGRESSIVE transcript: segments as they are decoded, rather than the
+    // whole thing when the recording finishes. A page must not have to
+    // implement file tailing to get one, which is what this callback is — the
+    // worker appends each finished segment to `outputPartial`, and the poll
+    // loop below reads whatever is new each time it ticks for `onProgress`.
+    //
+    // NULL unless the caller asked, and that is load-bearing rather than
+    // tidiness: every request made below is one that every existing
+    // transcription would otherwise start making, once per poll, for a file
+    // nobody is reading.
+    const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
     const body = {};
     for (const key of ["path", "model", "language", "task", "initialPrompt", "vad",
                        "diarize", "speakers"]) {
@@ -2687,6 +2707,110 @@
     if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/transcribe", body).then((started) => {
       const watcher = watchJob(started.jobId);
+      // ---- the progressive transcript --------------------------------------
+      //
+      // `started.outputPartial` is a `.partial.jsonl` beside the transcript:
+      // one segment per line, appended and flushed by the worker as each is
+      // decoded, and REMOVED the moment the real transcript lands. So this is
+      // a best-effort early view and never the source of truth — the final
+      // `.json` is read at the end regardless, and drains whatever the tail
+      // did not reach. That is what makes "every segment, exactly once, in
+      // order" true even when the tail sees nothing at all: a worker that
+      // finished before the first poll, a page that woke up late, an older
+      // server that advertises no partial path.
+      //
+      // Delivered COUNT, not delivered contents, is how the two are
+      // reconciled: the file's Nth line is the transcript's Nth segment by
+      // construction (both engines append in the order they build the list),
+      // so the drain is `segments.slice(delivered)`.
+      let delivered = 0;
+      // Where the next read starts, in BYTES. The text is written unescaped
+      // UTF-8, so "café" is five bytes of four characters and a reader
+      // counting string length would drift one byte per accent and start
+      // parsing mid-line.
+      let offset = 0;
+      let pending = "";
+      let tailing = false;
+      // A line that will not parse means the reader has lost the file's frame,
+      // and there is no way to re-sync (the bytes are already consumed). Stop
+      // tailing rather than emit nonsense; the final drain covers the rest.
+      let broken = false;
+      const decoder = onSegment && typeof TextDecoder === "function"
+        ? new TextDecoder("utf-8") : null;
+      const deliver = (segment) => {
+        // Counted BEFORE the call, so a callback that throws cannot make the
+        // final drain resend the segment it threw on.
+        delivered += 1;
+        onSegment(segment);
+      };
+      const readNew = async () => {
+        const from = offset;
+        const res = await fetch(rawUrl(started.outputPartial), {
+          headers: callHeaders({ Range: "bytes=" + from + "-" }),
+        });
+        // 416: nothing new since last time. 404: not written yet, or already
+        // removed because the transcript landed. Neither is a failure — this
+        // file is an optimisation, never the result.
+        if (res.status === 416 || res.status === 404) return;
+        if (!res.ok && res.status !== 206) return;
+        let bytes = new Uint8Array(await res.arrayBuffer());
+        // A 200 answering a Range request is legal — anything in front of the
+        // route could give one — and carries the whole file rather than the
+        // tail. Dropping what was already consumed is what stops a segment
+        // being delivered twice in that case.
+        if (res.status !== 206) {
+          if (bytes.length <= from) return;
+          bytes = bytes.subarray(from);
+        }
+        offset = from + bytes.length;
+        // `stream: true`, because a read can land in the middle of a multibyte
+        // character — the offsets are bytes and nothing aligns them to runes.
+        pending += decoder.decode(bytes, { stream: true });
+        const lines = pending.split("\n");
+        // Whatever followed the last newline: normally "", and a half-written
+        // line if a read ever lands between the worker's write and its flush.
+        pending = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let segment;
+          try {
+            segment = JSON.parse(line);
+          } catch (_unparseable) {
+            // The frame is lost and the bytes are already consumed, so there
+            // is no re-syncing. Stop rather than emit nonsense; the final
+            // drain still delivers this segment and every one after it.
+            broken = true;
+            return;
+          }
+          deliver(segment);
+        }
+      };
+      // Reads only what has been appended since the last tick, by BYTE RANGE.
+      // `/api/fs/raw` answers 206 for a local file and 416 once the offset is
+      // at or past the end — verified against the route, not assumed from the
+      // fact that it hands off to FileResponse. Re-reading the whole file
+      // every poll would cost a megabyte a tick on a long transcript to learn
+      // a few hundred new bytes.
+      //
+      // Serialised through one chain rather than fired per tick: two reads in
+      // flight would race on `offset` and could deliver out of order. `tailing`
+      // then keeps at most one waiting, so a slow read cannot build a queue of
+      // them behind a poll loop that keeps ticking.
+      let tailChain = Promise.resolve();
+      const tail = () => {
+        if (!onSegment || !decoder || tailing || broken || !started.outputPartial) {
+          return tailChain;
+        }
+        tailing = true;
+        tailChain = tailChain
+          .then(readNew)
+          // Swallowed deliberately: a failed tail costs the preview and
+          // nothing else, and there is nobody to reject to — this runs beside
+          // the caller's promise rather than inside it.
+          .catch(() => {})
+          .then(() => { tailing = false; });
+        return tailChain;
+      };
       // The transcript file is the result; the row only said when to read it.
       //
       // TYPED on failure, like every other rejection this bridge produces. The
@@ -2698,8 +2822,26 @@
       // on the one failure it could most easily explain. `aiImage` has no
       // equivalent exposure because its `done()` does no I/O.
       const done = () =>
-        readFile(started.output)
+        // Any tail still in flight is settled FIRST, so the drain below cannot
+        // interleave with it and deliver a segment out of order — or twice,
+        // by reading `delivered` while a read was about to raise it.
+        tailChain
+          .then(() => readFile(started.output))
           .then(JSON.parse)
+          .then((written) => {
+            // The completeness backstop. The transcript is read anyway and is
+            // the only source guaranteed whole, so whatever the tail did not
+            // reach is delivered here — which covers a worker that finished
+            // before the first poll, a tab asleep through the whole run, a
+            // partial file that never existed, and the last segments, which
+            // are written and then removed inside one tick almost every time.
+            if (onSegment) {
+              for (const segment of (written.segments || []).slice(delivered)) {
+                deliver(segment);
+              }
+            }
+            return written;
+          })
           .then((written) => ({
             ...started,
             url: rawUrl(started.output),
@@ -2721,7 +2863,15 @@
             err.cause = cause;
             throw err;
           });
-      return watcher.watch(onProgress).then((record) => {
+      // ONE poll loop, not two. The tail rides the tick `onProgress` already
+      // costs, so a page asking for both pays one `/api/jobs` poll and one
+      // ranged read per interval — and a caller passing neither gets exactly
+      // the argument this has always taken, which is what keeps the request
+      // count of every existing call unchanged.
+      const onTick = onSegment
+        ? (record) => { if (onProgress) onProgress(record); tail(); }
+        : onProgress;
+      return watcher.watch(onTick).then((record) => {
         if (!record) {
           // The row is gone — and since the manager stopped evicting live
           // SERVER work under its cap, that no longer happens MID-RUN. It means

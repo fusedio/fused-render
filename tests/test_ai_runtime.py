@@ -2848,6 +2848,243 @@ def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
     assert "cancelled" in settled["message"]
 
 
+# -- the progressive transcript, as a page sees it ---------------------------------
+#
+# `_run_ai_transcribe` above stubs `watch` into a single resolved promise, so
+# it cannot see the poll loop at all. This second harness drives the real one:
+# the file GROWS between ticks, exactly as a worker appending to it makes it,
+# and `fetch` is a real ranged reader over those bytes. What is proved is the
+# part a page must not have to write itself — that `onSegment` fires in order,
+# once each, while the run is still going.
+
+
+def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
+                               partial_path='"/t/out.partial.jsonl"',
+                               ranged=True):
+    """Drive `aiTranscribe` through a real poll loop over a growing file.
+
+    `lines` is a list of JS strings, one per tick: the WHOLE partial file as it
+    stands when that tick fires, so a caller writes the file's history rather
+    than a diff. `final` is the transcript JSON `readFile` resolves with.
+    `ranged=False` makes the stub server ignore `Range` and answer 200 with the
+    whole file, which is the behaviour a proxy in front of `/api/fs/raw` could
+    impose and which must not duplicate a single segment.
+
+    Returns `{settled, segments, fetches}` — the outcome, every `onSegment`
+    argument in the order it arrived, and every request the bridge made.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own transcription glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiTranscribe(opts)")
+    fn = source[start:source.index("\n  }\n", start) + 4]
+
+    prelude = """
+      const started = {jobId: "sys:ai-transcribe:x", output: "/t/out.json",
+                       outputText: "/t/out.txt", outputPartial: PARTIAL,
+                       path: "/t/a.m4a", model: "m", task: "transcribe"};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const callHeaders = (extra) => Object.assign({"X-Fused-Call": "1"}, extra);
+      const readFile = () => Promise.resolve(JSON.stringify(FINAL));
+      const RANGED = IS_RANGED;
+      const HISTORY = LINES;
+      const fetches = [];
+      let onDisk = "";
+      globalThis.fetch = async (url, init) => {
+        const headers = (init && init.headers) || {};
+        fetches.push({url, range: headers.Range || null});
+        const body = Buffer.from(onDisk, "utf8");
+        const match = /bytes=(\\d+)-/.exec(headers.Range || "");
+        const from = match ? Number(match[1]) : 0;
+        if (!RANGED) {
+          return {ok: true, status: 200,
+                  arrayBuffer: async () => body.buffer.slice(
+                    body.byteOffset, body.byteOffset + body.byteLength)};
+        }
+        // What /api/fs/raw really answers, verified against it: 206 with the
+        // tail, 416 once the offset is at or past the end.
+        if (from >= body.length) {
+          return {ok: false, status: 416, arrayBuffer: async () => new ArrayBuffer(0)};
+        }
+        const slice = body.subarray(from);
+        return {ok: true, status: 206,
+                arrayBuffer: async () => slice.buffer.slice(
+                  slice.byteOffset, slice.byteOffset + slice.byteLength)};
+      };
+      const watchJob = () => ({
+        // The real loop's shape: onUpdate every tick, then the terminal record.
+        watch: async (onUpdate) => {
+          for (const state of HISTORY) {
+            onDisk = state;
+            if (typeof onUpdate === "function") onUpdate({state: "running", done: 1});
+            await new Promise((r) => setTimeout(r, 5));
+          }
+          return {state: "done"};
+        },
+        get: () => Promise.resolve({state: "done"}),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const heard = [];
+    """
+    prelude = (prelude.replace("PARTIAL", partial_path)
+               .replace("IS_RANGED", "true" if ranged else "false")
+               .replace("LINES", json.dumps(lines))
+               .replace("FINAL", json.dumps(final)))
+    call = """
+      const options = Object.assign(OPTS, {onSegment: (s) => heard.push(s)});
+      aiTranscribe(options).then(
+        (value) => console.log(JSON.stringify(
+          {settled: {ok: true, value}, segments: heard, fetches})),
+        (err) => console.log(JSON.stringify(
+          {settled: {ok: false, message: err.message, type: err.type},
+           segments: heard, fetches})),
+      );
+    """.replace("OPTS", opts)
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def _jsonl(*segments):
+    """The partial file's contents after those segments, as the worker writes
+    it: `json.dumps(..., ensure_ascii=False)` per line, newline-terminated."""
+    return "".join(json.dumps(s, ensure_ascii=False) + "\n" for s in segments)
+
+
+def test_a_page_gets_each_segment_WHILE_the_file_is_still_decoding():
+    """The deliverable. A page must not have to implement file tailing to get a
+    streaming transcript — it passes `onSegment` and the bridge does it, off
+    the poll it was already running for `onProgress`."""
+    one = {"start": 0.0, "end": 1.5, "text": "hello"}
+    two = {"start": 1.5, "end": 3.0, "text": "world"}
+    run = _run_ai_transcribe_tailing(
+        ["", _jsonl(one), _jsonl(one, two)],
+        {"text": "hello world", "segments": [one, two], "language": "en"})
+
+    assert run["settled"]["ok"] is True, run["settled"]
+    assert run["segments"] == [one, two]
+
+
+def test_a_segment_the_TAIL_already_delivered_is_not_delivered_again():
+    """The final transcript is the completeness backstop — it is read anyway,
+    and it is the only source that is guaranteed whole — so it drains whatever
+    the tail did not reach. Which makes double delivery the hazard: a page
+    appending a cue per callback would end with the transcript twice."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    three = {"start": 2.0, "end": 3.0, "text": "three"}
+    run = _run_ai_transcribe_tailing(
+        # The last two land between the final tick and the row going done — the
+        # ordinary case, since the worker removes the partial file the moment
+        # the transcript lands.
+        [_jsonl(one)],
+        {"text": "one two three", "segments": [one, two, three]})
+
+    assert run["segments"] == [one, two, three]
+
+
+def test_a_run_whose_partial_file_never_appears_still_delivers_EVERY_segment():
+    """404 for the whole run — an older server that advertises no partial path,
+    a transcripts directory on a filesystem that lost it, a worker too fast to
+    ever be caught mid-run. `onSegment` is a promise about segments, not about
+    the file they arrived through."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        ["", "", ""], {"text": "one", "segments": [one]},
+        partial_path="undefined")
+
+    assert run["segments"] == [one]
+    # Nothing was tailed, because there was nothing to tail — not a request per
+    # tick against a path the reply never named.
+    assert [f for f in run["fetches"] if f["range"]] == []
+
+
+def test_the_tail_asks_for_the_BYTES_IT_HAS_NOT_SEEN(  # noqa: N802
+):
+    """Byte offsets, not "read the file and skip the lines I know" — which on a
+    90-minute transcript re-downloads a megabyte every 700ms for the length of
+    the run. `/api/fs/raw` answers Range for local files (206 + content-range,
+    416 past the end), which was verified against the route rather than assumed
+    from the fact that it uses FileResponse."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one, two)], {"text": "one two", "segments": [one, two]})
+
+    ranges = [f["range"] for f in run["fetches"] if f["range"]]
+    assert ranges[0] == "bytes=0-"
+    # The second asks from exactly the end of the first line — so a `Range`
+    # that reset, or one counting CHARACTERS, shows up here.
+    assert ranges[1] == "bytes=%d-" % len(_jsonl(one).encode())
+
+
+def test_a_MULTIBYTE_transcript_does_not_split_a_character_or_lose_its_place():
+    """Offsets are bytes and the text is written unescaped, so "café" is five
+    bytes of four characters. A tail that advanced by string length would drift
+    one byte per accented character and start parsing mid-line."""
+    one = {"start": 0.0, "end": 1.0, "text": "café"}
+    two = {"start": 1.0, "end": 2.0, "text": "naïve"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one, two)],
+        {"text": "café naïve", "segments": [one, two]})
+
+    assert run["segments"] == [one, two]
+
+
+def test_a_server_that_IGNORES_the_range_still_delivers_each_segment_once():
+    """`/api/fs/raw` honours Range today, but a 200 carrying the whole file is
+    a legal answer to a Range request and anything in front of the route could
+    give one. Re-reading from zero must not re-deliver what was already sent."""
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    two = {"start": 1.0, "end": 2.0, "text": "two"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one, two)], {"text": "one two", "segments": [one, two]},
+        ranged=False)
+
+    assert run["segments"] == [one, two]
+
+
+def test_a_caller_with_NO_onSegment_makes_exactly_the_requests_it_always_did():
+    """The additive promise, and the one a page cannot see: a bridge that
+    tailed unconditionally would put a second request on every poll of every
+    existing transcription, for a file nobody is reading."""
+    row = '{state: "done"}'
+    quiet = _run_ai_transcribe(
+        'Promise.resolve(JSON.stringify({text: "hi", segments: []}))', row)
+    assert quiet["ok"] is True, quiet
+
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one), _jsonl(one)], {"text": "one", "segments": [one]})
+    # With `onSegment`, one tail per tick and no more — no second poll loop.
+    assert len([f for f in run["fetches"] if f["range"]]) == 2
+
+
+def test_the_bridge_tails_the_path_the_ROUTE_advertised(client,
+                                                        fake_transcribe_runner,
+                                                        recording):
+    """The two halves meeting. The route's `outputPartial` is what the bridge
+    reads, so a suffix changed on one side and not the other is caught here
+    rather than as an empty transcript on a page."""
+    reply = _post_transcribe(client, path=recording).json()
+    _wait_job(reply["jobId"])
+
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        [_jsonl(one)], {"text": "one", "segments": [one]},
+        partial_path=json.dumps(reply["outputPartial"]))
+    assert run["segments"] == [one]
+    assert run["fetches"][0]["url"].endswith(reply["outputPartial"])
+
+
 def test_both_artefact_bridges_survive_a_row_that_aged_out():
     """The page half, pinned as an INVARIANT rather than an instance.
 
