@@ -454,7 +454,7 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
 
 def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
         monkeypatch):
-    """Image generation is arranged like the other two: MLX takes the Macs (D305).
+    """Image generation is arranged like the other two: MLX takes the Macs (D310).
 
     One 4.6GB repo instead of the ~10.1GB two-repo split, ~8x quicker to load
     and ~15-20% quicker per image. The memory ceiling behind the old inversion

@@ -205,7 +205,7 @@ def test_the_transformer_config_survives_the_filter(base, monkeypatch, selects):
 
 def test_the_split_costs_about_ten_gigabytes_not_eighteen(base, monkeypatch,
                                                           selects):
-    """The figure `catalog.py`'s `size_gb` promises and D305's benchmark
+    """The figure `catalog.py`'s `size_gb` promises and D310's benchmark
     assumed. Bounded rather than exact — the repo may gain a config file — but
     tight enough that either copy of the transformer reappearing breaks it."""
     worker = load_worker(monkeypatch, base)
