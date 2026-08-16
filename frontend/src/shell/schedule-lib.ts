@@ -374,3 +374,15 @@ export function repeatChoicesFor(picked: Date): RepeatChoice[] {
     { key: "custom", label: "Custom…", rule: null },
   ];
 }
+
+// "Open in Explorer" — the folder the job ran against, with the Claude pane
+// already holding that run's conversation (Akshil, 2026-08-16 — replaced
+// "Open in Inbox": the inbox showed the chat but not the files it was
+// about). Same /view codec + `_side=claude` handoff the Inbox's own
+// open-dir button uses (core_apps/sessions/inbox.html).
+export function explorerUrl(target: string, sessionId: string): string {
+  const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
+  const encoded = norm.replace(/^\/+/, "").split("/")
+    .filter(Boolean).map(encodeURIComponent).join("/");
+  return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}`;
+}

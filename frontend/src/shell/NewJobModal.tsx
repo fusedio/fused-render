@@ -10,7 +10,7 @@
 // Google's: the REPEAT choices are derived from the picked date-time ("Weekly
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -20,6 +20,7 @@ import {
 } from "@platform/lib/api";
 import type { RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
 
@@ -62,11 +63,14 @@ function rememberRecent(path: string) {
   }
 }
 
-// ---- Folder picker -----------------------------------------------------------
-// A small in-modal directory browser: descend by clicking, one Up control,
-// "Use this folder" hands the current path back. Deliberately folders-only —
-// scheduling against a file is still possible by typing, but the picker's job
-// is the common case, and mixing files in doubled the list for nothing.
+// ---- Browse: a slide-in explorer panel ---------------------------------------
+// Browsing happens BESIDE the card, not inside it: the in-modal picker was
+// "too small to see anything" (Akshil, 2026-08-16), so Browse slides an
+// explorer-shaped panel in on the modal's right — the card shifts left to
+// make room (see .schedule-explorer / the :has() rule in schedule.css) — with
+// the room to show folders AND files. A folder click descends; a file click
+// IS the pick (a task can target a file); "Use this folder" picks where you
+// stand.
 
 // Forward slashes throughout, including for Windows drive paths — the same
 // normalization every other shell caller applies to `/api/config` values,
@@ -76,10 +80,15 @@ function rememberRecent(path: string) {
 const normPath = (p: string) => p.replace(/\\/g, "/");
 
 
+interface Crumb {
+  name: string;
+  path: string;
+}
+
 // The path as clickable crumbs: every ancestor is one tap away, which is what
 // the old single "up" chevron made people hunt for (Akshil, 2026-08-15 — "not
 // intuitive"). Root renders as "/" (or "C:/"), each segment jumps there.
-function crumbsOf(path: string): { name: string; path: string }[] {
+function crumbsOf(path: string): Crumb[] {
   const trimmed = path.replace(/\/+$/, "");
   const drive = trimmed.match(/^[A-Za-z]:/)?.[0];
   const rootPath = drive ? drive + "/" : "/";
@@ -95,7 +104,27 @@ function crumbsOf(path: string): { name: string; path: string }[] {
   return out;
 }
 
-function FolderPicker({
+// A real path is deeper than a 460px panel is wide, and the trail used to wrap
+// onto three lines — which moved the filter, the listing and the foot down with
+// it, so the panel's whole geometry hung off how long the current path happened
+// to be (audit 2026-08-16). Past four segments the middle collapses to one "…",
+// which is NOT a control: there is no single folder it could stand for.
+const CRUMBS_SHOWN = 4;
+
+function collapseCrumbs(crumbs: Crumb[]): (Crumb | null)[] {
+  if (crumbs.length <= CRUMBS_SHOWN) return crumbs;
+  return [crumbs[0], null, crumbs[crumbs.length - 2], crumbs[crumbs.length - 1]];
+}
+
+const ICON_FILE = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <path d="M14 2v6h6" />
+  </svg>
+);
+
+function ExplorerPanel({
   start,
   onPick,
   onClose,
@@ -104,8 +133,13 @@ function FolderPicker({
   onPick: (path: string) => void;
   onClose: () => void;
 }) {
-  const [path, setPath] = useState(normPath(start));
-  const [dirs, setDirs] = useState<string[] | null>(null);
+  // A file target starts the panel in its PARENT — listing a file's "children"
+  // is a guaranteed error banner.
+  const [path, setPath] = useState(() => {
+    const p = normPath(start).replace(/\/+$/, "");
+    return p || "/";
+  });
+  const [rows, setRows] = useState<{ name: string; dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Type-to-narrow, cleared on every navigation — a filter that survives into
@@ -114,21 +148,22 @@ function FolderPicker({
 
   useEffect(() => {
     let stale = false;
-    // The OLD listing stays up, dimmed, while the next one loads. Blanking it
-    // collapsed the panel to one "Loading…" line and re-expanded it a beat
-    // later, so every click made the whole modal pump (QA 2026-08-14,
-    // "glitches in and out"). A local listing resolves in milliseconds — the
-    // dim is usually invisible; it exists for the slow (network-mounted) case.
+    // The OLD listing stays up, dimmed, while the next one loads — blanking
+    // it made the panel pump on every click (QA 2026-08-14).
     setLoading(true);
     setError(null);
     listDir(path).then(
       (r) => {
         if (stale) return;
-        setDirs(
+        setRows(
           r.entries
-            .filter((e) => e.is_dir && !e.name.startsWith("."))
-            .map((e) => e.name)
-            .sort((a, b) => a.localeCompare(b)),
+            .filter((e) => !e.name.startsWith("."))
+            .map((e) => ({ name: e.name, dir: e.is_dir }))
+            // Folders first, then files, each alphabetical — the explorer's
+            // own ordering, so the panel reads like the app it stands in for.
+            .sort((a, b) =>
+              a.dir !== b.dir ? (a.dir ? -1 : 1) : a.name.localeCompare(b.name),
+            ),
         );
         setLoading(false);
       },
@@ -143,34 +178,82 @@ function FolderPicker({
     };
   }, [path]);
 
+  // The panel reads as a sibling of the card, so it has to BE one in geometry:
+  // its top and height come from the dialog's own rect, not from the viewport.
+  // Centred on the viewport (the first cut) the two lined up only when their
+  // heights happened to match — a 520px card beside a 600px panel shared no
+  // edge at all (audit 2026-08-16). The floor keeps a short card (an Edit with
+  // nothing expanded) from shrinking the listing back to the "too small to see
+  // anything" it was rescued from. Modal exposes no ref for its dialog, hence
+  // the querySelector; recomputed while open because a resize moves both.
+  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const dialog = document.querySelector<HTMLElement>(".modal-dialog");
+      if (!dialog) return;
+      const r = dialog.getBoundingClientRect();
+      setBox({ top: r.top, height: Math.max(r.height, 480) });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
   const go = (p: string) => {
     setPath(p);
     setFilter("");
   };
-  const crumbs = crumbsOf(path);
-  const shown = dirs?.filter((n) =>
-    n.toLowerCase().includes(filter.trim().toLowerCase()),
+  const crumbs = collapseCrumbs(crumbsOf(path));
+  const shown = rows?.filter((r) =>
+    r.name.toLowerCase().includes(filter.trim().toLowerCase()),
   );
 
+  // Escape dismisses the PANEL, not the modal behind it — captured before the
+  // modal chassis' own document-level Escape listener can see it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopImmediatePropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
-    <div className="schedule-picker">
+    <div className="schedule-explorer" role="dialog" aria-label="Choose a folder or file"
+         style={box ? { top: box.top, height: box.height } : undefined}>
+      <div className="schedule-explorer-head">
+        <span className="schedule-explorer-title">Choose a folder or file</span>
+      </div>
       <div className="schedule-picker-crumbs" aria-label="Current folder">
-        {crumbs.map((c, i) => (
-          <span key={c.path} className="schedule-picker-crumb-seg">
-            {i > 0 && <span className="schedule-picker-crumb-sep">/</span>}
-            <button type="button" className="schedule-picker-crumb"
-                    disabled={i === crumbs.length - 1}
-                    title={c.path}
-                    onClick={() => go(c.path)}>
-              {c.name}
-            </button>
-          </span>
-        ))}
+        {crumbs.map((c, i) =>
+          c === null ? (
+            <span key="gap" className="schedule-picker-crumb-ellipsis">…</span>
+          ) : (
+            <span key={c.path} className="schedule-picker-crumb-seg">
+              {/* The root crumb IS "/", so a separator in front of the first
+                  real segment prints it twice — "//Users" (audit 2026-08-16).
+                  A drive root ("C:") still takes one. */}
+              {i > 0 && !(i === 1 && crumbs[0]?.name === "/") && (
+                <span className="schedule-picker-crumb-sep">/</span>
+              )}
+              <button type="button" className="schedule-picker-crumb"
+                      disabled={i === crumbs.length - 1}
+                      title={c.path}
+                      onClick={() => go(c.path)}>
+                {c.name}
+              </button>
+            </span>
+          ),
+        )}
       </div>
       <input
         type="text"
         className="field-control schedule-picker-filter"
-        placeholder="Filter folders"
+        placeholder="Filter this folder"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
       />
@@ -178,29 +261,204 @@ function FolderPicker({
         {error && <p className="schedule-card-why">{error}</p>}
         {!error && shown?.length === 0 && !loading && (
           <p className="schedule-card-why">
-            {filter ? "No folders match" : "No subfolders"}
+            {filter ? "Nothing matches" : "Empty folder"}
           </p>
         )}
-        {!error && shown?.map((name) => (
-          <button key={name} type="button" className="schedule-picker-row"
+        {!error && shown?.map(({ name, dir }) => (
+          <button key={name} type="button"
+                  className={"schedule-picker-row" + (dir ? "" : " schedule-picker-row--file")}
                   disabled={loading} title={name}
-                  onClick={() => go(path.replace(/\/+$/, "") + "/" + name)}>
-            {ICON_FOLDER} <span className="schedule-picker-name">{name}</span>
-            <span className="schedule-picker-enter" aria-hidden="true">›</span>
+                  onClick={() => {
+                    const full = path.replace(/\/+$/, "") + "/" + name;
+                    // A folder is a place to go; a file is an ANSWER — picking
+                    // one finishes the errand.
+                    if (dir) go(full);
+                    else {
+                      onPick(full);
+                      onClose();
+                    }
+                  }}>
+            {dir ? ICON_FOLDER : ICON_FILE}
+            <span className="schedule-picker-name">{name}</span>
+            {dir && <span className="schedule-picker-enter" aria-hidden="true">›</span>}
           </button>
         ))}
       </div>
       <div className="schedule-picker-foot">
-        {/* "Back", not "Cancel": the picker is a level below the recents
-            dropdown, and this returns there (Akshil, 2026-08-15). */}
         <button type="button" className="btn btn-secondary" onClick={onClose}>
-          Back
+          Cancel
         </button>
         <button type="button" className="btn btn-primary"
                 onClick={() => { onPick(path); onClose(); }}>
           Use this folder
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---- Fixed-position dropdowns ---------------------------------------------
+// Every dropdown in this modal is position:fixed, measured off its trigger:
+// the modal body scrolls (`.deploy-body { overflow-y: auto }`), and an
+// absolutely-positioned panel gets CLIPPED at its edge — the month grid
+// shipped cut off mid-row (Akshil, 2026-08-16 screenshot). Fixed escapes the
+// clip; when the viewport below the trigger is shorter than the panel, it
+// opens upward instead.
+function popStyle(
+  el: HTMLElement | null,
+  estHeight: number,
+  matchWidth = false,
+): React.CSSProperties {
+  const r = el?.getBoundingClientRect();
+  if (!r) return {};
+  const s: React.CSSProperties = { position: "fixed", left: r.left, right: "auto" };
+  if (r.bottom + 4 + estHeight > window.innerHeight && r.top - 4 - estHeight > 0) {
+    s.bottom = window.innerHeight - r.top + 4;
+  } else {
+    s.top = r.bottom + 4;
+  }
+  // A menu is as wide as the control that opened it — the CSS floor of 180px
+  // made the repeat menu wider than its chip and the recurrence units menu
+  // three times wider than the word it was replacing (audit 2026-08-16). The
+  // 140px is only there so a very narrow trigger still yields a readable list.
+  if (matchWidth) {
+    s.width = r.width;
+    s.minWidth = 140;
+  }
+  return s;
+}
+
+// One custom select for EVERYTHING the form chooses from a list — repeat,
+// permissions, the recurrence dialog's units. The native <select> sat beside
+// the custom date/time/path dropdowns as the one control drawn by the OS
+// (Akshil, 2026-08-16, "custom input for everything").
+function Dropdown({
+  value,
+  options,
+  onPick,
+  ariaLabel,
+  className,
+}: {
+  value: string; // the current choice's LABEL
+  options: { key: string; label: string }[];
+  onPick: (key: string) => void;
+  ariaLabel: string;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  // Which option the ARROW KEYS are on. Focus never leaves the trigger — the
+  // menu is a listbox, and a listbox's items are described by
+  // aria-activedescendant, not focused one by one (a Tab through this form
+  // otherwise walked every option of every open menu; audit 2026-08-16). The
+  // options carry tabIndex={-1} for the same reason.
+  const [active, setActive] = useState(-1);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const listId = useId();
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Open on the current choice, so the first ArrowDown steps off it.
+  const show = () => {
+    setActive(options.findIndex((o) => o.label === value));
+    setOpen(true);
+  };
+
+  // Keep the active option in view when it is stepped past the panel's edge.
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current
+      ?.querySelector<HTMLElement>(".is-active")
+      ?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
+
+  const move = (delta: number) => {
+    setActive((i) => {
+      const n = options.length;
+      if (n === 0) return -1;
+      return ((i < 0 ? 0 : i + delta) + n) % n;
+    });
+  };
+
+  return (
+    <div
+      className={"schedule-pop-wrap" + (className ? " " + className : "")}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && open) {
+          e.stopPropagation();
+          setOpen(false);
+          return;
+        }
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          if (!open) show();
+          else move(e.key === "ArrowDown" ? 1 : -1);
+          return;
+        }
+        if (!open) return;
+        if (e.key === "Home" || e.key === "End") {
+          e.preventDefault();
+          setActive(e.key === "Home" ? 0 : options.length - 1);
+          return;
+        }
+        if (e.key === "Enter" && active >= 0 && active < options.length) {
+          e.preventDefault();
+          setOpen(false);
+          onPick(options[active].key);
+        }
+      }}
+    >
+      <button
+        ref={btnRef}
+        type="button"
+        className="schedule-when-field schedule-select"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={
+          open && active >= 0 ? `${listId}-${active}` : undefined
+        }
+        aria-label={ariaLabel}
+        onClick={() => (open ? setOpen(false) : show())}
+      >
+        <span className="schedule-select-label">{value}</span>
+        <span className="schedule-select-caret" aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          id={listId}
+          className="schedule-pop schedule-pop--menu"
+          role="listbox"
+          aria-label={ariaLabel}
+          style={popStyle(btnRef.current, options.length * 34 + 10, true)}
+          onMouseDown={(e) => e.preventDefault()}
+        >
+          {options.map((o, i) => (
+            <button
+              key={o.key}
+              id={`${listId}-${i}`}
+              type="button"
+              role="option"
+              tabIndex={-1}
+              aria-selected={o.label === value}
+              className={
+                "schedule-menu-item" +
+                (o.label === value ? " is-selected" : "") +
+                (i === active ? " is-active" : "")
+              }
+              onMouseEnter={() => setActive(i)}
+              onClick={() => {
+                setOpen(false);
+                onPick(o.key);
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -220,9 +478,20 @@ const MONTHS = [
 function MiniCalendar({
   selected,
   onPick,
+  minToday = false,
+  minDate,
 }: {
   selected: Date;
   onPick: (d: Date) => void;
+  // Whether a day before today is pickable. Only the ONE-OFF case says no: for
+  // a repeating rule the picked date is the series' ANCHOR, and "Monthly on the
+  // second Wednesday" anchored last month is a legitimate thing to say — the
+  // server materializes from the next future run. The grid cannot know which it
+  // is being used for, so the caller tells it (audit 2026-08-16).
+  minToday?: boolean;
+  // A hard floor of its own (the recurrence section's end date, which cannot
+  // precede the anchor it ends).
+  minDate?: Date;
 }) {
   // The month being LOOKED AT, which is not the month selected — paging
   // through months must not move the selection.
@@ -239,17 +508,30 @@ function MiniCalendar({
   const same = (d: Date, y: number, m: number, day: number) =>
     d.getFullYear() === y && d.getMonth() === m && d.getDate() === day;
 
+  // The earliest day this grid will hand back, as a midnight stamp; -Infinity
+  // when nothing constrains it.
+  const floor = (() => {
+    const bounds: number[] = [];
+    if (minToday)
+      bounds.push(new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime());
+    if (minDate)
+      bounds.push(new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate()).getTime());
+    return bounds.length ? Math.max(...bounds) : -Infinity;
+  })();
+
   return (
     <div className="schedule-mini-cal">
       <div className="schedule-mini-cal-head">
         <span className="schedule-mini-cal-title">
           {MONTHS[view.getMonth()]} {view.getFullYear()}
         </span>
-        <button type="button" className="schedule-mini-cal-nav" aria-label="Previous month"
+        <button type="button" className="schedule-mini-cal-nav" tabIndex={-1}
+                aria-label="Previous month"
                 onClick={() => setView(new Date(view.getFullYear(), view.getMonth() - 1, 1))}>
           ‹
         </button>
-        <button type="button" className="schedule-mini-cal-nav" aria-label="Next month"
+        <button type="button" className="schedule-mini-cal-nav" tabIndex={-1}
+                aria-label="Next month"
                 onClick={() => setView(new Date(view.getFullYear(), view.getMonth() + 1, 1))}>
           ›
         </button>
@@ -258,24 +540,28 @@ function MiniCalendar({
         {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
           <span key={i} className="schedule-mini-cal-dow">{d}</span>
         ))}
-        {cells.map((day, i) =>
-          day === null ? (
-            <span key={`b${i}`} />
-          ) : (
+        {cells.map((day, i) => {
+          if (day === null) return <span key={`b${i}`} />;
+          const d = new Date(view.getFullYear(), view.getMonth(), day);
+          return (
             <button
               key={day}
               type="button"
+              // The grid is one control reached from its chip, not 31 tab
+              // stops in the middle of the form.
+              tabIndex={-1}
+              disabled={d.getTime() < floor}
               className={
                 "schedule-mini-cal-day" +
                 (same(selected, view.getFullYear(), view.getMonth(), day) ? " is-selected" : "") +
                 (same(today, view.getFullYear(), view.getMonth(), day) ? " is-today" : "")
               }
-              onClick={() => onPick(new Date(view.getFullYear(), view.getMonth(), day))}
+              onClick={() => onPick(d)}
             >
               {day}
             </button>
-          ),
-        )}
+          );
+        })}
       </div>
     </div>
   );
@@ -327,11 +613,17 @@ function TimeList({
     m: (i % 4) * 15,
   }));
   return (
-    <div className="schedule-time-list" ref={ref}>
+    // A listbox, said out loud: 96 slots that announced themselves as plain
+    // buttons left a screen reader no way to know one of them was the current
+    // time, and Tab walked all 96 (audit 2026-08-16).
+    <div className="schedule-time-list" ref={ref} role="listbox" aria-label="Time">
       {slots.map(({ h, m }, i) => (
         <button
           key={`${h}:${m}`}
           type="button"
+          role="option"
+          tabIndex={-1}
+          aria-selected={i === nearest}
           className={"schedule-time-slot" + (i === nearest ? " is-selected" : "")}
           onClick={() => onPick(h, m)}
         >
@@ -366,6 +658,19 @@ function CustomRecurrence({
   );
   const [until, setUntil] = useState(initial?.until ?? "");
   const [count, setCount] = useState(initial?.count ?? 13);
+  // The end date is picked from the SAME month grid the when-row uses, dropped
+  // from a chip — the `<input type="date">` it replaces was the last OS-drawn
+  // control in a form of custom chips (audit 2026-08-16).
+  const [untilOpen, setUntilOpen] = useState(false);
+  const untilRef = useRef<HTMLButtonElement>(null);
+  // The section opens on the question it is asking: how often. Without this
+  // the reveal landed focus nowhere and a keyboard user had to Tab in from the
+  // repeat menu they had just left (audit 2026-08-16).
+  const intervalRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    intervalRef.current?.focus();
+    intervalRef.current?.select();
+  }, []);
 
   const toggleDay = (d: number) =>
     setByday((prev) => {
@@ -388,22 +693,28 @@ function CustomRecurrence({
   const nth = NTH_LABELS[Math.floor((anchor.getDate() - 1) / 7)];
 
   return (
-    <div className="schedule-recur" role="dialog" aria-label="Custom recurrence">
+    // A SECTION of the form, not a dialog: it has no scrim, no focus trap and
+    // the card behind it stays live, so announcing role="dialog" promised a
+    // modality that does not exist (audit 2026-08-16).
+    <section className="schedule-recur" aria-label="Custom recurrence">
       <p className="schedule-recur-title">Custom recurrence</p>
 
       <div className="schedule-recur-row">
         <span>Repeat every</span>
-        <input type="number" min={1} max={99} className="field-control schedule-recur-n"
+        <input ref={intervalRef} type="number" min={1} max={99}
+               className="schedule-recur-n" aria-label="Repeat interval"
                value={interval}
                onChange={(e) => setIntervalN(Math.max(1, Math.min(99, Number(e.target.value) || 1)))} />
-        <select className="field-control schedule-recur-unit" value={freq}
-                aria-label="Repeat unit"
-                onChange={(e) => setFreq(e.target.value as RecurrenceRule["freq"])}>
-          <option value="day">{interval > 1 ? "days" : "day"}</option>
-          <option value="week">{interval > 1 ? "weeks" : "week"}</option>
-          <option value="month">{interval > 1 ? "months" : "month"}</option>
-          <option value="year">{interval > 1 ? "years" : "year"}</option>
-        </select>
+        <Dropdown
+          ariaLabel="Repeat unit"
+          className="schedule-recur-unit"
+          value={interval > 1 ? `${freq}s` : freq}
+          options={(["day", "week", "month", "year"] as const).map((u) => ({
+            key: u,
+            label: interval > 1 ? `${u}s` : u,
+          }))}
+          onPick={(u) => setFreq(u as RecurrenceRule["freq"])}
+        />
       </div>
 
       {freq === "week" && (
@@ -425,43 +736,88 @@ function CustomRecurrence({
 
       {freq === "month" && (
         <div className="schedule-recur-row">
-          <select className="field-control" value={monthly}
-                  aria-label="Monthly on"
-                  onChange={(e) => setMonthly(e.target.value as "day" | "nth-weekday")}>
-            <option value="day">Monthly on day {anchor.getDate()}</option>
-            <option value="nth-weekday">
-              Monthly on the {nth} {DAYS[anchor.getDay()]}
-            </option>
-          </select>
+          <Dropdown
+            ariaLabel="Monthly on"
+            value={
+              monthly === "day"
+                ? `Monthly on day ${anchor.getDate()}`
+                : `Monthly on the ${nth} ${DAYS[anchor.getDay()]}`
+            }
+            options={[
+              { key: "day", label: `Monthly on day ${anchor.getDate()}` },
+              { key: "nth-weekday", label: `Monthly on the ${nth} ${DAYS[anchor.getDay()]}` },
+            ]}
+            onPick={(v) => setMonthly(v as "day" | "nth-weekday")}
+          />
         </div>
       )}
 
+      {/* Three mutually exclusive answers to one question = a segmented
+          control, the same one the page's view toggle is built from. Three
+          stacked native radios (two of whose fields were rendered DISABLED
+          rather than hidden) was the one place this form still looked like a
+          settings page (audit 2026-08-16). Only the chosen branch's field is
+          rendered — a greyed-out control is a question you cannot answer. */}
       <div className="schedule-recur-ends">
-        <span>Ends</span>
-        <label className="schedule-recur-end">
-          <input type="radio" name="recur-ends" checked={ends === "never"}
-                 onChange={() => setEnds("never")} />
-          Never
-        </label>
-        <label className="schedule-recur-end">
-          <input type="radio" name="recur-ends" checked={ends === "on"}
-                 onChange={() => setEnds("on")} />
-          On
-          <input type="date" className="field-control" value={until}
-                 disabled={ends !== "on"}
-                 min={toLocalInput(anchor).slice(0, 10)}
-                 onChange={(e) => setUntil(e.target.value)} />
-        </label>
-        <label className="schedule-recur-end">
-          <input type="radio" name="recur-ends" checked={ends === "after"}
-                 onChange={() => setEnds("after")} />
-          After
-          <input type="number" min={1} max={999} className="field-control schedule-recur-n"
-                 disabled={ends !== "after"}
-                 value={count}
-                 onChange={(e) => setCount(Math.max(1, Math.min(999, Number(e.target.value) || 1)))} />
-          occurrences
-        </label>
+        <span className="schedule-recur-ends-label">Ends</span>
+        <div className="schedule-form-seg" role="radiogroup" aria-label="Ends">
+          {ENDS_CHOICES.map(({ key, label }) => (
+            <button key={key} type="button"
+                    className={"btn btn-secondary" + (ends === key ? " is-active" : "")}
+                    aria-pressed={ends === key}
+                    onClick={() => setEnds(key)}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {ends === "on" && (
+          <div className="schedule-recur-detail">
+            <div
+              className="schedule-pop-wrap"
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                  setUntilOpen(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && untilOpen) {
+                  e.stopPropagation();
+                  setUntilOpen(false);
+                }
+              }}
+            >
+              <button ref={untilRef} type="button"
+                      className="schedule-when-field schedule-recur-until"
+                      aria-expanded={untilOpen}
+                      aria-label="End date"
+                      onClick={() => setUntilOpen((o) => !o)}>
+                {untilLabel(until)}
+              </button>
+              {untilOpen && (
+                <div className="schedule-pop" style={popStyle(untilRef.current, 300)}
+                     onMouseDown={(e) => e.preventDefault()}>
+                  {/* minToday is deliberately off: an end date is bounded by
+                      its own anchor, not by today. */}
+                  <MiniCalendar
+                    selected={untilDate(until) ?? anchor}
+                    minDate={anchor}
+                    onPick={(d) => { setUntil(ymdOf(d)); setUntilOpen(false); }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {ends === "after" && (
+          <div className="schedule-recur-detail">
+            <input type="number" min={1} max={999} className="schedule-recur-n"
+                   aria-label="Number of occurrences"
+                   value={count}
+                   onChange={(e) => setCount(Math.max(1, Math.min(999, Number(e.target.value) || 1)))} />
+            <span>occurrences</span>
+          </div>
+        )}
       </div>
 
       <div className="schedule-picker-foot">
@@ -474,11 +830,45 @@ function CustomRecurrence({
           Done
         </button>
       </div>
-    </div>
+    </section>
   );
 }
 
+const ENDS_CHOICES = [
+  { key: "never", label: "Never" },
+  { key: "on", label: "On" },
+  { key: "after", label: "After" },
+] as const;
+
+// A date the recurrence section stores as "YYYY-MM-DD", both ways. Parsed by
+// hand rather than through `new Date(ymd)` — that reads a bare date string as
+// UTC and lands a day early west of Greenwich.
+const ymdOf = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function untilDate(ymd: string): Date | null {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return y && m && d ? new Date(y, m - 1, d) : null;
+}
+
+function untilLabel(ymd: string): string {
+  const d = untilDate(ymd);
+  return d ? `${MONTHS[d.getMonth()].slice(0, 3)} ${d.getDate()}, ${d.getFullYear()}` : "Pick a date";
+}
+
 const NTH_LABELS = ["first", "second", "third", "fourth", "fifth"];
+
+// How a permission mode is SAID. The keys are the server's contract and stay
+// exactly as they are on the wire; only the reading changes. A mode this map
+// has never heard of shows its key, which is still better than hiding it.
+const PERMISSION_LABELS: Record<string, string> = {
+  auto: "Auto",
+  acceptEdits: "Accept edits",
+  plan: "Plan only",
+  prompt: "Ask every time",
+};
+
+const permissionLabel = (key: string) => PERMISSION_LABELS[key] ?? key;
 
 // A Date as the value a <input type="datetime-local"> wants: local wall-clock,
 // minute precision, no zone suffix. `toISOString` is exactly wrong here (UTC).
@@ -509,6 +899,9 @@ function keyOfRule(rule: RecurrenceRule, anchor: Date): string {
 export default function NewJobModal({
   initialTime,
   initialTarget,
+  initialMessage,
+  chatSessionId,
+  chatBack,
   editing,
   permissionModes,
   recentTargets,
@@ -522,6 +915,16 @@ export default function NewJobModal({
   // It outranks the DEFAULT_TARGET_SUFFIX guess below — a guess is what you
   // offer when nobody said — and an Edit outranks both, having a stored target.
   initialTarget?: string | null;
+  // The chat composer's handoff (Akshil, 2026-08-16): the draft the user had
+  // typed arrives as the description…
+  initialMessage?: string | null;
+  // …the open conversation arrives as a session to CONTINUE — but only a
+  // one-off resumes it; a repeating task always opens fresh chats, because
+  // resuming the same conversation every day compounds context forever.
+  chatSessionId?: string | null;
+  // And the chat's own URL, so the form can offer the way back — the whole
+  // point is a round trip (chat → schedule → back → adjust → again).
+  chatBack?: string | null;
   // An existing task to change. The server has no update: saving schedules the
   // replacement first, then withdraws this one — see submit().
   editing?: ScheduledMessage | null;
@@ -534,7 +937,7 @@ export default function NewJobModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [message, setMessage] = useState(editing?.message ?? "");
+  const [message, setMessage] = useState(editing?.message ?? initialMessage ?? "");
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
   // repeat choice reads its parts (minute, time, weekday) — Google's model.
@@ -580,6 +983,51 @@ export default function NewJobModal({
       return true;
     });
   });
+
+  // Early path validation (Akshil, 2026-08-16 — "detect it before me
+  // scanning the input"): a beat after typing stops, ask the server whether
+  // the path exists. A folder answers listDir directly; a FILE fails it, so
+  // the parent is listed and the basename looked up — a file target is legal.
+  // null = fine (or still checking); a string is the red line under the row.
+  const [pathError, setPathError] = useState<string | null>(null);
+  useEffect(() => {
+    const p = target.trim();
+    if (!p) {
+      setPathError(null);
+      return;
+    }
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      listDir(p).then(
+        () => {
+          if (!stale) setPathError(null);
+        },
+        () => {
+          const norm = normPath(p).replace(/\/+$/, "");
+          const cut = norm.lastIndexOf("/");
+          const parent = cut > 0 ? norm.slice(0, cut) : "/";
+          const base = norm.slice(cut + 1);
+          listDir(parent).then(
+            (r) => {
+              if (stale) return;
+              setPathError(
+                r.entries.some((e) => e.name === base)
+                  ? null
+                  : "This folder or file doesn't exist",
+              );
+            },
+            () => {
+              if (!stale) setPathError("This folder or file doesn't exist");
+            },
+          );
+        },
+      );
+    }, 400);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [target]);
 
   // The description wears the title's clothes but grows like a note: with the
   // text, up to the CSS max-height (~5 lines), then scrolls. Measured on every
@@ -636,7 +1084,7 @@ export default function NewJobModal({
     // close-twice guard on an untouched modal (the bug the getConfig effect's
     // setInitial exists for — this is the same one, one prefill earlier).
     target: editing?.target ?? initialTarget ?? "",
-    message: editing?.message ?? "",
+    message: editing?.message ?? initialMessage ?? "",
     when,
     repeat,
     customRule: JSON.stringify(customRule),
@@ -656,11 +1104,20 @@ export default function NewJobModal({
   const picked = useMemo(() => new Date(when), [when]);
   const pickedOk = !Number.isNaN(picked.getTime());
 
+  // Ids so the two refusals this form can print are ATTACHED to the controls
+  // they refuse, not merely near them: a screen reader announcing the date chip
+  // otherwise read a bare label with an unrelated red line somewhere below
+  // (audit 2026-08-16).
+  const pastHintId = useId();
+  const pathErrorId = useId();
+
   // The two when-dropdowns, and the time field's draft text (editable like
   // Google's: type "8:30pm" or pick from the list; an unparseable draft
   // falls back to what the field had).
   const [dateOpen, setDateOpen] = useState(false);
   const [timeOpen, setTimeOpen] = useState(false);
+  const dateBtnRef = useRef<HTMLButtonElement>(null);
+  const timeRef = useRef<HTMLInputElement>(null);
   const [timeText, setTimeText] = useState(() =>
     fmtTime(new Date(when).getHours() || 0, new Date(when).getMinutes() || 0),
   );
@@ -724,8 +1181,16 @@ export default function NewJobModal({
         permission_mode: permission,
         // An edit keeps what it cannot re-ask for: a composer-scheduled task
         // that continues an open chat must still continue it after a time
-        // change, or the edit silently turns it into a fresh session.
-        ...(editing?.session_id ? { session_id: editing.session_id } : {}),
+        // change, or the edit silently turns it into a fresh session. A NEW
+        // one-off arriving from an open chat continues THAT chat — but only
+        // a one-off; a repeating task opens fresh sessions (Akshil,
+        // 2026-08-16), since resuming one conversation on every run
+        // compounds its context forever.
+        ...(editing?.session_id
+          ? { session_id: editing.session_id }
+          : chatSessionId && !rule && repeat !== "cron"
+            ? { session_id: chatSessionId }
+            : {}),
       });
       rememberRecent(target);
       if (editing) {
@@ -775,6 +1240,7 @@ export default function NewJobModal({
     !replaced &&
     message.trim() !== "" &&
     target.trim() !== "" &&
+    pathError === null &&
     (repeat === "custom" ? customRule !== null : true) &&
     (repeat === "cron" ? legacyCron !== "" : pickedOk) &&
     !dueIsPast;
@@ -787,10 +1253,22 @@ export default function NewJobModal({
       width={460}
       dirty={dirty}
       footer={
-        <button type="button" className="btn btn-primary schedule-save"
-                disabled={busy || !ready} onClick={submit}>
-          {busy ? "Saving…" : "Save"}
-        </button>
+        <>
+          {/* The way back completes the chat's round trip: chat → schedule →
+              adjust the draft → schedule again. Only shown when a chat sent
+              us here — from anywhere else there is no "back". */}
+          {chatBack && (
+            <button type="button" className="btn btn-secondary schedule-back-chat"
+                    disabled={busy}
+                    onClick={() => navigateUrl(chatBack)}>
+              Back to chat
+            </button>
+          )}
+          <button type="button" className="btn btn-primary schedule-save"
+                  disabled={busy || !ready} onClick={submit}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </>
       }
     >
       <div className="schedule-form">
@@ -840,7 +1318,9 @@ export default function NewJobModal({
             <input
               ref={pathRef}
               type="text"
-              className="field-control"
+              className={"field-control" + (pathError ? " is-invalid" : "")}
+              aria-invalid={pathError !== null}
+              aria-describedby={pathError ? pathErrorId : undefined}
               placeholder="Add folder or file"
               role="combobox"
               aria-expanded={recentsOpen}
@@ -862,6 +1342,7 @@ export default function NewJobModal({
               // unmount before its click fired (Bugbot, PR #541).
               <div
                 className="schedule-recents"
+                style={popStyle(pathRef.current, 240, true)}
                 onMouseDown={(e) => e.preventDefault()}
               >
                 {recents.slice(0, RECENTS_SHOWN).map((p) => (
@@ -885,17 +1366,26 @@ export default function NewJobModal({
                     setPicking(true);
                   }}
                 >
+                  {/* The empty icon column, so the verb's label starts on the
+                      same edge as every folder above it (audit 2026-08-16). */}
+                  <span className="schedule-picker-gutter" aria-hidden="true" />
                   Browse…
                 </button>
               </div>
             )}
           </div>
         </div>
+        {pathError && (
+          <span id={pathErrorId} className="field-hint schedule-form-bad schedule-form-sub"
+                role="alert">
+            {pathError}
+          </span>
+        )}
         {picking && (
-          // Full row width, like every other line of the card — the sub-row
-          // indent left the picker narrower than the field it serves
-          // (Akshil, 2026-08-15).
-          <FolderPicker
+          // Slides in BESIDE the card (position:fixed; the card shifts left
+          // via the :has() rule in schedule.css) — inside the card it was
+          // "too small to see anything" (Akshil, 2026-08-16).
+          <ExplorerPanel
             start={target.trim() || home || "/"}
             onPick={(p) => {
               pickedFromBrowser.current = true;
@@ -904,9 +1394,6 @@ export default function NewJobModal({
             }}
             onClose={() => {
               setPicking(false);
-              // Back (no pick) returns to the level above: refocusing the
-              // field is what reopens the recents dropdown.
-              if (!pickedFromBrowser.current) pathRef.current?.focus();
               pickedFromBrowser.current = false;
             }}
           />
@@ -924,16 +1411,33 @@ export default function NewJobModal({
                 if (!e.currentTarget.contains(e.relatedTarget as Node | null))
                   setDateOpen(false);
               }}
+              // Escape dismisses the GRID, not the modal around it — same
+              // contract as every other dropdown here.
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && dateOpen) {
+                  e.stopPropagation();
+                  setDateOpen(false);
+                }
+              }}
             >
-              <button type="button" className="field-control schedule-when-field"
+              <button ref={dateBtnRef} type="button"
+                      className={"schedule-when-field" + (dueIsPast ? " is-invalid" : "")}
+                      aria-invalid={dueIsPast}
+                      aria-describedby={dueIsPast ? pastHintId : undefined}
                       aria-expanded={dateOpen}
                       onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
                 {dateLabel}
               </button>
               {dateOpen && (
-                <div className="schedule-pop" onMouseDown={(e) => e.preventDefault()}>
+                <div className="schedule-pop" style={popStyle(dateBtnRef.current, 300)}
+                     onMouseDown={(e) => e.preventDefault()}>
+                  {/* A past day is only out of bounds for a ONE-OFF. For a
+                      rule the date is the series' anchor, and "Monthly on the
+                      second Wednesday" anchored last month is legitimate — the
+                      server materializes from the next future run. */}
                   <MiniCalendar
                     selected={pickedOk ? picked : new Date()}
+                    minToday={repeat === "none"}
                     onPick={(d) => { setDatePart(d); setDateOpen(false); }}
                   />
                 </div>
@@ -947,8 +1451,11 @@ export default function NewJobModal({
               }}
             >
               <input
+                ref={timeRef}
                 type="text"
-                className="field-control schedule-when-field schedule-when-time"
+                className={"schedule-when-field schedule-when-time" + (dueIsPast ? " is-invalid" : "")}
+                aria-invalid={dueIsPast}
+                aria-describedby={dueIsPast ? pastHintId : undefined}
                 aria-expanded={timeOpen}
                 aria-label="Time"
                 value={timeText}
@@ -962,6 +1469,7 @@ export default function NewJobModal({
               />
               {timeOpen && (
                 <div className="schedule-pop schedule-pop--time"
+                     style={popStyle(timeRef.current, 208)}
                      onMouseDown={(e) => e.preventDefault()}>
                   <TimeList
                     selected={{ h: pickedOk ? picked.getHours() : 9, m: pickedOk ? picked.getMinutes() : 0 }}
@@ -972,15 +1480,41 @@ export default function NewJobModal({
             </div>
           </div>
         </div>
+        {/* The refusal sits DIRECTLY under the row it refuses. Printed after
+            the repeat row (the first cut) it read as a complaint about the
+            recurrence rule, which is the one thing it is never about (audit
+            2026-08-16). role=alert so it is spoken when it appears. */}
+        {dueIsPast && (
+          <span id={pastHintId} className="field-hint schedule-form-bad schedule-form-sub"
+                role="alert">
+            Choose a time in the future
+          </span>
+        )}
         <div className="schedule-form-line schedule-form-line--sub">
-          <select
-            className="field-control"
-            value={repeat}
-            aria-label="Repeats"
-            onChange={(e) => {
-              const v = e.target.value;
+          <Dropdown
+            ariaLabel="Repeats"
+            className="schedule-repeat"
+            value={
+              repeat === "custom" && customRule
+                ? describeRule(customRule, pickedOk ? picked : new Date())
+                : repeat === "cron"
+                  ? describeRepeats(legacyCron)
+                  : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat"
+            }
+            options={[
+              ...choices.map((c) =>
+                c.key === "custom" && repeat === "custom" && customRule
+                  ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
+                  : { key: c.key, label: c.label },
+              ),
+              // Legacy cron templates keep their line under a key of their
+              // own — the form no longer writes cron, but editing one must
+              // not silently rewrite the rule.
+              ...(legacyCron ? [{ key: "cron", label: describeRepeats(legacyCron) }] : []),
+            ]}
+            onPick={(v) => {
               if (v === "custom") {
-                // The dialog answers what "Custom…" means; the select only
+                // The dialog answers what "Custom…" means; the choice only
                 // commits once Done says so.
                 repeatBefore.current = repeat;
                 setRecurOpen(true);
@@ -989,25 +1523,7 @@ export default function NewJobModal({
                 setRepeat(v);
               }
             }}
-          >
-            {choices.map((c) =>
-              c.key === "custom" ? (
-                <option key="custom" value="custom">
-                  {repeat === "custom" && customRule
-                    ? describeRule(customRule, pickedOk ? picked : new Date())
-                    : "Custom…"}
-                </option>
-              ) : (
-                <option key={c.key} value={c.key}>{c.label}</option>
-              ),
-            )}
-            {/* Legacy cron templates keep their line under a key of their own
-                — the form no longer writes cron, but editing one must not
-                silently rewrite the rule. */}
-            {legacyCron && (
-              <option value="cron">{describeRepeats(legacyCron)}</option>
-            )}
-          </select>
+          />
         </div>
         {recurOpen && (
           <CustomRecurrence
@@ -1025,26 +1541,32 @@ export default function NewJobModal({
             }}
           />
         )}
-        {dueIsPast && (
-          <span className="field-hint schedule-form-bad schedule-form-sub">
-            Choose a time in the future
-          </span>
-        )}
 
         <details className="schedule-form-more">
           <summary>More options</summary>
-          <label className="field">
+          {/* Inside the same 26px icon gutter every other control hangs from —
+              the details block was flush with the card edge, so the one control
+              behind it was the only one in the form that did not line up
+              (audit 2026-08-16). */}
+          <div className="field schedule-form-sub">
             <span className="field-label">Permissions</span>
-            <select className="field-control" value={permission}
-                    onChange={(e) => setPermission(e.target.value)}>
-              {(permissionModes.length ? permissionModes : ["auto"]).map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
+            <Dropdown
+              ariaLabel="Permissions"
+              value={permissionLabel(permission)}
+              // The KEY is what gets submitted; the label is only how the mode
+              // is said. The raw keys ("acceptEdits") were the server's
+              // vocabulary printed at the user (audit 2026-08-16), and an
+              // unknown key still shows itself rather than being hidden.
+              options={(permissionModes.length ? permissionModes : ["auto"]).map((m) => ({
+                key: m,
+                label: permissionLabel(m),
+              }))}
+              onPick={setPermission}
+            />
             <span className="field-hint">
               The task runs unattended. Auto approves safe actions and holds the rest.
             </span>
-          </label>
+          </div>
         </details>
 
         {error && <ErrorBanner>{error}</ErrorBanner>}

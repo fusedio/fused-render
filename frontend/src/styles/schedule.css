@@ -159,12 +159,14 @@
   border-color: var(--border);
 }
 
+/* No font-weight change on the active half: the segments are laid out by their
+   text, and bolding the selected one re-measures all three — the toggle jittered
+   on every click (audit 2026-08-16). The fill alone carries the state. */
 .schedule-form-seg .btn.is-active,
 .prefs-section .schedule-form-seg .btn.btn-secondary.is-active {
   background: var(--bg-alt);
   border-color: var(--border);
   color: var(--fg);
-  font-weight: 600;
 }
 
 /* overflow:hidden clips the default outside focus ring; draw it inside. */
@@ -436,13 +438,16 @@
   box-shadow: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .schedule-cal-event {
-    transition: none;
-  }
-}
+/* No local prefers-reduced-motion block: styles/reduced-motion.css collapses
+   every animation-duration and transition-duration to 0.01ms !important
+   globally, so per-component repeats were dead weight (audit 2026-08-16). */
 
+/* The two halves of a chip share one line, and the TEXT is the half that
+   gives: flex-basis auto + min-width 0 lets it ellipsise instead of shoving
+   the time out of the box (a three-lane cluster is ~70px wide). */
 .schedule-cal .schedule-cal-event-text {
+  flex: 1 1 auto;
+  min-width: 0;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -450,8 +455,18 @@
 }
 
 .schedule-cal .schedule-cal-event-time {
+  flex: 0 0 auto;
   white-space: nowrap;
   opacity: 0.85;
+}
+
+/* Three or more lanes and the chip has no room for both facts. The title is
+   the one that identifies the run; the time is already read off the row's
+   position on the hour ruler, so it is what goes. The class is set from
+   `lanes` in ScheduleCalendar (the number is already computed there) rather
+   than a container query — one source, no second layout system. */
+.schedule-cal .schedule-cal-event.is-narrow .schedule-cal-event-time {
+  display: none;
 }
 
 /* Already ran, ran fine: a quiet wash — the calendar's read is "that
@@ -543,11 +558,7 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .schedule-cal-popover {
-    animation: none;
-  }
-}
+/* (No local reduced-motion block — see styles/reduced-motion.css.) */
 
 /* The prompt as the popover's headline: body colour, a step up, room to
    wrap — scrolling only past a genuinely long prompt. */
@@ -633,9 +644,11 @@
   resize: none;
   overflow-wrap: anywhere;
   /* Grows with the text (JS sets height from scrollHeight) to five lines of
-     the 24px face, then scrolls — the cap is what keeps a long brief from
-     shoving the when/where rows off the card (Akshil, 2026-08-15). */
-  max-height: calc(24px * 1.35 * 5 + 14px);
+     the 20px face, then scrolls — the cap is what keeps a long brief from
+     shoving the when/where rows off the card (Akshil, 2026-08-15). The face
+     came DOWN from 24px: at 24 the description shouted over every other row
+     in a 460px card (audit 2026-08-16), and the calc has to follow it. */
+  max-height: calc(20px * 1.35 * 5 + 14px);
   overflow-y: auto;
 }
 
@@ -673,11 +686,34 @@
   margin-left: 26px;
 }
 
+/* The native disclosure marker is the platform's, not ours: a black WebKit
+   triangle sat outdented beside an accent text-button and read as debris
+   (audit 2026-08-16). Hidden, and replaced by our own ▸/▾ in the accent, so
+   the row is one object that rotates. */
 .schedule-form-more summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   font-size: 13px;
   color: var(--fg-muted);
   user-select: none;
+  list-style: none;
+}
+
+.schedule-form-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.schedule-form-more summary::before {
+  content: "▸";
+  font-size: 10px;
+  line-height: 1;
+  transition: transform 0.12s ease-out;
+}
+
+.schedule-form-more[open] summary::before {
+  transform: rotate(90deg);
 }
 
 .schedule-form-more summary:hover {
@@ -693,7 +729,6 @@
    hover, a pill Save. */
 
 .schedule-form-title {
-  font-size: 24px;
   border-bottom-width: 2px;
 }
 
@@ -797,10 +832,15 @@
 
 /* Compact controls — a row's actions are secondary to its text, like the
    Inbox's quiet per-row controls. Doubled with .prefs-section for the usual
-   specificity armor over the page's button skins. */
+   specificity armor over the page's button skins. 28px, shared with the
+   popover's actions below: the same three verbs (Edit / Cancel / Open in
+   Explorer) were 26px in a row and 30px in a popover (audit 2026-08-16). */
 .schedule-row-actions .btn,
-.prefs-section .schedule-row-actions .btn {
-  height: 26px;
+.prefs-section .schedule-row-actions .btn,
+.schedule-cal-popover .btn,
+.prefs-section .schedule-cal-popover .btn,
+.deploy-body .schedule-cal-popover .btn {
+  height: 28px;
   font-size: 12px;
   padding: 0 10px;
 }
@@ -830,10 +870,13 @@
   display: flex;
   flex-direction: column;
   padding: 4px;
-  background: var(--bg);
+  /* Same elevation as every other trigger-anchored panel (see .schedule-pop). */
+  background: var(--bg-popover, var(--bg));
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 6px 20px var(--shadow-sm);
+  box-shadow: 0 8px 24px var(--shadow-sm);
+  transform-origin: top;
+  animation: schedule-pop-in 0.1s ease-out;
 }
 
 .schedule-recents-path {
@@ -843,14 +886,33 @@
 }
 
 /* Browse closes the list of nouns with the one verb, set off by a hairline.
-   The doubled selector outranks the base row rule's border:none. */
+   The doubled selector outranks the base row rule's border:none. Padding is
+   the recents rows' own (6px 8px, NOT a fattened 8px top): the verb is one
+   more row, so it has to be the same height as the nouns above it — the
+   4px margin is what sets it apart, and it carries the same icon gutter so
+   every label in the list starts on one edge (audit 2026-08-16). */
 .schedule-form .schedule-picker-row.schedule-recents-browse {
   border-top: 1px solid var(--border);
   border-radius: 0 0 8px 8px;
   margin-top: 4px;
-  padding-top: 8px;
   color: var(--accent);
   font-weight: 500;
+}
+
+/* `.deploy-body button:hover` repaints border-color wholesale — including the
+   top hairline this row IS — so a hover turned the separator accent-green
+   (audit 2026-08-16). Restated, armored past that skin. */
+.deploy-body .schedule-form .schedule-picker-row.schedule-recents-browse:hover:not(:disabled),
+.prefs-section .schedule-form .schedule-picker-row.schedule-recents-browse:hover:not(:disabled) {
+  border-top-color: var(--border);
+}
+
+/* The empty column where an icon would be, so a row without one still starts
+   its label on the icon grid. */
+.schedule-picker-gutter {
+  flex: none;
+  width: 14px;
+  height: 14px;
 }
 
 /* -- Google-style when-row: date + time fields with dropdowns -------------- */
@@ -874,6 +936,8 @@
 
 /* The fields read as quiet filled chips (Google's), not boxed inputs. */
 .schedule-when-field,
+.deploy-body button.schedule-when-field,
+.deploy-body .schedule-when-field,
 .prefs-section button.schedule-when-field,
 .prefs-section .schedule-when-field {
   height: 32px;
@@ -883,7 +947,11 @@
   text-align: left;
   color: var(--fg);
   background: var(--bg-alt);
-  border: 1px solid transparent;
+  /* A RESTING border, not a transparent one. In dark the chip's --bg-alt sits
+     on the card's --bg-alt and the field vanished outright — three controls
+     with no edges, read as text (audit 2026-08-16). The accent still takes
+     over on :focus and --error on .is-invalid, below. */
+  border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
@@ -892,44 +960,182 @@
   width: 100%;
 }
 
-.schedule-when-time {
+/* The time chip is a fixed 96px — wide enough for "12:30pm", narrow enough
+   that the date chip keeps the row. Armored: `.deploy-body button` sets no
+   width, but the modal's own field rules do, and flex:none has to survive
+   both (audit 2026-08-16). */
+.schedule-when-time,
+.deploy-body .schedule-when-time,
+.deploy-body input.schedule-when-time,
+.prefs-section .schedule-when-time {
   width: 96px;
   flex: none;
 }
 
+/* The time chip is typed into; everything else about it matches the date
+   chip exactly — the two reading differently was a flagged discrepancy
+   (Akshil, 2026-08-16). */
+input.schedule-when-field {
+  cursor: text;
+}
+
+/* Errors point AT the field, not just at prose under the form — the message
+   alone was "very easy to miss" (Akshil, 2026-08-16). Restated for :focus
+   and hover so touching the bad field doesn't repaint it healthy. */
+.schedule-when-field.is-invalid,
+.deploy-body .schedule-when-field.is-invalid,
+.deploy-body .schedule-when-field.is-invalid:hover:not(:disabled),
+.deploy-body .schedule-when-field.is-invalid:focus,
+.prefs-section .schedule-when-field.is-invalid,
+.schedule-when-field.is-invalid:hover:not(:disabled),
+.schedule-when-field.is-invalid:focus,
+.prefs-section .schedule-when-field.is-invalid:focus {
+  border-color: var(--error);
+}
+
+.schedule-form .field-control.is-invalid,
+.schedule-form .field-control.is-invalid:focus {
+  border-color: var(--error);
+}
+
 .schedule-when-field:hover:not(:disabled),
+.deploy-body .schedule-when-field:hover:not(:disabled),
 .prefs-section .schedule-when-field:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fg-muted) 14%, var(--bg-alt));
-  border-color: transparent;
+  border-color: var(--border);
 }
 
 .schedule-when-field:focus,
+.deploy-body .schedule-when-field:focus,
 .prefs-section .schedule-when-field:focus {
   outline: none;
   border-color: var(--accent);
   background: var(--bg-alt);
 }
 
-/* The floating panel both dropdowns share. */
+/* The floating panel every dropdown shares. position:fixed with inline
+   coordinates measured off the trigger (popStyle in NewJobModal) — the modal
+   body scrolls, and an absolute panel was CLIPPED at its edge (the month
+   grid shipped cut off mid-row; Akshil, 2026-08-16 screenshot). */
 .schedule-pop {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 30;
-  background: var(--bg);
+  position: fixed;
+  z-index: 60;
+  /* One elevation vocabulary: everything anchored to a trigger floats on
+     --bg-popover at 0 8px 24px, and only the explorer — a panel, not a
+     dropdown — goes higher (audit 2026-08-16). */
+  background: var(--bg-popover, var(--bg));
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 8px 24px var(--shadow-sm);
   padding: 10px;
+  /* 100ms is the whole budget: these open on a click the user already
+     committed to, so the motion is only there to say WHERE the panel came
+     from — the trigger's own edge. */
+  transform-origin: top;
+  animation: schedule-pop-in 0.1s ease-out;
+}
+
+@keyframes schedule-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
 }
 
 .schedule-pop--time {
   padding: 4px;
 }
 
+/* The custom select: same quiet chip as the when-fields, caret at the end.
+   One control vocabulary for everything the form chooses from a list
+   (Akshil, 2026-08-16, "custom input for everything"). */
+.schedule-select,
+.deploy-body button.schedule-select,
+.prefs-section button.schedule-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.schedule-pop-wrap .schedule-select {
+  width: 100%;
+}
+
+.schedule-select-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-select-caret {
+  flex: none;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* No min-width here: the menu is sized to its TRIGGER (popStyle's matchWidth,
+   with a 140px floor set there). A flat 180px made the repeat menu wider than
+   the chip that opened it and the units menu three times wider (audit
+   2026-08-16). */
+.schedule-pop--menu {
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.schedule-menu-item,
+.deploy-body .schedule-menu-item,
+.prefs-section .schedule-menu-item {
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  align-self: stretch;
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.schedule-menu-item:hover:not(:disabled),
+.deploy-body .schedule-menu-item:hover:not(:disabled),
+.prefs-section .schedule-menu-item:hover:not(:disabled) {
+  background: var(--bg-alt);
+  border-color: transparent;
+}
+
+.schedule-menu-item.is-selected,
+.deploy-body .schedule-menu-item.is-selected,
+.prefs-section .schedule-menu-item.is-selected {
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+/* Where the ARROW KEYS are, which is not where the mouse is and not what is
+   chosen: focus stays on the trigger (aria-activedescendant), so without a
+   painted cursor the keyboard was moving through an invisible list. */
+.schedule-menu-item.is-active,
+.deploy-body .schedule-menu-item.is-active,
+.prefs-section .schedule-menu-item.is-active {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--fg);
+}
+
 /* Month grid, Google's anatomy: title + chevrons, S-M-T-W-T-F-S, discs. */
+/* 224px = 7 × 32px columns exactly. The card was 232 against a 224 grid, and
+   the 8px of slack pooled on one side — the month title, the chevrons and the
+   last column all stopped short of the card's edge (audit 2026-08-16). */
 .schedule-mini-cal {
-  width: 232px;
+  width: 224px;
   user-select: none;
 }
 
@@ -947,6 +1153,7 @@
 }
 
 .schedule-mini-cal-nav,
+.deploy-body .schedule-mini-cal-nav,
 .prefs-section .schedule-mini-cal-nav {
   width: 24px;
   height: 24px;
@@ -960,6 +1167,7 @@
 }
 
 .schedule-mini-cal-nav:hover:not(:disabled),
+.deploy-body .schedule-mini-cal-nav:hover:not(:disabled),
 .prefs-section .schedule-mini-cal-nav:hover:not(:disabled) {
   background: var(--bg-alt);
   border-color: transparent;
@@ -968,7 +1176,7 @@
 
 .schedule-mini-cal-grid {
   display: grid;
-  grid-template-columns: repeat(7, 32px);
+  grid-template-columns: repeat(7, 1fr);
   justify-items: center;
   row-gap: 2px;
 }
@@ -980,6 +1188,7 @@
 }
 
 .schedule-mini-cal-day,
+.deploy-body .schedule-mini-cal-day,
 .prefs-section .schedule-mini-cal-day {
   width: 28px;
   height: 28px;
@@ -997,22 +1206,46 @@
 }
 
 .schedule-mini-cal-day:hover:not(:disabled),
+.deploy-body .schedule-mini-cal-day:hover:not(:disabled),
 .prefs-section .schedule-mini-cal-day:hover:not(:disabled) {
   background: var(--bg-alt);
   border-color: transparent;
 }
 
 .schedule-mini-cal-day.is-today,
+.deploy-body .schedule-mini-cal-day.is-today,
 .prefs-section .schedule-mini-cal-day.is-today {
   color: var(--accent-soft, var(--accent));
   font-weight: 600;
 }
 
 .schedule-mini-cal-day.is-selected,
+.deploy-body .schedule-mini-cal-day.is-selected,
 .prefs-section .schedule-mini-cal-day.is-selected {
   background: var(--accent);
   color: var(--bg);
   font-weight: 600;
+}
+
+/* The selected disc must survive its own hover. `.deploy-body
+   button:hover:not(:disabled)` (0,3,1) outranked the (0,2,0) fill above and
+   repainted the picked day in the grey button skin — accent text on a grey
+   plate, unreadable (audit 2026-08-16). Restated at (0,4,0). */
+.schedule-mini-cal-day.is-selected:hover:not(:disabled),
+.deploy-body .schedule-mini-cal-day.is-selected:hover:not(:disabled),
+.prefs-section .schedule-mini-cal-day.is-selected:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: transparent;
+}
+
+/* A day before today, when the pick is a one-off's due date: shown (the month
+   has to keep its shape) but plainly out of reach. */
+.schedule-mini-cal-day:disabled,
+.deploy-body .schedule-mini-cal-day:disabled,
+.prefs-section .schedule-mini-cal-day:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* 15-minute list; the selected slot is centred on open by the component. */
@@ -1025,6 +1258,7 @@
 }
 
 .schedule-time-slot,
+.deploy-body .schedule-time-slot,
 .prefs-section .schedule-time-slot {
   padding: 6px 12px;
   font: inherit;
@@ -1040,12 +1274,14 @@
 }
 
 .schedule-time-slot:hover:not(:disabled),
+.deploy-body .schedule-time-slot:hover:not(:disabled),
 .prefs-section .schedule-time-slot:hover:not(:disabled) {
   background: var(--bg-alt);
   border-color: transparent;
 }
 
 .schedule-time-slot.is-selected,
+.deploy-body .schedule-time-slot.is-selected,
 .prefs-section .schedule-time-slot.is-selected {
   background: var(--bg-alt);
   font-weight: 600;
@@ -1053,6 +1289,9 @@
 
 /* -- Custom recurrence (Google's dialog) ----------------------------------- */
 
+/* An inline SECTION of the form, not a dialog (it has no scrim, no focus trap
+   and the card behind it stays live) — so it announces itself the way a
+   revealed section does: a 120ms settle in place. */
 .schedule-recur {
   display: flex;
   flex-direction: column;
@@ -1061,6 +1300,15 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
+  transform-origin: top;
+  animation: schedule-recur-in 0.12s ease-out;
+}
+
+@keyframes schedule-recur-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
 }
 
 .schedule-recur-title {
@@ -1076,9 +1324,43 @@
   font-size: 13px;
 }
 
-.schedule-recur-n {
+/* The number fields wear the when-chips' clothes: same height, same fill, same
+   radius — the section's other controls are all chips, and a boxed
+   .field-control beside them read as a different form (audit 2026-08-16). The
+   spinners go with them: a stepper on a 1–99 interval is two 8px hit targets
+   nobody uses, and it forced the value off-centre. */
+.schedule-recur-n,
+.deploy-body input.schedule-recur-n,
+.prefs-section input.schedule-recur-n {
   width: 64px;
   flex: none;
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+/* display:none, not appearance:none — Chrome keeps laying the spin button out
+   (and reserving its width) under appearance alone; only display removes it. */
+.schedule-recur-n::-webkit-outer-spin-button,
+.schedule-recur-n::-webkit-inner-spin-button {
+  display: none;
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.schedule-recur-n:focus,
+.deploy-body input.schedule-recur-n:focus,
+.prefs-section input.schedule-recur-n:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .schedule-recur-unit {
@@ -1091,8 +1373,13 @@
   gap: 6px;
 }
 
-/* The seven weekday discs. aria-pressed carries the state; the fill says it. */
+/* The seven weekday discs. aria-pressed carries the state; the fill says it.
+   The `.deploy-body` copy is not redundant: this section only ever renders
+   inside the modal, where `.deploy-body button` (0,1,1) beat the bare
+   (0,1,0) rule and drew the discs as bordered rounded SQUARES — border,
+   6px radius, --bg fill, the lot (audit 2026-08-16). */
 .schedule-recur-day,
+.deploy-body .schedule-recur-day,
 .prefs-section .schedule-recur-day {
   width: 28px;
   height: 28px;
@@ -1110,12 +1397,32 @@
   cursor: pointer;
 }
 
-.schedule-recur-day.is-on,
-.prefs-section .schedule-recur-day.is-on {
-  background: var(--accent);
-  color: var(--bg);
+.schedule-recur-day:hover:not(:disabled),
+.deploy-body .schedule-recur-day:hover:not(:disabled),
+.prefs-section .schedule-recur-day:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg-muted) 14%, var(--bg-alt));
+  border-color: transparent;
+  color: var(--fg);
 }
 
+/* A SELECTED disc must survive its own hover: the grey button skin at (0,3,1)
+   repainted an accent-filled circle grey while keeping its --bg text, which is
+   background-coloured text on a background-coloured plate — invisible (audit
+   2026-08-16). Both states restated at (0,4,0). */
+.schedule-recur-day.is-on,
+.deploy-body .schedule-recur-day.is-on,
+.deploy-body .schedule-recur-day.is-on:hover:not(:disabled),
+.prefs-section .schedule-recur-day.is-on,
+.prefs-section .schedule-recur-day.is-on:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: transparent;
+}
+
+/* Ends is a three-way choice, so it is drawn as one: the same segmented
+   control the page's view toggle uses, with the chosen branch's one extra
+   field under it. Three native radios stacked was the last piece of platform
+   chrome in a form of custom chips (audit 2026-08-16). */
 .schedule-recur-ends {
   display: flex;
   flex-direction: column;
@@ -1123,15 +1430,100 @@
   font-size: 13px;
 }
 
-.schedule-recur-end {
+.schedule-recur-ends-label {
+  color: var(--fg-muted);
+}
+
+/* The Ends segmented control sits in a COLUMN, so it has to refuse the
+   stretch a flex column hands its children. */
+.schedule-recur-ends .schedule-form-seg {
+  align-self: flex-start;
+}
+
+.schedule-recur-detail {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 4px;
 }
 
-.schedule-recur-end input[type="date"] {
+/* The end DATE is a chip that drops the same month grid the when-row uses —
+   one date-picking vocabulary in the form, instead of the OS control the
+   `<input type="date">` drew (audit 2026-08-16). */
+.schedule-recur-until,
+.deploy-body button.schedule-recur-until,
+.prefs-section button.schedule-recur-until {
   width: auto;
+  min-width: 140px;
+}
+
+/* -- Browse: the slide-in explorer panel ----------------------------------
+   Beside the card, not inside it (Akshil, 2026-08-16 — "too small to see
+   anything"). The card slides left to make room via the :has() rule below
+   (left, not transform: a transformed ancestor would re-anchor every
+   position:fixed dropdown inside the dialog), and the panel slides in from
+   the right at the card's own height. */
+
+.modal-overlay .modal-dialog {
+  left: 0;
+  transition: left 0.18s ease-out;
+}
+
+.modal-dialog:has(.schedule-explorer) {
+  position: relative;
+  left: -240px;
+}
+
+/* `top` and `height` are set INLINE by NewJobModal, measured off the dialog's
+   own rect and recomputed on resize: a panel centred on the viewport while the
+   card is centred on its own content lined up with nothing — the two shared an
+   edge only by coincidence of height (audit 2026-08-16). The values here are
+   the pre-measure fallback for the first frame only. */
+.schedule-explorer {
+  position: fixed;
+  top: 10vh;
+  left: calc(50% + 4px);
+  width: min(460px, 44vw);
+  height: min(600px, 82vh);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 16px;
+  /* A panel, not a dropdown: the one surface in this feature that goes to the
+     high elevation (audit 2026-08-16). */
+  background: var(--bg-popover, var(--bg-alt));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px var(--shadow-lg);
+  animation: schedule-explorer-in 0.18s ease-out;
+}
+
+@keyframes schedule-explorer-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+.schedule-explorer-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Inside the panel the listing takes all the room the fixed height gives —
+   the in-modal picker's fixed 180px was the "too small" complaint. */
+.schedule-explorer .schedule-picker-list {
+  height: auto;
+  flex: 1;
+}
+
+.schedule-explorer .schedule-picker-foot {
+  margin-top: 2px;
+}
+
+/* Files are answers, folders are places: same row, quieter glyph. */
+.schedule-picker-row--file svg {
+  opacity: 0.7;
 }
 
 /* -- Folder picker: a small in-modal directory browser ------------------- */
@@ -1149,13 +1541,35 @@
 /* Crumbs replace the old ‹-plus-path head: every ancestor is a click, the
    current folder is the bold unclickable tail (Akshil, 2026-08-15 — the
    single Up chevron read as "ugly and not intuitive"). */
+/* One line, always. A deep path wrapping to three rows moved the filter, the
+   listing and the foot down with it — the panel's whole geometry hung off how
+   long the current path happened to be (audit 2026-08-16). The middle
+   segments collapse to a single "…" in crumbsOf's caller instead. */
 .schedule-picker-crumbs {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 2px;
   min-width: 0;
+  overflow: hidden;
   font-size: 12px;
+}
+
+/* The tail owns the leftover room; the ancestors shrink to their ellipsis. */
+.schedule-picker-crumb-seg {
+  flex: 0 1 auto;
+}
+
+.schedule-picker-crumb-seg:last-child {
+  flex: 0 0 auto;
+}
+
+/* Not a control, and not clickable: the "…" standing in for the segments the
+   row has no room for. */
+.schedule-picker-crumb-ellipsis {
+  flex: none;
+  padding: 2px 4px;
+  color: var(--fg-muted);
 }
 
 .schedule-picker-crumb-seg {
@@ -1169,7 +1583,12 @@
   color: var(--fg-muted);
 }
 
+/* The `.deploy-body` copy is load-bearing: the panel only ever renders inside
+   the modal, where `.deploy-body button` (0,1,1) beat this (0,1,0) rule and
+   drew every crumb as a bordered raised chip — a path that read as a row of
+   buttons instead of a trail (audit 2026-08-16). */
 .schedule-picker-crumb,
+.deploy-body .schedule-picker-crumb,
 .prefs-section .schedule-picker-crumb {
   padding: 2px 6px;
   font: inherit;
@@ -1183,21 +1602,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  align-self: center;
 }
 
 .schedule-picker-crumb:hover:not(:disabled),
+.deploy-body .schedule-picker-crumb:hover:not(:disabled),
 .prefs-section .schedule-picker-crumb:hover:not(:disabled) {
   background: var(--bg-alt);
   border-color: transparent;
   color: var(--fg);
 }
 
-/* The tail is where you ARE — not a control, so it reads as the heading. */
+/* The tail is where you ARE — not a control, so it reads as the heading. The
+   `.deploy-body` copy restates opacity too: the chassis' own
+   `.deploy-body button:disabled { opacity: .55 }` faded the ONE crumb that
+   names the current folder to half strength (audit 2026-08-16). */
 .schedule-picker-crumb:disabled,
+.deploy-body .schedule-picker-crumb:disabled,
 .prefs-section .schedule-picker-crumb:disabled {
   color: var(--fg);
   font-weight: 600;
   opacity: 1;
+  background: transparent;
+  border: none;
   cursor: default;
 }
 
@@ -1224,11 +1651,7 @@
   pointer-events: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .schedule-picker-list {
-    transition: none;
-  }
-}
+/* (No local reduced-motion block — see styles/reduced-motion.css.) */
 
 /* One folder row: full-width, quiet, hover surface — a listing, not a form.
    align-self restated because the settings page's `.prefs-section button`
@@ -1288,7 +1711,12 @@
   gap: 8px;
 }
 
-.schedule-save {
+/* One shape for "this is the commit": the modal's Save, the explorer's "Use
+   this folder" and the recurrence section's Done are the same promise, so they
+   are the same pill (audit 2026-08-16). */
+.schedule-save,
+.schedule-picker-foot .btn-primary,
+.deploy-body .schedule-picker-foot .btn-primary {
   border-radius: 999px;
   padding: 0 22px;
 }
@@ -1372,11 +1800,18 @@
 /* A compact card, and a BUTTON (opens Edit / the Inbox). Doubled parent in the
    selector for the usual reason: the settings page's `.prefs-section button`
    skin out-specifies a single class. */
+/* align-self + width are what make the column a COLUMN: `.prefs-section
+   button` pins every button to align-self:flex-start, so each card
+   shrink-wrapped its own longest line and a column of four had four widths
+   (audit 2026-08-16). */
 .schedule-board .schedule-board-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
   align-items: stretch;
+  align-self: stretch;
+  width: 100%;
+  box-sizing: border-box;
   font: inherit;
   text-align: left;
   background: var(--bg);
@@ -1418,4 +1853,69 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* A recurring card's SECOND meta line: the rule on one, the next actual run on
+   the other ("next in 22h"). The rule alone answered "how often", never
+   "when" (audit 2026-08-16). */
+.schedule-board-card-next {
+  font-size: 10.5px;
+  color: var(--fg-muted);
+}
+
+/* An empty column is a STATE, not a stray line of prose. It was rendering the
+   card's error-text class, left-aligned and flush against the head — read as a
+   broken card (audit 2026-08-16). Centred, with enough height that the four
+   columns keep a shared baseline while the board fills up. */
+.schedule-board-empty {
+  margin: 0;
+  padding: 20px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.schedule-board-cards:has(.schedule-board-empty) {
+  min-height: 160px;
+  justify-content: center;
+}
+
+/* -- Focus ring: one, and ours ---------------------------------------------
+   Every control in this feature is a bespoke button (a chip, a disc, a slot, a
+   crumb, a calendar box) rather than a `.btn`, so none of them was reached by
+   the app's own ring in buttons-modal.css — and Chrome's default blue halo is
+   what keyboard users actually saw, in a UI with no other blue in it (audit
+   2026-08-16). Doubled with the two scope classes for the usual reason: the
+   page and the modal each ship a `button` skin these have to outrank. */
+.schedule-cal-event:focus-visible,
+.schedule-picker-row:focus-visible,
+.schedule-time-slot:focus-visible,
+.schedule-menu-item:focus-visible,
+.schedule-mini-cal-day:focus-visible,
+.schedule-mini-cal-nav:focus-visible,
+.schedule-recur-day:focus-visible,
+.schedule-picker-crumb:focus-visible,
+.schedule-when-field:focus-visible,
+.schedule-board-card:focus-visible,
+.deploy-body .schedule-cal-event:focus-visible,
+.deploy-body .schedule-picker-row:focus-visible,
+.deploy-body .schedule-time-slot:focus-visible,
+.deploy-body .schedule-menu-item:focus-visible,
+.deploy-body .schedule-mini-cal-day:focus-visible,
+.deploy-body .schedule-mini-cal-nav:focus-visible,
+.deploy-body .schedule-recur-day:focus-visible,
+.deploy-body .schedule-picker-crumb:focus-visible,
+.deploy-body .schedule-when-field:focus-visible,
+.prefs-section .schedule-cal-event:focus-visible,
+.prefs-section .schedule-picker-row:focus-visible,
+.prefs-section .schedule-time-slot:focus-visible,
+.prefs-section .schedule-menu-item:focus-visible,
+.prefs-section .schedule-mini-cal-day:focus-visible,
+.prefs-section .schedule-mini-cal-nav:focus-visible,
+.prefs-section .schedule-recur-day:focus-visible,
+.prefs-section .schedule-picker-crumb:focus-visible,
+.prefs-section .schedule-when-field:focus-visible,
+.prefs-section .schedule-board-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

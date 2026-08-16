@@ -21,6 +21,7 @@ import {
   assignLanes,
   calendarEvents,
   entryRepeatText,
+  explorerUrl,
   formatDue,
   stateLabel,
   stateTone,
@@ -240,8 +241,8 @@ function Popover({
         )}
         {entry.claude_session_id && (
           <button type="button" className="btn btn-secondary"
-                  onClick={() => navigateUrl(`/sessions?peek=${encodeURIComponent(entry.claude_session_id!)}`)}>
-            {ICON_INBOX} Open in Inbox
+                  onClick={() => navigateUrl(explorerUrl(entry.target, entry.claude_session_id!))}>
+            {ICON_INBOX} Open in Explorer
           </button>
         )}
       </div>
@@ -388,7 +389,12 @@ export default function ScheduleCalendar({
                     className={
                       "schedule-cal-event schedule-cal-event--" +
                       (ev.ghost ? "ghost" : stateTone(ev.entry)) +
-                      (ev.time < now ? " is-past" : "")
+                      (ev.time < now ? " is-past" : "") +
+                      // Three lanes leave a chip ~70px wide, which cannot hold
+                      // both the prompt and the clock — the title collapsed to
+                      // two characters (audit 2026-08-16). The CSS drops the
+                      // time; the hour ruler already carries it.
+                      (ev.lanes >= 3 ? " is-narrow" : "")
                     }
                     style={{
                       top: (ev.time.getHours() + ev.time.getMinutes() / 60) * HOUR_H,
