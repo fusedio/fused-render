@@ -33,6 +33,34 @@ export function relativeDue(iso: string): string {
   return say(Math.round(s / 86400), "d");
 }
 
+// ---- what `turn` means -------------------------------------------------------
+// `turn` is the second half of the pair, and it is what both this file and
+// tasks-lib keep getting wrong in the same way — so the rule lives in ONE place
+// and both read it from here.
+//
+// The two shapes spell the field differently — a ScheduledMessage's turn is
+// "" | "ok" | "failed" | "cancelled" | "unknown", a TaskMessage's is
+// "" | "done" | "idle" | "unknown" — but the POSITIONAL rule under both is the
+// same, because the field is written exactly once, when the turn ends:
+//
+//   ""         nothing written yet ⇒ the turn is still live
+//   "unknown"  the watch ended without a verdict ⇒ nobody is reporting any more
+//   anything   the turn ENDED and said so — "done", "idle", "ok", "failed", and
+//   else       whatever word a newer server invents next
+//
+// The default is the whole point. A value this client has not heard of is a
+// turn that ended, never one in flight, because the server does not write the
+// field until it ends. Defaulting the other way is what made `idle` — a turn
+// that finished and reported — paint as "Running…" on the calendar for as long
+// as the row existed.
+export type TurnPhase = "running" | "ended" | "unreported";
+
+export function turnPhase(turn: string | undefined | null): TurnPhase {
+  if (!turn) return "running";
+  if (turn === "unknown") return "unreported";
+  return "ended";
+}
+
 // Not finished with: waiting for its time, being sent, sent with a turn still
 // running — or a recurring rule, which is never finished with by nature. The
 // sent-but-running case is why this is not just a `state` check.
@@ -40,7 +68,7 @@ export const isLive = (e: ScheduledMessage) =>
   e.state === "pending" ||
   e.state === "sending" ||
   e.state === "recurring" ||
-  (e.state === "sent" && !e.turn);
+  (e.state === "sent" && turnPhase(e.turn) === "running");
 
 const STATE_LABELS: Record<ScheduledState, string> = {
   pending: "Scheduled",
@@ -70,7 +98,11 @@ export function stateLabel(entry: ScheduledMessage): string {
     // Not "Running…": nothing is watching it any more, and saying otherwise is
     // the frozen-progress-bar lie the job registry's `stalled` state avoids.
     if (entry.turn === "unknown") return "Stopped reporting";
-    return "Running…";
+    // Only an EMPTY turn is still going. A word this build has never heard of
+    // is a turn that ENDED without us knowing what to call it (turnPhase), and
+    // it says "Sent" — the honest half of the pair — rather than claiming work
+    // is in flight forever.
+    return turnPhase(entry.turn) === "running" ? "Running…" : STATE_LABELS.sent;
   }
   return STATE_LABELS[entry.state] ?? entry.state;
 }
@@ -82,7 +114,9 @@ export function stateTone(entry: ScheduledMessage): string {
     return "skipped";
   if (entry.state === "sent" && (entry.turn === "failed" || entry.turn === "unknown"))
     return "error";
-  if (entry.state === "sent" && !entry.turn) return "sending";
+  // Same rule as stateLabel's: only an empty turn is in flight. An unrecognised
+  // word falls through to `sent`, the neutral tone — never to `sending`.
+  if (entry.state === "sent" && turnPhase(entry.turn) === "running") return "sending";
   return entry.state;
 }
 
@@ -544,9 +578,14 @@ export const GHOST_PREFIX = "GHOST-";
 
 export const isProjected = (m: TaskMessage) => m.message_id.startsWith(GHOST_PREFIX);
 
-// How a single message paints. `state` says whether the message went out;
-// `turn` says how the session it started then went — two facts that fail
-// independently, so a sent message with a dead turn must not read as clean.
+// How a single message paints ON THE CALENDAR. `state` says whether the message
+// went out; `turn` says how the session it started then went — two facts that
+// fail independently, so a sent message with a dead turn must not read as clean.
+//
+// NOT the same function as tasks-lib.messageTone, and deliberately so — see the
+// note there. What the two DO share is the reading of `turn`, and that half is
+// turnPhase above, imported by both, so the calendar and the list can no longer
+// disagree about whether a run is still going.
 export function messageTone(m: TaskMessage): string {
   switch (m.state) {
     case "pending":
@@ -554,8 +593,17 @@ export function messageTone(m: TaskMessage): string {
     case "sending":
       return "sending";
     case "sent":
-      if (m.turn === "unknown") return "error";
-      return m.turn === "done" ? "ran" : "sending";
+      switch (turnPhase(m.turn)) {
+        // Nothing is watching it any more; "Running" would be the frozen
+        // progress bar.
+        case "unreported":
+          return "error";
+        case "running":
+          return "sending";
+        // Ended and said so — "done", "idle", or a word a newer server added.
+        default:
+          return "ran";
+      }
     case "error":
       return "error";
     case "missed":

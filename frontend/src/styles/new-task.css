@@ -109,6 +109,15 @@
   margin-left: 4px;
 }
 
+/* The thread note under the repeat sub-row: which chat the runs land in. Quiet
+   — it states a fact about the two ticks above it, so it takes the ordinary
+   hint voice, hangs from the same 26px gutter (.schedule-form-sub) as every
+   other sub-line, and inherits the form's own 12px rhythm rather than inventing
+   spacing of its own — exactly how the past-time note below the when-row sits. */
+.new-task-thread {
+  color: var(--fg-muted);
+}
+
 /* -- Title and description ---------------------------------------------------
    Two optional rows under the ask. Both are plain field-controls in the icon
    gutter every other row hangs from; the description grows a little taller
