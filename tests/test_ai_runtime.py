@@ -2927,7 +2927,8 @@ def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
 def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
                                partial_path='"/t/out.partial.jsonl"',
                                ranged=True, on_segment=True, slow_ms=0,
-                               terminal='{state: "done"}', readfile=None):
+                               terminal='{state: "done"}', readfile=None,
+                               fetch_after=None):
     """Drive `aiTranscribe` through a real poll loop over a growing file.
 
     `lines` is a list of JS strings, one per tick: the WHOLE partial file as it
@@ -2940,7 +2941,10 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
     `terminal` is the record `watch` finally resolves with — `null` for a row
     that aged out, an `error`/`cancelled` row for the failure paths — and
     `readfile` overrides what `readFile` does, so a failure can be driven all
-    the way through with the poll loop and the tail both real.
+    the way through with the poll loop and the tail both real. `fetch_after` is
+    JS for a replacement `fetch` installed the moment `watch` returns, which is
+    how a read attempted AFTER the run is over — the terminal drain — can be
+    made to fail on its own without disturbing the tail that ran before it.
 
     Returns `{settled, segments, segmentsAtSettle, fetches}` — the outcome,
     every `onSegment` argument in the order it arrived, how many of them had
@@ -2969,16 +2973,23 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
       const readFile = () => READFILE;
       const RANGED = IS_RANGED;
       const HISTORY = LINES;
+      const FETCH_AFTER = AFTER_FETCH;
       const fetches = [];
       let onDisk = "";
       globalThis.fetch = async (url, init) => {
         const headers = (init && init.headers) || {};
         fetches.push({url, range: headers.Range || null});
+        // The bytes are taken WHEN THE REQUEST IS SERVED, before the latency
+        // below, because that is what `/api/fs/raw` does: it opens the file
+        // now and the delay is the answer travelling back. Snapshotting after
+        // the sleep would hand every slow read the future contents of the
+        // file, which quietly hides the bug this models — a segment appended
+        // while a read is in flight is one that read CANNOT have seen.
+        const body = Buffer.from(onDisk, "utf8");
         // A read still in flight when the row goes done, which is the ordinary
         // case on a real machine and the one where the drain could interleave
         // with the tail and deliver a segment twice.
         if (SLOW_MS) await new Promise((r) => setTimeout(r, SLOW_MS));
-        const body = Buffer.from(onDisk, "utf8");
         const match = /bytes=(\\d+)-/.exec(headers.Range || "");
         const from = match ? Number(match[1]) : 0;
         if (!RANGED) {
@@ -3009,6 +3020,9 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
             await new Promise((r) => setTimeout(r, 5));
           }
           if (TERMINAL && typeof onUpdate === "function") onUpdate(TERMINAL);
+          // Swapped in AFTER the terminal tick has started whatever tail it
+          // was going to, so only reads belonging to the settled run see it.
+          if (FETCH_AFTER) globalThis.fetch = FETCH_AFTER;
           return TERMINAL;
         },
         get: () => Promise.resolve(TERMINAL),
@@ -3021,6 +3035,7 @@ def _run_ai_transcribe_tailing(lines, final, opts='{path: "a.m4a"}',
                .replace("IS_RANGED", "true" if ranged else "false")
                .replace("LINES", json.dumps(lines))
                .replace("TERMINAL", terminal)
+               .replace("AFTER_FETCH", fetch_after or "null")
                .replace("READFILE",
                         readfile or "Promise.resolve(%s)" % json.dumps(json.dumps(final))))
     # The report is taken AFTER a settle window, not at resolution. A read
@@ -3244,6 +3259,15 @@ def test_a_FAILED_run_delivers_its_last_segments_BEFORE_it_rejects():
     Waiting is the right answer rather than suppressing: those segments are
     real — they decoded before the run died — and delivering them BEFORE the
     rejection is exactly the salvage this feature is for.
+
+    And waiting is only HALF of it, which is why the segment here lands where
+    it does. The read from the tick before is still in flight when `one` is
+    appended, so it cannot have seen it, and the terminal tick's `tail()`
+    declines to start another while one is in flight. Settling the chain and
+    rejecting therefore delivered nothing at all: `err.outputPartial` pointed
+    at a file holding a segment `onSegment` never got. The success path drains
+    the finished `.json` for exactly this reason; the failure path has no
+    `.json`, so it re-reads the partial file one last time instead.
     """
     one = {"start": 0.0, "end": 1.0, "text": "one"}
     run = _run_ai_transcribe_tailing(
@@ -3273,7 +3297,54 @@ def test_a_CANCELLED_run_also_stops_calling_onSegment_once_it_rejects():
         slow_ms=30)
 
     assert run["settled"]["ok"] is False and run["settled"]["type"] == "cancelled"
+    # Delivered, not dropped: a cancel removes the partial file, but whatever
+    # decoded before the ✕ landed is still the honest answer to what was heard,
+    # and the same final read carries it on both terminal states.
+    assert run["segments"] == [one], run["segments"]
     assert run["segmentsAtSettle"] == len(run["segments"]), run
+
+
+def test_a_run_whose_ROW_AGED_OUT_and_whose_TRANSCRIPT_IS_GONE_still_drains():
+    """The third terminal path, and it had the same hole.
+
+    `watch` resolving null means the row finished and aged out under a sleeping
+    tab, so the transcript is read as the real witness — and when THAT fails
+    too, this is a failed run whose only artefact is the `.partial.jsonl` the
+    rejection names. `done()`'s drain never ran (it is inside the `.then` that
+    the read failure skipped), and its `.catch` rejected without one, so the
+    segments in the file the caller is being pointed at were never delivered.
+    """
+    one = {"start": 0.0, "end": 1.0, "text": "one"}
+    run = _run_ai_transcribe_tailing(
+        # Same shape as the live-failure test: appended under an in-flight read
+        # that cannot have seen it, and there is no terminal tick at all here
+        # to start another (a null record is reported to nobody).
+        ["", _jsonl(one)], {"text": "", "segments": []},
+        terminal="null",
+        readfile='Promise.reject(new Error("no transcript"))',
+        slow_ms=30)
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert "no longer being reported" in run["settled"]["message"]
+    assert run["settled"]["outputPartial"] == "/t/out.partial.jsonl"
+    assert run["segments"] == [one], run["segments"]
+    assert run["segmentsAtSettle"] == len(run["segments"]), run
+
+
+def test_a_FINAL_DRAIN_THAT_FAILS_does_not_replace_the_runs_own_error():
+    """Best-effort, like every other read of this file. The rejection a caller
+    switches on is the run's — "the decoder exploded", typed `ai_error` — and a
+    partial file that has already been removed, or a fetch that throws, must not
+    turn that into a network error with a different `type`."""
+    run = _run_ai_transcribe_tailing(
+        [""], {"text": "", "segments": []},
+        terminal='{state: "error", message: "the decoder exploded"}',
+        readfile='Promise.reject(new Error("no transcript"))',
+        fetch_after='() => { throw new Error("the socket died"); }')
+
+    assert run["settled"]["ok"] is False, run["settled"]
+    assert run["settled"]["type"] == "ai_error"
+    assert "decoder exploded" in run["settled"]["message"], run["settled"]
 
 
 def test_a_failure_that_AGED_OUT_still_says_where_the_salvage_is():

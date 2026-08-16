@@ -2811,6 +2811,35 @@
           .then(() => { tailing = false; });
         return tailChain;
       };
+      // The FAILURE path's answer to the drain `done()` does over the finished
+      // `.json`. There is no transcript on that path — that is what failing
+      // means — so the partial file is read one last time instead, and the
+      // segments it holds are the ones `err.outputPartial` is pointing at.
+      //
+      // It has to bypass `tail()` rather than call it, and that is the whole
+      // point rather than a shortcut: `tail()` declines while a read is in
+      // flight, and the terminal tick almost always fires with one in flight,
+      // so the last segments — appended after that read took its snapshot —
+      // were exactly the ones it would decline to fetch. Waiting on the chain
+      // and rejecting therefore delivered nothing new at all.
+      //
+      // Ordering is preserved by settling `tailChain` FIRST, the same way
+      // `done()` does: nothing is in flight by the time this reads, so it
+      // cannot interleave with a tail or double-deliver by racing `delivered`.
+      const drainPartial = () =>
+        tailChain
+          .then(() => {
+            // `tailing` is deliberately not consulted — the chain above has
+            // settled, so there is nobody left to race. `broken` and a missing
+            // path still rule it out: a lost frame cannot be re-synced, and an
+            // absent `outputPartial` has nothing to read.
+            if (!onSegment || !decoder || broken || !started.outputPartial) return;
+            return readNew();
+          })
+          // Best-effort, like every read of this file. A final drain that
+          // fails costs the last few cues; replacing the run's own typed
+          // rejection with a fetch error would cost the caller the reason.
+          .catch(() => {});
       // The transcript file is the result; the row only said when to read it.
       //
       // TYPED on failure, like every other rejection this bridge produces. The
@@ -2906,7 +2935,11 @@
             // caller at a file the server never confirmed.
             err.output = started.output;
             err.outputPartial = started.outputPartial;
-            throw err;
+            // Drained for the same reason the live failure below is: reaching
+            // here means `done()`'s own drain never ran (the transcript read it
+            // hangs off is what failed), so without this the caller is handed
+            // the partial file's path and none of the segments in it.
+            return drainPartial().then(() => { throw err; });
           });
         }
         if (record.state === "done") return done();
@@ -2928,19 +2961,25 @@
         // caller having to know which rejection populates them.
         err.output = started.output;
         err.outputPartial = started.outputPartial;
-        // Settled FIRST, for the same reason `done()` settles it: `watch`
-        // reports the terminal record before it returns, so an `error` or
-        // `cancelled` row starts one last tail — and a read from the tick
-        // before it can still be in flight regardless. Thrown straight from
-        // here, those reads land AFTER the caller's promise has rejected and
-        // call `onSegment` on a run the page has already been told is over,
-        // painting a cue into a pane it just cleared.
+        // Any tail still in flight is settled FIRST, for the same reason
+        // `done()` settles it: `watch` reports the terminal record before it
+        // returns, so an `error` or `cancelled` row starts one last tail — and
+        // a read from the tick before it can still be in flight regardless.
+        // Thrown straight from here, those reads land AFTER the caller's
+        // promise has rejected and call `onSegment` on a run the page has
+        // already been told is over, painting a cue into a pane it just
+        // cleared.
         //
-        // Waited on rather than suppressed, because those segments are the
-        // salvage: they decoded before the run died, and the two fields above
-        // are pointing at the same file they came out of. So they arrive
-        // before the rejection, and after it nothing does.
-        return tailChain.then(() => { throw err; });
+        // Then ONE more read, which is what makes "before the rejection"
+        // mean every segment rather than only the ones a read already had.
+        // Waiting alone delivered nothing new: the in-flight read's snapshot
+        // predates the last segments by definition, and the terminal tick's
+        // `tail()` declines to start another while that read is going. The
+        // success path has the finished `.json` to drain instead; here the
+        // partial file IS the artefact, and the two fields above are pointing
+        // straight at it, so the run must not reject holding segments it
+        // never handed over.
+        return drainPartial().then(() => { throw err; });
       });
     });
   }
