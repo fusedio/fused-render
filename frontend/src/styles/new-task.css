@@ -1,0 +1,145 @@
+/* -- New task modal: the parts added by the tasks/threads pass ----------------
+ * Everything else the form wears comes from schedule.css (.schedule-form-*,
+ * .schedule-when-*). This file holds only what that pass introduced: the two
+ * quiet checkboxes (Repeat / New task each run), the optional title and
+ * description rows, and the past-time note that used to be a refusal.
+ *
+ * Imported from NewJobModal.tsx rather than the shell.css barrel, so it lands
+ * after schedule.css in the cascade — which is what lets these rules armor
+ * themselves against `.deploy-body button` / `.prefs-section button` without
+ * an !important.
+ *
+ * Every colour is a token from tokens.css, so the two themes are one rule. */
+
+/* A checkbox that reads as a quiet chip beside the control it qualifies. The
+   native box is kept (focusable, toggled by the label, announced as a
+   checkbox) but drawn by us: `appearance: none` on a real input is the one
+   way to get both a keyboard-reachable control and a border that resolves in
+   both themes. */
+.new-task-check {
+  /* Positioned, because the real input is absolute INSIDE it: without this the
+     invisible box would resolve against whatever ancestor happens to be
+     positioned (a .schedule-pop-wrap, the dialog) and sit somewhere it can
+     swallow another control's clicks. */
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 13px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.new-task-check:hover {
+  color: var(--fg);
+}
+
+/* The input itself is invisible but NOT display:none — a hidden-by-display
+   checkbox leaves the keyboard nothing to land on. It sits under its drawn
+   box, same size, so a stray click still hits something real. */
+.new-task-check-input {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.new-task-check-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--on-accent);
+  /* Pinned properties, never `transition: all` — the box changes exactly two
+     things when it is ticked. */
+  transition: background-color 0.12s ease-out, border-color 0.12s ease-out;
+}
+
+/* Two class names deep on purpose: `.schedule-form-line svg` paints every glyph
+   in the row --fg-muted, and a one-class selector here would only win by import
+   order. The tick is drawn ON the accent fill, so it takes the fill's own
+   foreground instead. */
+.new-task-check .new-task-check-box svg {
+  opacity: 0;
+  color: inherit;
+}
+
+.new-task-check:hover .new-task-check-box {
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+.new-task-check-input:checked + .new-task-check-box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.new-task-check-input:checked + .new-task-check-box svg,
+.new-task-check .new-task-check-input:checked + .new-task-check-box svg {
+  opacity: 1;
+}
+
+/* The focus ring lives on the drawn box, because the real input is invisible.
+   :focus-visible only, so a mouse tick does not leave a ring behind. */
+.new-task-check-input:focus-visible + .new-task-check-box {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The Repeat tick sits on the when-row, hard against its right edge — the
+   date and time chips keep the row's stretch. */
+.new-task-check--repeat {
+  margin-left: 2px;
+}
+
+/* …and "New task each run" sits beside the repeat dropdown on the sub-row,
+   which is a flex row of its own. */
+.schedule-form-line--sub .new-task-check {
+  margin-left: 4px;
+}
+
+/* -- Title and description ---------------------------------------------------
+   Two optional rows under the ask. Both are plain field-controls in the icon
+   gutter every other row hangs from; the description grows a little taller
+   because it is prose. */
+
+.new-task-desc-line {
+  align-items: flex-start;
+}
+
+/* The row's icon is centred on a one-line control by default; against a
+   two-line textarea it has to sit on the FIRST line instead. */
+.new-task-desc-line > svg {
+  margin-top: 9px;
+}
+
+/* Armored against `.modal-body :where(…, textarea)` in deploy.css, which owns
+   the padding and border of every field in a modal and would otherwise decide
+   this one's height too. */
+.new-task-desc,
+.modal-body textarea.new-task-desc,
+.deploy-body textarea.new-task-desc {
+  min-height: 56px;
+  max-height: 140px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+/* -- The past-time note ------------------------------------------------------
+   Was a refusal in the error voice; scheduling into the past is now a
+   legitimate way to say "run this now" (design §9), so it states what will
+   happen in the ordinary hint voice. */
+.new-task-past {
+  color: var(--fg-muted);
+}
