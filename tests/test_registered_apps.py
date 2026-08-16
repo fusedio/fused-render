@@ -228,3 +228,69 @@ def test_registry_is_capped(tmp_path, workspace, monkeypatch):
         assert registered_apps.record_open(str(d))
     entries = registered_apps.read_entries()
     assert [os.path.basename(e["path"]) for e in entries] == ["app2", "app1"]
+
+
+# ------------------------------------------------------ is_registered_app_entry
+#
+# The file recents' question (shell/recents.py): is this file the ENTRY of a
+# registered app? Parity with `registered_apps()`, same posture as
+# `app_listing.is_workspace_app_entry` vs the workspace walk.
+
+
+def test_entry_check_true_for_a_registered_apps_entry(client, tmp_path):
+    d = _folder(tmp_path, "ext")
+    assert _open(client, d)
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is True
+
+
+def test_entry_check_false_for_a_non_entry_page(client, tmp_path):
+    d = _folder(tmp_path, "ext", htmls=("index.html", "other.html"))
+    assert _open(client, d)
+    assert registered_apps.is_registered_app_entry(str(d / "other.html")) is False
+
+
+def test_entry_check_false_for_an_unregistered_folder(client, tmp_path):
+    d = _folder(tmp_path, "ext")
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
+
+
+def test_entry_check_false_when_the_page_went_away(client, tmp_path):
+    d = _folder(tmp_path, "ext")
+    assert _open(client, d)
+    (d / "index.html").unlink()
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
+
+
+def test_entry_check_false_for_a_symlink_alias_of_the_workspace(
+    client, tmp_path, workspace
+):
+    """A hand-edited registry entry that is a symlink into the workspace is
+    skipped by the listing — its page must not count as a registered entry
+    either, or the open would be hidden from the file recents with nothing
+    recording it."""
+    ws_app = workspace / "local" / "demo"
+    ws_app.mkdir(parents=True)
+    (ws_app / "index.html").write_text(
+        '<html><head><meta name="fused-app" /></head></html>')
+    link = tmp_path / "elsewhere" / "ws-link"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(ws_app, link)
+    registered_apps.write_entries(
+        [{"path": str(link), "openedAt": "2026-01-01T00:00:00+00:00"}]
+    )
+    assert registered_apps.is_registered_app_entry(str(link / "index.html")) is False
+
+
+def test_entry_check_tracks_the_entry_rule(client, tmp_path):
+    """The entry is the first TAGGED page in name order (D301) — the check
+    must follow the same rule registered_apps() reports: an untagged
+    index.html changes nothing, an earlier-in-name-order tagged page wins."""
+    d = _folder(tmp_path, "ext", htmls=("page.html",))
+    assert _open(client, d)
+    assert registered_apps.is_registered_app_entry(str(d / "page.html")) is True
+    (d / "index.html").write_text("<html></html>")  # untagged: no app claim
+    assert registered_apps.is_registered_app_entry(str(d / "page.html")) is True
+    assert registered_apps.is_registered_app_entry(str(d / "index.html")) is False
+    (d / "aaa.html").write_text('<html><head><meta name="fused-app" /></head></html>')
+    assert registered_apps.is_registered_app_entry(str(d / "page.html")) is False
+    assert registered_apps.is_registered_app_entry(str(d / "aaa.html")) is True
