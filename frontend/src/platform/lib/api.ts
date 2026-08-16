@@ -2270,7 +2270,7 @@ export interface AiCatalogModel {
 export interface AiCatalogCapability {
   capability: string;
   runner: string | null;
-  /** The backend in words — "MLX (Apple Silicon)", "Transformers (PyTorch)".
+  /** The backend in words — "MLX LM (Apple Silicon)", "Transformers (PyTorch)".
    *  One capability can have more than one runner (text generation has two
    *  since D293), so which one this machine resolved is worth naming. */
   runnerLabel: string | null;

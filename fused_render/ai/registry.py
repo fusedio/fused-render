@@ -195,7 +195,7 @@ _RUNNERS: tuple[Runner, ...] = (
         code="mlx-text",
         capability=TEXT_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "mlx_text"),
-        label="MLX (Apple Silicon)",
+        label="MLX LM (Apple Silicon)",
         _available=_apple_silicon,
     ),
     Runner(
