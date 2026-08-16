@@ -145,6 +145,12 @@ function ExplorerPanel({
   // Type-to-narrow, cleared on every navigation — a filter that survives into
   // the next folder reads as "this folder is empty".
   const [filter, setFilter] = useState("");
+  // One free climb: the client cannot tell a file path from a folder path
+  // until listDir refuses it, so the FIRST refusal walks to the parent
+  // instead of showing the error banner — Browse on an already-picked file
+  // must open where that file lives (Bugbot, PR #548). One only, so a
+  // genuinely missing tree still errors instead of climbing to "/".
+  const climbed = useRef(false);
 
   useEffect(() => {
     let stale = false;
@@ -169,6 +175,12 @@ function ExplorerPanel({
       },
       (e: Error) => {
         if (stale) return;
+        const cut = path.replace(/\/+$/, "").lastIndexOf("/");
+        if (!climbed.current && cut >= 0) {
+          climbed.current = true;
+          setPath(path.replace(/\/+$/, "").slice(0, cut) || "/");
+          return;
+        }
         setError(e.message);
         setLoading(false);
       },
@@ -1158,6 +1170,29 @@ export default function NewJobModal({
     return choices.find((c) => c.key === repeat)?.rule ?? null;
   }, [repeat, customRule, choices]);
 
+  // Back to chat honours the SAME two-step dirty guard as the ✕ — one click
+  // must not silently abandon an adjusted form just because the exit points
+  // at the chat instead of nowhere (Bugbot, PR #548). First click re-labels
+  // the button for 2s; the second within that window really leaves.
+  const [backConfirm, setBackConfirm] = useState(false);
+  const backTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (backTimer.current !== null) window.clearTimeout(backTimer.current);
+    },
+    [],
+  );
+  const backToChat = () => {
+    if (!chatBack) return;
+    if (dirty && !backConfirm) {
+      setBackConfirm(true);
+      if (backTimer.current !== null) window.clearTimeout(backTimer.current);
+      backTimer.current = window.setTimeout(() => setBackConfirm(false), 2000);
+      return;
+    }
+    navigateUrl(chatBack);
+  };
+
   // The replacement was created but the original could not be withdrawn: the
   // one state where pressing Save again would mint a THIRD copy, so it
   // disables the button outright and the error says what to do by hand.
@@ -1186,11 +1221,16 @@ export default function NewJobModal({
         // a one-off; a repeating task opens fresh sessions (Akshil,
         // 2026-08-16), since resuming one conversation on every run
         // compounds its context forever.
-        ...(editing?.session_id
-          ? { session_id: editing.session_id }
-          : chatSessionId && !rule && repeat !== "cron"
-            ? { session_id: chatSessionId }
-            : {}),
+        // …and in BOTH cases only while the task stays a one-off: editing a
+        // chat-continuing one-off into a recurring schedule must drop the
+        // session, or that one conversation is resumed on every run — the
+        // exact compounding the new-task path already refuses (Bugbot,
+        // PR #548).
+        ...((() => {
+          const oneOff = !rule && repeat !== "cron";
+          const sid = oneOff ? editing?.session_id || chatSessionId || "" : "";
+          return sid ? { session_id: sid } : {};
+        })()),
       });
       rememberRecent(target);
       if (editing) {
@@ -1260,8 +1300,8 @@ export default function NewJobModal({
           {chatBack && (
             <button type="button" className="btn btn-secondary schedule-back-chat"
                     disabled={busy}
-                    onClick={() => navigateUrl(chatBack)}>
-              Back to chat
+                    onClick={backToChat}>
+              {backConfirm ? "Discard changes?" : "Back to chat"}
             </button>
           )}
           <button type="button" className="btn btn-primary schedule-save"
