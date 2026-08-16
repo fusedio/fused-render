@@ -67,6 +67,8 @@ logger = logging.getLogger("fused_render.selffix")
 STATE_DIR_NAME = ".fused-render-selffix"
 MARKER_NAME = "modified.json"
 BASELINE_NAME = "baseline.json"
+# Which tree state the user dismissed the badge for — see `clear`.
+DISMISSED_NAME = "dismissed.json"
 REPORTS_DIR = "reports"
 INCIDENTS_DIR = "incidents"
 
@@ -316,18 +318,62 @@ def _discard(path: str) -> None:
         pass
 
 
-def clear() -> bool:
+def dismissed_path() -> str:
+    return os.path.join(state_dir(), DISMISSED_NAME)
+
+
+def dismissed_digest() -> str:
+    """The tree state the user last said they did not want a badge for.
+
+    Version-scoped like everything else here: an upgrade replaced the tree the
+    dismissal was about, so the dismissal expires with it.
+    """
+    record = _read_json(dismissed_path()) or {}
+    if record.get("version") != __version__:
+        return ""
+    return str(record.get("digest") or "")
+
+
+def clear(*, now: float | None = None) -> bool:
     """Forget the modification. Returns whether there was a marker to forget.
 
     The baseline stays: it describes the release, not the modification, and
     keeping it means a LATER fix session on the same version still knows what
     pristine looked like without re-walking a tree that is no longer pristine.
+
+    **The dismissal is REMEMBERED, not just applied**, and that is what makes it
+    stick. A fix session's watcher re-stamps every few ticks and once more when
+    the turn ends, so dismissing mid-session — the likeliest moment, since the
+    badge appears while the user is watching — used to be undone seconds later
+    by the next stamp of the very same change. Recording WHICH tree state was
+    dismissed is what separates "I have seen this and I do not want a badge for
+    it" from "I never want a badge again": if the session goes on to change
+    something else, the digest moves past the dismissed one and the badge
+    legitimately comes back.
+
+    The marker's own `digest` is what gets recorded, rather than a fresh walk:
+    it is free, and it is exactly what the user was looking at when they
+    dismissed it. A tree that has drifted since that marker was written is a
+    state they have not seen.
     """
+    now = time.time() if now is None else now
     with _lock:
         path = marker_path()
         if not os.path.exists(path):
             return False
+        marker = _read_json(path) or {}
         _discard(path)
+        try:
+            _write_json(dismissed_path(), {
+                "schema": SCHEMA,
+                "version": __version__,
+                "digest": str(marker.get("digest") or ""),
+                "at": now,
+            })
+        except OSError:
+            # The badge is already gone for now; only its persistence across a
+            # re-stamp is lost. Not worth failing the user's click over.
+            logger.info("could not record the self-fix dismissal", exc_info=True)
         return True
 
 
@@ -385,6 +431,11 @@ def mark_modified(*, run_id: str = "", session_id: str = "", report: str = "",
             "fixes": fixes[-MAX_FIXES:],
         }
         _write_json(marker_path(), record)
+        # A badge is being raised, so whatever the user dismissed is behind us:
+        # the tree has moved past it (that is `settle`'s precondition for
+        # getting here). Leaving the record would silence a LATER dismissal of a
+        # state that happened to hash back to it.
+        _discard(dismissed_path())
         return _public(record)
 
 
@@ -436,6 +487,15 @@ def settle(*, before: str, run_id: str = "", session_id: str = "",
     current = tree_digest()
     if current == before:
         return False
+    if current == dismissed_digest():
+        # The user has already seen exactly this state and said they did not
+        # want a badge for it. The watcher stamps every few ticks and once more
+        # when the turn ends, so without this the dismissal — made, most
+        # likely, while watching the session that raised the badge — is undone
+        # seconds later by the next stamp of the very same change. Nothing has
+        # happened since; when something does, the digest moves off this value
+        # and the badge comes back on its own.
+        return True
     # The pristine digest for the record — read back rather than re-walked; the
     # baseline file is written by `begin_session` before any session starts.
     baseline = (_read_json(baseline_path()) or {})
@@ -460,25 +520,40 @@ def reconcile() -> None:
     out of date is not a reason to fail a boot.
     """
     try:
-        marker = _read_json(marker_path())
-        if not marker:
+        # A cheap look before the expensive one: no marker, nothing to reconcile.
+        if not _read_json(marker_path()):
             return
-        if marker.get("version") != __version__:
-            _discard(marker_path())
-            return
-        baseline = (_read_json(baseline_path()) or {})
-        pristine = baseline.get("digest") if baseline.get("version") == __version__ else None
-        if not pristine:
-            return
-        current = tree_digest()
-        if current == pristine:
-            logger.info("self-fix: the installation matches the released tree again "
-                        "— clearing the modified marker")
-            clear()
-        elif current != marker.get("digest"):
-            # Still modified, but not the way the marker last described. Keep
-            # the record honest so the "restored" test above stays meaningful.
-            with _lock:
+        current = tree_digest()  # SLOW — deliberately outside the lock
+
+        # RE-READ under the lock. The walk above takes long enough for the world
+        # to move: a `clear` (the user dismissing) or a `mark_modified` (a fix
+        # session's watcher) can land while it runs, and writing back the object
+        # read before the walk would silently undo either — a dismissed badge
+        # reappearing, or a just-recorded fix losing its report.
+        with _lock:
+            marker = _read_json(marker_path())
+            if not marker:
+                return  # cleared while we walked; the user's call stands
+            if marker.get("version") != __version__:
+                _discard(marker_path())
+                return
+            baseline = (_read_json(baseline_path()) or {})
+            pristine = (baseline.get("digest")
+                        if baseline.get("version") == __version__ else None)
+            if not pristine:
+                return
+            if current == pristine:
+                logger.info("self-fix: the installation matches the released tree "
+                            "again — clearing the modified marker")
+                # Not `clear()`: that takes this same non-reentrant lock, and it
+                # would also record a DISMISSAL, which this is not — the
+                # modification is gone, nobody waved it away.
+                _discard(marker_path())
+                _discard(dismissed_path())  # inert now, and confusing to leave
+            elif current != marker.get("digest"):
+                # Still modified, but not the way the marker last described. Keep
+                # the record honest so the "restored" test above stays meaningful.
+                # Merged into the FRESH read, not the stale one.
                 marker["digest"] = current
                 marker["modified_at"] = time.time()
                 try:
