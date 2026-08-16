@@ -6162,6 +6162,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   one walk, handed down, not a second walk Discover runs for itself: two walks
   meant two definitions of "on this machine" and a window where the tabs
   disagreed about the same repo.
+- **AI-7d** **Every suggestion list is ordered SMALLEST FIRST, and the default
+  is position 0.** One rule, no second field: `catalog.SUGGESTIONS` is sorted by
+  ascending `size_gb` (an entry with no size sorts last), and
+  `catalog.default_for()` returns the first entry — which is what a `model`-less
+  `POST /api/ai/image` or `/api/ai/transcribe` loads. **The consequence is
+  accepted, not overlooked**: a bare `fused.ai.transcribe()` gets
+  `Systran/faster-whisper-small` (or `mlx-community/whisper-small-mlx`) rather
+  than the turbo checkpoint, and a bare text default is the 2B/1.7B. The
+  alternative — order by recommendation and mark the default with its own field
+  — was considered and rejected, because two orderings that can silently
+  disagree cost more than the accuracy a no-model call gives up. Reordering a
+  list so the "best" model leads is therefore a REGRESSION of this requirement,
+  not a fix; `tests/test_ai_runtime.py` asserts the sort and the four defaults.
 - **AI-9** **Image generation is job-backed, and the reply decides everything
   but the pixels.** `POST /api/ai/image` answers immediately with a `jobId` to
   watch AND with the **path** and the **seed** already settled — so no second

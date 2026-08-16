@@ -899,6 +899,43 @@ def test_transformers_and_whisper_suggestions_show_snapshot_size_estimates():
     assert actual == expected
 
 
+def test_every_suggestion_list_is_ordered_smallest_first():
+    """One ordering rule, and the default is whatever it puts at position 0.
+
+    The user was shown the trade — a bare `fused.ai.transcribe()` now loads
+    `Systran/faster-whisper-small` rather than the turbo model — and chose one
+    rule over a separate default field. So this is the rule, asserted rather
+    than left to the eye: sorted by ascending `size_gb`, with an entry that has
+    no size sorting LAST (an unknown download must never lead a list, since
+    leading it means being what a no-model call silently starts).
+    """
+    for code, entries in catalog.SUGGESTIONS.items():
+        keys = [(e["size_gb"] is None, e["size_gb"] or 0.0) for e in entries]
+        assert keys == sorted(keys), (
+            f"{code} is not smallest-first: "
+            f"{[(e['id'], e['size_gb']) for e in entries]}")
+
+
+def test_the_default_is_the_smallest_model_the_active_runner_offers(monkeypatch):
+    """`default_for` is position 0, and position 0 is the smallest — end to end.
+
+    Named per capability because these are the ids a no-model call reaches for,
+    and the whole point of the change is that they are now the SMALL ones.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    assert catalog.default_for(registry.TEXT_GENERATION) == \
+        "mlx-community/Qwen3.5-2B-MLX-4bit"
+    assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
+        "mlx-community/whisper-small-mlx"
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
+    assert catalog.default_for(registry.TEXT_GENERATION) == "Qwen/Qwen3-1.7B"
+    assert catalog.default_for(registry.SPEECH_TO_TEXT) == \
+        "Systran/faster-whisper-small"
+
+
 def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     """A Windows machine must not be shown MLX repos, or told it has no runner.
 
