@@ -2727,6 +2727,7 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     '{path: "a.m4a", diarize: true, speakers: 2.5}',
     '{path: "a.m4a", diarize: true, speakers: "2"}',
     '{path: "a.m4a", diarize: true, speakers: NaN}',
+    '{path: "a.m4a", diarize: true, speakers: 101}',
 ])
 def test_diarizing_without_a_usable_speaker_count_rejects_BEFORE_a_job_opens(opts):
     """The bridge's half of the required argument, beside the `path` check and
@@ -2743,6 +2744,39 @@ def test_diarizing_without_a_usable_speaker_count_rejects_BEFORE_a_job_opens(opt
     assert settled["ok"] is False, settled
     assert settled["type"] == "bad_request", settled
     assert "speakers" in settled["message"]
+
+
+def test_the_bridges_speaker_bound_is_the_SAME_NUMBER_python_enforces():
+    """Four copies of one rule — `runtime.js`, the endpoint, and each worker —
+    and this is the copy no other test can reach: JS cannot import
+    `diarize.MAX_SPEAKERS`, so the bound is restated in the bridge and nothing
+    but this comparison stops the two drifting.
+
+    Read out of the SOURCE and then driven through the real function, because
+    either half alone is weak: a number that matches but is never applied, or a
+    rejection at some bound that is not Python's. `diarize.py:speakers_or_raise`
+    and D309 both claim the four enforcement points are identical, and this is
+    what makes that claim true rather than aspirational.
+    """
+    from fused_render.ai.runners import diarize
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    transcribe = source[source.index("  function aiTranscribe(opts)"):]
+    transcribe = transcribe[:transcribe.index("\n  }\n")]
+    assert f"const MAX_SPEAKERS = {diarize.MAX_SPEAKERS};" in transcribe
+
+    # …and the boundary is inclusive on both sides, in both languages.
+    assert diarize.speakers_or_raise(diarize.MAX_SPEAKERS) == diarize.MAX_SPEAKERS
+    at_the_bound = _run_ai_transcribe(
+        'Promise.resolve(JSON.stringify({text: "x", segments: []}))', '{state: "done"}',
+        opts='{path: "a.m4a", diarize: true, speakers: %d}' % diarize.MAX_SPEAKERS)
+    assert at_the_bound["ok"] is True, at_the_bound
+    over = _run_ai_transcribe(
+        'Promise.resolve("{}")', '{state: "done"}',
+        opts='{path: "a.m4a", diarize: true, speakers: %d}' % (diarize.MAX_SPEAKERS + 1))
+    assert over["ok"] is False and over["type"] == "bad_request"
 
 
 def test_asking_for_speakers_properly_gets_the_labels_and_the_legend_back():

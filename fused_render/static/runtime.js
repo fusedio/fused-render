@@ -2646,11 +2646,25 @@
     // computed the count and got it wrong, and NaN is what a bad parseInt
     // produces. `true` fails it too, which matters — `{diarize: true, speakers:
     // true}` is a plausible copy-paste that would otherwise mean one speaker.
+    //
+    // The upper bound is `diarize.py`'s MAX_SPEAKERS, restated because JS
+    // cannot import it. It is not decoration: without it `{speakers: 500}`
+    // passed here and was refused by the server instead, which is a working
+    // refusal but makes "all four checks enforce the same rule" false on the
+    // one copy no Python test can reach. `tests/test_ai_runtime.py` reads this
+    // number back out of the source and drives it through the real function,
+    // so the two cannot drift silently.
     if (opts.diarize) {
-      if (!Number.isInteger(opts.speakers) || opts.speakers < 1) {
+      const MAX_SPEAKERS = 100;
+      if (
+        !Number.isInteger(opts.speakers) ||
+        opts.speakers < 1 ||
+        opts.speakers > MAX_SPEAKERS
+      ) {
         const err = new Error(
           "fused.ai.transcribe({diarize: true}): 'speakers' is required and must be a " +
-            "whole number of people, e.g. {diarize: true, speakers: 2}. It cannot be " +
+            "whole number of people from 1 to " + MAX_SPEAKERS +
+            ", e.g. {diarize: true, speakers: 2}. It cannot be " +
             "guessed reliably, and a wrong guess relabels the whole transcript.",
         );
         err.type = "bad_request";
