@@ -853,6 +853,28 @@
   @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   @media (prefers-reduced-motion: reduce) { .turn { animation: none; } }
 
+  /* The turn a `?msg=` link asked for (see MESSAGE_ANCHOR). A HALO that fades,
+     not a selection state: the flare answers "this one" and then leaves, where
+     a permanent tint would sit there implying something is still selected and
+     that clearing it is the reader's job. Drawn entirely with box-shadow so it
+     costs no layout — a padded, backgrounded turn would nudge every turn under
+     it the moment the class landed, which reads as the page moving underneath a
+     scroll that is still settling. */
+  .turn.is-anchored {
+    border-radius: 10px;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent);
+    animation: anchor-flare 1.6s ease-out forwards;
+  }
+  @keyframes anchor-flare {
+    0%, 45% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent); }
+    100% { box-shadow: 0 0 0 4px transparent; }
+  }
+  /* Higher specificity than the `.turn { animation: none }` above, so the flare
+     has to be switched off on its own. The halo then simply holds until the JS
+     timer strips the class — a state change instead of a fade, which is what
+     reduced motion asks for. */
+  @media (prefers-reduced-motion: reduce) { .turn.is-anchored { animation: none; } }
+
   .user { display: flex; flex-direction: column; align-items: flex-end; }
   /* annotations a sent message carried — subtle receipt under the bubble */
   .annsum {
@@ -3452,10 +3474,13 @@ function searchParamsOf(search) {
 // APP is running with would be describing our chrome as its state. `chat_only`
 // is the extreme case of that: it describes THIS DOCUMENT'S HOST (see
 // CHAT_ONLY), and there is no pane for it to be a param of.
+// `msg` is here for the `session_id` reason: it is this chat's own bookkeeping
+// (which turn a Tasks-list link asked to land on), and reporting it to the model
+// as a param the APP is running with describes our navigation as its state.
 const CHAT_PARAMS = new Set(["_file", "_mode", "session_id", "run", "split",
                              "model", "effort", "permission", "annotations",
                              "annmode", "leftmode", "paneview", "chat_only",
-                             "path"]);
+                             "path", "msg"]);
 
 function appParamsOf(all) {
   const out = {};
@@ -8043,6 +8068,157 @@ logwrap.addEventListener("scroll", () => {
   lastTop = top; lastHeight = h;
 }, { passive: true });
 
+// ── scroll to one message (?msg=<transcript record uuid>) ──────────────────
+//
+// The Tasks list links a MESSAGE, not just a session. Its rows carry the uuid of
+// the transcript record the server read that prompt out of, and the link is
+//
+//     /explorer/view/<path>?_side=claude&session_id=<id>&msg=<uuid>
+//
+// so the click both opens the right conversation and says which turn in it the
+// reader was pointing at (spec §7 — that click is also what marks the message
+// read, which the list does on its own side). Read through `fused.params`, not
+// `location.search`: this page sets no `_fusedParamBoundary`, so its params live
+// on the SHELL's url, which is where the list wrote this one. `chat_only` is the
+// counter-example a few hundred lines up and the distinction is the same one —
+// that param describes the iframe, this one describes the navigation.
+//
+// EVERYTHING here degrades to silence, deliberately. No param, a uuid from some
+// other transcript, a uuid whose record this page does not render (a slash
+// command, an app-state-only send), a transcript that fails to restore at all —
+// each ends with the chat exactly as it would have been without the param,
+// because landing at the bottom of the right conversation is a far better
+// failure than a chat that throws on a stale link.
+const MESSAGE_ANCHOR = fused.params.get("msg") || "";
+
+// Long enough to be seen after the scroll settles, short enough that it is
+// plainly a flare and not a mode. Matches the anchor-flare keyframes.
+const ANCHOR_FLARE_MS = 1600;
+
+// WHY THERE IS NO OBSERVER HERE, because "wait for the turn to appear" is the
+// obvious shape for this and it is the wrong one.
+//
+// Only ONE caller ever renders an anchorable turn: `loadHistory`, which is the
+// only `addUser` call site that passes a uuid — every other one (a live send,
+// `resumeRun`'s three repair branches) is a turn this frame is making up as it
+// goes, with no transcript record behind it and therefore no id an anchor could
+// ever match. And `loadHistory` renders its whole transcript in a single
+// synchronous loop before it yields, so there is no moment at which the turn
+// exists but has not been looked for: the call at the end of that loop sees
+// every turn there will be. A MutationObserver watching #log would fire only on
+// appends that can never match, and the page already pins itself to exactly one
+// observer (annObserveTarget, which watches the PREVIEWED APP's document, not
+// this one — so it could not be reused for this either).
+//
+// What genuinely does arrive late is LAYOUT, not turns: a restored transcript's
+// pictures load through /api/fs/raw after their turn is on screen, and every one
+// of them above the anchor pushes it off centre. That is the real "scrolled to
+// the wrong place" failure, and `settleAnchor` below is what answers it.
+
+// Spent on the first turn it matches, and held as state rather than re-read from
+// the url each time: a later session switch renders a DIFFERENT transcript, and
+// re-firing an anchor there would flare whichever turn happened to collide.
+let anchorPending = MESSAGE_ANCHOR;
+
+/** The rendered turn carrying this uuid, or null. Compared as a string against
+ * what the render wrote rather than built into a selector — a uuid off a url is
+ * untrusted input, and `[data-msg="..."]` with a quote in it throws. */
+function anchoredTurn() {
+  if (!anchorPending) return null;
+  for (const el of log.querySelectorAll(".turn[data-msg]"))
+    if (el.dataset.msg === anchorPending) return el;
+  return null;
+}
+
+function scrollToAnchor(el, still) {
+  try {
+    el.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
+  } catch (e) {
+    el.scrollIntoView();  // an engine that takes no options object
+  }
+}
+
+/**
+ * Hold the anchored turn in view while the transcript finishes settling.
+ *
+ * A restored turn's pictures are `<img>` elements pointed at /api/fs/raw, and
+ * they have no intrinsic height until they load. Every one that lands ABOVE the
+ * anchor grows the document under it, which slides the turn we just centred off
+ * the screen — so the link that worked in a text-only chat quietly lands in the
+ * wrong place in one with screenshots, which is most of them.
+ *
+ * Re-centres at a few decaying points rather than continuously, and only when
+ * the turn has actually drifted OUT of view: a turn that is merely off-centre
+ * has already done its job, and re-scrolling it would be the page tugging at a
+ * reader who has started reading. Any deliberate scroll cancels the rest
+ * outright — once the reader has taken the wheel, nothing here may take it back.
+ */
+const ANCHOR_SETTLE_MS = [120, 400, 1000];
+
+function settleAnchor(el, still) {
+  const timers = [];
+  const stop = () => {
+    for (const t of timers) clearTimeout(t);
+    timers.length = 0;
+    for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"])
+      logwrap.removeEventListener(ev, stop);
+  };
+  for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"])
+    logwrap.addEventListener(ev, stop, { passive: true });
+  for (const delay of ANCHOR_SETTLE_MS) {
+    timers.push(setTimeout(() => {
+      if (!el.isConnected) return stop();
+      // Out of the scroller's box, not merely off its centre.
+      const box = logwrap.getBoundingClientRect();
+      const seen = el.getBoundingClientRect();
+      if (seen.bottom <= box.top || seen.top >= box.bottom) scrollToAnchor(el, still);
+      if (delay === ANCHOR_SETTLE_MS[ANCHOR_SETTLE_MS.length - 1]) stop();
+    }, delay));
+  }
+}
+
+/** Land on the anchored turn if it is on screen. True when it did, so callers
+ * can fall back to their own scroll when it did not. */
+function revealAnchor() {
+  const el = anchoredTurn();
+  if (!el) return false;
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  scrollToAnchor(el, still);
+  settleAnchor(el, still);
+  el.classList.add("is-anchored");
+  setTimeout(() => el.classList.remove("is-anchored"), ANCHOR_FLARE_MS);
+  return true;
+}
+
+/**
+ * One attempt at the anchor, after which it is spent whether it landed or not.
+ *
+ * THE GIVE-UP CONDITION, and it is a state change rather than a deadline
+ * because nothing here is waiting on a clock: `loadHistory` is the only caller
+ * that can render an anchorable turn (see above), and by the time it calls this
+ * the whole transcript is on screen. So one attempt is every attempt there will
+ * ever be — the anchor names a turn in the conversation the link opened, and if
+ * it is not in THIS transcript it is not anywhere.
+ *
+ * Disarming on the miss is the part that matters. Left armed, a uuid that
+ * matched nothing here would sit waiting for the next `loadHistory` and flare
+ * whichever turn of a DIFFERENT conversation happened to carry that id — a
+ * stale link quietly pointing at the wrong message in the wrong chat, which is
+ * a worse failure than the link doing nothing at all.
+ */
+function consumeAnchor() {
+  const landed = revealAnchor();
+  if (anchorPending) {
+    anchorPending = "";
+    // Spent, so it comes off the url — `replace`, because arriving on the
+    // message is not a place anyone navigated to twice, and a Back that
+    // re-fired the flare would be a history entry nobody made. Left behind it
+    // would also re-scroll a reload the reader has since scrolled away from.
+    fused.params.set("msg", "", { history: "replace", default: "" });
+  }
+  return landed;
+}
+
 // Back to chats: the landing is both "start a new chat" and "open a past one".
 // Clear the session param so a reload lands on the landing page,
 // wipe the visible transcript, and rebuild the session list.
@@ -8173,9 +8349,15 @@ terminalOpt.addEventListener("click", async () => {
 });
 
 // ── log rendering ──
-function addUser(text) {
+// `uuid` — the transcript record this turn was restored from, when the caller
+// knows it (only `loadHistory` does; a turn typed in this frame has no record
+// yet). It is what a `?msg=` link addresses, so it goes on the element BEFORE
+// the append: the anchor watcher fires on that append, and a turn whose id
+// lands a tick later is a turn the watcher looks straight past.
+function addUser(text, uuid) {
   const d = document.createElement("div");
   d.className = "turn user";
+  if (uuid) d.dataset.msg = uuid;
   const b = document.createElement("div");
   b.className = "bubble";
   b.textContent = text;
@@ -11067,7 +11249,11 @@ async function loadHistory(session_id) {
       // optional). A restored turn renders through the same renderSegments the
       // live stream uses — no typer, because nothing is arriving.
       if (t.role === "user") {
-        addUser(stripBlocks(t.text));
+        // `t.uuid` is the transcript record's own id — the same value the Tasks
+        // list carries as a message's `anchor`, which is what makes `?msg=`
+        // resolvable here. Optional: a payload without it renders exactly as
+        // before and simply cannot be anchored to.
+        addUser(stripBlocks(t.text), t.uuid);
         // ...and the picture it carried, if it carried one. addUser appends the
         // turn, so the last `.turn.user` in the log is the one just made — the
         // same way sendMessage finds the turn to hang its own receipt on.
@@ -11076,7 +11262,12 @@ async function loadHistory(session_id) {
       } else addAssistantTurn(t.text, t.segments);
     }
     attachCodeCopy(log);  // one pass over the whole restored transcript
-    scrollBottom();
+    // The transcript is now on screen, so this is both the first moment a
+    // `?msg=` link can be honoured and the last one worth trying: the loop
+    // above rendered every turn there will be, synchronously. Falls through to
+    // the bottom when there is no anchor, or when the anchor names a turn this
+    // transcript does not contain.
+    if (!consumeAnchor()) scrollBottom();
   } catch (err) {
     log.innerHTML = "";
     console.warn("history restore failed:", err.message);
