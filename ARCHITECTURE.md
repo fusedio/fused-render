@@ -218,40 +218,14 @@ revision delete removes the snapshot, the blobs no other revision references
 (resolved through their links), the refs pointing at that commit, and the whole
 repo when it was the last revision.
 
-### `/api/ai-models/hub/*` — Hub search, joined to the cache (SPEC §39, D255)
+### Hub search — REMOVED (D312)
 
-`POST /api/ai-models/hub/search {q, task, sort, limit}` (`X-Fused` guarded) →
-`{models, query, endpoint, authenticated}` or, when the far side is unhappy,
-`{models: [], error}` with a 200 — the request this server got was fine and the
-page has a sentence to show. Each model is `{id, task, taskHelp, pipelineTag,
-library, downloads, likes, updated, gated, private, tags, params, estimatedSize,
-local, url}`, where `local` is `{state: "downloaded"|"partial"|"none", size,
-files, lastUsed, path, dir}`.
-`GET /api/ai-models/hub/tasks` → the offered filters as `{tag, label, help}`,
-an unguarded read like every other (WF-5): a static glossary that touches
-nothing. Search is the asymmetry, and deliberate. It downloads nothing either,
-but it is the one read that LEAVES the machine — an outbound call carrying the
-user's Hub token — and D36's protection is the browser refusing to show a
-foreign page the *response*, which does nothing about the *request*. Unguarded,
-a blind cross-origin GET could spend someone's credential and rate limit while
-learning nothing. So the route takes the shape its effect deserves rather than
-the rule acquiring a guarded-GET exception.
-
-`hub_models.py` is the only outbound request this feature makes. The host is
-fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
-`urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
-token (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`/`$HF_HOME/token`) is sent and never
-returned. Answers are memoised for a short TTL — search-as-you-type would
-otherwise be one request per keystroke — but **errors are not cached** and the
-**local join runs on every request**, outside the cache, so a model deleted a
-second ago stops claiming to be downloaded. That join is scoped to the rows
-being returned: one `scandir` of the cache root for id→folder, then `_scan_repo`
-+ `_revisions` for only the results actually present. It deliberately does NOT
-go through `_listing()`, which additionally reads every repo's card, config and
-safetensors headers — metadata no Hub row uses. Sizes are recovered from
-`safetensors.parameters` (`count * bits / 8`) with the same table `inspect_model`
-uses locally; no metadata means no size rather than a guess. Sync `def`: one
-bounded outbound call plus a cache walk, so it belongs in the threadpool.
+`/api/ai-models/hub/*` and `routers/hub_models.py` are gone, and with them the
+only outbound request this app ever made on its own behalf. The endpoint
+searched huggingface.co with the user's token and joined every result against
+the local cache; the page that consumed it could act on none of them, because a
+model runs here only if a registered engine reads its weight format. The
+Discover tab now shows `GET /api/ai/catalog` and nothing else.
 
 ### `/api/ai/runtime`, `/api/ai/catalog` — local inference (SPEC §40, D257)
 

@@ -741,10 +741,9 @@ function SectionHead({ title, size }: { title: string; size: number }) {
 }
 
 export default function AiModels() {
-  // Local is the default, and Discover is the only thing on this page that
-  // touches the network — so nothing is sent to a third party until someone
-  // asks for it. The tab is not mounted until selected, which is also what
-  // keeps the query from firing on page load.
+  // Local is the default. No tab here queries a third party any more — the Hub
+  // search box that did is gone — so the only thing that leaves this machine is
+  // a download somebody pressed a button for.
   //
   // **The tab lives in the URL, not in state** (`?tab=discover`), the pattern
   // Preferences already uses for its own tabs: it makes the choice
@@ -1008,7 +1007,11 @@ export default function AiModels() {
             <h2 className="cc-heading">AI Models</h2>
             <div className="cc-caption cc-mono">
               {tab === "discover" ? (
-                "Models on the Hugging Face Hub"
+                // Not "models on the Hugging Face Hub" any more. The tab used
+                // to search it and now lists a curation, and a caption naming
+                // the Hub over a shortlist of a dozen invites the reader to
+                // look for the search box that is gone.
+                "Models this machine can run, ready to download"
               ) : tab === "engines" ? (
                 // Not the cache path: this tab is not about the disk, and a
                 // caption naming a directory over a panel of engine pickers is
@@ -1080,7 +1083,7 @@ export default function AiModels() {
                 aria-selected={tab === "discover"}
                 className={"am-tab" + (tab === "discover" ? " active" : "")}
                 onClick={() => setTab("discover")}
-                title="Search the Hugging Face Hub for models you don't have yet"
+                title="Models this machine can run, ready to download"
               >
                 Discover
               </button>
@@ -1185,7 +1188,7 @@ export default function AiModels() {
                   : "No Hugging Face cache on this machine — the first download from the Hub creates it."}
               </p>
               <button type="button" className="btn btn-secondary" onClick={() => setTab("discover")}>
-                Search the Hub
+                Browse models
               </button>
             </div>
           ))}

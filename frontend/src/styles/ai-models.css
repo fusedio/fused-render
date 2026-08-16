@@ -107,31 +107,27 @@
   margin-top: auto;
 }
 
-/* The two destinations named in the page's captions: the cache directory this
-   machine fills (Local) and the host this page queries (Discover). One rule,
-   because they are the same idea on either tab — the caption states WHERE, and
-   where should be reachable rather than copied out by hand.
+/* The destination named in the Local tab's caption: the cache directory this
+   machine fills. The caption states WHERE, and where should be reachable rather
+   than copied out by hand.
 
-   Underlined only on hover: each sits in a line of plain facts ("8 cached ·
-   43 GB total", "Search results are read-only…") and a permanently underlined
-   run of text would read as the whole caption being a link rather than as one
-   word in it being one. The path wraps, because a hub path under a long
-   username is longer than the page head. */
-.am-cache-dir,
-.am-hub-host {
+   Underlined only on hover: it sits in a line of plain facts ("8 cached ·
+   43 GB total") and a permanently underlined run of text would read as the
+   whole caption being a link rather than as one word in it being one. The path
+   wraps, because a hub path under a long username is longer than the page
+   head. */
+.am-cache-dir {
   color: inherit;
   text-decoration: none;
   overflow-wrap: anywhere;
 }
 
-.am-cache-dir:hover,
-.am-hub-host:hover {
+.am-cache-dir:hover {
   color: var(--fg);
   text-decoration: underline;
 }
 
-.am-cache-dir:focus-visible,
-.am-hub-host:focus-visible {
+.am-cache-dir:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 3px;
@@ -416,11 +412,10 @@
   height: 22px;
 }
 
-/* -- Local / Discover, and the Discover tab itself --------------------------
-   Cards on both tabs are the same .cc-mdcard/.am-card — one model should not
-   look like two different things depending on which tab found it — so what
-   lives here is the tab strip, the query controls, and the two badges that only
-   mean something for a Hub result.
+/* -- the tab strip ----------------------------------------------------------
+   Cards on every tab are the same .cc-mdcard/.am-card — one model should not
+   look like two different things depending on which tab listed it — so what
+   lives here is only the strip itself.
 
    The strip is the ONLY thing in the page head (D256): with Prune and Refresh
    gone, the toggle sits in the same place in every state instead of sliding as
@@ -469,82 +464,6 @@
    rather than a blank line below it. */
 .am-empty p {
   margin: 0 0 12px;
-}
-
-.am-hub-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 4px 0 8px;
-}
-
-.am-hub-search {
-  flex: 1 1 260px;
-  min-width: 180px;
-  padding: 7px 10px;
-  font: inherit;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.am-hub-select {
-  padding: 7px 10px;
-  font: inherit;
-  font-size: 13px;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-}
-
-.am-hub-search:focus-visible,
-.am-hub-select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
-.am-hub-note {
-  margin: 0 0 14px;
-}
-
-/* A refetch in flight dims the results that are still on screen rather than
-   replacing them with a spinner: the old answer is still the best one we have
-   until the new one lands, and swapping it for empty space makes typing feel
-   like the page is breaking. */
-.am-hub-stale {
-  opacity: 0.55;
-  transition: opacity 120ms ease-out;
-}
-
-.am-hub-state {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-/* The one thing a browser tab on huggingface.co cannot tell you. */
-.am-hub-here {
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 999px;
-  color: var(--bg);
-  background: var(--accent);
-}
-
-.am-hub-partial {
-  padding: 1px 7px;
-  font-size: 11px;
-  border-radius: 999px;
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-}
-
-.am-hub-gated {
-  color: var(--fg-muted);
 }
 
 /* -- what a model is doing right now (SPEC §40) ------------------------------
@@ -667,7 +586,7 @@
   text-transform: uppercase;
   white-space: nowrap;
   border-radius: 999px;
-  /* The .am-hub-here pattern: a filled pill whose text is the PAGE background,
+  /* The .am-suggest-have pattern: a filled pill whose text is the PAGE background,
      which stays readable in both themes without a second token — dark text on
      the bright green above, white on the darker green below. */
   color: var(--bg);
@@ -735,61 +654,34 @@
 }
 
 /* -- Suggested (the curated shortlist, SPEC §40) ------------------------------
-   Above the search box and only when nothing is typed: a handful someone has
-   chosen is the answer to "what should I even get", which is the question you
-   have before you know what to search for. */
-.am-suggested {
-  margin: 0 0 18px;
-}
+   The whole of the Discover tab now that the Hub search box is gone. It is laid
+   out in the LOCAL tab's vocabulary — .am-section per capability, and the
+   .am-section-head / .am-subgroup-title pair for the heading — so a group of
+   cards means the same thing on either tab. What is left here is only the two
+   things that hang off that heading. */
 
-.am-suggested-head {
-  margin: 0 0 8px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-muted);
-}
-
-.am-suggested-group + .am-suggested-group {
-  margin-top: 14px;
-}
-
-.am-suggested-cap {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--fg);
-}
-
-.am-suggested-cap::first-letter {
-  text-transform: uppercase;
-}
-
-/* Why a capability cannot run here. Shown, never hidden — a missing feature
-   with no explanation is a bug report. */
-.am-suggested-why {
-  font-size: 11px;
-  color: var(--fg-muted);
-}
-
-/* Which backend the shortlist below belongs to. Quiet: it qualifies the
-   heading rather than competing with it, and it only starts mattering once a
-   capability has more than one runner. */
+/* Why a capability cannot run here, and which backend serves it when it can.
+   Both live in the head's right-hand slot, where the Local tab puts a byte
+   subtotal: quiet, qualifying the heading rather than competing with it. */
+.am-suggested-why,
 .am-suggested-runner {
+  flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-muted);
 }
 
-/* What running on that backend is like — the CPU-speed warning, above the
-   cards, where it can still change a decision. Sized to be read rather than
-   skimmed past, and indented to hang off the heading it qualifies. */
+/* What running on that backend is like — the MLX image runner's memory
+   ceiling, MLX Whisper's GPU speed — above the cards, where it can still
+   change a decision.
+
+   MUTED, and it used to be `--warning`. Three orange paragraphs down one page
+   is how a reader learns that orange on this page means nothing; none of these
+   sentences reports a problem, they describe what a backend is LIKE, which is
+   context for a choice and not an alarm about one. It rides .am-group-note for
+   the rest — the same prose treatment the Local tab's group notes get. */
 .am-suggested-note {
-  margin: 0 0 8px;
+  margin-top: -2px;
   max-width: 62ch;
-  color: var(--warning, var(--fg-muted));
 }
 
 .am-suggest-note {
