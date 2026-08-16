@@ -284,13 +284,14 @@ _RUNNERS: tuple[Runner, ...] = (
 #: that can actually RUN it.
 #:
 #: **A vision-language checkpoint is a text model when you only give it text**,
-#: and that is not a technicality — `mlx-community/gemma-3-12b-it-4bit` is
-#: labelled "image + text to text" because gemma-3 carries a vision tower, and
-#: it is also one of the models this app's own catalog RECOMMENDS for chat.
-#: Leaving the label out of this table took the Load button off a model the app
-#: was suggesting on the next tab over. mlx-lm loads such a checkpoint through
-#: its text config; the image half simply goes unused until an `mlx-vlm` runner
-#: exists to use it.
+#: and that is not a technicality — it is now the NORMAL case rather than an
+#: exception. Every model in this app's own MLX catalog is labelled "image +
+#: text to text", because Qwen3.5 and gemma-4 ship as one checkpoint with a
+#: vision tower (and, for gemma-4, an audio one) attached to the language
+#: model. Leaving the label out of this table took the Load button off the
+#: models the app was suggesting on the next tab over. mlx-lm loads such a
+#: checkpoint through its text config; the other towers simply go unused until
+#: an `mlx-vlm` runner exists to use them.
 _TASK_CAPABILITIES = {
     "text generation": TEXT_GENERATION,
     "image + text to text": TEXT_GENERATION,

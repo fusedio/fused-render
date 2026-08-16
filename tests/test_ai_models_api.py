@@ -696,6 +696,55 @@ def test_task_inferred_from_the_architecture(client, hub, architectures, model_t
 
 
 @requires_symlinks
+@pytest.mark.parametrize("architecture,model_type,extra", [
+    # Qwen3.5 — a vision tower and no audio. Every MLX conversion of it, which
+    # is the whole of this app's own Apple Silicon catalog since D3xx.
+    ("Qwen3_5ForConditionalGeneration", "qwen3_5", {"vision_config": {}}),
+    # gemma-4 — vision AND audio, and still a chat model to mlx-lm.
+    ("Gemma4ForConditionalGeneration", "gemma4",
+     {"vision_config": {}, "audio_config": {}}),
+])
+def test_a_multimodal_wrapper_is_a_TEXT_model_not_a_t5(client, hub, architecture,
+                                                       model_type, extra):
+    """`…ForConditionalGeneration` on a config with a `vision_config` is a
+    vision-language model whose language tower is what mlx-lm loads — the case
+    `_TASK_CAPABILITIES` already has a word for ("image + text to text"), and
+    which it already maps to text generation.
+
+    Read as T5's head instead, it came out "text-to-text generation" — a label
+    in NO_RUNNER_YET — so the newest models in the app's own catalog arrived on
+    this page with a wrong task and no Load button. The card path has always
+    said "image + text to text" for exactly these repos (it is their
+    pipeline_tag); this is the architecture path agreeing with it, which is the
+    invariant `test_every_label_this_module_can_produce_is_explained` exists to
+    protect.
+    """
+    repo = _repo(hub, "models--org--m", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps(
+        {"architectures": [architecture], "model_type": model_type, **extra}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    row = _repo_row(client, "org/m")
+    assert row["task"] == "image + text to text"
+    assert row["taskSource"] == "the architecture in config.json"
+    assert row["capability"] == _ai_registry.TEXT_GENERATION
+
+
+@requires_symlinks
+def test_a_text_only_encoder_decoder_is_still_text_to_text(client, hub):
+    """The other half of the same branch: no vision and no audio is a T5, and
+    reading THAT as a chat model would put a Load button on a translation
+    model the text runner would then fail to use."""
+    repo = _repo(hub, "models--org--t5", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps(
+        {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}))
+    row = _repo_row(client, "org/t5")
+    assert row["task"] == "text-to-text generation"
+    assert row["capability"] is None
+
+
+@requires_symlinks
 def test_diffusers_and_sentence_transformers_are_recognised(client, hub):
     a = _repo(hub, "models--org--sd", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(a, "c1", "model_index.json", json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
@@ -1178,8 +1227,8 @@ def test_every_task_label_is_classified():
     A label nobody has thought about and a label that has been ruled out both
     produce `capability: null`, so they look identical from the page — and that
     is how "image + text to text" lost its Load button while the app's own
-    Discover tab went on recommending `mlx-community/gemma-3-12b-it-4bit`, a
-    model carrying exactly that label, as a chat model.
+    Discover tab went on recommending the models that carry exactly that label
+    — today every entry in the MLX catalog — as chat models.
 
     Pinning the CLASSIFICATION rather than the instance: growing the vocabulary
     without deciding what runs it now fails here instead of quietly removing a

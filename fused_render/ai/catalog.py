@@ -14,7 +14,7 @@ down beside each entry.
 
 **Keyed by RUNNER, not by capability, and that is what makes it correct on more
 than one platform.** A suggestion is only meaningful for the backend that will
-load it: `mlx-community/Qwen3-8B-4bit` is packed for Metal kernels and is
+load it: `mlx-community/Qwen3.5-9B-MLX-4bit` is packed for Metal kernels and is
 unloadable rubbish on a Windows box, while `Qwen/Qwen3-4B-Instruct-2507` is the
 right answer there and the wrong one on a Mac that has MLX. One capability with
 two runners (text generation since D293, speech to text since D302) therefore
@@ -45,26 +45,64 @@ from fused_render.ai import registry
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
 SUGGESTIONS: dict[str, list[dict]] = {
+    # Refreshed 2026-08-16, and the refresh brought one fact this list has not
+    # had to state before.
+    #
+    # **EVERY CURRENT CHECKPOINT HERE IS MULTIMODAL, AND HALF OF IT IS DEAD
+    # WEIGHT.** Qwen3.5, Qwen3.6 and gemma-4 all ship as
+    # `…ForConditionalGeneration` with a `vision_config` (gemma-4 adds an
+    # `audio_config`), and mlx-lm loads the LANGUAGE TOWER and nothing else —
+    # the vision and audio weights sit in the snapshot, downloaded and unused,
+    # until an `mlx-vlm` runner exists to use them. It is not avoidable by
+    # shopping around: there is no text-only conversion of Qwen3.5 on the Hub,
+    # every 4-bit variant of it measured the same. So the sizes below are
+    # honest about the download and quietly larger than a text-only model of
+    # the same class — Qwen3.5 9B is 6.0GB against the Qwen3 8B it replaces at
+    # 4.6GB, and 1.4GB of that difference is weights this app cannot currently
+    # run. Under this file's own "sized for the machine that will actually run
+    # them" rule that is a real cost, and it is why the ceiling here came DOWN
+    # (the largest entry was 8.1GB, now 6.1GB) rather than up.
+    #
+    # **`mlx-community/gemma-4-12B-it-4bit` is deliberately absent**, and it is
+    # the entry a future reader is most likely to try to add: it is newer than
+    # everything here, 6.8GB, ungated, and — measured, not assumed — 1.3GB
+    # SMALLER than the Gemma 3 12B this list used to carry. It does not load.
+    # Its `model_type` is `gemma4_unified`, mlx-lm resolves a checkpoint by
+    # importing `mlx_lm.models.<model_type>`, and 0.31.3 ships `gemma4.py` and
+    # `gemma4_text.py` and no `gemma4_unified.py` — so the load ends in
+    # "Model type gemma4_unified not supported." The `e4b`/`e2b` siblings below
+    # are `gemma4` and do load. Recheck when mlx-lm is next bumped.
+    #
+    # Sizes are the whole-snapshot Hub byte sum on 2026-08-16 (D295), and every
+    # entry is ungated. **One line each**, per the rule the transformers list
+    # states below.
     "mlx-text": [
         {
-            "id": "mlx-community/Qwen3-8B-4bit",
-            "label": "Qwen3 8B (4-bit)",
-            "size_gb": 4.6,
-            "note": "The safest strong option: fast, good at reasoning and code, "
+            "id": "mlx-community/Qwen3.5-9B-MLX-4bit",
+            "label": "Qwen3.5 9B (MLX 4-bit)",
+            "size_gb": 6.0,
+            "note": "The one to start with: strong on reasoning and code, and "
                     "comfortable on 16GB.",
         },
         {
-            "id": "mlx-community/gemma-3-12b-it-4bit",
-            "label": "Gemma 3 12B (4-bit)",
-            "size_gb": 8.1,
-            "note": "Best quality that fits on a laptop. Tight on 16GB — close "
-                    "other heavy apps first.",
+            "id": "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "label": "Qwen3.5 4B (MLX 4-bit)",
+            "size_gb": 3.1,
+            "note": "Half the download and quicker to answer, for a machine "
+                    "with other things open.",
         },
         {
-            "id": "mlx-community/gemma-3-4b-it-4bit",
-            "label": "Gemma 3 4B (4-bit)",
-            "size_gb": 3.4,
-            "note": "Very fast and light. Noticeably weaker output, but it runs "
+            "id": "mlx-community/gemma-4-e4b-it-4bit",
+            "label": "Gemma 4 E4B (4-bit)",
+            "size_gb": 5.2,
+            "note": "A second family at the same size, worth trying on a "
+                    "prompt Qwen handles badly.",
+        },
+        {
+            "id": "mlx-community/Qwen3.5-2B-MLX-4bit",
+            "label": "Qwen3.5 2B (MLX 4-bit)",
+            "size_gb": 1.8,
+            "note": "The one to pick with no headroom — weaker, and it runs "
                     "anywhere MLX does.",
         },
         # Bonsai 27B (prism-ml). The family ships eight repos and most of them
@@ -72,6 +110,13 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # builds are both AWQ and image-text-to-text. The MLX ones are what is
         # left, and only the 2-bit is listed — the 1-bit sibling is omitted
         # deliberately rather than forgotten (see the note below).
+        #
+        # KEPT through the 2026-08 refresh, and re-argued rather than assumed:
+        # it still loads (`model_type` is `qwen3_5`, which mlx-lm ships), and it
+        # is still the only way to have a 27B-class model inside this list's
+        # size budget. What changed is the comparison its note used to make —
+        # Gemma 3 12B has left the list, and against the 9B above it is no
+        # longer the cheaper download, only the bigger model for the same money.
         {
             "id": "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
             "label": "Ternary Bonsai 27B (MLX 2-bit)",
@@ -82,8 +127,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # a suggestion that overstates by 2.4GB is the one figure someone
             # plans a download around.
             "size_gb": 6.1,
-            "note": "27B at roughly two bits per weight, so it costs less on "
-                    "disk than Gemma 3 12B. Comfortable on 16GB. Ternary "
+            "note": "27B for what the 9B above costs on disk. Ternary "
                     "quantization is new, so measure it against a 4-bit model "
                     "you already trust.",
         },

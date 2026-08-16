@@ -300,6 +300,13 @@ _ARCH_TASKS = (
 # this", so the model type is what separates them.
 _AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
 
+# …and the same head again for a vision-language model. These sub-configs are
+# how a multimodal wrapper says so — a nested block per extra tower — and they
+# are keyed on rather than a list of model types because the list would need a
+# new entry for every family that ships (gemma3, gemma4, qwen3_5, whatever is
+# next), which is the maintenance that let the last two arrive mislabelled.
+_MULTIMODAL_CONFIGS = ("vision_config", "audio_config")
+
 
 # Storage width of each safetensors dtype, for the quantized case below. Only
 # the INTEGER types matter: a float tensor stores one value per element, while
@@ -456,8 +463,22 @@ def _architecture_task(config: dict) -> str | None:
         return None
     for suffix, task in _ARCH_TASKS:
         if name.endswith(suffix):
-            if suffix == "ForConditionalGeneration" and config.get("model_type") in _AUDIO_MODEL_TYPES:
-                return "speech recognition"
+            if suffix == "ForConditionalGeneration":
+                # One head, three jobs, and the config is what tells them apart.
+                if config.get("model_type") in _AUDIO_MODEL_TYPES:
+                    return "speech recognition"
+                # A MULTIMODAL WRAPPER — a language model with a vision (and
+                # sometimes audio) tower bolted on, which is what every current
+                # Qwen3.5 and gemma-4 checkpoint is, including the ones this
+                # app's own MLX catalog recommends. mlx-lm loads the language
+                # tower and ignores the rest, so it is a chat model here; read
+                # as a bare `…ForConditionalGeneration` it came out
+                # "text-to-text generation", a label in NO_RUNNER_YET, and the
+                # newest models the app suggests arrived on this page as T5s
+                # with no Load button. The label is the one the CARD path
+                # already produces for these repos, so the two agree.
+                if any(key in config for key in _MULTIMODAL_CONFIGS):
+                    return "image + text to text"
             return task
     return None
 
