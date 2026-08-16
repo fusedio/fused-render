@@ -596,6 +596,58 @@ def test_auto_is_honoured_by_definition(monkeypatch):
     assert resolution.honoured and resolution.ignored_reason == ""
 
 
+def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch):
+    """Resolution moves under models that are already loaded, and until now the
+    only thing that noticed was `evict_stale_engines` — which has exactly ONE
+    caller, the prefs PUT handler.
+
+    That is not enough, because `preferred_code` re-reads prefs.json on every
+    resolution with no cache: a file edited by hand, restored from a backup or
+    synced into the home directory moves the answer with no PUT ever running.
+    The result was a page reporting CTranslate2 while every transcription was
+    still served by the resident MLX worker — the exact "which engine served
+    me?" confusion the whole feature exists to remove.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, registry.AUTO)
+    worker = supervisor.Worker(model="org/w", capability=registry.SPEECH_TO_TEXT,
+                               runner_code="mlx-whisper", token="t", state="ready")
+    monkeypatch.setitem(supervisor._workers, registry.SPEECH_TO_TEXT, worker)
+
+    assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is worker
+
+    _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+
+    assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is None
+    # …and it is GONE, not merely refused. A worker nothing will ever route to
+    # again, holding gigabytes, is the precise waste `evict_stale_engines`
+    # exists to prevent; declining to serve it without unloading it would leak
+    # that memory until a PUT that may never come.
+    assert supervisor._workers.get(registry.SPEECH_TO_TEXT) is None
+
+
+def test_a_load_JOINING_one_in_flight_checks_the_engine_too(monkeypatch, fake_runner):
+    """The other place a worker is reused without being started.
+
+    Same model, different backend, is a real pair — `openai/whisper-large-v3`
+    exists as both an MLX conversion and a CTranslate2 one — so "the model
+    already loading is the model you asked for" is not the same question as
+    "the worker loading it is the one that should serve you".
+    """
+    monkeypatch.setattr(supervisor, "_terminate", lambda worker: None)
+    stale = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                              runner_code="some-other-runner", token="t",
+                              state="loading")
+    monkeypatch.setitem(supervisor._workers, registry.TEXT_GENERATION, stale)
+
+    _reply, worker = supervisor._start_resident("m", registry.TEXT_GENERATION)
+
+    assert worker is not stale, "it joined a bring-up of the wrong engine"
+    assert worker.runner_code == fake_runner.code
+
+
 def test_describe_tells_AVAILABLE_apart_from_ACTIVE(monkeypatch):
     """The distinction the public API needed (`fused.ai.models.list()`).
 

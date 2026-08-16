@@ -837,9 +837,20 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
     job = job_id_for(model)
     with _lock:
         current = _workers.get(capability)
-        if current is not None and current.model == model and current.state != "error":
+        if (current is not None and current.model == model
+                and current.runner_code == runner.code
+                and current.state != "error"):
             # Joining an in-flight bring-up hands back ITS record, so the second
             # caller watches the same thing the first one is watching.
+            #
+            # The RUNNER has to match as well as the model. One model id can be
+            # published for two backends — `openai/whisper-large-v3` exists as
+            # an MLX conversion and as a CTranslate2 one — so "the model already
+            # loading is the model you asked for" does not answer "the worker
+            # loading it is the one that should serve you". Without this, a load
+            # placed after the preference moved joined the outgoing engine's
+            # bring-up and the switch never happened. A mismatch falls through
+            # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
         if current is not None:
             # Eviction: the weights of the old model must be released BEFORE the
@@ -1136,14 +1147,39 @@ def busy_reason(model: str) -> str | None:
 
 
 def ready_worker(capability: str, model: str | None = None) -> Worker | None:
-    """The resident, READY worker for a capability — what generation needs."""
+    """The resident, READY worker for a capability — what generation needs.
+
+    **The ENGINE is part of the question, not only the capability and the
+    model.** A worker belongs to the backend that started it, and resolution can
+    move underneath one that is already loaded: `preferred_code` re-reads
+    prefs.json on EVERY resolution with no cache, so a file edited by hand,
+    restored from a backup or synced into the home directory changes the answer
+    with no endpoint ever running. Serving the old worker anyway is the failure
+    the whole feature exists to remove — the Preferences page saying CTranslate2
+    while every transcription is answered by the resident MLX process.
+
+    So a mismatch EVICTS rather than merely declining. Returning None alone
+    would leave a worker nothing can ever route to holding its gigabytes until
+    the next PUT, which may never come; `evict_stale_engines` is exactly that
+    reconciliation, and calling it here rather than copying it keeps one
+    definition of "stale". Idempotent, so the second request pays nothing.
+
+    The resolution happens OUTSIDE `_lock` — it reads prefs.json off disk, and
+    that is not something to do while holding the table every other thread
+    wants. It costs one small JSON read per generation request, which is the
+    price of the preference meaning something between PUTs.
+    """
     with _lock:
         worker = _workers.get(capability)
         if worker is None or worker.state != "ready":
             return None
         if model is not None and worker.model != model:
             return None
-        return worker
+    resolved = registry.for_capability(capability)
+    if resolved is not None and resolved.code != worker.runner_code:
+        evict_stale_engines()
+        return None
+    return worker
 
 
 def generate_text(model: str, body: dict):
