@@ -65,6 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # different import than the one that ships.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
@@ -160,12 +161,23 @@ def download(model_id):
     transcription that works without it (see `_speech_regions`), so a Hub
     hiccup while fetching 2MB must not fail an 8GB model download that has
     already succeeded.
+
+    **Best-effort stops at the ✕.** `Cancelled` is now something a fetch really
+    raises — the tick carries it back (`worker_base.fetch_with_progress`), where
+    it used to be latent — and it is the one exception here that is not a Hub
+    hiccup. Absorbed, it would print "could not pre-fetch the speech detector:
+    Cancelled" and report the download DONE, so a user who pressed stop would
+    watch the row finish successfully. Re-raised first, and before the broad
+    catch, because `Cancelled` is an ordinary `Exception` and order is the whole
+    of the distinction.
     """
     snapshot = worker_base.download_snapshot(model_id)
     try:
         import vad as vad_module
 
         vad_module.model_path(worker_base.download_file)
+    except worker_base.Cancelled:
+        raise
     except Exception as error:  # noqa: BLE001 - see the docstring
         print(f"could not pre-fetch the speech detector: "
               f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
@@ -763,17 +775,26 @@ def _speech_regions(audio, total, job, row):
     "Speech detection unavailable", a sentence that reads like a flaky network
     and sends nobody to the defect. They propagate and fail the transcription,
     which is how they get found. `worker_base.Cancelled` is also an `Exception`
-    and is excluded by the same narrowing — no download reports through
-    `report_or_cancel` today, so a swallowed ✕ is latent rather than live, but a
-    catch that COULD swallow one is not a catch worth leaving in place.
+    and is excluded by the same narrowing — which is no longer a precaution: the
+    fetch below ticks through `report_or_cancel` now that it reports into a
+    transcription row with a live ✕, so a ✕ pressed while the 2MB detector is
+    downloading raises HERE, and a wider catch would answer it by transcribing
+    the whole file for the user who asked to stop.
     """
     import vad as vad_module
 
     sess = _loaded.get("vad")
     if sess is None:
         try:
-            sess = vad_module.session(
-                vad_module.model_path(worker_base.download_file))
+            # Bound to THIS row, for the reason `_speaker_turns` gives. `download`
+            # pre-fetches the detector so this is normally a cache hit, but a
+            # machine whose whisper download predates AI-10f reaches the network
+            # here — and used to reopen the model's finished load row to say so.
+            def fetch(repo_id, filename, detail=None):
+                return worker_base.download_file(repo_id, filename, detail=detail,
+                                                 job=job, row=row)
+
+            sess = vad_module.session(vad_module.model_path(fetch))
         except _FETCH_FAILED + _onnx_failures() as error:
             print(f"speech detection unavailable, transcribing the whole file: "
                   f"{error.__class__.__name__}: {error}", file=sys.stderr,
@@ -786,6 +807,69 @@ def _speech_regions(audio, total, job, row):
     worker_base.report(job=job, **row, state="running", done=0, total=total,
                        detail="Finding speech…")
     return vad_module.speech_regions(audio, sess)
+
+
+# ----------------------------------------------------------------- diarization
+
+
+def _speaker_turns(audio, speakers, job, row):
+    """Who spoke when, over the WHOLE waveform — `[(start, end, index), …]`.
+
+    **Independent of the VAD, and before it.** The segmenter finds its own
+    silence and is better at it than a threshold over Silero probabilities, and
+    handing it VAD regions would mean clustering voices across cuts made for a
+    different purpose. Turns come back in original-recording time, which is the
+    same clock `_transcribe_regions` maps every segment into — so the join in
+    `generate` is a join, not a second remap.
+
+    **A failure here FAILS the transcription**, which is the opposite of what
+    `_speech_regions` does two functions down, and the difference is what the
+    caller asked for. `vad` is an optimisation the user did not request and a
+    transcript without it is still the transcript they wanted; `diarize: true`
+    is a request for speaker labels, and quietly returning an unlabelled
+    transcript would answer a different question while looking like success.
+    So there is no degradation path: no `try`, no fallback, and the reason
+    reaches the job row as an error.
+
+    Ticked through `_call_with_ticks` so the row stays alive and the ✕ stays
+    answerable, and `_STOP` is threaded into sherpa's own progress callback so
+    an abandoned diarization stops at the next chunk rather than running the
+    recording out — the same reach-inside `_Ticker` gives the decode.
+
+    **`done`/`total` stay None for the whole phase.** They are SECONDS OF AUDIO
+    (SPEC AI-10a, promised to pages by `runtime.js`) and they denominate the
+    TRANSCRIPT; a pre-pass that filled them would either inflate `total` past
+    the recording or run the bar to 100% before a word was transcribed. The row
+    already has the field for this — `detail` — and an indeterminate bar under
+    its own sentence is what the audio decode above already does.
+    """
+    # Bound to THIS request's row: the fetch happens inside a transcription, so
+    # an unbound `download_file` would tick into `JOB_ID` — the model's own
+    # finished load row — while the row the user is watching said nothing.
+    def fetch(repo_id, filename, detail=None):
+        return worker_base.download_file(repo_id, filename, detail=detail,
+                                         job=job, row=row)
+
+    segmentation, embedding = diarize.model_paths(fetch)
+    worker_base.report(job=job, **row, state="running", done=None, total=None,
+                       detail="Finding speakers…")
+    session = diarize.diarizer(segmentation, embedding, speakers)
+
+    def run():
+        return diarize.speaker_turns(audio, session, SAMPLE_RATE,
+                                     should_stop=_STOP.is_set)
+
+    try:
+        return _call_with_ticks(run, job, row,
+                                lambda: (None, None, "Finding speakers…"))
+    except diarize.DiarizationCancelled:
+        # `_STOP` was set by the tick loop on its way out of a ✕, so the cancel
+        # is already in flight on this thread's behalf; this is the abort
+        # arriving from inside sherpa a moment later. Translated rather than
+        # propagated, because `diarize.py` cannot name `worker_base.Cancelled`
+        # (it is imported by the server too) and the supervisor only knows the
+        # one type.
+        raise worker_base.Cancelled()
 
 
 def _regions_to_decode(audio, regions, total):
@@ -1008,6 +1092,14 @@ def generate(body):
     # default reached only by an absent KEY inverts for the caller that spreads
     # an options object carrying an unset one. (The bug the CT2 runner shipped.)
     vad = True if body.get("vad") is None else bool(body.get("vad"))
+    # Defaults FALSE, so every existing caller's output is byte-identical: no
+    # `speaker` on a segment, no `speakers` in the JSON, no 33MB download.
+    diarizing = bool(body.get("diarize"))
+    # Validated HERE, before the decode, and by the shared rule — the bridge
+    # and the server both check it first, but neither is the only door into
+    # this process, and a `speakers` refused after ninety seconds of `av` is a
+    # refusal the user paid for.
+    speakers = diarize.speakers_or_raise(body.get("speakers")) if diarizing else None
     job = body.get("job") or None
     # The row's IDENTITY, carried on every tick — see
     # `supervisor.transcribe_row_fields`. A tick missing `title` is refused
@@ -1042,9 +1134,23 @@ def generate(body):
     # before the model sees a thing, which is what lets the very first
     # transcribing tick carry a `total`.
     total = round(len(audio) / SAMPLE_RATE, 2) or None
+
+    # PHASE ONE-AND-A-HALF — who is speaking, over the whole waveform. Before
+    # the VAD and independent of it (see `_speaker_turns`), and a fast pre-pass:
+    # seconds on a recording that will take minutes to transcribe, which is why
+    # it gets its own `detail` line rather than a share of the transcript's bar.
+    turns = _speaker_turns(audio, speakers, job, row) if diarizing else None
+
     # The ETA's clock starts HERE, not at `started`: the audio decode produced
     # no transcript, so charging its seconds to the first window makes the rate
-    # read as wildly slower than it is.
+    # read as wildly slower than it is. **Below the diarization for the same
+    # reason, not by accident.** `_transcribe_regions` divides `elapsed` by
+    # seconds of speech decoded, so every second charged to this clock before a
+    # word exists inflates the whole first minute of ETAs — and on a 90-minute
+    # recording the pre-pass is minutes. Started above it, the first tick priced
+    # the transcript at the diarization's wall time plus its own, which is the
+    # exact failure this variable exists to prevent, reintroduced one phase
+    # later. `faster_whisper/worker.py` starts its clock after both pre-passes.
     transcribing_since = time.time()
 
     # PHASE TWO — find the speech. Skipped entirely when the caller said not to,
@@ -1062,6 +1168,11 @@ def generate(body):
         audio, clips, fetched, task, language, initial_prompt,
         job, row, total, transcribing_since)
 
+    # PHASE FOUR — the join. Both engines call the SAME function on the same
+    # two lists, which is what makes "identical labels" structural rather than
+    # a thing to keep testing (AI-10c).
+    speaker_list = diarize.assign_speakers(segments, turns) if turns is not None else None
+
     text = " ".join(s["text"] for s in segments).strip()
     payload = {
         "path": source,
@@ -1074,6 +1185,12 @@ def generate(body):
         "seconds": round(time.time() - started, 2),
         "segments": segments,
     }
+    if speaker_list is not None:
+        # ADDITIVE, and only when asked: a run without `diarize` writes exactly
+        # the bytes it always did, key for key. The list is the transcript's
+        # legend — the labels that actually landed on a segment — so a page can
+        # build a colour map without walking thousands of segments first.
+        payload["speakers"] = speaker_list
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w", encoding="utf-8") as handle:
         json.dump({**payload, "text": text}, handle, ensure_ascii=False, indent=1)

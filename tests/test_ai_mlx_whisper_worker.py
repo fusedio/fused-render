@@ -48,6 +48,8 @@ class FakeBase:
         self.ticks = []
         self.CANCEL = threading.Event()
         self.state = {}
+        #: Every `download_file` call, with the row it was told to report to.
+        self.fetches = []
         #: Set by a test to have the NEXT tick answer "the ✕ was pressed",
         #: which is how a real cancel reaches a worker.
         self.cancel_on_tick = None
@@ -66,10 +68,27 @@ class FakeBase:
     def download_snapshot(self, model_id, **kwargs):
         return f"/snapshots/{model_id}"
 
-    def download_file(self, repo_id, filename, detail=None):
+    def download_file(self, repo_id, filename, detail=None, job=None, row=None):
         # Present because `_speech_regions` reads it off the base to hand to
         # `vad.model_path`, and a base that lacks it makes every VAD test fail
         # as an AttributeError from a line that is not what is under test.
+        #
+        # `job`/`row` are recorded rather than ignored: a component fetched
+        # DURING a transcription must tick into the row the user is watching,
+        # not into `JOB_ID` — which is this process's model-load row, finished
+        # long ago, and which reopening is how a finished download starts
+        # running again on the manager for something nobody asked for.
+        self.fetches.append({"repo": repo_id, "file": filename,
+                             "job": job, "row": row})
+        # The real `fetch_with_progress` leaves the row as a FINISHED DOWNLOAD:
+        # `kind="download"`, `unit="bytes"`, `done == total`. Modelled here
+        # rather than stubbed away, because the row state a fetch leaves behind
+        # is the whole of what the caller then has to restore — a double that
+        # silently returned a path made that failure invisible to every test.
+        self.report(job=job, **{**(row or {}), "kind": "download",
+                                "unit": "bytes"},
+                    state="running", done=2_217_492, total=2_217_492,
+                    detail=detail or f"Fetching {filename}…")
         return f"/snapshots/{repo_id}/{filename}"
 
     def serve(self, **kwargs):
@@ -763,7 +782,17 @@ def test_EVERY_tick_can_rebuild_the_row_it_reports_to(loaded, base, tmp_path):
 
     assert len(base.ticks) >= 3, base.ticks
     for tick in base.ticks:
-        missing = [k for k, v in ROW.items() if tick.get(k) != v]
+        # A fetch tick deliberately overrides `kind`/`unit` — for the length of
+        # a download the row IS one, and bytes are what a person wants to see
+        # (`worker_base.fetch_with_progress`). The IDENTITY half is not
+        # negotiable on any tick: without `title` the row is not re-created at
+        # all, and without `cancellable` it comes back with a dead ✕.
+        expected = dict(ROW)
+        if tick.get("kind") == "download":
+            expected.pop("kind")
+            expected.pop("unit")
+            assert tick.get("unit") == "bytes", tick
+        missing = [k for k, v in expected.items() if tick.get(k) != v]
         assert not missing, f"tick cannot rebuild its row, missing {missing}: {tick}"
         assert tick.get("state") == "running", tick
 
@@ -772,6 +801,219 @@ def test_every_tick_carries_the_job_the_route_opened(loaded, base, tmp_path):
     worker, _ = loaded(windows=(100,))
     worker.generate(_request(tmp_path, job="sys:ai-transcribe:zzz"))
     assert {t["job"] for t in base.ticks} == {"sys:ai-transcribe:zzz"}
+
+
+# -- speaker labels -------------------------------------------------------------
+#
+# The diarization itself is `tests/test_ai_diarize.py`'s — the shared module
+# both engines import, and the only place the models, the labels and the
+# overlap arithmetic exist. What is driven HERE is this runner's WIRING: that
+# the pre-pass sees the whole waveform rather than the VAD's regions, that it
+# does not touch the progress contract, that the output is additive, and that
+# the component fetch reports to the row the user is watching.
+
+
+def _diarizes(monkeypatch, worker, turns):
+    """Stand in for the whole pipeline, with no sherpa-onnx and no models.
+
+    `model_paths` is left REAL, because the row it reports to is one of the
+    things under test — only the ONNX-needing halves are replaced."""
+    import diarize as diarize_module
+
+    monkeypatch.setattr(diarize_module, "diarizer",
+                        lambda seg, emb, speakers: {"speakers": speakers})
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        lambda audio, session, rate, **kw: list(turns))
+
+
+def test_diarization_is_OFF_unless_asked_for(monkeypatch, loaded, tmp_path):
+    """Additive or it is a breaking change to every page already transcribing:
+    no `speaker` on a segment, no `speakers` in the JSON, and no 33MB fetch."""
+    worker, _ = loaded(windows=(100,), segments=[_segment(0.0, 1.0, "hi")])
+    _diarizes(monkeypatch, worker, [(0.0, 10.0, 0)])
+
+    result = worker.generate(_request(tmp_path))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    assert "speakers" not in written and "speakers" not in result
+    assert "speaker" not in written["segments"][0]
+
+
+def test_the_speaker_PRE_PASS_sees_the_whole_waveform_not_the_vad_regions(
+        monkeypatch, loaded, tmp_path):
+    """Independent of the VAD by design: the segmenter finds its own silence
+    and is better at it, and feeding it regions cut for a different purpose
+    would cluster voices across those cuts."""
+    worker, _ = loaded(windows=(100,), audio_seconds=30.0)
+    _regions(monkeypatch, worker, [(0.0, 5.0), (20.0, 25.0)])
+    seen = {}
+
+    import diarize as diarize_module
+    monkeypatch.setattr(diarize_module, "diarizer", lambda *a: object())
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        lambda audio, session, rate, **kw: seen.update(
+                            samples=len(audio), rate=rate) or [(0.0, 30.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2))
+
+    assert seen["samples"] == 30 * 16000, seen
+    assert seen["rate"] == worker.SAMPLE_RATE
+
+
+def test_the_speaker_count_reaches_the_clustering(monkeypatch, loaded, tmp_path):
+    worker, _ = loaded(windows=(100,))
+    seen = {}
+    import diarize as diarize_module
+    monkeypatch.setattr(diarize_module, "diarizer",
+                        lambda seg, emb, speakers: seen.update(speakers=speakers))
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        lambda *a, **k: [(0.0, 10.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=4))
+    assert seen == {"speakers": 4}
+
+
+@pytest.mark.parametrize("speakers", [None, 0, -1, True, 2.5, "2"])
+def test_a_bad_speaker_count_is_refused_BEFORE_the_audio_is_decoded(
+        monkeypatch, loaded, tmp_path, speakers):
+    """The bridge and the server refuse it first, but neither is the only door
+    into this process — and a refusal that arrives after ninety seconds of `av`
+    is a refusal the user paid for."""
+    worker, transcribe = loaded(windows=(100,))
+    with pytest.raises(ValueError, match="speakers"):
+        worker.generate(_request(tmp_path, diarize=True, speakers=speakers))
+    assert transcribe.calls == []
+
+
+def test_every_segment_is_LABELLED_and_the_json_gains_the_legend(
+        monkeypatch, loaded, tmp_path):
+    worker, _ = loaded(windows=(100,), audio_seconds=20.0,
+                       segments=[_segment(0.0, 2.0, "hello"),
+                                 _segment(12.0, 14.0, "hi there")])
+    _diarizes(monkeypatch, worker, [(0.0, 10.0, 0), (10.0, 20.0, 1)])
+    request = _request(tmp_path, diarize=True, speakers=2, vad=False)
+
+    result = worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1", "Speaker 2"]
+    assert written["speakers"] == ["Speaker 1", "Speaker 2"]
+    # …and the reply carries the legend too, so a caller that never reads the
+    # file still knows who was in the recording.
+    assert result["speakers"] == ["Speaker 1", "Speaker 2"]
+
+
+def test_the_pre_pass_does_NOT_inflate_the_progress_total(
+        monkeypatch, loaded, tmp_path, base):
+    """`done`/`total` are SECONDS OF AUDIO of the TRANSCRIPT (AI-10a, and
+    `runtime.js` promises it to pages). Diarization is a fast pre-pass over the
+    same recording, so a bar that counted it would either run to 100% before a
+    word was decoded or report a total longer than the file."""
+    worker, _ = loaded(windows=(500, 500), seconds_per_window=0.1,
+                       audio_seconds=20.0)
+    _diarizes(monkeypatch, worker, [(0.0, 20.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2, vad=False))
+
+    # Only the ticks denominated in SECONDS — a fetch tick's total is bytes,
+    # and comparing the two units in one set is how a download's size would be
+    # read as a claim about the recording's length.
+    totals = {t.get("total") for t in base.ticks
+              if t.get("total") is not None and t.get("unit") == "s"}
+    assert totals == {20.0}, totals
+    # …and the stage is its own line on the row, with an indeterminate bar —
+    # what the job record already offers for a phase with no position to report,
+    # and what the audio decode above it already does.
+    finding = [t for t in base.ticks if t.get("detail") == "Finding speakers…"]
+    assert finding, base.ticks
+    assert all(t.get("done") is None and t.get("total") is None for t in finding)
+
+
+def test_the_component_fetch_reports_to_the_row_the_USER_is_watching(
+        monkeypatch, loaded, tmp_path, base):
+    """It happens inside a TRANSCRIPTION, so an unbound `download_file` ticks
+    into this process's `JOB_ID` — the model's own load row, finished long ago —
+    reopening it as a running download of something nobody asked for, while the
+    row the page is watching says nothing at all."""
+    worker, _ = loaded(windows=(100,))
+    import diarize as diarize_module
+    monkeypatch.setattr(diarize_module, "diarizer", lambda *a: object())
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        lambda *a, **k: [(0.0, 10.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2, vad=False,
+                             job="sys:ai-transcribe:zzz"))
+
+    assert len(base.fetches) == 2, base.fetches
+    for fetch in base.fetches:
+        assert fetch["job"] == "sys:ai-transcribe:zzz", fetch
+        # …with the row's IDENTITY, because the manager can evict and rebuild
+        # any row at any tick and a report with no `title` is refused outright.
+        assert fetch["row"] == ROW, fetch
+
+
+def test_no_stage_is_left_showing_a_FINISHED_DOWNLOAD_while_it_works(
+        monkeypatch, loaded, base, tmp_path):
+    """A component fetch leaves the row at `kind="download"`, `unit="bytes"`,
+    `done == total` — correct while it downloads, and a completed 2MB download
+    sitting over a 90-minute transcription if nothing restores the row.
+
+    Both fetching stages must therefore report the row's own `kind`/`unit` back
+    BEFORE the work they fetched for begins, and the window in between must be
+    the load of the model rather than the work. This is an invariant over every
+    fetching stage rather than a test of one, because the failure is invisible:
+    the transcript is perfect and the row simply lies for minutes.
+    """
+    worker, _ = loaded(windows=(100,), audio_seconds=20.0)
+    _diarizes(monkeypatch, worker, [(0.0, 20.0, 0)])
+    # The VAD fetches too, on a machine whose whisper download predates AI-10f.
+    import vad as vad_module
+    monkeypatch.setattr(vad_module, "model_path",
+                        lambda download: download("onnx-community/silero-vad",
+                                                  "onnx/model.onnx"))
+    monkeypatch.setattr(vad_module, "session", lambda path: object())
+    monkeypatch.setattr(vad_module, "speech_regions", lambda audio, sess: [(0.0, 20.0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2))
+
+    # Every tick that says `download` is a fetch reporting its own bytes; what
+    # matters is that a task tick follows each RUN of them before any work.
+    kinds = [t.get("kind") for t in base.ticks]
+    assert "download" in kinds, base.ticks
+    for index, kind in enumerate(kinds):
+        if kind != "download":
+            continue
+        rest = kinds[index + 1:]
+        assert "task" in rest, (
+            f"tick {index} left the row as a download with no task tick after "
+            f"it: {base.ticks[index:]}")
+    # …and the last word on the row is the transcription's, not a download's.
+    assert kinds[-1] == "task", base.ticks[-1]
+
+
+def test_a_cancel_during_the_pre_pass_is_translated_into_the_workers_own(
+        monkeypatch, loaded, tmp_path):
+    """`diarize.py` cannot name `worker_base.Cancelled` — it is imported by the
+    server too — so it raises its own type and the runner translates. Untranslated,
+    a ✕ pressed while finding speakers would reach the supervisor as an ERROR
+    and tell the user the transcription they cancelled had failed."""
+    worker, transcribe = loaded(windows=(100,))
+    import diarize as diarize_module
+    monkeypatch.setattr(diarize_module, "diarizer", lambda *a: object())
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        _raise(diarize_module.DiarizationCancelled()))
+
+    with pytest.raises(worker_base_cancelled(worker)):
+        worker.generate(_request(tmp_path, diarize=True, speakers=2))
+    assert transcribe.calls == []
+
+
+def worker_base_cancelled(worker):
+    """The `Cancelled` this worker's base module carries — the fake one under
+    test, not the real `worker_base`'s."""
+    import worker_base
+
+    return worker_base.Cancelled
 
 
 def test_the_clock_agrees_with_the_other_runners(loaded):
@@ -1019,6 +1261,48 @@ def test_the_ETA_rate_is_measured_in_SPEECH_not_in_recording_time(
     # position being read as a quantity of decoding.
     assert all(done <= 10.0 for _remaining, done in seen), seen
     assert all(0.0 < remaining <= 10.0 for remaining, _done in seen), seen
+
+
+def test_the_ETA_does_not_charge_the_DIARIZATION_to_the_transcript(
+        monkeypatch, loaded, tmp_path):
+    """`transcribing_since` starts below the speaker pre-pass, not above it.
+
+    `_eta` divides `elapsed` by seconds of speech decoded, so every second on
+    that clock before a word exists inflates the rate. Started above the
+    pre-pass, a 90-minute recording whose diarization takes three minutes
+    charges all three to the first window — the exact failure the variable was
+    introduced to prevent (the audio decode), reintroduced one phase later.
+
+    Driven by making the pre-pass take real time and asserting the elapsed the
+    ETA is handed excludes it. `faster_whisper/worker.py` starts its clock after
+    both pre-passes for the same reason.
+    """
+    pre_pass_seconds = 0.6
+    # Long enough to tick (`_TICK_S` is 0.02 here) but far SHORTER than the
+    # pre-pass, so the two are unambiguous in the elapsed the ETA is handed.
+    worker, _ = loaded(windows=(100, 100), seconds_per_window=0.05,
+                       audio_seconds=60.0)
+    _regions(monkeypatch, worker, [(0.0, 60.0)])
+
+    import diarize as diarize_module
+    monkeypatch.setattr(diarize_module, "diarizer", lambda *a: object())
+    monkeypatch.setattr(
+        diarize_module, "speaker_turns",
+        lambda *a, **k: (time.sleep(pre_pass_seconds), [(0.0, 60.0, 0)])[1])
+
+    seen = []
+    real_eta = worker._eta
+    monkeypatch.setattr(worker, "_eta",
+                        lambda remaining, elapsed, done: (
+                            seen.append(elapsed) or real_eta(remaining, elapsed, done)))
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2))
+
+    assert seen, "no tick landed during the decode"
+    # The pre-pass alone is 0.6s. An elapsed that includes it would start at or
+    # above that on the very first tick; the clock reset means it starts near
+    # zero and only counts the decoding.
+    assert min(seen) < pre_pass_seconds, seen
 
 
 def test_progress_is_seconds_of_the_ORIGINAL_audio_not_of_the_speech(

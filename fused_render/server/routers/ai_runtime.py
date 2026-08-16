@@ -39,6 +39,10 @@ from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, registry, supervisor
+# The `speakers` rule, imported rather than restated. It is the SAME module the
+# two whisper runners import out of their own venvs — which is why every heavy
+# import inside it is deferred, and why reading the rule here costs nothing.
+from fused_render.ai.runners import diarize
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability`. It imports nothing from here.
@@ -416,6 +420,25 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
             f"'task' must be {_TRANSCRIBE_TASKS[0]!r} (same language) or "
             f"{_TRANSCRIBE_TASKS[1]!r} (into English), not {task!r}", status=400)
 
+    # Speaker labels, and the count that cannot be left out. Checked BEFORE the
+    # model is resolved and before a job row exists, with the other arguments a
+    # typo deserves an answer about — `runtime.js` refuses the same request
+    # first, but the bridge is not the only door: a page can POST here, and so
+    # can anything else on this machine holding the `X-Fused` header.
+    #
+    # The rule comes from `runners/diarize.py`, the module the workers import
+    # out of their own venvs, so the sentence a caller reads here is the same
+    # sentence the worker would have raised. `bool(...)` and not `is None`: this
+    # one has no true default to invert (D306's trap), it is off unless asked
+    # for, so a JSON null and an absent key mean the same thing.
+    diarizing = bool(body.get("diarize"))
+    speakers = None
+    if diarizing:
+        try:
+            speakers = diarize.speakers_or_raise(body.get("speakers"))
+        except ValueError as e:
+            return _error(str(e), status=400)
+
     model = _model_of(body) or catalog.default_for(registry.SPEECH_TO_TEXT)
     if not model:
         # See `api_ai_image`: no runner and no curated default are different
@@ -453,6 +476,12 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # of the documented default. `task` and `language` use `or` above and
         # are null-safe already; this was the one that inverted.
         "vad": True if body.get("vad") is None else bool(body.get("vad")),
+        # Speaker labels on every segment, plus a top-level list of them in the
+        # written JSON. Off unless asked for, so an existing caller's transcript
+        # is byte-identical — and `speakers` is only sent when it is meaningful,
+        # rather than as a null the worker would have to re-validate as absent.
+        "diarize": diarizing,
+        **({"speakers": speakers} if diarizing else {}),
         "out": out_base + ".json",
         "outText": out_base + ".txt",
     }

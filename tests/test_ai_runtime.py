@@ -1870,6 +1870,71 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
         _wait_job(started["jobId"])
 
 
+def test_diarizing_without_a_speaker_count_is_refused_before_a_job_opens(
+        client, fake_transcribe_runner, recording):
+    """`speakers` is REQUIRED with `diarize`, and this is the server's copy of
+    that rule — `runtime.js` refuses first, but the bridge is not the only door
+    into this endpoint and a rule enforced only in JavaScript is not enforced.
+
+    Refused with a 400 rather than guessed, for the reason `diarize.py` states:
+    the alternative to a cluster count is a cosine threshold nobody outside a
+    lab can set, so a guess relabels the whole transcript with total confidence.
+    Before a job row opens, like the `path` check above — this one would
+    otherwise open a row that survives a multi-second model load to die.
+    """
+    for sent in ({"diarize": True},
+                 {"diarize": True, "speakers": None},
+                 {"diarize": True, "speakers": 0},
+                 {"diarize": True, "speakers": -1},
+                 {"diarize": True, "speakers": True},
+                 {"diarize": True, "speakers": 2.5},
+                 {"diarize": True, "speakers": "2"},
+                 {"diarize": True, "speakers": 10_000}):
+        response = _post_transcribe(client, path=recording, **sent)
+        assert response.status_code == 400, sent
+        assert "speakers" in response.json()["error"], sent
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+def test_the_server_and_the_workers_refuse_a_speaker_count_by_the_SAME_rule(
+        client, fake_transcribe_runner, recording):
+    """One sentence, one place. The endpoint hands the caller whatever
+    `runners/diarize.py` raises, so a rule that changes there changes here —
+    which is the point of the server importing the module the workers import
+    rather than restating it."""
+    from fused_render.ai.runners import diarize
+
+    response = _post_transcribe(client, path=recording, diarize=True)
+    with pytest.raises(ValueError) as raised:
+        diarize.speakers_or_raise(None)
+    assert response.json()["error"] == str(raised.value)
+
+
+def test_diarize_and_speakers_reach_the_worker_and_default_to_OFF(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """Additive: a call that does not ask for speakers must send `diarize`
+    false and no `speakers` at all, so the worker writes exactly the transcript
+    it always did."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent, expected in (({}, None), ({"diarize": False}, None),
+                           ({"diarize": None}, None),
+                           ({"diarize": True, "speakers": 3}, 3)):
+        seen.clear()
+        started = _post_transcribe(client, path=recording, **sent).json()
+        assert seen["diarize"] is (expected is not None), sent
+        assert seen.get("speakers") == expected, sent
+        if expected is None:
+            # Not a null, ABSENT — the worker's own `speakers_or_raise` never
+            # sees an argument for a run that did not ask for one.
+            assert "speakers" not in seen, sent
+        _wait_job(started["jobId"])
+
+
 def test_a_relative_path_resolves_against_the_PAGE_not_the_server(
         client, fake_transcribe_runner, recording):
     """The same page-relative rule every other path-taking call follows (RH-1).
@@ -2560,7 +2625,7 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
-def _run_ai_transcribe(readfile, record, node_required=True):
+def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}'):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
 
     The same extraction the claude suites use (`tests/test_claude_narrow.py`):
@@ -2570,7 +2635,9 @@ def _run_ai_transcribe(readfile, record, node_required=True):
     typed rejection from an untyped one.
 
     `readfile` is JS for the body of the stub `readFile`; `record` is the job
-    row `watch` resolves with. Returns the settled outcome as a dict.
+    row `watch` resolves with; `opts` is the argument object as JS, so a caller
+    can drive the argument checks that reject before any of the stubs are ever
+    reached. Returns the settled outcome as a dict.
     """
     import shutil
     import subprocess
@@ -2599,13 +2666,15 @@ def _run_ai_transcribe(readfile, record, node_required=True):
         stop() {{}}, cancel: () => Promise.resolve(true),
       }});
     """
+    # Not an f-string: the body below is JS object literals, and doubling every
+    # brace to smuggle one substitution through would make it unreadable.
     call = """
-      aiTranscribe({path: "a.m4a"}).then(
+      aiTranscribe(OPTS).then(
         (value) => console.log(JSON.stringify({ok: true, value})),
         (err) => console.log(JSON.stringify(
           {ok: false, message: err.message, type: err.type, jobId: err.jobId})),
       );
-    """
+    """.replace("OPTS", opts)
     out = subprocess.run(["node", "-e", prelude + fn + call],
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
@@ -2647,6 +2716,94 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["segments"][0]["end"] == 1.5
     assert value["language"] == "en" and value["duration"] == 1.5
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
+
+
+@pytest.mark.parametrize("opts", [
+    '{path: "a.m4a", diarize: true}',
+    '{path: "a.m4a", diarize: true, speakers: null}',
+    '{path: "a.m4a", diarize: true, speakers: 0}',
+    '{path: "a.m4a", diarize: true, speakers: -2}',
+    '{path: "a.m4a", diarize: true, speakers: true}',
+    '{path: "a.m4a", diarize: true, speakers: 2.5}',
+    '{path: "a.m4a", diarize: true, speakers: "2"}',
+    '{path: "a.m4a", diarize: true, speakers: NaN}',
+    '{path: "a.m4a", diarize: true, speakers: 101}',
+])
+def test_diarizing_without_a_usable_speaker_count_rejects_BEFORE_a_job_opens(opts):
+    """The bridge's half of the required argument, beside the `path` check and
+    for the same reason: the caller fails synchronously with an actionable
+    sentence instead of watching a row open and die.
+
+    `speakers: true` is in the list deliberately — `{diarize: true, speakers:
+    true}` is a plausible copy-paste, and a language where `true` is not a
+    number is the only thing between it and a transcript labelled entirely
+    "Speaker 1". So is `"2"`: a count read out of an <input> without a parseInt
+    is the common way this argument arrives wrong.
+    """
+    settled = _run_ai_transcribe('Promise.resolve("{}")', '{state: "done"}', opts=opts)
+    assert settled["ok"] is False, settled
+    assert settled["type"] == "bad_request", settled
+    assert "speakers" in settled["message"]
+
+
+def test_the_bridges_speaker_bound_is_the_SAME_NUMBER_python_enforces():
+    """Four copies of one rule — `runtime.js`, the endpoint, and each worker —
+    and this is the copy no other test can reach: JS cannot import
+    `diarize.MAX_SPEAKERS`, so the bound is restated in the bridge and nothing
+    but this comparison stops the two drifting.
+
+    Read out of the SOURCE and then driven through the real function, because
+    either half alone is weak: a number that matches but is never applied, or a
+    rejection at some bound that is not Python's. `diarize.py:speakers_or_raise`
+    and D309 both claim the four enforcement points are identical, and this is
+    what makes that claim true rather than aspirational.
+    """
+    from fused_render.ai.runners import diarize
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    transcribe = source[source.index("  function aiTranscribe(opts)"):]
+    transcribe = transcribe[:transcribe.index("\n  }\n")]
+    assert f"const MAX_SPEAKERS = {diarize.MAX_SPEAKERS};" in transcribe
+
+    # …and the boundary is inclusive on both sides, in both languages.
+    assert diarize.speakers_or_raise(diarize.MAX_SPEAKERS) == diarize.MAX_SPEAKERS
+    at_the_bound = _run_ai_transcribe(
+        'Promise.resolve(JSON.stringify({text: "x", segments: []}))', '{state: "done"}',
+        opts='{path: "a.m4a", diarize: true, speakers: %d}' % diarize.MAX_SPEAKERS)
+    assert at_the_bound["ok"] is True, at_the_bound
+    over = _run_ai_transcribe(
+        'Promise.resolve("{}")', '{state: "done"}',
+        opts='{path: "a.m4a", diarize: true, speakers: %d}' % (diarize.MAX_SPEAKERS + 1))
+    assert over["ok"] is False and over["type"] == "bad_request"
+
+
+def test_asking_for_speakers_properly_gets_the_labels_and_the_legend_back():
+    """The success path with `diarize`, through the real function: the reply
+    carries the transcript's legend so a page can build a colour map without
+    walking thousands of segments, and each segment carries its own label."""
+    written = ('Promise.resolve(JSON.stringify({text: "hello hi", '
+               'segments: [{start: 0, end: 1, text: "hello", speaker: "Speaker 1"}, '
+               '{start: 1, end: 2, text: "hi", speaker: "Speaker 2"}], '
+               'speakers: ["Speaker 1", "Speaker 2"], language: "en", duration: 2}))')
+    settled = _run_ai_transcribe(written, '{state: "done"}',
+                                 opts='{path: "a.m4a", diarize: true, speakers: 2}')
+    assert settled["ok"] is True, settled
+    assert settled["value"]["speakers"] == ["Speaker 1", "Speaker 2"]
+    assert settled["value"]["segments"][1]["speaker"] == "Speaker 2"
+
+
+def test_a_call_that_does_not_ask_for_speakers_is_unchanged():
+    """`diarize` defaults false, so the count is not required and nothing about
+    the reply gains a value — the whole feature is additive or it is a breaking
+    change to every page already calling this."""
+    good = ('Promise.resolve(JSON.stringify({text: "hello", '
+            'segments: [{start: 0, end: 1, text: "hello"}], language: "en"}))')
+    settled = _run_ai_transcribe(good, '{state: "done"}')
+    assert settled["ok"] is True, settled
+    assert "speakers" not in settled["value"]
+    assert "speaker" not in settled["value"]["segments"][0]
 
 
 def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():

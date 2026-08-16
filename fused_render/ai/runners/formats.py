@@ -66,10 +66,11 @@ DIFFUSERS_INDEX = "model_index.json"
 
 #: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
 #:
-#: **Repos the user never chose.** Two of them land in the Hub cache because a
-#: runner needs a piece of them: the quantized transformer the FLUX.2 recipe
-#: swaps in, and the speech detector the MLX whisper runner filters silence
-#: with. Neither is a model — nothing here can load either one on its own — so
+#: **Repos the user never chose.** They land in the Hub cache because a runner
+#: needs a piece of them: the quantized transformer the FLUX.2 recipe swaps in,
+#: the speech detector the MLX whisper runner filters silence with, and the two
+#: sherpa-onnx models that put speaker labels on a transcript. None is a model —
+#: nothing here can load any of them on its own — so
 #: the AI Models page used to show them as peers of real models with the quiet
 #: "no engine" tag and no explanation, and a user reclaiming 2.4GB by deleting
 #: the mystery row broke the image model that needs it.
@@ -109,6 +110,36 @@ COMPONENT_REPOS = {
             "speech in a recording and skip the silence — fetched with any "
             "whisper download so an offline machine still has it. Deleting it "
             "costs a slower transcription, not a broken one."
+        ),
+    },
+    "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0": {
+        "file": "model.onnx",
+        "of": None,
+        "owner": "Whisper transcription",
+        "part": "speaker segmenter",
+        "what": (
+            "The 6MB pyannote segmentation model that finds who is speaking "
+            "when, for transcribe({diarize: true}) — used by BOTH speech-to-text "
+            "engines, not a model you can load on its own. An ungated ONNX "
+            "re-export (by csukuangfj, for sherpa-onnx) of pyannote/"
+            "segmentation-3.0, MIT-licensed. Fetched on the first diarized "
+            "transcription; deleting it makes the next one download it again."
+        ),
+    },
+    "csukuangfj/speaker-embedding-models": {
+        "file": "wespeaker_en_voxceleb_resnet34_LM.onnx",
+        "of": None,
+        "owner": "Whisper transcription",
+        "part": "speaker embedding model",
+        "what": (
+            "The 27MB voice-fingerprint model that decides which of the "
+            "segmenter's turns belong to the same person, for "
+            "transcribe({diarize: true}) — used by BOTH speech-to-text engines, "
+            "not a model you can load on its own. It is WeSpeaker's VoxCeleb "
+            "ResNet34-LM speaker embedding, by the WeSpeaker team (CC BY 4.0), "
+            "in the ONNX re-export sherpa-onnx reads. Fetched on the first "
+            "diarized transcription; deleting it makes the next one download it "
+            "again."
         ),
     },
 }

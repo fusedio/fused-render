@@ -1256,7 +1256,8 @@ def _fallback(model_id, error):
     _clear_parts(repo_folder(model_id))
 
 
-def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…", job=None):
+def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…",
+                        job=None, row=None):
     """Run `call()` on a thread, reporting bytes-on-disk once a second.
 
     `call` is whatever huggingface_hub function actually fetches — a whole
@@ -1264,12 +1265,57 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     part neither of them should write twice: the poll is the progress AND the
     heartbeat, without which a long single-file download reports nothing for
     minutes and the manager calls the row abandoned.
+
+    **`job`/`row` exist because not every fetch belongs to a download job.** A
+    runner that pulls a component model DURING a request — the speech detector,
+    the two diarization models — is reporting into a row the supervisor opened
+    for a transcription, not into this process's `JOB_ID` (which is the model's
+    own load row, long since finished). `job` sends the tick to the right row;
+    `row` is that row's IDENTITY (`supervisor.transcribe_row_fields`), restated
+    on every tick because the manager can evict and rebuild any row at any tick
+    and a report with no `title` is refused outright.
+
+    `kind`/`unit` are this function's own and override the row's, deliberately:
+    for the length of the fetch the row IS a download and 6MB of 26MB is what a
+    person wants to see. The next tick from the work itself restates the row's
+    own pair, so the flip is for the duration and not a rename.
+
+    **The tick carries the ✕ back**, and that became load-bearing the moment a
+    fetch could land on a transcription row. It ticked with a plain `report`
+    while these fetches owned a model-load row, whose ✕ the supervisor answers
+    by killing the process — so nothing here had to. A component fetch reports
+    into a row whose `cancellable` is True and whose ✕ must stop THIS work, and
+    with a plain `report` the user pressed it, the manager set
+    `cancel_requested`, and 33MB carried on downloading behind a row that went
+    on saying "running". The reply to the tick we were sending anyway is the
+    only channel that reaches a thread parked inside huggingface_hub.
+
+    `CANCEL` is consulted too, but ONLY when `job` was passed. That flag is the
+    `/cancel` route's, it belongs to the generation holding `GENERATE_LOCK`, and
+    it is cleared by `_single`/`_stream` on the way in — so it means this fetch
+    exactly when this fetch is inside a request. A model download runs on
+    `_bring_up`'s own thread with no such lock, where a flag left set by an
+    earlier cancelled generation would abort a download nobody asked to stop.
+
+    **A ✕ that lands as the fetch FINISHES is not honoured**, which is the same
+    rule `_call_with_ticks` states: the bytes are on the disk, and throwing them
+    away would make the next attempt re-download what this one already has. So
+    the final report is a plain `report`. The abandoned fetch thread is a
+    daemon nobody waits for — it finishes into a result that is discarded, and
+    huggingface_hub resumes partial files, so the bytes are not lost either.
     """
     folder = repo_folder(model_id)
     if total is None:
         total = repo_total_bytes(model_id)
-    report(job=job, state="running", kind="download", unit="bytes",
-           detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
+    identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+
+    def tick(**fields):
+        """One progress report that can carry a ✕ back. See the docstring."""
+        report_or_cancel(job=job, **identity, state="running", **fields)
+        if job is not None and CANCEL.is_set():
+            raise Cancelled()
+
+    tick(detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
 
     result = {}
 
@@ -1283,14 +1329,19 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     thread.start()
     while thread.is_alive():
         thread.join(timeout=1.0)
-        report(job=job, done=_capped(bytes_on_disk(folder), total), total=total,
-               detail=detail)
+        if not thread.is_alive():
+            # Finished during the join. Ticking now would be the late-cancel
+            # the docstring refuses — the bytes are already on the disk.
+            break
+        tick(done=_capped(bytes_on_disk(folder), total), total=total,
+             detail=detail)
     if "error" in result:
         raise result["error"]
     # Land on the total rather than on the last walk: the snapshot symlinks are
     # not counted, so a finished repo measures slightly under its own size and a
     # bar that stopped at 98% reads as a download that gave up.
-    report(job=job, done=total or bytes_on_disk(folder), total=total)
+    report(job=job, **identity, state="running",
+           done=total or bytes_on_disk(folder), total=total)
     return result["value"]
 
 
@@ -1346,13 +1397,20 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     return hub()
 
 
-def download_file(repo_id, filename, detail=None):
+def download_file(repo_id, filename, detail=None, job=None, row=None):
     """One file out of a repo — a GGUF checkpoint, say — with progress.
 
     The total is THAT FILE's size, not the repo's. A repo that publishes a dozen
     quantizations of the same model sums to tens of gigabytes, and measuring a
     2.6GB pull against that is how a download reads as barely started for its
     whole life and then jumps to complete.
+
+    `job`/`row` for a fetch that happens inside a REQUEST rather than inside a
+    download — the diarization models on the first `diarize: true`, the speech
+    detector on a machine whose Download predates it. Without them the tick goes
+    to this process's `JOB_ID`, which is the model's own load row: finished,
+    and reopened as a running download of something the user never asked for
+    while the row they ARE watching says nothing. See `fetch_with_progress`.
     """
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
@@ -1371,7 +1429,7 @@ def download_file(repo_id, filename, detail=None):
         return fetch_with_progress(
             repo_id,
             lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-            total=total, detail=detail)
+            total=total, detail=detail, job=job, row=row)
 
     if not sha:
         return hub()
@@ -1380,7 +1438,7 @@ def download_file(repo_id, filename, detail=None):
             repo_id,
             lambda: os.path.join(_segmented_fetch(repo_id, [filename], sha),
                                  filename),
-            total=total, detail=detail)
+            total=total, detail=detail, job=job, row=row)
     except Cancelled:
         raise
     except Exception as error:  # noqa: BLE001 - every failure degrades to hf's downloader

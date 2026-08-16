@@ -190,9 +190,9 @@ out.textContent = rec.text;
 for (const s of rec.segments) addCue(s.start, s.end, s.text);   // {start, end, text}
 ```
 
-Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `onProgress`.
+Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `onProgress`.
 
-Resolves with `{jobId, path, output, outputText, model, task, url, text, segments, language, duration}`.
+Resolves with `{jobId, path, output, outputText, model, task, url, text, segments, language, duration, speakers}`.
 
 **The result is read off DISK, not returned by the job** — this is the part that is not obvious. The worker writes `~/.fused-render/ai/transcripts/<time>-<name>-<uid>.json` plus a `.txt` beside it, and when the row reaches `done` the bridge does `readFile(output)` → `JSON.parse` and hands you the parsed fields. So:
 
@@ -209,7 +209,27 @@ Everything else worth knowing:
 - **`model` omitted loads the SMALLEST model the active engine offers** — `Systran/faster-whisper-small` or `mlx-community/whisper-small-mlx`, not the turbo one. That is deliberate: the catalog is ordered smallest-first and the default is simply its first entry, so a bare call is the cheapest download rather than the most accurate transcript. If accuracy matters, **pass a `model`** from `catalog()`; the turbo entries are the ones to reach for.
 - `vad` (default `true`) runs a Silero speech detector and skips the silence — the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — that is not an off-by-one to work around. Timestamps are always positions in the original file, never in the filtered audio.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
-- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, or an unknown `task`).
+- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, an unknown `task`, or `diarize` without a usable `speakers`).
+
+### Who said it: `diarize` + `speakers`
+
+```js
+const rec = await fused.ai.transcribe({
+  path: "meeting.m4a",
+  diarize: true,
+  speakers: 3,          // REQUIRED with diarize — how many people are in the room
+});
+rec.speakers;                       // ["Speaker 1", "Speaker 2", "Speaker 3"]
+rec.segments[0].speaker;            // "Speaker 1"  (or null — see below)
+```
+
+- **`speakers` is required and must be a whole number ≥ 1.** Omitting it, or passing `true`, `"3"` or `2.5`, rejects `bad_request` **before a job opens**. It is not an optimisation the app could work out for you: underneath, the clustering takes either a speaker count or a similarity threshold, and the threshold answers 2, 4 or 7 on the same recording across its plausible range. A guess would relabel the whole transcript with total confidence, so the app asks instead.
+- Every segment gains **`speaker`**, and the reply gains **`speakers`** — the list of labels that actually landed on a segment, ready to build a colour map from without walking thousands of segments.
+- **`speaker` is `null` where Whisper heard words but the segmenter heard nobody.** Handle it; do not assume a label.
+- **Both engines run the same two models through the same code**, so the labels do not depend on which one served you.
+- **Default `false`, and additive**: a call without it is unchanged in every byte, and a transcript written without it has no `speaker` and no `speakers` at all.
+- **It does not change what progress means.** `job.done`/`job.total` stay seconds of audio of the *transcript*; diarization is a fast pre-pass that shows up as its own line on the row ("Finding speakers…") with an indeterminate bar.
+- **First use on a machine downloads ~33MB** (a speaker segmenter and a voice-embedding model). It needs the network that once; after that it works offline. Unlike the VAD these are *not* pre-fetched by a model Download, because most callers never ask for them.
 
 **Take the model from `fused.ai.models.catalog()`, never from memory.** Whisper repos come in three mutually unloadable formats — CTranslate2 (`model.bin`), MLX (`weights.npz`), transformers (`model.safetensors`) — and which one loads depends on the engine serving this machine, not on the model being "the good one". `openai/whisper-large-v3` is the repo everyone reaches for and loads under **none** of the runners that ship, and because the format is not in the task label the AI Models page offers a Load button anyway. The load error names the format you have, the format that runner needs, and a repo that works. `catalog()` already answers per engine, so it is the only source that cannot be wrong: on Apple Silicon it offers `mlx-community/whisper-large-v3-turbo` and friends, elsewhere `deepdml/faster-whisper-large-v3-turbo-ct2` and friends.
 
