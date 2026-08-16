@@ -1053,7 +1053,8 @@ export default function NewJobModal({
     recurTimer.current = null;
     setRecurOut(false);
     setRecurOpen((open) => {
-      if (open && !customRule) setRepeat(repeatBefore.current);
+      if (open && !customRule)
+        setRepeat((r) => (r === "custom" ? repeatBefore.current : r));
       return false;
     });
     setPicking(true);
@@ -1659,6 +1660,8 @@ export default function NewJobModal({
                 setRepeat("custom");
               } else {
                 setRepeat(v);
+                // A non-custom pick makes an open recurrence panel moot.
+                if (recurOpen) closeRecur();
               }
             }}
           />
@@ -1673,9 +1676,12 @@ export default function NewJobModal({
             }}
             onCancel={() => {
               closeRecur();
-              // No rule was committed: fall back to whatever was chosen
-              // before "Custom…" was tried.
-              if (!customRule) setRepeat(repeatBefore.current);
+              // No rule was committed: fall back — but only if the select
+              // still says "Custom…". The card stays live while the panel is
+              // open, and a newer pick made meanwhile must not be wiped by
+              // the panel's cancel (Bugbot, PR #548).
+              if (!customRule)
+                setRepeat((r) => (r === "custom" ? repeatBefore.current : r));
             }}
             closing={recurOut}
           />
