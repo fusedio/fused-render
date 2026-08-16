@@ -5,9 +5,17 @@
 // transformers import, a diffusers pipeline, an `hf download`, a page a user
 // pasted in — and it is invisible: it fills up under ~/.cache with multi-GB
 // checkpoints nothing on screen ever mentions. This page is the missing
-// inventory: one card per cached repo, biggest first, with what it costs on
-// disk, its NAME linking to the model's page on the Hub and an "Explore" that
-// opens it HERE — two destinations, so neither has to win the same click.
+// inventory: one card per cached repo, with what it costs on disk, its NAME
+// linking to the model's page on the Hub and an "Explore" that opens it HERE —
+// two destinations, so neither has to win the same click.
+//
+// Biggest-first WITHIN a group, not across the page (shell/aiModelGroups.ts).
+// One flat size sort put a 2.4GB component a runner fetched for itself fifth,
+// between two models the user chose, and left the distinction to the quietest
+// chip on the card. Position now carries meaning: what you chose, by what it
+// does; then what an engine fetched; then the repos nothing here recognises.
+// Every group states its own byte subtotal, because a group that can be skipped
+// must still say what it costs.
 //
 // It manages that cache too (D250), two ways: delete a repo, or delete one
 // revision of one. Both name their targets in a confirmation the user reads
@@ -22,6 +30,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import { ModelProgress } from "./AiProgress";
+import { groupRepos } from "@shell/aiModelGroups";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
@@ -646,6 +655,25 @@ function RepoCard({
   );
 }
 
+/** A section heading with its own byte subtotal.
+ *
+ *  The subtotal is not decoration and it is not the same figure as the caption's
+ *  total. This page's job is "what is eating my disk", and grouping introduced
+ *  something the flat list did not have: a section a reader may reasonably
+ *  decide to skip. A section that can be skipped has to state its cost on the
+ *  way past, or the grouping hides exactly the number the page exists to show.
+ */
+function SectionHead({ title, size }: { title: string; size: number }) {
+  return (
+    <div className="am-section-head">
+      <h3 className="am-section-title">{title}</h3>
+      <span className="am-section-size" title={`${title} take up ${formatSize(size)} on this machine`}>
+        {formatSize(size)}
+      </span>
+    </div>
+  );
+}
+
 export default function AiModels() {
   // Local is the default, and Discover is the only thing on this page that
   // touches the network — so nothing is sent to a third party until someone
@@ -855,6 +883,34 @@ export default function AiModels() {
     }
   };
 
+  // Derived on every render rather than memoised: it is one pass over a list
+  // whose length is the number of repos in a cache, and `repos` is a fresh array
+  // each render anyway — a memo keyed on it would recompute every time and cost
+  // the comparison on top.
+  const grouped = groupRepos(repos);
+
+  // One card, wherever it ends up. Written once because a section is only a
+  // heading and a subset — nothing about a card changes with the group it is
+  // drawn in, and two copies of this call site would be two places for a prop
+  // to go missing.
+  const card = (r: AiModelRepo) => (
+    <RepoCard
+      key={r.path}
+      repo={r}
+      expanded={expanded === r.dir}
+      loaded={loadedById.get(r.id)}
+      job={jobByModel.get(r.id)}
+      busy={busy}
+      fetching={downloading.has(r.id)}
+      canLoad={canLoad(r)}
+      onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
+      onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
+      onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
+      onLoad={() => runLoad(r)}
+      onUnload={() => runUnload(r)}
+    />
+  );
+
   return (
     <div className="cc-root">
       <main className="cc-main">
@@ -964,25 +1020,43 @@ export default function AiModels() {
         {tab === "local" &&
           data &&
           (repos.length ? (
-            <div className="cc-mdgrid am-grid">
-              {repos.map((r) => (
-                <RepoCard
-                  key={r.path}
-                  repo={r}
-                  expanded={expanded === r.dir}
-                  loaded={loadedById.get(r.id)}
-                  job={jobByModel.get(r.id)}
-                  busy={busy}
-                  fetching={downloading.has(r.id)}
-                  canLoad={canLoad(r)}
-                  onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
-                  onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
-                  onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
-                  onLoad={() => runLoad(r)}
-                  onUnload={() => runUnload(r)}
-                />
-              ))}
-            </div>
+            <>
+              {/* Section A. Everything somebody chose to download, under the
+                  capability that would serve it. Rendered at all only when
+                  there is one — a machine holding nothing but a runner's own
+                  components should not be told it has a Models section. */}
+              {grouped.models.groups.length > 0 && (
+                <section className="am-section">
+                  <SectionHead title="Models" size={grouped.models.size} />
+                  {grouped.models.groups.map((group) => (
+                    <div className="am-subgroup" key={group.key}>
+                      <div className="am-subgroup-head">
+                        <h4 className="am-subgroup-title">{group.label}</h4>
+                        <span className="am-subgroup-size">{formatSize(group.size)}</span>
+                      </div>
+                      {group.note && <p className="am-group-note">{group.note}</p>}
+                      <div className="cc-mdgrid am-grid">{group.repos.map(card)}</div>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {/* Section B. No sub-grouping: there are a handful of these, and
+                  it is the HEADING that does the work now — the cards already
+                  wear "part of X", and scattering them through a size-sorted
+                  list is what made that chip the only thing distinguishing a
+                  2.4GB machine-fetched repo from a model the user picked. */}
+              {grouped.components.repos.length > 0 && (
+                <section className="am-section">
+                  <SectionHead title="Fetched by engines" size={grouped.components.size} />
+                  <p className="am-group-note">
+                    Downloaded by a runner to do its job — nobody chose these. They are listed
+                    and deletable because they eat the same disk as everything above; delete one
+                    and the next run that needs it fetches it again.
+                  </p>
+                  <div className="cc-mdgrid am-grid">{grouped.components.repos.map(card)}</div>
+                </section>
+              )}
+            </>
           ) : (
             // Two different nothings: no cache dir at all (nothing has ever
             // pulled from the Hub) versus a cache that has been emptied. The
