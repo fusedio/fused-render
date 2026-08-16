@@ -131,6 +131,37 @@ export function groupRepos(repos: AiModelRepo[]): GroupedRepos {
   };
 }
 
+/** What `no engine` MEANS on this repo — the tag's hover, and the first half of
+ *  the Load refusal below.
+ *
+ *  **Two different nothings wear the same tag**, and blaming the FORMAT for both
+ *  is what put the Wespeaker orphan and a perfectly identifiable Qwen checkpoint
+ *  behind one sentence. With a capability we know what the repo is FOR and the
+ *  format really is the obstacle; without one we know nothing about it at all,
+ *  and "no engine reads this format" implies a diagnosis nobody made.
+ *
+ *  It lives here, next to `UNRECOGNISED_NOTE`, because three surfaces say this
+ *  about the same card — the group heading, the Load refusal, and the tag's
+ *  hover — and the hover was the one that kept the format sentence after the
+ *  other two stopped saying it. One function, so a card cannot contradict
+ *  itself again.
+ */
+export function noEngineReason(repo: AiModelRepo): string {
+  if (repo.capability === null) {
+    // Agrees with the Unrecognised heading above the card, which is the only
+    // other place on the page that has an opinion about this repo.
+    return (
+      "Nothing here recognises this repo — not a model this app can load, " +
+      "and not part of one."
+    );
+  }
+  return (
+    "No local engine reads this repo's weight format. The formats are not " +
+    "interchangeable — a Whisper repo comes as CTranslate2, MLX or " +
+    "transformers, and each engine loads exactly one of them."
+  );
+}
+
 /** Why Load is refused for this repo, or null when it can be loaded.
  *
  *  **Every card offers Load, always.** A control that vanishes teaches nothing:
@@ -160,24 +191,16 @@ export function loadRefusal(repo: AiModelRepo): string | null {
     return `This is a ${repo.kind}, not a model — nothing here loads one.`;
   }
   if (!repo.engine) {
-    // Two different nothings, and blaming the FORMAT for both is what put the
-    // Wespeaker orphan and a perfectly identifiable Qwen checkpoint behind the
-    // same sentence. With a capability we know what the repo is FOR and the
-    // format really is the obstacle; without one we know nothing about it at
-    // all, and saying "no engine reads this format" implies a diagnosis nobody
-    // made. This second sentence has to agree with the Unrecognised heading
-    // above the card, or the group and the button contradict each other.
+    // The same sentence the tag's hover shows, because they are answering the
+    // same question about the same card. What the BUTTON adds is the one clause
+    // that is about loading: an unrecognised repo has no capability to be loaded
+    // AS, which is a dead end the format sentence does not have — a repo whose
+    // format nothing reads is still a text model, and the answer there is an
+    // engine or another copy of the weights.
     if (repo.capability === null) {
-      return (
-        "Nothing here recognises this repo — not a model this app can load, " +
-        "and not part of one. There is nothing to load it as."
-      );
+      return noEngineReason(repo) + " There is nothing to load it as.";
     }
-    return (
-      "No local engine reads this repo's weight format. The formats are not " +
-      "interchangeable — a Whisper repo comes as CTranslate2, MLX or " +
-      "transformers, and each engine loads exactly one of them."
-    );
+    return noEngineReason(repo);
   }
   if (!repo.engine.available) {
     // The registry's own sentence, quoted rather than paraphrased. It is the

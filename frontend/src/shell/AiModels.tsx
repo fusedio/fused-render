@@ -31,7 +31,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
 import AiModelsEngines from "./AiModelsEngines";
 import { ModelProgress } from "./AiProgress";
-import { groupRepos, loadRefusal } from "@shell/aiModelGroups";
+import { groupRepos, loadRefusal, noEngineReason } from "@shell/aiModelGroups";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
@@ -467,11 +467,13 @@ function RepoCard({
               /* Same reasoning as above: "no engine" states its condition in
                  words, but WHY is hover-only, so it gets a tab stop too. */
               tabIndex={0}
-              title={
-                "No local engine reads this repo's weight format. The formats are not " +
-                "interchangeable — a Whisper repo comes as CTranslate2, MLX or " +
-                "transformers, and each engine loads exactly one of them."
-              }
+              /* Asked of `aiModelGroups`, which is where the Load refusal and
+                 the Unrecognised heading get their answer too. The tag is worn
+                 by two different cards — a Qwen checkpoint in a format nothing
+                 reads, and a repo nothing here can identify at all — and a
+                 hardcoded sentence here said "weight format" to both, under a
+                 heading and beside a button that had stopped saying it. */
+              title={noEngineReason(repo)}
             >
               no engine
             </span>

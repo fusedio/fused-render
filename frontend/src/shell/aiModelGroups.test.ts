@@ -4,7 +4,7 @@
 // cannot load look identical once they are both wearing a dead-end tag.
 import { describe, expect, it } from "bun:test";
 import type { AiModelRepo } from "@platform/lib/api";
-import { UNRECOGNISED, groupRepos, loadRefusal } from "@shell/aiModelGroups";
+import { UNRECOGNISED, groupRepos, loadRefusal, noEngineReason } from "@shell/aiModelGroups";
 
 function repo(over: Partial<AiModelRepo> & { id: string }): AiModelRepo {
   return {
@@ -245,5 +245,41 @@ describe("why Load is refused", () => {
 
   it("refuses a dataset without pretending it has an engine problem", () => {
     expect(loadRefusal(repo({ id: "squad", kind: "dataset" }))).toContain("dataset");
+  });
+});
+
+// The `no engine` tag is worn by two different cards, and the page says three
+// things about each: the heading over the group, the sentence on the disabled
+// Load button, and the tag's own hover. They answer the same question, so they
+// have to give the same answer — the hover was left blaming the weight format
+// after the other two stopped, which is the exact misreading the Unrecognised
+// group was added to remove.
+describe("the three surfaces on a no-engine card agree", () => {
+  it("blames the format only where a format is the obstacle", () => {
+    expect(noEngineReason(QWEN_NO_ENGINE)).toContain("weight format");
+    expect(noEngineReason(WESPEAKER)).not.toContain("format");
+    expect(noEngineReason(WESPEAKER)).toContain("Nothing here recognises");
+  });
+
+  // Not a paraphrase of the hover: the same string, so the two cannot drift.
+  it("gives the Load button the hover's sentence, plus what loading adds", () => {
+    expect(loadRefusal(QWEN_NO_ENGINE)).toBe(noEngineReason(QWEN_NO_ENGINE));
+    expect(loadRefusal(WESPEAKER)?.startsWith(noEngineReason(WESPEAKER))).toBe(true);
+    expect(loadRefusal(WESPEAKER)).toContain("nothing to load it as");
+  });
+
+  it("says what the Unrecognised heading over the card says", () => {
+    const note = groupRepos([WESPEAKER]).models.groups[0].note ?? "";
+    for (const phrase of ["not a model this app can load", "part of one"]) {
+      expect(note).toContain(phrase);
+      expect(noEngineReason(WESPEAKER)).toContain(phrase);
+    }
+  });
+
+  // A repo with a capability keeps its format problem, which is a real
+  // diagnosis with a real fix: another engine, or another copy of the weights.
+  // Flattening both cards onto one sentence would lose it.
+  it("does not tell a Qwen checkpoint that nothing recognises it", () => {
+    expect(noEngineReason(QWEN_NO_ENGINE)).not.toContain("Nothing here recognises");
   });
 });
