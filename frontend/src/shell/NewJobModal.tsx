@@ -155,11 +155,17 @@ function CheckField({
   onChange,
   label,
   className,
+  describedBy,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
   className?: string;
+  // A hint printed under the box that says what ticking it MEANS. Attached to
+  // the real input, not merely placed near it, so a screen reader reads the
+  // consequence with the control rather than as a stray line below it (the
+  // discipline pastHintId already follows).
+  describedBy?: string;
 }) {
   return (
     <label className={"new-task-check" + (className ? " " + className : "")}>
@@ -167,6 +173,7 @@ function CheckField({
         type="checkbox"
         className="new-task-check-input"
         checked={checked}
+        aria-describedby={describedBy}
         onChange={(e) => onChange(e.target.checked)}
       />
       <span className="new-task-check-box" aria-hidden="true">{ICON_CHECK}</span>
@@ -992,6 +999,23 @@ export function initialRepeatKey(entry?: ScheduledMessage | null): string {
   return entry?.repeats ? "cron" : "none";
 }
 
+// The thread a task ALREADY OWNS, if any. A repeating template LEARNS one: its
+// first run reports the session it ran in and the server writes that id back
+// onto the template, so run 2 resumes it (a task IS a session — design §6).
+// That id has to survive an edit, because an edit is cancel + re-create and
+// dropping it orphans everything the task built.
+//
+// A ONE-OFF's stored id is not that. It is a chat handoff kept from when the
+// task was scheduled, and it keeps a handoff's rules: continued while the task
+// stays a one-off, refused the moment it starts repeating — otherwise ticking
+// Repeat on a chat-scheduled task quietly signs the user's open conversation up
+// to be appended to forever, the exact thing the repeat rule exists to refuse.
+// Repeating-ness is read the same way initialRepeatKey reads it.
+export function learnedSessionOf(entry?: ScheduledMessage | null): string {
+  if (!entry?.session_id) return "";
+  return entry.rule || entry.repeats ? entry.session_id : "";
+}
+
 // What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
 // goes back to "none" AND the custom rule is dropped, so nothing stays armed
 // behind a dropdown that is no longer on screen — a hidden rule would still be
@@ -1028,9 +1052,18 @@ export function buildSchedulePayload(form: {
   repeat: string;
   legacyCron: string;
   permission: string;
-  // The session an edit (or a chat handoff) wants CONTINUED, before the
-  // one-off test below decides whether it may be.
+  // A CHAT HANDOFF's session: the conversation the composer was in when it
+  // deep-linked here (?new=1&session_id=…). A one-off continues it; a repeat
+  // refuses it, because a task that runs every day must not hijack the user's
+  // open chat and compound its context forever.
   sessionId: string;
+  // The task's OWN session, and the opposite case: an id already stored on the
+  // entry being edited — either a one-off's handoff kept from last time, or the
+  // thread a repeating template LEARNED when its first run reported the session
+  // it ran in. Editing is cancel + re-create, so dropping this is how a
+  // chaining task silently abandons everything it had built. It outranks a
+  // chat's id and survives a repeat — unless the task forks every run below.
+  learnedSessionId?: string;
   // Ticked: mint a fresh task — a fresh Claude session — per occurrence,
   // instead of the default, which is every run landing in this task's own
   // thread (design §6).
@@ -1039,6 +1072,21 @@ export function buildSchedulePayload(form: {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
   const trimmedDescription = form.description.trim();
+  // WHICH session, if any, the re-created entry continues. The two sources are
+  // treated oppositely:
+  //   · the task's own (learned) id survives everything except a template that
+  //     is meant to fork — an edit that dropped it would orphan the thread the
+  //     task had been building, with nothing in the UI saying so;
+  //   · a chat's id is continued only while the task stays a one-off.
+  // A ticked "new task each run" refuses BOTH: that template mints a fresh
+  // session per occurrence, so any id on it is a thread it must not resume.
+  const continued = form.learnedSessionId
+    ? repeating && form.newTaskEachRun
+      ? ""
+      : form.learnedSessionId
+    : repeating
+      ? ""
+      : form.sessionId;
   return {
     target: form.target.trim(),
     message: form.message,
@@ -1050,12 +1098,8 @@ export function buildSchedulePayload(form: {
         ? { repeats: form.legacyCron }
         : { due: form.when }),
     permission_mode: form.permission,
-    // An edit keeps what it cannot re-ask for: a composer-scheduled task that
-    // continues an open chat must still continue it after a time change, or the
-    // edit silently turns it into a fresh session. …but only while the task
-    // stays a one-off — resuming one conversation on every run compounds its
-    // context forever (Akshil, 2026-08-16; Bugbot, PR #548).
-    ...(!repeating && form.sessionId ? { session_id: form.sessionId } : {}),
+    // An edit keeps what it cannot re-ask for — see `continued` above.
+    ...(continued ? { session_id: continued } : {}),
     // Empty means "the server decides" for the title and "there isn't one" for
     // the description — in both cases the key is better left off the wire than
     // sent as "".
@@ -1146,6 +1190,10 @@ export default function NewJobModal({
     () => editing?.new_task_each_run ?? false,
   );
   const legacyCron = editing?.repeats ?? "";
+  // The thread this task has already been building, if it has one — read once
+  // and used twice: it goes on the wire (or the edit orphans it) and it is what
+  // the note under the repeat row is able to say out loud.
+  const learnedSession = learnedSessionOf(editing);
   // The recurrence dialog, and the key to fall back to if it's cancelled —
   // picking "Custom…" must not strand the select on a choice with no rule.
   const [recurOpen, setRecurOpen] = useState(false);
@@ -1394,6 +1442,9 @@ export default function NewJobModal({
   // (audit 2026-08-16).
   const pastHintId = useId();
   const pathErrorId = useId();
+  // …and the third: what the repeat does to this task's thread, attached to
+  // the checkbox that decides it.
+  const threadHintId = useId();
 
   // The two when-dropdowns, and the time field's draft text (editable like
   // Google's: type "8:30pm" or pick from the list; an unparseable draft
@@ -1478,11 +1529,12 @@ export default function NewJobModal({
     setError(null);
     try {
       // One pure function builds the whole body, so what actually goes on the
-      // wire can be asserted without a DOM (new-task-form.test.ts). The rules
-      // it carries are unchanged: a rule rides with its anchor, a legacy cron
-      // line replaces `due`, and a session is continued only while the task
-      // stays a one-off — resuming one conversation on every run compounds its
-      // context forever (Akshil, 2026-08-16; Bugbot, PR #548).
+      // wire can be asserted without a DOM (new-task-form.test.ts). A rule
+      // rides with its anchor, a legacy cron line replaces `due`, a CHAT's
+      // session is continued only while the task stays a one-off (resuming one
+      // conversation on every run compounds its context forever — Akshil,
+      // 2026-08-16; Bugbot, PR #548), and the task's OWN thread is carried
+      // through the re-create an edit really is.
       await scheduleMessage(
         buildSchedulePayload({
           target,
@@ -1494,9 +1546,13 @@ export default function NewJobModal({
           repeat,
           legacyCron,
           permission,
-          // An edit keeps the session it cannot re-ask for; a NEW one-off
-          // arriving from an open chat continues THAT chat.
-          sessionId: editing?.session_id || chatSessionId || "",
+          // The two sources are kept APART here, because the payload treats
+          // them oppositely: the task's OWN thread (learned, on the entry)
+          // survives a repeat, a CHAT's does not. A one-off entry's stored id
+          // travels in the chat slot — see learnedSessionOf — and still
+          // outranks the deep link's, as it always did.
+          sessionId: (!learnedSession && editing?.session_id) || chatSessionId || "",
+          learnedSessionId: learnedSession,
           newTaskEachRun,
         }),
       );
@@ -1839,6 +1895,7 @@ export default function NewJobModal({
           </span>
         )}
         {repeatOn && (
+        <>
         <div className="schedule-form-line schedule-form-line--sub">
           <Dropdown
             ariaLabel="Repeats"
@@ -1890,8 +1947,24 @@ export default function NewJobModal({
             label="New task each run"
             checked={newTaskEachRun}
             onChange={setNewTaskEachRun}
+            describedBy={threadHintId}
           />
         </div>
+        {/* The thread this repeat writes into, said out loud. It is the one
+            thing about a repeating task that was invisible: a task IS a
+            session, so every run lands in the same chat — and an edit that
+            silently dropped that chat cost the user everything it had built
+            with nothing on screen to notice. Editing a task that already has
+            a thread says so in particular, because THAT is the sentence worth
+            reading before you change anything. */}
+        <span id={threadHintId} className="field-hint schedule-form-sub new-task-thread">
+          {newTaskEachRun
+            ? "Each run starts a new chat."
+            : learnedSession
+              ? "Every run adds to the chat this task has already started."
+              : "Every run adds to the same chat."}
+        </span>
+        </>
         )}
         {recurOpen && (
           <CustomRecurrence

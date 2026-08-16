@@ -21,6 +21,7 @@ import {
   messageHref,
   messageTime,
   messageTone,
+  openMessageHref,
   projectOptions,
   readKey,
   taskColumn,
@@ -220,10 +221,27 @@ describe("messageTone", () => {
     expect(messageTone(msg({ state: "sent", turn: "done" }))).toMatchObject({
       column: "done", failed: false,
     });
-    // Sent, no verdict yet: still running.
+    // Sent, no verdict yet: still running. The ONLY value that means that.
     expect(messageTone(msg({ state: "sent", turn: "" })).column).toBe("in_progress");
     expect(messageTone(msg({ state: "pending" })).column).toBe("upcoming");
     expect(messageTone(msg({ state: "sending" })).column).toBe("in_progress");
+  });
+
+  it("reads an idle turn as ran, never as still running", () => {
+    // `idle` = the turn ended and reported, nothing is live. It is a SECOND
+    // word for the same outcome as `done`, and the calendar once painted it
+    // "Running" because only `done` was named here.
+    expect(messageTone(msg({ state: "sent", turn: "idle" }))).toMatchObject({
+      column: "done", failed: false, label: "Ran",
+    });
+  });
+
+  it("does not call an unheard-of turn word in-flight", () => {
+    // `turn` is written once, when the turn ENDS, so a word this build does not
+    // know is a turn that finished — not one still going. Defaulting the other
+    // way freezes the row on "Running…" forever.
+    const future = msg({ state: "sent", turn: "settled" as TaskMessage["turn"] });
+    expect(messageTone(future)).toMatchObject({ column: "done", failed: false });
   });
 });
 
@@ -350,6 +368,38 @@ describe("hrefs", () => {
     const t = task({ session_id: "" });
     expect(taskHref(t)).toBe(null);
     expect(messageHref(t, msg())).toBe(null);
+  });
+
+  // openMessageHref is what every view that LISTS messages asks, and the
+  // calendar is why it exists: its popover shows projected occurrences beside
+  // real messages, and the two must not link the same way.
+  it("lands a calendar click on the turn, exactly as the list's does", () => {
+    const t = task();
+    const m = msg({ anchor: "rec-9" });
+    expect(openMessageHref(t, m)).toBe(messageHref(t, m));
+    expect(openMessageHref(t, m)).toContain("&msg=rec-9");
+  });
+
+  it("builds no msg param for a message with no anchor", () => {
+    const t = task();
+    const to = openMessageHref(t, msg({ anchor: "" }));
+    expect(to).toBe(taskHref(t));
+    expect(to).not.toContain("msg=");
+  });
+
+  it("offers no link at all before the first run mints a session", () => {
+    expect(openMessageHref(task({ session_id: "" }), msg({ anchor: "rec-9" }))).toBe(null);
+  });
+
+  it("offers no link on a projected occurrence, however real it looks", () => {
+    const t = task();
+    // A ghost is cron arithmetic: the session exists, the run does not. Even
+    // handed an anchor it must not produce a url — there is no turn to land on.
+    expect(openMessageHref(t, msg({ message_id: "GHOST-1" }))).toBe(null);
+    expect(openMessageHref(t, msg({ message_id: "GHOST-1", anchor: "rec-9" }))).toBe(null);
+    // The real message beside it in the same popover still opens.
+    expect(openMessageHref(t, msg({ message_id: "MSG-004", anchor: "rec-9" })))
+      .toContain("&msg=rec-9");
   });
 
   it("names the anchor param once, and escapes what it carries", () => {

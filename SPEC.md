@@ -6828,6 +6828,23 @@ world from one the user typed.
   four. Occurrences no longer carry `max_late: 120`; a legacy one is cleared by the
   coalescer. `count`/`until` budgets are spent by skipped runs, following the same
   rule `create` already applies.
+- **SCH-13a** **A repeating template LEARNS its thread on the first run.** A task is
+  a Claude session, so a repeat appends into one thread and `new_task_each_run` is
+  the opt-out — but that does not fall out for free, and assuming it did was a real
+  bug. A template is created with **no** session, because none exists yet: Claude
+  Code mints the id on the first turn. So when a run reports the session it actually
+  ran in, `_chain_session` writes that id back onto the TEMPLATE's `session_id`, and
+  every later occurrence inherits it. Three guards, each of which is a bug if
+  dropped: write only while the field is empty, so a re-report cannot thrash it and a
+  session the user chose deliberately is never overwritten; never write when the
+  template is set to fork; and fix up any ALREADY-materialized pending occurrence in
+  the same pass, because `tick` materializes the next run before the previous turn
+  reports, so run 2 normally already exists carrying `""`. `_busy_sessions` must also
+  union `session_id` with `claude_session_id`, or run 2 resumes run 1's thread while
+  its turn is still open. The `session_id` (input, "resume this") and
+  `claude_session_id` (answer, "what it ran in") split is preserved throughout: this
+  propagates run 1's ANSWER into run 2's INPUT, and never conflates the two on one
+  entry.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at

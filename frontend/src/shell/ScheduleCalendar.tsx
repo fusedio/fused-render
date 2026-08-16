@@ -52,7 +52,6 @@ import {
   chipAccessibleName,
   groupScheduled,
   dayKey,
-  explorerUrl,
   firstLine,
   isProjected,
   messageTone,
@@ -70,6 +69,11 @@ import {
   windowBounds,
 } from "./schedule-lib";
 import type { CalendarChip, CalendarRange } from "./schedule-lib";
+// Where a click GOES is owned by tasks-lib, and by nothing else: taskHref opens
+// the thread, messageHref opens the one turn inside it. The calendar used to
+// build that url itself out of explorerUrl, which silently dropped the message
+// anchor and landed every reader at the top of the conversation.
+import { openMessageHref, taskHref } from "./tasks-lib";
 
 // One hour of grid, in px. 44 puts a full day at ~1050px — tall enough that two
 // runs half an hour apart do not collide, short enough that the 8am–6pm band a
@@ -212,21 +216,28 @@ function ChipPopover({
     [messages, chip.day],
   );
 
-  // Clicking a message opens the explorer's Claude chat on that task, and that
-  // click is what marks it read (§7). A task that has not run yet has no
-  // session to open, so its rows are text rather than a dead link.
-  // A PROJECTED occurrence is cron arithmetic, not a message: it has no
-  // transcript record, no real id and nothing that could be marked read, so it
-  // is inert here rather than a link to a conversation that has not happened.
-  // The same posture a task with no session yet already takes.
-  const canOpen = (m: TaskMessage) => !!task.session_id && !isProjected(m);
+  // Clicking a message opens the explorer's Claude chat ON THAT TURN, and that
+  // click is what marks it read (§7). The url is messageHref's to build — the
+  // same one the List uses — so the calendar lands the reader exactly where the
+  // list does, `msg=` anchor and all, instead of at the top of the thread.
+  //
+  // openMessageHref answers for every row that has nowhere to go — a task with
+  // no session yet, and a PROJECTED occurrence, which is cron arithmetic rather
+  // than a message and must never mint a `msg=` pointing at nothing. It is
+  // tested there, not re-decided here.
+  const canOpen = (m: TaskMessage) => openMessageHref(task, m) !== null;
 
   const openMessage = (m: TaskMessage) => {
-    if (!canOpen(m)) return;
+    const to = openMessageHref(task, m);
+    if (!to) return;
     if (m.unread) markTaskMessageRead(task.key, m.message_id).then(onReload, () => {});
-    navigateUrl(explorerUrl(task.target, task.session_id));
+    navigateUrl(to);
     onClose();
   };
+
+  // The footer button opens the thread itself, top of the chat — taskHref, the
+  // same function the List's task row uses, and null when there is no session.
+  const threadHref = taskHref(task);
 
   const cancelMessage = async (m: TaskMessage) => {
     setBusy(m.message_id);
@@ -370,9 +381,9 @@ function ChipPopover({
             {ICON_EDIT} Edit
           </button>
         )}
-        {task.session_id && (
+        {threadHref && (
           <button type="button" className="btn btn-secondary"
-                  onClick={() => navigateUrl(explorerUrl(task.target, task.session_id))}>
+                  onClick={() => navigateUrl(threadHref)}>
             {ICON_INBOX} Open in Explorer
           </button>
         )}

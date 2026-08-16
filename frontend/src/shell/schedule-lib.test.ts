@@ -98,7 +98,12 @@ describe("calendarEvents", () => {
 });
 
 // ---- boardColumn: which Board column a task sits in --------------------------
-import { boardColumn, stateLabel as stateLabelOf, stateTone as stateToneOf } from "./schedule-lib";
+import {
+  boardColumn,
+  isLive,
+  stateLabel as stateLabelOf,
+  stateTone as stateToneOf,
+} from "./schedule-lib";
 
 describe("boardColumn", () => {
   it("routes by the same collapse the pill shows", () => {
@@ -283,6 +288,7 @@ import {
   dayKey,
   dayTone,
   firstLine,
+  messageTone,
   minutesOfDay,
   projectedMessages,
   queueSummary,
@@ -294,6 +300,7 @@ import {
   taskChips,
   taskColour,
   threadForDay,
+  turnPhase,
 } from "./schedule-lib";
 import type { Task, TaskMessage } from "@platform/lib/api";
 
@@ -535,6 +542,81 @@ describe("taskChips", () => {
     }).get("2026-08-17")!;
     expect(chips[0].anchor.message_id).toBe("full-1");
     expect(chips[0].extra).toBe(1);
+  });
+});
+
+// ---- tone: `turn` means the same thing in both views ---------------------------
+// The one vocabulary the calendar and the list share, and the one they had
+// silently forked: schedule-lib.messageTone named only "done" as finished, so
+// "idle" — a turn that ended and reported — painted as Running here while
+// tasks-lib.messageTone already said Ran. Both now read turnPhase.
+
+describe("turnPhase", () => {
+  it("calls only an EMPTY turn still running", () => {
+    // The field is written once, when the turn ends. That is the whole rule,
+    // and it holds across both spellings of the field.
+    expect(turnPhase("")).toBe("running");
+    expect(turnPhase(undefined)).toBe("running");
+    expect(turnPhase("unknown")).toBe("unreported");
+    // TaskMessage's words…
+    expect(turnPhase("done")).toBe("ended");
+    expect(turnPhase("idle")).toBe("ended");
+    // …ScheduledMessage's…
+    expect(turnPhase("ok")).toBe("ended");
+    expect(turnPhase("failed")).toBe("ended");
+    expect(turnPhase("cancelled")).toBe("ended");
+    // …and a word neither of them has invented yet. It ENDED: the server did
+    // not write the field until it did, so guessing "in flight" is the one
+    // wrong answer.
+    expect(turnPhase("settled")).toBe("ended");
+  });
+});
+
+describe("messageTone", () => {
+  it("reads an idle turn as ran, the same as the list does", () => {
+    expect(messageTone(msg({ at: 1, state: "sent", turn: "idle" }))).toBe("ran");
+    expect(messageTone(msg({ at: 1, state: "sent", turn: "done" }))).toBe("ran");
+  });
+
+  it("keeps `sending` for the one case that is genuinely in flight", () => {
+    expect(messageTone(msg({ at: 1, state: "sent", turn: "" }))).toBe("sending");
+    expect(messageTone(msg({ at: 1, state: "sending" }))).toBe("sending");
+    // A turn that stopped reporting is a failure, not work in progress.
+    expect(messageTone(msg({ at: 1, state: "sent", turn: "unknown" }))).toBe("error");
+    // And an unheard-of word is a turn that finished.
+    expect(
+      messageTone(msg({ at: 1, state: "sent", turn: "settled" as TaskMessage["turn"] })),
+    ).toBe("ran");
+  });
+
+  it("still tells the calendar's six tones apart", () => {
+    // Why this function is not tasks-lib's: `missed` and `error` are different
+    // colours here, and `cancelled` files under skipped rather than archived.
+    expect(messageTone(msg({ at: 1, state: "pending" }))).toBe("upcoming");
+    expect(messageTone(msg({ at: 1, state: "missed" }))).toBe("missed");
+    expect(messageTone(msg({ at: 1, state: "error" }))).toBe("error");
+    expect(messageTone(msg({ at: 1, state: "cancelled" }))).toBe("skipped");
+    expect(messageTone(msg({ at: 1, state: "skipped" }))).toBe("skipped");
+  });
+});
+
+// The same audit on the OTHER shape's turn vocabulary — the schedule store's
+// "" | "ok" | "failed" | "cancelled" | "unknown".
+describe("stateLabel / isLive on an unheard-of turn", () => {
+  it("does not report a finished turn as running forever", () => {
+    const future = entry({
+      state: "sent",
+      fired: "x",
+      turn: "settled" as ScheduledMessage["turn"],
+    });
+    expect(stateLabelOf(future)).toBe("Sent");
+    expect(stateToneOf(future)).not.toBe("sending");
+    expect(isLive(future)).toBe(false);
+    // The empty turn is the one that is still going, in all three.
+    const live = entry({ state: "sent", fired: "x", turn: "" });
+    expect(stateLabelOf(live)).toBe("Running…");
+    expect(stateToneOf(live)).toBe("sending");
+    expect(isLive(live)).toBe(true);
   });
 });
 

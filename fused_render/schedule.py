@@ -578,6 +578,12 @@ def create(target: str, message: str, due=None, session_id: str = "",
     template's `session_id`). Ticked, each run starts a fresh session instead.
     See `_materialize`, which is where the one-line difference lives.
 
+    A repeating message created WITHOUT a `session_id` — which is every one the
+    Tasks page makes, and every one handed off from a chat, that form dropping
+    the open conversation rather than letting a repeat compound it for ever —
+    still chains: its first run opens a thread and `_chain_session` records
+    which, so runs 2..N continue it.
+
     With `repeats` (a 5-field cron expression) the stored entry is a RECURRING
     template instead: `due` is ignored — the cron line already says every time
     it means — and the first occurrence is materialized immediately, so the
@@ -1164,6 +1170,14 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     if ran and ran != entry.get("claude_session_id"):
         entry["claude_session_id"] = ran
         _update(entry_id, claude_session_id=ran)
+        # …and if this was a chaining template's run, the answer becomes the
+        # INPUT of the next one. Without this the default never happens: a
+        # template created from the Tasks page has no session id, every
+        # occurrence inherits "", and every run opens a new thread — which is
+        # exactly what "new task each run" is supposed to be the opt-IN to.
+        # `_chain_session` owns every condition on that; here we only know that
+        # this is the first tick that had an id to offer.
+        _chain_session(str(entry.get("template_id") or ""), ran)
     if data.get("done"):
         reason = str(data.get("error") or "")
         if reason:
@@ -1192,6 +1206,74 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
         _report(entry_id, state="cancelled")
         return False
     return True
+
+
+def _chain_session(template_id: str, ran: str) -> None:
+    """Teach a chaining template which conversation its runs live in — once.
+
+    THIS IS WHAT MAKES CHAINING THE DEFAULT rather than merely the documented
+    intention. `_materialize` gives an occurrence the template's `session_id`,
+    so a template that has one repeats into one thread; but a template created
+    from the Tasks page has none, and nothing else ever gave it one — the
+    watcher writes the session a run landed in onto the OCCURRENCE
+    (`claude_session_id`), and an occurrence is thrown away. So the template
+    stayed empty for ever and every run started fresh, making the "new task
+    each run" opt-out indistinguishable from leaving it unticked. The first run
+    of a chaining template answers the question the template could not, and
+    this is where that answer is carried back to it.
+
+    The distinction the module rests on is NOT weakened by that. `session_id`
+    is still the input ("resume this one", "" meaning start fresh) and
+    `claude_session_id` still the answer ("what it ran in"); no entry's own
+    session_id is rewritten to match its own answer, which is the move that
+    would retroactively relabel a fresh send as a continuation. Run 1 keeps
+    saying it started fresh. What travels is run 1's answer into run 2's input,
+    across two different entries, which is the ordinary direction of the link.
+
+    Four conditions, each load-bearing:
+
+    * **Only a live template.** An occurrence's `template_id` is the only way
+      up; a one-off has none and never reaches here.
+    * **Only when the template is CHAINING.** With `new_task_each_run` ticked
+      the template must keep minting fresh sessions for ever, so it must never
+      learn one.
+    * **Only into an EMPTY `session_id`.** A template that already has one was
+      told which conversation to continue (a task handed off from a chat), and
+      that is the user's decision, not this function's. It is also what makes
+      the writeback idempotent and the thread stable: the first run wins, later
+      ticks of the same turn re-report the same id and find the field taken, so
+      the store is not rewritten.
+    * **The pending successor is fixed up too.** `_materialize` runs on every
+      tick and only waits for an occurrence to leave `pending`/`sending` — so
+      run 2 can already exist, minted with "", before run 1's session is
+      reported. Filling in that one entry here is what stops the race from
+      costing a whole occurrence its thread. Only `pending` ones: a finished
+      occurrence's input is a historical fact.
+
+    Same locked read-modify-write as every other mutation here, and for the
+    same reason — this runs on a watcher thread, mutating a DIFFERENT entry
+    than the one being watched, while other watchers may be reporting. No
+    `_sync_wake`: not one due time moves, and the stub costs two subprocesses.
+    """
+    if not template_id or not ran:
+        return
+    with _lock:
+        entries = _read()
+        template = next((e for e in entries
+                         if str(e.get("id") or "") == template_id), None)
+        if (template is None
+                or template.get("state") != RECURRING
+                or _flag(template.get("new_task_each_run"))
+                or str(template.get("session_id") or "")):
+            return
+        template["session_id"] = ran
+        for entry in entries:
+            if (str(entry.get("template_id") or "") == template_id
+                    and entry.get("state") == PENDING
+                    and not _flag(entry.get("new_task_each_run"))
+                    and not str(entry.get("session_id") or "")):
+                entry["session_id"] = ran
+        _write(entries)
 
 
 def _watch_turn(entry: dict, run_id: str) -> None:
@@ -1258,15 +1340,25 @@ def _busy_sessions(entries: list[dict]) -> set[str]:
     """Session ids with a scheduled send already in flight — claimed but not yet
     spawned (`sending`), or spawned with a turn still running (`sent`, no `turn`
     verdict). Fresh-session entries (`session_id` "") are never busy: they collide
-    with nothing."""
+    with nothing.
+
+    BOTH ids count, and the answer is why. An entry that asked for a fresh
+    session occupies the session it GOT just as completely as a resume occupies
+    the one it named — the difference is only that nobody knew which one that
+    would be until the turn said so. The first run of a chaining template is
+    exactly that case: it sends with "" and `_chain_session` then puts the id it
+    reported on the template, so run 2 arrives resuming a conversation whose
+    only record of being busy is run 1's `claude_session_id`. Reading just the
+    input here would let run 2 resume a thread mid-turn."""
     busy = set()
     for entry in entries:
-        session = str(entry.get("session_id") or "")
-        if not session:
-            continue
         state = entry.get("state")
-        if state == SENDING or (state == SENT and not entry.get("turn")):
-            busy.add(session)
+        if state != SENDING and not (state == SENT and not entry.get("turn")):
+            continue
+        for key in ("session_id", "claude_session_id"):
+            session = str(entry.get(key) or "")
+            if session:
+                busy.add(session)
     return busy
 
 
@@ -1522,6 +1614,12 @@ def _materialize(now: datetime) -> None:
                 # resuming, and `_busy_sessions` treats "" as colliding with
                 # nothing, so independent runs are not serialised against each
                 # other the way one thread's turns must be.
+                #
+                # A template created from the Tasks page has NO session id to
+                # inherit, and its first occurrence therefore starts one. That
+                # is not a hole in the default, it is how the default begins:
+                # `_chain_session` writes the session that run reported back
+                # onto the template, so this line has a thread to hand run 2.
                 "session_id": "" if _flag(entry.get("new_task_each_run"))
                               else str(entry.get("session_id") or ""),
                 "permission_mode": entry.get("permission_mode")

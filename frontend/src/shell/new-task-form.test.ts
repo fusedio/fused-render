@@ -21,12 +21,14 @@ type Form = Parameters<typeof import("./NewJobModal").buildSchedulePayload>[0];
 let initialRepeatKey: typeof import("./NewJobModal").initialRepeatKey;
 let applyRepeatToggle: typeof import("./NewJobModal").applyRepeatToggle;
 let buildSchedulePayload: typeof import("./NewJobModal").buildSchedulePayload;
+let learnedSessionOf: typeof import("./NewJobModal").learnedSessionOf;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
   initialRepeatKey = mod.initialRepeatKey;
   applyRepeatToggle = mod.applyRepeatToggle;
   buildSchedulePayload = mod.buildSchedulePayload;
+  learnedSessionOf = mod.learnedSessionOf;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -177,5 +179,97 @@ describe("the payload", () => {
     expect(
       buildSchedulePayload(form({ sessionId: "abc", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
+  });
+});
+
+// Editing is cancel + re-create, so every edit re-states the whole task — and
+// what it fails to re-state is LOST. The thread a repeating task has been
+// building is exactly that kind of thing: nothing on the form asks for it, the
+// backend wrote it onto the template after run 1, and re-creating without it
+// orphans everything the task had done. So the two ids that can reach the
+// payload are told apart: the CHAT's (a handoff, from the deep link) and the
+// TASK's own (learned, already on the entry).
+describe("whose session the entry is carrying", () => {
+  test("a repeating template's id is the thread it LEARNED on its first run", () => {
+    expect(learnedSessionOf(entry({ rule: DAILY, session_id: "own" }))).toBe("own");
+    expect(learnedSessionOf(entry({ repeats: "0 9 * * *", session_id: "own" }))).toBe("own");
+  });
+
+  test("a one-off's id is only a chat handoff, so it is not a learned thread", () => {
+    // It still travels — as a chat's id, under a chat's rules — so ticking
+    // Repeat on a task scheduled from a conversation does not sign that
+    // conversation up to be appended to forever.
+    expect(learnedSessionOf(entry({ session_id: "chat" }))).toBe("");
+  });
+
+  test("and a task that has not started one has nothing to carry", () => {
+    expect(learnedSessionOf(entry({ rule: DAILY }))).toBe("");
+    expect(learnedSessionOf(null)).toBe("");
+    expect(learnedSessionOf(undefined)).toBe("");
+  });
+});
+
+describe("which session an edit carries", () => {
+  test("editing a chaining repeating task keeps the thread it learned", () => {
+    const body = buildSchedulePayload(
+      form({ rule: DAILY, repeat: "daily", learnedSessionId: "sess-learned" }),
+    );
+    expect(body.session_id).toBe("sess-learned");
+    expect(body.rule).toEqual(DAILY);
+  });
+
+  test("…and a legacy cron template chains the same way", () => {
+    expect(
+      buildSchedulePayload(
+        form({ repeat: "cron", legacyCron: "0 9 * * *", learnedSessionId: "sess-learned" }),
+      ).session_id,
+    ).toBe("sess-learned");
+  });
+
+  test("but a template that forks every run carries no thread at all", () => {
+    // "New task each run" means a fresh session per occurrence; an id on that
+    // template is a thread it must NOT resume.
+    expect(
+      buildSchedulePayload(
+        form({
+          rule: DAILY,
+          repeat: "daily",
+          newTaskEachRun: true,
+          learnedSessionId: "sess-learned",
+        }),
+      ).session_id,
+    ).toBeUndefined();
+  });
+
+  test("the task's own thread outranks a chat the form was opened from", () => {
+    // Editing from a composer deep link: the chat's id is the one the repeat
+    // rule was always meant to refuse, so the entry's wins.
+    expect(
+      buildSchedulePayload(
+        form({ rule: DAILY, repeat: "daily", sessionId: "chat", learnedSessionId: "own" }),
+      ).session_id,
+    ).toBe("own");
+    expect(
+      buildSchedulePayload(form({ sessionId: "chat", learnedSessionId: "own" })).session_id,
+    ).toBe("own");
+  });
+
+  test("a repeat created fresh FROM a chat still refuses the chat's session", () => {
+    // The unchanged half of the rule: no learned id, so there is nothing to
+    // continue and the open conversation is not hijacked.
+    expect(
+      buildSchedulePayload(
+        form({ sessionId: "chat", learnedSessionId: "", rule: DAILY, repeat: "daily" }),
+      ).session_id,
+    ).toBeUndefined();
+  });
+
+  test("and a one-off is untouched by any of it", () => {
+    expect(buildSchedulePayload(form({ sessionId: "chat" })).session_id).toBe("chat");
+    // The fork flag is meaningless on a one-off, so it does not eat the
+    // session either.
+    expect(
+      buildSchedulePayload(form({ learnedSessionId: "own", newTaskEachRun: true })).session_id,
+    ).toBe("own");
   });
 });

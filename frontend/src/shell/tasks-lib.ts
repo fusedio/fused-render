@@ -16,7 +16,7 @@
 // is the server, and a client that guesses a second answer is a client that
 // disagrees with itself on the next poll.
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { explorerUrl } from "./schedule-lib";
+import { explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 
 // How many messages a collapsed-then-expanded task shows before Show more.
@@ -119,6 +119,29 @@ export interface MessageTone {
   label: string;
 }
 
+/**
+ * WHY THERE ARE TWO `messageTone`s (this one, and schedule-lib's).
+ *
+ * They answer different questions about the same message and neither is a
+ * superset of the other:
+ *
+ *   - This one returns a BOARD COLUMN plus a failed flag and an English label —
+ *     four buckets, because that is how many lanes the Board has.
+ *   - schedule-lib's returns one of six CALENDAR TONES, which are CSS classes
+ *     (`--missed` is amber, `--error` is red, `--skipped` is grey), and it
+ *     draws distinctions this one has already collapsed: a missed one-off is
+ *     `missed` there and `done`+failed here, a cancelled message is `skipped`
+ *     there and `archived`/"Cancelled" here.
+ *
+ * Deriving either from the other would therefore lose a distinction the losing
+ * view actually paints. A merge is also blocked mechanically: schedule-lib is
+ * the LOWER module (this file imports explorerUrl and BoardColumn from it), so
+ * schedule-lib importing back would be a cycle.
+ *
+ * What is genuinely shared is the reading of `turn` — the half that caused the
+ * bug — and that now lives in exactly one place, schedule-lib.turnPhase, which
+ * both call. Change the meaning of `turn` there and both views move together.
+ */
 export function messageTone(m: TaskMessage): MessageTone {
   switch (m.state) {
     case "pending":
@@ -140,14 +163,19 @@ export function messageTone(m: TaskMessage): MessageTone {
       return { column: "done", failed: true, label: "Failed" };
     case "sent":
     default:
-      // `sent` only means the turn STARTED. How it ended is the second fact.
-      if (m.turn === "unknown")
-        // Not "Running…": nothing is watching it any more, and saying
-        // otherwise is the frozen-progress-bar lie.
-        return { column: "done", failed: true, label: "Stopped reporting" };
-      if (m.turn === "done" || m.turn === "idle")
-        return { column: "done", failed: false, label: "Ran" };
-      return { column: "in_progress", failed: false, label: "Running…" };
+      // `sent` only means the turn STARTED. How it ended is the second fact,
+      // and turnPhase is the one place that fact is read (schedule-lib).
+      switch (turnPhase(m.turn)) {
+        case "unreported":
+          // Not "Running…": nothing is watching it any more, and saying
+          // otherwise is the frozen-progress-bar lie.
+          return { column: "done", failed: true, label: "Stopped reporting" };
+        case "running":
+          return { column: "in_progress", failed: false, label: "Running…" };
+        // "done", "idle", or whatever a newer server writes — the turn ended.
+        default:
+          return { column: "done", failed: false, label: "Ran" };
+      }
   }
 }
 
@@ -278,6 +306,26 @@ export function messageHref(task: Task, m: TaskMessage): string | null {
   if (!base) return null;
   if (!m.anchor) return base;
   return `${base}&${MESSAGE_ANCHOR_PARAM}=${encodeURIComponent(m.anchor)}`;
+}
+
+/**
+ * Where a click on a message ROW goes, or null when it has nowhere to go — the
+ * form every view that lists messages should ask in, because the calendar's
+ * popover lists one kind the List never does.
+ *
+ * A PROJECTED occurrence (schedule-lib.isProjected) is cron arithmetic, not a
+ * message: the server computed that it WILL happen and wrote nothing down. It
+ * has no transcript record and therefore no anchor, so linking it would open a
+ * conversation that has not happened — and a `msg=` built from its empty anchor
+ * would be a pointer at nothing. It is inert.
+ *
+ * The other two cases are messageHref's own and are not re-decided here: a task
+ * with no session yet is null, and a real message with an empty anchor falls
+ * back to the top of the right thread.
+ */
+export function openMessageHref(task: Task, m: TaskMessage): string | null {
+  if (isProjected(m)) return null;
+  return messageHref(task, m);
 }
 
 // ---- cancelling a message that has not gone out ------------------------------
