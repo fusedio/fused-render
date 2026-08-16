@@ -36,7 +36,7 @@
 // click handler — which is the second reason this module exists: `hrefFor` and
 // `openTargetFor` resolve the same target, so a new tab and a left click can't
 // land in different places.
-import { postAppOpen, type AppInfo } from "./api";
+import { type AppInfo } from "./api";
 import { navigate, urlForFsPath } from "./router";
 
 // The ONE ordering every app grid uses (/home's strip, the /apps hub):
@@ -56,12 +56,11 @@ export function appRecency(app: AppInfo): number {
   return app.opened_at ?? app.updated_at ?? 0;
 }
 
-// Record the open in the app recents store — what `opened_at` (and so the
-// sort above) is fed by. Fire-and-forget: recording must never delay or fail
-// the navigation itself.
-function recordAppOpen(app: AppInfo): void {
-  void postAppOpen(app.path, app.title).catch(() => undefined);
-}
+// NO client-side open recording (D301): `opened_at` is fed by the SERVER —
+// GET /render records the open (and, for an external folder, the /apps hub
+// registration) whenever it serves a page carrying the fused-app marker. Every
+// open, this tab or a new one, renders the page, so nothing here has to
+// remember to report it.
 
 // The file this card is about, tolerating a backend that predates `entry`.
 // `entry` is "the file a card opens and previews"; `entry_html` is the narrower
@@ -131,7 +130,6 @@ export function hrefFor(app: AppInfo): string {
 }
 
 export function openApp(app: AppInfo): void {
-  recordAppOpen(app);
   const { path, opts } = openTargetFor(app);
   navigate(path, opts);
 }
@@ -170,18 +168,9 @@ export function isBrowserHandledClick(e: CardClickEvent): boolean {
 export function onAppCardClick(e: CardClickEvent, app: AppInfo): void {
   if (e.defaultPrevented) return;
   if (isBrowserHandledClick(e)) {
-    // The browser owns the click, but SOME of these gestures still open the
-    // app — record those so the recency sort sees them. Only the unambiguous
-    // ones: middle-click, Cmd-click and Shift-click all navigate. Ctrl-click
-    // is the context menu on macOS (no navigation) and Alt-click is a
-    // download — a false record would scramble the sort, where a missed one
-    // just falls back to the modified time, so both are skipped even though
-    // Ctrl-click does open a tab on other platforms. No preventDefault:
-    // recording rides alongside the browser's own handling.
-    const opens =
-      e.button === 1 ||
-      (e.button === 0 && (e.metaKey || e.shiftKey) && !e.ctrlKey && !e.altKey);
-    if (opens) recordAppOpen(app);
+    // The browser owns the click. A gesture that does open the app (a new
+    // tab) still gets recorded — by the server, when the new tab renders the
+    // page — so nothing is reported from here.
     return;
   }
   e.preventDefault();

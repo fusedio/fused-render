@@ -1,8 +1,9 @@
 def main(dir: str = ""):
     """Resolve the project folder's app entry: the html file the left pane
-    should render. Mirrors the shell's "Open as app" rule — index.html first,
-    else the folder's single top-level .html — so the split view opens the
-    same page the `app` mode and that button open. The rule itself lives in
+    should render. Mirrors the shell's "Open as app" rule — the first
+    top-level .html carrying `<meta name="fused-app">` (D301) — so the split
+    view opens the same page the `app` mode and that button open. The rule
+    itself lives in
     ../shared/app_entry.py, shared with the `app` template so the two views can
     never disagree about which page an app folder is.
     Returns {"entry": <abs path> | None}."""

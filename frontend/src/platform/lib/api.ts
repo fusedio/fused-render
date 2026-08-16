@@ -1943,19 +1943,16 @@ export function getApps(): Promise<{ apps: AppInfo[] }> {
   return getJson<{ apps: AppInfo[] }>("/api/apps");
 }
 
-// Record that an app was opened (feeds opened_at above, which is what /home
-// and /apps sort by). `path` is the app's absolute folder path from the
-// listing — the identity the store keys on (workspace-relative server-side),
-// unique at every depth where (tag, name) is not. Server no-ops
-// (recorded: false) for an app whose folder is gone, so callers need not
-// pre-check.
-export function postAppOpen(
-  path: string,
-  title?: string | null,
-): Promise<{ recorded: boolean }> {
-  return postJson<{ recorded: boolean }>(
-    "/api/apps/recents/open",
-    title ? { path, title } : { path },
+// (postAppOpen is gone — D301: the SERVER records app opens when GET /render
+// serves a page carrying the fused-app marker; no client post feeds opened_at
+// any more. The endpoint survives server-side for older clients only.)
+
+// The folder's app entry page (its first top-level .html carrying
+// `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
+// null. Feeds the explorer's "Open app" button.
+export function getAppEntry(path: string): Promise<{ entry: string | null }> {
+  return getJson<{ entry: string | null }>(
+    `/api/apps/entry?path=${encodeURIComponent(path)}`,
   );
 }
 

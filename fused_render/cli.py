@@ -128,7 +128,13 @@ def _run_serve(args: argparse.Namespace) -> None:
     log_file = setup_logging()
     # First-run onboarding (D81): create ~/Documents/Fused. Runs regardless of
     # --start-dir — onboarding is about the Fused dir, not the start dir.
-    ensure_fused_dir()
+    fused_ws = ensure_fused_dir()
+    # One-time migration: stamp `<meta name="fused-app">` into pre-existing
+    # workspace apps (meta_migration's docstring carries the rules). Against
+    # the Fused dir, not --start-dir, for the same reason as onboarding.
+    from fused_render import meta_migration
+
+    meta_migration.run_once_in_background(fused_ws)
     # Showcase apps: clone/sync the community repo into <workspace>/showcase in
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community

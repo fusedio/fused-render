@@ -96,7 +96,7 @@ export function AppPreviewCard({
         ) : app.entry_html ? (
           <>
             <iframe
-              src={`/render?path=${encodeURIComponent(app.entry_html)}`}
+              src={`/render?path=${encodeURIComponent(app.entry_html)}&_preview=1`}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
