@@ -255,12 +255,13 @@ function Suggested({
             {/* …and since D302 that backend can be a CHOICE rather than only a
                 hardware fact, which makes this list something the user can
                 move. The title says where from: "my suggested models changed"
-                is otherwise an unexplainable event, and the page that caused it
-                is two clicks away with no signpost. */}
+                is otherwise an unexplainable event. It is a shorter sentence
+                than it was, because the control is no longer two clicks and a
+                page away — it is the Engines tab of this page. */}
             {group.available && group.runnerShortLabel && (
               <span
                 className="am-suggested-runner"
-                title="Chosen in Preferences → Inference engines. Each backend loads its own model format, so this list changes with it."
+                title="Chosen on the Engines tab. Each backend loads its own model format, so this list changes with it."
               >
                 via {group.runnerShortLabel}
               </span>

@@ -7,6 +7,86 @@
    have no answer for — the size figure that is the whole point of the page, the
    "Explore" link, the revision drawer a card opens, and the Discover tab. */
 
+/* The Engines tab. Capped at the same 760px the Preferences page caps its own
+   content column at, because that is what it IS — a settings surface that moved
+   pages, not a grid. Uncapped it would set a paragraph and a <select> across
+   the full width of a four-card layout, which reads as a form somebody forgot
+   to lay out. */
+.am-engines {
+  max-width: 760px;
+  font-size: 13px;
+}
+
+/* -- the Local tab's two sections ------------------------------------------
+   "Models" (by capability) and "Fetched by engines". The bucketing itself is
+   shell/aiModelGroups.ts; what is here is the hierarchy that makes it readable
+   — a section title, a capability title one step quieter, and a subtotal on
+   each. The subtotals are the reason the headings carry a baseline rule at all:
+   a figure floating at the right end of an unruled line reads as belonging to
+   the first card below it. */
+.am-section + .am-section {
+  margin-top: 28px;
+}
+
+.am-section-head,
+.am-subgroup-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.am-section-head {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+  margin-bottom: 14px;
+}
+
+.am-section-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* One step down from the section, and deliberately NOT a second bordered rule:
+   two rules of the same weight would read as two sections rather than as a
+   section and its parts. */
+.am-subgroup-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.am-subgroup + .am-subgroup {
+  margin-top: 20px;
+}
+
+.am-subgroup-head {
+  margin-bottom: 8px;
+}
+
+.am-section-size,
+.am-subgroup-size {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The sentence under a heading that needs one — what a group IS, when its two
+   or three words cannot carry it. Capped rather than full-bleed: this is prose
+   to be read once, and prose set to the width of a four-card grid is not. */
+.am-group-note {
+  margin: 0 0 10px;
+  max-width: 68ch;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
 /* Cards in a row are the SAME height, and their footers line up.
    `align-items: start` was here to stop an open revision drawer stretching the
    card beside it — but it paid for that with a permanently ragged grid: a repo
@@ -108,17 +188,46 @@
   text-decoration: none;
 }
 
-/* The DESTRUCTIVE actions are quiet until the card is hovered or one of them is
-   focused: a grid of ✕ buttons reads as a page about deleting, and this one is
-   about looking. "Explore" is exempt — it is the card's other destination, and
-   an affordance you have to hover to discover is one most people never find. */
-.am-card .cc-mdcard-actions .cc-iconbtn:not(.am-card-explore) {
-  opacity: 0;
+/* A card's controls are ALWAYS visible — the delete ✕ and the revisions
+   chevron included, which were hidden at `opacity: 0` until the card was
+   hovered or focused.
+
+   The argument for hiding them was that a grid of ✕ buttons reads as a page
+   about deleting. What it actually produced was an icon that appeared on
+   exactly one card at a time, following the mouse rather than describing a
+   repo: in a screenshot, in a screen share, or to anyone scanning the grid
+   before touching the pointer, eleven cards had no controls and one did. That
+   is not a quieter page, it is a page whose controls have to be discovered
+   one at a time, and it made "which of these can I delete?" unanswerable
+   without hovering all of them.
+
+   Quieting them stays, by COLOUR rather than by presence: `.cc-iconbtn` is
+   already muted at rest and lights on hover, which says "secondary" without
+   saying "absent". Delete is still confirmed through the modal, so a
+   permanently visible ✕ cannot destroy anything by itself. */
+
+/* A disabled icon button, now that "at rest" is a state the user actually sees.
+   It must not read as merely muted — the enabled ones are muted too — so it
+   drops further and takes the pointer with it, and `cursor: not-allowed` is
+   what makes a hover that changes nothing legible as a refusal rather than as a
+   dead page. The `title` on every one of them says why. */
+.am-card .cc-iconbtn:disabled,
+.am-rev .cc-iconbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
-.am-card:hover .cc-mdcard-actions .cc-iconbtn,
-.am-card:focus-within .cc-mdcard-actions .cc-iconbtn {
-  opacity: 1;
+/* …and it must not LIGHT UP under the pointer. `.cc-iconbtn:hover` carries no
+   `:not(:disabled)` guard, which never mattered while a disabled one was
+   invisible; now that every card shows its full control set, a dead ✕ that
+   washes accent on hover promises an action it will not perform. Fixed here
+   rather than on the shared class: the base rule is wrong on every surface, but
+   this page is the one that made it visible, and widening it would restyle
+   pages nothing in this change has looked at. */
+.am-card .cc-iconbtn:disabled:hover,
+.am-rev .cc-iconbtn:disabled:hover {
+  background: none;
+  color: var(--fg-muted);
 }
 
 /* -- what the model is for -------------------------------------------------- */
@@ -278,17 +387,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* A drawer row's ✕ follows the drawer row it belongs to, not the whole card. */
+/* A drawer row's ✕ is smaller than a card's, and — like the card's — always
+   there rather than revealed by hovering the row it belongs to. Same reason:
+   the drawer is a list of revisions to compare, and one visible ✕ chasing the
+   pointer down it says nothing about which of them can be deleted. */
 .am-rev .cc-iconbtn {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  opacity: 0;
-}
-
-.am-rev:hover .cc-iconbtn,
-.am-rev .cc-iconbtn:focus-visible {
-  opacity: 1;
 }
 
 /* -- Local / Discover, and the Discover tab itself --------------------------
@@ -590,9 +696,13 @@
   background: var(--bg-alt);
 }
 
+/* `not-allowed`, not `default`. This used to mean "busy for a moment" and now
+   means "this repo cannot be loaded here" on cards that will never offer it —
+   the button is permanently visible and permanently disabled there, so the
+   pointer has to say refused rather than idle. The `title` says why. */
 .am-card-power:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: not-allowed;
 }
 
 .am-card-power-on {

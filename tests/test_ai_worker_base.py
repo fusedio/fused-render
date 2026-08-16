@@ -161,6 +161,33 @@ def test_a_failed_load_ends_in_error_never_loading_forever(base):
     assert "no metal for you" in state["error"]
 
 
+def test_a_cancelled_download_is_not_reported_as_a_failed_load(base, monkeypatch):
+    """A ✕ pressed during the fetch is not a crash, and calling it one is not
+    merely a wrong word.
+
+    `fetch_with_progress` learns about the ✕ from the reply to its own tick and
+    raises `Cancelled` — which the broad catch below turned into a terminal
+    `state="error"` on the row. That state CLEARS `cancel_requested`
+    (`jobs.upsert`), so the supervisor's own poll — the thing that would have
+    written "cancelled" half a second later — could no longer see the ✕ at all,
+    read /health, found "error", and reported the download the user stopped as a
+    load that failed.
+    """
+    reports = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: reports.append(fields) or None)
+
+    def download(model_id):
+        raise base.Cancelled()
+
+    base._bring_up("org/m", download, lambda model_id, fetched: None)
+
+    assert [r["state"] for r in reports if "state" in r] == ["cancelled"]
+    # The health error is the literal string the supervisor switches on, so its
+    # independent verdict agrees with the row rather than overwriting it.
+    assert base.snapshot()["error"] == "cancelled"
+
+
 # -- /generate, both shapes -----------------------------------------------------
 
 

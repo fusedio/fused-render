@@ -965,13 +965,16 @@ def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str |
     # Otherwise: name the backend that DOES read it, and say what stands in the
     # way. Both reasons are actionable and they are different actions — one is
     # "this needs another machine", the other "this needs the other engine,
-    # which is one switch away in Preferences".
+    # which is one tab away on the page this sentence is printed on".
     runner = next((r for r in candidates if r.available().ok), candidates[0])
     status = runner.available()
     reason = status.reason or None
     if status.ok and serving is not None:
+        # Names the TAB, not a settings page: the engine picker moved onto
+        # /ai-models, so the remedy for a card the user is looking at is beside
+        # the card. Directions are worth less the further away they point.
         reason = (f"{capability} is set to {serving.short}, which does not read "
-                  f"this format — switch it in Preferences → Inference engines")
+                  f"this format — switch it on the Engines tab")
     elif status.ok:
         reason = f"nothing serves {capability} on this machine"
     return {
@@ -1131,7 +1134,9 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # everything a user downloaded on purpose. The bytes stay on the page
         # and stay deletable — this page's job includes showing what is eating
         # the disk, and hiding a 2.4GB row would be the opposite of that — but
-        # the card says whose it is and does not offer a Load. See
+        # the page files these under their own "Fetched by engines" heading, the
+        # card says whose it is, and its Load is disabled with that as the
+        # reason (never absent: a control that vanishes teaches nothing). See
         # `runners/formats.COMPONENT_REPOS`, which is where the ids live because
         # they are named inside runner venvs this process cannot import.
         "component": dict(component, id=repo_id) if component else None,

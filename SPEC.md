@@ -6291,7 +6291,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   complete; the reported figure is also capped at the total, since the disk walk
   sees siblings the download was never fetching.
 - **AI-9d** **Image generation has an MLX runner too, and like the other two
-  multi-runner capabilities it takes the Macs by default** (D305). `mflux_image`
+  multi-runner capabilities it takes the Macs by default** (D310). `mflux_image`
   renders FLUX on Metal from a single `mlx-community`
   conversion whose components are all already 4-bit — so where the torch path
   needs AI-9b's recipe (a ~2.6GB GGUF transformer plus ~8.2GB of base-repo

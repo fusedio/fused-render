@@ -5,9 +5,17 @@
 // transformers import, a diffusers pipeline, an `hf download`, a page a user
 // pasted in — and it is invisible: it fills up under ~/.cache with multi-GB
 // checkpoints nothing on screen ever mentions. This page is the missing
-// inventory: one card per cached repo, biggest first, with what it costs on
-// disk, its NAME linking to the model's page on the Hub and an "Explore" that
-// opens it HERE — two destinations, so neither has to win the same click.
+// inventory: one card per cached repo, with what it costs on disk, its NAME
+// linking to the model's page on the Hub and an "Explore" that opens it HERE —
+// two destinations, so neither has to win the same click.
+//
+// Biggest-first WITHIN a group, not across the page (shell/aiModelGroups.ts).
+// One flat size sort put a 2.4GB component a runner fetched for itself fifth,
+// between two models the user chose, and left the distinction to the quietest
+// chip on the card. Position now carries meaning: what you chose, by what it
+// does; then what an engine fetched; then the repos nothing here recognises.
+// Every group states its own byte subtotal, because a group that can be skipped
+// must still say what it costs.
 //
 // It manages that cache too (D250), two ways: delete a repo, or delete one
 // revision of one. Both name their targets in a confirmation the user reads
@@ -21,7 +29,9 @@
 // the size figure, the Explore link, the revision drawer, and the tab strip.
 import { useEffect, useMemo, useRef, useState } from "react";
 import AiModelsDiscover from "./AiModelsDiscover";
+import AiModelsEngines from "./AiModelsEngines";
 import { ModelProgress } from "./AiProgress";
+import { groupRepos, loadRefusal } from "@shell/aiModelGroups";
 import { isBusy, publishAiRuntime, refreshAiRuntime, useAiRuntime } from "./aiRuntime";
 import {
   deleteAiModels,
@@ -61,15 +71,21 @@ type Load =
 // "cached" describes the mechanism (a Hugging Face cache directory) rather than
 // the thing. Discover is the other half of the same question — what it could
 // have — and "local vs discover" is the pair that reads.
-export type AiModelsTab = "local" | "discover";
+//
+// Engines is the third, moved here from Preferences (D302 shipped it there).
+// It is a setting, but every consequence of it is on this page — which cards
+// can be loaded, what their engine tags say, what Discover suggests — and the
+// question it answers ("why can't I load this?") is asked with the unloadable
+// card on screen. `/preferences?tab=engines` is rewritten to it
+// (`rewriteLegacyUrl`), so nobody's bookmark lands on a tab that is gone.
+export type AiModelsTab = "local" | "discover" | "engines";
 
 /** The tab the URL asks for. An unknown value falls back to the default
  *  silently, the same forgiving posture the shell takes for an unknown `_mode`
  *  (PT-9): a stale link should open the page, not an error. */
 function tabFromUrl(): AiModelsTab {
-  return new URLSearchParams(location.search).get("tab") === "discover"
-    ? "discover"
-    : "local";
+  const asked = new URLSearchParams(location.search).get("tab");
+  return asked === "discover" || asked === "engines" ? asked : "local";
 }
 
 // What the confirmation is about. Every destructive action becomes one of these
@@ -285,7 +301,7 @@ function RepoCard({
   job,
   busy,
   fetching,
-  canLoad,
+  refusal,
   onToggle,
   onDeleteRepo,
   onDeleteRevision,
@@ -301,16 +317,21 @@ function RepoCard({
   busy: boolean;
   /** True while a weights-only fetch for this repo is in flight. */
   fetching: boolean;
-  /** False when no runner here serves this kind of model. It gates LOADING
-   *  only: a button that always fails is worse than no button, but a model that
-   *  is already RESIDENT must always be releasable — see the render below. */
-  canLoad: boolean;
+  /** Why Load is refused for this repo, or null when it can be loaded
+   *  (`aiModelGroups.loadRefusal`). It DISABLES the button and becomes its
+   *  title; it never removes it. A model that is already RESIDENT must still be
+   *  releasable whatever this says — see the render below. */
+  refusal: string | null;
   onToggle: () => void;
   onDeleteRepo: () => void;
   onDeleteRevision: (revision: AiModelRevision) => void;
   onLoad: () => void;
   onUnload: () => void;
 }) {
+  // Whether the revisions drawer has anything to show. Read twice — by the
+  // expander and by the drawer's own guard below — from one name, so the two
+  // cannot come apart.
+  const hasRevisions = repo.revisions > 1;
   const when = timeAgo(repo.lastUsed ?? repo.mtime);
   // "added", not "released": the Hub's release date isn't on this disk (see the
   // endpoint), so the card states the date this machine actually knows.
@@ -381,10 +402,15 @@ function RepoCard({
             instead of an engine tag. "no engine" was true of both of these and
             explained neither: the 2.4GB GGUF is FLUX's transformer and deleting
             it breaks that model, the 2MB Silero is the whisper engine's speech
-            detector and deleting it only costs speed. The tag states the fact
-            ("part of FLUX.2 klein 4B") and the hover carries the consequence —
-            which is prose nothing else on the card repeats, so it earns the tab
-            stop the same way the unavailable engine tag does. */}
+            detector and deleting it only costs speed.
+
+            The tag no longer has to carry the whole distinction on its own —
+            these cards sit under "Fetched by engines" now, and that heading is
+            what stops a component reading as a model. What the tag adds is WHICH
+            one it belongs to, and the hover adds what deleting THIS one costs,
+            which differs per component and is not in the heading. That is prose
+            nothing else on the card repeats, so it keeps its tab stop the same
+            way the unavailable engine tag does. */}
         {repo.component ? (
           <span
             className="am-card-engine am-card-engine-component"
@@ -512,16 +538,25 @@ function RepoCard({
         </span>
         <span className="cc-mdcard-actions">
           {/* Load / Unload — the one control on this page that costs MEMORY
-              rather than disk. Only offered for a capability this machine can
-              actually serve: on a Windows box the text runner is unavailable,
-              and a button that always fails is worse than no button. */}
-          {/* `loaded` FIRST, and `canLoad` only for the Load half. Residency is a
-              FACT the runtime reported; the task label is an INFERENCE from
-              model-card metadata, and the two can disagree — FLUX.2 klein's card
-              says "image to image", which no runner serves, while the model is
-              sitting in memory loaded as text-to-image. Gating both halves on
-              the inference stranded it: the card said Loaded and offered no way
-              to get the memory back. What is resident can always be unloaded. */}
+              rather than disk.
+
+              **Always rendered, disabled when it cannot be pressed.** It used
+              to disappear for a repo no engine here can load, and a control
+              that vanishes teaches nothing: comparing two cards, a user cannot
+              tell "this model cannot be loaded" from "I misremembered where the
+              button was", and the row's width shifted card to card so the eye
+              never learned where to look. `refusal` carries the reason — and
+              there are four different ones, which is the other half of the
+              argument: a disabled button with no explanation is the same dead
+              end as a missing one. */}
+          {/* `loaded` FIRST, and the refusal only for the Load half. Residency
+              is a FACT the runtime reported; the refusal rests on an INFERENCE
+              from model-card metadata and the format on disk, and the two can
+              disagree — FLUX.2 klein's card says "image to image", which no
+              runner serves, while the model is sitting in memory loaded as
+              text-to-image. Gating both halves on the inference stranded it: the
+              card said Loaded and offered no way to get the memory back. What is
+              resident can always be unloaded. */}
           {loaded ? (
             <button
               type="button"
@@ -532,17 +567,25 @@ function RepoCard({
             >
               Unload
             </button>
-          ) : canLoad ? (
+          ) : (
             <button
               type="button"
               className="am-card-power"
-              disabled={busy || !!job}
-              title={`Load ${repo.id} into memory so it can answer`}
+              disabled={busy || !!job || !!refusal}
+              title={refusal ?? `Load ${repo.id} into memory so it can answer`}
+              /* The reason again, in the accessible name. A `title` is a hover,
+                 and a disabled button is one a pointer user may never think to
+                 hover — while a screen reader reads the name and nothing else.
+                 It opens with the visible label so the name still contains
+                 what is on screen (WCAG 2.5.3). */
+              aria-label={
+                refusal ? `Load ${repo.id} — unavailable: ${refusal}` : `Load ${repo.id}`
+              }
               onClick={onLoad}
             >
               {job ? "Loading…" : "Load"}
             </button>
-          ) : null}
+          )}
           {/* The local door: the model card view (SPEC §38), read from this
               folder's own files. A real <a href> so middle-click and copy-link
               work, with left-click intercepted for client-side navigation like
@@ -586,34 +629,47 @@ function RepoCard({
               <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
             </svg>
           </a>
-          {/* Only offered where it means something: with a single revision,
-              deleting "the revision" and deleting the repo are the same act,
-              and two controls for it would just ask the user to tell them
-              apart. */}
-          {repo.revisions > 1 && (
-            <button
-              type="button"
-              className={"cc-iconbtn" + (expanded ? " cc-btn-on" : "")}
-              title={expanded ? "Hide revisions" : "Show revisions"}
-              aria-label={`${expanded ? "Hide" : "Show"} revisions of ${repo.id}`}
-              aria-expanded={expanded}
-              onClick={onToggle}
+          {/* Disabled at a single revision, not removed. It does nothing there
+              — deleting "the revision" and deleting the repo are the same act,
+              and two controls for it would only ask the user to tell them apart
+              — but a chevron that is present on some cards and absent on others
+              is a difference the reader has to notice and then explain, and the
+              explanation is a fact about the repo worth stating outright. */}
+          <button
+            type="button"
+            className={"cc-iconbtn" + (expanded ? " cc-btn-on" : "")}
+            disabled={!hasRevisions}
+            title={
+              hasRevisions
+                ? expanded
+                  ? "Hide revisions"
+                  : "Show revisions"
+                : `${repo.id} has one revision, so there is nothing to expand — deleting it and deleting the repo are the same act.`
+            }
+            aria-label={
+              hasRevisions
+                ? `${expanded ? "Hide" : "Show"} revisions of ${repo.id}`
+                : `Revisions of ${repo.id} — only one, nothing to expand`
+            }
+            /* Only where it describes something. A disabled control that
+               announces itself as collapsed invites the reader to expand it. */
+            aria-expanded={hasRevisions ? expanded : undefined}
+            onClick={onToggle}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d={expanded ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
-              </svg>
-            </button>
-          )}
+              <path d={expanded && hasRevisions ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+            </svg>
+          </button>
           <button
             type="button"
             className="cc-iconbtn cc-iconbtn-danger"
@@ -638,10 +694,31 @@ function RepoCard({
           </button>
         </span>
       </div>
-      {/* Same predicate as the expander above, so a repo that drops to one
-          revision under a deletion collapses itself rather than stranding an
-          open drawer with no control left to close it. */}
-      {expanded && repo.revisions > 1 && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
+      {/* Kept even though the expander is now always rendered: the expander
+          being DISABLED at one revision is not the same as this drawer being
+          closed, and a repo that drops to one revision under a deletion must
+          collapse itself rather than strand an open drawer above a control that
+          can no longer close it. */}
+      {expanded && hasRevisions && <Revisions repo={repo} inUse={inUse} onDelete={onDeleteRevision} />}
+    </div>
+  );
+}
+
+/** A section heading with its own byte subtotal.
+ *
+ *  The subtotal is not decoration and it is not the same figure as the caption's
+ *  total. This page's job is "what is eating my disk", and grouping introduced
+ *  something the flat list did not have: a section a reader may reasonably
+ *  decide to skip. A section that can be skipped has to state its cost on the
+ *  way past, or the grouping hides exactly the number the page exists to show.
+ */
+function SectionHead({ title, size }: { title: string; size: number }) {
+  return (
+    <div className="am-section-head">
+      <h3 className="am-section-title">{title}</h3>
+      <span className="am-section-size" title={`${title} take up ${formatSize(size)} on this machine`}>
+        {formatSize(size)}
+      </span>
     </div>
   );
 }
@@ -791,13 +868,17 @@ export default function AiModels() {
   const jobByModel = new Map(
     jobs.filter((j) => j.owner === "server").map((j) => [j.title, j]),
   );
-  // Loadable is now ONE question, asked of the server: is there an engine that
+  // Loadable is ONE question, asked of the server: is there an engine that
   // reads this repo's format and runs on this machine. It used to be asked of
   // the capability alone — this repo has one, and some runner here serves it —
   // which is true of `openai/whisper-large-v3` on every machine and false of
   // every repo whose card was missing a task label. The format is the half that
   // was missing, and `repo.engine` carries both halves (see `_engine`).
-  const canLoad = (repo: AiModelRepo) => !!repo.engine?.available;
+  //
+  // Asked through `loadRefusal` rather than as a boolean here, because the
+  // button now needs the SENTENCE and not just the verdict — and one function
+  // answering both is what stops a card that is disabled for one reason
+  // explaining itself with another.
   // What Discover means by "you already have this one". A MATERIALISED snapshot,
   // not merely a folder: huggingface_hub creates `models--org--name/` the moment
   // a pull starts, so a set built from folder names alone flipped a suggestion
@@ -855,6 +936,34 @@ export default function AiModels() {
     }
   };
 
+  // Derived on every render rather than memoised: it is one pass over a list
+  // whose length is the number of repos in a cache, and `repos` is a fresh array
+  // each render anyway — a memo keyed on it would recompute every time and cost
+  // the comparison on top.
+  const grouped = groupRepos(repos);
+
+  // One card, wherever it ends up. Written once because a section is only a
+  // heading and a subset — nothing about a card changes with the group it is
+  // drawn in, and two copies of this call site would be two places for a prop
+  // to go missing.
+  const card = (r: AiModelRepo) => (
+    <RepoCard
+      key={r.path}
+      repo={r}
+      expanded={expanded === r.dir}
+      loaded={loadedById.get(r.id)}
+      job={jobByModel.get(r.id)}
+      busy={busy}
+      fetching={downloading.has(r.id)}
+      refusal={loadRefusal(r)}
+      onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
+      onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
+      onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
+      onLoad={() => runLoad(r)}
+      onUnload={() => runUnload(r)}
+    />
+  );
+
   return (
     <div className="cc-root">
       <main className="cc-main">
@@ -864,6 +973,11 @@ export default function AiModels() {
             <div className="cc-caption cc-mono">
               {tab === "discover" ? (
                 "Models on the Hugging Face Hub"
+              ) : tab === "engines" ? (
+                // Not the cache path: this tab is not about the disk, and a
+                // caption naming a directory over a panel of engine pickers is
+                // the page's chrome contradicting its content.
+                "Which backend runs each kind of local model"
               ) : data ? (
                 <>
                   {/* The path is a DESTINATION, not a label. It is the one
@@ -934,6 +1048,16 @@ export default function AiModels() {
               >
                 Discover
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "engines"}
+                className={"am-tab" + (tab === "engines" ? " active" : "")}
+                onClick={() => setTab("engines")}
+                title="Which backend runs each kind of local model"
+              >
+                Engines
+              </button>
             </div>
           </div>
         </div>
@@ -949,6 +1073,7 @@ export default function AiModels() {
             jobByModel={jobByModel}
           />
         )}
+        {tab === "engines" && <AiModelsEngines />}
         {tab === "local" && load.status === "error" && <ErrorBanner>{load.message}</ErrorBanner>}
         {tab === "local" && runtimeError && <ErrorBanner>{runtimeError}</ErrorBanner>}
         {tab === "local" && failures.length > 0 && (
@@ -964,25 +1089,43 @@ export default function AiModels() {
         {tab === "local" &&
           data &&
           (repos.length ? (
-            <div className="cc-mdgrid am-grid">
-              {repos.map((r) => (
-                <RepoCard
-                  key={r.path}
-                  repo={r}
-                  expanded={expanded === r.dir}
-                  loaded={loadedById.get(r.id)}
-                  job={jobByModel.get(r.id)}
-                  busy={busy}
-                  fetching={downloading.has(r.id)}
-                  canLoad={canLoad(r)}
-                  onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
-                  onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
-                  onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
-                  onLoad={() => runLoad(r)}
-                  onUnload={() => runUnload(r)}
-                />
-              ))}
-            </div>
+            <>
+              {/* Section A. Everything somebody chose to download, under the
+                  capability that would serve it. Rendered at all only when
+                  there is one — a machine holding nothing but a runner's own
+                  components should not be told it has a Models section. */}
+              {grouped.models.groups.length > 0 && (
+                <section className="am-section">
+                  <SectionHead title="Models" size={grouped.models.size} />
+                  {grouped.models.groups.map((group) => (
+                    <div className="am-subgroup" key={group.key}>
+                      <div className="am-subgroup-head">
+                        <h4 className="am-subgroup-title">{group.label}</h4>
+                        <span className="am-subgroup-size">{formatSize(group.size)}</span>
+                      </div>
+                      {group.note && <p className="am-group-note">{group.note}</p>}
+                      <div className="cc-mdgrid am-grid">{group.repos.map(card)}</div>
+                    </div>
+                  ))}
+                </section>
+              )}
+              {/* Section B. No sub-grouping: there are a handful of these, and
+                  it is the HEADING that does the work now — the cards already
+                  wear "part of X", and scattering them through a size-sorted
+                  list is what made that chip the only thing distinguishing a
+                  2.4GB machine-fetched repo from a model the user picked. */}
+              {grouped.components.repos.length > 0 && (
+                <section className="am-section">
+                  <SectionHead title="Fetched by engines" size={grouped.components.size} />
+                  <p className="am-group-note">
+                    Downloaded by a runner to do its job — nobody chose these. They are listed
+                    and deletable because they eat the same disk as everything above; delete one
+                    and the next run that needs it fetches it again.
+                  </p>
+                  <div className="cc-mdgrid am-grid">{grouped.components.repos.map(card)}</div>
+                </section>
+              )}
+            </>
           ) : (
             // Two different nothings: no cache dir at all (nothing has ever
             // pulled from the Hub) versus a cache that has been emptied. The

@@ -785,6 +785,18 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
                 return
             time.sleep(0.5)
         if proc.returncode != 0:
+            # **The ✕ is checked before the exit code, because the WORKER can
+            # beat this loop to it.** Both sides watch for a cancel — this loop
+            # every 0.5s, and the worker's own fetch tick every 1s, which learns
+            # about it from the reply (`worker_base.report_or_cancel`). When the
+            # worker notices first it raises `Cancelled` and exits non-zero, and
+            # the `proc.poll() is None` guard above then drops us straight here
+            # without ever asking about the ✕ — so a download the user cancelled
+            # was reported as a FAILED one, with a traceback in the message.
+            # The flag is the honest answer either way: it is server state that
+            # only a ✕ sets, and it survives the worker's death.
+            if _cancel_requested(job):
+                raise SupervisorError("cancelled")
             stderr = _tail(log)
             raise SupervisorError(stderr.strip() or f"the download exited {proc.returncode}")
         _report(job, state="done", detail="Downloaded")
