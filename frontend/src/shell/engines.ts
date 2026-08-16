@@ -2,8 +2,8 @@
 //
 // The rendering is four lines of JSX; the sentences are where this feature can
 // actually be wrong, and they are wrong in ways a screenshot does not reveal —
-// a preference reported as in force when it is not, a control greyed out with
-// no reason beside it, a capability with no engine that reads as a bug rather
+// a preference reported as in force when it is not, an option greyed out with
+// no reason in it, a capability with no engine that reads as a bug rather
 // than as an unsupported machine. So the wording lives here, as plain
 // functions over the server's payload, and `engines.test.ts` drives them.
 //
@@ -48,11 +48,11 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
   const chosen = row.choices.find((c) => c.code === row.selected);
   const name = chosen?.label ?? row.selected;
   // One sentence, and it survives the trim because it is the ONLY signal that
-  // a stored preference was dropped: the radio still shows the user's choice,
+  // a stored preference was dropped: the select still shows the user's choice,
   // so without this the page states something untrue. The reason is the
   // registry's own and is passed through; what went is the second sentence
   // about the choice being kept for another machine, which is reassurance
-  // rather than information — the radio being still selected says it.
+  // rather than information — the choice being still selected says it.
   return `${name} is not used here — ${row.ignoredReason}.`;
 }
 
@@ -61,7 +61,11 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
  *  A disabled control with no explanation is the thing the greying-out rule
  *  exists to prevent, so an unavailable choice ALWAYS has a reason: the
  *  fallback covers a null from the server, which would otherwise produce a
- *  silently dead radio.
+ *  silently dead menu item.
+ *
+ *  Returning null for an available choice is what lets the caller append this
+ *  unconditionally: the engine picker folds the reason into the option's own
+ *  label, because a disabled `<option>` has nowhere else to say anything.
  *
  *  Deliberately says nothing about an AVAILABLE engine. It used to return the
  *  runner's `note` — what using that backend is like — and the page rendered it

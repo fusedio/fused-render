@@ -392,14 +392,29 @@ function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs
   );
 }
 
-// One capability's engine: a radio per backend, plus Automatic.
+// One capability's engine: a <select> holding Automatic and every backend.
 //
-// Radios rather than a select, matching the Appearance section: the options
-// each need a sentence beside them (what the backend is like, or why it cannot
-// run here) and a <select> has nowhere to put one. It also makes the DISABLED
-// case work — a greyed-out option in a dropdown is invisible until you open it,
-// while a greyed-out radio with its reason next to it explains itself in place,
-// which is the same idiom the Call log section uses for an env-locked control.
+// A dropdown rather than a radio list, so that a machine with three engines for
+// one capability is one line high instead of four — and so this section reads
+// like the rest of the page, where every other choice-of-several (Model,
+// Parameters, Keep for) is a select.
+//
+// **The reason an unavailable engine cannot be picked is folded into its own
+// option label**, which is the whole difficulty a dropdown has here and the
+// reason this was radios first. A greyed-out radio carries its explanation
+// beside it permanently; a disabled <option> is invisible until the menu is
+// opened, and its `title` is not reliably shown at all. So the sentence — the
+// registry's own, which the page cannot synthesise — goes in the text: "MLX
+// Whisper (Apple Silicon) — needs Apple Silicon (this is windows/amd64)". It is
+// the idiom the retention select already uses (`describeRetention`): state that
+// would otherwise need a line of prose beside the control goes into the option
+// labels, so the control still explains itself when it is read.
+//
+// Unavailable engines stay in the menu, disabled. Hidden, a Windows user would
+// have no way to learn that the MLX path exists and why it is not for them —
+// and a stored preference for one is what the select still SHOWS as its value,
+// because "your choice, and why it is not in force" is exactly what the muted
+// lines underneath go on to explain.
 function CapabilityEngineRow({
   row,
   auto,
@@ -435,51 +450,38 @@ function CapabilityEngineRow({
   return (
     <div className="prefs-field">
       <h3>{capabilityLabel(row.capability)}</h3>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name={`engine-${row.capability}`}
-          checked={row.selected === auto}
+      <label>
+        Engine{" "}
+        <select
+          value={row.selected}
           disabled={busy}
-          onChange={() => choose(auto)}
-        />
-        <span>
-          <b>Automatic</b>
-        </span>
+          onChange={(e) => choose(e.target.value)}
+        >
+          {/* First, and the only option with no engine behind it. */}
+          <option value={auto}>Automatic</option>
+          {row.choices.map((choice) => {
+            // Null for an engine that CAN be picked, which is the whole of what
+            // this adds to a label: what a backend is LIKE ("transcribes on the
+            // GPU") is editorial and lives on the AI Models page. What is left
+            // is the registry's sentence about why a greyed-out option is
+            // greyed out, and in a menu the only place it can be read is here.
+            const reason = choiceReason(choice);
+            return (
+              <option key={choice.code} value={choice.code} disabled={busy || !choice.available}>
+                {choice.label}
+                {reason ? ` — ${reason}` : ""}
+              </option>
+            );
+          })}
+        </select>
       </label>
-      {row.choices.map((choice) => {
-        // ONLY for a disabled option. A radio that cannot be clicked and says
-        // nothing about why is worse than the verbosity being cut here, and the
-        // sentence is the registry's — the page cannot know it. An available
-        // engine gets its name and nothing else: what it is LIKE ("transcribes
-        // on the GPU") is editorial, and this is a settings page.
-        const reason = choice.available ? null : choiceReason(choice);
-        return (
-          <label className="prefs-radio" key={choice.code}>
-            <input
-              type="radio"
-              name={`engine-${row.capability}`}
-              checked={row.selected === choice.code}
-              // Unavailable backends are shown and not offered. Hidden, a user
-              // on a Windows machine would have no way to learn that the MLX
-              // path exists and why it is not for them.
-              disabled={busy || !choice.available}
-              onChange={() => choose(choice.code)}
-            />
-            <span>
-              <b>{choice.label}</b>
-              {reason ? ` — ${reason}` : ""}
-            </span>
-          </label>
-        );
-      })}
       <div className="deploy-muted">{servingLine(row)}</div>
       {warning && <div className="deploy-muted">{warning}</div>}
       {/* The consequence, in four words. It stays because an unload is a real
           thing that just happened to the user's machine and nothing else on
           screen would report it — but the paragraph explaining WHY the model
-          was unloaded and how suggestion lists work was an essay after a radio
-          click. */}
+          was unloaded and how suggestion lists work was an essay after picking
+          a menu item. */}
       {changed && <div className="deploy-muted">Switched. Loaded model unloaded.</div>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>

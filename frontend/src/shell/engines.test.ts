@@ -97,10 +97,15 @@ describe("ignoredWarning", () => {
     // page cannot know this and must not paraphrase it.
     expect(warning).toContain("needs Apple Silicon");
     expect(warning).toContain("windows/amd64");
-    // ONE sentence: this is a settings page, and the warning earns its place
-    // by being the only thing that contradicts the still-selected radio above
-    // it — not by explaining itself at length.
-    expect(warning.split(". ").length).toBe(1);
+    // The whole line, asserted as content rather than by counting full stops:
+    // the warning earns its place by being the only thing that contradicts the
+    // still-selected option above it, and what must not come back is the
+    // second sentence this used to carry — reassurance that the choice is kept
+    // for another machine, which the selection itself already says.
+    expect(warning).toBe(
+      "MLX Whisper (Apple Silicon) is not used here — needs Apple Silicon — MLX runs on"
+      + " Metal only (this is windows/amd64).",
+    );
   });
 });
 
@@ -112,8 +117,9 @@ describe("choiceReason", () => {
 
   it("falls back rather than leaving a dead control unexplained", () => {
     // A null reason on an unavailable runner should not be reachable, but a
-    // radio that cannot be clicked and says nothing about why is the exact
-    // failure the greying-out rule is there to prevent.
+    // menu item that cannot be picked and says nothing about why is the exact
+    // failure the greying-out rule is there to prevent — and in a dropdown the
+    // label is the only place it could have said anything.
     const reason = choiceReason({
       code: "x", label: "X", note: null, available: false, reason: null,
     });
