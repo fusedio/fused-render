@@ -672,6 +672,102 @@ fi
 echo "    $(echo "$SELFLOC_OUT" | tail -1) (prefix $SELFLOC_PREFIX)"
 
 # ---------------------------------------------------------------------------
+# 4b-ter. The bundle must carry the WHOLE standard library — and a venv built
+#     on the bundled interpreter must inherit it.
+#
+#     py2app freezes the stdlib IT TRACED from app_entry.py, which is a subset
+#     chosen by whatever fused_render happens to import. That subset is not the
+#     app's business alone: `Contents/MacOS/python` is the BASE INTERPRETER of
+#     every environment the app builds (PY-18), so a stdlib module missing here
+#     is missing from every project venv, every runner venv, and from every
+#     third-party package inside them.
+#
+#     It shipped. `filecmp` was absent, `transformers/dynamic_module_utils.py`
+#     imports it, and loading an MLX model on a DMG failed with `Could not
+#     import module 'AutoTokenizer'` — transformers' lazy-import machinery
+#     re-raising a ModuleNotFoundError as a sentence about the model. Nothing
+#     about the install was wrong and nothing about the model was wrong, so no
+#     amount of rebuilding the environment could have fixed it.
+#
+#     Two checks, because they fail independently:
+#       a) the bundled interpreter imports every stdlib module setup_py2app.py
+#          says it ships (STDLIB_PACKAGES + STDLIB_INCLUDES). That list is what
+#          the build was told to carry, so a hole here is py2app dropping
+#          something it was asked for.
+#       b) a real venv on that interpreter does the same. That is the path that
+#          actually broke, it is one `python -m venv` away, and it is the only
+#          version of this check a user's failure would recognise.
+#
+#     Env stripped, for 4b-bis's reason: with PYTHONHOME set, the build
+#     machine's own stdlib answers imports the bundle cannot.
+# ---------------------------------------------------------------------------
+
+echo "==> bundle sanity: the bundled stdlib is complete"
+STDLIB_EXPECTED="$("$BUILD_VENV/bin/python" -c "
+import sys
+sys.path.insert(0, '$REPO_ROOT/scripts')
+import setup_py2app as s
+print(','.join(sorted(set(s.STDLIB_PACKAGES) | set(s.STDLIB_INCLUDES))))
+")"
+if [[ -z "$STDLIB_EXPECTED" ]]; then
+  echo "FATAL: setup_py2app.py named no stdlib modules to ship — _stdlib_split()" >&2
+  echo "       returned nothing, so this build would repeat the traced-subset" >&2
+  echo "       bug the list exists to prevent." >&2
+  exit 1
+fi
+
+STDLIB_CHECK="$BUILD_DIR/stdlib_check.py"
+cat > "$STDLIB_CHECK" <<'STDLIBEOF'
+import importlib
+import os
+import sys
+
+names = os.environ["STDLIB_EXPECTED"].split(",")
+missing = []
+for name in names:
+    try:
+        importlib.import_module(name)
+    except BaseException as exc:  # noqa: BLE001 - the report IS the product
+        missing.append("%s: %s: %s" % (name, exc.__class__.__name__, exc))
+print("checked %d, missing %d, prefix %s" % (len(names), len(missing), sys.prefix))
+for line in missing[:25]:
+    print("   ", line)
+STDLIBEOF
+
+for STDLIB_WHO in bundled venv; do
+  if [[ "$STDLIB_WHO" == "bundled" ]]; then
+    STDLIB_PY="$APP_DIR/Contents/MacOS/python"
+  else
+    rm -rf "$BUILD_DIR/stdlib-venv"
+    # --without-pip: ensurepip is deliberately not in the bundle (DP-3), and
+    # this venv exists to answer one question about imports.
+    if ! env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+        "$APP_DIR/Contents/MacOS/python" -m venv --without-pip \
+        "$BUILD_DIR/stdlib-venv" >/dev/null 2>&1; then
+      echo "FATAL: the bundled interpreter cannot create a venv at all — and" >&2
+      echo "       every PY-18 environment is built exactly that way." >&2
+      exit 1
+    fi
+    STDLIB_PY="$BUILD_DIR/stdlib-venv/bin/python"
+  fi
+  # `|| true` inside the substitution, like every smoke above: `set -e` would
+  # abort on the ASSIGNMENT and take the diagnostic with it.
+  STDLIB_OUT="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    STDLIB_EXPECTED="$STDLIB_EXPECTED" \
+    "$STDLIB_PY" "$STDLIB_CHECK" 2>&1 || true)"
+  if ! echo "$STDLIB_OUT" | grep -q ", missing 0,"; then
+    echo "FATAL: the $STDLIB_WHO interpreter is missing stdlib modules:" >&2
+    echo "$STDLIB_OUT" >&2
+    echo "       Every environment the app builds inherits this hole, and it" >&2
+    echo "       surfaces inside whichever third-party package imports the" >&2
+    echo "       module — nowhere near here. See setup_py2app.STDLIB_*." >&2
+    exit 1
+  fi
+  echo "    $STDLIB_WHO: $(echo "$STDLIB_OUT" | head -1)"
+done
+rm -rf "$BUILD_DIR/stdlib-venv" "$STDLIB_CHECK"
+
+# ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
 #     (a [bundled] requirement, so setup_py2app.py's derivation forces it)
 #     ships in the bundle so Deploy works with zero setup. Two artifacts:

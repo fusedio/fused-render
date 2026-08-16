@@ -104,7 +104,7 @@ def download(model_id):
 
 
 def _place(pipe):
-    """Put the pipeline on the best device here, and say where to seed.
+    """Put the pipeline on the best device here: `(device, seed_device)`.
 
     Three cases and one wrinkle. On CUDA, `enable_model_cpu_offload` keeps a
     model bigger than the card's VRAM working. On Apple Silicon that same call
@@ -112,17 +112,22 @@ def _place(pipe):
     RAM, so offloading buys nothing and adds transfers — hence a plain move. And
     MPS generators are unreliable, so the seed is taken on the CPU whatever the
     pipeline runs on; a reproducible seed is worth more than the microsecond.
+
+    The two are returned separately because they genuinely differ on MPS, and
+    collapsing them is what hid the device from `/health` for as long as this
+    function only answered the seed's question: a FLUX render on a Windows CPU
+    is tens of minutes, and nothing on screen said which case the user was in.
     """
     import torch
 
     if torch.cuda.is_available():
         pipe.enable_model_cpu_offload()
-        return "cuda"
+        return "cuda", "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         pipe.to("mps")
-        return "cpu"
+        return "mps", "cpu"
     pipe.to("cpu")
-    return "cpu"
+    return "cpu", "cpu"
 
 
 def load(model_id, fetched):
@@ -154,8 +159,13 @@ def load(model_id, fetched):
         pipe = AutoPipelineForText2Image.from_pretrained(
             model_id, torch_dtype=torch.bfloat16)
 
-    _loaded["seed_device"] = _place(pipe)
+    device, seed_device = _place(pipe)
+    _loaded["seed_device"] = seed_device
     _loaded["pipe"] = pipe
+    # See `worker_base.STATE["device"]`: on Windows the PyPI torch wheel is
+    # CPU-only, so "this machine has a GPU" and "this pipeline is using one" are
+    # different facts and only this process knows the second.
+    worker_base.set_state(device=device)
 
 
 # ------------------------------------------------------------------ generation

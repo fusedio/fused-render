@@ -206,3 +206,58 @@ def test_the_loop_is_not_started_by_building_the_app(tmp_path, monkeypatch):
     with TestClient(create_app(start_dir=str(tmp_path))):
         pass
     assert started == [True]
+
+
+# ----------------------------------------------------------------- recurring
+
+def test_repeats_creates_a_template_and_lists_its_projection(client, target):
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "daily report",
+                            "repeats": "0 * * * *"})
+    assert res.status_code == 200
+    entry = res.json()["entry"]
+    assert entry["state"] == schedule.RECURRING
+    assert entry["repeats"] == "0 * * * *"
+
+    listed = client.get("/api/schedule").json()["entries"]
+    template = next(e for e in listed if e["id"] == entry["id"])
+    # The projection rides along on the GET — server-side cron math for the
+    # calendar — and the materialized first occurrence is in the list too.
+    assert len(template["upcoming"]) > 0
+    assert any(e.get("template_id") == entry["id"] and e["state"] == "pending"
+               for e in listed)
+
+
+def test_repeats_rejects_bad_cron_and_extra_when(client, target):
+    bad = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "x",
+                            "repeats": "every morning"})
+    assert bad.status_code == 400
+    assert "cron" in bad.json()["error"]
+
+    both = client.post("/api/schedule", headers=WRITE,
+                       json={"target": str(target), "message": "x",
+                             "repeats": "0 * * * *", "delay_seconds": 60})
+    assert both.status_code == 400
+    assert "repeats" in both.json()["error"]
+
+
+def test_restore_is_guarded_and_unskips_over_http(client, target):
+    entry = client.post("/api/schedule", headers=WRITE,
+                        json={"target": str(target), "message": "x",
+                              "repeats": "0 * * * *"}).json()["entry"]
+    listed = client.get("/api/schedule").json()["entries"]
+    occurrence = next(e for e in listed if e.get("template_id") == entry["id"])
+    client.post("/api/schedule/cancel", headers=WRITE, json={"id": occurrence["id"]})
+
+    unguarded = client.post("/api/schedule/restore", json={"id": occurrence["id"]})
+    assert unguarded.status_code == 403  # the D3 guard, same as every other write
+
+    res = client.post("/api/schedule/restore", headers=WRITE,
+                      json={"id": occurrence["id"]})
+    assert res.status_code == 200
+    assert res.json()["entry"]["state"] == "pending"
+
+    again = client.post("/api/schedule/restore", headers=WRITE,
+                        json={"id": occurrence["id"]})
+    assert again.status_code == 404

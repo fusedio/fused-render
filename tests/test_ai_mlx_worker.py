@@ -41,17 +41,19 @@ def worker(monkeypatch):
 
 
 def test_an_unimportable_runner_environment_is_named_as_the_cause(worker, monkeypatch):
-    """`cannot import name 'AutoTokenizer' from 'transformers'` is not about the model.
+    """`Could not import module 'AutoTokenizer'` is not about the model.
 
-    mlx-lm imports transformers for the tokenizer, so an environment whose
-    packages are half-there fails on whichever import comes first — and what
-    reached the AI Models page was that sentence, printed beside the name of a
-    Qwen repo that was downloaded correctly and is not the problem. A user has
-    no way to get from it to the thing that is actually broken.
+    mlx-lm imports transformers for the tokenizer, so the import that fails is
+    rarely the one named first — and what reached the AI Models page was that
+    sentence, printed beside the name of a Qwen repo that was downloaded
+    correctly and is not the problem. A user has no way to get from it to the
+    thing that is actually broken.
 
-    So the message names the interpreter, says it is the environment rather than
-    the model, and gives the one action that fixes it. `sys.prefix` is that
-    interpreter: in a runner this process IS the venv the app built.
+    So this layer says only what it knows: mlx-lm did not import, out of THIS
+    environment (`sys.prefix` — in a runner, this process is the venv the app
+    built), with the original error kept. Diagnosing what that error means is
+    `worker_base.describe_failure`'s job, one level up, because it is not
+    specific to MLX.
     """
     # `None` in sys.modules is what makes an import raise ImportError on demand,
     # which is the same shape as a package whose files are half-written.
@@ -61,11 +63,15 @@ def test_an_unimportable_runner_environment_is_named_as_the_cause(worker, monkey
         worker.load("mlx-community/Qwen3-8B-4bit", "/snapshots/qwen")
     message = str(caught.value)
 
-    assert sys.prefix in message, "the environment has to be named to be fixable"
-    assert "incomplete" in message
-    assert "not a problem with this model" in message
-    assert "not downloaded again" in message, "the multi-GB fear is worth answering"
+    assert sys.prefix in message, "the environment has to be named to be reported"
+    assert "mlx-lm could not be imported" in message
+    assert "rather than a problem with this model" in message
     assert "Qwen" not in message, "the model is not the subject"
+    # And no invented cause: claiming an interrupted install sent a user to
+    # delete an environment that had installed perfectly (the DMG's stdlib was
+    # the real problem). What the failure MEANS is `worker_base`'s job.
+    assert "interrupted" not in message
+    assert "Delete" not in message
 
 
 def test_the_import_error_itself_survives_into_the_message(worker, monkeypatch):

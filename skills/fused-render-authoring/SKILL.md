@@ -26,6 +26,29 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
 
+**Mark every app entry page with `<meta name="fused-app" />`**, placed near the
+top of `<head>` (right after `<meta charset>` — detection reads only the first
+4 KiB of the file). The marker is **the only thing that makes a folder a fused
+app**: filenames — `index.html` included — declare nothing, so a page without
+the tag does not appear on the /apps hub, does not resolve as a folder's entry,
+and is never recorded/registered when rendered. The starter template already
+carries it; when authoring an entry page by hand, add it yourself.
+
+**Migrating an existing app** (one that predates the marker, or lives outside
+`~/Documents/Fused`): add the tag to the entry page's `<head>`:
+
+```html
+<head>
+<meta charset="utf-8" />
+<meta name="fused-app" />
+...
+```
+
+Workspace apps were stamped automatically by a one-time migration at startup;
+apps anywhere else (external folders, cloned repos) are yours to stamp — this
+one line is the whole migration. Once tagged, rendering the page registers an
+external folder on the /apps hub automatically.
+
 Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model — the claude CLI or a local one — and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
 
 ## The Python side: `main()` contract

@@ -246,6 +246,15 @@ function Suggested({
         <div key={group.capability} className="am-suggested-group">
           <div className="am-suggested-cap">
             {group.capability.replace(/-/g, " ")}
+            {/* WHICH backend will load these, named. One capability can have
+                two runners now (text generation: MLX on Apple Silicon,
+                PyTorch everywhere else), and the shortlist below differs
+                completely between them — so a heading that said only "text
+                generation" left the reader with no way to tell which list they
+                were looking at, or why it was not the one in the docs. */}
+            {group.available && group.runnerLabel && (
+              <span className="am-suggested-runner">via {group.runnerLabel}</span>
+            )}
             {/* Shown even when it cannot run here, with the reason: hiding a
                 capability leaves someone hunting for a feature that never was. */}
             {!group.available && (
@@ -254,6 +263,17 @@ function Suggested({
               </span>
             )}
           </div>
+          {/* What running on this backend is LIKE — in practice, the CPU-speed
+              warning for PyTorch. It sits ABOVE the cards deliberately: it is
+              the thing to know BEFORE starting a multi-gigabyte download, and
+              the same sentence discovered afterwards is an apology rather than
+              information. It is a standing fact about the runner and not a
+              claim about this machine — what device a model actually got is a
+              measurement, and it appears on the loaded card in the Local tab
+              once there is one to report. */}
+          {group.available && group.runnerNote && (
+            <p className="cc-caption am-suggested-note">{group.runnerNote}</p>
+          )}
           <div className="cc-mdgrid am-grid">
             {group.models.map((m) => {
               // FOUR states, and every one of them was a bug at some point:

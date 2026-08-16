@@ -425,6 +425,20 @@ def _claim_dir(staging, dest_base):
     raise ActionError("could not claim an install folder (too many name collisions)")
 
 
+def _stamp_fused_meta(app_dir):
+    """Make sure the installed copy's entry page carries the
+    `<meta name="fused-app">` marker — the only thing the listing trusts
+    (D301). The showcase clone itself is synced from the community repo and is
+    never edited here; the tag is expected upstream, and this covers the window
+    (and any straggler app) where it isn't there yet. Best-effort like the rest
+    of install/update — a page that can't be stamped is skipped, not fatal."""
+    from fused_render import meta_migration
+
+    entry = meta_migration._legacy_entry(app_dir)
+    if entry is not None:
+        meta_migration.stamp_entry(entry)
+
+
 def _init_repo(app_dir):
     _git_ok(app_dir, "init", "-q", what="git init")
     gi = os.path.join(app_dir, ".gitignore")
@@ -453,6 +467,7 @@ def _install(slug):
     try:
         stage_app = os.path.join(staging, slug)
         shutil.copytree(src, stage_app)
+        _stamp_fused_meta(stage_app)
         dest = _claim_dir(stage_app, os.path.join(COMMUNITY_TAG_DIR, slug))
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -538,6 +553,10 @@ def _update(slug, force):
                 "Local edits before community update", what="git commit")
     src = _app_folder(slug)
     _replace_contents(app_dir, src)
+    # Re-stamp: the replace copies the showcase's (possibly untagged) files
+    # over the install's tagged entry, and an update that strips the marker
+    # makes the app vanish from the listing.
+    _stamp_fused_meta(app_dir)
     _git_ok(app_dir, "add", "-A", what="git add")
     # An update that changes nothing (sha moved but files identical) leaves
     # nothing staged; that's fine — record the new commit either way.
