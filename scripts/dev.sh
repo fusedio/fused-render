@@ -5,8 +5,15 @@
 #
 # Pipeline: npm install (if needed) -> one gated build (tsc + vite, so type
 # errors surface before anything starts) -> `vite build --watch` in the
-# background -> fused-render server in the foreground, supervised by
-# watchfiles for Python auto-reload. Ctrl-C stops everything.
+# background -> fused-render server (supervised by watchfiles for Python
+# auto-reload) ALSO in the background, with dev.sh parked on `wait` for it.
+# Ctrl-C — or a plain `kill` of this script — stops everything.
+#
+# The server is deliberately not a foreground child: bash defers a trap handler
+# until the current foreground command returns, so while it ran in the
+# foreground a signal to dev.sh merely QUEUED the handler and the whole tree
+# survived. `wait` is interruptible, so the handler runs at once. See the
+# process-cleanup section below, which owns the teardown for every pid.
 #
 # Two independent reload paths:
 #   * Frontend: `vite build --watch` rebuilds into fused_render/static/
@@ -100,6 +107,15 @@ fi
 # dev servers and orphans that are none of our business.
 # ---------------------------------------------------------------------------
 
+# Every walk below is `pgrep -P`, so a machine without pgrep would degrade
+# silently back to the exact orphan bug this section exists to fix (the walks
+# swallow the failure with `|| true` and only the root pid gets signalled). Say
+# so once, loudly, rather than leaking vite watchers for another three weeks.
+if ! command -v pgrep >/dev/null 2>&1; then
+  echo "==> WARNING: pgrep not found — dev.sh can only signal its direct" >&2
+  echo "    children, so a vite watch or server may be left running after exit." >&2
+fi
+
 # macOS ships bash 3.2 and has no `setsid`, so there is no process group to
 # signal — walk the tree by hand. `pgrep -P` exists on both macOS and Linux
 # (CI runs linux-desktop), unlike the BSD-only ps flags. Depth-first: children
@@ -134,15 +150,42 @@ pid_alive() {
   [[ -n "$st" && "${st:0:1}" != "Z" ]]
 }
 
-# TERM the tree, then KILL whatever is still standing. The grace period is
-# bounded (~2s) rather than a wait-until-gone loop: a child that traps TERM must
-# not be able to hang the Ctrl-C the developer just pressed.
-kill_tree_hard() {
-  local pid="$1" pids p i alive
-  [[ -n "$pid" ]] || return 0
-  pids="$(tree_pids "$pid")"
-  kill_tree "$pid"
+# TERM every tree rooted at the (space-separated) pids in $1, then KILL whatever
+# is still standing. The grace period is bounded (~2s) rather than a
+# wait-until-gone loop: a child that traps TERM must not be able to hang the
+# Ctrl-C the developer just pressed.
+#
+# One function for both callers (the startup reap and dev_shutdown) so the
+# escalation policy cannot differ between "reap the previous run" and "reap this
+# one" — the two trap sites already drifted apart once.
+reap_trees() {
+  local roots="$1" pids="" p i alive newpid
+  for p in $roots; do
+    [[ -n "$p" ]] || continue
+    pids="$pids $(tree_pids "$p")"
+    kill_tree "$p"
+  done
+  [[ -n "${pids// /}" ]] || return 0
   for i in $(seq 1 10); do
+    # Re-walk from the roots on every pass: a tree can GROW mid-teardown. The
+    # core_apps poll loop touches a *.py trigger, which is exactly what makes
+    # watchfiles spawn a REPLACEMENT server — so a restart can land between the
+    # walk above and the TERM, and that new server would inherit the port with
+    # nothing supervising it. Anything that appears is TERMed and joins the
+    # escalation list. (A root that is already gone contributes nothing, which is
+    # why this cannot chase a pid we never owned.)
+    for p in $roots; do
+      [[ -n "$p" ]] || continue
+      for newpid in $(tree_pids "$p"); do
+        case " $pids " in
+          *" $newpid "*) ;;
+          *)
+            pids="$pids $newpid"
+            kill -TERM "$newpid" 2>/dev/null || true
+            ;;
+        esac
+      done
+    done
     alive=0
     for p in $pids; do
       if pid_alive "$p"; then alive=1; break; fi
@@ -151,8 +194,15 @@ kill_tree_hard() {
     sleep 0.2
   done
   for p in $pids; do
-    kill -KILL "$p" 2>/dev/null || true
+    if pid_alive "$p"; then kill -KILL "$p" 2>/dev/null || true; fi
   done
+  return 0
+}
+
+# Single-tree convenience wrapper (the startup reap has exactly one root).
+kill_tree_hard() {
+  [[ -n "$1" ]] || return 0
+  reap_trees "$1"
 }
 
 # A python that can import this worktree's fused_render._branch. Deliberately
@@ -166,7 +216,11 @@ dev_python() {
   elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
     printf '%s\n' "$REPO_ROOT/.venv/bin/python"
   else
-    command -v python3 || true
+    # Last resort, and it CAN come up empty: on a machine with no venv yet and
+    # only a versioned `python3.12` on PATH (the setup the venv bootstrap below
+    # exists to serve) there is no bare python3 to find. Callers must treat ""
+    # as "not yet resolvable" and say so — see the PORT note below.
+    command -v python3 || command -v python || true
   fi
 }
 
@@ -185,21 +239,27 @@ dev_pidfile_path() {
   printf '%s/.dev-pids/%s\n' "$REPO_ROOT" "${ref:-_baseline}"
 }
 
-# Is pid $1 really the dev.sh this pidfile was written for? Three independent
-# checks, because getting this wrong means killing an innocent process:
-#   * it is alive at all;
-#   * its command line still mentions dev.sh (a recycled pid almost never will);
+# Is pid $1 really the dev.sh this pidfile was written for? Four checks, ALL
+# mandatory, because getting this wrong means kill_tree_hard on an innocent
+# process:
+#   * a recorded start time exists at all;
+#   * it is alive;
+#   * its command line still mentions dev.sh;
 #   * its start time matches the one recorded alongside the pid — the only check
 #     that actually rules out pid reuse, since a *new* dev.sh in another
-#     worktree could otherwise satisfy the first two.
+#     worktree satisfies the other two just as well as ours does.
+# The start-time check is required rather than best-effort for exactly that
+# reason: were it skipped when the record is empty (a `ps -o lstart=` that
+# failed at write time), a recycled pid landing on ANY process whose argv
+# mentions dev.sh — another worktree's dev.sh included — would be reaped.
+# Failing closed costs a missed auto-restart; failing open kills someone's work.
 # The recorded repo root is compared too; the pidfile already lives inside this
 # worktree, so this only catches a file copied between checkouts.
-# Any doubt resolves to "not ours" — a stale pidfile is a no-op plus a delete,
-# never a guess.
 dev_pidfile_is_ours() {
   local pid="$1" want_start="$2" want_root="$3" cmd cur_start
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   [[ "$pid" != "$$" ]] || return 1
+  [[ -n "$want_start" ]] || return 1
   [[ "$want_root" == "$REPO_ROOT" ]] || return 1
   pid_alive "$pid" || return 1
   cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
@@ -207,10 +267,8 @@ dev_pidfile_is_ours() {
     *dev.sh*) ;;
     *) return 1 ;;
   esac
-  if [[ -n "$want_start" ]]; then
-    cur_start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')"
-    [[ "$cur_start" == "$want_start" ]] || return 1
-  fi
+  cur_start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')"
+  [[ "$cur_start" == "$want_start" ]] || return 1
   return 0
 }
 
@@ -228,24 +286,9 @@ DEV_PIDFILE=""
 dev_shutdown() {
   # Disarm first: the INT/TERM handlers exit, which re-enters via EXIT.
   trap - EXIT INT TERM
-  local pids="" p i alive
-  for p in "$WATCH_PID" "$CORE_WATCH_PID" "$OPENER_PID" "$SERVER_PID"; do
-    [[ -n "$p" ]] || continue
-    pids="$pids $(tree_pids "$p")"
-    kill_tree "$p"
-  done
-  if [[ -n "${pids// /}" ]]; then
-    for i in $(seq 1 10); do
-      alive=0
-      for p in $pids; do
-        if pid_alive "$p"; then alive=1; break; fi
-      done
-      [[ "$alive" -eq 0 ]] && break
-      sleep 0.2
-    done
-    for p in $pids; do
-      pid_alive "$p" && kill -KILL "$p" 2>/dev/null || true
-    done
+  local roots="$WATCH_PID $CORE_WATCH_PID $OPENER_PID $SERVER_PID"
+  if [[ -n "${roots// /}" ]]; then
+    reap_trees "$roots"
     # Reap our own children rather than leaving zombies parked on this shell.
     # Safe from hanging: anything that ignored TERM has just been KILLed.
     wait 2>/dev/null || true
@@ -254,16 +297,11 @@ dev_shutdown() {
   return 0
 }
 
-# Library mode: define the helpers, then stop before doing anything. Lets the
-# tests drive kill_tree and the stale-pidfile decision against the real code
-# instead of a copy that can rot (tests/test_dev_sh_process_cleanup.py).
-if [[ -n "${FUSED_RENDER_DEV_SH_LIB:-}" ]]; then
-  return 0 2>/dev/null || exit 0
-fi
-
 # The port this run will use, for the post-reap wait below and for the browser
-# opener further down (computed once so the two cannot disagree). An explicit
-# --port wins; otherwise it is the per-branch default the server derives.
+# opener further down (derived in one place so the two cannot disagree). An
+# explicit --port wins — in either spelling — otherwise it is the per-branch
+# default the server derives. Returns "" when no interpreter is resolvable yet;
+# every caller checks.
 dev_effective_port() {
   local a want=0 port="" py
   for a in "$@"; do
@@ -281,7 +319,6 @@ dev_effective_port() {
   fi
   printf '%s\n' "$port"
 }
-PORT="$(dev_effective_port "$@")"
 
 # Is $1 accepting connections? Same probe the browser opener uses.
 port_is_open() {
@@ -291,16 +328,39 @@ port_is_open() {
   "$py" -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1])))==0 else 1)" "$1" 2>/dev/null
 }
 
+# Library mode: define the helpers, then stop before doing anything. Lets the
+# tests drive kill_tree, the stale-pidfile decision and the --port extraction
+# against the real code instead of a copy that can rot
+# (tests/test_dev_sh_process_cleanup.py). Everything testable belongs ABOVE
+# this line.
+if [[ -n "${FUSED_RENDER_DEV_SH_LIB:-}" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# Best effort at this point in the script: the reap has to run before the venv
+# bootstrap (it must stop the old vite watch before this run rebuilds
+# shell-dist/), so on a machine whose only interpreter is the versioned
+# python3.12 that the bootstrap is about to use, there is nothing to ask yet.
+# That is not fatal — it costs the post-reap port wait, and PORT is re-derived
+# once $PY exists — but it is never silent.
+PORT="$(dev_effective_port "$@")"
+if [[ -z "$PORT" ]]; then
+  echo "==> NOTE: no interpreter on PATH yet, so the dev port is still unknown;" >&2
+  echo "    skipping the post-reap port wait (re-derived after the venv is ready)." >&2
+fi
+
 # Reap a previous dev.sh for THIS worktree. Restarting is nearly always what the
 # developer meant by running dev.sh again — and the alternative is hole 3 above:
 # a second full tree whose vite watch fights this one over shell-dist/.
 DEV_PIDFILE="$(dev_pidfile_path)"
+REAPED=0
 if [[ -f "$DEV_PIDFILE" ]]; then
   rec_pid="" rec_start="" rec_root=""
   { read -r rec_pid || true; read -r rec_start || true; read -r rec_root || true; } < "$DEV_PIDFILE"
   if dev_pidfile_is_ours "$rec_pid" "$rec_start" "$rec_root"; then
     echo "==> reaping the dev.sh already running for this worktree (pid $rec_pid)"
     kill_tree_hard "$rec_pid"
+    REAPED=1
     # Wait for the port to actually free: the old server holds the bind for a
     # beat after its process dies, and cli.py's port guard would SystemExit on
     # it. Bounded — a port still busy after this belongs to something else, and
@@ -318,7 +378,19 @@ if [[ -f "$DEV_PIDFILE" ]]; then
 fi
 
 if [[ "$CLEANUP_ONLY" -eq 1 ]]; then
-  echo "==> --cleanup: nothing left to start"
+  if [[ "$REAPED" -eq 1 ]]; then
+    echo "==> --cleanup: done, nothing left running for this worktree"
+  else
+    # Say what was NOT done, and why. A dev.sh started before this change wrote
+    # no pidfile at all, which is the common case on the first upgrade — and
+    # finding it would take a pattern match over every process on the machine,
+    # which is precisely what must never happen here (other worktrees run their
+    # own servers, and at least one deliberate orphan). Hand the developer the
+    # search instead of guessing on their behalf.
+    echo "==> --cleanup: no dev.sh recorded for this worktree — nothing reaped"
+    echo "    (a dev.sh started before this pidfile existed leaves no record;"
+    echo "     find it with: pgrep -laf dev.sh, and check its worktree first)"
+  fi
   exit 0
 fi
 
@@ -327,10 +399,18 @@ fi
 # kill_tree_hard does not return until that process is gone. The start time goes
 # in alongside the pid so a recycled pid can be recognized and left alone.
 mkdir -p "$REPO_ROOT/.dev-pids"
-printf '%s\n%s\n%s\n' \
-  "$$" \
-  "$(ps -o lstart= -p $$ 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')" \
-  "$REPO_ROOT" > "$DEV_PIDFILE"
+SELF_START="$(ps -o lstart= -p $$ 2>/dev/null | sed -e 's/^ *//' -e 's/ *$//')"
+if [[ -z "$SELF_START" ]]; then
+  # dev_pidfile_is_ours fails closed without a start time, so the record would
+  # be inert: the next run would call it stale and start a second tree instead
+  # of restarting. Better to lose the auto-restart than to reap on two weaker
+  # checks, but the developer should know why `dev.sh` stopped replacing itself.
+  echo "==> WARNING: could not read this process's start time (ps -o lstart=)," >&2
+  echo "    so a later run will not be able to verify this pidfile and will not" >&2
+  echo "    reap this dev.sh. Stop it with Ctrl-C, or scripts/dev.sh --cleanup" >&2
+  echo "    will report nothing to do." >&2
+fi
+printf '%s\n%s\n%s\n' "$$" "$SELF_START" "$REPO_ROOT" > "$DEV_PIDFILE"
 
 # Armed from here on, so an abort anywhere in the setup below (a failed npm
 # install, a Ctrl-C during the venv bootstrap) still clears the pidfile and
@@ -611,6 +691,19 @@ if [[ "$RELOAD" -eq 1 ]]; then
       --no-browser) NO_BROWSER=1 ;;
     esac
   done
+  # Second attempt for the case the early derivation warned about: back then
+  # there may have been no interpreter at all, and by now the venv bootstrap has
+  # made one. Without this the opener would silently never fire on a
+  # freshly-created checkout.
+  if [[ -z "$PORT" ]]; then
+    PORT="$(dev_effective_port "$@")"
+    # Spelled as an `if`, not `[[ … ]] && echo`: under `set -e` that idiom
+    # aborts the script whenever the test is false and it is the last command
+    # in the enclosing block.
+    if [[ -z "$PORT" ]]; then
+      echo "==> NOTE: dev port still unresolved — not opening a browser tab" >&2
+    fi
+  fi
 
   # One-shot opener: wait for the port to accept a connection, then open the tab.
   if [[ "$NO_BROWSER" -eq 0 && -n "$PORT" ]]; then
