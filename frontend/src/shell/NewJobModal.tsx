@@ -1019,25 +1019,63 @@ export default function NewJobModal({
   // 2026-08-16). Guarded so a double-close cannot double-arm the timer.
   const [pickingOut, setPickingOut] = useState(false);
   const [recurOut, setRecurOut] = useState(false);
+  // The exit timers are HELD, not fire-and-forget: reopening a panel during
+  // its 180ms exit must cancel the pending unmount, or the reopened panel
+  // stays is-closing and then vanishes when the stale timer lands (Bugbot,
+  // PR #548 — same discipline as backTimer above).
+  const pickerTimer = useRef<number | null>(null);
+  const recurTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (pickerTimer.current !== null) window.clearTimeout(pickerTimer.current);
+      if (recurTimer.current !== null) window.clearTimeout(recurTimer.current);
+    },
+    [],
+  );
   const closePicker = () => {
-    setPickingOut((out) => {
-      if (out) return out;
-      window.setTimeout(() => {
-        setPicking(false);
-        setPickingOut(false);
-      }, 180);
-      return true;
+    if (pickingOut) return;
+    setPickingOut(true);
+    pickerTimer.current = window.setTimeout(() => {
+      pickerTimer.current = null;
+      setPicking(false);
+      setPickingOut(false);
+    }, 180);
+  };
+  const openPicker = () => {
+    if (pickerTimer.current !== null) window.clearTimeout(pickerTimer.current);
+    pickerTimer.current = null;
+    setPickingOut(false);
+    // Displacing an open Custom panel runs its CANCEL semantics, not a bare
+    // close: "Custom…" chosen but never Done'd would otherwise strand the
+    // select on a choice with no rule and Save disabled for no visible
+    // reason (Bugbot, PR #548).
+    if (recurTimer.current !== null) window.clearTimeout(recurTimer.current);
+    recurTimer.current = null;
+    setRecurOut(false);
+    setRecurOpen((open) => {
+      if (open && !customRule) setRepeat(repeatBefore.current);
+      return false;
     });
+    setPicking(true);
   };
   const closeRecur = () => {
-    setRecurOut((out) => {
-      if (out) return out;
-      window.setTimeout(() => {
-        setRecurOpen(false);
-        setRecurOut(false);
-      }, 180);
-      return true;
-    });
+    if (recurOut) return;
+    setRecurOut(true);
+    recurTimer.current = window.setTimeout(() => {
+      recurTimer.current = null;
+      setRecurOpen(false);
+      setRecurOut(false);
+    }, 180);
+  };
+  const openRecur = () => {
+    if (recurTimer.current !== null) window.clearTimeout(recurTimer.current);
+    recurTimer.current = null;
+    setRecurOut(false);
+    if (pickerTimer.current !== null) window.clearTimeout(pickerTimer.current);
+    pickerTimer.current = null;
+    setPickingOut(false);
+    setPicking(false);
+    setRecurOpen(true);
   };
   const [home, setHome] = useState("");
   // The path field's recents dropdown: what this form remembers being used
@@ -1461,8 +1499,7 @@ export default function NewJobModal({
                   className="schedule-picker-row schedule-recents-browse"
                   onClick={() => {
                     setRecentsOpen(false);
-                    setRecurOpen(false);
-                    setPicking(true);
+                    openPicker();
                   }}
                 >
                   {/* The empty icon column, so the verb's label starts on the
@@ -1618,8 +1655,7 @@ export default function NewJobModal({
                 // commits once Done says so. One side panel at a time — the
                 // recurrence panel takes Browse's spot beside the card.
                 repeatBefore.current = repeat;
-                setPicking(false);
-                setRecurOpen(true);
+                openRecur();
                 setRepeat("custom");
               } else {
                 setRepeat(v);
