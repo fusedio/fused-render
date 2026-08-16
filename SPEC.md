@@ -7052,6 +7052,23 @@ the installation, and the mark that says so.
   ask about this?" is answerable either way), the reinstall instructions, and
   the dismiss — with room to read it. Read-only installs say so up front here
   rather than only on click, since there is space to say it.
+- **SF-15** **A dismissal is REMEMBERED, and it is scoped to the tree state it
+  was made for.** The watcher re-stamps every few ticks and once more when the
+  turn ends, so dismissing mid-session — the likeliest moment, since the badge
+  appears while the user is watching — was undone seconds later by the next
+  stamp of the very same change. `clear` records the dismissed digest (the
+  marker's own, so no second walk) and `settle` skips stamping while the tree
+  still hashes to it. Scoped, not permanent: "I have seen this and do not want
+  a badge for it", never "never badge me again" — a session that goes on to
+  change something else moves the digest past it and the badge legitimately
+  returns, retiring the spent record as it does. The dismissal expires with its
+  version, like the marker and the baseline.
+- **SF-16** **`reconcile` re-reads under the lock after its walk.** Hashing the
+  tree takes long enough for the world to move: a `clear` or a watcher's
+  `mark_modified` can land mid-walk, and writing back the object read BEFORE it
+  silently undid either — a dismissed badge reappearing, or a just-recorded fix
+  losing its report. The slow walk stays outside the lock (it must); the
+  decision and the write are made against a fresh read inside it.
 - **SF-13** **A read-only installation is refused BEFORE the spawn** (409, with
   the path). A session that cannot write spends several minutes reading and then
   reports a fix that was never applied — which, to the user watching, reads

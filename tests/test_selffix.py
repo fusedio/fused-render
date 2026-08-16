@@ -281,6 +281,98 @@ def test_clear_forgets_the_mark_but_keeps_the_report(install):
     assert selffix.clear() is False
 
 
+def test_dismissing_mid_session_is_not_undone_by_the_next_stamp(install):
+    """The likeliest moment to dismiss is while watching the session that raised
+    the badge — and the watcher re-stamps every few ticks and once more when the
+    turn ends. Without remembering WHAT was dismissed, the user's click was
+    undone seconds later by the next stamp of the very same change."""
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    assert selffix.status() is not None
+
+    assert selffix.clear() is True
+    # ...the watcher keeps going, and the tree still differs from `before`.
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    assert selffix.status() is None
+
+
+def test_a_dismissal_covers_only_the_state_it_was_made_for(install):
+    """"I have seen this and do not want a badge for it" — not "never badge me
+    again". A session that goes on to change something ELSE moves the digest
+    past the dismissed one, and the badge legitimately comes back."""
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    selffix.clear()
+    assert selffix.status() is None
+
+    (install / "server" / "app.py").write_text("and this too\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    assert selffix.status() is not None
+    # ...and the spent dismissal is retired, not left to silence a later one.
+    assert not os.path.exists(selffix.dismissed_path())
+
+
+def test_a_dismissal_expires_with_the_version_it_was_made_on(install, monkeypatch):
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    selffix.clear()
+
+    stale = json.loads(open(selffix.dismissed_path()).read())
+    stale["version"] = "0.0.1"
+    with open(selffix.dismissed_path(), "w") as f:
+        json.dump(stale, f)
+    assert selffix.dismissed_digest() == ""
+
+
+def test_reconcile_does_not_resurrect_a_marker_cleared_while_it_walked(install,
+                                                                      monkeypatch):
+    """`reconcile` hashes the whole tree before it writes, which is long enough
+    for the user to dismiss the badge. Writing back the object read BEFORE the
+    walk would silently undo that."""
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+
+    real_digest = selffix.tree_digest
+
+    def digest_then_dismiss(*args, **kwargs):
+        # The user clicks Dismiss while the walk is in flight.
+        out = real_digest(*args, **kwargs)
+        selffix.clear()
+        monkeypatch.setattr(selffix, "tree_digest", real_digest)
+        return out
+
+    monkeypatch.setattr(selffix, "tree_digest", digest_then_dismiss)
+    selffix.reconcile()
+    assert selffix.status() is None
+
+
+def test_reconcile_does_not_drop_a_fix_recorded_while_it_walked(install,
+                                                               monkeypatch):
+    """The other side of the same race: a watcher's stamp landing mid-walk must
+    not be replaced by the pre-walk snapshot, losing its report."""
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+
+    real_digest = selffix.tree_digest
+
+    def digest_then_stamp(*args, **kwargs):
+        out = real_digest(*args, **kwargs)
+        monkeypatch.setattr(selffix, "tree_digest", real_digest)
+        # A second session's watcher records its own fix while we walk.
+        selffix.mark_modified(run_id="r2", title="second", digest="drifted")
+        return out
+
+    monkeypatch.setattr(selffix, "tree_digest", digest_then_stamp)
+    selffix.reconcile()
+    assert [f["run_id"] for f in selffix.status()["fixes"]] == ["r1", "r2"]
+
+
 def test_a_new_version_starts_a_fresh_baseline(install, monkeypatch):
     """An upgrade legitimately replaced the tree the old baseline described;
     trusting it would report every upgrade as a modification."""
