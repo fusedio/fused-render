@@ -10,7 +10,7 @@
 // Google's: the REPEAT choices are derived from the picked date-time ("Weekly
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -22,7 +22,10 @@ import type { RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
-import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_FOLDER, ICON_NOTES } from "./ScheduleCalendar";
+// This card's own rules live in styles/new-task.css, imported from the
+// shell.css barrel like every other section — no shell component imports its
+// own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
 
 // Where a new task points before the user says otherwise: ~/Desktop/fused
 // (Akshil, 2026-08-14 — an empty path field was the confusing part of the
@@ -123,6 +126,54 @@ const ICON_FILE = (
     <path d="M14 2v6h6" />
   </svg>
 );
+
+// lucide "type" — the serif T of a title field. Inline, like every other glyph
+// in this file: no icon package in this repo.
+const ICON_TITLE = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="4 7 4 4 20 4 20 7" />
+    <line x1="9" y1="20" x2="15" y2="20" />
+    <line x1="12" y1="4" x2="12" y2="20" />
+  </svg>
+);
+
+// lucide "check", at tick scale.
+const ICON_CHECK = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+// A quiet checkbox: a real <input> (focusable, space-toggled, announced as a
+// checkbox) wrapped in the <label> that names it, with the box itself drawn in
+// CSS so it resolves in both themes. Used twice — Repeat, and the flag behind
+// it.
+function CheckField({
+  checked,
+  onChange,
+  label,
+  className,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  label: string;
+  className?: string;
+}) {
+  return (
+    <label className={"new-task-check" + (className ? " " + className : "")}>
+      <input
+        type="checkbox"
+        className="new-task-check-input"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="new-task-check-box" aria-hidden="true">{ICON_CHECK}</span>
+      <span className="new-task-check-text">{label}</span>
+    </label>
+  );
+}
 
 // Both side panels (Browse, Custom recurrence) borrow the dialog's own rect
 // so they read as siblings of the card in geometry — see the comment inside.
@@ -506,19 +557,15 @@ const MONTHS = [
 function MiniCalendar({
   selected,
   onPick,
-  minToday = false,
   minDate,
 }: {
   selected: Date;
   onPick: (d: Date) => void;
-  // Whether a day before today is pickable. Only the ONE-OFF case says no: for
-  // a repeating rule the picked date is the series' ANCHOR, and "Monthly on the
-  // second Wednesday" anchored last month is a legitimate thing to say — the
-  // server materializes from the next future run. The grid cannot know which it
-  // is being used for, so the caller tells it (audit 2026-08-16).
-  minToday?: boolean;
-  // A hard floor of its own (the recurrence section's end date, which cannot
-  // precede the anchor it ends).
+  // A hard floor, and the ONLY one left: the recurrence section's end date,
+  // which cannot precede the anchor it ends. The when-row's grid no longer
+  // floors at today — scheduling into the past is now a legitimate way to say
+  // "run this as soon as you can" (design §9), so the `minToday` this
+  // component used to take is gone with the refusal it enforced.
   minDate?: Date;
 }) {
   // The month being LOOKED AT, which is not the month selected — paging
@@ -538,14 +585,9 @@ function MiniCalendar({
 
   // The earliest day this grid will hand back, as a midnight stamp; -Infinity
   // when nothing constrains it.
-  const floor = (() => {
-    const bounds: number[] = [];
-    if (minToday)
-      bounds.push(new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime());
-    if (minDate)
-      bounds.push(new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate()).getTime());
-    return bounds.length ? Math.max(...bounds) : -Infinity;
-  })();
+  const floor = minDate
+    ? new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate()).getTime()
+    : -Infinity;
 
   return (
     <div className="schedule-mini-cal">
@@ -755,7 +797,7 @@ function CustomRecurrence({
           ariaLabel="Repeat unit"
           className="schedule-recur-unit"
           value={interval > 1 ? `${freq}s` : freq}
-          options={(["day", "week", "month", "year"] as const).map((u) => ({
+          options={(["hour", "day", "week", "month", "year"] as const).map((u) => ({
             key: u,
             label: interval > 1 ? `${u}s` : u,
           }))}
@@ -942,6 +984,89 @@ function keyOfRule(rule: RecurrenceRule, anchor: Date): string {
   return hit?.key ?? "custom";
 }
 
+// The repeat choice a form OPENS on. "none" is the one value that means the
+// Repeat checkbox is unticked, so this is also what decides whether editing a
+// repeating task opens checked (design §6).
+export function initialRepeatKey(entry?: ScheduledMessage | null): string {
+  if (entry?.rule) return keyOfRule(entry.rule, new Date(entry.due));
+  return entry?.repeats ? "cron" : "none";
+}
+
+// What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
+// goes back to "none" AND the custom rule is dropped, so nothing stays armed
+// behind a dropdown that is no longer on screen — a hidden rule would still be
+// submitted by `rule` below. Ticking an unset form lands on the commonest
+// answer rather than on a blank menu; ticking a form that already carries a
+// rule (an Edit) leaves it exactly where it was.
+export const DEFAULT_REPEAT_KEY = "daily";
+
+export function applyRepeatToggle(
+  on: boolean,
+  current: { repeat: string; customRule: RecurrenceRule | null },
+): { repeat: string; customRule: RecurrenceRule | null } {
+  if (!on) return { repeat: "none", customRule: null };
+  if (current.repeat === "none") return { repeat: DEFAULT_REPEAT_KEY, customRule: current.customRule };
+  return current;
+}
+
+// The body POSTed to /api/schedule — api.ts's own parameter type, nothing
+// added to it. That type models `title`, `description` and `new_task_each_run`
+// itself, so this alias only names what the builder returns.
+export type SchedulePayload = Parameters<typeof scheduleMessage>[0];
+
+export function buildSchedulePayload(form: {
+  target: string;
+  message: string;
+  // Optional, and empty is the ordinary case: the server fills a missing title
+  // in from the transcript's `ai-title` (design §4).
+  title: string;
+  description: string;
+  when: string;
+  // The structured rule the current choice means; null for a one-off and for
+  // the legacy cron key, whose line is submitted verbatim instead.
+  rule: RecurrenceRule | null;
+  repeat: string;
+  legacyCron: string;
+  permission: string;
+  // The session an edit (or a chat handoff) wants CONTINUED, before the
+  // one-off test below decides whether it may be.
+  sessionId: string;
+  // Ticked: mint a fresh task — a fresh Claude session — per occurrence,
+  // instead of the default, which is every run landing in this task's own
+  // thread (design §6).
+  newTaskEachRun: boolean;
+}): SchedulePayload {
+  const repeating = form.rule !== null || form.repeat === "cron";
+  const trimmedTitle = form.title.trim();
+  const trimmedDescription = form.description.trim();
+  return {
+    target: form.target.trim(),
+    message: form.message,
+    // A rule rides WITH its anchor (`due` = the first run); the legacy cron
+    // line replaces due exactly as it always did; a one-off is due alone.
+    ...(form.rule
+      ? { due: form.when, rule: form.rule }
+      : form.repeat === "cron" && form.legacyCron
+        ? { repeats: form.legacyCron }
+        : { due: form.when }),
+    permission_mode: form.permission,
+    // An edit keeps what it cannot re-ask for: a composer-scheduled task that
+    // continues an open chat must still continue it after a time change, or the
+    // edit silently turns it into a fresh session. …but only while the task
+    // stays a one-off — resuming one conversation on every run compounds its
+    // context forever (Akshil, 2026-08-16; Bugbot, PR #548).
+    ...(!repeating && form.sessionId ? { session_id: form.sessionId } : {}),
+    // Empty means "the server decides" for the title and "there isn't one" for
+    // the description — in both cases the key is better left off the wire than
+    // sent as "".
+    ...(trimmedTitle ? { title: trimmedTitle } : {}),
+    ...(trimmedDescription ? { description: trimmedDescription } : {}),
+    // Only ever sent on a repeating task: on a one-off there is no "each run"
+    // for it to mean anything about.
+    ...(repeating && form.newTaskEachRun ? { new_task_each_run: true } : {}),
+  };
+}
+
 export default function NewJobModal({
   initialTime,
   initialTarget,
@@ -984,6 +1109,14 @@ export default function NewJobModal({
   onCreated: () => void;
 }) {
   const [message, setMessage] = useState(editing?.message ?? initialMessage ?? "");
+  // Both optional, both new (design §4). The title is normally left blank —
+  // Claude Code writes its own one-liner into the transcript and the server
+  // prefers that — so the field asks for nothing and the placeholder says so.
+  // The description is empty by default and is not auto-filled in this pass.
+  // Absent on the stored entry reads as empty, which is what an entry written
+  // before these fields existed means.
+  const [title, setTitle] = useState(editing?.title ?? "");
+  const [description, setDescription] = useState(editing?.description ?? "");
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
   // repeat choice reads its parts (minute, time, weekday) — Google's model.
@@ -996,15 +1129,21 @@ export default function NewJobModal({
   // The repeat CHOICE (a key into repeatChoicesFor) plus the one choice that
   // carries its own data: a custom rule from the recurrence dialog. Legacy
   // cron templates edit under the "cron" key and keep their line verbatim.
-  const [repeat, setRepeat] = useState<string>(() => {
-    if (editing?.rule)
-      return keyOfRule(editing.rule, new Date(editing.due));
-    return editing?.repeats ? "cron" : "none";
-  });
+  const [repeat, setRepeat] = useState<string>(() => initialRepeatKey(editing));
   const [customRule, setCustomRule] = useState<RecurrenceRule | null>(() =>
     editing?.rule && keyOfRule(editing.rule, new Date(editing.due)) === "custom"
       ? editing.rule
       : null,
+  );
+  // Repeat is a CHECKBOX now, and the dropdown only exists while it is ticked
+  // (design §6). Editing a repeating task therefore opens ticked, with the
+  // stored rule already loaded — which is exactly "the key is not none".
+  const [repeatOn, setRepeatOn] = useState(() => initialRepeatKey(editing) !== "none");
+  // The opt-out behind it: every run of a repeating task lands in this task's
+  // own thread — a task IS a session — unless this says to mint a fresh one
+  // per occurrence.
+  const [newTaskEachRun, setNewTaskEachRun] = useState(
+    () => editing?.new_task_each_run ?? false,
   );
   const legacyCron = editing?.repeats ?? "";
   // The recurrence dialog, and the key to fall back to if it's cancelled —
@@ -1079,20 +1218,47 @@ export default function NewJobModal({
     setPicking(false);
     setRecurOpen(true);
   };
+  // The Repeat tick. Unticking is the case worth being explicit about: it puts
+  // the key back to "none" AND drops the custom rule, so the rule the form
+  // submits really is gone rather than merely hidden — an armed rule behind an
+  // unticked box would repeat a task nobody asked to repeat. The flag under it
+  // goes with it, and an open recurrence panel is dismissed (it is asking about
+  // a rule that no longer exists).
+  const toggleRepeat = (on: boolean) => {
+    const next = applyRepeatToggle(on, { repeat, customRule });
+    setRepeat(next.repeat);
+    setCustomRule(next.customRule);
+    setRepeatOn(on);
+    if (!on) {
+      setNewTaskEachRun(false);
+      if (recurOpen) closeRecur();
+    }
+  };
   const [home, setHome] = useState("");
   // The path field's recents dropdown: what this form remembers being used
   // (localStorage, first — the user's own picks outrank inference), padded
-  // with the folders existing tasks point at. Read once per open — the
-  // stored list only changes through this same modal.
+  // with the folders existing tasks point at.
+  //
+  // RE-READ every time the list opens, not once per modal: the store changes
+  // through this very modal (Browse writes the folder you pick), so a
+  // read-once state showed the list as it was BEFORE you went browsing —
+  // "I just went through a bunch of folders but recents didn't update"
+  // (Akshil, 2026-08-16). The read is a single localStorage hit on a user
+  // gesture, so doing it per open costs nothing worth saving.
   const [recentsOpen, setRecentsOpen] = useState(false);
-  const [recents] = useState(() => {
+  const [recents, setRecents] = useState<string[]>([]);
+  const readRecentList = useCallback(() => {
     const seen = new Set<string>();
     return [...readRecents(), ...(recentTargets ?? [])].filter((p) => {
       if (!p || seen.has(p)) return false;
       seen.add(p);
       return true;
     });
-  });
+  }, [recentTargets]);
+  const openRecents = () => {
+    setRecents(readRecentList());
+    setRecentsOpen(true);
+  };
 
   // Early path validation (Akshil, 2026-08-16 — "detect it before me
   // scanning the input"): a beat after typing stops, ask the server whether
@@ -1195,8 +1361,12 @@ export default function NewJobModal({
     // setInitial exists for — this is the same one, one prefill earlier).
     target: editing?.target ?? initialTarget ?? "",
     message: editing?.message ?? initialMessage ?? "",
+    title,
+    description,
     when,
     repeat,
+    repeatOn,
+    newTaskEachRun,
     customRule: JSON.stringify(customRule),
     permission,
   }));
@@ -1206,8 +1376,12 @@ export default function NewJobModal({
   const dirty =
     target !== initial.target ||
     message !== initial.message ||
+    title !== initial.title ||
+    description !== initial.description ||
     when !== initial.when ||
     repeat !== initial.repeat ||
+    repeatOn !== initial.repeatOn ||
+    newTaskEachRun !== initial.newTaskEachRun ||
     JSON.stringify(customRule) !== initial.customRule ||
     permission !== initial.permission;
 
@@ -1263,10 +1437,13 @@ export default function NewJobModal({
     [picked, pickedOk],
   );
   const rule: RecurrenceRule | null = useMemo(() => {
+    // The checkbox is the outer gate: an unticked Repeat submits no rule, full
+    // stop, whatever the (hidden) dropdown last said.
+    if (!repeatOn) return null;
     if (repeat === "custom") return customRule;
     if (repeat === "cron" || repeat === "none") return null;
     return choices.find((c) => c.key === repeat)?.rule ?? null;
-  }, [repeat, customRule, choices]);
+  }, [repeatOn, repeat, customRule, choices]);
 
   // Back to chat honours the SAME two-step dirty guard as the ✕ — one click
   // must not silently abandon an adjusted form just because the exit points
@@ -1300,36 +1477,29 @@ export default function NewJobModal({
     setBusy(true);
     setError(null);
     try {
-      await scheduleMessage({
-        target: target.trim(),
-        message,
-        // A rule rides WITH its anchor (`due` = the first run); the legacy
-        // cron line replaces due exactly as it always did; a one-off is due
-        // alone.
-        ...(rule
-          ? { due: when, rule }
-          : repeat === "cron" && legacyCron
-            ? { repeats: legacyCron }
-            : { due: when }),
-        permission_mode: permission,
-        // An edit keeps what it cannot re-ask for: a composer-scheduled task
-        // that continues an open chat must still continue it after a time
-        // change, or the edit silently turns it into a fresh session. A NEW
-        // one-off arriving from an open chat continues THAT chat — but only
-        // a one-off; a repeating task opens fresh sessions (Akshil,
-        // 2026-08-16), since resuming one conversation on every run
-        // compounds its context forever.
-        // …and in BOTH cases only while the task stays a one-off: editing a
-        // chat-continuing one-off into a recurring schedule must drop the
-        // session, or that one conversation is resumed on every run — the
-        // exact compounding the new-task path already refuses (Bugbot,
-        // PR #548).
-        ...((() => {
-          const oneOff = !rule && repeat !== "cron";
-          const sid = oneOff ? editing?.session_id || chatSessionId || "" : "";
-          return sid ? { session_id: sid } : {};
-        })()),
-      });
+      // One pure function builds the whole body, so what actually goes on the
+      // wire can be asserted without a DOM (new-task-form.test.ts). The rules
+      // it carries are unchanged: a rule rides with its anchor, a legacy cron
+      // line replaces `due`, and a session is continued only while the task
+      // stays a one-off — resuming one conversation on every run compounds its
+      // context forever (Akshil, 2026-08-16; Bugbot, PR #548).
+      await scheduleMessage(
+        buildSchedulePayload({
+          target,
+          message,
+          title,
+          description,
+          when,
+          rule,
+          repeat,
+          legacyCron,
+          permission,
+          // An edit keeps the session it cannot re-ask for; a NEW one-off
+          // arriving from an open chat continues THAT chat.
+          sessionId: editing?.session_id || chatSessionId || "",
+          newTaskEachRun,
+        }),
+      );
       rememberRecent(target);
       if (editing) {
         // Replacement first, THEN withdraw — a failed create must never leave
@@ -1363,25 +1533,22 @@ export default function NewJobModal({
     }
   };
 
-  // A one-off in the past is refused HERE, not left to the server: the server
-  // accepts a slightly-past due (the catch-up bound exists for the composer's
-  // "send at" racing the clock), but from a planning form a past time is only
-  // ever a mistake.
-  // Only a ONE-OFF refuses a past time: for a rule the picked time is the
-  // series' anchor — "Daily at 9am" saved in the afternoon legitimately
-  // starts tomorrow (the server materializes from the next future run), and
-  // cron never reads `due` at all (Bugbot, PR #541).
-  const dueIsPast =
-    repeat === "none" && pickedOk && picked.getTime() <= Date.now();
+  // A past time is no longer refused — by this form or by the server (design
+  // §9): missed work is queued and runs when the app next opens, so picking
+  // yesterday is a legitimate way to say "run this as soon as you can". What
+  // is left is a NOTE saying so, and only for a one-off: for a rule the picked
+  // time is the series' anchor — "Daily at 9am" saved in the afternoon starts
+  // tomorrow, which is not "as soon as it can" — and cron never reads `due` at
+  // all (Bugbot, PR #541).
+  const dueIsPast = !repeatOn && pickedOk && picked.getTime() <= Date.now();
 
   const ready =
     !replaced &&
     message.trim() !== "" &&
     target.trim() !== "" &&
     pathError === null &&
-    (repeat === "custom" ? customRule !== null : true) &&
-    (repeat === "cron" ? legacyCron !== "" : pickedOk) &&
-    !dueIsPast;
+    (repeatOn && repeat === "custom" ? customRule !== null : true) &&
+    (repeat === "cron" ? legacyCron !== "" : pickedOk);
 
   return (
     <Modal
@@ -1410,19 +1577,53 @@ export default function NewJobModal({
       }
     >
       <div className="schedule-form">
-        {/* The task text leads, wearing the title's clothes: one field is the
-            whole ask — what Claude should do — and splitting a title from a
-            description made people write the same thing twice (Akshil,
-            2026-08-14). */}
+        {/* The task text leads, wearing the title's clothes: this field is the
+            whole ask — what Claude should do. It is NOT the title: the two
+            rows under it are, and both are optional (design §4), which is why
+            this one keeps the big face and they do not. Its placeholder used
+            to read "Add description", which is now the name of a different
+            field one row down. */}
         <textarea
           ref={titleRef}
           className="schedule-form-title"
           rows={2}
-          placeholder="Add description"
+          placeholder="What should Claude do?"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           autoFocus
         />
+
+        {/* Optional, and normally left alone: Claude Code writes its own
+            one-line title into the transcript and the server prefers that,
+            falling back to the first line of the message. The placeholder says
+            so, because a blank field with a "Title" label reads as something
+            you owe the form. */}
+        <div className="schedule-form-line">
+          {ICON_TITLE}
+          <input
+            type="text"
+            className="field-control new-task-title"
+            aria-label="Title"
+            placeholder="Title — optional, filled in automatically"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </div>
+
+        {/* Empty by default and not auto-filled in this pass: `ai-title` is a
+            title, not a summary, and Claude Code stores no summary (design
+            §4, §12). */}
+        <div className="schedule-form-line new-task-desc-line">
+          {ICON_NOTES}
+          <textarea
+            className="field-control new-task-desc"
+            rows={2}
+            aria-label="Description"
+            placeholder="Description (optional)"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
 
         {/* The path is a combobox, Google-style: focusing it drops the last
             few folders the user scheduled against, with Browse as the
@@ -1468,9 +1669,9 @@ export default function NewJobModal({
                   suppressOpen.current = false;
                   return;
                 }
-                setRecentsOpen(true);
+                openRecents();
               }}
-              onClick={() => setRecentsOpen(true)}
+              onClick={openRecents}
               onChange={(e) => setTarget(e.target.value)}
             />
             {recentsOpen && (
@@ -1560,8 +1761,7 @@ export default function NewJobModal({
               }}
             >
               <button ref={dateBtnRef} type="button"
-                      className={"schedule-when-field" + (dueIsPast ? " is-invalid" : "")}
-                      aria-invalid={dueIsPast}
+                      className="schedule-when-field"
                       aria-describedby={dueIsPast ? pastHintId : undefined}
                       aria-expanded={dateOpen}
                       onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
@@ -1570,13 +1770,12 @@ export default function NewJobModal({
               {dateOpen && (
                 <div className="schedule-pop" style={popStyle(dateBtnRef.current, 300)}
                      onMouseDown={(e) => e.preventDefault()}>
-                  {/* A past day is only out of bounds for a ONE-OFF. For a
-                      rule the date is the series' anchor, and "Monthly on the
-                      second Wednesday" anchored last month is legitimate — the
-                      server materializes from the next future run. */}
+                  {/* No floor at all now. A past day is a one-off saying "run
+                      this as soon as you can" (design §9), and for a rule it
+                      was always legitimate — the date is the series' anchor,
+                      and the server materializes from the next future run. */}
                   <MiniCalendar
                     selected={pickedOk ? picked : new Date()}
-                    minToday={repeat === "none"}
                     onPick={(d) => { setDatePart(d); setDateOpen(false); }}
                   />
                 </div>
@@ -1592,8 +1791,7 @@ export default function NewJobModal({
               <input
                 ref={timeRef}
                 type="text"
-                className={"schedule-when-field schedule-when-time" + (dueIsPast ? " is-invalid" : "")}
-                aria-invalid={dueIsPast}
+                className="schedule-when-field schedule-when-time"
                 aria-describedby={dueIsPast ? pastHintId : undefined}
                 aria-expanded={timeOpen}
                 aria-label="Time"
@@ -1618,17 +1816,29 @@ export default function NewJobModal({
               )}
             </div>
           </div>
+          {/* Repeat is a tick on the when-row, not a dropdown that is always
+              open (design §6): most tasks run once, and the menu they never
+              use was the loudest thing under the time. Unticking clears the
+              rule outright — see toggleRepeat. */}
+          <CheckField
+            className="new-task-check--repeat"
+            label="Repeat"
+            checked={repeatOn}
+            onChange={toggleRepeat}
+          />
         </div>
-        {/* The refusal sits DIRECTLY under the row it refuses. Printed after
-            the repeat row (the first cut) it read as a complaint about the
-            recurrence rule, which is the one thing it is never about (audit
-            2026-08-16). role=alert so it is spoken when it appears. */}
+        {/* Not a refusal any more: past-due work is queued and runs when the
+            app next opens (design §9), so this says what will happen instead
+            of asking for a different answer. Still directly under the row it
+            is about — printed after the repeat row it read as a complaint
+            about the recurrence rule (audit 2026-08-16). */}
         {dueIsPast && (
-          <span id={pastHintId} className="field-hint schedule-form-bad schedule-form-sub"
-                role="alert">
-            Choose a time in the future
+          <span id={pastHintId} className="field-hint new-task-past schedule-form-sub"
+                role="status">
+            This time has passed — the task will run as soon as it can.
           </span>
         )}
+        {repeatOn && (
         <div className="schedule-form-line schedule-form-line--sub">
           <Dropdown
             ariaLabel="Repeats"
@@ -1641,11 +1851,16 @@ export default function NewJobModal({
                   : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat"
             }
             options={[
-              ...choices.map((c) =>
-                c.key === "custom" && repeat === "custom" && customRule
-                  ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
-                  : { key: c.key, label: c.label },
-              ),
+              // "Does not repeat" is gone from the menu: the tick above IS
+              // that answer now, and a dropdown that can contradict the
+              // checkbox it hangs from is two controls for one question.
+              ...choices
+                .filter((c) => c.key !== "none")
+                .map((c) =>
+                  c.key === "custom" && repeat === "custom" && customRule
+                    ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
+                    : { key: c.key, label: c.label },
+                ),
               // Legacy cron templates keep their line under a key of their
               // own — the form no longer writes cron, but editing one must
               // not silently rewrite the rule.
@@ -1666,7 +1881,18 @@ export default function NewJobModal({
               }
             }}
           />
+          {/* A task IS a Claude session, so a repeating task sends every run
+              into its own thread by construction — that is the default and
+              needs no flag. This is the opt-OUT: tick it and each occurrence
+              mints a fresh task, with a session and a TASK-nnn of its own
+              (design §6). */}
+          <CheckField
+            label="New task each run"
+            checked={newTaskEachRun}
+            onChange={setNewTaskEachRun}
+          />
         </div>
+        )}
         {recurOpen && (
           <CustomRecurrence
             initial={customRule}
