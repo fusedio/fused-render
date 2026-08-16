@@ -31,12 +31,43 @@ make it survivable rather than silent:
   so a laptop that slept through a due time fires on the tick after it wakes,
   and an app that was quit fires on the tick after it next starts. Catch-up
   is not a feature here; it is what the absence of tick-counting gets for free.
-* **A bound on how late is still worth sending** (`max_late_seconds`). Catch-up
-  with no bound is its own bug: a message scheduled for Tuesday's 9am standup,
-  fired unattended on Friday afternoon against a repo that has moved on, is
-  worse than one that never fired. Past the bound an entry becomes `missed` —
-  visible, never sent. The default is a day, because "I opened the laptop later
-  than I meant to" is the case worth serving and "I was away all week" is not.
+* **A QUEUE, rather than a bound on how late is still worth sending.** This is
+  the part that changed, and the old reasoning is worth keeping visible because
+  the new rule is an answer to it rather than a denial of it. The bound existed
+  because unbounded catch-up is its own bug: a message meant for Tuesday's 9am
+  standup, fired unattended on Friday afternoon against a repo that has moved
+  on, is worse than one that never fired. The default was a day; past it an
+  entry became `missed` — visible, never sent.
+
+  What that got wrong is *who decides*. A day is a guess about the user's
+  habits made by a constant, and the user was never asked. So the decision moved
+  to them: missed work is **queued** and runs when the app next opens, and the
+  queue is a surface with cancel-each and cancel-all on it (`queue`,
+  `cancel_queued`, and the popover the shell raises from them). Silently
+  discarding a message is no longer something this module does on its own.
+
+  Three rules make that safe rather than reckless, and each is load-bearing:
+
+  1. **One-offs are unbounded, because an unsent one-shot is GONE.** Ten
+     one-offs missed over two weeks all fire on open. `max_late_seconds()`
+     therefore answers `None` by default — no bound. An operator who sets
+     `FUSED_RENDER_SCHEDULE_MAX_LATE` explicitly still gets one, and it still
+     produces `missed` exactly as before; the env var is the escape hatch for
+     an install that wants the old shape.
+  2. **Recurring occurrences COALESCE — only the latest missed run is sent**
+     (`_coalesce`). The surviving half of the old 120-second occurrence bound:
+     replaying a week of "daily at 9am" into one thread is not what the words
+     meant, and the next run is already coming. The dropped runs are counted
+     and reported on the survivor (`skipped`, `skipped_note`) rather than
+     vanishing.
+  3. **Scheduling into the past is allowed** and is recorded with the due time
+     the user picked, so history reads truthfully. Because the queue runs in
+     due order, a due time in the past sorts ahead of everything later — it is
+     at the head of the queue and goes on the next tick.
+
+  Nothing here counts ticks either: coalescing walks the recurrence with
+  wall-clock arithmetic, asking "which occurrences lie between this entry's due
+  time and now", and never "how many ticks did we miss".
 
 **The claim-before-spawn order matters.** An entry is written `sending` BEFORE
 the helper is spawned, not after. If the process dies mid-spawn the entry is
@@ -110,19 +141,27 @@ STATES = (PENDING, SENDING, SENT, MISSED, ERROR, CANCELLED, RECURRING)
 # minute" rather than for precision.
 POLL_INTERVAL_S = 30
 
-# How late an overdue message may still be sent. See the module docstring for
-# why this is bounded at all; the env var is there because "a day" is a judgement
-# about the user's habits, not a fact.
-_DEFAULT_MAX_LATE_S = 24 * 3600
+# How late an overdue message may still be sent. **None means no bound**, which
+# is the default: a missed one-off is queued and runs when the app next opens,
+# however old (see the module docstring). It was 24h, and the env var — which
+# still works, and still produces `missed` past its value — is what an install
+# that wants the old shape sets. "A day" was always a judgement about the user's
+# habits rather than a fact, and the queue is where that judgement now lives.
+_DEFAULT_MAX_LATE_S: int | None = None
 _MAX_LATE_ENV = "FUSED_RENDER_SCHEDULE_MAX_LATE"
 
-# The late bound for a RECURRING occurrence, deliberately tiny where the
-# one-shot bound is a day: a missed recurring run is SKIPPED, never caught up.
-# Replaying "daily at 9am" at 2pm is not what the words meant, and the next
-# run is already coming — where a one-shot message not sent is GONE, which is
-# why that one is worth chasing for a day. The two minutes exist to absorb
-# tick jitter, nothing more.
-_OCCURRENCE_MAX_LATE_S = 120
+# How many occurrences `_coalesce` will walk past in one pass before giving up
+# and firing what it has reached.
+#
+# A bound on WORK, not on lateness — nothing here decides whether a message is
+# too old, only how long one sweep may spend catching a recurrence up. An app
+# closed for a year with an every-minute rule is half a million steps of
+# recurrence arithmetic on the tick that reopens it, and the tick thread is the
+# one that also fires everything else due. Hitting the cap costs only precision
+# in the REPORT: the survivor fires at the occurrence the walk reached rather
+# than at the very latest one, and `_materialize` still puts the successor ahead
+# of `now`, so no backlog is left behind either way.
+_COALESCE_MAX_STEPS = 20000
 
 # How long an entry may sit in `sending` before a sweep calls it interrupted.
 # Generously past the helper's own 60s timeout: the window this covers is the
@@ -234,16 +273,40 @@ def store_path() -> str:
     return os.path.join(storage.home_dir(), _STORE_NAME)
 
 
-def max_late_seconds() -> int:
-    """The catch-up bound, in seconds. A nonsense value falls back to the
-    default rather than producing a scheduler that fires everything ever
-    scheduled (0/negative) or nothing at all."""
+def max_late_seconds() -> int | None:
+    """The catch-up bound in seconds, or **None for no bound** — which is the
+    default, and what makes a missed one-off queue rather than expire.
+
+    An operator who sets `FUSED_RENDER_SCHEDULE_MAX_LATE` to a positive number
+    still gets the old behaviour: past that many seconds an entry becomes
+    `missed`, visible and never sent.
+
+    Anything else falls back to the default, unbounded. That covers a nonsense
+    value (the env var is a string a human typed) and 0/negative, which used to
+    be refused because a zero bound would have meant "expire everything the
+    instant it is late" — under the new default it means what it always fell
+    back to, which is now "no bound"."""
     raw = os.environ.get(_MAX_LATE_ENV)
     try:
         seconds = int(float(raw))
     except (TypeError, ValueError, OverflowError):
         return _DEFAULT_MAX_LATE_S
     return seconds if seconds > 0 else _DEFAULT_MAX_LATE_S
+
+
+def _entry_bound(entry: dict) -> int | None:
+    """How late THIS entry may be and still be sent, or None for no bound.
+
+    Per-entry, because the store is a JSON file a human may edit and because an
+    occurrence written by an older version carries its own `max_late` (the
+    120-second skip-not-catch-up bound that coalescing replaced). Read
+    defensively for the same reason: a `max_late` that came back as a string, a
+    bool, or a negative must not decide whether a message is sent — it falls
+    back to the global answer."""
+    bound = entry.get("max_late")
+    if isinstance(bound, (int, float)) and not isinstance(bound, bool) and bound > 0:
+        return int(bound)
+    return max_late_seconds()
 
 
 def _now() -> datetime:
@@ -374,6 +437,29 @@ def _write(entries: list[dict]) -> None:
     storage.write_json(store_path(), {"entries": entries})
 
 
+def _text(value) -> str:
+    """One free-text field off an entry (or off a request body), as a string.
+
+    Anything that is not a string reads as empty rather than raising. The store
+    is a JSON file a human may edit and the router hands this module a raw dict,
+    so a `title` that came back as a number, a list, or null must cost the entry
+    nothing — an empty title falls through to the next branch of the title
+    precedence (`ai-title`, then the message's first line), which is exactly the
+    behaviour of not setting one."""
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _flag(value) -> bool:
+    """One boolean field, read the same way and for the same reason.
+
+    `bool(value)` is deliberately NOT what this does: the strings a hand-edited
+    store or a sloppy client can carry ("false", "no", "0") are all truthy, and
+    silently reading "false" as True would flip a schedule's threading model
+    without anybody asking. Only a real `true` means true; everything else is
+    the default."""
+    return value is True
+
+
 def _pending_due(entries: list[dict]) -> list[str]:
     return [str(e.get("due") or "") for e in entries if e.get("state") == PENDING]
 
@@ -470,8 +556,27 @@ def _from_local(when: datetime) -> datetime:
 
 def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
-           rule: dict | None = None) -> dict:
+           rule: dict | None = None, title=None, description=None,
+           new_task_each_run=None) -> dict:
     """Validate and store one scheduled message; return the stored entry.
+
+    `title` and `description` are the user's own words about the work, both
+    optional and both stored as given. An empty `title` is not a missing value
+    to be filled in here — it is the first branch of a precedence the tasks
+    endpoint owns (the user's title, else Claude Code's `ai-title` off the
+    transcript, else the message's first line), and guessing one at creation
+    would pin the row to whatever the message happened to open with.
+
+    The three of them are UNTYPED on purpose: the router hands this module the
+    request body's values as they arrived, and the form omits a field rather
+    than sending a blank one, so "absent", "null" and "" all have to mean the
+    same thing. `_text` and `_flag` are where that happens.
+
+    `new_task_each_run` only means anything on a repeating message, and it names
+    the threading model: a task IS a Claude session, so by default every run of
+    a repeating message appends to the same thread (the occurrence inherits the
+    template's `session_id`). Ticked, each run starts a fresh session instead.
+    See `_materialize`, which is where the one-line difference lives.
 
     With `repeats` (a 5-field cron expression) the stored entry is a RECURRING
     template instead: `due` is ignored — the cron line already says every time
@@ -529,12 +634,24 @@ def create(target: str, message: str, due=None, session_id: str = "",
         if when.tzinfo is None:
             when = when.astimezone()
         when = when.astimezone(timezone.utc)
-        # A due time already past the catch-up bound would be stored only to be
-        # swept to `missed` on the very next tick. Refusing it up front tells the
-        # caller why, instead of accepting the message and quietly never sending it.
-        if when < _now() - timedelta(seconds=max_late_seconds()):
-            raise ValueError("due: further in the past than the catch-up bound "
-                             f"({max_late_seconds()}s) — it would never be sent")
+        # A DUE TIME IN THE PAST IS ACCEPTED, and stored as the time the user
+        # picked. This used to be refused past the catch-up bound, and the
+        # refusal was right for as long as the bound was: an entry that would be
+        # swept to `missed` on the very next tick is better refused than accepted
+        # and silently dropped.
+        #
+        # With catch-up unbounded there is nothing to refuse it FOR. Picking a
+        # date days back on the calendar now means "run this, and file it under
+        # then" — the due time is recorded as given so history reads truthfully,
+        # and because the queue runs in due order (`_claim_due`) a past due time
+        # sorts ahead of everything later, which puts it at the head of the queue
+        # and sends it on the next tick.
+        #
+        # An operator who has set FUSED_RENDER_SCHEDULE_MAX_LATE is the one case
+        # where this can still be stored only to expire. It is still accepted:
+        # the bound is theirs, the sweep applies it, and `missed` says plainly
+        # what happened — where a refusal here would report a policy the caller
+        # did not set as if the date were malformed.
 
     mode = permission_mode or _SCHEDULED_PERMISSION_MODE
     if mode not in PERMISSION_MODES:
@@ -551,6 +668,16 @@ def create(target: str, message: str, due=None, session_id: str = "",
         "due": when.isoformat(),
         "session_id": session_id or "",
         "permission_mode": mode,
+        # The user's own words, both optional and both "" by default. Read
+        # through `_text` because the router hands this module the request body
+        # unvalidated, exactly as it does for every other field here.
+        "title": _text(title),
+        "description": _text(description),
+        # Threading, not scheduling: whether each run of a REPEAT opens its own
+        # session. Stored on one-shots too (as False) so every entry has the
+        # same shape and the form reads it back the same way — a one-shot has
+        # one run, so there is nothing for it to mean there.
+        "new_task_each_run": _flag(new_task_each_run),
         "state": RECURRING if (repeats or spec is not None) else PENDING,
         # "" on a one-shot; the cron line on a template. An OCCURRENCE never
         # carries it — the link runs the other way, through `template_id`.
@@ -680,6 +807,127 @@ def restore(entry_id: str) -> dict | None:
     return restored
 
 
+# ---------------------------------------------------------------- the queue
+#
+# With catch-up unbounded, opening the app after a week away can find real work
+# waiting — which is only safe if the user can SEE it and stop it. These two
+# functions are that surface; the shell raises one popover from them on open
+# (never one per message) with cancel-each and cancel-all.
+
+
+def _queue_order(entries: list[dict], now: datetime) -> list[tuple[datetime, str, dict]]:
+    """Past-due pending entries, in the order `_claim_due` will send them.
+
+    Deliberately the same key — due time, id breaking ties — because a queue
+    listed in one order and run in another is worse than no queue at all.
+    Entries past an explicit bound are left out: they are not waiting to run,
+    they are waiting to be swept to `missed`."""
+    queued: list[tuple[datetime, str, dict]] = []
+    for entry in entries:
+        if entry.get("state") != PENDING:
+            continue
+        try:
+            when = parse_due(entry.get("due"))
+        except ValueError:
+            continue
+        if when > now:
+            continue
+        bound = _entry_bound(entry)
+        if bound is not None and when < now - timedelta(seconds=bound):
+            continue
+        queued.append((when, str(entry.get("id") or ""), entry))
+    queued.sort(key=lambda item: (item[0], item[1]))
+    return queued
+
+
+def queue(now: datetime | None = None) -> dict:
+    """What is waiting and what is in flight: `{"queued": [...], "running": [...]}`.
+
+    * **queued** — past-due `pending` entries, in run order. Not "everything
+      scheduled": a message due tomorrow is not queued, it is scheduled, and
+      showing it here would make the cancel-all button mean something the user
+      did not ask for.
+    * **running** — entries in `sending`, i.e. claimed but not yet spawned.
+      Narrow on purpose. A `sent` entry with a live turn is running too, but it
+      has its own cancel (the job registry's ✕, which really does stop the run)
+      and it is past the point this surface can withdraw it.
+
+    A plain read, like `list_entries`: no materialize, no coalesce, no claim.
+    The tick owns every state change, and a GET that mutated the store would
+    make merely LOOKING at the queue change what runs."""
+    now = now or _now()
+    with _lock:
+        entries = _read()
+    running = [e for e in entries if e.get("state") == SENDING]
+    running.sort(key=lambda e: str(e.get("fired") or e.get("due") or ""))
+    return {"queued": [entry for _, _, entry in _queue_order(entries, now)],
+            "running": running}
+
+
+def cancel_queued(entry_ids=None, all_queued: bool = False,
+                  now: datetime | None = None) -> dict:
+    """Drop queued messages: `{"cancelled": [id...], "refused": [id...],
+    "reasons": {id: why}}`.
+
+    **The claim race is the whole design problem here**, and the answer is to
+    refuse rather than to force. The tick claims an entry (`pending` ->
+    `sending`) immediately before spawning its helper, so between the moment the
+    user reads the queue and the moment they press Cancel, an entry can be away.
+    Cancelling it then would be a claim this module cannot make good on — the
+    process is launched, the turn may have started — and writing `cancelled`
+    over `sending` would additionally destroy the record the stuck sweep needs
+    to report an interrupted send.
+
+    So the transition allowed is exactly `pending` -> `cancelled`, decided on a
+    fresh read under `_lock` — the same lock and the same re-read `_claim` uses.
+    One of the two wins and the other sees the loser's state: cancel first and
+    the claim returns None (the tick skips it), claim first and cancel refuses
+    it as already running. Neither can leave a half-cancelled entry.
+
+    `all_queued` means the entries `queue()` would list right now, recomputed
+    under the lock rather than trusted from the client — "cancel all" must mean
+    the queue as it is, not the queue as the page last drew it, or a message
+    that came due in between would be cancelled without ever being shown.
+
+    Cancelling a recurring OCCURRENCE means what it means everywhere else in
+    this module: skip this one, keep the schedule."""
+    now = now or _now()
+    cancelled: list[str] = []
+    refused: list[str] = []
+    reasons: dict[str, str] = {}
+    with _lock:
+        entries = _read()
+        by_id = {str(e.get("id") or ""): e for e in entries}
+        if all_queued:
+            targets = [entry_id for _, entry_id, _ in _queue_order(entries, now)]
+        else:
+            targets = [str(i) for i in (entry_ids or []) if isinstance(i, str)]
+        changed = False
+        for entry_id in targets:
+            entry = by_id.get(entry_id)
+            if entry is None:
+                refused.append(entry_id)
+                reasons[entry_id] = "no scheduled message with that id"
+                continue
+            state = entry.get("state")
+            if state == PENDING:
+                entry["state"] = CANCELLED
+                cancelled.append(entry_id)
+                changed = True
+            elif state == SENDING or (state == SENT and not entry.get("turn")):
+                refused.append(entry_id)
+                reasons[entry_id] = ("already running — it was claimed for "
+                                     "sending before this cancel arrived")
+            else:
+                refused.append(entry_id)
+                reasons[entry_id] = f"already {state}"
+        if changed:
+            _write(entries)
+    if changed:
+        _sync_wake()
+    return {"cancelled": cancelled, "refused": refused, "reasons": reasons}
+
+
 def _update(entry_id: str, **fields) -> None:
     """Merge `fields` into one entry, re-reading under the lock so a concurrent
     cancel or create is not clobbered by a stale copy."""
@@ -777,13 +1025,14 @@ def _claim_due(now: datetime) -> list[dict]:
                 continue
             if when > now:
                 continue
-            # The bound is per-entry: a recurring occurrence carries a tiny one
-            # (`max_late`, skip-not-catch-up), everything else gets the global
-            # day. Read defensively — the store is a JSON file a human can edit.
-            bound = entry.get("max_late")
-            if not isinstance(bound, (int, float)) or isinstance(bound, bool):
-                bound = max_late_seconds()
-            if when < now - timedelta(seconds=bound):
+            # The bound is per-entry and USUALLY None — nothing expires, missed
+            # work queues (see the module docstring). A number gets here two
+            # ways: an operator's FUSED_RENDER_SCHEDULE_MAX_LATE, or an
+            # occurrence written by an older version whose `max_late` field
+            # survives in the store. Both mean the same thing here and are read
+            # the same way, defensively, in `_entry_bound`.
+            bound = _entry_bound(entry)
+            if bound is not None and when < now - timedelta(seconds=bound):
                 changed = True
                 entry["state"] = MISSED
                 entry["error"] = (
@@ -1061,6 +1310,141 @@ def _next_template_due(entry: dict, base: datetime) -> datetime | None:
     return _from_local(line.next_after(_local_naive(base)))
 
 
+def _skipped(entry: dict) -> int:
+    """How many runs this entry has already absorbed. Read defensively, like
+    `_made`: a hand-edited count must not stop the schedule."""
+    value = entry.get("skipped")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _coalesce(now: datetime) -> None:
+    """Collapse a recurring template's backlog into ONE run — the latest.
+
+    The half of the old 120-second occurrence bound that survives. That bound
+    discarded every late recurring run; this keeps the last one and drops the
+    rest, because "daily at 9am" replayed seven times into one thread on Monday
+    morning is not what the words meant, while running it once — late — is.
+
+    **Two shapes of backlog reach here, and both have to work.** Which one the
+    store holds depends only on how the app was closed:
+
+    * **One stale pending occurrence** is the ordinary case. `_materialize`
+      keeps exactly one run ahead of a template and refuses to make another
+      while it is still pending, so an app closed for a week reopens with a
+      single occurrence dated a week ago — and the six runs in between exist
+      only in the recurrence, never in the store. Those are found by WALKING
+      (`_next_template_due`), not by counting ticks: the walk asks the rule
+      which occurrences lie between that due time and now.
+    * **Several past-due pending occurrences** happen when something else put
+      them there — `restore` un-skipping a run beside its successor, or a
+      hand-edited store. All but the newest are marked `missed`; the newest is
+      the survivor, and the walk continues from it.
+
+    The dropped runs are COUNTED, never replayed: `skipped` accumulates on the
+    survivor and `skipped_note` is the sentence the UI shows ("5 earlier runs
+    skipped"). One `missed` event is emitted for the whole collapse rather than
+    one per dropped run — a toast per skipped run is precisely the storm this
+    exists to prevent.
+
+    `made` moves with the walk for a rule template, because it must: it counts
+    what the template put on the calendar, and the docstring on `create` is
+    explicit that skipped runs count. That also ends a `count` series honestly —
+    `_next_template_due` answers None once the budget is spent, which stops the
+    walk exactly where materialization would have stopped.
+
+    Occurrences it touches lose any legacy `max_late`, so the survivor is sent
+    rather than swept to `missed` by the bound coalescing replaced.
+
+    Only PENDING entries are read and only PENDING entries are written, which is
+    what keeps this from resurrecting anything: an entry the old bound already
+    called `missed` is terminal and invisible here."""
+    announce: list[tuple[str, dict, str]] = []
+    with _lock:
+        entries = _read()
+        templates = {str(e.get("id")): e for e in entries
+                     if e.get("state") == RECURRING}
+        backlog: dict[str, list[tuple[datetime, dict]]] = {}
+        for entry in entries:
+            tid = str(entry.get("template_id") or "")
+            if not tid or entry.get("state") != PENDING:
+                continue
+            try:
+                when = parse_due(entry.get("due"))
+            except ValueError:
+                continue  # `_claim_due` owns the unreadable-due verdict
+            if when <= now:
+                backlog.setdefault(tid, []).append((when, entry))
+        changed = False
+        for tid, occurrences in backlog.items():
+            # Newest last. The id breaks ties and is itself due-time-derived, so
+            # two occurrences on the same second still order deterministically.
+            occurrences.sort(key=lambda pair: (pair[0], str(pair[1].get("id"))))
+            when, survivor = occurrences[-1]
+            dropped = 0
+            for _, earlier in occurrences[:-1]:
+                earlier["state"] = MISSED
+                earlier["error"] = ("skipped: only the latest missed run of a "
+                                    "repeating message is sent")
+                dropped += 1
+                changed = True
+            template = templates.get(tid)
+            steps = 0
+            while template is not None and steps < _COALESCE_MAX_STEPS:
+                try:
+                    following = _next_template_due(template, when)
+                except ValueError:
+                    # A hand-edited schedule that no longer parses. Left for
+                    # `_materialize`, which is where that verdict is announced;
+                    # the survivor still fires at the time it already has.
+                    break
+                if following is None or following > now:
+                    break
+                if following <= when:
+                    # The walk must MOVE. Recurrence math is done on local
+                    # wall-clock time (a repeat is a wall-clock promise), so the
+                    # autumn fall-back — where one local hour happens twice —
+                    # can hand back a later local time that converts to an
+                    # earlier or equal UTC instant. Stepping on it would walk
+                    # the same hour for as long as the cap allows. The repo
+                    # already accepts a cosmetic DST ghost as out of scope; this
+                    # only refuses to spin on one.
+                    break
+                when = following
+                dropped += 1
+                steps += 1
+                if isinstance(template.get("rule"), dict):
+                    template["made"] = _made(template) + 1
+            if steps:
+                # The survivor MOVES to the latest missed occurrence rather than
+                # a new entry being created for it: one run was missed many
+                # times over, and one row is the honest way to say that.
+                survivor["due"] = when.isoformat()
+                if template is not None:
+                    # The template's `due` mirrors its latest occurrence, which
+                    # is what the listing sorts and shows for the recurring row.
+                    template["due"] = when.isoformat()
+                changed = True
+            if survivor.get("max_late") is not None:
+                # The bound this pass replaced. Left in place it would sweep the
+                # very run we just decided to send.
+                survivor.pop("max_late", None)
+                changed = True
+            if dropped:
+                total = _skipped(survivor) + dropped
+                survivor["skipped"] = total
+                survivor["skipped_note"] = (
+                    f"{total} earlier run{'' if total == 1 else 's'} skipped")
+                announce.append((EVENT_MISSED, dict(survivor),
+                                 survivor["skipped_note"]))
+                changed = True
+        if changed:
+            _write(entries)
+    for kind, entry, detail in announce:
+        _emit(kind, entry, detail)
+    if changed:
+        _sync_wake()
+
+
 def _materialize(now: datetime) -> None:
     """Ensure every live recurring template has exactly ONE pending occurrence.
 
@@ -1125,13 +1509,42 @@ def _materialize(now: datetime) -> None:
                 "target": entry.get("target", ""),
                 "message": entry.get("message", ""),
                 "due": next_due.isoformat(),
-                "session_id": str(entry.get("session_id") or ""),
+                # THE THREADING DECISION, and the one line where
+                # `new_task_each_run` does its whole job.
+                #
+                # A task is a Claude session, so a repeating message appending
+                # into one thread is what inheriting the template's session id
+                # gets — chaining is the default by construction, with no
+                # separate flag for it. Ticking "new task each run" is the
+                # opposite ask, and "" is exactly how the rest of this module
+                # already spells it: `_send` passes the empty string to
+                # `spawn_helper`, which starts a fresh session rather than
+                # resuming, and `_busy_sessions` treats "" as colliding with
+                # nothing, so independent runs are not serialised against each
+                # other the way one thread's turns must be.
+                "session_id": "" if _flag(entry.get("new_task_each_run"))
+                              else str(entry.get("session_id") or ""),
                 "permission_mode": entry.get("permission_mode")
                                    or _SCHEDULED_PERMISSION_MODE,
+                # The user's words travel with every run, like the message and
+                # the target: an occurrence is that template's run, so a list
+                # showing occurrences must be able to name it without going back
+                # to the template for the label.
+                "title": _text(entry.get("title")),
+                "description": _text(entry.get("description")),
+                # Carried so an occurrence reads the same shape as any other
+                # entry. It is the TEMPLATE's answer that decided the session id
+                # above; copying it keeps the record of which way that went.
+                "new_task_each_run": _flag(entry.get("new_task_each_run")),
                 "state": PENDING,
                 "repeats": "",
                 "template_id": str(entry["id"]),
-                "max_late": _OCCURRENCE_MAX_LATE_S,
+                # NO `max_late`. An occurrence used to carry 120s — the
+                # skip-not-catch-up bound — and `_coalesce` is what replaced it:
+                # a missed recurring run is no longer discarded, it is collapsed
+                # into the latest one and sent. An occurrence an older version
+                # wrote still carries the field, and `_entry_bound` still honours
+                # it until coalescing clears it.
                 "created": now.isoformat(),
                 "fired": "",
                 "run_id": "",
@@ -1284,10 +1697,18 @@ def tick(now: datetime | None = None) -> list[dict]:
     tests drive directly instead of waiting on the loop."""
     now = now or _now()
     sent: list[dict] = []
-    # Recurring templates first, so an occurrence coming due THIS tick exists
-    # by the time the sweep looks. Order matters the other way too: a finished
-    # occurrence's successor is created here and then correctly ignored by the
-    # sweep below until its own time comes.
+    # Coalesce first, materialize second, sweep third — and that order is the
+    # one thing about this sequence worth stating.
+    #
+    # `_coalesce` collapses a recurring backlog into the one run that should go,
+    # possibly MOVING that occurrence's due time forward, so it has to finish
+    # before anything reads a due time. `_materialize` then keeps exactly one run
+    # ahead of every template (it sees the coalesced state and correctly leaves
+    # a template alone while its survivor is still pending). Only then does the
+    # sweep look, so an occurrence coming due THIS tick exists by the time it
+    # does, and a finished occurrence's successor is created above and correctly
+    # ignored below until its own time comes.
+    _coalesce(now)
     _materialize(now)
     due = _claim_due(now)
     if not due:

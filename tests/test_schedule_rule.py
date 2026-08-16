@@ -150,6 +150,57 @@ def test_the_series_includes_its_anchor():
                                  SAT - timedelta(days=99)) == SAT
 
 
+def test_hourly_steps_by_its_interval():
+    """The one frequency that fires more than once a day — everything else in
+    this module keeps a time of day fixed, and this one moves it."""
+    assert _walk({"freq": "hour"}, SAT, 3) == [
+        SAT, datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 11, 0)]
+    assert _walk({"freq": "hour", "interval": 3}, SAT, 3) == [
+        SAT, datetime(2026, 8, 15, 12, 0), datetime(2026, 8, 15, 15, 0)]
+    # Strictly after, so the anchor's own instant is not offered twice.
+    assert recur.next_occurrence({"freq": "hour"}, SAT, SAT) == \
+        datetime(2026, 8, 15, 10, 0)
+
+
+def test_hourly_walks_straight_through_midnight():
+    """The date is a consequence of the arithmetic, never a step in it: an
+    hourly series does not pause at the end of a day, and an interval that does
+    not divide 24 lands on a different hour of the next one."""
+    late = datetime(2026, 8, 15, 23, 0)
+    assert _walk({"freq": "hour"}, late, 3) == [
+        late, datetime(2026, 8, 16, 0, 0), datetime(2026, 8, 16, 1, 0)]
+    assert _walk({"freq": "hour", "interval": 5}, datetime(2026, 8, 15, 22, 0), 3) == [
+        datetime(2026, 8, 15, 22, 0), datetime(2026, 8, 16, 3, 0),
+        datetime(2026, 8, 16, 8, 0)]
+
+
+def test_an_hourly_until_keeps_every_run_of_its_last_day():
+    """`until` is a DATE and an hourly rule is not, which is the one place the
+    two could have disagreed. "Ends on the 16th" means the 16th runs in full —
+    all twenty-four of them — and the 17th does not run at all."""
+    rule = {"freq": "hour", "until": "2026-08-16"}
+    times = _walk(rule, datetime(2026, 8, 15, 22, 0), 99)
+    assert len(times) == 26                       # 22:00, 23:00, then all of the 16th
+    assert times[-1] == datetime(2026, 8, 16, 23, 0)
+    assert {t.date() for t in times} == {date(2026, 8, 15), date(2026, 8, 16)}
+    # The last hour of the last day is reachable, and nothing follows it.
+    assert recur.next_occurrence(rule, datetime(2026, 8, 15, 22, 0),
+                                 datetime(2026, 8, 16, 22, 30)) == times[-1]
+    assert recur.next_occurrence(rule, datetime(2026, 8, 15, 22, 0),
+                                 times[-1]) is None
+
+
+def test_hourly_takes_neither_weekdays_nor_a_monthly_mode():
+    """The existing sentences cover it: `byday` belongs to a week and `monthly`
+    to a month, and "hour" is neither — no branch of its own."""
+    with pytest.raises(ValueError) as byday:
+        recur.validate_rule({"freq": "hour", "byday": [1]})
+    assert "only a weekly repeat" in str(byday.value)
+    with pytest.raises(ValueError) as monthly:
+        recur.validate_rule({"freq": "hour", "monthly": "day"})
+    assert "only a monthly repeat" in str(monthly.value)
+
+
 def test_daily_steps_by_its_interval_and_keeps_the_time_of_day():
     assert _walk({"freq": "day", "interval": 3}, SAT, 3) == [
         SAT, datetime(2026, 8, 18, 9, 0), datetime(2026, 8, 21, 9, 0)]
@@ -292,6 +343,8 @@ def test_count_is_not_the_walks_business():
 
 def test_a_valid_rule_normalises_to_what_it_actually_says():
     assert recur.validate_rule({"freq": "day"}) == {"freq": "day", "interval": 1}
+    assert recur.validate_rule({"freq": "hour", "interval": 6}) == \
+        {"freq": "hour", "interval": 6}
     # byday deduped and sorted; monthly defaulted only where it means something.
     assert recur.validate_rule({"freq": "week", "byday": [3, 1, 3]}) == \
         {"freq": "week", "interval": 1, "byday": [1, 3]}
@@ -314,6 +367,8 @@ def test_a_valid_rule_normalises_to_what_it_actually_says():
     ({"freq": "day", "interval": 100}, "interval: expected a whole number"),
     ({"freq": "day", "interval": "2"}, "interval: expected a whole number"),
     ({"freq": "day", "byday": [1]}, "only a weekly repeat"),
+    ({"freq": "hour", "byday": [1]}, "only a weekly repeat"),
+    ({"freq": "hour", "monthly": "day"}, "only a monthly repeat"),
     ({"freq": "week", "byday": []}, "byday: cannot be empty"),
     ({"freq": "week", "byday": 3}, "byday: expected a list"),
     ({"freq": "week", "byday": [7]}, "is not a weekday"),
@@ -330,6 +385,16 @@ def test_a_bad_rule_says_what_is_wrong_with_it(rule, says):
     with pytest.raises(ValueError) as raised:
         recur.validate_rule(rule)
     assert says in str(raised.value)
+
+
+def test_the_freq_message_offers_the_whole_vocabulary_shortest_first():
+    """"hourly" is the near miss the word "hour" invites, so the sentence that
+    refuses it has to name every word on offer — and in the order the repeat
+    menu lists them, or the list reads as arbitrary."""
+    with pytest.raises(ValueError) as raised:
+        recur.validate_rule({"freq": "hourly"})
+    assert "expected one of hour, day, week, month, year" in str(raised.value)
+    assert recur.FREQUENCIES == ("hour", "day", "week", "month", "year")
 
 
 def test_a_typo_is_refused_rather_than_ignored():
@@ -367,9 +432,10 @@ def test_create_with_a_rule_stores_a_template_and_its_first_run(target):
     occurrence = occurrences[0]
     assert occurrence["state"] == schedule.PENDING
     assert occurrence["template_id"] == template["id"]
-    # A recurring run, so the tiny skip-not-catch-up bound, exactly as a cron
-    # occurrence gets — the whole point of sharing the lifecycle.
-    assert occurrence["max_late"] == schedule._OCCURRENCE_MAX_LATE_S
+    # No per-occurrence late bound, exactly as a cron occurrence gets none —
+    # the whole point of sharing the lifecycle. The 120-second
+    # skip-not-catch-up bound both used to carry was replaced by coalescing.
+    assert "max_late" not in occurrence
     assert _entries()[template["id"]]["made"] == 1
     # The template's `due` mirrors the run ahead of it; `anchor` does not move.
     assert _entries()[template["id"]]["due"] == occurrence["due"]
@@ -477,6 +543,36 @@ def test_count_projection_ignores_never_made_past_runs(target):
     ahead = schedule.upcoming(stored)
     assert len(ahead) == 3
     assert all(schedule.parse_due(t) > schedule._now() for t in ahead)
+
+
+def test_an_hourly_count_series_runs_out_the_same_way(target, spawned, clock):
+    """The store never learns that this one fires more often: `made` counts
+    materializations, and a materialization an hour apart costs exactly what one
+    a day apart does."""
+    template = schedule.create(str(target), "run", due=_anchor(minutes=1),
+                               rule={"freq": "hour", "count": 3})
+    made = _run_out(template["id"], clock)
+
+    assert len(made) == 3
+    assert len(spawned) == 3
+    steps = [_local(b) - _local(a) for a, b in zip(made, made[1:])]
+    assert steps == [timedelta(hours=1), timedelta(hours=1)]
+    assert schedule.upcoming(_entries()[template["id"]]) == []
+
+
+def test_an_hourly_projection_fills_the_days_it_covers(target):
+    """The projection is a list of instants, not one per day — the first rule
+    that could have exposed a day-bucketed `upcoming`."""
+    template = schedule.create(str(target), "run", due=_anchor(minutes=1),
+                               rule={"freq": "hour"})
+    times = [_local(t) for t in schedule.upcoming(_entries()[template["id"]],
+                                                  horizon_days=2)]
+    assert len(times) == 48
+    assert times == sorted(times)
+    # Far more runs than days: whatever hour the test runs at, two days of an
+    # hourly rule cannot be three dates' worth of one-a-day.
+    assert len(times) > len({t.date() for t in times})
+    assert all(b - a == timedelta(hours=1) for a, b in zip(times, times[1:]))
 
 
 def test_a_skipped_run_still_counts_against_the_count(target, spawned, clock):
