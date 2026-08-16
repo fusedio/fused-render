@@ -181,6 +181,47 @@ def _lstart(pid):
     ).stdout.strip()
 
 
+def _argv(pid):
+    return subprocess.run(
+        ["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.strip()
+
+
+# A stand-in for dev.sh: a script whose *argv* is what the identity check reads.
+#
+# The trailing `exit 0` and the trap are not decoration. Bash replaces itself
+# with the last command of a script when nothing can follow it — verified here:
+# `bash -c 'sleep 30'` already shows up as `sleep 30`, with no shell in argv, on
+# bash 3.2 — and bash 5.x (every Linux runner) applies that optimization to
+# script files too. A stub that was only `sleep 60` therefore became a bare
+# `sleep` on Linux, its argv lost the "dev.sh" the check looks for, and two
+# tests that should read OURS read STALE. The real dev.sh installs traps and has
+# hundreds of commands after any given one, so it is never exec-replaced; the
+# stub has to be equally unoptimizable or it is not standing in for anything.
+_STUB = "#!/usr/bin/env bash\ntrap 'exit 0' TERM\nsleep 60\nexit 0\n"
+
+
+def _spawn_stub(path):
+    """Start `path` (named dev.sh) and assert it really is identifiable.
+
+    Checking the argv here rather than letting the OURS assertion fail turns a
+    platform quirk in the *fixture* into a message that names it, instead of a
+    bare "STALE" that looks identical to the production bug.
+    """
+    path.write_text(_STUB)
+    proc = subprocess.Popen(["bash", str(path)], close_fds=False)
+    time.sleep(0.5)
+    argv = _argv(proc.pid)
+    if "dev.sh" not in argv:
+        proc.kill()
+        proc.wait(timeout=10)
+        raise AssertionError(
+            f"stub was exec-replaced by its own last command; argv={argv!r}. "
+            "The fixture, not dev.sh, is what needs fixing."
+        )
+    return proc
+
+
 def test_a_dead_pid_is_stale():
     """The common case: the machine rebooted, or dev.sh was SIGKILLed.
 
@@ -231,17 +272,17 @@ def test_a_missing_start_time_fails_closed(tmp_path):
     empty record as "skip that check" would make a recycled pid landing on a
     colleague's dev.sh reapable. Failing closed costs one missed auto-restart.
     """
-    stub = tmp_path / "dev.sh"
-    stub.write_text("#!/usr/bin/env bash\nsleep 60\n")
-    proc = subprocess.Popen(["bash", str(stub)], close_fds=False)
+    proc = _spawn_stub(tmp_path / "dev.sh")
     try:
-        time.sleep(0.5)
         # Same process that IS recognized when the start time is supplied.
         res = _run_lib(
             f'dev_pidfile_is_ours {proc.pid} {_lstart(proc.pid)!r} {_ROOT!r}'
             " && echo OURS || echo STALE"
         )
-        assert res.stdout.strip() == "OURS", res.stdout + res.stderr
+        assert res.stdout.strip() == "OURS", (
+            f"{res.stdout}{res.stderr} argv={_argv(proc.pid)!r} "
+            f"lstart={_lstart(proc.pid)!r}"
+        )
         res = _run_lib(
             f'dev_pidfile_is_ours {proc.pid} "" {_ROOT!r} && echo OURS || echo STALE'
         )
@@ -259,20 +300,15 @@ def test_a_live_dev_sh_for_this_worktree_is_recognized(tmp_path):
     under test is the identification (command line + start time + recorded
     root), and that sees only what `ps` reports.
     """
-    stub = tmp_path / "dev.sh"
-    stub.write_text("#!/usr/bin/env bash\nsleep 60\n")
-    proc = subprocess.Popen(["bash", str(stub)], close_fds=False)
+    proc = _spawn_stub(tmp_path / "dev.sh")
     try:
-        time.sleep(0.5)
-        start = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(proc.pid)],
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        start = _lstart(proc.pid)
         res = _run_lib(
             f'dev_pidfile_is_ours {proc.pid} {start!r} {_ROOT!r} && echo OURS || echo STALE'
         )
-        assert res.stdout.strip() == "OURS", res.stdout + res.stderr
+        assert res.stdout.strip() == "OURS", (
+            f"{res.stdout}{res.stderr} argv={_argv(proc.pid)!r} start={start!r}"
+        )
 
         # ...and the same pid with a start time from a different process (i.e. a
         # recycled pid) must not be.
@@ -292,16 +328,48 @@ def test_a_pidfile_from_another_worktree_root_is_stale(tmp_path):
     Uses a live process that passes every OTHER check (named dev.sh, real start
     time), so the recorded root is the only thing that can reject it.
     """
-    stub = tmp_path / "dev.sh"
-    stub.write_text("#!/usr/bin/env bash\nsleep 60\n")
-    proc = subprocess.Popen(["bash", str(stub)], close_fds=False)
+    proc = _spawn_stub(tmp_path / "dev.sh")
     try:
-        time.sleep(0.5)
         res = _run_lib(
             f'dev_pidfile_is_ours {proc.pid} {_lstart(proc.pid)!r} "/some/other/worktree"'
             " && echo OURS || echo STALE"
         )
         assert res.stdout.strip() == "STALE", res.stdout + res.stderr
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_a_long_command_line_is_still_recognized(tmp_path):
+    """`ps` must not truncate dev.sh out of its own command line.
+
+    GNU procps caps the command column at 80 chars when stdout is not a
+    terminal, and dev.sh sits at the END of the line — so on Linux a checkout
+    deeper than ~74 chars (any git worktree under
+    <repo>/.claude/worktrees/<name>/) would make dev_pidfile_is_ours reject its
+    own pidfile forever: no error, no reap, just the duplicate trees this PR
+    exists to prevent. `ps -ww` lifts the cap.
+
+    This can only go red on Linux — BSD ps never truncated a piped `-o` — but it
+    is the check that pins the flag in place, and it is cheap to keep here
+    rather than in a Linux-only file nobody runs locally.
+    """
+    deep = tmp_path
+    for part in ("a-very-deeply-nested", "worktree-style-path", "that-exceeds-eighty"):
+        deep = deep / part
+    deep.mkdir(parents=True)
+    stub = deep / "dev.sh"
+    proc = _spawn_stub(stub)
+    try:
+        argv = _argv(proc.pid)
+        assert len(argv) > 80, f"path too short to exercise the cap: {len(argv)}"
+        res = _run_lib(
+            f'dev_pidfile_is_ours {proc.pid} {_lstart(proc.pid)!r} {_ROOT!r}'
+            " && echo OURS || echo STALE"
+        )
+        assert res.stdout.strip() == "OURS", (
+            f"{res.stdout}{res.stderr} argv={argv!r} (len {len(argv)})"
+        )
     finally:
         proc.kill()
         proc.wait(timeout=10)
@@ -427,6 +495,20 @@ def test_the_server_is_backgrounded_and_waited_on_in_both_branches():
         )
         assert re.search(pattern, src, re.M), f"{launch} is not backgrounded"
     assert src.count('wait "$SERVER_PID"') == 2, "both launches must be waited on"
+
+
+def test_command_line_reads_are_width_unlimited():
+    """Every `ps … command=` in dev.sh must pass -ww.
+
+    The behavioural test above cannot fail on macOS, where BSD ps does not
+    truncate; this one can, and it is the guard that keeps the flag from being
+    dropped as noise by someone reading the script on a Mac.
+    """
+    src = _script()
+    reads = re.findall(r"ps\s+([^\n|]*?)-o\s+command=", src)
+    assert reads, "the command-line read vanished"
+    for flags in reads:
+        assert "-ww" in flags, f"`ps -o command=` without -ww: {flags!r}"
 
 
 def test_dev_pids_dir_is_gitignored():

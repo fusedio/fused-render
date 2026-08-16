@@ -262,7 +262,17 @@ dev_pidfile_is_ours() {
   [[ -n "$want_start" ]] || return 1
   [[ "$want_root" == "$REPO_ROOT" ]] || return 1
   pid_alive "$pid" || return 1
-  cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+  # `-ww` is load-bearing on Linux and NOT cosmetic: GNU procps truncates the
+  # command column to 80 chars whenever stdout is not a terminal (it is a pipe
+  # here), and dev.sh lives at the END of its own command line. Any checkout
+  # deeper than ~74 characters — e.g. a git worktree under
+  # <repo>/.claude/worktrees/<name>/scripts/dev.sh — would lose the "dev.sh"
+  # suffix, this check would reject the pidfile forever, and the startup reap
+  # would silently do nothing while dev.sh went back to stacking duplicate
+  # trees. Exactly the invisible failure this whole section exists to remove.
+  # BSD ps (macOS) accepts -ww too and never truncated a piped -o in the first
+  # place, so this needs no platform branch.
+  cmd="$(ps -ww -o command= -p "$pid" 2>/dev/null || true)"
   case "$cmd" in
     *dev.sh*) ;;
     *) return 1 ;;
