@@ -1178,3 +1178,55 @@
   border-bottom: none;
 }
 
+
+/* -- Fix this app (shell/SelfFixPanel, SPEC §42 SF-14) ---------------------- */
+
+/* The one line that says this copy is not stock. Warning-toned like the version
+   chip it corresponds to, and for the same reason: a fix was applied, possibly
+   successfully — nothing is broken, the version string has simply stopped being
+   the whole truth. */
+.selffix-modified {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--warning-rgb), 0.4);
+  border-radius: 6px;
+  background: rgba(var(--warning-rgb), 0.1);
+  color: var(--fg);
+  line-height: 1.5;
+}
+
+.selffix-fixes {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.5;
+}
+
+.selffix-fix-title {
+  font-weight: 600;
+}
+
+/* A report is a DOCUMENT you open, so its control reads as a link — and has to
+   say so explicitly, because `.prefs-section button` skins every button on this
+   page as a bordered pill. Borrowing the version panel's link class was not
+   enough: that class sets no box of its own, so the generic skin won and two
+   filenames rendered as chunky buttons in the middle of a sentence. The same
+   cascade trap D304 records on the schedule modal, one page over. */
+.prefs-section .selffix-report {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--fg-muted);
+  font-size: inherit;
+  text-decoration: underline;
+  align-self: baseline;
+}
+
+.prefs-section .selffix-report:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--fg);
+}

@@ -517,6 +517,33 @@ def machine_facts() -> dict:
     }
 
 
+# How much of this process's app log rides along in the incident. A session
+# started from Preferences has NO traceback — the user simply says the app is
+# behaving wrongly — so the log is often the only evidence that exists, and
+# telling the model to go and find it is a step it may not take. Bounded because
+# an incident file is meant to be read: the tail is where a session's recent
+# failures are, and the head is startup chatter.
+LOG_TAIL_BYTES = 24_000
+
+
+def _log_tail(limit: int = LOG_TAIL_BYTES) -> tuple[str, str]:
+    """(path, tail) of this process's log, or ("", "") when there isn't one."""
+    from fused_render import logs
+
+    try:
+        path = logs.log_path()
+        size = os.path.getsize(path)
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            if size > limit:
+                f.seek(size - limit)
+                f.readline()  # drop the partial line the seek landed inside
+            return path, f.read()
+    except OSError:
+        # No log configured, or it is gone. Not worth a word in the incident:
+        # the fix session has plenty else to read.
+        return "", ""
+
+
 def record_incident(context: dict, *, now: float | None = None) -> tuple[str, str]:
     """Write the failure down, and pre-create the report the session must fill in.
 
@@ -553,7 +580,10 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
     report = os.path.join(reports, f"{stamp}.md")
 
     facts = machine_facts()
-    title = str(context.get("title") or "").strip() or "an unnamed failure"
+    note = str(context.get("note") or "").strip()
+    message = str(context.get("message") or "").strip()
+    title = (str(context.get("title") or "").strip()
+             or ("a problem the user described" if note else "an unnamed failure"))
     lines = [
         f"# Incident — {title}",
         "",
@@ -564,22 +594,61 @@ def record_incident(context: dict, *, now: float | None = None) -> tuple[str, st
         f"- **Platform**: {facts['platform']}",
         f"- **Installation**: `{facts['install_root']}`",
         "",
-        "## What the user saw",
-        "",
     ]
-    for label, key in (("Operation", "title"), ("Detail", "detail"),
-                       ("State", "state"), ("Kind", "kind"),
-                       ("Reported by", "page"), ("Job id", "job_id"),
-                       ("Where", "source")):
-        value = str(context.get(key) or "").strip()
-        if value:
-            lines.append(f"- **{label}**: {value}")
-    message = str(context.get("message") or "").strip()
+    # THE USER'S OWN WORDS COME FIRST when there are any. A Preferences-started
+    # session has no traceback and no failed row — the description IS the
+    # report, and burying it under a machine-facts table would bury the only
+    # statement of what is actually wrong.
+    if note:
+        lines += ["## What the user asked for", "",
+                  "> " + "\n> ".join(note.splitlines()), ""]
+    fields = [
+        (label, str(context.get(key) or "").strip())
+        for label, key in (("Operation", "title"), ("Detail", "detail"),
+                           ("State", "state"), ("Kind", "kind"),
+                           ("Reported by", "page"), ("Job id", "job_id"),
+                           ("Where", "source"))
+    ]
+    fields = [(label, value) for label, value in fields if value]
+    if fields:
+        lines += ["## What the app was doing", ""]
+        lines += [f"- **{label}**: {value}" for label, value in fields]
     if message:
         lines += ["", "## Error", "", "```", message, "```"]
-    lines += ["", "This file was written by fused-render when the user asked for a "
-              "local fix. It is the input to the session; the session's own "
-              f"account of what it did goes in `{REPORTS_DIR}/{stamp}.md`.", ""]
+    elif note:
+        # Said out loud so the session does not go hunting for a traceback that
+        # was never produced, and does not treat its absence as a dead end.
+        lines += ["", "**No error was raised.** Nothing crashed and nothing was "
+                  "reported as failed — the user is describing behaviour that is "
+                  "wrong, not an exception. The log below and the code are the "
+                  "evidence; reproduce first, diagnose second.", ""]
+
+    # The app's own log, inline. For a described problem it is frequently the
+    # only evidence that exists, and a path the session has to go and find is a
+    # step it may simply not take.
+    log_path, tail = _log_tail()
+    if tail:
+        lines += ["", f"## Recent app log (`{log_path}`)", "",
+                  "```", tail.rstrip(), "```"]
+    # Not inlined — it is a JSONL store that can run to megabytes — but NAMED,
+    # because "which of my pages errored, and when" is answered there and
+    # nowhere else (SPEC §31).
+    try:
+        from fused_render import calls as _calls
+
+        lines += ["", "## Call log", "",
+                  f"Every API call pages made is recorded under `{_calls.store_dir()}` "
+                  f"as `*{_calls.SUFFIX}` (JSONL, newest file last). Failures carry a "
+                  "traceback. Read it directly"
+                  + (" if the log above is not enough." if tail
+                     else " — this process wrote no log file.")]
+    except Exception:  # noqa: BLE001 — a missing call log is not worth failing over
+        pass
+
+    lines += ["", "---", "", "This file was written by fused-render when the user "
+              "asked for a local fix. It is the input to the session; the "
+              "session's own account of what it did goes in "
+              f"`{REPORTS_DIR}/{stamp}.md`.", ""]
     incident_text = "\n".join(lines)
 
     with open(incident, "w", encoding="utf-8") as f:
@@ -649,7 +718,7 @@ def list_reports() -> list[dict]:
 FIX_PERMISSION_MODE = "prompt"
 
 
-def fix_prompt(incident: str, report: str) -> str:
+def fix_prompt(incident: str, report: str, *, reported_error: bool = True) -> str:
     """What the fix session is told. Written as instructions to a colleague who
     has never seen this machine and cannot ask the user anything.
 
@@ -662,11 +731,34 @@ def fix_prompt(incident: str, report: str) -> str:
     the only thing that can help everyone else).
     """
     root = install_root()
+    # TWO WAYS IN, and they hand over different things. A failed job row carries
+    # a traceback and a name for what broke; a Preferences-started session
+    # carries a sentence from the user and nothing else. Telling the second one
+    # to "trace the failure" points it at a failure that does not exist, and the
+    # most likely outcome is a confident guess — which is the single thing a
+    # patch to somebody's installation must not be.
+    opening = (
+        'The user hit a failure in the app and chose "Fix this locally". What '
+        "happened is\nwritten down here — read it first:"
+        if reported_error else
+        "NOTHING CRASHED. The user opened Preferences and described something the "
+        "app is\ndoing wrong — no exception, no failed job, no traceback. Their "
+        "description, and\nthe app's recent log, are here — read it first:"
+    )
+    investigate = (
+        "Read the incident file, then trace the failure through the code in this\n"
+        "   folder until you can name the cause."
+        if reported_error else
+        "Read the incident file. REPRODUCE WHAT THEY DESCRIBE before you change\n"
+        "   anything — read the code paths involved, and use the log and the call\n"
+        "   log it points at. If you cannot reproduce it, say so in the report and\n"
+        "   change nothing: a described problem you could not observe is a "
+        "question,\n   not a diagnosis."
+    )
     return f"""\
 You are fixing a problem in the fused-render installation on this machine.
 
-The user hit a failure in the app and chose "Fix this locally". What happened is
-written down here — read it first:
+{opening}
 
   {incident}
 
@@ -683,11 +775,10 @@ this one machine, right now, and nowhere else.
 
 ## What to do
 
-1. Read the incident file, then trace the failure through the code in this
-   folder until you can name the cause. Say "I could not find it" rather than
+1. {investigate} Say "I could not find it" rather than
    guessing — a wrong patch to an installation is worse than no patch.
 2. If there is a small, safe fix, apply it here. Smallest change that fixes the
-   reported failure; no refactors, no drive-by cleanups, no dependency changes.
+   reported problem; no refactors, no drive-by cleanups, no dependency changes.
 3. Rewrite the report at
 
      {report}

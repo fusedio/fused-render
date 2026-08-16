@@ -314,6 +314,120 @@ def test_the_report_exists_before_the_session_writes_a_word(install):
     assert __version__ in text
 
 
+# ------------------------------------- ...when nothing actually went wrong
+
+
+def test_a_described_problem_needs_no_error_and_says_so(install):
+    """The Preferences way in (SF-14). A great deal of what is wrong with an app
+    never raises anything, and a session told to trace a failure that does not
+    exist will guess — which is the one thing a patch to somebody's install must
+    not be."""
+    incident, report = selffix.record_incident({
+        "note": "Opening a big folder takes ten seconds and the window freezes.",
+        "source": "preferences",
+    })
+    text = open(incident, encoding="utf-8").read()
+    # The user's own words outrank the machinery: with no traceback the
+    # description is the whole of what is known, so it leads the body rather
+    # than sitting under the surface that sent it. (The five-line preamble —
+    # when, version, platform — still comes first; that is context, not burial.)
+    assert text.index("What the user asked for") < text.index("What the app was doing")
+    assert "takes ten seconds" in text
+    assert "No error was raised" in text
+    assert "Not written yet" in open(report, encoding="utf-8").read()
+
+
+def test_a_described_problem_gets_the_reproduce_first_brief(install):
+    described = selffix.fix_prompt("/i.md", "/r.md", reported_error=False)
+    assert "NOTHING CRASHED" in described
+    assert "REPRODUCE WHAT THEY DESCRIBE" in described
+    # ...and the failure brief keeps its own opening.
+    failed = selffix.fix_prompt("/i.md", "/r.md", reported_error=True)
+    assert "NOTHING CRASHED" not in failed
+    assert "trace the failure" in failed
+    # Both still fence the agent into the install.
+    for prompt in (described, failed):
+        assert "Only edit files under" in prompt
+
+
+def test_the_incident_carries_the_app_log_and_names_the_call_log(install, tmp_path,
+                                                                 monkeypatch):
+    """With no traceback the log is frequently the only evidence there is, and a
+    path the session has to go and find is a step it may not take."""
+    log = tmp_path / "fused-render-1.log"
+    log.write_text("ERROR listing /big took 9.8s\n" * 3)
+    monkeypatch.setenv("FUSED_RENDER_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr("fused_render.logs.log_path", lambda: str(log))
+
+    incident, _ = selffix.record_incident({"note": "slow"})
+    text = open(incident, encoding="utf-8").read()
+    assert "Recent app log" in text
+    assert "listing /big took 9.8s" in text
+    assert "Call log" in text
+
+
+def test_the_log_tail_is_bounded(install, tmp_path, monkeypatch):
+    """An incident file is meant to be READ. A multi-megabyte log pasted whole
+    buries the description it is supposed to support."""
+    log = tmp_path / "big.log"
+    log.write_text("x" * 500_000 + "\nTHE LAST LINE\n")
+    monkeypatch.setattr("fused_render.logs.log_path", lambda: str(log))
+
+    incident, _ = selffix.record_incident({"note": "slow"})
+    text = open(incident, encoding="utf-8").read()
+    assert len(text) < selffix.LOG_TAIL_BYTES + 8_000
+    assert "THE LAST LINE" in text  # the TAIL, not the head
+
+
+def test_a_missing_log_is_not_worth_a_word(install, monkeypatch):
+    monkeypatch.setattr("fused_render.logs.log_path", lambda: "/nope/absent.log")
+    incident, _ = selffix.record_incident({"note": "slow"})
+    assert "Recent app log" not in open(incident, encoding="utf-8").read()
+
+
+def test_start_refuses_a_session_with_nothing_to_look_at(client, monkeypatch):
+    """Not validation for its own sake: a session handed no failure, no
+    description and no name would read code at random and then report on having
+    done so — which costs the user minutes to discover."""
+    called = []
+    monkeypatch.setattr(selffix_routes, "_spawn_helper",
+                        lambda *a, **k: called.append(a) or {"run_id": "r"})
+    res = post(client, "/api/selffix/start", {"source": "preferences", "note": "   "})
+    assert res.status_code == 400
+    assert "say what is wrong" in res.json()["error"]
+    assert called == []
+
+
+def test_a_described_problem_starts_a_session_and_is_labelled_by_its_first_line(
+        client, install, monkeypatch):
+    seen = {}
+
+    def fake_spawn(target, prompt, mode):
+        seen.update(prompt=prompt)
+        return {"run_id": "run-9"}
+
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", fake_spawn)
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
+    monkeypatch.setattr(selffix_routes, "_record_session_when_ready", lambda *a, **k: None)
+
+    res = post(client, "/api/selffix/start",
+               {"note": "Dates are wrong in the parquet preview.\nOff by a day.",
+                "source": "preferences"})
+    assert res.status_code == 200
+    # No error was reported, so the session gets the reproduce-first brief.
+    assert "NOTHING CRASHED" in seen["prompt"]
+    assert "Dates are wrong" in open(res.json()["incident"], encoding="utf-8").read()
+
+    # The marker labels the fix by the description's first line — "a problem the
+    # user described" over every row in the panel would say nothing.
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="run-9",
+                   title="Dates are wrong in the parquet preview.")
+    assert selffix.status()["fixes"][0]["title"] == (
+        "Dates are wrong in the parquet preview.")
+
+
 def test_list_reports_is_newest_first(install):
     _, first = selffix.record_incident({"title": "a"}, now=1000.0)
     _, second = selffix.record_incident({"title": "b"}, now=2000.0)
