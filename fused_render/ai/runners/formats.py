@@ -115,7 +115,7 @@ COMPONENT_REPOS = {
     "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0": {
         "file": "model.onnx",
         "of": None,
-        "owner": "transcription",
+        "owner": "Whisper transcription",
         "part": "speaker segmenter",
         "what": (
             "The 6MB pyannote segmentation model that finds who is speaking "
@@ -129,7 +129,7 @@ COMPONENT_REPOS = {
     "csukuangfj/speaker-embedding-models": {
         "file": "wespeaker_en_voxceleb_resnet34_LM.onnx",
         "of": None,
-        "owner": "transcription",
+        "owner": "Whisper transcription",
         "part": "speaker embedding model",
         "what": (
             "The 27MB voice-fingerprint model that decides which of the "
