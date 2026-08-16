@@ -53,6 +53,9 @@ cmux-assets/
 # dev.sh's staged builtin-mount zips (learn.zip / sessions.zip) — build
 # artifacts, freshly rebuilt on every dev.sh run, never committed
 .dev-zips/
+# dev.sh's per-worktree pidfile (one file per branch ref) — how a re-run finds
+# and reaps the dev.sh tree already running for this worktree
+.dev-pids/
 # dev.sh's core_apps reload poke (scripts/dev.sh core_apps watcher)
 core_apps/.dev-reload-trigger.py
 docs/superpowers/plans/
