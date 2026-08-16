@@ -483,8 +483,25 @@ if [[ "$REAPED" -eq 1 && -n "$PORT" ]]; then
 fi
 
 if [[ "$CLEANUP_ONLY" -eq 1 ]]; then
-  if [[ "$REAPED" -eq 1 ]]; then
+  # The summary is a function of ALL THREE sweep outcomes, not just the reap
+  # flag. --cleanup exists to answer one question — "is anything still running
+  # for this worktree?" — so a kept record has to outrank everything else: it
+  # names a pid that is alive right now and that this run deliberately did not
+  # signal. Reporting "nothing left running" or "nothing reaped" alongside it
+  # would contradict the NOTE printed a few lines above, in the one command whose
+  # entire output is that answer.
+  if [[ -n "${STALE_KEPT// /}" ]]; then
+    echo "==> --cleanup: NOT clean — see the unverified pidfile(s) noted above"
+    if [[ "$REAPED" -eq 1 ]]; then
+      echo "    (the dev.sh this worktree recorded WAS reaped; what is left is"
+      echo "     the record(s) above, whose pids are alive but unverifiable)"
+    fi
+  elif [[ "$REAPED" -eq 1 ]]; then
     echo "==> --cleanup: done, nothing left running for this worktree"
+  elif [[ "$STALE_DEAD" -gt 0 ]]; then
+    # Distinct from the case below: records DID exist, so this worktree is not a
+    # fresh one — their processes had simply already exited. Nothing to hunt for.
+    echo "==> --cleanup: nothing was running — only dead records to tidy up"
   else
     # Say what was NOT done, and why. A dev.sh started before this change wrote
     # no pidfile at all, which is the common case on the first upgrade — and

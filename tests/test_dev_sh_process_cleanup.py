@@ -18,12 +18,21 @@ defines the helpers and returns before dev.sh does any work, which is what makes
 `kill_tree` and the stale-pidfile decision testable without booting a server.
 """
 import os
+import pathlib
 import re
 import shutil
 import subprocess
 import time
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# realpath, NOT abspath: dev.sh derives $REPO_ROOT with `pwd -P` and compares the
+# recorded root to it as a plain string. abspath leaves symlinks in place, so on
+# a symlinked checkout every `want_root=_ROOT` below would differ from what the
+# script computed, every dev_pidfile_is_ours here would flip to STALE, and the
+# suite would go red for a reason that has nothing to do with dev.sh. Worse, it
+# would be red only on the machines where the behaviour under test actually
+# matters — this file would be unable to detect the very bug the physical-root
+# change exists to fix.
+_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
 _DEV_SH = os.path.join(_ROOT, "scripts", "dev.sh")
 
 
@@ -158,7 +167,13 @@ def _fake_root(tmp_path, name):
     and "no importable package" would be indistinguishable and the regression
     test below could pass for the wrong reason.
     """
-    root = tmp_path / name
+    # Resolved for the same reason as _ROOT: every assertion below compares this
+    # against a path the script derived with `pwd -P`. pytest's tmp_path is
+    # already physical on macOS (/private/var, not /var), but that is a platform
+    # accident, not a guarantee — a test that only passes because of it would go
+    # red somewhere else for a harness reason. Tests that want the UNRESOLVED
+    # spelling build their own symlink and pass it explicitly.
+    root = pathlib.Path(os.path.realpath(str(tmp_path))) / name
     (root / "scripts").mkdir(parents=True)
     shutil.copy2(_DEV_SH, root / "scripts" / "dev.sh")
     (root / "fused_render").symlink_to(os.path.join(_ROOT, "fused_render"))
@@ -595,6 +610,99 @@ def test_the_sweep_deletes_dead_records_but_keeps_live_unverifiable_ones(tmp_pat
     finally:
         alien.kill()
         alien.wait(timeout=10)
+
+
+def test_the_suites_repo_root_is_physical():
+    """Pins the harness invariant the assertions below silently depend on.
+
+    Every `want_root=_ROOT` in this file is compared against a `pwd -P` root
+    computed inside dev.sh. If _ROOT ever goes back to abspath, that comparison
+    holds on an ordinary checkout and breaks on a symlinked one — a failure that
+    would look like a dev.sh bug and appear only on someone else's machine.
+    """
+    assert _ROOT == os.path.realpath(_ROOT)
+
+
+def test_a_record_is_still_ours_when_dev_sh_is_invoked_through_a_symlink(tmp_path):
+    """The symlinked-checkout bug, end to end rather than by path arithmetic.
+
+    dev.sh writes the physical root into the record. Invoked through a symlinked
+    path with a logical `pwd`, the next run computed a DIFFERENT root string for
+    the same worktree, called its own live record not-ours, and (with the sweep's
+    keep rule) left the tree running while reporting nothing to do. Reaping here
+    is the whole chain working: symlinked invocation -> physical $REPO_ROOT ->
+    recorded root matches -> the tree dies.
+    """
+    real = _fake_root(tmp_path, "real")
+    link = pathlib.Path(os.path.realpath(str(tmp_path))) / "link"
+    link.symlink_to(real)
+    (real / "legacy").mkdir()
+    proc = _spawn_stub(real / "legacy" / "dev.sh")
+    try:
+        rec = _record(real, "dev.sh.pid", proc.pid, _lstart(proc.pid),
+                      os.path.realpath(str(real)))
+        res = _run_cleanup_at(link)
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert not _alive(proc.pid), (
+            f"the record was not recognized through the symlink:\n"
+            f"{res.stdout}{res.stderr}"
+        )
+        assert not rec.exists()
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_cleanup_never_reports_clean_while_a_live_record_is_kept(tmp_path):
+    """`--cleanup` exists to answer "is this worktree clean?" — truthfully.
+
+    The summary used to branch on the reap flag alone, so a run that had just
+    left an unverifiable-but-LIVE record on disk still printed "nothing left
+    running for this worktree" (when something was also reaped) or "no dev.sh
+    recorded … nothing reaped" (when nothing was) — both flatly contradicting the
+    NOTE it had printed moments earlier, in the one command whose whole job is
+    that answer.
+    """
+    for also_reap in (False, True):
+        root = _fake_root(tmp_path, f"wt-{int(also_reap)}")
+        alien = subprocess.Popen(["sleep", "60"], close_fds=False)
+        time.sleep(0.3)
+        stub = None
+        try:
+            _record(root, "live-branch", alien.pid, _lstart(alien.pid),
+                    os.path.realpath(str(root)))
+            if also_reap:
+                (root / "legacy").mkdir()
+                stub = _spawn_stub(root / "legacy" / "dev.sh")
+                _record(root, "dev.sh.pid", stub.pid, _lstart(stub.pid),
+                        os.path.realpath(str(root)))
+            res = _run_cleanup_at(root)
+            assert res.returncode == 0, res.stdout + res.stderr
+            out = res.stdout + res.stderr
+            assert "nothing left running" not in out, out
+            assert "no dev.sh recorded" not in out, out
+            assert "could not verify" in out, out
+        finally:
+            alien.kill()
+            alien.wait(timeout=10)
+            if stub is not None:
+                stub.kill()
+                stub.wait(timeout=10)
+
+
+def test_cleanup_still_reports_an_empty_worktree_as_empty(tmp_path):
+    """The genuinely-clean case keeps its guidance: no record is not no process.
+
+    A dev.sh started before the pidfile existed leaves nothing behind, and
+    finding it would take the pattern match this script must never do — so the
+    developer gets the search rather than a guess made on their behalf.
+    """
+    root = _fake_root(tmp_path, "wt")
+    res = _run_cleanup_at(root)
+    assert res.returncode == 0, res.stdout + res.stderr
+    out = res.stdout + res.stderr
+    assert "no dev.sh recorded for this worktree" in out, out
+    assert "pgrep -laf dev.sh" in out, out
 
 
 def test_the_sweep_reports_stale_records_once_not_once_per_file(tmp_path):
