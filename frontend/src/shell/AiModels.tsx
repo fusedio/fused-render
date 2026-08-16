@@ -348,7 +348,13 @@ function RepoCard({
           {repo.id}
         </a>
         {loaded?.state === "ready" && <LoadedBadge loaded={loaded} />}
-        <span className="cc-pill">{repo.kind}</span>
+        {/* Only when the kind is NOT the one the page already promises. A page
+            titled "AI Models" listing eight cards each tagged MODEL states the
+            obvious eight times and spends head-row width doing it. A dataset or
+            a Space in the same cache is the exception the reader has to notice —
+            it is not loadable, its Hub address is a different one (HUB_PREFIX),
+            and the tag is the only thing on the card that says so. */}
+        {repo.kind !== "model" && <span className="cc-pill">{repo.kind}</span>}
         {/* The size is the reason this page exists, so it is a figure in the
             card's head rather than another clause in the meta line. */}
         <span
