@@ -1138,6 +1138,20 @@ input.schedule-when-field {
   font-weight: 600;
 }
 
+/* ONE highlight at a time (Akshil, 2026-08-16): while the pointer is on any
+   item, the hovered row is the only tinted row — the selected one keeps its
+   weight (so it stays findable) but yields the wash. :has(), so hovering the
+   panel's padding does not strip the selection's tint. */
+.schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover),
+.deploy-body .schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover) {
+  background: transparent;
+}
+
+.schedule-time-list:has(.schedule-time-slot:hover) .schedule-time-slot.is-selected:not(:hover),
+.deploy-body .schedule-time-list:has(.schedule-time-slot:hover) .schedule-time-slot.is-selected:not(:hover) {
+  background: transparent;
+}
+
 /* Where the ARROW KEYS are, which is not where the mouse is and not what is
    chosen: focus stays on the trigger (aria-activedescendant), so without a
    painted cursor the keyboard was moving through an invisible list. */
