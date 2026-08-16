@@ -919,16 +919,26 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
 
 
 @requires_symlinks
-def test_a_gguf_repo_is_recognised(client, hub):
-    # The last link in the evidence chain, and the one a llama.cpp user's cache
-    # is full of: no config.json, no card, just weights.
+def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
+    """The one a llama.cpp user's cache is full of: no config.json, no card,
+    just weights — and the library is all that can honestly be read off them.
+
+    It used to say "text generation" here, which is a guess about the MODALITY
+    made from a CONTAINER, and it was wrong on the first image repo it met
+    (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer the diffusers
+    recipe fetches). The guess never bought anything either: no runner that
+    ships loads a GGUF-only repo, so all it ever produced was a Load button
+    that fails.
+    """
     repo = _repo(hub, "models--TheBloke--m-GGUF", blobs={"w": 10},
                  snapshots={"c1": {"model.Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
     assert repo.exists()
     row = _repo_row(client, "TheBloke/m-GGUF")
-    assert row["task"] == "text generation"
-    assert row["taskSource"] == "a GGUF weights file"
+    assert row["task"] is None
+    assert row["taskSource"] is None
     assert row["library"] == "gguf"
+    assert row["capability"] is None
+    assert row["engine"] is None
     assert row["params"] is None  # no cheap header to read
 
 
@@ -1274,3 +1284,131 @@ def test_a_dataset_is_never_loadable(client, hub):
     _snapshot_file(data, "c1", "config.json",
                    json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
     assert _repo_row(client, "org/corpus")["capability"] is None
+
+
+# -- which ENGINE could load this ------------------------------------------------
+# The card's most useful fact, and the one it did not carry: in this app a repo
+# belongs to a BACKEND, not to a capability, and the three mutually unloadable
+# formats of Whisper are the standing proof. The detection reads the same
+# evidence each worker's own `load()` checks (`ai/runners/formats.py`), so a
+# card cannot offer a Load the runner then refuses.
+
+
+def _engine(client, repo_id):
+    return _repo_row(client, repo_id)["engine"]
+
+
+@requires_symlinks
+def test_a_ctranslate2_whisper_repo_is_recognised_and_loadable(client, hub, monkeypatch):
+    """`deepdml/faster-whisper-large-v3-turbo-ct2` — this app's own recommended
+    speech model everywhere but Apple Silicon — showed no task line and no Load
+    button, because a CT2 conversion carries no pipeline_tag and no
+    `architectures`. Its LAYOUT is the evidence, and it is the same layout
+    `faster_whisper/worker.py` checks before it loads."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--deepdml--faster-whisper-large-v3-turbo-ct2",
+                 blobs={"w": 10}, snapshots={"c1": {"model.bin": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"alignment_heads": [[1, 2]], "lang_ids": [50259]}))
+    row = _repo_row(client, "deepdml/faster-whisper-large-v3-turbo-ct2")
+    assert row["task"] == "speech recognition"
+    assert row["capability"] == _ai_registry.SPEECH_TO_TEXT
+    assert row["engine"]["code"] == "faster-whisper"
+    assert row["engine"]["available"] is True
+
+
+@requires_symlinks
+def test_an_mlx_whisper_repo_names_the_engine_it_needs_off_a_mac(client, hub, monkeypatch):
+    """"Nothing here reads this" and "what reads it does not run here" are
+    different sentences, and only the second tells a Windows user that the
+    download was not a mistake — it is a Mac's model."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "AMD64")
+    repo = _repo(hub, "models--mlx-community--whisper-large-v3-turbo", blobs={"w": 10},
+                 snapshots={"c1": {"weights.npz": "w"}}, refs={"main": "c1"})
+    engine = _engine(client, "mlx-community/whisper-large-v3-turbo")
+    assert engine["code"] == "mlx-whisper"
+    assert engine["available"] is False
+    assert "Apple Silicon" in engine["reason"]
+
+
+@requires_symlinks
+def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
+    """`unsloth/FLUX.2-klein-4B-GGUF` is an IMAGE model — and in this app it is
+    not even a model, it is the quantized transformer the diffusers recipe
+    fetches for FLUX.2 klein. It read "Text generation" with a Load button,
+    which is the exact failure `capability_for_task` warns about: a GGUF file
+    is a container, not a modality, and no shipping runner loads a GGUF-only
+    repo at all."""
+    _repo(hub, "models--unsloth--FLUX.2-klein-4B-GGUF", blobs={"w": 10},
+          snapshots={"c1": {"flux-2-klein-4b-Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
+    row = _repo_row(client, "unsloth/FLUX.2-klein-4B-GGUF")
+    assert row["task"] is None
+    assert row["capability"] is None
+    assert row["library"] == "gguf"
+    assert row["engine"] is None
+
+
+@requires_symlinks
+def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch):
+    """`black-forest-labs/FLUX.2-klein-4B` is `catalog.py`'s suggestion for the
+    diffusers runner, and its card's `pipeline_tag` says image-to-image — a
+    label in NO_RUNNER_YET, so the page offered no Load for a model the app
+    recommends on the next tab. The card names the model FAMILY; the
+    `model_index.json` in the snapshot names the pipeline that is actually
+    here, written by the library that will load it."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    row = _repo_row(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert row["task"] == "image generation"
+    assert row["capability"] == _ai_registry.IMAGE_GENERATION
+    assert row["engine"]["code"] == "diffusers-image"
+
+
+@requires_symlinks
+def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch):
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--mlx-community--Qwen3-8B-4bit", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps(
+        {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",
+         "quantization": {"group_size": 64, "bits": 4}}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    assert _engine(client, "mlx-community/Qwen3-8B-4bit")["code"] == "mlx-text"
+
+    # The same checkpoint off a Mac: still MLX's, and torch will not read it —
+    # which is exactly what the transformers runner's `_refuse_unloadable`
+    # raises about a `quantization` block with a `group_size` in it.
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
+    assert engine["code"] == "mlx-text" and engine["available"] is False
+
+
+@requires_symlinks
+def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, hub, monkeypatch):
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--Qwen--Qwen3-8B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    engine = _engine(client, "Qwen/Qwen3-8B")
+    assert engine["code"] == "transformers-text" and engine["available"] is True
+
+
+@requires_symlinks
+def test_a_dataset_has_no_engine(client, hub):
+    data = _repo(hub, "datasets--org--corpus", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(data, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
+    assert _repo_row(client, "org/corpus")["engine"] is None

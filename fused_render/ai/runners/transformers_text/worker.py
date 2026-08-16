@@ -40,6 +40,7 @@ import time
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded (model, tokenizer) and the device they are on. One per process.
@@ -58,27 +59,14 @@ def download(model_id):
 
 
 #: Quantization schemes a checkpoint can declare that this runner cannot load,
-#: and what the user should do about each.
+#: and what the user should do about each — named rather than left to the
+#: loader's own error, for the reason `faster_whisper/worker.py` spells out
+#: about CTranslate2.
 #:
-#: Named rather than left to the loader's own error, for the reason
-#: `faster_whisper/worker.py` spells out about CTranslate2: the AI Models page
-#: offers Load on anything whose task label maps to a capability, and the FORMAT
-#: is not in the label. What transformers raises for an AWQ repo with no
-#: autoawq installed is a bare ImportError several frames inside a loader, and
-#: the user who reads it cannot tell that their repo was the wrong kind rather
-#: than their download broken.
-_UNLOADABLE_QUANT = {
-    "awq": "an AWQ checkpoint, which needs a package this runner does not ship",
-    "gptq": "a GPTQ checkpoint, which needs a package this runner does not ship",
-    "bitsandbytes": (
-        "a bitsandbytes checkpoint, which needs bitsandbytes and an NVIDIA GPU "
-        "— this runner ships neither"
-    ),
-    "compressed-tensors": (
-        "a compressed-tensors checkpoint, which needs a package this runner "
-        "does not ship"
-    ),
-}
+#: In `formats` with the other backends' format checks, because the AI Models
+#: page reads the same table: a repo this runner refuses by name must not be
+#: tagged as one it loads.
+_UNLOADABLE_QUANT = formats.UNLOADABLE_QUANT
 
 #: What to suggest instead, once we have refused. One sentence, and a repo that
 #: really does load, because a user who picked the wrong format should learn the

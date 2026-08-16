@@ -44,6 +44,7 @@ import time
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model. One per process.
@@ -60,20 +61,18 @@ _loaded = {}
 #: mflux has no `AutoPipeline`, and the variant and its config are two arguments
 #: nothing can guess. So an unknown repo is refused with a sentence rather than
 #: attempted, which is the same trade the whisper runners make about formats.
-_VARIANTS = {
-    "mlx-community/FLUX.2-Klein-4B-4bit": {
-        "variant": "Flux2Klein",
-        "module": "mflux.models.flux2.variants",
-        "config": "flux2_klein_4b",
-    },
-}
+#: In `formats` rather than here, with the layout check below, because the AI
+#: Models page needs BOTH halves to tag a cached repo honestly: a snapshot can
+#: have perfect MLX components and still be a model this build cannot name a
+#: variant class for.
+_VARIANTS = formats.MFLUX_VARIANTS
 
 #: What an mflux-readable snapshot always has: component subfolders of MLX
 #: safetensors. Checked by NAME before the import, exactly as the whisper
 #: runners check theirs — a repo in the wrong format is a fact about the
 #: download, and mflux's own error for it is a `ValueError` about path
 #: resolution that says nothing a user can act on.
-_MLX_COMPONENTS = ("transformer", "text_encoder", "vae")
+_MLX_COMPONENTS = formats.MFLUX_COMPONENTS
 
 
 # --------------------------------------------------------------- model loading

@@ -65,6 +65,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # different import than the one that ships.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model's snapshot PATH, not the model. See the module docstring:
@@ -113,7 +114,10 @@ def download(model_id):
 #: `faster_whisper/worker.py` gives about `model.bin`: what that error says is
 #: "No such file or directory: '…/weights.npz'", and a user reading it has no
 #: way to know their repo was the wrong FORMAT rather than a broken download.
-_MLX_WEIGHTS = ("weights.npz", "weights.safetensors")
+#: From `formats` for the reason the CT2 runner's own constant gives: the AI
+#: Models page reads it too, and its engine tag must not promise a load this
+#: function refuses.
+_MLX_WEIGHTS = formats.MLX_WHISPER_WEIGHTS
 
 
 def load(model_id, fetched):

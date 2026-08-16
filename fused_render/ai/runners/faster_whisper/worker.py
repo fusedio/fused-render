@@ -45,6 +45,7 @@ import time
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model. One per process.
@@ -86,7 +87,12 @@ def _placement():
 #: because that error is a bare "Unable to open file 'model.bin'" and the user
 #: who reads it has no way to know that their repo was the wrong FORMAT rather
 #: than a broken download.
-_CT2_WEIGHTS = "model.bin"
+#:
+#: From `formats` rather than spelled here, because the AI Models page now
+#: reads the same fact to decide which engine tag a cached repo gets — and a
+#: card promising a load this function then refuses is the one way that tag can
+#: be worse than no tag.
+_CT2_WEIGHTS = formats.CT2_WEIGHTS
 
 
 def load(model_id, fetched):
