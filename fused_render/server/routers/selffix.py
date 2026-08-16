@@ -145,10 +145,21 @@ def api_selffix_start(body: dict = Body(default={}),
                       x_fused: str | None = Header(default=None)):
     """Open a Claude Code session on this installation, about one failure.
 
-    The body is the failure as the shell knows it — a download-manager row, in
-    practice: `{job_id, title, detail, state, kind, message, page, source}`.
-    Nothing is required: a user who clicks this from a row with no message still
-    gets a session that can read the logs.
+    TWO WAYS IN, one endpoint:
+
+      a failed row     `{job_id, title, detail, state, kind, message, page}` —
+                       the download manager's own record of what broke.
+      a description    `{note}` — the Preferences tab, where the user is
+                       reporting behaviour rather than a crash. No traceback
+                       exists, so the incident carries the app log instead and
+                       the prompt tells the session to reproduce before it
+                       diagnoses.
+
+    One of `message`, `note` or `title` is required. Not as validation for its
+    own sake: a session handed nothing at all has no failure, no description and
+    no name for what it is looking at — it would read code at random and then
+    write a report about having done so, which is worse than the button not
+    working, because it costs the user minutes to find that out.
 
     Answers `{run_id, target, incident, report}`. The shell builds the sidebar
     URL from `target` + `run_id` (platform/lib/selffix.ts) rather than being
@@ -160,6 +171,12 @@ def api_selffix_start(body: dict = Body(default={}),
         return guard
     if not isinstance(body, dict):
         return _error("request body must be a JSON object")
+    reported_error = bool(str(body.get("message") or "").strip())
+    if not (reported_error or str(body.get("note") or "").strip()
+            or str(body.get("title") or "").strip()):
+        return _error(
+            "say what is wrong — a fix session needs either a failure to read "
+            "or a description of what the app is doing wrong")
 
     root = selffix.install_root()
     if not selffix.writable():
@@ -193,8 +210,9 @@ def api_selffix_start(body: dict = Body(default={}),
         return _error(f"could not write the incident file: {exc}", status=500)
 
     try:
-        res = _spawn_helper(root, selffix.fix_prompt(incident, report),
-                            selffix.FIX_PERMISSION_MODE)
+        res = _spawn_helper(
+            root, selffix.fix_prompt(incident, report, reported_error=reported_error),
+            selffix.FIX_PERMISSION_MODE)
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         _release_active()
         return _error(f"could not start the fix session: {exc}", status=502)
@@ -205,7 +223,13 @@ def api_selffix_start(body: dict = Body(default={}),
                       status=502)
 
     _set_active_run(str(run_id))
+    # The marker's label for this fix. A described problem has no operation
+    # name, so its first line stands in — the panel lists fixes by this, and
+    # "a problem the user described" over every row says nothing.
     title = str(body.get("title") or "").strip()
+    if not title:
+        first_line = str(body.get("note") or "").strip().splitlines()
+        title = first_line[0][:120] if first_line else ""
     try:
         threading.Thread(target=_watch_fix,
                          args=(str(run_id), incident, report, title, before),

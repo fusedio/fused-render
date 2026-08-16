@@ -40,8 +40,9 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { AccountPanel } from "@shell/Account";
 import { IndexingPanel } from "@shell/Indexing";
+import { SelfFixPanel } from "@shell/SelfFixPanel";
 
-type PrefsTab = "render" | "indexing" | "account";
+type PrefsTab = "render" | "indexing" | "selffix" | "account";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -420,7 +421,13 @@ export default function Preferences() {
   // a tab with no button pointing at it.
   const requested = new URLSearchParams(location.search).get("tab");
   const requestedTab: PrefsTab =
-    requested === "account" ? "account" : requested === "indexing" ? "indexing" : "render";
+    requested === "account"
+      ? "account"
+      : requested === "indexing"
+        ? "indexing"
+        : requested === "selffix"
+          ? "selffix"
+          : "render";
   const tab: PrefsTab =
     requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {
@@ -459,6 +466,20 @@ export default function Preferences() {
             >
               Indexing
             </button>
+            {/* Named for what a stuck user would look for, not for the
+                feature (SF-14). The siblings are noun phrases and this is an
+                imperative, deliberately: it is the one tab somebody opens
+                Preferences *in order to find*, and matching the grammar would
+                cost the only thing that matters about it. Ungated, like
+                Indexing — a user whose app is misbehaving must not have to
+                have enabled something first. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "selffix" ? " active" : "")}
+              onClick={() => setTab("selffix")}
+            >
+              Fix this app
+            </button>
             {prefs.deploy.enabled && (
               <button
                 type="button"
@@ -484,6 +505,7 @@ export default function Preferences() {
               </>
             )}
             {tab === "indexing" && <IndexingPanel />}
+            {tab === "selffix" && <SelfFixPanel />}
             {tab === "account" && prefs.deploy.enabled && <AccountPanel />}
           </div>
         </>

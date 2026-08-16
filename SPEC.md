@@ -7010,6 +7010,34 @@ the installation, and the mark that says so.
   idle interval, which is the delay the two cadences exist to remove. A clock that has gone backwards past the stamp reads as *not*
   watching: a badge a minute late costs nothing, a permanent 5s poll costs a
   request every 5s for the life of the app.
+- **SF-14** **The other way in is Preferences → "Fix this app"**, because most
+  of what is wrong with an app never raises anything: a preview renders the
+  wrong dates, a folder takes ten seconds to open, a button does nothing. No
+  error means no failed row, which meant no way in at all — leaving the user
+  with exactly the option this feature exists to replace, describing it to us
+  and waiting for a release. The tab takes a SENTENCE (`note` on the same
+  `POST /api/selffix/start`; one of `message`/`note`/`title` is required,
+  because a session handed nothing reads code at random and then reports on
+  having done so). A free-text box and not a form: the user does not know which
+  subsystem is at fault — that is the session's job — and a dropdown of our
+  subsystem names asks them to guess it before they may ask for help.
+- **SF-14a** **With no traceback, the incident carries different evidence.** The
+  user's own words lead the body, the file says outright that **nothing
+  crashed** (so the session does not hunt a traceback that was never produced,
+  nor read its absence as a dead end), this process's app log rides along
+  INLINE and bounded (`LOG_TAIL_BYTES`; a path the session has to go and find is
+  a step it may not take, and a multi-megabyte paste buries the description it
+  is meant to support), and the call-log store is named for reading directly.
+  The prompt branches too: *reproduce what they describe before you change
+  anything, and if you cannot reproduce it say so and change nothing* — a
+  described problem nobody can observe is a question, not a diagnosis.
+- **SF-14b** **That tab is also the feature's HOME, as opposed to its
+  notification.** The version chip's popover must stay small and says *something
+  happened, here is the report*; the tab is the full-size account — every report
+  ever written (including those a dismissed badge left behind, so "did I already
+  ask about this?" is answerable either way), the reinstall instructions, and
+  the dismiss — with room to read it. Read-only installs say so up front here
+  rather than only on click, since there is space to say it.
 - **SF-13** **A read-only installation is refused BEFORE the spawn** (409, with
   the path). A session that cannot write spends several minutes reading and then
   reports a fix that was never applied — which, to the user watching, reads

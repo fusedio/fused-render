@@ -96,9 +96,16 @@ export interface SelfFixStart {
   report: string;
 }
 
-// What the session is told went wrong. Every field optional on the wire: a user
-// may well click Fix on a row whose reporter never set a message, and a session
-// that has only the title still has the logs and the code.
+// What the session is told is wrong — from EITHER of the two ways in.
+//
+//   a failed row   carries `message` (the error) and the row's own fields.
+//   a description  carries `note`, and nothing else exists: no exception, no
+//                  failed job. The server's incident then leans on the app log
+//                  instead, and the prompt tells the session to reproduce
+//                  before it diagnoses.
+//
+// Every field is optional on the wire, but the server requires at least one of
+// `message` / `note` / `title`: a session handed nothing has nothing to look at.
 export interface FailureContext {
   job_id?: string;
   title?: string;
@@ -107,6 +114,9 @@ export interface FailureContext {
   kind?: string;
   message?: string;
   page?: string;
+  /** The user's own words, when they are reporting behaviour rather than a
+      crash (the Preferences tab). */
+  note?: string;
   // Which surface offered the fix ("download manager"), so the report says how
   // the user got here.
   source?: string;
@@ -222,6 +232,18 @@ export function failureContextFromJob(job: {
     page: job.page,
     source: "download manager",
   };
+}
+
+// The Preferences tab's brief: the user's own description, and nothing else to
+// go on. Trimmed here rather than at the button so "is there anything to send"
+// is one answer — the Start control's enabled state and the request body must
+// not disagree about whether a box holding three spaces counts.
+export function failureContextFromNote(note: string): FailureContext {
+  return { note: note.trim(), source: "preferences" };
+}
+
+export function describedProblemIsSendable(note: string): boolean {
+  return note.trim().length > 0;
 }
 
 export function getSelfFix(): Promise<SelfFixSnapshot> {

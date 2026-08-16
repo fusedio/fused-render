@@ -413,6 +413,26 @@ not an audit trail.
 
 ## Fixing a failure on your own machine
 
+Two ways in: a failed row in the download manager, and
+**Preferences → Fix this app** for when nothing has actually errored.
+
+### Nothing errored, but something is wrong
+
+Open **Preferences → Fix this app** and describe it — "opening a big folder
+takes ten seconds and the window freezes", "the dates in the parquet preview are
+off by a day". You do not need an error message; most of what goes wrong never
+produces one.
+
+Claude opens a session on this installation with your description and the app's
+recent log, and you land in the conversation to watch. It is told to *reproduce
+what you describe before changing anything*, and to say so and change nothing if
+it cannot — so "I could not make that happen" is a possible and useful outcome.
+
+The same tab shows the state of this installation: whether it has been modified,
+every report a fix session has written, and how to reinstall.
+
+### Something failed
+
 When something the app is doing fails — a model download, a long job, anything
 that shows up in the download manager at the bottom right — the failed row
 carries a **Fix this** button beside its ✕.
