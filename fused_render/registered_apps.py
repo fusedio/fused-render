@@ -185,6 +185,45 @@ def registered_apps() -> list[dict]:
     return apps
 
 
+def is_registered_app_entry(fs_path: str) -> bool:
+    """Whether `fs_path` is the ENTRY page of a registered app — i.e. whether
+    `registered_apps()` would report it as some entry's `entry`. The file
+    recents' question (shell/recents.py), asked beside its workspace twin
+    `app_listing.is_workspace_app_entry`: rendering a registered app's page
+    already records the open into this registry (GET /render → `record_open`,
+    D301), so the same open must not land in the file recents too.
+
+    Targeted like the workspace check rather than a full `registered_apps()`
+    membership test — that pays `entry_title`/`preview_image`/`metadata.json`
+    reads per entry, and this runs per recents record and per GET row. Cost
+    here: one registry read, and at most one guarded listdir when the file's
+    parent IS a registered folder.
+
+    Same error asymmetry as the workspace check: True hides the file from the
+    file recents, so anything indeterminate (blocked mount, OSError, page
+    gone) answers False — the row records/stays."""
+    path = os.path.abspath(fs_path)
+    parent = os.path.dirname(path)
+    if not any(os.path.normcase(os.path.abspath(e["path"])) == os.path.normcase(parent)
+               for e in read_entries()):
+        return False
+    # Guard BEFORE the listdir, same ordering as registered_apps(): the
+    # registry is user-writable and everything in it feeds syscalls.
+    if MountGuard().blocks(parent):
+        return False
+    # Same post-guard resolve as registered_apps(): a registry folder that is
+    # a symlink alias of the workspace is skipped by the listing, so its page
+    # is not a registered entry either — treating it as one would hide the
+    # open from the file recents with nothing recording it.
+    if _resolves_into_workspace(parent):
+        return False
+    try:
+        entry = app_listing.app_entry(parent)
+    except OSError:
+        return False
+    return entry is not None and os.path.normcase(entry) == os.path.normcase(path)
+
+
 def _opened_epoch(ts) -> float | None:
     """`openedAt` as epoch seconds (opened_at's unit), or None — the file is
     user-writable, so a malformed timestamp drops to "never opened" rather

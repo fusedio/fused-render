@@ -967,6 +967,21 @@
      the cursor still have to say that a second click will not start a second one
      (shotBusy is the half that enforces it). */
   .viewshot:disabled { opacity: .45; cursor: default; }
+  /* The composer's calendar button, immediately left of Send. Same box as
+     .viewshot above and for the same three reasons — an icon-only control in a
+     row that wraps, a monochrome inline svg on `currentColor` so it stays as
+     quiet as its neighbours, and `.pill`'s own padding kept so the hover paints
+     the shape the rest of the row paints. Spelled out rather than folded into
+     the .viewshot selector: the two buttons share a look, not a fate, and
+     .viewshot's other two rules (hidden with the pane, disabled mid-capture) are
+     about photographing something this one never touches. */
+  .schedbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 1.65em;
+  }
+  .schedbtn svg { display: block; }
   .user .bubble {
     background: var(--bubble-user);
     border-radius: 18px 18px 4px 18px;
@@ -1770,58 +1785,35 @@
      --accent is a fill here, never text on its own tint. */
   .selpop-opt.on { background: color-mix(in srgb, var(--accent) 16%, transparent); }
   .selpop-opt.on:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
-  /* ── the When pill's inline panels ("Pick a time…" and "Repeats…") ──
-     The two things a fixed vocabulary of presets cannot say: an exact instant,
-     and "every time". They are drawn BELOW the pill row and not inside it —
-     see the WHEN_OPTIONS note on why a datetime field was kept out of the row
-     in the first place. A whole row of its own, appearing only while one of the
-     two choices is selected, is the version of that field which does not stretch
-     the pills or re-flow the send button every time it shows up.
-     One panel at a time (renderWhenPanels), and none at all under "Send now",
-     so the composer's resting state is exactly what it was. */
-  .whenpanel {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border);
+  /* ── the Schedule button's confirm, over the composer ──
+     The FOURTH popup in this file and deliberately the same box as the other
+     three (#leftmodepop, #kebabpop, .selpop): panel, --border-strong, 10px, one
+     shadow. A menu and a confirm ask different questions, but a reader should
+     not have to learn a second surface to answer one of them.
+     There IS a confirm because the click LEAVES: it replaces the chat with the
+     Schedule page, carrying whatever is half-typed in the box with it, and that
+     is not something to do on a pointer that missed Send by 34px. It also says
+     what travels, which is the part a user cannot see from the icon.
+     `position: fixed` for .selpop's reason — the composer clips (overflow) and
+     sits at the very bottom of a pane, so an in-flow popup would be cut off. */
+  .schedpop {
+    position: fixed;
+    z-index: 40;
+    width: 260px;
+    padding: 12px;
+    background: var(--panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 6px 24px var(--shadow);
   }
   /* Same story as .selpop: a `display` of our own outranks the UA's [hidden]. */
-  .whenpanel[hidden] { display: none; }
-  .whenpanel .lbl {
-    font-size: 12px;
-    line-height: 1;
-    color: var(--faint);
-    user-select: none;
-  }
-  /* NATIVE appearance, deliberately unlike .pill: a pill shows a value that is
-     already chosen, these are fields being filled in, and skinning a date field
-     into a caret-less capsule would hide the one affordance it has (its own
-     picker). Only the box around them is brought into the composer's palette. */
-  .whenfield {
-    background-color: var(--surface-2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--fg);
-    font: inherit;
-    font-size: 12px;
-    line-height: 1.4;
-    padding: 3px 6px;
-    outline: none;
-  }
-  .whenfield:focus-visible { border-color: var(--border-strong); }
-  .whenfield[hidden] { display: none; }
-  /* A cron line is a payload, not prose (see .mono) — and `font: inherit` above
-     would have won on source order, so the family is restated here. */
-  .when-rep-cron {
-    font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
-    min-width: 130px;
-  }
-  /* The panel's own confirm. Bordered rather than filled: the composer already
-     has exactly one filled action (.send) and that is the one that commits. */
-  .whenok {
+  .schedpop[hidden] { display: none; }
+  .schedpop-title { font-size: 13px; line-height: 1.4; color: var(--fg-strong); }
+  /* The one line the icon cannot say: this hop is not a dead end, the draft and
+     the folder go with it. Muted, because it is a receipt and not a control. */
+  .schedpop-sub { margin-top: 3px; font-size: 11.5px; line-height: 1.45; color: var(--faint); }
+  .schedpop-row { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+  .schedpop-btn {
     background-color: transparent;
     border: 1px solid var(--border-strong);
     border-radius: 999px;
@@ -1829,22 +1821,20 @@
     font: inherit;
     font-size: 12px;
     line-height: 1;
-    padding: 4px 10px;
+    padding: 5px 11px;
     cursor: pointer;
-    transition: background-color .12s, color .12s;
+    transition: background-color .12s, color .12s, filter .12s;
   }
-  .whenok:hover:not(:disabled) { background-color: var(--surface-2); color: var(--fg); }
-  .whenok:disabled { opacity: .5; cursor: default; }
-  /* What will actually be sent, in the panel's own words: the resolved instant,
-     or the cron line the presets just built. Muted, because it is a receipt for
-     the fields above it and not a control. */
-  .whenhint {
-    font-size: 11px;
-    line-height: 1.4;
-    color: var(--faint);
+  .schedpop-btn:hover { background-color: var(--surface-2); color: var(--fg); }
+  /* The one filled thing in this box, for the same reason .send is the one filled
+     thing in the composer: exactly one control here commits, and it is the one
+     that navigates. */
+  .schedpop-btn.go {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--on-accent);
   }
-  .whenhint.bad { color: var(--error); }
-  .whenhint.cron { font-family: "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace; }
+  .schedpop-btn.go:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.1); }
   .send {
     width: 32px;
     height: 32px;
@@ -2732,13 +2722,13 @@
       <div id="kebab">
         <button id="kebabbtn" type="button" aria-haspopup="menu" aria-expanded="false"
                 aria-label="More options" title="More options">⋮</button>
+        <!-- Scheduling was briefly a second item here (Akshil, 2026-08-14) and is
+             back in the composer as a button of its own (2026-08-16): the menu
+             could offer the FOLDER and nothing else, so the user retyped on the
+             Schedule page the message they had already written. The composer
+             holds the draft, so the composer is what can hand it over. -->
         <div id="kebabpop" role="menu" aria-label="More options" hidden>
           <button id="terminalopt" type="button" role="menuitem" class="kebab-opt"></button>
-          <!-- Scheduling moved HERE from a composer pill (Akshil, 2026-08-14):
-               planning a task is a step out of the conversation, and the menu
-               of ways out — the terminal above it — is where a step out
-               belongs. The composer keeps only what acts on THIS message. -->
-          <button id="schedopt" type="button" role="menuitem" class="kebab-opt">Schedule a task…</button>
         </div>
       </div>
       <!-- Which view the LEFT pane frames. The popup ships EMPTY and the whole
@@ -2794,10 +2784,6 @@
             <select id="model" class="pill model-sel" aria-label="Model"></select>
             <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
-            <!-- Scheduling lives HERE, in the composer, and not on a settings
-                 page: this row already knows the folder and already holds the
-                 message, so "later" is the only thing left to say. -->
-            <select id="when" class="pill when-sel" aria-label="When to send this"></select>
             <span class="spacer"></span>
             <!-- Takes the picture NOW and hangs it above the composer as a chip;
                  see the shotAttachPane section. The spoken strings are rewritten
@@ -2815,6 +2801,16 @@
             <button id="viewshot" class="pill viewshot" type="button"
                     aria-label="Screenshot the preview and attach it to this message"
                     title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
+            <!-- IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these
+                 two are the ways this draft leaves the box — now, or as a task —
+                 so they sit together, after the spacer, apart from the three
+                 selects that only describe how a run behaves.
+                 A calendar and not a clock: what it opens is a task with a date
+                 on it, not a delay on this message (see openScheduler for what
+                 the composer stopped trying to do on its own). -->
+            <button id="schedbtn" class="pill schedbtn" type="button"
+                    aria-label="Schedule this as a task"
+                    title="Schedule this as a task"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="10.6" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.6h12M5.4 1.8v2.6M10.6 1.8v2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2823,49 +2819,6 @@
                 <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/>
               </svg>
             </button>
-          </div>
-          <!-- The two When choices that need more than a label: an exact instant,
-               and a repeat rule. Hidden until the pill selects one of them
-               (renderWhenPanels), and duplicated on the home composer for the
-               same reason the pill is — a first message is exactly as schedulable
-               as a follow-up. No ids on the fields: the two copies are addressed
-               by class and kept value-for-value in step, like the pills. -->
-          <div class="whenpanel" data-when="at" hidden>
-            <span class="lbl">Send at</span>
-            <!-- No `min` attribute, though a past time is invalid here: `min`
-                 turns on native constraint validation, which silently blocks this
-                 form's submit BUTTON while leaving the Enter key (its own keydown
-                 handler, calling submitChat directly) untouched — two send paths
-                 disagreeing about whether a time is allowed, one of them with no
-                 message the user can act on. The past is rejected in JS instead,
-                 in the one place both paths pass through. -->
-            <input type="datetime-local" class="whenfield when-at"
-                   aria-label="Date and time to send this">
-            <button type="button" class="whenok when-at-ok"
-                    title="Check this time, then write your message">Use this time</button>
-            <span class="whenhint when-at-hint"></span>
-          </div>
-          <div class="whenpanel" data-when="repeat" hidden>
-            <span class="lbl">Repeat</span>
-            <select class="whenfield when-rep-preset" aria-label="How often this repeats">
-              <option value="hourly">Hourly</option>
-              <option value="daily" selected>Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="cron">Custom cron</option>
-            </select>
-            <!-- One field per question, shown only for the presets that ask it:
-                 hourly wants a minute past the hour, daily and weekly a time of
-                 day, weekly a weekday too, and Custom the line itself. The two
-                 long option lists are filled in JS (fillWhenPanelLists) rather
-                 than spelt out twice here. -->
-            <select class="whenfield when-rep-min" aria-label="Minutes past the hour" hidden></select>
-            <input type="time" class="whenfield when-rep-time" value="09:00"
-                   aria-label="Time of day">
-            <select class="whenfield when-rep-dow" aria-label="Day of the week" hidden></select>
-            <input type="text" class="whenfield when-rep-cron" placeholder="0 9 * * 1-5"
-                   spellcheck="false" data-gramm="false"
-                   aria-label="Cron line: minute hour day month weekday" hidden>
-            <span class="whenhint cron when-rep-hint"></span>
           </div>
         </div>
       </div>
@@ -2900,7 +2853,6 @@
             <select id="hmodel" class="pill model-sel" aria-label="Model"></select>
             <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
-            <select id="hwhen" class="pill when-sel" aria-label="When to send this"></select>
             <span class="spacer"></span>
             <!-- The home card's copy, in the same seat beside Send. Both composers
                  carry one because the chips row above them is the same row
@@ -2909,6 +2861,16 @@
             <button id="hviewshot" class="pill viewshot" type="button"
                     aria-label="Screenshot the preview and attach it to this message"
                     title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
+            <!-- The chat composer's copy, in the same seat. Both rows carry one
+                 for the reason both carry a screenshot button: a FIRST message is
+                 exactly as schedulable as a follow-up, and which of the two you
+                 are writing must not decide whether the control exists. The
+                 difference is what rides along — there is no session yet here, so
+                 the hop carries an empty `session_id` and the task starts a chat
+                 of its own. -->
+            <button id="hschedbtn" class="pill schedbtn" type="button"
+                    aria-label="Schedule this as a task"
+                    title="Schedule this as a task"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="2" y="3.2" width="12" height="10.6" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2 6.6h12M5.4 1.8v2.6M10.6 1.8v2.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             <button class="send" type="submit" aria-label="Send">
               <svg class="ic-send" width="14" height="14" viewBox="0 0 16 16" fill="none">
                 <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -2917,34 +2879,6 @@
                 <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/>
               </svg>
             </button>
-          </div>
-          <!-- The chat composer's copy carries the comments; this is the same
-               panel pair, because scheduling the FIRST message has to offer the
-               same two choices. -->
-          <div class="whenpanel" data-when="at" hidden>
-            <span class="lbl">Send at</span>
-            <input type="datetime-local" class="whenfield when-at"
-                   aria-label="Date and time to send this">
-            <button type="button" class="whenok when-at-ok"
-                    title="Check this time, then write your message">Use this time</button>
-            <span class="whenhint when-at-hint"></span>
-          </div>
-          <div class="whenpanel" data-when="repeat" hidden>
-            <span class="lbl">Repeat</span>
-            <select class="whenfield when-rep-preset" aria-label="How often this repeats">
-              <option value="hourly">Hourly</option>
-              <option value="daily" selected>Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="cron">Custom cron</option>
-            </select>
-            <select class="whenfield when-rep-min" aria-label="Minutes past the hour" hidden></select>
-            <input type="time" class="whenfield when-rep-time" value="09:00"
-                   aria-label="Time of day">
-            <select class="whenfield when-rep-dow" aria-label="Day of the week" hidden></select>
-            <input type="text" class="whenfield when-rep-cron" placeholder="0 9 * * 1-5"
-                   spellcheck="false" data-gramm="false"
-                   aria-label="Cron line: minute hour day month weekday" hidden>
-            <span class="whenhint cron when-rep-hint"></span>
           </div>
         </form>
         <!-- The two cross-session lists for this target, in ONE block: past
@@ -3024,6 +2958,23 @@
        specificity, and the "hidden" viewer sat over the whole pane swallowing
        every click. Caught in the browser, never in the source — a full-bleed
        scrim looks like the app when the app is what is behind it. -->
+  <!-- The Schedule button's confirm. ONE of them for both composers, a sibling of
+       the layout rather than a child of either: #chat sets `overflow: hidden`, so
+       a popup living inside it would be clipped by the column it hangs over, and
+       only one composer is ever on screen anyway (openSchedConfirm anchors it to
+       whichever button was pressed).
+       Not a <dialog>: this is a 260px note pinned to a 32px button, and a modal
+       would dim a chat the user is about to be shown again if they say Cancel. -->
+  <div id="schedpop" class="schedpop" role="dialog" aria-modal="false"
+       aria-labelledby="schedpop-title" hidden>
+    <div class="schedpop-title" id="schedpop-title">Schedule this as a task?</div>
+    <div class="schedpop-sub">This task will be scheduled to run at a specific time.</div>
+    <div class="schedpop-row">
+      <button id="schedpop-no" class="schedpop-btn" type="button">Cancel</button>
+      <button id="schedpop-go" class="schedpop-btn go" type="button">Continue</button>
+    </div>
+  </div>
+
   <div id="shotview" hidden>
     <div id="shotview-scrim"></div>
     <figure id="shotview-box">
@@ -7620,371 +7571,29 @@ document.querySelectorAll(".effort-sel").forEach((el) => fillSelect(el, EFFORTS,
 document.querySelectorAll(".perm-sel").forEach((el) =>
   fillSelect(el, PERMISSION_MODES, "Approvals", PERMISSION_LABELS));
 
-// ── the When pill: send this message now, or leave it for later ──
+// ── the Schedule button: hand this draft to the Schedule page ──
 //
-// Scheduling is the composer's business because the composer is where the two
-// hard parts already are: WHICH FOLDER (this template is bound to one) and WHAT
-// TO SAY. Everything a separate page would have to ask for again, this row
-// already has, so all it adds is the one word it was missing.
+// The composer used to try to schedule on its own (the "Send now" pill, deleted
+// 2026-08-16): it could defer ONE message and nothing else — no title, no
+// description, no repeat rule, no second thought — which meant a row of send-later
+// presets sitting permanently in front of every user to serve the rarest thing
+// they do with a draft. Everything past a bare deferral is the /scheduled page's
+// form, so the whole job here is the HANDOFF, and the handoff is one button.
 //
-// PRESETS FIRST, and no date picker IN THE ROW. The pill row is a fixed
-// vocabulary — a `datetime-local` field wedged between the pills would look like
-// a different app, and "later today / tomorrow morning" is what a scheduled
-// prompt usually wants.
-//
-// The two things presets cannot say are 03:14 tomorrow and "every morning", and
-// both now have a choice of their own at the END of the list — "Pick a time…"
-// and "Repeats…", each revealing a panel BELOW the row (see .whenpanel) rather
-// than a field inside it. So the row keeps its shape, the common case is still
-// one click, and the exact/recurring cases stop being "use the API".
-//
-// Deliberately NOT persisted in `fused.params`, unlike the model/effort/approval
-// pills: those describe how this chat behaves and should outlive a reload, while
-// "send it at 6pm" is a property of ONE message. A scheduling choice that
-// survived its own send would silently defer the next thing the user typed.
-const WHEN_NOW = "now";
-// The two panel-backed choices. Named constants because three places have to
-// agree about them: the option list, the `data-when` attribute on each panel,
-// and whenPlan's two special cases.
-const WHEN_AT = "at";
-const WHEN_REPEAT = "repeat";
-const WHEN_OPTIONS = [WHEN_NOW, "5m", "1h", "3h", "evening", "tomorrow", "monday",
-                      WHEN_AT, WHEN_REPEAT];
-const WHEN_LABELS = {
-  [WHEN_NOW]: "Send now",
-  // Short enough to watch happen, which makes it the one preset that is also how
-  // you TRY scheduling: pick it, and the whole path (store, tick, spawn, job row,
-  // toast) plays out while you are still looking at the screen.
-  "5m": "In 5 minutes",
-  "1h": "In 1 hour",
-  "3h": "In 3 hours",
-  "evening": "This evening",
-  "tomorrow": "Tomorrow 9am",
-  "monday": "Monday 9am",
-  // The ellipsis is the promise the other labels do not make: picking one of
-  // these asks a second question, in the panel it reveals, instead of being the
-  // whole answer on its own.
-  [WHEN_AT]: "Pick a time…",
-  [WHEN_REPEAT]: "Repeats…",
-};
-// Local wall-clock times, resolved at SEND time rather than when the pill was
-// touched — "tomorrow 9am" means tomorrow from the moment you commit to it.
-// Each returns a Date, or null when the preset has already gone by today (the
-// evening case), which the caller reports rather than silently shifting a day.
-//
-// WHEN_AT and WHEN_REPEAT are deliberately absent: a resolver's whole contract is
-// "a Date from nothing but the clock", and those two read fields (and one of them
-// produces no instant at all). They are whenPlan's two named cases instead.
-const WHEN_RESOLVERS = {
-  "5m": () => new Date(Date.now() + 5 * 60e3),
-  "1h": () => new Date(Date.now() + 3600e3),
-  "3h": () => new Date(Date.now() + 3 * 3600e3),
-  "evening": () => {
-    const d = new Date();
-    d.setHours(18, 0, 0, 0);
-    return d > new Date() ? d : null;
-  },
-  "tomorrow": () => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    d.setHours(9, 0, 0, 0);
-    return d;
-  },
-  "monday": () => {
-    const d = new Date();
-    // 1 = Monday; always the NEXT one, so choosing it on a Monday means a week.
-    d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7));
-    d.setHours(9, 0, 0, 0);
-    return d;
-  },
-};
-document.querySelectorAll(".when-sel").forEach((el) =>
-  fillSelect(el, WHEN_OPTIONS, "Send", WHEN_LABELS));
-
-// The naive local `YYYY-MM-DDTHH:mm` the server reads as local time
-// (schedule.parse_due) — so the time the user picked is the time that is stored,
-// with no timezone arithmetic on either side of the wire.
-function localDueString(d) {
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
-    + `T${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-function whenChoice() {
-  const el = document.querySelector(".when-sel");
-  return el && WHEN_OPTIONS.includes(el.value) ? el.value : WHEN_NOW;
-}
-
-// ── the panels behind "Pick a time…" and "Repeats…" ──
-//
-// Both composers carry a copy of each panel (the pill is on both rows, so its
-// fields have to be too), and the two copies are kept identical the way the pills
-// are: READ THE FIRST, WRITE ALL. Only one composer is on screen at a time, so
-// "the first copy" and "the one in front of the user" are the same value — and a
-// time typed on home is still there if the send is refused and lands in the chat.
-const whenFieldValue = (cls) => {
-  const el = document.querySelector("." + cls);
-  return el ? el.value : "";
-};
-function whenFieldsSet(cls, value) {
-  document.querySelectorAll("." + cls).forEach((el) => { el.value = value; });
-}
-
-// The two long option lists, built once instead of spelt out twice in the markup.
-// The week starts on SUNDAY because cron's day-of-week does (0 = Sunday), so the
-// option order is the field's own numbering and no mapping is needed anywhere.
-const REP_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
-                  "Friday", "Saturday"];
-function fillWhenPanelLists() {
-  const add = (el, value, text) => {
-    const o = document.createElement("option");
-    o.value = String(value);
-    o.textContent = text;
-    el.appendChild(o);
-  };
-  // Fives, not every minute: a recurring job's minute is a choice about load and
-  // tidiness ("on the half hour"), and 60 rows to scroll is not that choice.
-  document.querySelectorAll(".when-rep-min").forEach((el) => {
-    for (let m = 0; m < 60; m += 5) add(el, m, `at :${String(m).padStart(2, "0")}`);
-  });
-  document.querySelectorAll(".when-rep-dow").forEach((el) => {
-    REP_DAYS.forEach((name, i) => add(el, i, name));
-    // Monday is the default day, though Sunday is 0: "every Sunday" is a stranger
-    // thing to offer first than the start of the working week.
-    el.value = "1";
-  });
-}
-fillWhenPanelLists();
-
-// The exact instant the "Pick a time…" panel currently names, or null.
-//
-// `new Date("YYYY-MM-DDTHH:mm")` — a datetime-local value, no zone — is parsed as
-// LOCAL time, which is the same reading the server gives the string when it goes
-// back out through localDueString. So the wall clock the user picked is the wall
-// clock that is stored, with no conversion at either end.
-function whenAtDate() {
-  const raw = whenFieldValue("when-at");
-  if (!raw) return null;
-  const d = new Date(raw);
-  return isNaN(d.getTime()) ? null : d;
-}
-
-// The 5-field cron line the repeat panel describes right now, or "" when the
-// fields do not make one yet.
-//
-// The panel stores no rule of its own — the fields ARE the rule, and this is the
-// one place that turns them into a line, so what the hint shows and what the POST
-// carries cannot drift apart.
-function repeatCron() {
-  const preset = whenFieldValue("when-rep-preset");
-  if (preset === "cron") return whenFieldValue("when-rep-cron").trim();
-  // "09" -> "9": leading zeros parse fine server-side, but a cron line nobody
-  // would type by hand reads as a bug in the line the panel shows you.
-  const n = (v) => String(parseInt(v, 10) || 0);
-  const time = whenFieldValue("when-rep-time");
-  if (preset !== "hourly" && !time) return "";   // a cleared time is not a rule
-  const [hh, mm] = time.split(":");
-  const hr = n(hh);
-  const min = preset === "hourly" ? n(whenFieldValue("when-rep-min")) : n(mm);
-  if (preset === "hourly") return `${min} * * * *`;
-  if (preset === "daily") return `${min} ${hr} * * *`;
-  const dow = n(whenFieldValue("when-rep-dow"));
-  return `${min} ${hr} * * ${dow}`;
-}
-
-// Why a line is not a cron line, or "" when it looks like one.
-//
-// A SHAPE CHECK, not a parser: fused_render/cron.py owns the grammar and answers
-// 400 naming the field it choked on, which the POST's error path already shows.
-// This exists so the two mistakes a text field invites — the wrong number of
-// fields, and a word where a number goes — are named under the field itself
-// instead of costing a round trip.
-function cronComplaint(expr) {
-  const parts = expr.split(/\s+/).filter(Boolean);
-  if (parts.length !== 5) {
-    return `expected 5 fields (minute hour day month weekday), got ${parts.length}`;
-  }
-  const bad = parts.find((p) => !/^[0-9*,\/-]+$/.test(p));
-  return bad ? `cannot read "${bad}"` : "";
-}
-
-// Show the panel the pill is asking for, hide the rest, and re-draw what the
-// visible one is currently promising. Called from syncSelects, which is the one
-// owner of pill state (see the note above scheduledPerm) — so every path that
-// changes the When value already comes through here.
-function renderWhenPanels() {
-  const choice = whenChoice();
-  document.querySelectorAll(".whenpanel").forEach((p) => {
-    p.hidden = p.dataset.when !== choice;
-  });
-
-  // "Pick a time…": the hint says which instant, and the confirm button is what
-  // refuses a past one. It has to be a refusal the user can SEE before sending,
-  // because the send button is shared with every other choice.
-  const at = whenAtDate();
-  const gone = !!at && at <= new Date();
-  document.querySelectorAll(".when-at-hint").forEach((el) => {
-    el.classList.toggle("bad", gone);
-    el.textContent = !at
-      ? "Pick a date and time, then send your message."
-      : gone
-        ? "That time has already gone by."
-        : `Sends ${at.toLocaleString()}.`;
-  });
-  document.querySelectorAll(".when-at-ok").forEach((el) => { el.disabled = !at || gone; });
-
-  // "Repeats…": each preset asks for different fields, and the hint under them is
-  // the generated line — the panel's presets are a way of WRITING cron, so the
-  // cron it wrote is shown rather than hidden, and a user who wants to tweak it
-  // can switch to Custom and see the same line waiting there.
-  const preset = whenFieldValue("when-rep-preset");
-  const shown = {
-    "when-rep-min": preset === "hourly",
-    "when-rep-time": preset === "daily" || preset === "weekly",
-    "when-rep-dow": preset === "weekly",
-    "when-rep-cron": preset === "cron",
-  };
-  for (const [cls, on] of Object.entries(shown)) {
-    document.querySelectorAll("." + cls).forEach((el) => { el.hidden = !on; });
-  }
-  const expr = repeatCron();
-  const bad = expr ? cronComplaint(expr) : "";
-  document.querySelectorAll(".when-rep-hint").forEach((el) => {
-    el.classList.toggle("bad", !!bad);
-    el.textContent = !expr ? "No rule yet." : bad ? bad : `runs ${expr}`;
-  });
-}
-
-// One listener for every field in both panels: mirror the value into the other
-// composer's copy (by the `when-…` class the two share) and re-draw. `input`
-// rather than `change` so the hint keeps up with typing in the cron field —
-// selects and date fields fire it too.
-document.querySelectorAll(".whenpanel .whenfield").forEach((el) => {
-  el.addEventListener("input", () => {
-    const cls = [...el.classList].find((c) => c.startsWith("when-"));
-    if (cls) whenFieldsSet(cls, el.value);
-    renderWhenPanels();
-  });
-});
-
-// The panel's confirm. It cannot SEND — the message may not be typed yet — so
-// what it confirms is the time: it is disabled while the value is empty or past
-// (the hint says which), and clicking it hands focus to the composer the panel
-// belongs to, which is the next thing that has to happen anyway.
-document.querySelectorAll(".when-at-ok").forEach((el) => {
-  el.addEventListener("click", () => {
-    renderWhenPanels();               // in case the clock moved past the value
-    if (el.disabled) return;
-    focusBox(el.closest("#card") ? homebox : box);
-  });
-});
-
-// What a deferred send should carry, decided from the choice and the panels:
-// `{ at, repeats }` for the wire, or `{ error }` for a note the user can act on.
-// One function so the two composers, and any later caller, cannot disagree about
-// what "Repeats…" with an empty cron field means.
-function whenPlan(choice) {
-  if (choice === WHEN_REPEAT) {
-    const expr = repeatCron();
-    if (!expr) return { error: "Fill in the repeat rule first — it is empty." };
-    const bad = cronComplaint(expr);
-    if (bad) return { error: `That repeat rule is not a cron line: ${bad}.` };
-    // No instant at all: the cron line says every time it means, and the server
-    // refuses a request that carries both (see the POST below).
-    return { at: null, repeats: expr };
-  }
-  if (choice === WHEN_AT) {
-    const at = whenAtDate();
-    if (!at) return { error: "Pick a date and time first, in the panel below." };
-    // Checked HERE and not with the field's own `min` attribute — see the markup
-    // for why native validation was left off — so the button path and the Enter
-    // path refuse the same times.
-    if (at <= new Date()) {
-      return { error: `${at.toLocaleString()} has already gone by — pick a later time.` };
-    }
-    return { at, repeats: "" };
-  }
-  const resolve = WHEN_RESOLVERS[choice];
-  const at = resolve ? resolve() : null;
-  if (!at) {
-    return { error: `${WHEN_LABELS[choice]} has already passed today — pick another time.` };
-  }
-  return { at, repeats: "" };
-}
-
-// The approvals mode a DEFERRED message will really run under, which is not always
-// the one the pill was showing when the user picked a time.
-//
-// "ask every time" cannot work unattended, and the failure is silent: nobody is
-// polling `decide` for a scheduled turn, so the first tool call parks a request in
-// the run's perm dir and blocks until PERMISSION_WAIT expires and the server
-// denies it on the user's behalf — a message that "sent" and did nothing (the
-// same trap agent.py's `_APP_SESSION_PERMISSION_MODE` note describes). So a
-// scheduled send under `prompt` becomes `auto`, the broadest the template offers,
-// where the CLI's own classifier approves what it judges safe and still parks the
-// rest for the folder's chat.
-//
-// SUBSTITUTED VISIBLY, never quietly: the pill switches to show `auto` the moment
-// a time is chosen, so what is on screen is what will be used, and the user can
-// override it or go back to "Send now". That disclosure is the whole point — this
-// loosens approvals, and loosening them behind the user's back would be worse
-// than the parked turn it avoids.
-//
-// `plan` and `acceptEdits` pass through untouched. Both can still park a card, but
-// neither does so on EVERY call the way `prompt` does, and each is a deliberate
-// choice a user may well want waiting for them.
-function scheduledPerm(mode) {
-  return mode === "prompt" ? "auto" : mode;
-}
-
-// NOTE: the deferral's effect on the approvals pill lives inside `syncSelects`,
-// not in a second function beside it. The first cut had `syncPermForWhen` running
-// after each `syncSelects`, and every desync came from the same place — a caller
-// that ran one and not the other:
-//
-//   * `resetWhen` put the pill back to "Send now" without restoring approvals, so
-//     after a successful schedule the row still read `auto` (with `prompt` still
-//     disabled) while the next send-now would have used `prompt`;
-//   * a model or effort change — or `defaults`/prefs landing asynchronously —
-//     called `syncSelects` alone, writing the params value back over the
-//     substitution, so the pill could read "ask every time" for a message that
-//     was going to run as `auto`.
-//
-// Both are "two functions, one state" bugs, so the state has ONE owner. Every
-// existing caller of `syncSelects` is now correct without knowing scheduling
-// exists.
-
-// Back to "Send now" after every send. See the note above: a deferral must not
-// outlive the message it was chosen for.
-function resetWhen() {
-  document.querySelectorAll(".when-sel").forEach((el) => { el.value = WHEN_NOW; });
-  // The exact instant goes with it, for the same reason: it named ONE message, and
-  // a stale past time waiting in the panel is the next scheduled send refused for
-  // no visible reason. The REPEAT fields stay — a rule ("daily at 9am") is a shape
-  // that outlives the message, and the panel is hidden anyway until it is asked
-  // for again.
-  document.querySelectorAll(".when-at").forEach((el) => { el.value = ""; });
-  // Through syncSelects, so the approvals pill is handed back to the user's own
-  // mode and its options are re-enabled. Setting the value alone left the row
-  // reading `auto` (with `prompt` still disabled) after a successful schedule,
-  // while the next send-now would have used `prompt`.
-  syncSelects();
-}
-
-// ── the Schedule button: hand this target to the Schedule page ──
-//
-// The pill's limit is that it defers ONE message, with no title, no
-// description, no repeat rule and no second thought. Everything past that is
-// the /scheduled page's form, and the only thing that page cannot know is the
-// one thing this template always knows: which folder. So the button carries
-// exactly that across, and nothing else — no message, no approvals mode, no
-// draft. Composing is the page's job; naming the subject is ours.
+// What travels is what the page cannot know and this template always does: the
+// FOLDER it is bound to, the words already in the box, and the conversation they
+// were written in. What does NOT travel is how this chat is configured — model,
+// effort, approvals — because a task runs unattended and the page owns those
+// answers for its own reasons. The rule the deleted pill carried is one of them:
+// "ask every time" cannot work with nobody watching (nothing polls `decide`, so
+// the first tool call parks until the permission timeout denies it), and that is
+// now the Schedule page's to apply rather than this row's to substitute.
 //
 // `new=1` is what makes the hop feel like one control rather than two: it opens
 // the form immediately, so the click lands on a filled-in dialog instead of a
-// page with a button to press next. Scheduled.tsx consumes both params and
-// clears them (history.replaceState), so a reload of the resulting URL is just
-// the Schedule page.
+// page with a button to press next. Scheduled.tsx consumes the params and clears
+// them (history.replaceState), so a reload of the resulting URL is just the
+// Schedule page.
 //
 // A TOP-WINDOW write, deliberately, and it is the same standard-break the
 // markdown/graph templates make for shell navigation (their `navigateShell`,
@@ -7997,8 +7606,39 @@ function resetWhen() {
 // where reading `top.location.href` throws.
 const SCHEDULE_URL = "/scheduled";
 
-function openScheduler() {
-  const url = SCHEDULE_URL + "?new=1&target=" + encodeURIComponent(FILE);
+// Where "Back to chat" has to land. The TOP window's path when it is readable,
+// this document's otherwise — the same split every other navigation in this file
+// makes, for the same reason: framed by the React shell, `location` here is the
+// view's own inner URL, and a Back button pointing at it would return the reader
+// to a bare template outside the app they left from.
+function backHere() {
+  try {
+    const host = window.top;
+    return host.location.pathname + host.location.search;
+  } catch (err) {
+    return location.pathname + location.search;
+  }
+}
+
+// `draft` is whatever is typed right now, and an EMPTY one is fine: the page's
+// form is where the description gets written, and arriving there with a blank
+// field is exactly what "+ New task" already does. Nothing is validated here —
+// this navigates, it does not create.
+function openScheduler(draft) {
+  // The draft SURVIVES the trip: leaving for the schedule page unloads this
+  // document, and coming back rebuilt the composer empty — the message the
+  // user had half-written was gone (Akshil, 2026-08-16). sessionStorage, not
+  // local: a draft is a fact about this tab's errand, not about the machine.
+  try { sessionStorage.setItem("fused:chatdraft:" + FILE, draft || ""); }
+  catch (err) { /* storage denied — the draft just doesn't survive the trip */ }
+  const url = SCHEDULE_URL + "?new=1"
+    + "&target=" + encodeURIComponent(FILE)
+    + "&message=" + encodeURIComponent(draft || "")
+    // The chat this task was thought of in, so the page can offer to continue it.
+    // "" on the landing page, which is correct rather than missing: there is no
+    // session yet, and the store reads "" as "start a new one".
+    + "&session_id=" + encodeURIComponent(fused.params.get("session_id") || "")
+    + "&back=" + encodeURIComponent(backHere());
   try {
     const host = window.top;
     void host.location.href;   // throws when cross-origin
@@ -8009,10 +7649,109 @@ function openScheduler() {
   try { window.top.location.href = url; } catch (err) { location.href = url; }
 }
 
-document.getElementById("schedopt").addEventListener("click", () => {
-  kebabClose();
-  openScheduler();
+// ── the confirm in front of it ──
+//
+// The button sits 34px from Send and the click LEAVES the conversation, so a
+// miss is expensive in a way a mistyped pill never was. One short question, and
+// a sub-line naming what rides along — the two things the icon cannot say.
+//
+// Modelled on .selpop's dismissal contract (outside press, Escape, window blur)
+// rather than on a modal's: this is a note pinned to a button, and dimming a
+// chat the reader may be about to come straight back to would be the heavier
+// gesture of the two.
+const schedPop = document.getElementById("schedpop");
+// Which composer's button opened it — the draft comes from that composer's box,
+// read at CONTINUE time and not at open time, so a paste made with the confirm
+// already up still travels.
+let schedPopFor = null;
+
+function closeSchedConfirm() {
+  if (!schedPopFor) return;
+  schedPop.hidden = true;
+  schedPopFor = null;
+}
+
+function openSchedConfirm(btn) {
+  schedPopFor = btn;
+  // Laid out before it is measured: the height decides which side it opens on.
+  schedPop.style.left = "0px";
+  schedPop.style.top = "0px";
+  schedPop.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const h = schedPop.offsetHeight;
+  const w = schedPop.offsetWidth;
+  // ABOVE by default, like every other popup here: the composer is pinned to the
+  // bottom of the pane, so below is usually off screen. Flip down only when there
+  // is no room up there, and clamp either way.
+  const up = r.top - h - 6;
+  const top = up >= 4 ? up : Math.min(r.bottom + 6, window.innerHeight - h - 4);
+  schedPop.style.top = `${Math.max(4, top)}px`;
+  // Right-aligned to the button, not left: it hangs off the last control before
+  // Send, and a 260px box growing rightwards from there leaves the pane.
+  schedPop.style.left = `${Math.max(4, Math.min(r.right - w, window.innerWidth - w - 4))}px`;
+  document.getElementById("schedpop-go").focus({ preventScroll: true });
+}
+
+document.querySelectorAll(".schedbtn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    // A second press on the same button closes, rather than closing on the
+    // document handler below and reopening here.
+    const same = schedPopFor === btn;
+    closeSchedConfirm();
+    if (!same) openSchedConfirm(btn);
+  });
 });
+
+document.getElementById("schedpop-go").addEventListener("click", () => {
+  // The box belonging to the composer that was clicked, not "the visible one":
+  // only one composer is on screen at a time, but reading the button's own form
+  // is what keeps that a fact about the layout rather than an assumption here.
+  const host = schedPopFor && schedPopFor.closest("#card");
+  const draft = (host ? homebox : box).value.trim();
+  closeSchedConfirm();
+  openScheduler(draft);
+});
+// The other half of the round trip: a draft stashed by openScheduler is put
+// back the moment the composer exists again — into an EMPTY box only, never
+// over something newer — and the stash is spent either way.
+try {
+  const savedDraft = sessionStorage.getItem("fused:chatdraft:" + FILE);
+  if (savedDraft !== null) {
+    sessionStorage.removeItem("fused:chatdraft:" + FILE);
+    if (savedDraft) {
+      if (box && !box.value) box.value = savedDraft;
+      if (homebox && !homebox.value) homebox.value = savedDraft;
+    }
+  }
+} catch (err) { /* storage denied — nothing to restore */ }
+
+document.getElementById("schedpop-no").addEventListener("click", () => {
+  const btn = schedPopFor;
+  closeSchedConfirm();
+  // Focus goes back where the reader was, not where the confirm was: the draft is
+  // the thing they were in the middle of.
+  focusBox(btn && btn.closest("#card") ? homebox : box);
+});
+document.addEventListener("pointerdown", (ev) => {
+  if (schedPopFor && !schedPop.contains(ev.target) && !ev.composedPath().includes(schedPopFor)) {
+    closeSchedConfirm();
+  }
+});
+// Capture phase, and the event is CONSUMED — same discipline as .selpop's
+// Escape: the document-level binding kills a live run, and dismissing a confirm
+// must not also do that.
+document.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Escape" || !schedPopFor) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  closeSchedConfirm();
+}, true);
+// A click into the preview iframe never reaches this document but does blur this
+// window, and with a pane on screen that is the ordinary case.
+window.addEventListener("blur", closeSchedConfirm);
+// Nothing repositions an open popup: a scroll or resize under it would leave it
+// pointing at a button that has moved, so it goes away instead.
+window.addEventListener("resize", closeSchedConfirm);
 
 // An appearance:none select keeps the width of its WIDEST option, so a short
 // value renders in a wide pill ("fable" inside a "sonnet"-wide pill) with dead
@@ -8036,46 +7775,14 @@ function syncSelects() {
   document.querySelectorAll(".effort-sel").forEach((el) => { el.value = curEffort(); });
   const perm = fused.params.get("permission");
   const chosen = PERMISSION_MODES.includes(perm) ? perm : DEFAULT_PERMISSION;
-  // A DEFERRED message cannot honour every mode (see scheduledPerm), so while a
-  // time is selected the pill shows the one that will actually run and stops
-  // offering the ones that will not. Decided HERE, inside the one function that
-  // owns pill state, so a caller cannot get it half-right — see the note above
-  // scheduledPerm for the desyncs that came of splitting this in two.
-  const deferred = whenChoice() !== WHEN_NOW;
-  document.querySelectorAll(".perm-sel").forEach((el) => {
-    for (const opt of el.options) {
-      opt.disabled = deferred && opt.value !== scheduledPerm(opt.value);
-    }
-    el.value = deferred ? scheduledPerm(chosen) : chosen;
-  });
-  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel, .when-sel").forEach(fitSelect);
-  // Two of the choices need a panel, and which one is showing is pill state like
-  // any other — so it is decided here rather than in a listener of its own, and
-  // every existing caller of syncSelects (resetWhen included) is right by default.
-  renderWhenPanels();
+  // Every mode is offered, always. The disabling that used to live here belonged
+  // to a DEFERRED send ("ask every time" cannot work with nobody watching) and
+  // went with the pill: this row now only ever describes a run the user is
+  // sitting in front of, and the unattended case is the Schedule page's to rule
+  // on — where the answer is picked for a task rather than borrowed from a chat.
+  document.querySelectorAll(".perm-sel").forEach((el) => { el.value = chosen; });
+  document.querySelectorAll(".model-sel, .effort-sel, .perm-sel").forEach(fitSelect);
 }
-// The When pill keeps no params state (see WHEN_OPTIONS), so its only listener is
-// the width fit every pill needs, plus keeping the two composers' copies in step.
-document.querySelectorAll(".when-sel").forEach((el) =>
-  el.addEventListener("change", () => {
-    document.querySelectorAll(".when-sel").forEach((other) => {
-      other.value = el.value;
-      fitSelect(other);
-    });
-    // Picking a time can change which approvals mode actually applies, and
-    // syncSelects is what knows that — so the whole pill row is re-read. It also
-    // reveals the panel for this choice, which is why the focus below can only
-    // happen after it.
-    syncSelects();
-    // A panel that just appeared is where the next keystroke belongs: the pill
-    // asked a second question and the field is the answer. Through focusBox, like
-    // every other focus in this file, so previewing a file in the explorer's pane
-    // still does not steal focus from the listing.
-    const host = el.closest(".composer");
-    const panel = host && host.querySelector(`.whenpanel[data-when="${el.value}"]`);
-    const field = panel && !panel.hidden && panel.querySelector(".whenfield:not([hidden])");
-    if (field) focusBox(field);
-  }));
 document.querySelectorAll(".model-sel").forEach((el) =>
   el.addEventListener("change", () => { fused.params.set("model", el.value); syncSelects(); }));
 document.querySelectorAll(".effort-sel").forEach((el) =>
@@ -10669,95 +10376,6 @@ function setRunningUi(on) {
   });
 }
 
-// True while a schedule POST is in flight. A separate flag from `sending`, which
-// belongs to the run path (and is also held by loadHistory and resumeRun's probe):
-// a scheduled message starts no run, so it must neither consult nor occupy that
-// one. It needs its own because the box is cleared only on SUCCESS — the draft has
-// to survive a refusal — so without a guard a second Enter during the round trip
-// stores a second copy of the same unattended job.
-let scheduling = false;
-
-// Hand the composer's message to the scheduler instead of starting a run now.
-// Returns true when it was stored, false when it was not (and has said why), so
-// the caller knows whether to clear the box.
-//
-// Annotations are deliberately NOT folded in, unlike sendMessage: a note is a
-// crop of what is on screen RIGHT NOW plus a pointer into this render of the
-// page, and by the time the message is sent the pane may show something else
-// entirely. A scheduled message is the words, and the pending notes stay pending.
-async function scheduleMessage(message, choice) {
-  // WHEN, in one step: a preset's resolved Date, the exact instant from the
-  // "Pick a time…" panel, or a cron line from the "Repeats…" one — and a reason
-  // when the choice cannot be turned into any of the three.
-  const plan = whenPlan(choice);
-  if (plan.error) {
-    addNote(plan.error, null, "◷");
-    return false;
-  }
-  const at = plan.at;              // null for a recurring job — the cron line is when
-  const repeats = plan.repeats;    // "" for a one-shot
-  const perm = document.querySelector(".perm-sel");
-  // The mode that will really run, not merely the one on screen — though while a
-  // time is selected syncSelects keeps those the same thing, and this is the
-  // backstop that means a desync could never send under a mode nobody saw.
-  const mode = scheduledPerm(perm ? perm.value : "");
-  // CONTINUE THIS CONVERSATION when there is one. Scheduling from an open chat is
-  // "and then do this next", so a fresh session would throw away the thread the
-  // prompt was written against — the very context that made it worth deferring
-  // from here rather than from a page. Empty on the home view, which is correct:
-  // there is no session yet, and the store reads "" as "start a new one".
-  const session = fused.params.get("session_id") || "";
-  try {
-    const res = await fetch("/api/schedule", {
-      method: "POST",
-      // X-Fused is the D3 write guard; without it the endpoint answers 403.
-      headers: { "Content-Type": "application/json", "X-Fused": "1" },
-      body: JSON.stringify({
-        target: FILE,
-        message,
-        // EXACTLY ONE of the two ways to say when: a cron line already names every
-        // time it means, so the endpoint refuses a request carrying it alongside
-        // `due` (400). Spread rather than a `due: null`, which would be a request
-        // that half-means each.
-        ...(repeats ? { repeats } : { due: localDueString(at) }),
-        session_id: session,
-        // The approvals pill applies to the scheduled turn too — it is the same
-        // question, and a message sent while nobody is watching is the case where
-        // the answer matters most.
-        permission_mode: mode,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      addNote(`Could not schedule: ${data.error || res.status}`, null, "◷");
-      return false;
-    }
-    // The mode is named at the moment of commitment, which is where a substituted
-    // one has to be disclosed (see scheduledPerm) — and where "it will act without
-    // me" is worth reading even when nothing was substituted.
-    const label = (PERMISSION_LABELS && PERMISSION_LABELS[mode]) || mode;
-    // A recurring job has no single instant to name, so it is named by its rule —
-    // the cron line itself, which is what was sent and what the Inbox shows. The
-    // stored template's own `due` is the first occurrence the server worked out
-    // from that line, so the reader gets a date too, and can tell straight away
-    // whether the rule means what they thought it meant.
-    const stamp = repeats && data.entry && data.entry.due;
-    const first = stamp ? new Date(stamp).toLocaleString() : "";
-    const when = repeats
-      ? `— repeats: ${repeats}${first ? `, first on ${first}` : ""}`
-      : `for ${at.toLocaleString()}`;
-    addNote(`Scheduled ${when}`
-            + `${session ? ", continuing this chat" : ""}, with approvals set to`
-            + ` "${label}". It runs as long as fused-render is open, and appears`
-            + ` here when it does — leave this open and you will see it happen.`,
-            null, "◷");
-    return true;
-  } catch (e) {
-    addNote(`Could not schedule: ${e.message}`, null, "◷");
-    return false;
-  }
-}
-
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
@@ -10961,9 +10579,9 @@ async function sendMessage(message) {
 // here ever set `activeRun` and the turn happened entirely off-screen. A chat
 // left open past its own scheduled time sat on "Scheduled for 12:20" while the
 // session ran, finished, and edited files — with the page's only route to the
-// truth being a reload. Reported from use, and it made the composer a worse place
-// to schedule from than the settings page it replaced: at least there, nobody
-// expected the conversation to be on screen.
+// truth being a reload. Reported from use, and it outlived the composer pill that
+// prompted it: a task made on the Schedule page for THIS folder still fires into
+// this conversation, and a chat left open is still where the user watches it.
 //
 // `resumeRun` already does the hard half. It is written for exactly this shape —
 // a run this frame did not start and may have missed the end of — and handles
@@ -11179,32 +10797,12 @@ async function resumeRun(run_id, opts) {
 }
 
 function submitChat() {
-  // DEFERRED FIRST, above the live-run branch below. Scheduling is a store write,
-  // not a send, so it does not care whether a turn is running — and putting this
-  // check second meant a message the user had deferred to tomorrow was instead
-  // PARKED by the queue and fired the moment the current turn ended, which is the
-  // one outcome the pill exists to prevent.
-  const when = whenChoice();
-  if (when !== WHEN_NOW) {
-    const draft = box.value.trim();
-    // A scheduled message must have WORDS — there is nothing to defer in a bare
-    // annotation, whose whole meaning is the screen it was drawn on.
-    if (!draft) {
-      addNote("A scheduled message needs some text — a note on its own only "
-              + "means anything now.", null, "◷");
-      return;
-    }
-    if (scheduling) return;  // see `scheduling`: a second Enter must not store a second copy
-    scheduling = true;
-    scheduleMessage(draft, when).then((ok) => {
-      scheduling = false;
-      if (!ok) return;       // refused: the draft stays in the box, unharmed
-      box.value = "";
-      growBox();
-      resetWhen();
-    });
-    return;
-  }
+  // Send is a send, always. Deferral used to be decided HERE, above the queue
+  // branch, and the whole question left the composer with the When pill — so what
+  // this key does no longer depends on a dropdown two controls away, which was
+  // most of what that pill cost to read. Scheduling is the calendar button beside
+  // it now, and it navigates rather than sending anything.
+  //
   // A live run queues instead of refusing: the text is parked and fired when
   // the turn ends. Gated on activeRun, NOT `sending` — `sending` is also held
   // by loadHistory and resumeRun's probe, and a message typed while browsing
@@ -11249,35 +10847,6 @@ document.getElementById("card").onsubmit = (e) => {
   // notes alone are sendable, and so is a bare picture (captured, pasted or
   // dropped) with no words at all
   if (!message && !annPending().length && !shotAttached.length) return;
-  const when = whenChoice();
-  if (when !== WHEN_NOW) {
-    if (!message) {
-      enterChat();
-      addNote("A scheduled message needs some text — a note on its own only "
-              + "means anything now.", null, "◷");
-      return;
-    }
-    if (scheduling) return;  // one Enter, one stored message (see `scheduling`)
-    scheduling = true;
-    // enterChat FIRST: addNote writes into the transcript, which the home view
-    // hides, so a confirmation left on this screen would be invisible. Landing in
-    // the chat is also the honest destination — it is where the message will
-    // appear when it runs.
-    enterChat();
-    homebox.value = "";
-    growHome();
-    scheduleMessage(message, when).then((ok) => {
-      scheduling = false;
-      if (ok) { resetWhen(); return; }
-      // REFUSED, and the user is now looking at the chat — so the draft goes into
-      // the composer in front of them rather than staying in the home box this
-      // navigation just hid, where it reads as lost.
-      box.value = message;
-      growBox();
-      focusBox(box);
-    });
-    return;
-  }
   homebox.value = "";
   growHome();
   enterChat();

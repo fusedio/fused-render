@@ -260,7 +260,7 @@ _RUNNERS: tuple[Runner, ...] = (
         _available=_transformers_platform,
     ),
     # Image generation is arranged like the other two: MLX takes the Macs
-    # (D303). One 4.6GB repo against the ~10.1GB two-repo split the torch
+    # (D305). One 4.6GB repo against the ~10.1GB two-repo split the torch
     # recipe needs, ~8x quicker to load, ~15-20% quicker per image, measured
     # same model, prompt and seed.
     #

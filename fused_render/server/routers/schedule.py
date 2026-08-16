@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import schedule
+from fused_render import recur, schedule
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -37,9 +37,14 @@ def api_schedule():
     page."""
     entries = schedule.list_entries()
     for entry in entries:
-        # Server-side cron math, so the calendar can draw a recurring job's
-        # future runs without the client growing a cron parser. Projection
-        # only — the store holds just the ONE materialized next occurrence.
+        # Server-side recurrence math, so the calendar can draw a recurring
+        # job's future runs without the client growing a cron parser or a
+        # second copy of the rule engine. Projection only — the store holds
+        # just the ONE materialized next occurrence. Both kinds of template
+        # answer here: `upcoming` reads `rule` or `repeats`, whichever the
+        # entry carries, and the entry itself ships both (plus `made`, which
+        # is what an "ends after N" row needs to say how far along it is)
+        # because the store's dicts are serialized as they are.
         if entry.get("state") == schedule.RECURRING:
             entry["upcoming"] = schedule.upcoming(entry)
     return {"entries": entries,
@@ -117,10 +122,35 @@ def api_schedule_create(body: dict = Body(...),
     # of the two, so a request carrying both cannot half-mean each. A `repeats`
     # cron line replaces both — it already says every time it means — so a
     # request carrying it alongside either would half-mean two schedules.
+    #
+    # A `rule` object is the third way, and the one that reads DIFFERENTLY: a
+    # structured repeat counts from an anchor, so it needs `due` rather than
+    # refusing it. What it cannot be combined with is the other two ways of
+    # repeating and of saying "later" — `repeats` (a second schedule) and
+    # `delay_seconds` (a relative anchor, which is not a date the user picked).
     due = body.get("due")
     delay = body.get("delay_seconds")
     repeats = str(body.get("repeats") or "").strip()
-    if repeats:
+    rule = body.get("rule")
+    if rule is not None:
+        if not isinstance(rule, dict):
+            return _error("rule: expected an object describing the repeat",
+                          status=400)
+        if repeats or delay is not None:
+            return _error("rule: cannot be combined with `repeats` or "
+                          "`delay_seconds` — a structured repeat says when "
+                          "on its own, counting from `due`", status=400)
+        if due is None:
+            return _error("rule: needs `due` — the date and time of the first "
+                          "run, which is what the repeat counts from",
+                          status=400)
+        try:
+            # Validated HERE and not only in the model, so the message a person
+            # reads is written by the module that knows the vocabulary.
+            rule = recur.validate_rule(rule)
+        except ValueError as exc:
+            return _error(str(exc), status=400)
+    elif repeats:
         if due is not None or delay is not None:
             return _error("repeats: cannot be combined with `due` or "
                           "`delay_seconds` — the cron line says when",
@@ -142,7 +172,7 @@ def api_schedule_create(body: dict = Body(...),
             resolved, body.get("message"), due,
             session_id=str(body.get("session_id") or ""),
             permission_mode=str(body.get("permission_mode") or ""),
-            repeats=repeats)
+            repeats=repeats, rule=rule)
     except ValueError as exc:
         return _error(str(exc), status=400)
     return {"entry": entry}

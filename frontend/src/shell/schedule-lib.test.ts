@@ -179,3 +179,60 @@ describe("assignLanes", () => {
     expect(packed.every((p) => p.lanes === 3)).toBe(true);
   });
 });
+
+// describeRule / repeatChoicesFor: the Google wording is the CONTRACT — the
+// select's labels, the cards and the popover must all say these exact words,
+// so the words themselves are pinned, not paraphrased.
+import { describeRule, entryRepeatText, nthOfMonth, repeatChoicesFor } from "./schedule-lib";
+
+// Wednesday, August 12 2026 — the date Google's own screenshots use.
+const AUG12 = new Date(2026, 7, 12, 10, 0);
+
+describe("describeRule", () => {
+  it("says Google's presets verbatim", () => {
+    expect(describeRule({ freq: "day" }, AUG12)).toBe("Daily");
+    expect(describeRule({ freq: "week", byday: [3] }, AUG12)).toBe("Weekly on Wednesday");
+    expect(describeRule({ freq: "month", monthly: "nth-weekday" }, AUG12))
+      .toBe("Monthly on the second Wednesday");
+    expect(describeRule({ freq: "year" }, AUG12)).toBe("Annually on August 12");
+    expect(describeRule({ freq: "week", byday: [1, 2, 3, 4, 5] }, AUG12))
+      .toBe("Every weekday (Monday to Friday)");
+  });
+  it("reads intervals, day sets and ends", () => {
+    expect(describeRule({ freq: "week", interval: 2, byday: [1, 3] }, AUG12))
+      .toBe("Every 2 weeks on Monday, Wednesday");
+    expect(describeRule({ freq: "month", monthly: "day" }, AUG12)).toBe("Monthly on day 12");
+    expect(describeRule({ freq: "day", until: "2026-11-11" }, AUG12))
+      .toBe("Daily, until Nov 11, 2026");
+    expect(describeRule({ freq: "day", count: 13 }, AUG12)).toBe("Daily, 13 times");
+  });
+});
+
+describe("repeatChoicesFor", () => {
+  it("is Google's list, derived from the picked date", () => {
+    expect(repeatChoicesFor(AUG12).map((c) => c.label)).toEqual([
+      "Does not repeat",
+      "Daily",
+      "Weekly on Wednesday",
+      "Monthly on the second Wednesday",
+      "Annually on August 12",
+      "Every weekday (Monday to Friday)",
+      "Custom…",
+    ]);
+  });
+  it("nthOfMonth counts the way the label reads", () => {
+    expect(nthOfMonth(new Date(2026, 7, 1))).toBe(1);
+    expect(nthOfMonth(new Date(2026, 7, 12))).toBe(2);
+    expect(nthOfMonth(new Date(2026, 7, 29))).toBe(5);
+  });
+});
+
+describe("entryRepeatText", () => {
+  const base = { id: "x", target: "", message: "", due: AUG12.toISOString(),
+    session_id: "", permission_mode: "auto", state: "recurring", created: "",
+    fired: "", run_id: "", error: "" } as never;
+  it("prefers the rule's wording, falls back to cron's", () => {
+    expect(entryRepeatText({ ...(base as object), rule: { freq: "day" } } as never)).toBe("Daily");
+    expect(entryRepeatText({ ...(base as object), repeats: "30 9 * * *" } as never)).toBe("daily at 09:30");
+  });
+});

@@ -180,7 +180,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # lands at the bottom on size alone now, which happens to agree with
         # where its memory cost belongs: 20GB of weights resident is a 32GB Mac,
         # and the note says so instead of leaving someone to find out after the
-        # download. Its 35B-A3B MoE sibling is omitted for the reason D303 gives
+        # download. Its 35B-A3B MoE sibling is omitted for the reason D305 gives
         # about mflux — 24.7GB resident on a 34GB machine already several GB
         # into swap is not something to suggest on one machine's evidence.
         {
@@ -263,7 +263,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # which is the now-familiar shape: a repo belongs to a backend, not to a
     # capability. `size_gb` is the whole snapshot, because unlike the diffusers
     # recipe there is nothing skipped and no second repo: every component is
-    # already 4-bit. (2026-08-15 Hub metadata sums to 4.62e9 bytes. D303's
+    # already 4-bit. (2026-08-15 Hub metadata sums to 4.62e9 bytes. D305's
     # benchmark says 4.3GB for the same download — that is GiB; this field is
     # decimal GB, as D295 defines it, and the two numbers agree.)
     "mflux-image": [

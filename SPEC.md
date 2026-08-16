@@ -6238,7 +6238,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   complete; the reported figure is also capped at the total, since the disk walk
   sees siblings the download was never fetching.
 - **AI-9d** **Image generation has an MLX runner too, and like the other two
-  multi-runner capabilities it takes the Macs by default** (D303). `mflux_image`
+  multi-runner capabilities it takes the Macs by default** (D305). `mflux_image`
   renders FLUX on Metal from a single `mlx-community`
   conversion whose components are all already 4-bit — so where the torch path
   needs AI-9b's recipe (a ~2.4GB GGUF transformer plus the ~7.7GB bf16 base repo
@@ -6469,7 +6469,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   windows over a 198-second file. What that verification did NOT cover is
   transcription quality, the container formats users will point at it, and the
   behaviour of a recording long enough to matter.
-- **AI-10f** **`vad` means the same thing on both whisper engines** (D304).
+- **AI-10f** **`vad` means the same thing on both whisper engines** (D306).
   `fused.ai.transcribe` has always taken the flag, and until now the two
   runners answered it differently: faster-whisper runs a Silero VAD filter and
   drops the silence, while the MLX runner could only map it onto mlx-whisper's

@@ -1,19 +1,23 @@
-"""Scheduling from the claude template's composer (the "Send now" pill).
+"""A scheduled task firing INTO this chat (templates/claude/template.html).
 
-Scheduling lives HERE and not on a settings page, because this row already knows
-the folder (the template is bound to one target) and already holds the message —
-so the only thing it was missing is *when*. These are structural assertions over
-the template source, the same approach test_claude_kind.py takes: the pill is
-inline vanilla JS in a 9000-line document, so what can be pinned is that the
-wiring exists, that it reaches the right endpoint with the right guard, and that
-the two properties it would be easy to get wrong stay true.
+The composer used to schedule on its own — the "Send now" pill, deleted
+2026-08-16 — and this file was its suite. What is left is the other half, which
+outlived it: a task is stored by the Schedule page and spawned by the SERVER, so
+nothing in this page ever sets `activeRun`, and a chat left open past its own
+scheduled time would otherwise watch the session run, finish and edit files with
+no sign of any of it. The watcher below is what puts that turn on screen.
+
+The composer's side of scheduling now lives in test_claude_schedule_button.py:
+one calendar button that hands the draft, the folder and the session to the
+Schedule page. These are structural assertions over the template source, the same
+approach test_claude_kind.py takes — inline vanilla JS in a 12000-line document,
+so what can be pinned is that the wiring exists and that the properties it would
+be easy to get wrong stay true.
 """
 import os
 import re
 
 import pytest
-
-from fused_render import schedule
 
 _TEMPLATE = os.path.join("fused_render", "templates", "claude", "template.html")
 
@@ -32,307 +36,6 @@ def code(source) -> str:
     without_block = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
     without_html = re.sub(r"<!--.*?-->", "", without_block, flags=re.S)
     return re.sub(r"^\s*//.*$", "", without_html, flags=re.M)
-
-
-def test_both_composers_carry_the_when_pill(code):
-    """The chat composer AND the home one: a first message is exactly as
-    schedulable as a follow-up, and a pill on only one of them would make that
-    depend on whether a session happened to exist yet."""
-    assert code.count('class="pill when-sel"') == 2
-    assert 'id="when"' in code
-    assert 'id="hwhen"' in code
-
-
-def test_the_pill_posts_to_the_schedule_api_with_the_write_guard(code):
-    assert '"/api/schedule"' in code
-    # D3: without the header the endpoint answers 403, and the template is the
-    # one caller here that does not go through platform/lib/api.ts's helper.
-    assert '"X-Fused": "1"' in code
-
-
-def _schedule_message_fn(code: str) -> str:
-    """The body of `scheduleMessage`. Scoped to the function rather than to a
-    character window after the fetch URL — the earlier version of this helper broke
-    the moment a line moved above the request, which is not a fact worth failing on."""
-    body = code[code.index("async function scheduleMessage("):]
-    return body[:body.index("\n}")]
-
-
-def test_it_sends_the_target_it_is_bound_to_and_the_composers_approval_mode(code):
-    """No path input anywhere: the target is FILE, the param this template is
-    opened with. That is the whole reason scheduling moved here."""
-    body = _schedule_message_fn(code)
-    assert "target: FILE" in body
-    assert "permission_mode" in body
-    # the approvals pill applies to the scheduled turn too — same question, and
-    # the case where the answer matters most
-    assert "perm-sel" in body
-
-
-def test_the_due_time_is_sent_as_a_naive_local_stamp(code):
-    """`schedule.parse_due` reads a naive timestamp as LOCAL time, so the pill
-    must send local wall-clock and never a UTC conversion — otherwise a 9am
-    choice fires at the wrong hour for everyone off UTC."""
-    assert "localDueString" in code
-    assert "due: localDueString(at)" in code
-    # the giveaways of a timezone conversion on the way out
-    assert "toISOString()" not in code.split("localDueString")[1][:600]
-
-
-def test_the_deferral_does_not_outlive_its_own_message(code):
-    """The model/effort/approval pills persist in `fused.params` because they
-    describe how the chat behaves. "Send at 6pm" describes ONE message, and a
-    choice that survived its send would silently defer whatever was typed next."""
-    assert "function resetWhen()" in code
-    # not persisted like its neighbours
-    assert 'fused.params.set("when"' not in code
-    assert 'fused.params.get("when")' not in code
-
-
-def test_a_scheduled_message_requires_words(code):
-    """An annotation on its own is sendable NOW — its meaning is the screen it was
-    drawn on — but there is nothing to defer in it, and the crop would describe a
-    pane that has since changed."""
-    assert "A scheduled message needs some text" in code
-
-
-def test_the_presets_are_resolved_at_send_time(code):
-    """"Tomorrow 9am" means tomorrow from the moment the user commits, not from
-    whenever the pill happened to be touched."""
-    assert "WHEN_RESOLVERS" in code
-    # each resolver builds its Date when called, so none of them may be a value
-    resolvers = code[code.index("const WHEN_RESOLVERS"):]
-    resolvers = resolvers[:resolvers.index("document.querySelectorAll(\".when-sel\")")]
-    assert resolvers.count("() =>") >= 5
-
-
-def test_the_permission_modes_offered_are_the_ones_the_scheduler_accepts(code):
-    """The pill hands its value straight to `schedule.create`, which validates
-    against its own tuple and raises on anything else — so a mode the composer can
-    offer but the store refuses would be a 400 the user cannot explain."""
-    listed = re.search(r"const PERMISSION_MODES = \[([^\]]*)\]", code)
-    assert listed, "the template's PERMISSION_MODES list moved"
-    offered = set(re.findall(r'"([a-zA-Z]+)"', listed.group(1)))
-    assert offered <= set(schedule.PERMISSION_MODES), (
-        f"composer offers {offered - set(schedule.PERMISSION_MODES)}, which "
-        f"schedule.create refuses")
-
-
-def test_deferring_is_decided_before_the_live_run_queue(code):
-    """Scheduling is a store write, not a send, so it must not care whether a turn
-    is running. When this check sat BELOW the `activeRun` branch, a message the user
-    had deferred to tomorrow was parked by the queue and fired the moment the
-    current turn ended — the one outcome the pill exists to prevent."""
-    body = code[code.index("function submitChat()"):]
-    body = body[:body.index("\n}")]
-    assert body.index("whenChoice()") < body.index("if (activeRun)"), \
-        "the When check must come first, above the queue"
-
-
-def test_a_second_submit_cannot_store_a_second_copy(code):
-    """The box is cleared only on SUCCESS (the draft must survive a refusal), so
-    without a guard a second Enter during the round trip stores another unattended
-    job. A flag of its own, not `sending` — a scheduled message starts no run."""
-    assert "let scheduling = false;" in code
-    assert code.count("if (scheduling) return;") == 2  # both composers
-    assert code.count("scheduling = true;") == 2
-    assert code.count("scheduling = false;") >= 3      # the declaration + both resets
-
-
-def test_a_scheduled_follow_up_continues_the_chat_it_was_written_in(code):
-    """Scheduling from an open chat is "and then do this next", so a fresh session
-    would throw away the thread the prompt was written against — the context that
-    made it worth deferring from HERE rather than from a page."""
-    body = _schedule_message_fn(code)
-    assert "session_id: session" in body
-    assert 'fused.params.get("session_id")' in body
-
-
-def test_a_refused_home_schedule_puts_the_draft_where_the_user_now_is(code):
-    """The home path enters the chat before the POST resolves (the confirmation
-    lands in the transcript, which home hides), so a refusal must not leave the
-    text in the box that navigation just hid, where it reads as lost."""
-    home = code[code.index('document.getElementById("card").onsubmit'):]
-    home = home[:home.index("homebox.addEventListener")]
-    assert "box.value = message;" in home
-    assert "focusBox(box)" in home
-
-
-def test_deferring_shows_the_approvals_mode_that_will_actually_run(code):
-    """"ask every time" cannot work unattended — nobody polls `decide`, so the
-    first tool call parks until the permission timeout denies it. A deferred send
-    therefore runs under `auto`, and the pill SAYS so the moment a time is picked:
-    this loosens approvals, and doing that behind the user's back would be worse
-    than the parked turn it avoids."""
-    assert "function scheduledPerm(" in code
-    assert 'mode === "prompt" ? "auto" : mode' in code
-
-    # ONE owner of pill state. The first cut had a second function running after
-    # each syncSelects, and every desync came from a caller that ran one and not
-    # the other — `resetWhen` leaving `auto` on screen after a successful schedule,
-    # a model change writing the params value back over the substitution. So the
-    # deferral is decided INSIDE syncSelects and there is nothing to forget.
-    assert "function syncPermForWhen(" not in code
-    sync = code[code.index("function syncSelects()"):]
-    sync = sync[:sync.index("\n}")]
-    assert "whenChoice()" in sync, "syncSelects must know whether a time is picked"
-    assert "scheduledPerm(" in sync
-    # a mode that cannot be honoured is not OFFERED — the pill informs, it does not
-    # argue with a choice the user just made (which is what substituting on every
-    # change did: picking "ask every time" snapped straight back to auto)
-    assert "opt.disabled = deferred" in sync
-    # never written to params: the CHAT's own mode is not what is being changed
-    assert 'params.set("permission"' not in sync
-
-    # and the wire carries the effective mode, not the one that was on screen before
-    assert "permission_mode: mode," in _schedule_message_fn(code)
-
-
-def test_resetting_the_time_hands_the_approvals_pill_back(code):
-    """Setting the When value alone left the row reading `auto` with `prompt` still
-    disabled after a successful schedule, while the next send-now would have used
-    `prompt`. It goes through syncSelects, which owns both."""
-    body = code[code.index("function resetWhen()"):]
-    body = body[:body.index("\n}")]
-    assert "syncSelects()" in body
-
-
-def test_the_presets_include_one_short_enough_to_watch(code):
-    """Five minutes is the preset that doubles as the way to TRY scheduling: the
-    whole path plays out while the user is still looking at the screen."""
-    assert '"5m": "In 5 minutes"' in code
-    assert '"5m": () =>' in code
-
-
-def test_the_two_choices_a_preset_list_cannot_express_are_offered(code):
-    """A fixed vocabulary of relative presets can say "this evening" and never
-    03:14 tomorrow, nor "every morning" — the two things the API always accepted
-    and the pill could not ask for. Both are choices in the same list (so the row
-    keeps its shape) with a panel behind them, and both are spelt with an ellipsis
-    because picking one asks a SECOND question instead of being the answer."""
-    assert '[WHEN_AT]: "Pick a time…"' in code
-    assert '[WHEN_REPEAT]: "Repeats…"' in code
-    # in the list the pill is filled from, or the label is unreachable
-    assert "WHEN_AT, WHEN_REPEAT]" in code
-    # one panel per choice per composer: a first message is as schedulable as a
-    # follow-up, which is the same reason the pill itself is on both rows
-    assert code.count('class="whenpanel" data-when="at"') == 2
-    assert code.count('class="whenpanel" data-when="repeat"') == 2
-    assert code.count('type="datetime-local"') == 2
-
-
-def test_a_recurring_send_carries_the_cron_line_INSTEAD_of_a_time(code):
-    """`repeats` and `due` are two answers to one question, so the endpoint
-    refuses a request holding both (400) — which makes a `due: null` sent
-    "just in case" a schedule that cannot be stored at all. The key is therefore
-    absent from the body, not empty in it."""
-    body = _schedule_message_fn(code)
-    assert "...(repeats ? { repeats } : { due: localDueString(at) })" in body
-    # exactly one mention of `due` on the wire, and it is inside that conditional
-    assert body.count("due:") == 1
-    # the third way to say when is a page's convenience and never this composer's:
-    # it would be the same collision with a cron line, one round trip later
-    assert "delay_seconds" not in code
-
-
-def test_the_repeat_presets_build_the_line_they_promise(code):
-    """The presets are a way of WRITING cron, not an alternative to it — three
-    shapes of the same five fields. Pinned as strings because the panel keeps no
-    rule of its own: these templates are the only definition of what "Daily at
-    9am" means, and the hint under the fields shows the line they produced."""
-    assert "`${min} * * * *`" in code          # hourly: that minute, every hour
-    assert "`${min} ${hr} * * *`" in code      # daily at HH:MM
-    assert "`${min} ${hr} * * ${dow}`" in code  # weekly, on that day
-    # Custom hands the field's own text through untouched — a power user's line is
-    # not re-derived from pickers that cannot express it
-    assert 'if (preset === "cron") return whenFieldValue("when-rep-cron").trim();' in code
-
-
-def test_the_lines_the_presets_build_are_lines_the_parser_accepts(code):
-    """The cross-module half of the test above, in the spirit of the permission
-    modes one: the template writes a cron line and `fused_render.cron` is what has
-    to read it, so the SHAPE is checked against the real parser rather than
-    against a second copy of the field order living in this file."""
-    from fused_render import cron
-
-    shapes = re.findall(r"return `(\$\{min\}[^`]*)`", code)
-    assert len(shapes) == 3, "the preset → cron templates moved"
-    for shape in shapes:
-        line = (shape.replace("${min}", "0").replace("${hr}", "9")
-                .replace("${dow}", "1"))
-        assert len(line.split()) == 5
-        cron.parse(line)   # ValueError here means the panel builds an unstorable rule
-
-
-def test_the_repeat_panel_counts_days_the_way_cron_does(code):
-    """0 = Sunday in a crontab, so the day list starts on Sunday and the option's
-    INDEX is the field's value. A Monday-first list would have needed a mapping,
-    and a mapping is where "weekly on Friday" quietly becomes Saturday."""
-    assert 'const REP_DAYS = ["Sunday", "Monday"' in code
-    # the value goes into the line as-is, with no arithmetic on the way
-    assert 'const dow = n(whenFieldValue("when-rep-dow"));' in code
-
-
-def test_the_generated_cron_line_is_shown_rather_than_hidden(code):
-    """A repeat rule is the one scheduling choice a user can get subtly wrong, and
-    the cron line is the only place the mistake is visible before the first run
-    fires (or does not). So the panel shows the line it built, which is also what
-    makes Custom a continuation of the presets rather than a different feature."""
-    assert "`runs ${expr}`" in code
-    assert "function cronComplaint(" in code
-    # a shape check only — the grammar has ONE owner, and it answers 400 with the
-    # field it choked on (see cron.parse), which the POST's error path already shows
-    assert "expected 5 fields (minute hour day month weekday)" in code
-
-
-def test_a_past_exact_time_is_refused_by_the_PAGE(code):
-    """`min` on the field would have been the obvious guard and is deliberately
-    absent: it turns on native constraint validation, which blocks the form's
-    submit BUTTON and says so in a bubble, while Enter in the textarea (its own
-    keydown handler, calling submitChat directly) sails past — two send paths
-    disagreeing about which times are allowed. The check lives where both paths
-    already meet."""
-    assert 'type="datetime-local" class="whenfield when-at"' in code
-    assert "min=" not in code.split('type="datetime-local"')[1][:400]
-    plan = code[code.index("function whenPlan("):]
-    plan = plan[:plan.index("\n}")]
-    assert "if (at <= new Date())" in plan
-    assert "has already gone by" in plan
-    # and the panel's own affordance says so before the send is attempted
-    assert 'document.querySelectorAll(".when-at-ok").forEach((el) => { el.disabled' in code
-
-
-def test_the_new_choices_are_deferrals_like_every_other(code):
-    """Nothing about approvals disclosure, the send guard, or the reset may know
-    which deferral was picked: `whenChoice() !== WHEN_NOW` is the whole test, so
-    adding a value to WHEN_OPTIONS is what makes "Pick a time…" and "Repeats…"
-    inherit the substituted permission mode (scheduledPerm), the one-copy guard,
-    and the return to "Send now"."""
-    sync = code[code.index("function syncSelects()"):]
-    sync = sync[:sync.index("\n}")]
-    assert "WHEN_AT" not in sync and "WHEN_REPEAT" not in sync
-    submit = code[code.index("function submitChat()"):]
-    submit = submit[:submit.index("\n}")]
-    assert "WHEN_AT" not in submit and "WHEN_REPEAT" not in submit
-    # panels are pill state, so the ONE owner of pill state shows and hides them —
-    # see the note above scheduledPerm on what a second function beside it cost
-    assert "renderWhenPanels();" in sync
-    # and the exact instant is dropped with the choice: a stale past time waiting
-    # in the panel is the NEXT scheduled send refused for no visible reason
-    reset = code[code.index("function resetWhen()"):]
-    reset = reset[:reset.index("\n}")]
-    assert 'document.querySelectorAll(".when-at").forEach((el) => { el.value = ""; });' in reset
-
-
-def test_a_recurring_confirmation_names_the_rule(code):
-    """A repeating job has no single instant to report, so the note names what was
-    actually stored — the cron line — plus the first occurrence the server worked
-    out from it, which is how a reader catches a rule that does not mean what they
-    thought before it has run twice."""
-    body = _schedule_message_fn(code)
-    assert "repeats: ${repeats}" in body
-    assert "data.entry.due" in body, "the first occurrence comes from the stored entry"
-    assert 'null, "◷");' in body
 
 
 def test_the_model_and_effort_pills_validate_their_param(code):
@@ -508,38 +211,27 @@ def test_it_only_attaches_a_run_that_belongs_on_this_screen(code):
     assert "return !entry.session_id;" in body
 
 
-def test_the_confirmation_promises_only_what_the_page_now_delivers(code):
-    """It says the turn will appear here, which is true only because
-    pollScheduledRuns exists. The two have to move together."""
-    assert "appears" in code and "here when it does" in code
-    assert "function pollScheduledRuns(" in code
+def test_the_reader_is_told_before_the_turn_starts_writing(code):
+    """The one line this page owes someone who left a chat open: text appearing on
+    its own, in a conversation they are not currently having, is otherwise just
+    strange. The note and the attach are the same event and must not drift apart —
+    it is written immediately before the run is adopted."""
+    body = code[code.index("async function pollScheduledRuns("):]
+    body = body[:body.index("\npollScheduledRuns();")]
+    note = 'addNote("Your scheduled message is running now.", null, "◷");'
+    assert note in body
+    assert body.index(note) < body.index("await resumeRun(")
 
 
-def test_the_page_links_a_ran_message_to_its_session_in_the_inbox():
-    """This page can say a message ran; only the transcript knows what it DID. The
-    Inbox addresses a session by the id the watcher captured (`?peek=<id>`), so a
-    row that has one hands the reader straight to the conversation — and a row that
-    does not simply offers no link rather than pointing at nothing."""
+def test_the_page_links_a_ran_message_to_its_session():
+    """This page can say a message ran; only the transcript knows what it DID. So a
+    row whose watcher captured a session id hands the reader straight to that
+    conversation — and a row without one simply offers no link rather than pointing
+    at nothing."""
     with open(os.path.join("frontend", "src", "shell", "Scheduled.tsx"),
               encoding="utf-8") as f:
         page = f.read()
-    assert "/sessions?peek=" in page
+    assert "explorerUrl(" in page
     assert "entry.claude_session_id &&" in page, "the link must be gated on having an id"
     # the shell's own navigation, not a full page load
     assert "navigateUrl(" in page
-    assert "encodeURIComponent" in page
-
-
-def test_the_settings_page_no_longer_asks_for_what_the_composer_knows():
-    """The page keeps the LIST (nowhere else shows every folder's schedule at
-    once) and loses the compose form, which asked the user to retype the folder
-    and the message they had already typed in the chat."""
-    with open(os.path.join("frontend", "src", "shell", "Scheduled.tsx"),
-              encoding="utf-8") as f:
-        page = f.read()
-    assert "scheduleMessage" not in page      # the create call is gone
-    assert "datetime-local" not in page       # and its When field with it
-    assert "cancelScheduledMessage" in page   # cancelling stays
-    assert "/api/schedule" not in page or "getSchedule" in page
-    # and it points at where scheduling now happens
-    assert "composer" in page

@@ -12,7 +12,7 @@ Testable because the module is **stdlib-only at import time** — `mflux` and
 runs against stubs. What is NOT covered is any actual rendering: no Metal, no
 weights, no pixels. The library contract the stubs encode (a per-model callback
 registry, `call_in_loop`, `generate_image`'s keywords, `save(overwrite=)`) was
-read off mflux 0.13 on an Apple Silicon machine, and the benchmark behind D303
+read off mflux 0.13 on an Apple Silicon machine, and the benchmark behind D305
 ran that path for real.
 """
 import importlib.util
@@ -410,7 +410,7 @@ def test_memory_is_the_ACTIVE_figure_not_the_allocator_POOL(monkeypatch, base):
     """The number that goes in a column beside the torch runner's.
 
     MLX's cache is buffers reserved from Metal and not returned — on this model
-    ~23.6GB against ~14.1GB active (D303). Reporting the pool would tell the AI
+    ~23.6GB against ~14.1GB active (D305). Reporting the pool would tell the AI
     Models page that one resident image model costs two thirds of a 34GB
     machine, which is not what "this model is holding" means anywhere else in
     the app: the torch runner reports allocated bytes, not the driver's

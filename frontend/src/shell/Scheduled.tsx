@@ -47,7 +47,8 @@ import {
   BOARD_COLUMNS,
   boardColumn,
   canUnskip,
-  describeRepeats,
+  entryRepeatText,
+  explorerUrl,
   formatDue,
   isLive,
   relativeDue,
@@ -76,13 +77,6 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // into the next one.
 const NEW_LINK_LEAD_MS = 120_000;
 
-function hoursText(seconds: number): string {
-  const hours = Math.round(seconds / 3600);
-  if (hours >= 48) return `${Math.round(hours / 24)} days`;
-  if (hours >= 1) return `${hours} hour${hours === 1 ? "" : "s"}`;
-  return `${Math.max(1, Math.round(seconds / 60))} minutes`;
-}
-
 // The Board view: the Inbox board's shape (fixed-width columns, dot + count
 // heads, compact cards) over the scheduler's own facts. No drag, deliberately:
 // the Inbox's columns are triage labels a person may move; these are states
@@ -94,10 +88,25 @@ function ScheduleBoard({
   entries: ScheduledMessage[];
   onEdit: (entry: ScheduledMessage) => void;
 }) {
+  // A recurring template and its next materialized occurrence are the same
+  // task said twice, and the board printed both — two identical cards in
+  // Upcoming, one carrying the rule and one carrying the time (audit
+  // 2026-08-16). The TEMPLATE is the card that survives, because it is the
+  // one a click can edit; it takes the occurrence's information instead, as a
+  // second meta line. The calendar deliberately keeps both (a grid is about
+  // instants), so this dedup is the board's alone.
+  const liveTemplates = new Set(
+    entries.filter((e) => e.state === "recurring").map((e) => e.id),
+  );
+  const isDuplicateOfTemplate = (e: ScheduledMessage) =>
+    e.state === "pending" && !!e.template_id && liveTemplates.has(e.template_id);
+
   return (
     <div className="schedule-board">
       {BOARD_COLUMNS.map((col) => {
-        const cards = entries.filter((e) => boardColumn(e) === col.key);
+        const cards = entries.filter(
+          (e) => boardColumn(e) === col.key && !isDuplicateOfTemplate(e),
+        );
         return (
           <div className="schedule-board-col" key={col.key}>
             <div className={`schedule-board-head schedule-board-head--${col.key}`}>
@@ -105,7 +114,12 @@ function ScheduleBoard({
               <span className="schedule-board-count">{cards.length}</span>
             </div>
             <div className="schedule-board-cards">
-              {cards.length === 0 && <p className="schedule-card-why">Empty</p>}
+              {/* Its own state, not the card's error-text class: "Empty" was
+                  rendering left-aligned and flush under the head, reading as a
+                  broken card (audit 2026-08-16). */}
+              {cards.length === 0 && (
+                <p className="schedule-board-empty">Nothing here</p>
+              )}
               {cards.map((e) => {
                 const editable = e.state === "pending" || e.state === "recurring";
                 return (
@@ -117,7 +131,7 @@ function ScheduleBoard({
                     onClick={() => {
                       if (editable) onEdit(e);
                       else if (e.claude_session_id)
-                        navigateUrl(`/sessions?peek=${encodeURIComponent(e.claude_session_id)}`);
+                        navigateUrl(explorerUrl(e.target, e.claude_session_id));
                     }}
                   >
                     <span className="schedule-board-card-name">{e.message}</span>
@@ -127,10 +141,18 @@ function ScheduleBoard({
                       </span>
                       <span className="schedule-board-card-time">
                         {e.state === "recurring"
-                          ? describeRepeats(e.repeats || "")
+                          ? entryRepeatText(e)
                           : relativeDue(isLive(e) || !e.fired ? e.due : e.fired)}
                       </span>
                     </span>
+                    {/* The rule says how OFTEN; the card that absorbed its next
+                        occurrence has to say when — otherwise deduping the two
+                        would have cost the board the only fact it had. */}
+                    {e.state === "recurring" && (
+                      <span className="schedule-board-card-next">
+                        next {relativeDue(e.due)}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -187,28 +209,27 @@ function EntryCard({
     : `Due ${formatDue(entry.due)} · ran ${formatDue(entry.fired)}`;
 
   return (
-    <div className={`schedule-card schedule-card--${stateTone(entry)}`}>
-      <div className="schedule-card-head">
+    // The Inbox's row anatomy, copied deliberately (Akshil, 2026-08-15 — the
+    // card grid "is not a list view"): pill + bold one-line title + time on
+    // the right, a muted meta line under it, quiet actions last. Full-width
+    // rows, so the eye scans down one column.
+    <div className={`schedule-row schedule-row--${stateTone(entry)}`}>
+      <div className="schedule-row-line">
         <span className={`schedule-state schedule-state--${stateTone(entry)}`}>
           {stateLabel(entry)}
         </span>
+        <span className="schedule-row-title" title={entry.message}>
+          {entry.message}
+        </span>
         <span className="schedule-card-when" title={stampTitle}>
           {/* A recurring rule has no single "when" — its rule is the when. */}
-          {entry.state === "recurring" ? describeRepeats(entry.repeats || "") : relativeDue(stamp)}
+          {entry.state === "recurring" ? entryRepeatText(entry) : relativeDue(stamp)}
         </span>
       </div>
 
-      {/* The prompt is the card's subject — what the reader scans to find the one
-          they mean — so it gets the body colour and the room. Clamped rather than
-          scrolled: a card grid wants even heights, and the full text is one hover
-          away in the title. */}
-      <p className="schedule-card-message" title={entry.message}>
-        {entry.message}
-      </p>
-
-      {/* Only what departs from the default earns a line: continuing a
+      {/* Only what departs from the default earns a mention: continuing a
           session, or a non-auto mode. The default case says nothing. */}
-      <p className="schedule-card-meta">
+      <p className="schedule-row-meta">
         <code title={entry.target}>{entry.target}</code>
         {(entry.session_id || entry.permission_mode !== "auto") && (
           <span>
@@ -222,9 +243,7 @@ function EntryCard({
       {entry.error && <p className="schedule-card-why">{entry.error}</p>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
 
-      {/* Actions last and pinned to the foot, so cards of different text lengths
-          still line their buttons up across a row. */}
-      <div className="schedule-card-actions">
+      <div className="schedule-row-actions">
         {(entry.state === "pending" || entry.state === "recurring") && (
           <>
             <button
@@ -268,10 +287,10 @@ function EntryCard({
             type="button"
             className="btn btn-secondary"
             onClick={() =>
-              navigateUrl(`/sessions?peek=${encodeURIComponent(entry.claude_session_id!)}`)
+              navigateUrl(explorerUrl(entry.target, entry.claude_session_id!))
             }
           >
-            {ICON_INBOX} Open in Inbox
+            {ICON_INBOX} Open in Explorer
           </button>
         )}
       </div>
@@ -301,9 +320,12 @@ export default function Scheduled() {
   // OCCURRENCE means editing its rule: the template is what gets edited, and
   // the resolver below is what makes a click on any chip land there.
   const [editing, setEditing] = useState<ScheduledMessage | null>(null);
-  // The folder a deep link named (see the effect below); null for every other
+  // What a deep link named (see the effect below); all null for every other
   // way of opening the form.
   const [newTarget, setNewTarget] = useState<string | null>(null);
+  const [newMessage, setNewMessage] = useState<string | null>(null);
+  const [newSession, setNewSession] = useState<string | null>(null);
+  const [newBack, setNewBack] = useState<string | null>(null);
 
   // `?new=1&target=…` — the chat composer's Schedule button
   // (templates/claude/template.html openScheduler). The chat knows the folder
@@ -320,9 +342,18 @@ export default function Scheduled() {
     const q = new URLSearchParams(location.search);
     if (q.get("new") !== "1") return;
     setNewTarget(q.get("target"));
+    // The chat's whole handoff (Akshil, 2026-08-16): the typed draft becomes
+    // the description, the open conversation the session a ONE-OFF will
+    // continue, and the chat's URL the way back — the form's round trip.
+    setNewMessage(q.get("message"));
+    setNewSession(q.get("session_id"));
+    setNewBack(q.get("back"));
     setCreating(new Date(Date.now() + NEW_LINK_LEAD_MS));
     q.delete("new");
     q.delete("target");
+    q.delete("message");
+    q.delete("session_id");
+    q.delete("back");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
@@ -369,12 +400,15 @@ export default function Scheduled() {
     // out of the 760px content column `.prefs-page > *` imposes, while the prose
     // inside them stays at that measure. See styles/schedule.css.
     <div className="prefs-page schedule-page">
-      {/* Copy voice: Google Calendar's — short, neutral, no mechanics essays
-          (Akshil, 2026-08-14, "wording is too crude"). What the first cut
-          explained in paragraphs, the UI now mostly says by shape; the one
-          honesty that must survive is the app-must-be-running caveat below. */}
+      {/* No description under the title and no mechanics paragraph — both
+          were cut on review (Akshil, 2026-08-16, "it does not make any sense
+          to me"): the page says what it is by shape. The app-must-be-running
+          caveat lives where a person meets its consequence — the Missed
+          state's own wording ("skipped") — not as standing copy. */}
       <header>
         <h1>Schedule</h1>
+        {/* One quiet line, no mechanics essay (Akshil, 2026-08-16: "one small
+            line of description wouldn't hurt anybody"). */}
         <p className="deploy-muted">
           Tasks Claude runs for you, at the times you choose.
         </p>
@@ -414,14 +448,6 @@ export default function Scheduled() {
             </button>
           </div>
 
-          <p className="deploy-muted">
-            {/* The one caveat that must stay on the page, in one line. The
-                bound is a server setting, so the number comes from the server. */}
-            Tasks run while fused-render is open. If it's closed at the time, a one-time
-            task still runs up to {hoursText(state.max_late_seconds)} later; a repeating
-            task waits for its next time.
-          </p>
-
           {view === "calendar" ? (
             <ScheduleCalendar
               entries={entries}
@@ -436,7 +462,7 @@ export default function Scheduled() {
               {live.length === 0 ? (
                 <p className="deploy-muted">No upcoming tasks</p>
               ) : (
-                <div className="schedule-cards">
+                <div className="schedule-list">
                   {live.map((e) => (
                     <EntryCard key={e.id} entry={e} unskippable={canUnskip(e, entries)}
                                onCancelled={reload} onEdit={edit} />
@@ -449,7 +475,7 @@ export default function Scheduled() {
                       run in opposite directions on purpose (see
                       schedule.list_entries); do not re-sort what it gives. */}
                   <h2>Past</h2>
-                  <div className="schedule-cards">
+                  <div className="schedule-list">
                     {past.map((e) => (
                       <EntryCard key={e.id} entry={e} unskippable={canUnskip(e, entries)}
                                onCancelled={reload} onEdit={edit} />
@@ -466,12 +492,25 @@ export default function Scheduled() {
         <NewJobModal
           initialTime={creating instanceof Date ? creating : null}
           initialTarget={newTarget}
+          initialMessage={newMessage}
+          chatSessionId={newSession}
+          chatBack={newBack}
           editing={editing}
           permissionModes={state.permission_modes}
+          // Newest-first fallback recents: past entries arrive newest first,
+          // and the modal dedupes against what localStorage already knows.
+          recentTargets={entries.map((e) => e.target)}
           // `newTarget` is cleared with the rest: it described the ONE form the
           // deep link opened, and left standing it would prefill the next
           // "+ New task" with a folder the user arrived from some time ago.
-          onClose={() => { setCreating(null); setEditing(null); setNewTarget(null); }}
+          onClose={() => {
+            setCreating(null);
+            setEditing(null);
+            setNewTarget(null);
+            setNewMessage(null);
+            setNewSession(null);
+            setNewBack(null);
+          }}
           onCreated={reload}
         />
       )}

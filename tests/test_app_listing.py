@@ -626,6 +626,168 @@ def test_malformed_or_missing_category_degrades_to_none(tmp_path, body):
     assert app["category"] is None
 
 
+# --------------------------------------------------- is_workspace_app_entry
+#
+# The recents filter's question: "would the walk report this file as some
+# app's entry?" — a targeted re-derivation of the walk, so parity with
+# `workspace_apps` is the property, held the same way `app_entry`'s
+# shared-template copy is.
+
+
+def _walk_entries(root):
+    return {os.path.normcase(a["entry"]) for a in app_listing.workspace_apps(str(root))
+            if a["entry"]}
+
+
+def _assert_parity(root, fs_path):
+    """The helper and the walk must agree about `fs_path`."""
+    expected = os.path.normcase(os.path.abspath(str(fs_path))) in _walk_entries(root)
+    assert app_listing.is_workspace_app_entry(str(fs_path), str(root)) is expected
+    return expected
+
+
+def test_entry_check_true_for_a_listed_apps_entry(tmp_path):
+    d = _app(tmp_path / "local", "demo")
+    assert _assert_parity(tmp_path, d / "index.html") is True
+
+
+def test_entry_check_true_for_a_depth_one_app(tmp_path):
+    d = tmp_path / "sine"
+    d.mkdir()
+    (d / "sine.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, d / "sine.html") is True
+
+
+def test_entry_check_false_for_a_non_entry_page_in_an_app(tmp_path):
+    """Only the ENTRY is filtered from recents — a secondary page in the same
+    folder still records, tagged or not (`index.html` wins by name order)."""
+    d = _app(tmp_path / "local", "demo")
+    (d / "other.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, d / "other.html") is False
+    assert _assert_parity(tmp_path, d / "index.html") is True
+
+
+def test_entry_check_false_for_an_untagged_page(tmp_path):
+    """The marker is the only signal (D301): an untagged `index.html` makes no
+    app, so opening it records in the file recents like any other file."""
+    d = _app(tmp_path / "local", "plain", body=PLAIN)
+    assert _assert_parity(tmp_path, d / "index.html") is False
+
+
+def test_entry_check_false_outside_the_workspace(tmp_path):
+    root = tmp_path / "ws"
+    root.mkdir()
+    d = tmp_path / "elsewhere"
+    d.mkdir()
+    (d / "index.html").write_text(TAGGED, encoding="utf-8")
+    assert app_listing.is_workspace_app_entry(str(d / "index.html"), str(root)) is False
+
+
+def test_entry_check_false_for_a_root_level_file(tmp_path):
+    (tmp_path / "index.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, tmp_path / "index.html") is False
+
+
+def test_entry_check_uniform_rule_at_depth_three(tmp_path):
+    """The marker rule is uniform across depths 1-3 (D301): a tagged page at
+    depth 3 is an entry whatever its name is."""
+    deep = tmp_path / "tag" / "shelf" / "app"
+    deep.mkdir(parents=True)
+    (deep / "dash.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, deep / "dash.html") is True
+
+
+def test_entry_check_false_below_max_depth(tmp_path):
+    deep = tmp_path / "a" / "b" / "c" / "d"
+    deep.mkdir(parents=True)
+    (deep / "index.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, deep / "index.html") is False
+
+
+def test_entry_check_false_under_an_entry_owned_subtree(tmp_path):
+    """A depth-2 folder with an entry of its own owns its subtree — the walk
+    never descends, so a page below it is not an app's entry."""
+    owner = _app(tmp_path / "local", "owner")  # local/owner/index.html
+    sub = owner / "sub"
+    sub.mkdir()
+    (sub / "index.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, sub / "index.html") is False
+    assert _assert_parity(tmp_path, owner / "index.html") is True
+
+
+def test_entry_check_descends_through_a_depth_one_landing_page(tmp_path):
+    """Depth 1 descends unconditionally, even past its own entry page."""
+    shelf = tmp_path / "showcase"
+    shelf.mkdir()
+    (shelf / "index.html").write_text(TAGGED, encoding="utf-8")
+    child = shelf / "app"
+    child.mkdir()
+    (child / "index.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, shelf / "index.html") is True
+    assert _assert_parity(tmp_path, child / "index.html") is True
+
+
+def test_entry_check_false_in_pruned_and_hidden_dirs(tmp_path):
+    hidden = tmp_path / ".secret" / "app"
+    hidden.mkdir(parents=True)
+    (hidden / "index.html").write_text(TAGGED, encoding="utf-8")
+    vend = tmp_path / "node_modules" / "pkg"
+    vend.mkdir(parents=True)
+    (vend / "index.html").write_text(TAGGED, encoding="utf-8")
+    assert _assert_parity(tmp_path, hidden / "index.html") is False
+    assert _assert_parity(tmp_path, vend / "index.html") is False
+
+
+def test_entry_check_false_under_an_unlistable_shelf(tmp_path):
+    """The walk resolves each candidate's entry before descending, so an
+    unlistable (execute-only) depth-1 shelf ends its subtree there — the
+    helper must probe listability at every depth, not just where the index
+    rule applies."""
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("needs POSIX directory permissions and a non-root user")
+    shelf = tmp_path / "shelf"
+    app = shelf / "app"
+    app.mkdir(parents=True)
+    (app / "index.html").write_text(TAGGED, encoding="utf-8")
+    shelf.chmod(0o111)
+    try:
+        assert _assert_parity(tmp_path, app / "index.html") is False
+    finally:
+        shelf.chmod(0o755)
+
+
+def test_entry_check_false_under_an_unlistable_root(tmp_path):
+    """The walk's first act is listdir(root) — an execute-only workspace root
+    lists no apps, so the helper must answer False for anything under it."""
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        pytest.skip("needs POSIX directory permissions and a non-root user")
+    root = tmp_path / "ws"
+    app = root / "app"
+    app.mkdir(parents=True)
+    (app / "index.html").write_text(TAGGED, encoding="utf-8")
+    root.chmod(0o111)
+    try:
+        assert _assert_parity(root, app / "index.html") is False
+    finally:
+        root.chmod(0o755)
+
+
+def test_entry_check_false_past_a_symlinked_ancestor(tmp_path):
+    """A symlinked dir LISTS if it holds a page, but is never walked past."""
+    real = tmp_path / "outside"
+    (real / "app").mkdir(parents=True)
+    (real / "app" / "index.html").write_text(TAGGED, encoding="utf-8")
+    (real / "top.html").write_text(TAGGED, encoding="utf-8")
+    root = tmp_path / "ws"
+    root.mkdir()
+    link = root / "linked"
+    os.symlink(str(real), str(link))
+    # The link itself has a page -> it lists, and its entry passes the check.
+    assert _assert_parity(root, link / "top.html") is True
+    # But nothing BELOW a symlink is walked.
+    assert _assert_parity(root, link / "app" / "index.html") is False
+
+
 # ------------------------------------------------- the fused-app meta marker
 
 
