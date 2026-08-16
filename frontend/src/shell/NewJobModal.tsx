@@ -1005,15 +1005,23 @@ export function initialRepeatKey(entry?: ScheduledMessage | null): string {
 // That id has to survive an edit, because an edit is cancel + re-create and
 // dropping it orphans everything the task built.
 //
-// A ONE-OFF's stored id is not that. It is a chat handoff kept from when the
-// task was scheduled, and it keeps a handoff's rules: continued while the task
-// stays a one-off, refused the moment it starts repeating — otherwise ticking
-// Repeat on a chat-scheduled task quietly signs the user's open conversation up
-// to be appended to forever, the exact thing the repeat rule exists to refuse.
-// Repeating-ness is read the same way initialRepeatKey reads it.
+// An UNMARKED id is not that. It is a chat handoff kept from when the task was
+// scheduled, and it keeps a handoff's rules: continued while the task stays a
+// one-off, refused the moment it starts repeating — otherwise ticking Repeat on
+// a chat-scheduled task quietly signs the user's open conversation up to be
+// appended to forever, the exact thing the repeat rule exists to refuse.
+//
+// The two are told apart by `session_learned`, which the server writes at the
+// moment it learns the id and which travels through the cancel-and-re-create an
+// edit is. This used to be INFERRED — an id counted as learned if the entry
+// repeated — and that reading cannot survive a round trip: demote a chaining
+// task to a one-off (its learned id deliberately rides along) and promote it
+// back, and the learned thread reads as a chat handoff and is dropped
+// (Bugbot, PR #555). An absent marker means NOT learned, which is the reading
+// that keeps a chat's id refused by a repeat.
 export function learnedSessionOf(entry?: ScheduledMessage | null): string {
-  if (!entry?.session_id) return "";
-  return entry.rule || entry.repeats ? entry.session_id : "";
+  if (!entry?.session_id || entry.session_learned !== true) return "";
+  return entry.session_id;
 }
 
 // What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
@@ -1057,12 +1065,12 @@ export function buildSchedulePayload(form: {
   // refuses it, because a task that runs every day must not hijack the user's
   // open chat and compound its context forever.
   sessionId: string;
-  // The task's OWN session, and the opposite case: an id already stored on the
-  // entry being edited — either a one-off's handoff kept from last time, or the
-  // thread a repeating template LEARNED when its first run reported the session
-  // it ran in. Editing is cancel + re-create, so dropping this is how a
-  // chaining task silently abandons everything it had built. It outranks a
-  // chat's id and survives a repeat — unless the task forks every run below.
+  // The task's OWN session, and the opposite case: the thread the entry being
+  // edited LEARNED when its first run reported the session it ran in, which the
+  // server marks as learned at that moment (`session_learned`). Editing is
+  // cancel + re-create, so dropping this is how a chaining task silently
+  // abandons everything it had built. It outranks a chat's id and survives a
+  // repeat — unless the task forks every run below.
   learnedSessionId?: string;
   // Ticked: mint a fresh task — a fresh Claude session — per occurrence,
   // instead of the default, which is every run landing in this task's own
@@ -1080,11 +1088,11 @@ export function buildSchedulePayload(form: {
   //   · a chat's id is continued only while the task stays a one-off.
   // A ticked "new task each run" refuses BOTH: that template mints a fresh
   // session per occurrence, so any id on it is a thread it must not resume.
-  const continued = form.learnedSessionId
-    ? repeating && form.newTaskEachRun
-      ? ""
-      : form.learnedSessionId
-    : repeating
+  const carriesLearned =
+    Boolean(form.learnedSessionId) && !(repeating && form.newTaskEachRun);
+  const continued = carriesLearned
+    ? (form.learnedSessionId ?? "")
+    : form.learnedSessionId || repeating
       ? ""
       : form.sessionId;
   return {
@@ -1100,6 +1108,12 @@ export function buildSchedulePayload(form: {
     permission_mode: form.permission,
     // An edit keeps what it cannot re-ask for — see `continued` above.
     ...(continued ? { session_id: continued } : {}),
+    // …and re-states WHERE that id came from, so the re-created entry is still
+    // marked as owning a learned thread. Without this the marker would die on
+    // the first edit and the next one would read the id as a chat handoff —
+    // which is the bug this replaced. Never sent for a chat's id: nothing has
+    // learned anything yet.
+    ...(continued && carriesLearned ? { session_learned: true } : {}),
     // Empty means "the server decides" for the title and "there isn't one" for
     // the description — in both cases the key is better left off the wire than
     // sent as "".

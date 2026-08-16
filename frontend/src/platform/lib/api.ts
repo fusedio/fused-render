@@ -2502,6 +2502,13 @@ export interface ScheduledMessage {
   message: string;
   due: string;
   session_id: string;
+  // WHERE `session_id` came from: true only when the server LEARNED it (a
+  // repeating template's first run reported the session it opened, and that id
+  // was written back). Absent or false means the user supplied it — a chat
+  // handoff — which is the reading an entry stored before this field existed
+  // gets, and the safe one: a repeat continues a learned thread but must never
+  // continue the chat it was scheduled from.
+  session_learned?: boolean;
   permission_mode: string;
   state: ScheduledState;
   created: string;
@@ -2580,6 +2587,12 @@ export function scheduleMessage(body: {
   // with `repeats` and `delay_seconds`.
   rule?: RecurrenceRule;
   session_id?: string;
+  // Only ever sent alongside a `session_id` the entry being re-created had
+  // LEARNED (an edit is cancel + re-create, so the marker has to be re-stated
+  // or it dies with the old entry). Never sent for a chat handoff: the server
+  // does not invent this, and a false claim here would let a repeating task
+  // resume the conversation it was scheduled from.
+  session_learned?: boolean;
   permission_mode?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.

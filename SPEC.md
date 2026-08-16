@@ -6844,7 +6844,13 @@ world from one the user typed.
   its turn is still open. The `session_id` (input, "resume this") and
   `claude_session_id` (answer, "what it ran in") split is preserved throughout: this
   propagates run 1's ANSWER into run 2's INPUT, and never conflates the two on one
-  entry.
+  entry. The writeback also stamps **`session_learned`** on the entry, because a
+  `session_id` has two possible authors — a chat handoff the user supplied, which a
+  repeat must refuse, and this — and only the moment of writing knows which. It rides
+  with the id everywhere the id goes (`_materialize` copies both; `create` accepts it
+  so an edit, which is cancel + re-create, can re-state it) and is never invented for
+  a supplied id. Absent means NOT learned, which is what every entry stored before it
+  existed is.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at

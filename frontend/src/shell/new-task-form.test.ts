@@ -190,22 +190,97 @@ describe("the payload", () => {
 // payload are told apart: the CHAT's (a handoff, from the deep link) and the
 // TASK's own (learned, already on the entry).
 describe("whose session the entry is carrying", () => {
-  test("a repeating template's id is the thread it LEARNED on its first run", () => {
-    expect(learnedSessionOf(entry({ rule: DAILY, session_id: "own" }))).toBe("own");
-    expect(learnedSessionOf(entry({ repeats: "0 9 * * *", session_id: "own" }))).toBe("own");
+  test("the id the server MARKED as learned is the task's own thread", () => {
+    expect(
+      learnedSessionOf(entry({ rule: DAILY, session_id: "own", session_learned: true })),
+    ).toBe("own");
+    expect(
+      learnedSessionOf(
+        entry({ repeats: "0 9 * * *", session_id: "own", session_learned: true }),
+      ),
+    ).toBe("own");
   });
 
-  test("a one-off's id is only a chat handoff, so it is not a learned thread", () => {
+  test("an UNMARKED id is only a chat handoff, so it is not a learned thread", () => {
     // It still travels — as a chat's id, under a chat's rules — so ticking
     // Repeat on a task scheduled from a conversation does not sign that
-    // conversation up to be appended to forever.
+    // conversation up to be appended to forever. A repeating entry is read the
+    // same way: repeating-ness says nothing about where the id came from.
     expect(learnedSessionOf(entry({ session_id: "chat" }))).toBe("");
+    expect(learnedSessionOf(entry({ rule: DAILY, session_id: "chat" }))).toBe("");
+    expect(
+      learnedSessionOf(entry({ session_id: "chat", session_learned: false })),
+    ).toBe("");
+  });
+
+  test("a marker on an entry hand-edited to nonsense claims nothing", () => {
+    // The store is a JSON file a person may edit, and the server reads flags
+    // the same strict way (`_flag`). Anything that is not exactly `true` is
+    // read as "the user supplied this id".
+    const junk = entry({ session_id: "own" }) as Omit<ScheduledMessage, "session_learned"> & {
+      session_learned: unknown;
+    };
+    junk.session_learned = "true";
+    expect(learnedSessionOf(junk as ScheduledMessage)).toBe("");
   });
 
   test("and a task that has not started one has nothing to carry", () => {
     expect(learnedSessionOf(entry({ rule: DAILY }))).toBe("");
+    // A marker with no id behind it is not an id.
+    expect(learnedSessionOf(entry({ rule: DAILY, session_learned: true }))).toBe("");
     expect(learnedSessionOf(null)).toBe("");
     expect(learnedSessionOf(undefined)).toBe("");
+  });
+});
+
+// The round trip the inferred reading could not survive (Bugbot, PR #555): a
+// chaining template learns a thread, the user unticks Repeat — the learned id
+// deliberately rides onto the one-off — and later ticks Repeat back on. Read
+// off repeating-ness, the id looked like a chat handoff at that last step and
+// was dropped, orphaning everything the task had built. Read off the marker,
+// which the re-create re-states, it survives.
+describe("repeat → one-off → repeat", () => {
+  test("a learned thread survives the demotion and the promotion back", () => {
+    const learned = entry({ rule: DAILY, session_id: "S", session_learned: true });
+    // 1. demoted: the id travels onto the one-off, still marked.
+    const demoted = buildSchedulePayload(
+      form({ learnedSessionId: learnedSessionOf(learned) }),
+    );
+    expect(demoted.session_id).toBe("S");
+    expect(demoted.session_learned).toBe(true);
+    expect(demoted.rule).toBeUndefined();
+
+    // 2. promoted back: the stored one-off is what the form reads next time.
+    const oneOff = entry({ session_id: "S", session_learned: true });
+    const promoted = buildSchedulePayload(
+      form({ rule: DAILY, repeat: "daily", learnedSessionId: learnedSessionOf(oneOff) }),
+    );
+    expect(promoted.session_id).toBe("S");
+    expect(promoted.session_learned).toBe(true);
+  });
+
+  test("but a chat-scheduled one-off promoted to repeating still drops the chat", () => {
+    const chat = entry({ session_id: "chat" });
+    expect(
+      buildSchedulePayload(
+        form({
+          rule: DAILY,
+          repeat: "daily",
+          sessionId: chat.session_id,
+          learnedSessionId: learnedSessionOf(chat),
+        }),
+      ).session_id,
+    ).toBeUndefined();
+  });
+
+  test("and the marker is never claimed for a chat's id", () => {
+    expect(buildSchedulePayload(form({ sessionId: "chat" })).session_learned).toBeUndefined();
+    // Nor for a learned id the fork flag refuses.
+    expect(
+      buildSchedulePayload(
+        form({ rule: DAILY, repeat: "daily", newTaskEachRun: true, learnedSessionId: "own" }),
+      ).session_learned,
+    ).toBeUndefined();
   });
 });
 

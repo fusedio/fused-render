@@ -557,7 +557,7 @@ def _from_local(when: datetime) -> datetime:
 def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
-           new_task_each_run=None) -> dict:
+           new_task_each_run=None, session_learned=None) -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -583,6 +583,16 @@ def create(target: str, message: str, due=None, session_id: str = "",
     the open conversation rather than letting a repeat compound it for ever —
     still chains: its first run opens a thread and `_chain_session` records
     which, so runs 2..N continue it.
+
+    `session_learned` is the PROVENANCE of `session_id`, and this function
+    never invents it. Two very different things put an id on an entry — a chat
+    handoff (the conversation the user was in) and a thread the template LEARNED
+    on its first run — and an edit, which is cancel + re-create, has to treat
+    them oppositely: a repeat must refuse the former and keep the latter. Only
+    `_chain_session` mints the marker; `create` accepts it so that an edit
+    re-stating a learned id can say which kind it is, because the alternative
+    was the form INFERRING it from whether the entry repeated, and that could
+    not survive a task being demoted to a one-off and promoted back.
 
     With `repeats` (a 5-field cron expression) the stored entry is a RECURRING
     template instead: `due` is ignored — the cron line already says every time
@@ -673,6 +683,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         "message": message,
         "due": when.isoformat(),
         "session_id": session_id or "",
+        # WHERE that id came from, and False unless the caller says otherwise —
+        # a chat handoff is the ordinary case, and only `_chain_session` ever
+        # mints this. `and` the id itself so the marker can never outlive it: a
+        # provenance for nothing is a claim the form would have to second-guess.
+        "session_learned": _flag(session_learned) and bool(session_id or ""),
         "permission_mode": mode,
         # The user's own words, both optional and both "" by default. Read
         # through `_text` because the router hands this module the request body
@@ -1267,12 +1282,20 @@ def _chain_session(template_id: str, ran: str) -> None:
                 or str(template.get("session_id") or "")):
             return
         template["session_id"] = ran
+        # …and WHO decided it, written in the same breath, because this is the
+        # only moment anything knows. An edit is cancel + re-create, and the
+        # form has to keep a learned id while refusing a chat's; it used to tell
+        # them apart by asking whether the entry repeated, which a repeat →
+        # one-off → repeat round trip breaks. Recorded provenance does not care
+        # what the entry became.
+        template["session_learned"] = True
         for entry in entries:
             if (str(entry.get("template_id") or "") == template_id
                     and entry.get("state") == PENDING
                     and not _flag(entry.get("new_task_each_run"))
                     and not str(entry.get("session_id") or "")):
                 entry["session_id"] = ran
+                entry["session_learned"] = True
         _write(entries)
 
 
@@ -1622,6 +1645,13 @@ def _materialize(now: datetime) -> None:
                 # onto the template, so this line has a thread to hand run 2.
                 "session_id": "" if _flag(entry.get("new_task_each_run"))
                               else str(entry.get("session_id") or ""),
+                # The id's provenance travels with the id, on the same
+                # condition — an occurrence that inherited nothing has nothing
+                # to be the provenance OF. Copied for the same reason
+                # `new_task_each_run` below is: an occurrence reads the same
+                # shape as any other entry.
+                "session_learned": False if _flag(entry.get("new_task_each_run"))
+                                   else _flag(entry.get("session_learned")),
                 "permission_mode": entry.get("permission_mode")
                                    or _SCHEDULED_PERMISSION_MODE,
                 # The user's words travel with every run, like the message and
