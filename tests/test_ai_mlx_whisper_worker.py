@@ -218,6 +218,42 @@ def make_av(seconds=2.0, has_audio=True):
     return module
 
 
+class FakeMlxCore(types.ModuleType):
+    """`mlx.core` as this runner uses it: a dtype, a device, and STREAMS.
+
+    Streams are the part with teeth. From mlx 0.32 they are per-thread, and an
+    array evaluated off the thread that made it aborts the process rather than
+    raising — so the runner pins one shared stream on every thread that touches
+    MLX. This double records who pinned what, and from which thread, which is
+    the only way to assert that from outside.
+    """
+
+    def __init__(self, **extra):
+        super().__init__("mlx.core")
+        self.float16 = "FLOAT16"
+        self.made = []
+        #: (thread name, stream) for every `set_default_stream`.
+        self.pinned = []
+        self._lock = threading.Lock()
+        for name, value in extra.items():
+            setattr(self, name, value)
+
+    def default_device(self):
+        return "DEVICE"
+
+    def new_thread_unsafe_stream(self, device):
+        with self._lock:
+            self.made.append(device)
+            return f"SHARED-STREAM-{len(self.made)}"
+
+    def set_default_stream(self, stream):
+        with self._lock:
+            self.pinned.append((threading.current_thread().name, stream))
+
+    def get_active_memory(self):
+        return 0
+
+
 def load_worker(monkeypatch, base, transcribe_module=None, av_module=None,
                 mlx_core=None):
     """A fresh import of the MLX whisper worker, against the given fakes.
@@ -244,11 +280,17 @@ def load_worker(monkeypatch, base, transcribe_module=None, av_module=None,
         monkeypatch.setitem(sys.modules, "mlx_whisper.transcribe", transcribe_module)
     if av_module is not None:
         monkeypatch.setitem(sys.modules, "av", av_module)
-    if mlx_core is not None:
-        mlx = types.ModuleType("mlx")
-        mlx.core = mlx_core
-        monkeypatch.setitem(sys.modules, "mlx", mlx)
-        monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    # `mlx.core` is no longer only the loader's business: every decode pins the
+    # shared stream on its own thread (`_pin_stream`), so a transcription test
+    # that left it out would be testing an import that cannot happen in
+    # production. A caller may still hand in its own — a namespace missing
+    # `get_active_memory`, say — and gets exactly that.
+    if mlx_core is None:
+        mlx_core = FakeMlxCore()
+    mlx = types.ModuleType("mlx")
+    mlx.core = mlx_core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
     spec = importlib.util.spec_from_file_location(
         "mlx_whisper_worker_under_test", WORKER_PATH)
     assert spec is not None and spec.loader is not None, WORKER_PATH
@@ -1179,6 +1221,64 @@ def test_loading_PRIMES_the_librarys_holder_rather_than_keeping_a_handle(
     # The device is reported rather than deduced by the supervisor: it is the
     # answer to "why is this so much faster than it was".
     assert base.state == {"device": "mps"}
+
+
+def _pinned_run(monkeypatch, base, tmp_path, mlx_core, clips=1):
+    """A load and a transcription, on the threads production uses."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "weights.npz").write_bytes(b"")
+    transcribe = FakeTranscribeModule(windows=(100,),
+                                      segments=[_segment(0.0, 1.0, "hi")])
+    worker = load_worker(monkeypatch, base, transcribe_module=transcribe,
+                         av_module=make_av(seconds=2.0), mlx_core=mlx_core)
+    worker._TICK_S = 0.02
+    # `load` runs on the bring-up thread in production (`worker_base.serve`),
+    # never on the one that decodes — which is the whole of the bug.
+    loader = threading.Thread(
+        target=worker.load, args=("mlx-community/whisper-small-mlx", str(snapshot)),
+        name="load")
+    loader.start()
+    loader.join()
+    worker.generate(_request(tmp_path, vad=False))
+    return worker, transcribe
+
+
+def test_the_load_and_the_decode_share_ONE_mlx_stream(monkeypatch, base, tmp_path):
+    """From mlx 0.32 a stream belongs to the THREAD that made it, and an array
+    evaluated anywhere else throws a C++ exception nothing catches — the process
+    aborts. This runner loads on the bring-up thread and decodes on a fresh
+    thread per clip, so every MLX Whisper transcription died the moment
+    `transcribe()` touched the primed weights: "the transcription process did
+    not answer: Remote end closed connection without response", with one
+    `libc++abi: … There is no Stream(gpu, 1) in current thread` line in the
+    worker log.
+
+    One shared stream, pinned on every thread that touches MLX, is the fix — so
+    what this pins is that BOTH threads pinned, and pinned the SAME stream.
+    """
+    mlx_core = FakeMlxCore()
+
+    _pinned_run(monkeypatch, base, tmp_path, mlx_core)
+
+    threads = {name for name, _stream in mlx_core.pinned}
+    streams = {stream for _name, stream in mlx_core.pinned}
+    assert len(threads) > 1, f"only one thread pinned a stream: {mlx_core.pinned}"
+    assert streams == {"SHARED-STREAM-1"}, mlx_core.pinned
+    # One stream for the process, not one per thread: a second would be a second
+    # owner, which is the thing being prevented.
+    assert mlx_core.made == ["DEVICE"]
+
+
+def test_an_mlx_without_thread_local_streams_is_left_alone(monkeypatch, base, tmp_path):
+    """Streams were process-wide before 0.32 and there was nothing to pin. A
+    runner that insisted on the newer call would turn a version skew into a
+    worker that cannot transcribe at all."""
+    mlx_core = types.SimpleNamespace(float16="FLOAT16", get_active_memory=lambda: 0)
+
+    _worker, transcribe = _pinned_run(monkeypatch, base, tmp_path, mlx_core)
+
+    assert transcribe.calls, "the transcription never ran"
 
 
 @pytest.mark.parametrize("weights", ["weights.npz", "weights.safetensors"])

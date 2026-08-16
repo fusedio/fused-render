@@ -74,6 +74,54 @@ import worker_base  # noqa: E402 - the path insert above is what makes it import
 #: is resident.
 _loaded = {}
 
+#: The one MLX stream every thread in this process works on. See `_pin_stream`.
+_STREAM = {"stream": None}
+_STREAM_LOCK = threading.Lock()
+
+
+def _pin_stream():
+    """Put this thread's MLX work on the process's ONE shared stream.
+
+    **MLX streams are per-THREAD from mlx 0.32 on, and this worker is threaded.**
+    The weights are primed on the bring-up thread (`worker_base.serve` runs
+    `load` on one), each request arrives on a `ThreadingTCPServer` thread, and
+    each decode runs on a fresh thread of its own (`_call_with_ticks`). Under
+    0.32 a thread that touches MLX gets its own default stream, an array
+    remembers the stream it was made on, and evaluating it anywhere else does
+    not raise a Python exception — it throws `std::runtime_error("There is no
+    Stream(gpu, 1) in current thread")` out of `metal::get_command_encoder`,
+    which is an UNCAUGHT C++ exception and aborts the process.
+
+    That is not a hypothetical: it is what "the transcription process did not
+    answer: Remote end closed connection without response" was. The weights
+    `ModelHolder.get_model` primes here are lazy — `load_model` evaluates them
+    on the LOAD thread — and the first thing `transcribe()` does on the decode
+    thread is `detect_language`, which touches them. Every MLX Whisper
+    transcription died there, on every model, with only a `libc++abi:` line in
+    the worker log to say so.
+
+    `new_thread_unsafe_stream` is mlx's own answer: a stream not owned by the
+    thread that made it. "Unsafe" means it must not be driven by two threads AT
+    ONCE, which this worker already guarantees — the supervisor serializes
+    transcriptions (`_TRANSCRIBE_LOCK`) and an abandoned decode is waited for
+    (`_await_orphan`) before the next one starts.
+
+    A no-op on an mlx too old to have the call, which is the right answer:
+    streams were process-wide there and there was nothing to pin.
+    """
+    import mlx.core as mx
+
+    make = getattr(mx, "new_thread_unsafe_stream", None)
+    pin = getattr(mx, "set_default_stream", None)
+    if make is None or pin is None:
+        return None
+    with _STREAM_LOCK:
+        stream = _STREAM["stream"]
+        if stream is None:
+            stream = _STREAM["stream"] = make(mx.default_device())
+    pin(stream)
+    return stream
+
 
 # --------------------------------------------------------------- model loading
 
@@ -143,6 +191,10 @@ def load(model_id, fetched):
 
     module = _transcribe_module()
     import mlx.core as mx
+
+    # BEFORE the weights exist, because an array remembers the stream it was
+    # made on and this thread is not the one that will decode. See `_pin_stream`.
+    _pin_stream()
 
     # Primed rather than held: `transcribe()` looks its model up in this holder
     # by PATH, so priming it is what makes the weights resident now instead of
@@ -736,6 +788,19 @@ def _regions_to_decode(audio, regions, total):
     return list(regions)
 
 
+def _decode_clip(module, clip, fetched, task, language, initial_prompt):
+    """One `transcribe()` call, on the thread `_call_with_ticks` gave it.
+
+    A named function rather than the lambda it replaced, because the pin has to
+    happen ON THIS THREAD — every decode runs on a thread of its own, and the
+    weights it is about to touch were primed on another. See `_pin_stream`.
+    """
+    _pin_stream()
+    return module.transcribe(clip, path_or_hf_repo=fetched, task=task,
+                             language=language, initial_prompt=initial_prompt,
+                             verbose=False)
+
+
 def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
                         job, row, total, transcribing_since):
     """Transcribe each clip and return `(segments, language)` in ORIGINAL time.
@@ -827,9 +892,8 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
         late_cancel = {}
         with _watch_progress(position):
             result = _call_with_ticks(
-                lambda: module.transcribe(
-                    clip, path_or_hf_repo=fetched, task=task, language=detected,
-                    initial_prompt=initial_prompt, verbose=False),
+                lambda: _decode_clip(module, clip, fetched, task, detected,
+                                     initial_prompt),
                 job, row, progress, cancelled=late_cancel)
 
         # This clip is decoded, whatever its counter last said: the borrowed bar
