@@ -49,9 +49,15 @@ export default function AiModelsDiscover({
   settling: Set<string>;
   jobByModel: Map<string, Job>;
 }) {
-  const [catalog, setCatalog] = useState<AiCatalogCapability[]>([]);
+  // `null` while the catalog request is in flight, which is a state this tab
+  // did not have to distinguish before: the search grid used to fill the page
+  // while the curation loaded behind it, so an empty `catalog` was invisible.
+  // It is the whole tab now, and "still loading" and "the server has nothing"
+  // must not both render as a blank page.
+  const [catalog, setCatalog] = useState<AiCatalogCapability[] | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     // Just the curation. Whether each entry is on this disk is the PAGE's
@@ -60,7 +66,14 @@ export default function AiModelsDiscover({
     // they were true.
     getAiCatalog().then(
       (cat) => setCatalog(cat.capabilities),
-      () => setCatalog([]),
+      (e: Error) => {
+        // Said out loud rather than swallowed into an empty list. This used to
+        // fail silently because the tab had a search box to fall back to; with
+        // the catalog as the entire content, a swallowed failure is a page
+        // that renders nothing and explains nothing.
+        setCatalog([]);
+        setLoadError(e.message);
+      },
     );
   }, []);
 
@@ -92,12 +105,15 @@ export default function AiModelsDiscover({
     }
   };
 
-  if (!catalog.length && !error) return null;
-
   return (
     <>
+      {loadError && <ErrorBanner>{loadError}</ErrorBanner>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {catalog.map((group) => (
+      {catalog === null && <p className="cc-empty">Reading the model catalog…</p>}
+      {catalog !== null && catalog.length === 0 && !loadError && (
+        <p className="cc-empty">No models are suggested for this machine.</p>
+      )}
+      {(catalog ?? []).map((group) => (
         <section className="am-section" key={group.capability}>
           {/* The Local tab's section heading, exactly: an ALL-CAPS title over a
               rule, with the one secondary fact about the group at the far right
