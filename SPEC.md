@@ -6252,12 +6252,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   → a ~2.6GB Q4_K_M GGUF), because "which quantization of which part is safe" is
   the same editorial judgement `catalog.py` makes about what to suggest, not
   something to infer from a file listing. A model absent from the table is not
-  unsupported — it loads the ordinary way. The recipe also decides what NOT to
-  download: the base repo's own `transformer/` is exactly the weights the
-  quantized file replaces, and fetching it would cost several GB for components
-  that are then ignored — but it skips the WEIGHT files, never the subfolder,
-  because `from_single_file` reads that subfolder's config and a "download" that
-  leaves a cache which cannot load offline has not done what the button said.
+  unsupported — it loads the ordinary way. The recipe also decides what IS
+  downloaded, **as an allow-list of what `from_pretrained` reads** (`keep`:
+  `model_index.json` plus the component subfolders, and the transformer's
+  `config.json` but not its weights) — never a deny-list of what to skip (D308).
+  A deny-list has to predict every extra bundle a repo may carry, and the first
+  one it met defeated it: FLUX.2 klein also ships its transformer as a
+  root-level `flux-2-klein-4b.safetensors`, 7.75GB the pipeline never opens and
+  no `transformer/*` pattern matched, so the skip list saved nothing and the
+  recipe cost 18.6GB where the model needs 10.8. The transformer's config is
+  kept because `from_single_file` reads that subfolder's config and a "download"
+  that leaves a cache which cannot load offline has not done what the button
+  said. `allow_patterns` and `ignore_patterns` are both first-class arguments of
+  `download_snapshot`, applied by one filter (`worker_base.selects`, hub's own
+  precedence — ignore wins) to the bar's total, the segmented fetch and the
+  fallback alike.
   **A scoped download measures itself against a scoped total**: one file out of
   a repo that publishes a dozen quantizations counts that file, and a pull that
   ignores a subfolder does not count it. Summing the whole repo either way is
@@ -6268,8 +6277,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   multi-runner capabilities it takes the Macs by default** (D305). `mflux_image`
   renders FLUX on Metal from a single `mlx-community`
   conversion whose components are all already 4-bit — so where the torch path
-  needs AI-9b's recipe (a ~2.4GB GGUF transformer plus the ~7.7GB bf16 base repo
-  for everything else), this is one ~4.6GB snapshot with nothing skipped. On the
+  needs AI-9b's recipe (a ~2.6GB GGUF transformer plus ~8.2GB of base-repo
+  components — 10.8GB in all), this is one ~4.6GB snapshot with nothing skipped. On the
   machine it was measured on it loads ~8x faster, halves cold time-to-first-image
   and is ~15-20% quicker per image. **Its memory ceiling is an accepted risk
   rather than a resolved one**, and is recorded because the failure it would

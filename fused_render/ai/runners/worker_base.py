@@ -411,7 +411,31 @@ def bytes_on_disk(folder):
     return total
 
 
-def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
+def selects(name, include=None, allow=None, ignore=None) -> bool:
+    """Whether a repo file is in scope, with `huggingface_hub`'s OWN semantics.
+
+    One function, because three readers ask it and they must not drift: the
+    total on the bar, the list the segmented fetch works through, and
+    `snapshot_download` itself on the fallback path. Hub's `filter_repo_objects`
+    is `(no allow_patterns or any match) and (no ignore_patterns or no match)`,
+    matched with `fnmatch` against the path RELATIVE to the repo root — where
+    `*` crosses `/` like every other character, which is what makes
+    `transformer/*.safetensors` a subtree rule rather than a one-level one.
+
+    **`ignore` wins over `allow`**, as it does there. `include` is ours: a single
+    exact filename, for a fetch of one GGUF out of a repo that publishes twenty.
+    """
+    if include is not None and name != include:
+        return False
+    if allow and not any(fnmatch.fnmatch(name, pattern) for pattern in allow):
+        return False
+    if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
+        return False
+    return True
+
+
+def _repo_files(model_id, include=None, allow=None, ignore=None,
+                revision=DEFAULT_REVISION):
     """`(sha, files)` — the commit this listing resolved to, and what to fetch.
 
     The sha comes back WITH the list because the two must not be decided
@@ -435,8 +459,10 @@ def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
 
     **Scoped, because a repo is rarely fetched whole.** `include` is a single
     filename (one GGUF out of a repo that publishes a dozen quantizations of the
-    same model); `ignore` is the same fnmatch patterns `snapshot_download` takes,
-    so a download that skips a subfolder does not measure itself against it.
+    same model); `allow`/`ignore` are the same fnmatch patterns
+    `snapshot_download` takes, applied by `selects` with the same precedence, so
+    a download that fetches part of a repo does not measure itself against the
+    rest of it.
 
     Raises, unlike its callers: the fetch cannot proceed on a guess, while the
     bar can.
@@ -449,9 +475,7 @@ def _repo_files(model_id, include=None, ignore=None, revision=DEFAULT_REVISION):
         name = getattr(sibling, "rfilename", None) or ""
         if not name:
             continue
-        if include is not None and name != include:
-            continue
-        if ignore and any(fnmatch.fnmatch(name, pattern) for pattern in ignore):
+        if not selects(name, include=include, allow=allow, ignore=ignore):
             continue
         files.append((name, getattr(sibling, "size", None)))
     return getattr(info, "sha", None), files
@@ -1270,14 +1294,19 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     return result["value"]
 
 
-def download_snapshot(model_id, ignore_patterns=None, **kwargs):
+def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwargs):
     """The repo, with progress. What most runners mean by "download".
 
-    The total is measured against the SAME `ignore_patterns` the download uses,
-    or a pull that deliberately skips a subfolder measures itself against
-    weights it was never going to fetch — a bar that stalls partway and then
-    jumps. The segmented fetch takes its file list from the same filter, for the
-    same reason.
+    The total is measured against the SAME patterns the download uses, or a pull
+    that deliberately fetches part of a repo measures itself against weights it
+    was never going to fetch — a bar that stalls partway and then jumps. The
+    segmented fetch takes its file list from the same filter, for the same
+    reason.
+
+    Both scopes are first-class arguments rather than `**kwargs` precisely so
+    that they reach `_repo_files` too: an `allow_patterns` that only reached
+    `snapshot_download` would fetch a tenth of a repo behind a bar priced at all
+    of it.
     """
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;
@@ -1285,7 +1314,8 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
     # be fetched at another.
     sha, files, total = None, None, None
     try:
-        sha, files = _repo_files(model_id, ignore=ignore_patterns)
+        sha, files = _repo_files(model_id, allow=allow_patterns,
+                                 ignore=ignore_patterns)
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
@@ -1295,8 +1325,8 @@ def download_snapshot(model_id, ignore_patterns=None, **kwargs):
 
         return fetch_with_progress(
             model_id,
-            lambda: snapshot_download(model_id, ignore_patterns=ignore_patterns,
-                                      **kwargs),
+            lambda: snapshot_download(model_id, allow_patterns=allow_patterns,
+                                      ignore_patterns=ignore_patterns, **kwargs),
             total=total)
 
     if kwargs or files is None or not sha:

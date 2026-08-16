@@ -31,17 +31,31 @@ frame-energy detector, which is the failure mode that looks like it works.
 """
 
 import os
+import sys
+
+# The shared format module sits one directory up, in `runners/` — the same path
+# insert `worker.py` makes, repeated because this module is also imported by
+# path on its own (by its test, and by anything that wants the region maths
+# without onnxruntime).
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import formats  # noqa: E402 - the path insert above is what makes it importable
 
 #: Silero's own frame size at 16 kHz, and not a tunable: the exported graph is
 #: built for 512 samples in and one probability out. A different window does not
 #: fail, it produces nonsense.
 WINDOW = 512
 
-#: The repo and file. Named here rather than in `worker.py` so the one thing a
-#: reader wants to check — what gets downloaded onto their machine — is beside
-#: the code that uses it.
-REPO = "onnx-community/silero-vad"
-FILE = "onnx/model.onnx"
+#: The repo and file — read from `formats.COMPONENT_REPOS`, which is the ONE
+#: place the ids of repos this app downloads on its own behalf are written down.
+#: They used to be literals here, "beside the code that uses them", and the cost
+#: of that was a row on the AI Models page the page could not explain: the
+#: detector lands in the Hub cache like any model, and the server process cannot
+#: import this venv to ask what it is. `formats.py` is importable from both
+#: sides, which is the whole reason it exists.
+_COMPONENT = "onnx-community/silero-vad"
+REPO = _COMPONENT
+FILE = formats.COMPONENT_REPOS[_COMPONENT]["file"]
 
 #: Above this a window is speech. Silero's own default, and the same value
 #: faster-whisper uses, so the two engines draw the line in the same place.

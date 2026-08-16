@@ -513,22 +513,12 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
     assert all(t.get("done", 0) <= 2_600_000_000 for t in ticks if "done" in t), ticks
 
 
-def test_the_image_recipe_keeps_the_config_it_needs_to_load():
-    """The recipe skips WEIGHT files, never the subfolder. `from_single_file`
-    reads `transformer/config.json`, so ignoring `transformer/*` would leave a
-    "downloaded" model that still needs the network — the one promise Download
-    makes."""
-    import importlib.util
-
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "fused_render", "ai", "runners", "diffusers_image", "worker.py",
-    )
-    source = open(path, encoding="utf-8").read()
-    # Read as source: importing it would pull in torch.
-    assert '"transformer/*"' not in source, "the whole subfolder is ignored again"
-    assert '"transformer/*.safetensors"' in source
-    assert '"skip"' in source
+# The image recipe's own patterns moved to tests/test_ai_diffusers_worker.py,
+# where they are asserted against a frozen listing of the real repo instead of
+# by grepping the source for a pattern string. That grep was the reason a recipe
+# whose deny-list saved nothing still passed: the string it looked for was
+# present and the 7.75GB root bundle beside it was not something a substring
+# check could see.
 
 
 # -- the heartbeat --------------------------------------------------------------

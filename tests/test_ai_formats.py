@@ -74,3 +74,42 @@ def test_a_ct2_whisper_repo_needs_more_than_the_filename():
     assert formats.is_ct2_whisper({"model.bin", "preprocessor_config.json"}, {})
     assert formats.is_ct2_whisper({"model.bin"}, {"alignment_heads": [[1, 2]]})
     assert not formats.is_ct2_whisper({"model.bin"}, {})
+
+
+# -- the repos this app downloads on its own behalf ------------------------------
+
+
+def test_every_component_repo_says_what_it_is_a_part_of():
+    """The registry the AI Models page reads to explain a row nobody chose.
+
+    Each entry must carry the four things a card needs — the file we fetch, the
+    thing it belongs to, the noun, and the sentence — because a half-filled
+    entry renders as the mystery row this table exists to abolish."""
+    assert formats.COMPONENT_REPOS, "the registry cannot be empty"
+    for repo_id, entry in formats.COMPONENT_REPOS.items():
+        assert "/" in repo_id, repo_id
+        assert entry["file"] and not entry["file"].startswith("/"), repo_id
+        assert entry["owner"] and entry["part"] and entry["what"], repo_id
+        # `of` is a repo id or None (a component of an ENGINE, like the VAD).
+        assert entry["of"] is None or "/" in entry["of"], repo_id
+        assert formats.component(repo_id) is entry
+    assert formats.component("mlx-community/whisper-small-mlx") is None
+
+
+def test_the_vad_reads_its_file_from_the_registry():
+    """`vad.py` names the detector, and the page names it too. One copy: the
+    module under a runner folder imports the shared one, so a moved repo cannot
+    quietly become an unexplained row."""
+    import importlib.util
+    import os
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "fused_render", "ai", "runners", "mlx_whisper", "vad.py",
+    )
+    spec = importlib.util.spec_from_file_location("vad_for_formats", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.REPO in formats.COMPONENT_REPOS
+    assert formats.COMPONENT_REPOS[module.REPO]["file"] == module.FILE

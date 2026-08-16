@@ -33,6 +33,16 @@ the resolved runner's LABEL beside every list and the page shows it.
 Sizes are the on-disk download, and the notes are frank about the trade — "tight
 on 16GB" is the sentence that stops someone starting an 8GB pull they will regret.
 
+**`size_gb` IS EVERY BYTE THE DOWNLOAD FETCHES, ACROSS EVERY REPO IT TOUCHES.**
+Not the weights file, not the interesting part, not one of the two repos — the
+whole of what appears on the disk when the user presses Download, in decimal GB.
+The diffusers FLUX entry said 2.6 for eighteen months of reading, because 2.6 is
+what its GGUF transformer weighs, while the pull also brought the base repo's
+text encoder and VAE: the true figure was 18.6 (D308). The mflux entry beside it
+has always meant the whole snapshot. Two adjacent lists whose field means
+different things is a silent ordering bug the moment either gains a second
+entry, because the rule below sorts and DEFAULTS on this number.
+
 **ONE ORDERING RULE: SMALLEST FIRST, AND THE DEFAULT FOLLOWS POSITION 0.** Every
 list here is sorted by ascending `size_gb`, and `default_for()` returns
 `entries[0]["id"]` — so what a bare `fused.ai.transcribe()` or `fused.ai.image()`
@@ -58,8 +68,9 @@ from fused_render.ai import registry
 
 #: runner code -> suggested models, SMALLEST FIRST (see the ordering rule in the
 #: module docstring; position 0 is also the default). `size_gb` is the approximate
-#: full-snapshot download in decimal GB: the sum of the Hub's per-file byte
-#: metadata, rounded to one decimal. **None when that metadata is unavailable**,
+#: download in decimal GB — EVERY repo and every file the Download fetches, summed
+#: from the Hub's per-file byte metadata and rounded to one decimal, never the
+#: headline weights alone. **None when that metadata is unavailable**,
 #: which the card shows as "—" rather than inventing a figure from parameter
 #: counts (the same no-guess rule the Hub result cards follow, D255/D295).
 #: `note` is why you would or would not pick this one.
@@ -254,7 +265,12 @@ SUGGESTIONS: dict[str, list[dict]] = {
         {
             "id": "black-forest-labs/FLUX.2-klein-4B",
             "label": "FLUX.2 klein 4B",
-            "size_gb": 2.6,
+            # EVERYTHING the Download fetches, both repos: 8.23 of base
+            # components (text encoder 8.05, VAE 0.17, tokenizer + configs) plus
+            # the 2.60 GGUF transformer. It said 2.6 — the GGUF alone — while
+            # the actual pull was 18.6, and the field two lists down means the
+            # whole download; see the module docstring's rule (D308).
+            "size_gb": 10.8,
             "note": "Quantized transformer (Q4_K_M) instead of the ~8GB bf16 "
                     "original — the full-precision one OOMs on 16GB machines.",
         },

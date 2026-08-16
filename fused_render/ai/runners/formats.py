@@ -64,6 +64,60 @@ MFLUX_VARIANTS = {
 #: A diffusers pipeline names itself here, and `from_pretrained` reads it.
 DIFFUSERS_INDEX = "model_index.json"
 
+#: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
+#:
+#: **Repos the user never chose.** Two of them land in the Hub cache because a
+#: runner needs a piece of them: the quantized transformer the FLUX.2 recipe
+#: swaps in, and the speech detector the MLX whisper runner filters silence
+#: with. Neither is a model — nothing here can load either one on its own — so
+#: the AI Models page used to show them as peers of real models with the quiet
+#: "no engine" tag and no explanation, and a user reclaiming 2.4GB by deleting
+#: the mystery row broke the image model that needs it.
+#:
+#: Here, in `formats.py`, for the reason the module docstring gives about
+#: `MFLUX_VARIANTS`: the ids are named inside RUNNER folders, which are separate
+#: venvs the server process cannot import, and the page and the worker must not
+#: be able to disagree about what is on the disk. The workers read `file` from
+#: here rather than carrying their own copy, and `test_ai_formats.py` asserts
+#: every recipe's component repo appears here — so a new recipe cannot
+#: reintroduce a mystery row without failing a test.
+#:
+#: `of` is the repo id this is part of, or None when it belongs to an ENGINE
+#: rather than to a model (the VAD serves every transcription, whatever model is
+#: loaded). `part` is the noun the card wears; `owner` is what it is part of, in
+#: the words the rest of the UI uses.
+COMPONENT_REPOS = {
+    "unsloth/FLUX.2-klein-4B-GGUF": {
+        "file": "flux-2-klein-4b-Q4_K_M.gguf",
+        "of": "black-forest-labs/FLUX.2-klein-4B",
+        "owner": "FLUX.2 klein 4B",
+        "part": "quantized transformer",
+        "what": (
+            "The 4-bit transformer FLUX.2 klein 4B loads instead of its own "
+            "8GB one — fetched by the Diffusers image engine, not a model you "
+            "can load on its own. Deleting it makes that model download it "
+            "again on its next load."
+        ),
+    },
+    "onnx-community/silero-vad": {
+        "file": "onnx/model.onnx",
+        "of": None,
+        "owner": "MLX Whisper",
+        "part": "speech detector",
+        "what": (
+            "The 2MB Silero detector the MLX Whisper engine uses to find the "
+            "speech in a recording and skip the silence — fetched with any "
+            "whisper download so an offline machine still has it. Deleting it "
+            "costs a slower transcription, not a broken one."
+        ),
+    },
+}
+
+
+def component(repo_id: str) -> dict | None:
+    """What `repo_id` is a component of, or None for an ordinary repo."""
+    return COMPONENT_REPOS.get(repo_id)
+
 #: What torch can open. `.bin` and `.pt` are pickles: readable, but with no
 #: cheap header, which is why the page counts parameters only from safetensors.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
