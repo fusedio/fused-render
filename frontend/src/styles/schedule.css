@@ -1709,8 +1709,10 @@ input.schedule-when-field {
   cursor: pointer;
 }
 
-.schedule-form .schedule-picker-row:hover {
+.schedule-form .schedule-picker-row:hover,
+.deploy-body .schedule-form .schedule-picker-row:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: transparent;
 }
 
 .schedule-form .schedule-picker-row svg {
