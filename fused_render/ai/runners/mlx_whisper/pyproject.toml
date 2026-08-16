@@ -35,6 +35,14 @@
 #                   model: importing faster-whisper's copy would drag
 #                   ctranslate2 into a Metal-only venv, and the PyTorch one
 #                   would cost gigabytes for a 2MB detector.
+#   sherpa-onnx     speaker diarization (`../diarize.py`), so `diarize: true`
+#                   means the same thing here as it does on the CTranslate2
+#                   runner. Same argument as onnxruntime above, one step
+#                   further: pyannote.audio is the obvious library and it needs
+#                   PyTorch, which is the dependency this file refuses on
+#                   principle for a helper model — and its pipeline repo is
+#                   gated, so an unattended download fails without a Hub token.
+#                   sherpa-onnx runs on the ONNX Runtime already named above.
 [project]
 name = "fused-render-runner-mlx-whisper"
 version = "0.1.0"
@@ -45,6 +53,7 @@ dependencies = [
     "psutil",
     "av",
     "onnxruntime",
+    "sherpa-onnx",
 ]
 
 # Not a distribution — a folder of scripts, not something to build and install.

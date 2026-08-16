@@ -45,6 +45,7 @@ import time
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
@@ -312,6 +313,102 @@ def _call_with_ticks(call, job, row, detail):
     return result["value"]
 
 
+# ----------------------------------------------------------------- diarization
+
+
+#: What `diarize.py` and Whisper both work in. Not a preference — Whisper's mel
+#: front end assumes it and the diarization models are 16 kHz exports.
+#:
+#: Only the FALLBACK, though: `_waveform` asks the loaded model instead, because
+#: `transcribe()` re-decodes a path at `self.feature_extractor.sampling_rate`
+#: and does NOT expose that as an argument. Handing it an array decoded at a
+#: different rate would transcribe a chipmunk with no error anywhere.
+SAMPLE_RATE = 16000
+
+
+def _model_sample_rate(model):
+    """The rate `transcribe()` would have decoded this file at itself."""
+    rate = getattr(getattr(model, "feature_extractor", None), "sampling_rate", None)
+    return int(rate) if rate else SAMPLE_RATE
+
+
+def _waveform(source, model, job, row):
+    """The recording as 16 kHz mono float32 — the samples diarization needs.
+
+    **This runner normally never holds one, and that is the whole problem this
+    function solves.** `model.transcribe(path)` hands faster-whisper a PATH and
+    it decodes internally; the samples exist inside the library and are never
+    ours. Diarization is not a whisper feature and cannot be reached through
+    that call, so `diarize: true` needs a waveform this process can pass to
+    sherpa-onnx.
+
+    Three ways to get one were available and two are worse:
+
+    * **Decode a second time with `av` directly.** It works — it is what
+      `mlx_whisper/worker.py` does — but it would decode a 90-minute recording
+      TWICE (once here, once inside faster-whisper) and it would name `av` as
+      this folder's own dependency in order to reimplement a function
+      faster-whisper already exports.
+    * **Give this engine a different diarization** — a cheaper one, or none.
+      Refused outright: `diarize: true` must mean the same thing on both
+      engines the way `vad: true` does (AI-10c), and "the CT2 runner labels
+      worse" is exactly the two-behaviours-one-argument failure the runner
+      split is not allowed to produce.
+    * **Use faster-whisper's OWN decoder and hand the array back to it.**
+      `faster_whisper.audio.decode_audio` is the function `transcribe()` calls
+      on a path, it produces exactly this array through PyAV, and `transcribe()`
+      accepts an ndarray on the same argument. One decode, one library, no new
+      dependency and no second implementation of "what 16 kHz mono means".
+
+    So the array is decoded here and passed to `transcribe()` in place of the
+    path — which also makes the diarized and undiarized paths differ by an
+    argument rather than by a pipeline. **Only when diarizing**: an ordinary
+    transcription still hands over the path, so nothing about the common case
+    changes shape.
+
+    Ticked, because it is not free: this is the same minutes-long decode of a
+    long recording that `_call_with_ticks` exists for, and it is now happening
+    where the row would otherwise sit silent.
+    """
+    from faster_whisper.audio import decode_audio
+
+    rate = _model_sample_rate(model)
+    return _call_with_ticks(
+        lambda: decode_audio(source, sampling_rate=rate),
+        job, row, "Decoding audio…")
+
+
+def _speaker_turns(audio, sample_rate, speakers, job, row):
+    """Who spoke when, over the WHOLE waveform — `[(start, end, index), …]`.
+
+    The MLX runner's function of the same name, doing the same thing through
+    the same shared module, and the two are meant to be readable side by side:
+    the models, the labels and the join all live in `runners/diarize.py`, so
+    what differs here is only this engine's ticking.
+
+    **A failure FAILS the transcription**, unlike the VAD's degradation. The
+    caller asked for speaker labels; an unlabelled transcript answers a
+    different question while looking like success.
+
+    **`done`/`total` stay None.** They are SECONDS OF AUDIO denominating the
+    TRANSCRIPT (SPEC AI-10a), and a pre-pass that borrowed them would run the
+    bar to 100% before a word was decoded. `detail` is the field the row
+    already has for a stage, and an indeterminate bar under its own sentence is
+    what the decode above already does.
+
+    No `should_stop` predicate, unlike the MLX runner: this worker has no
+    `_STOP` flag to offer — a cancel here abandons the thread and lets it
+    finish, which is the same trade `_call_with_ticks` documents for the decode.
+    """
+    segmentation, embedding = diarize.model_paths(worker_base.download_file)
+    worker_base.report(job=job, **row, state="running", done=None, total=None,
+                       detail="Finding speakers…")
+    session = diarize.diarizer(segmentation, embedding, speakers)
+    return _call_with_ticks(
+        lambda: diarize.speaker_turns(audio, session, sample_rate),
+        job, row, "Finding speakers…")
+
+
 def generate(body):
     """Transcribe one file. Returns `{path, output, segments, language, …}`."""
     model = _loaded.get("model")
@@ -335,6 +432,13 @@ def generate(body):
     # default reached only by an absent KEY inverts for the caller that spreads
     # an options object carrying an unset one.
     vad = True if body.get("vad") is None else bool(body.get("vad"))
+    # Defaults FALSE, so every existing caller's output is byte-identical: no
+    # `speaker` on a segment, no `speakers` in the JSON, no 33MB download and
+    # no separate decode.
+    diarizing = bool(body.get("diarize"))
+    # Validated HERE too, by the shared rule. The bridge and the server both
+    # check it first, but neither is the only door into this process.
+    speakers = diarize.speakers_or_raise(body.get("speakers")) if diarizing else None
     job = body.get("job") or None
     # The row's IDENTITY, decided by the server and carried on every tick this
     # process sends. Not decoration: the job manager can evict any row under
@@ -349,6 +453,16 @@ def generate(body):
     worker_base.report(job=job, **row, state="running",
                        done=0, total=None, detail="Decoding audio…")
     _await_orphan(job, row)
+    # PHASE ZERO, and only when diarizing: the samples, which this runner
+    # otherwise never holds (see `_waveform`). `audio` then goes to
+    # `transcribe()` in place of the path, so the file is decoded once whether
+    # or not speakers were asked for.
+    audio = _waveform(source, model, job, row) if diarizing else None
+    # …and who was speaking, over all of it, before a word is transcribed. A
+    # fast pre-pass with its own `detail` line rather than a share of the
+    # transcript's bar — see `_speaker_turns`.
+    turns = (_speaker_turns(audio, _model_sample_rate(model), speakers, job, row)
+             if diarizing else None)
     # TWO phases, and only the second one is lazy. `transcribe` returns a
     # generator that decodes segment by segment as it is consumed — but it
     # decodes the whole file and runs the VAD before handing that generator
@@ -356,7 +470,8 @@ def generate(body):
     # through it is what keeps the ✕ live in that window (see `_call_with_ticks`).
     stream, info = _call_with_ticks(
         lambda: model.transcribe(
-            source, task=task, language=language, initial_prompt=initial_prompt,
+            source if audio is None else audio,
+            task=task, language=language, initial_prompt=initial_prompt,
             vad_filter=vad),
         job, row, "Decoding audio…")
     # `info.duration` is the whole AUDIO; a segment's `end` is where SPEECH
@@ -425,6 +540,11 @@ def generate(body):
                 raise
             break
 
+    # The join, through the same shared function the MLX runner calls on the
+    # same two lists — which is what makes "identical labels" structural rather
+    # than a thing to keep testing (AI-10c).
+    speaker_list = diarize.assign_speakers(segments, turns) if turns is not None else None
+
     text = " ".join(s["text"] for s in segments).strip()
     result = {
         "path": source,
@@ -437,6 +557,11 @@ def generate(body):
         "seconds": round(time.time() - started, 2),
         "segments": segments,
     }
+    if speaker_list is not None:
+        # ADDITIVE, and only when asked: a run without `diarize` writes exactly
+        # the bytes it always did, key for key. The list is the transcript's
+        # legend — the labels that actually landed on a segment.
+        result["speakers"] = speaker_list
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w", encoding="utf-8") as handle:
         json.dump({**result, "text": text}, handle, ensure_ascii=False, indent=1)

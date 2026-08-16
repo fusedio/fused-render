@@ -21,6 +21,19 @@
 #                   everywhere) and av (the ffmpeg libraries, see above).
 #   huggingface_hub downloads
 #   psutil          answers "how much memory is this costing"
+#   sherpa-onnx     speaker diarization (`../diarize.py`), so `diarize: true`
+#                   means the same thing here as it does on the MLX runner —
+#                   the same two models, the same labels, the same output
+#                   shape. Chosen over pyannote.audio because that needs
+#                   PyTorch (which the MLX runner refuses, and parity means
+#                   both engines run the same thing) and because its pipeline
+#                   repo is gated, so an unattended download fails without a
+#                   Hub token. **`av` is still not named here**: diarization
+#                   needs a waveform this runner does not normally hold, and it
+#                   gets one from `faster_whisper.audio.decode_audio` — the
+#                   library's own decoder, on the PyAV it already pulls in —
+#                   rather than by reimplementing the decode and taking on the
+#                   dependency directly. See `worker.py`'s `_waveform`.
 [project]
 name = "fused-render-runner-faster-whisper"
 version = "0.1.0"
@@ -29,6 +42,7 @@ dependencies = [
     "faster-whisper",
     "huggingface_hub",
     "psutil",
+    "sherpa-onnx",
 ]
 
 # Not a distribution — a folder of scripts, not something to build and install.
