@@ -171,8 +171,9 @@ def api_schedule_create(body: dict = Body(...),
             return _error("delay_seconds: must be positive", status=400)
         due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
-    # `title`, `description` and `new_task_each_run` are passed straight through
-    # and normalised by the model (`_text`/`_flag`), not here. Deliberately NOT
+    # `title`, `description`, `new_task_each_run` and `session_learned` are
+    # passed straight through and normalised by the model (`_text`/`_flag`),
+    # not here. Deliberately NOT
     # validated into a 400: the form omits them when they are blank or unticked,
     # so "absent" and "empty" have to mean the same thing, and a request that
     # carries a stray null for one of them should still schedule the message
@@ -186,7 +187,8 @@ def api_schedule_create(body: dict = Body(...),
             permission_mode=str(body.get("permission_mode") or ""),
             repeats=repeats, rule=rule,
             title=body.get("title"), description=body.get("description"),
-            new_task_each_run=body.get("new_task_each_run"))
+            new_task_each_run=body.get("new_task_each_run"),
+            session_learned=body.get("session_learned"))
     except ValueError as exc:
         return _error(str(exc), status=400)
     return {"entry": entry}

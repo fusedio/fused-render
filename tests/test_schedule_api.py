@@ -259,6 +259,37 @@ def test_the_three_fields_are_optional_and_never_a_400(client, target):
         assert entry["new_task_each_run"] is False
 
 
+def test_session_learned_survives_the_round_trip_and_is_never_invented(
+        client, target):
+    """The same drop, in the one place it costs a thread: an edit is cancel +
+    re-create, so the re-create is where a learned session's provenance has to
+    be re-stated. A router that quietly ignored `session_learned` would make
+    every edit look like a chat handoff, and the next repeat would refuse the
+    task's own thread."""
+    kept = client.post("/api/schedule", headers=WRITE,
+                       json={"target": str(target), "message": "pull news",
+                             "repeats": "0 9 * * *",
+                             "session_id": "sess-learned",
+                             "session_learned": True})
+    assert kept.status_code == 200
+    entry = kept.json()["entry"]
+    assert entry["session_learned"] is True
+    occurrence = next(e for e in client.get("/api/schedule").json()["entries"]
+                      if e.get("template_id") == entry["id"])
+    assert occurrence["session_id"] == "sess-learned"
+    assert occurrence["session_learned"] is True
+
+    # A chat handoff says nothing, so nothing is claimed for it — and a stray
+    # null is a missing opinion, not a 400.
+    for body in ({}, {"session_learned": None}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600,
+                                "session_id": "sess-chat", **body})
+        assert res.status_code == 200
+        assert res.json()["entry"]["session_learned"] is False
+
+
 # ----------------------------------------------------------------- recurring
 
 def test_repeats_creates_a_template_and_lists_its_projection(client, target):

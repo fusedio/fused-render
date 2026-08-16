@@ -497,6 +497,141 @@ def test_a_one_off_reporting_a_session_chains_nothing(target, spawned):
     assert len(schedule.list_entries()) == 1
 
 
+# ------------------------------------------------- WHERE the session came from
+#
+# `session_learned` is the provenance of `session_id`, and it exists because two
+# unlike things write that field: a chat handoff (the conversation the user was
+# in when they scheduled the task) and a thread the template LEARNED on its
+# first run. An edit is cancel + re-create, and it must refuse the first while
+# keeping the second — so the form used to guess, counting an id as learned only
+# if the entry already repeated. That guess dies on a round trip: demote a
+# chaining task to a one-off (the learned id rides along on purpose), promote it
+# back, and its own thread reads as a chat handoff and is dropped (Bugbot,
+# PR #555). Only the moment the id is written knows the answer, so that moment
+# records it.
+
+
+def test_the_learned_thread_is_marked_as_learned(target, spawned):
+    template = schedule.create(str(target), "run", repeats="*/5 * * * *")
+    assert _entries()[template["id"]]["session_learned"] is False
+
+    _run_once(template["id"], "sess-1")
+
+    assert _entries()[template["id"]]["session_learned"] is True
+    # …and the successor `_chain_session` fixed up says so too, or the next edit
+    # of a task caught mid-chain would read its own thread as a handoff.
+    second = [o for o in _occurrences(template["id"])
+              if o["state"] == schedule.PENDING][0]
+    assert second["session_learned"] is True
+
+
+def test_a_session_the_user_supplied_is_never_marked_learned(target, spawned):
+    """The whole point of the marker: a chat's id must stay a chat's id, however
+    many runs the template does, so a repeat keeps refusing it."""
+    template = schedule.create(str(target), "run", repeats="*/5 * * * *",
+                               session_id="sess-user")
+    assert template["session_learned"] is False
+
+    _run_once(template["id"], "sess-other")
+
+    assert _entries()[template["id"]]["session_learned"] is False
+    second = [o for o in _occurrences(template["id"])
+              if o["state"] == schedule.PENDING][0]
+    assert second["session_id"] == "sess-user"
+    assert second["session_learned"] is False
+
+
+def test_create_does_not_invent_the_marker_and_wont_hold_one_alone(target):
+    """`create` accepts the marker (an edit re-states it) but never mints it,
+    and a marker with no id behind it is not stored as a claim about nothing."""
+    one_off = schedule.create(str(target), "one shot",
+                              datetime.now(timezone.utc) + timedelta(hours=1),
+                              session_id="sess-chat")
+    assert one_off["session_learned"] is False
+
+    kept = schedule.create(str(target), "one shot",
+                           datetime.now(timezone.utc) + timedelta(hours=1),
+                           session_id="sess-learned", session_learned=True)
+    assert kept["session_learned"] is True
+
+    empty = schedule.create(str(target), "one shot",
+                            datetime.now(timezone.utc) + timedelta(hours=1),
+                            session_learned=True)
+    assert empty["session_id"] == ""
+    assert empty["session_learned"] is False
+
+
+def test_the_marker_survives_the_demotion_and_promotion_an_edit_really_is(
+        target, spawned):
+    """The round trip end to end, through the store: a chaining template learns
+    a thread, an edit re-creates it as a one-off carrying that thread, and a
+    second edit puts the repeat back. The thread is the same one throughout."""
+    template = schedule.create(str(target), "run", repeats="*/5 * * * *")
+    _run_once(template["id"], "sess-1")
+    learned = _entries()[template["id"]]
+    schedule.cancel(template["id"])
+
+    one_off = schedule.create(str(target), "run",
+                              datetime.now(timezone.utc) + timedelta(hours=1),
+                              session_id=learned["session_id"],
+                              session_learned=learned["session_learned"])
+    assert one_off["session_learned"] is True
+    schedule.cancel(one_off["id"])
+
+    again = schedule.create(str(target), "run", repeats="*/5 * * * *",
+                            session_id=one_off["session_id"],
+                            session_learned=one_off["session_learned"])
+    assert again["session_id"] == "sess-1"
+    assert again["session_learned"] is True
+    # And its first occurrence inherits both halves.
+    occurrence = [o for o in _occurrences(again["id"])][0]
+    assert occurrence["session_id"] == "sess-1"
+    assert occurrence["session_learned"] is True
+
+
+def test_a_hand_edited_marker_degrades_rather_than_claiming_a_thread(target):
+    """`bool("false")` is True, so reading this with it would let a store
+    somebody edited by hand relabel a chat handoff as a learned thread — and an
+    edit would then let a repeating task resume the user's own conversation."""
+    import json
+    template = schedule.create(str(target), "run", repeats="0 * * * *",
+                               session_id="sess-chat")
+    occurrence = _occurrences(template["id"])[0]
+    schedule.cancel(occurrence["id"])   # so the next tick has to materialize
+
+    path = schedule.store_path()
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    for entry in data["entries"]:
+        if entry["id"] == template["id"]:
+            entry["session_learned"] = "true"
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+
+    schedule.tick()
+
+    fresh = [o for o in _occurrences(template["id"])
+             if o["state"] == schedule.PENDING][0]
+    assert fresh["session_id"] == "sess-chat"     # the thread is unaffected
+    assert fresh["session_learned"] is False
+    # An entry stored before the marker existed reads the same way, which is the
+    # safe reading: every id in an old store was one the user supplied.
+    assert schedule._flag(_entries()[template["id"]].get("session_learned")) is False
+
+
+def test_a_forking_template_hands_down_neither_the_id_nor_the_marker(
+        target, spawned):
+    """`new_task_each_run` blanks the id, so there is nothing for a provenance
+    to be about — and a marker left on the occurrence would outlive its id."""
+    template = schedule.create(str(target), "run", repeats="*/5 * * * *",
+                               new_task_each_run=True,
+                               session_id="sess-user", session_learned=True)
+    occurrence = _occurrences(template["id"])[0]
+
+    assert occurrence["session_id"] == ""
+    assert occurrence["session_learned"] is False
+
+
 # ---------------------------------------------------------------- cancelling
 
 def test_cancelling_template_cancels_its_pending_occurrence(target):
