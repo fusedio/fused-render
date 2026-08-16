@@ -37,12 +37,37 @@
 #                   would cost gigabytes for a 2MB detector.
 #   sherpa-onnx     speaker diarization (`../diarize.py`), so `diarize: true`
 #                   means the same thing here as it does on the CTranslate2
-#                   runner. Same argument as onnxruntime above, one step
-#                   further: pyannote.audio is the obvious library and it needs
+#                   runner. pyannote.audio is the obvious library and it needs
 #                   PyTorch, which is the dependency this file refuses on
 #                   principle for a helper model — and its pipeline repo is
 #                   gated, so an unattended download fails without a Hub token.
-#                   sherpa-onnx runs on the ONNX Runtime already named above.
+#                   It brings its OWN ONNX Runtime rather than sharing the one
+#                   above: `onnxruntime`'s copy is `onnxruntime/capi/
+#                   libonnxruntime.1.28.0.dylib`, which is not on sherpa's
+#                   rpath, so the two are separate builds that happen to be the
+#                   same engine.
+#   sherpa-onnx-core  **NOT redundant, and do not delete it.** This is where
+#                   sherpa's `libonnxruntime.dylib` actually lives, and the
+#                   `sherpa-onnx` wheel for this platform is a 2MB shim that
+#                   ships only `_sherpa_onnx…so` and declares
+#                   `Requires-Dist: sherpa-onnx-core==1.13.5` to get it. That
+#                   declaration never reaches the lock: sherpa-onnx 1.13.5
+#                   publishes TWO shapes of wheel under one version — the
+#                   linux_armv7l ones are self-contained (12MB, bundled
+#                   `libonnxruntime.so`, no Requires-Dist) while every other
+#                   wheel is split — and its sdist PKG-INFO declares no
+#                   dependencies at all. `uv lock` is a UNIVERSAL resolution, so
+#                   it takes one dependency set per package and took the empty
+#                   one; `uv pip install` resolves for the current platform, so
+#                   it reads the real wheel and looks like it works. The result
+#                   was a venv where `import sherpa_onnx` raised `Library not
+#                   loaded: @rpath/libonnxruntime.dylib` on every diarized
+#                   transcription. Naming it here is the fix — it is a
+#                   first-class dependency, so it enters the lock on its own
+#                   account. Unpinned to match every other line, which is safe
+#                   because the two are published together and have never had
+#                   different version numbers; `tests/test_ai_runner_deps.py`
+#                   pins the pairing so a tidy-up cannot quietly undo it.
 [project]
 name = "fused-render-runner-mlx-whisper"
 version = "0.1.0"
@@ -54,6 +79,9 @@ dependencies = [
     "av",
     "onnxruntime",
     "sherpa-onnx",
+    # The other half of sherpa-onnx, which its own metadata cannot get into the
+    # lock. See the comment above before removing this as a duplicate.
+    "sherpa-onnx-core",
 ]
 
 # Not a distribution — a folder of scripts, not something to build and install.

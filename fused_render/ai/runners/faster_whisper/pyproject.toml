@@ -34,6 +34,23 @@
 #                   library's own decoder, on the PyAV it already pulls in —
 #                   rather than by reimplementing the decode and taking on the
 #                   dependency directly. See `worker.py`'s `_waveform`.
+#   sherpa-onnx-core  **NOT redundant, and do not delete it.** sherpa's
+#                   `libonnxruntime.dylib` lives in this separate distribution,
+#                   and the `sherpa-onnx` wheel for most platforms is a small
+#                   shim that declares `Requires-Dist: sherpa-onnx-core==1.13.5`
+#                   to get it — a declaration that never reaches the lock,
+#                   because sherpa-onnx 1.13.5 publishes BOTH self-contained
+#                   wheels (linux_armv7l, 12MB, bundled `libonnxruntime.so`, no
+#                   Requires-Dist) and split ones under a single version, and
+#                   its sdist PKG-INFO declares no dependencies at all — so
+#                   `uv lock`'s universal resolution takes one dependency set
+#                   for the package and takes the empty one. Without this line
+#                   `uv sync` produced a venv where `import sherpa_onnx` raised
+#                   `Library not loaded: @rpath/libonnxruntime.dylib` on every
+#                   diarized transcription. The MLX runner's pyproject tells the
+#                   whole story; both runners need the line because both declare
+#                   sherpa-onnx, and `tests/test_ai_runner_deps.py` pins the
+#                   pairing so a tidy-up cannot quietly undo it.
 [project]
 name = "fused-render-runner-faster-whisper"
 version = "0.1.0"
@@ -43,6 +60,9 @@ dependencies = [
     "huggingface_hub",
     "psutil",
     "sherpa-onnx",
+    # The other half of sherpa-onnx, which its own metadata cannot get into the
+    # lock. See the comment above before removing this as a duplicate.
+    "sherpa-onnx-core",
 ]
 
 # Not a distribution — a folder of scripts, not something to build and install.
