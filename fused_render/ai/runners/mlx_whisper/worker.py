@@ -765,6 +765,24 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
     segments = []
     detected = language
 
+    #: The ETA's own currency: seconds of audio there actually are to DECODE,
+    #: which once silence is dropped is not the length of the recording.
+    #:
+    #: `done`/`total` stay denominated in the original recording — that is the
+    #: public contract (AI-10a), and that they drift from the decoder's own
+    #: units is the same accepted trade `faster_whisper/worker.py` documents.
+    #: The ETA cannot live with it, because it does not report a position, it
+    #: divides: `elapsed / done_audio` is a RATE, and feeding it the remapped
+    #: position mixes two currencies in one fraction. A 60-second speech region
+    #: at the end of an hour-long file made the first tick read
+    #: `60 * (0.5 / 3540)` — "~0s left" for the entire decode — and the same
+    #: region at the START of that file ends on `3540 * (6 / 60)`, promising
+    #: six minutes on a job that is about to finish.
+    speech_total = sum(clip_end - clip_start for clip_start, clip_end in clips)
+    #: Seconds of speech finished by earlier clips. The current clip's own
+    #: contribution comes off the live counter, below.
+    decoded = 0.0
+
     for index, (start, end) in enumerate(clips):
         last = index == len(clips) - 1
         clip = audio if (start, end) == (0.0, total) else _slice(audio, start, end)
@@ -776,7 +794,7 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
             continue
         position = {}
 
-        def progress(offset=start, limit=end):
+        def progress(offset=start, limit=end, before=decoded):
             done = _seconds_done(position, offset=offset, limit=limit)
             if done is None:
                 # No counter to read (see `_watch_progress`). Honest
@@ -784,9 +802,19 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
                 # the tick is here to be answered, not to move a bar.
                 return None, None, "Transcribing…"
             elapsed = time.time() - transcribing_since
+            # `done - offset` is this clip's share, already clamped to the
+            # region by `_seconds_done`; `before` is what earlier clips
+            # contributed. The pair handed to `_eta` is therefore speech decoded
+            # and speech left, in one currency — while the pair REPORTED stays
+            # in recording time. `before` is a default argument for the same
+            # reason `offset` and `limit` are: the closure outlives the loop
+            # iteration that made it, and a late tick reading the loop variable
+            # would price this clip against a later clip's progress.
+            speech_done = before + (done - offset)
             return done, total, "Transcribing — %s of %s%s" % (
                 _clock(done), _clock(total) if total else "?",
-                _eta(total - done if total else None, elapsed, done))
+                _eta(speech_total - speech_done if speech_total else None,
+                     elapsed, speech_done))
 
         # A ✕ landing while a call RETURNS is not honoured for THAT call — its
         # transcript is complete and that decoding is spent, exactly as
@@ -800,6 +828,10 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
                     initial_prompt=initial_prompt, verbose=False),
                 job, row, progress, cancelled=late_cancel)
 
+        # This clip is decoded, whatever its counter last said: the borrowed bar
+        # counts mel frames of a PADDED window, so trusting its final value
+        # would drift the rate a little further from the truth on every region.
+        decoded += end - start
         detected = detected or result.get("language")
         for segment in (result.get("segments") or []):
             # The library's segments carry tokens, logprobs and temperatures

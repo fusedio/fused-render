@@ -939,6 +939,46 @@ def test_a_segment_starting_INSIDE_its_region_survives_a_long_end(
     assert [(s["start"], s["end"]) for s in written["segments"]] == [(11.5, 12.0)]
 
 
+def test_the_ETA_rate_is_measured_in_SPEECH_not_in_recording_time(
+        monkeypatch, loaded, tmp_path):
+    """`done` is remapped into original-recording time so the BAR means what
+    SPEC AI-10a says it means — but `_eta`'s rate is `elapsed / done_audio`, and
+    that has to be audio actually DECODED or the rate is nonsense.
+
+    Handed the remapped position, a 100-second recording whose only speech is
+    its last 10 seconds reports `done ≈ 90` on the first tick, having decoded
+    about a second: a rate of ~0.006s of wall clock per second of audio, and
+    "~0s left" for the whole decode. The mistake runs the other way for an
+    EARLY region, which ends up promising minutes on a job about to finish.
+
+    The `done`/`total` pair itself is NOT what this fixes — that they denominate
+    the recording while the decode chews through speech is the accepted,
+    documented trade the CT2 runner makes too. Only the ETA's own two numbers
+    move, and they move together.
+    """
+    worker, _transcribe = loaded(windows=(100, 100), seconds_per_window=0.05,
+                                 audio_seconds=100.0)
+    _regions(monkeypatch, worker, [(90.0, 100.0)])
+
+    seen = []
+    real_eta = worker._eta
+
+    def spy(remaining_audio, elapsed, done_audio):
+        seen.append((remaining_audio, done_audio))
+        return real_eta(remaining_audio, elapsed, done_audio)
+
+    monkeypatch.setattr(worker, "_eta", spy)
+
+    worker.generate(_request(tmp_path))
+
+    assert seen, "no tick landed during the decode"
+    # Both numbers are seconds of SPEECH — the 10-second region, never the
+    # 100-second file. `done_audio` above 10 is the bug: it is the bar's
+    # position being read as a quantity of decoding.
+    assert all(done <= 10.0 for _remaining, done in seen), seen
+    assert all(0.0 < remaining <= 10.0 for remaining, _done in seen), seen
+
+
 def test_progress_is_seconds_of_the_ORIGINAL_audio_not_of_the_speech(
         monkeypatch, loaded, base, tmp_path):
     """The contract SPEC AI-10a and `runtime.js` both state, and the thing
