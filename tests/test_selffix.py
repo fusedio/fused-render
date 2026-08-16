@@ -257,6 +257,35 @@ def test_list_reports_is_newest_first(install):
     assert [r["path"] for r in selffix.list_reports()] == [second, first]
 
 
+@pytest.mark.parametrize("method", ["brew", "dmg", "windows", "linux", "source", "pip"])
+def test_every_install_method_can_say_how_to_reinstall(install, method, monkeypatch):
+    """The badge's other half. A panel that says "this app has been modified"
+    and cannot tell you how to get an unmodified one is only half an answer, so
+    every branch has to carry a headline, a note and a working link."""
+    monkeypatch.setattr(selffix, "install_method", lambda: method)
+    advice = selffix.reinstall_advice()
+    assert advice["method"] == method
+    assert advice["headline"] and advice["note"]
+    assert advice["url"].startswith("https://")
+    # The panel promotes the link to the section's ACTION when there is no
+    # command to type, and words it from here — a raw URL as the only call to
+    # action reads as a citation. So a label is never optional.
+    assert advice["url_label"]
+
+
+def test_a_dmg_install_has_nothing_to_type(install, monkeypatch):
+    """The contract the panel's styling reads: empty `command` means the link
+    IS the instruction. The DMG is dragged, not run — and it is the most common
+    end-user install, so this is the branch that decides whether the reinstall
+    section has a visible call to action at all."""
+    for method in ("dmg", "windows", "linux"):
+        monkeypatch.setattr(selffix, "install_method", lambda m=method: m)
+        assert selffix.reinstall_advice()["command"] == ""
+    for method in ("brew", "pip", "source"):
+        monkeypatch.setattr(selffix, "install_method", lambda m=method: m)
+        assert selffix.reinstall_advice()["command"]
+
+
 def test_the_prompt_names_the_two_files_and_fences_the_agent_in(install):
     prompt = selffix.fix_prompt("/i/incident.md", "/r/report.md")
     assert "/i/incident.md" in prompt

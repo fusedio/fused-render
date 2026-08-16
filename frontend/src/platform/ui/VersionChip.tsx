@@ -201,14 +201,22 @@ function ModifiedPanel({
             <CopyButton resolve={() => reinstall.command} onError={setError} />
           </div>
         )}
+        {/* NO COMMAND MEANS THE LINK IS THE INSTRUCTION, so it is styled as the
+            section's action rather than as a footnote. That is the DMG case —
+            the most common end-user install, where reinstalling is "go to the
+            download page and drag it over" and there is nothing to type. Left
+            as a quiet link where a command carries the actual instruction
+            (brew, pip, git), so the section never has two primary actions. */}
         {reinstall?.url && (
           <a
-            className="version-panel-link"
+            className={
+              reinstall.command ? "version-panel-link" : "update-badge-action"
+            }
             href={reinstall.url}
             target="_blank"
             rel="noreferrer"
           >
-            {reinstall.url}
+            {reinstall.url_label ?? reinstall.url} ↗
           </a>
         )}
         {/* The promise this whole feature rests on, said out loud: the mark
