@@ -36,7 +36,7 @@
  *     the download-manager record, and that row's ✕ really stops it. Rejects
  *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
  *     this machine — the reason is in the message).
- *   fused.ai.transcribe({path, model, language, task, onProgress})
+ *   fused.ai.transcribe({path, model, language, task, diarize, speakers, onProgress})
  *                  -> Promise<{output, url, text, segments, language, ...}>
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
  *     file on THIS machine — nothing is uploaded — resolved beside this page
@@ -59,6 +59,21 @@
  *     never ahead of one. The MODEL is not interchangeable between them — each
  *     engine loads its own format — so pick a repo from
  *     fused.ai.models.catalog() rather than hardcoding one.
+ *     `diarize: true` labels WHO said each segment, and then `speakers` is
+ *     REQUIRED — the number of people in the recording. It cannot be guessed
+ *     reliably and a wrong guess relabels the whole transcript, so an omitted
+ *     or non-integer count rejects immediately with .type "bad_request" rather
+ *     than opening a job. Every segment then gains `speaker` ("Speaker 1",
+ *     "Speaker 2", … — or null where the recording has words but nobody the
+ *     segmenter could hear), and the reply gains `speakers`, the list of labels
+ *     that actually landed on a segment, ready to build a colour map from.
+ *     Default false, so a call without it is unchanged in every byte. Both
+ *     engines run the same two models through the same code, so the labels do
+ *     not depend on which one served you. It is a fast pre-pass over the whole
+ *     recording and does NOT change what done/total mean: they stay seconds of
+ *     audio of the transcript, and diarization reports as its own stage on the
+ *     row instead. First use on a machine downloads ~33MB, so it needs a
+ *     network that once; after that it works offline.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -2615,9 +2630,37 @@
       err.type = "bad_request";
       return Promise.reject(err);
     }
+    // `speakers` is REQUIRED with `diarize`, and refused HERE so the caller
+    // fails before a job row exists — the same place `path` is checked, for the
+    // same reason: a row that opens and immediately dies is a worse answer than
+    // a rejection, and this one would open after a multi-second model load.
+    //
+    // The count is not an optimisation. Underneath, the clustering takes either
+    // a number of speakers or a cosine threshold, and a threshold is a number
+    // nobody outside a lab can set meaningfully — so a guess would relabel the
+    // whole transcript with complete confidence. The server and both workers
+    // enforce the identical rule (fused_render/ai/runners/diarize.py); this
+    // copy exists to make the failure instant, not to be the only one.
+    //
+    // `Number.isInteger` and not `typeof === "number"`: `2.7` is a caller who
+    // computed the count and got it wrong, and NaN is what a bad parseInt
+    // produces. `true` fails it too, which matters — `{diarize: true, speakers:
+    // true}` is a plausible copy-paste that would otherwise mean one speaker.
+    if (opts.diarize) {
+      if (!Number.isInteger(opts.speakers) || opts.speakers < 1) {
+        const err = new Error(
+          "fused.ai.transcribe({diarize: true}): 'speakers' is required and must be a " +
+            "whole number of people, e.g. {diarize: true, speakers: 2}. It cannot be " +
+            "guessed reliably, and a wrong guess relabels the whole transcript.",
+        );
+        err.type = "bad_request";
+        return Promise.reject(err);
+      }
+    }
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
     const body = {};
-    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad"]) {
+    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad",
+                       "diarize", "speakers"]) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     // The page's own path, so a RELATIVE `path` resolves beside this page —
@@ -2650,6 +2693,10 @@
             segments: written.segments,
             language: written.language,
             duration: written.duration,
+            // The transcript's legend, and undefined unless `diarize` was
+            // asked for. Read from the FILE like everything else here, so a
+            // page never has to know which engine wrote it.
+            speakers: written.speakers,
           }))
           .catch((cause) => {
             const err = new Error(
