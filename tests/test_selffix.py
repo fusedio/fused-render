@@ -54,6 +54,18 @@ def post(client, url, body=None):
                        headers={"X-Fused": "1"})
 
 
+# The digest the current test's session starts from. `settle` measures against
+# THIS, not against the release — see its docstring — so a test that stamps has
+# to open a session first, exactly as the start route does.
+BEFORE = [""]
+
+
+def _pristine():
+    """Begin a session on the install as it currently stands."""
+    _, BEFORE[0] = selffix.begin_session()
+    return BEFORE[0]
+
+
 # ---------------------------------------------------------------- the digest
 
 
@@ -92,12 +104,12 @@ def test_a_rename_is_as_visible_as_an_edit(install):
 
 
 def test_settle_marks_only_when_the_tree_actually_moved(install):
-    selffix.ensure_baseline()
-    assert selffix.settle(run_id="r1") is False
+    _pristine()
+    assert selffix.settle(before=BEFORE[0], run_id="r1") is False
     assert selffix.status() is None
 
     (install / "jobs.py").write_text("RUNNING = 'running'  # patched\n")
-    assert selffix.settle(run_id="r1", report=str(install / ".x" / "r.md")) is True
+    assert selffix.settle(before=BEFORE[0], run_id="r1", report=str(install / ".x" / "r.md")) is True
     state = selffix.status()
     assert state is not None
     assert state["modified"] is True
@@ -108,14 +120,14 @@ def test_settle_marks_only_when_the_tree_actually_moved(install):
 def test_repeated_stamps_from_one_session_stay_one_fix(install):
     """The watcher re-checks every few ticks so the badge appears while the user
     watches — appending per check would show one conversation as a column."""
-    selffix.ensure_baseline()
+    _pristine()
     (install / "jobs.py").write_text("patched\n")
     for _ in range(4):
-        selffix.settle(run_id="r1", title="download failed")
+        selffix.settle(before=BEFORE[0], run_id="r1", title="download failed")
     state = selffix.status()
     assert [f["run_id"] for f in state["fixes"]] == ["r1"]
 
-    selffix.settle(run_id="r2")
+    selffix.settle(before=BEFORE[0], run_id="r2")
     assert [f["run_id"] for f in selffix.status()["fixes"]] == ["r1", "r2"]
 
 
@@ -123,10 +135,10 @@ def test_report_paths_survive_the_installation_being_moved(install, tmp_path,
                                                            monkeypatch):
     """Stored relative to the state dir, absolutised on read — a bundle dragged
     from the DMG to /Applications must not lose its own report."""
-    selffix.ensure_baseline()
+    _pristine()
     incident, report = selffix.record_incident({"title": "boom"})
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1", report=report, incident=incident)
+    selffix.settle(before=BEFORE[0], run_id="r1", report=report, incident=incident)
 
     moved = tmp_path / "Applications" / "fused_render"
     moved.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +151,60 @@ def test_report_paths_survive_the_installation_being_moved(install, tmp_path,
     assert os.path.exists(latest)
 
 
+def test_a_session_that_changed_nothing_is_not_recorded_as_a_fix(install):
+    """`settle` measures against the tree as THIS session found it, not against
+    the release. On an install an earlier session already changed, the two are
+    different before the new session has done anything — so measuring against
+    the release would record a do-nothing session as a fix, and make its own
+    empty report the one the badge points at."""
+    _pristine()
+    (install / "jobs.py").write_text("patched by the first session\n")
+    selffix.settle(before=BEFORE[0], run_id="r1", title="first")
+    assert [f["run_id"] for f in selffix.status()["fixes"]] == ["r1"]
+
+    # A second session opens on the ALREADY-MODIFIED tree and edits nothing.
+    _, before2 = selffix.begin_session()
+    assert selffix.settle(before=before2, run_id="r2", title="second") is False
+    assert [f["run_id"] for f in selffix.status()["fixes"]] == ["r1"]
+
+
+def test_a_no_op_session_does_not_re_light_a_dismissed_badge(install):
+    """Dismissing is a decision the user made about this machine. A later
+    session that changed nothing must not overturn it."""
+    _pristine()
+    (install / "jobs.py").write_text("patched\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+    assert selffix.clear() is True
+
+    _, before2 = selffix.begin_session()
+    assert selffix.settle(before=before2, run_id="r2") is False
+    assert selffix.status() is None
+
+
+def test_a_second_session_that_does_change_something_is_recorded(install):
+    """The other half — the guard above must not swallow a real second fix."""
+    _pristine()
+    (install / "jobs.py").write_text("patched once\n")
+    selffix.settle(before=BEFORE[0], run_id="r1")
+
+    _, before2 = selffix.begin_session()
+    (install / "server" / "app.py").write_text("patched twice\n")
+    assert selffix.settle(before=before2, run_id="r2") is True
+    assert [f["run_id"] for f in selffix.status()["fixes"]] == ["r1", "r2"]
+
+
+def test_the_pristine_baseline_survives_a_session_on_a_modified_tree(install):
+    """`begin_session` must not re-baseline against an already-patched tree, or
+    `reconcile` would lose its only picture of what the release shipped."""
+    pristine_file = (install / "jobs.py").read_text()
+    baseline, _ = selffix.begin_session()
+    (install / "jobs.py").write_text("patched\n")
+
+    baseline2, before2 = selffix.begin_session()
+    assert baseline2 == baseline          # still the release
+    assert before2 != baseline            # ...and this session knows it differs
+
+
 # ------------------------------------------------- ...and the three ways out
 
 
@@ -147,9 +213,9 @@ def test_an_upgrade_clears_the_mark_on_sight(install):
     outlive the install it described. The version stamp is what catches that,
     and it has to be caught on the READ path — the badge must be gone the
     moment the new version serves a request, not after the next restart."""
-    selffix.ensure_baseline()
+    _pristine()
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
     assert selffix.status() is not None
 
     marker = json.loads(open(selffix.marker_path()).read())
@@ -167,9 +233,9 @@ def test_a_same_version_reinstall_clears_the_mark(install):
     does when the app misbehaves. `reconcile` is the only thing that catches
     it, which is why it hashes the tree at every start where a marker exists."""
     pristine = (install / "jobs.py").read_text()
-    selffix.ensure_baseline()
+    _pristine()
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
     assert selffix.status() is not None
 
     (install / "jobs.py").write_text(pristine)  # the reinstall
@@ -178,9 +244,9 @@ def test_a_same_version_reinstall_clears_the_mark(install):
 
 
 def test_reconcile_leaves_a_still_modified_install_alone(install):
-    selffix.ensure_baseline()
+    _pristine()
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
     selffix.reconcile()
     assert selffix.status() is not None
 
@@ -189,9 +255,9 @@ def test_reconcile_refreshes_a_digest_that_drifted_further(install):
     """A resumed conversation can change more files after the watcher gave up.
     The record has to follow, or the 'restored' test above compares against a
     tree that no longer exists anywhere."""
-    selffix.ensure_baseline()
+    _pristine()
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
     first = json.loads(open(selffix.marker_path()).read())["digest"]
 
     (install / "jobs.py").write_text("patched twice\n")
@@ -204,10 +270,10 @@ def test_clear_forgets_the_mark_but_keeps_the_report(install):
     """The user's own override. The badge is a claim about this machine and the
     person at it may have settled it by hand — but the record of what was
     changed is not theirs to lose by dismissing a badge."""
-    selffix.ensure_baseline()
+    _pristine()
     incident, report = selffix.record_incident({"title": "boom"})
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1", report=report, incident=incident)
+    selffix.settle(before=BEFORE[0], run_id="r1", report=report, incident=incident)
 
     assert selffix.clear() is True
     assert selffix.status() is None
@@ -218,16 +284,15 @@ def test_clear_forgets_the_mark_but_keeps_the_report(install):
 def test_a_new_version_starts_a_fresh_baseline(install, monkeypatch):
     """An upgrade legitimately replaced the tree the old baseline described;
     trusting it would report every upgrade as a modification."""
-    first = selffix.ensure_baseline()
+    first, _ = selffix.begin_session()
     (install / "jobs.py").write_text("the next release\n")
-    monkeypatch.setattr(selffix, "__version__", "9.9.9")
     # ensure_baseline compares against the module's own __version__ binding.
     stale = json.loads(open(selffix.baseline_path()).read())
     stale["version"] = "0.0.1"
     with open(selffix.baseline_path(), "w") as f:
         json.dump(stale, f)
-    second = selffix.ensure_baseline()
-    assert second["digest"] != first["digest"]
+    second, _ = selffix.begin_session()
+    assert second != first
 
 
 # ------------------------------------------------------ incidents & reports
@@ -387,7 +452,7 @@ def test_only_one_fix_session_runs_at_a_time(client, monkeypatch):
 def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypatch):
     """The stamp is the app's decision, not the model's — a session asked to
     mark its own work is a session that can forget to."""
-    selffix.ensure_baseline()
+    _pristine()
 
     def fake_record(agent, run_id, on_tick=None):
         (install / "jobs.py").write_text("patched by the session\n")
@@ -395,7 +460,7 @@ def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypa
 
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready", fake_record)
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "download failed")
+    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "download failed", BEFORE[0])
 
     state = selffix.status()
     assert state is not None
@@ -404,11 +469,11 @@ def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypa
 
 
 def test_the_watcher_leaves_an_untouched_installation_alone(install, monkeypatch):
-    selffix.ensure_baseline()
+    _pristine()
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready",
                         lambda agent, run_id, on_tick=None: on_tick({"done": True}))
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "")
+    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "", BEFORE[0])
     assert selffix.status() is None
 
 
@@ -426,11 +491,11 @@ def test_snapshot_carries_the_panel_and_config_carries_only_the_flag(client, ins
     """The split that keeps /api/config cheap: the chip's PRESENCE rides the
     config poll, its CONTENTS (a directory walk and, on a mac, a brew probe)
     are fetched once when the panel opens."""
-    selffix.ensure_baseline()
+    _pristine()
     assert "modified_install" not in client.get("/api/config").json()
 
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
 
     config = client.get("/api/config").json()
     assert config["modified_install"]["modified"] is True
@@ -444,9 +509,9 @@ def test_snapshot_carries_the_panel_and_config_carries_only_the_flag(client, ins
 
 
 def test_clear_endpoint(client, install):
-    selffix.ensure_baseline()
+    _pristine()
     (install / "jobs.py").write_text("patched\n")
-    selffix.settle(run_id="r1")
+    selffix.settle(before=BEFORE[0], run_id="r1")
     assert client.post("/api/selffix/clear").status_code == 403
     assert post(client, "/api/selffix/clear").json() == {"cleared": True}
     assert "modified_install" not in client.get("/api/config").json()

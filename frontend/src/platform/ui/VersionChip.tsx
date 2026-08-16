@@ -27,6 +27,7 @@ import {
   lastFixStartedAt,
   modifiedSummary,
   selffixPollInterval,
+  SELFFIX_PING_EVENT,
   SELFFIX_PING_KEY,
   type ModifiedInstall,
   type SelfFixSnapshot,
@@ -295,20 +296,30 @@ function useModifiedInstall(
       timer = window.setTimeout(poll, selffixPollInterval(lastFixStartedAt()));
     }
 
-    // A ping from another tab (or from this one's own download manager) means a
-    // session just started: re-arm now so the cadence switches immediately
-    // instead of after the current idle timer runs out.
-    const onPing = (e: StorageEvent) => {
-      if (e.key !== SELFFIX_PING_KEY) return;
+    // A fix just started: re-arm NOW so the cadence switches immediately
+    // instead of after the running idle timer expires.
+    //
+    // Two listeners for one announcement, because one channel cannot carry it.
+    // `storage` fires in every same-origin document EXCEPT the writer, so it
+    // covers a chip in another tab and never this one — and the download
+    // manager that starts the fix is normally in THIS document. The event
+    // covers exactly the gap. (Both firing is harmless: `poll` cancels the
+    // pending timer before it re-arms.)
+    const rearm = () => {
       window.clearTimeout(timer);
       poll();
     };
+    const onPing = (e: StorageEvent) => {
+      if (e.key === SELFFIX_PING_KEY) rearm();
+    };
     timer = window.setTimeout(poll, selffixPollInterval(lastFixStartedAt()));
     window.addEventListener("storage", onPing);
+    window.addEventListener(SELFFIX_PING_EVENT, rearm);
     return () => {
       disposed = true;
       window.clearTimeout(timer);
       window.removeEventListener("storage", onPing);
+      window.removeEventListener(SELFFIX_PING_EVENT, rearm);
     };
   }, []);
 
