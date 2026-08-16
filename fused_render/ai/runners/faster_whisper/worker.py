@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
+import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model. One per process.
@@ -425,6 +426,11 @@ def generate(body):
     source = str(body.get("path") or "")
     out = str(body.get("out") or "")
     out_text = str(body.get("outText") or "")
+    # Where each segment lands AS it is decoded. Passed rather than derived, for
+    # the reason `outText` is: the server owns where user files go. Absent — an
+    # older request, or a caller that wants none — it is a no-op sink and this
+    # function runs exactly as it did before the feature existed.
+    out_partial = str(body.get("outPartial") or "") or None
     if not source:
         raise ValueError("'path' must be the audio file to transcribe")
     if not out or not out_text:
@@ -498,82 +504,95 @@ def generate(body):
     transcribing_since = time.time()
 
     segments = []
-    for segment in stream:
-        segments.append({
-            "start": round(float(segment.start), 2),
-            "end": round(float(segment.end), 2),
-            "text": segment.text.strip(),
-        })
-        done = segments[-1]["end"]
-        elapsed = time.time() - transcribing_since
-        try:
-            # `report_or_cancel`, not `report`: this loop is the only place a
-            # stop can be honoured, and the reply to this tick is how the ✕
-            # gets here.
-            worker_base.report_or_cancel(
-                job=job, **row, state="running", done=done, total=total,
-                detail="Transcribing — %s of %s%s" % (
-                    _clock(done), _clock(total) if total else "?",
-                    _eta(total - done if total else None, elapsed, done)))
-            if not worker_base.CANCEL.is_set():
-                continue
-            raise worker_base.Cancelled()
-        except worker_base.Cancelled:
-            # **A cancel is only worth honouring while there is work left to
-            # stop.** This tick fires AFTER its segment is appended, so a ✕
-            # landing on the last one used to raise straight past the write
-            # below — an hour of decoding discarded at 99%, with the transcript
-            # complete in memory and nothing on disk to show for it.
-            #
-            # Asking the generator for one more segment is what tells the two
-            # apart, and it is only ever paid for on the cancel path. If one
-            # comes back it is dropped, which costs nothing: we are stopping.
-            # It does cost the DECODE of that segment, so a ✕ on a long segment
-            # is honoured seconds later than it was pressed — the price of not
-            # throwing away a finished transcript, and paid only once.
-            #
-            # **A failure in the probe must not become the outcome.** Decoding
-            # the tail of a file is exactly where a container or codec error
-            # surfaces, and an exception raised here would REPLACE the
-            # `Cancelled` in flight: `_single` would answer `{"ok": false}` and
-            # the row would end in `error`, telling the user the transcription
-            # they cancelled had failed. Unknown means "assume there is more",
-            # which re-raises the cancel — the honest answer to a ✕.
+    # Everything from here to the final write happens inside the sink, because
+    # its EXIT is the lifecycle: reaching the end means the real output landed
+    # and the partial file is duplicate bytes; a `Cancelled` means the user does
+    # not want this transcript at all; anything else LEAVES the file, which is
+    # the only salvage from a run that died halfway. See `runners/partial.py`.
+    with partial.sink(out_partial, turns=turns,
+                      cancelled=(worker_base.Cancelled,)) as progressive:
+        for segment in stream:
+            segments.append({
+                "start": round(float(segment.start), 2),
+                "end": round(float(segment.end), 2),
+                "text": segment.text.strip(),
+            })
+            # Appended BEFORE the tick, so a page tailing the file already has
+            # the segment by the time the row says the bar moved past it.
+            progressive.add(segments[-1])
+            done = segments[-1]["end"]
+            elapsed = time.time() - transcribing_since
             try:
-                more = next(stream, None) is not None
-            except BaseException:  # noqa: BLE001 - the cancel is the outcome, not this
-                more = True
-            if more:
-                raise
-            break
+                # `report_or_cancel`, not `report`: this loop is the only place
+                # a stop can be honoured, and the reply to this tick is how the
+                # ✕ gets here.
+                worker_base.report_or_cancel(
+                    job=job, **row, state="running", done=done, total=total,
+                    detail="Transcribing — %s of %s%s" % (
+                        _clock(done), _clock(total) if total else "?",
+                        _eta(total - done if total else None, elapsed, done)))
+                if not worker_base.CANCEL.is_set():
+                    continue
+                raise worker_base.Cancelled()
+            except worker_base.Cancelled:
+                # **A cancel is only worth honouring while there is work left to
+                # stop.** This tick fires AFTER its segment is appended, so a ✕
+                # landing on the last one used to raise straight past the write
+                # below — an hour of decoding discarded at 99%, with the
+                # transcript complete in memory and nothing on disk to show.
+                #
+                # Asking the generator for one more segment is what tells the
+                # two apart, and it is only ever paid for on the cancel path. If
+                # one comes back it is dropped, which costs nothing: we are
+                # stopping. It does cost the DECODE of that segment, so a ✕ on a
+                # long segment is honoured seconds later than it was pressed —
+                # the price of not throwing away a finished transcript, and paid
+                # only once.
+                #
+                # **A failure in the probe must not become the outcome.**
+                # Decoding the tail of a file is exactly where a container or
+                # codec error surfaces, and an exception raised here would
+                # REPLACE the `Cancelled` in flight: `_single` would answer
+                # `{"ok": false}` and the row would end in `error`, telling the
+                # user the transcription they cancelled had failed. Unknown
+                # means "assume there is more", which re-raises the cancel — the
+                # honest answer to a ✕.
+                try:
+                    more = next(stream, None) is not None
+                except BaseException:  # noqa: BLE001 - the cancel is the outcome
+                    more = True
+                if more:
+                    raise
+                break
 
-    # The join, through the same shared function the MLX runner calls on the
-    # same two lists — which is what makes "identical labels" structural rather
-    # than a thing to keep testing (AI-10c).
-    speaker_list = diarize.assign_speakers(segments, turns) if turns is not None else None
+        # The join, through the same shared function the MLX runner calls on the
+        # same two lists — which is what makes "identical labels" structural
+        # rather than a thing to keep testing (AI-10c).
+        speaker_list = (diarize.assign_speakers(segments, turns)
+                        if turns is not None else None)
 
-    text = " ".join(s["text"] for s in segments).strip()
-    result = {
-        "path": source,
-        "output": out,
-        "outputText": out_text,
-        "model": body.get("model") or "",
-        "task": task,
-        "language": getattr(info, "language", None),
-        "duration": total,
-        "seconds": round(time.time() - started, 2),
-        "segments": segments,
-    }
-    if speaker_list is not None:
-        # ADDITIVE, and only when asked: a run without `diarize` writes exactly
-        # the bytes it always did, key for key. The list is the transcript's
-        # legend — the labels that actually landed on a segment.
-        result["speakers"] = speaker_list
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    with open(out, "w", encoding="utf-8") as handle:
-        json.dump({**result, "text": text}, handle, ensure_ascii=False, indent=1)
-    with open(out_text, "w", encoding="utf-8") as handle:
-        handle.write(text + "\n")
+        text = " ".join(s["text"] for s in segments).strip()
+        result = {
+            "path": source,
+            "output": out,
+            "outputText": out_text,
+            "model": body.get("model") or "",
+            "task": task,
+            "language": getattr(info, "language", None),
+            "duration": total,
+            "seconds": round(time.time() - started, 2),
+            "segments": segments,
+        }
+        if speaker_list is not None:
+            # ADDITIVE, and only when asked: a run without `diarize` writes
+            # exactly the bytes it always did, key for key. The list is the
+            # transcript's legend — the labels that landed on a segment.
+            result["speakers"] = speaker_list
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump({**result, "text": text}, handle, ensure_ascii=False, indent=1)
+        with open(out_text, "w", encoding="utf-8") as handle:
+            handle.write(text + "\n")
     # The segments stay out of the REPLY: a 90-minute recording is thousands of
     # them, and the caller was handed the path to the file that holds them
     # before this ever started. The supervisor only needs to know it landed.

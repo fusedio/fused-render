@@ -190,13 +190,13 @@ out.textContent = rec.text;
 for (const s of rec.segments) addCue(s.start, s.end, s.text);   // {start, end, text}
 ```
 
-Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `onProgress`.
+Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `onProgress`, `onSegment`.
 
-Resolves with `{jobId, path, output, outputText, model, task, url, text, segments, language, duration, speakers}`.
+Resolves with `{jobId, path, output, outputText, outputPartial, model, task, url, text, segments, language, duration, speakers}`.
 
 **The result is read off DISK, not returned by the job** — this is the part that is not obvious. The worker writes `~/.fused-render/ai/transcripts/<time>-<name>-<uid>.json` plus a `.txt` beside it, and when the row reaches `done` the bridge does `readFile(output)` → `JSON.parse` and hands you the parsed fields. So:
 
-- `output` is that JSON path, `outputText` the plain-text one, and `url` a ready-made `/api/fs/raw` address for `output`.
+- `output` is that JSON path, `outputText` the plain-text one, `outputPartial` the segments-as-they-decode one (see `onSegment` below), and `url` a ready-made `/api/fs/raw` address for `output`.
 - A transcription **outlives the tab that asked for it**. The file is the result; the row only says when to read it. A page that navigated away mid-run can still open `output`.
 - If the transcript cannot be read (deleted, truncated), the rejection is typed `ai_error` with `err.jobId` — not a bare `SyntaxError`.
 
@@ -210,6 +210,48 @@ Everything else worth knowing:
 - `vad` (default `true`) runs a Silero speech detector and skips the silence — the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — that is not an off-by-one to work around. Timestamps are always positions in the original file, never in the filtered audio.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
 - Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, an unknown `task`, or `diarize` without a usable `speakers`).
+
+### As it decodes: `onSegment`
+
+```js
+const rec = await fused.ai.transcribe({
+  path: "meeting.m4a",
+  onSegment: (s) => addCue(s.start, s.end, s.text),   // fires DURING the run
+  onProgress: (job) => bar.value = job.done / job.total,
+});
+// …and `rec.segments` is the same list, whole, when it resolves.
+```
+
+- **Every segment, in order, exactly once** — including the ones that were already decoded before your first callback, and including the last ones. Append on each call and you have the transcript; you never have to de-duplicate or re-sort.
+- **It costs one extra request per poll, and only if you pass it.** There is no second loop and no new connection: the tail rides the tick `onProgress` was already paying for. A call without `onSegment` makes exactly the requests it always did.
+- **The segment is the same shape `rec.segments` carries** — `{start, end, text}`, plus `speaker` when diarizing. One rendering path for both, which is the point.
+- **Resolution is the engine's, not the callback's.** faster-whisper produces a segment at a time; the MLX runner finishes a whole decoded window (up to 30s of audio) and then emits its segments together — so callbacks arrive in the same bursts `job.done` jumps in.
+- **A transcription still outlives the tab.** `onSegment` is a live view, not the delivery mechanism; the file is. A page that navigated away and came back reads `output` and has everything.
+
+**Underneath, and worth knowing because it is the salvage path:** the worker appends each finished segment to **`outputPartial`** — `<output minus .json>.partial.jsonl`, one JSON object per line, flushed per segment. The reply names it so you never derive it yourself. Its lifecycle is:
+
+| The run | `outputPartial` afterwards |
+|---|---|
+| finished | **gone** — `output` is the answer and the partial file would be a duplicate of it |
+| cancelled with the ✕ | **gone** — you asked for it to stop |
+| **failed** | **left on disk**, holding every segment that decoded before it died |
+
+That last row is the reason to know the path exists. A 90-minute recording that fails at minute 80 writes no `.json` at all, and the `.partial.jsonl` is the only place those 80 minutes survive. The rejection carries it, since a failed call never resolves with anything:
+
+```js
+try {
+  await fused.ai.transcribe({ path: "meeting.m4a" });
+} catch (err) {
+  if (err.type === "ai_error" && err.outputPartial) {
+    const salvaged = (await fused.readFile(err.outputPartial))
+      .split("\n").filter(Boolean).map(JSON.parse);   // {start, end, text}[]
+  }
+}
+```
+
+`err.output` and `err.outputPartial` are on `cancelled` rejections too, where the file is already gone — one shape for both, so you check the read rather than the rejection type. They are also on the "job is no longer being reported" rejection, which is what a run long enough to salvage most often hits: its job row is dropped after retention while the tab sleeps, and the transcript is not there either. Nothing cleans a salvaged file up for you: delete it once the page has what it needs.
+
+`onSegment` stops when the promise does — the last reads in flight are delivered *before* the rejection, never after it, so a `catch` that clears the transcript pane keeps it clear.
 
 ### Who said it: `diarize` + `speakers`
 
@@ -284,7 +326,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Awaiting `models.load()` as if it returned a model** → it returns `{jobId}`.
 - **Omitting `{capability}` on `load`/`download` for a repo that is not a chat model** → inference has nothing to read before the download lands, so an uncached whisper or diffusion repo still falls back to text generation and fails inside mlx-lm. Name it.
 - **Assuming a capability's runner from the platform** → both text generation and transcription have two runners, and a user preference can pick either. Ask `fused.ai.models.list()` and read `active`.
-- **Expecting `transcribe` to hand back the words from the job** → the row only says when; the text is read off `output` from disk.
+- **Expecting `transcribe` to hand back the words from the job** → the row only says when; the text is read off `output` from disk. For words *during* the run, pass `onSegment` — not a bigger `detail` on the row.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads, however willingly the page offers the button. Take the id from `catalog()`.
 - **Carrying a Whisper repo id between machines** → the CT2 and MLX runners load different files; a repo that works on one engine is an unusable download on the other.
 - **Reading transcription progress as bytes or steps** → it is `unit: "s"`, seconds of audio.

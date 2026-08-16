@@ -67,6 +67,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
+import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded model's snapshot PATH, not the model. See the module docstring:
@@ -906,8 +907,14 @@ def _decode_clip(module, clip, fetched, task, language, initial_prompt):
 
 
 def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
-                        job, row, total, transcribing_since):
+                        job, row, total, transcribing_since, progressive=None):
     """Transcribe each clip and return `(segments, language)` in ORIGINAL time.
+
+    `progressive` is the partial-transcript sink (`runners/partial.py`), fed
+    from the one place in this file where a segment is finished AND already
+    remapped into original-recording time — the only point at which a line is
+    safe to publish, since a page seeking a player off a clip-relative
+    timestamp would land in the wrong minute. Omitted, a no-op stands in.
 
     **The cut is at a VAD boundary, never at a fixed offset**, and that is what
     makes this loop acceptable where the chunking `_watch_progress` rejects is
@@ -937,6 +944,8 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
     module = _transcribe_module()
     segments = []
     detected = language
+    if progressive is None:
+        progressive = partial.sink(None)
 
     #: The ETA's own currency: seconds of audio there actually are to DECODE,
     #: which once silence is dropped is not the length of the recording.
@@ -1037,6 +1046,11 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
                 "end": round(until, 2),
                 "text": str(segment.get("text") or "").strip(),
             })
+            # Published the instant it is final. This runner reports progress
+            # once per decoded 30s WINDOW rather than per segment, so without
+            # this a page's bar jumps and its transcript stays empty until the
+            # end; with it, the words arrive in the same jumps the bar does.
+            progressive.add(segments[-1])
         if late_cancel.get("late"):
             # The rule the CT2 runner states: a cancel is worth honouring
             # exactly while there is work left to stop. On the LAST clip there
@@ -1078,6 +1092,11 @@ def generate(body):
     source = str(body.get("path") or "")
     out = str(body.get("out") or "")
     out_text = str(body.get("outText") or "")
+    # Where each segment lands AS it is decoded. Passed rather than derived, for
+    # the reason `outText` is: the server owns where user files go. Absent — an
+    # older request, or a caller that wants none — it is a no-op sink and this
+    # function runs exactly as it did before the feature existed.
+    out_partial = str(body.get("outPartial") or "") or None
     if not source:
         raise ValueError("'path' must be the audio file to transcribe")
     if not out or not out_text:
@@ -1162,40 +1181,49 @@ def generate(body):
     regions = _speech_regions(audio, total, job, row) if vad else None
     clips = _regions_to_decode(audio, regions, total)
 
-    # PHASE THREE — transcribe each clip, ticked from here and watched from
-    # inside, with every timestamp mapped back to original-recording time.
-    segments, language = _transcribe_regions(
-        audio, clips, fetched, task, language, initial_prompt,
-        job, row, total, transcribing_since)
+    # Everything from here to the final write happens inside the sink, because
+    # its EXIT is the lifecycle: reaching the end means the real output landed
+    # and the partial file is duplicate bytes; a `Cancelled` means the user does
+    # not want this transcript at all; anything else LEAVES the file, which is
+    # the only salvage from a run that died halfway. See `runners/partial.py`.
+    with partial.sink(out_partial, turns=turns,
+                      cancelled=(worker_base.Cancelled,)) as progressive:
+        # PHASE THREE — transcribe each clip, ticked from here and watched from
+        # inside, with every timestamp mapped back to original-recording time.
+        segments, language = _transcribe_regions(
+            audio, clips, fetched, task, language, initial_prompt,
+            job, row, total, transcribing_since, progressive=progressive)
 
-    # PHASE FOUR — the join. Both engines call the SAME function on the same
-    # two lists, which is what makes "identical labels" structural rather than
-    # a thing to keep testing (AI-10c).
-    speaker_list = diarize.assign_speakers(segments, turns) if turns is not None else None
+        # PHASE FOUR — the join. Both engines call the SAME function on the same
+        # two lists, which is what makes "identical labels" structural rather
+        # than a thing to keep testing (AI-10c).
+        speaker_list = (diarize.assign_speakers(segments, turns)
+                        if turns is not None else None)
 
-    text = " ".join(s["text"] for s in segments).strip()
-    payload = {
-        "path": source,
-        "output": out,
-        "outputText": out_text,
-        "model": body.get("model") or "",
-        "task": task,
-        "language": language,
-        "duration": total,
-        "seconds": round(time.time() - started, 2),
-        "segments": segments,
-    }
-    if speaker_list is not None:
-        # ADDITIVE, and only when asked: a run without `diarize` writes exactly
-        # the bytes it always did, key for key. The list is the transcript's
-        # legend — the labels that actually landed on a segment — so a page can
-        # build a colour map without walking thousands of segments first.
-        payload["speakers"] = speaker_list
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    with open(out, "w", encoding="utf-8") as handle:
-        json.dump({**payload, "text": text}, handle, ensure_ascii=False, indent=1)
-    with open(out_text, "w", encoding="utf-8") as handle:
-        handle.write(text + "\n")
+        text = " ".join(s["text"] for s in segments).strip()
+        payload = {
+            "path": source,
+            "output": out,
+            "outputText": out_text,
+            "model": body.get("model") or "",
+            "task": task,
+            "language": language,
+            "duration": total,
+            "seconds": round(time.time() - started, 2),
+            "segments": segments,
+        }
+        if speaker_list is not None:
+            # ADDITIVE, and only when asked: a run without `diarize` writes
+            # exactly the bytes it always did, key for key. The list is the
+            # transcript's legend — the labels that actually landed on a
+            # segment — so a page can build a colour map without walking
+            # thousands of segments first.
+            payload["speakers"] = speaker_list
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "w", encoding="utf-8") as handle:
+            json.dump({**payload, "text": text}, handle, ensure_ascii=False, indent=1)
+        with open(out_text, "w", encoding="utf-8") as handle:
+            handle.write(text + "\n")
     # The segments stay out of the REPLY: a 90-minute recording is thousands of
     # them, and the caller was handed the path to the file that holds them
     # before this ever started.
