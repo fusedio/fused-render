@@ -731,6 +731,30 @@ def test_a_multimodal_wrapper_is_a_TEXT_model_not_a_t5(client, hub, architecture
 
 
 @requires_symlinks
+def test_an_AUDIO_language_model_is_not_called_a_vision_one(client, hub):
+    """An audio tower is not evidence of a vision tower.
+
+    `Qwen2AudioForConditionalGeneration` carries an `audio_config` and no
+    `vision_config`, and reading either key as "multimodal, therefore image +
+    text to text" made it a VLM — which in this app means text generation,
+    which means a Load button pointed at a runner that cannot use it: mlx-lm
+    resolves a checkpoint by importing `mlx_lm.models.<model_type>` and ships
+    no `qwen2_audio`. Nothing here loads an audio-language model, and the
+    honest rendering of that is a label with no Load.
+    """
+    repo = _repo(hub, "models--Qwen--Qwen2-Audio-7B-Instruct", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps(
+        {"architectures": ["Qwen2AudioForConditionalGeneration"],
+         "model_type": "qwen2_audio", "audio_config": {}}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    row = _repo_row(client, "Qwen/Qwen2-Audio-7B-Instruct")
+    assert row["task"] == "audio + text to text"
+    assert row["capability"] is None
+    assert row["engine"] is None
+
+
+@requires_symlinks
 def test_a_text_only_encoder_decoder_is_still_text_to_text(client, hub):
     """The other half of the same branch: no vision and no audio is a T5, and
     reading THAT as a chat model would put a Load button on a translation
@@ -1439,6 +1463,102 @@ def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkey
     assert engine["code"] == "diffusers-image"
     assert engine["available"] is False
     assert "MLX FLUX" in engine["reason"] and "Preferences" in engine["reason"]
+
+
+@requires_symlinks
+def test_the_two_FLUX_klein_repos_read_the_same_and_the_label_matches_the_gate(
+        client, hub, monkeypatch):
+    """One model, two conversions, two cards in the same row — and they used to
+    disagree about what it was. The diffusers repo says "Image generation" off
+    its `model_index.json`; the MLX conversion has no config.json at all, so
+    its card's `image-to-image` tag was the only evidence and stood, giving one
+    model two labels side by side.
+
+    It also made the Load button contradict the label: `image to image` is in
+    NO_RUNNER_YET, yet the card offered Load, because the GATE reads the
+    format (which is an mflux image model this machine serves) while the LABEL
+    read the card. The gate was right and the label was stale, so decisive
+    format evidence now settles the label too — and the two can no longer
+    disagree, which is what the last assertion pins.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    mlx = _repo(hub, "models--mlx-community--FLUX.2-Klein-4B-4bit", blobs={"w": 10},
+                snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(mlx, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
+    for component in ("transformer", "text_encoder", "vae"):
+        _snapshot_file(mlx, "c1", f"{component}/weights.safetensors",
+                       _safetensors({"w": (4, 4)}))
+    row = _repo_row(client, "mlx-community/FLUX.2-Klein-4B-4bit")
+    assert row["task"] == "image generation"
+    assert row["capability"] == _ai_registry.IMAGE_GENERATION
+    assert row["engine"]["code"] == "mflux-image" and row["engine"]["available"]
+    # The invariant behind both halves: a card that offers Load shows a task
+    # this machine can actually serve.
+    assert _ai_registry.capability_for_task(row["task"]) == row["capability"]
+
+
+@requires_symlinks
+def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, monkeypatch):
+    """The invariant behind (b) and (c), over a cache of every shape at once.
+
+    Load is gated on the ENGINE — the weight format, plus whether a runner for
+    it runs here — while the task line is read from the model card. Those are
+    two different sources for one claim, and when they disagreed the card said
+    "image to image" (a task in NO_RUNNER_YET) above a working Load button.
+
+    Pinned as a property rather than as the one repo that showed it, because
+    the next disagreement will be a different repo: for every row on the page,
+    a Load offered means a task this machine can actually serve.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    # An MLX diffusion conversion whose card claims img2img…
+    mlx = _repo(hub, "models--mlx-community--FLUX.2-Klein-4B-4bit", blobs={"w": 10},
+                snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(mlx, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
+    for component in ("transformer", "text_encoder", "vae"):
+        _snapshot_file(mlx, "c1", f"{component}/weights.safetensors", _safetensors({"w": (4, 4)}))
+    # …a CT2 conversion with no card at all…
+    ct2 = _repo(hub, "models--deepdml--faster-whisper-large-v3-turbo-ct2", blobs={"w": 10},
+                snapshots={"c1": {"model.bin": "w"}}, refs={"main": "c1"})
+    _snapshot_file(ct2, "c1", "config.json", json.dumps({"alignment_heads": [[1, 2]]}))
+    # …an audio-language model nothing here loads…
+    audio = _repo(hub, "models--Qwen--Qwen2-Audio-7B-Instruct", blobs={"w": 10},
+                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(audio, "c1", "config.json", json.dumps(
+        {"architectures": ["Qwen2AudioForConditionalGeneration"],
+         "model_type": "qwen2_audio", "audio_config": {}}))
+    _snapshot_file(audio, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    # …a GGUF-only repo, and an embedding model.
+    _repo(hub, "models--unsloth--FLUX.2-klein-4B-GGUF", blobs={"w": 10},
+          snapshots={"c1": {"m.gguf": "w"}}, refs={"main": "c1"})
+    st = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}},
+               refs={"main": "c1"})
+    _snapshot_file(st, "c1", "modules.json", "[]")
+
+    rows = _get(client)["repos"]
+    assert len(rows) == 5
+    for row in rows:
+        if not (row["engine"] and row["engine"]["available"]):
+            continue  # no Load button, so nothing to contradict
+        assert _ai_registry.capability_for_task(row["task"]) == row["capability"], row
+
+
+@requires_symlinks
+def test_a_genuine_image_to_image_repo_keeps_its_label_and_gets_no_load(client, hub):
+    """The other side of the same rule: the override is for a task the app
+    SERVES, read off decisive format evidence. A repo that really is img2img
+    and carries no such evidence keeps the card's word for it, and gets no
+    Load — nothing here does image-to-image."""
+    repo = _repo(hub, "models--org--img2img", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: image-to-image\n---\n")
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    row = _repo_row(client, "org/img2img")
+    assert row["task"] == "image to image"
+    assert row["capability"] is None
+    assert row["engine"] is None
 
 
 @requires_symlinks

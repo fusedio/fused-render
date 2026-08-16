@@ -351,6 +351,13 @@ NO_RUNNER_YET = frozenset({
     "zero-shot text classification", "image segmentation", "object detection",
     "depth estimation", "image to image", "image to text", "audio classification",
     "video generation",
+    # An audio-language model: a recording and a prompt in, text out. It is
+    # NOT speech recognition — it is asked questions about the audio rather
+    # than asked to transcribe it — and mlx-lm has no module for one, so
+    # neither the text runners nor the whisper runners can serve it. Listed
+    # here rather than left out, because an absent label and a ruled-out label
+    # look identical from a card (see the table above).
+    "audio + text to text",
     # Speech OUT, as opposed to speech in. Deliberately not folded into the
     # transcription capability as a direction flag: one capability holds one
     # resident model, so a shared "audio" capability would have a synthesis

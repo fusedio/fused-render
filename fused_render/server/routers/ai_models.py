@@ -260,6 +260,12 @@ _FRIENDLIER_TAGS = {
     # text". It means a vision-language model: an image AND a prompt in, text
     # out, so the "+" is doing the work the hyphens could not.
     "image-text-to-text": "image + text to text",
+    # The audio half of the same shape, and the same reason: hyphens-to-spaces
+    # gives the unreadable "audio text to text". An audio-language model takes
+    # a RECORDING and a prompt and answers in text — which is not speech
+    # recognition (it is asked questions, not asked to transcribe) and is not
+    # something anything here can load.
+    "audio-text-to-text": "audio + text to text",
     "any-to-any": "any input to any output",
     # These two exist to make the CARD path and the ARCHITECTURE path agree on
     # one spelling. Left alone, a whisper model read from its card said
@@ -300,12 +306,26 @@ _ARCH_TASKS = (
 # this", so the model type is what separates them.
 _AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
 
-# …and the same head again for a vision-language model. These sub-configs are
-# how a multimodal wrapper says so — a nested block per extra tower — and they
-# are keyed on rather than a list of model types because the list would need a
-# new entry for every family that ships (gemma3, gemma4, qwen3_5, whatever is
+# …and the same head again for a vision-language model. This sub-config is how
+# a multimodal wrapper says so — a nested block per extra tower — and it is
+# keyed on rather than a list of model types because the list would need a new
+# entry for every family that ships (gemma3, gemma4, qwen3_5, whatever is
 # next), which is the maintenance that let the last two arrive mislabelled.
-_MULTIMODAL_CONFIGS = ("vision_config", "audio_config")
+#
+# **A `vision_config` and ONLY a `vision_config`.** An audio tower is not
+# evidence of a vision one, and treating any extra tower as multimodal-therefore
+# -VLM made `Qwen2AudioForConditionalGeneration` — audio, no vision — an "image
+# + text to text" model, which in this app means text generation and therefore a
+# Load button aimed at a runner that cannot use it. The gemma-4 checkpoints have
+# BOTH towers and are still vision-language models, which is why this is a test
+# for vision rather than a test for exactly-one-tower.
+_VISION_CONFIG = "vision_config"
+
+# The audio-only case, which is a real thing with no runner here: mlx-lm
+# resolves a checkpoint by importing `mlx_lm.models.<model_type>` and ships no
+# `qwen2_audio`, so this label lives in `NO_RUNNER_YET` and the card correctly
+# offers nothing to press.
+_AUDIO_CONFIG = "audio_config"
 
 
 # Storage width of each safetensors dtype, for the quantized case below. Only
@@ -356,6 +376,7 @@ def _quantization(config: dict) -> int | None:
 # and a tag we have no sentence for still shows its label and its source, which
 # is what an open vocabulary degrades to gracefully.
 _TASK_HELP = {
+    "audio + text to text": "Answers questions about a recording — an audio clip and a prompt in, text out.",
     "text generation": "Continues or answers a prompt in text — chat models, code models, completion.",
     "text-to-text generation": "Rewrites text into other text — translation, summarising, reformatting.",
     "fill mask": "Fills in blanked-out words in a sentence. Mostly a building block for other models.",
@@ -477,8 +498,10 @@ def _architecture_task(config: dict) -> str | None:
                 # newest models the app suggests arrived on this page as T5s
                 # with no Load button. The label is the one the CARD path
                 # already produces for these repos, so the two agree.
-                if any(key in config for key in _MULTIMODAL_CONFIGS):
+                if _VISION_CONFIG in config:
                     return "image + text to text"
+                if _AUDIO_CONFIG in config:
+                    return "audio + text to text"
             return task
     return None
 
@@ -530,6 +553,32 @@ def _weight_files(snapshot_dir: str) -> list[str]:
             counted.add(key)
             found.append(path)
     return found
+
+
+def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str] | None:
+    """What the WEIGHT LAYOUT says this is, when it says anything at all.
+
+    Only the formats that are decisive about the modality — a `weights.npz` is
+    a Whisper conversion and can be nothing else; a folder of mflux components
+    is a diffusion pipeline. A directory of safetensors says nothing about what
+    the model does, and is deliberately not here.
+
+    Each predicate is `formats`', not a second reading of the same filenames,
+    so the label a card shows and the engine that would load it are decided
+    from one description of each backend.
+
+    **Stricter than `formats.loaders` for CTranslate2 on purpose.** The runner
+    loads anything with a `model.bin`, which is the right test for a loader and
+    too loose for a label: "speech recognition" printed on a card because a
+    stray pickle happened to be called model.bin would be a confident lie.
+    """
+    if formats.is_ct2_whisper(names, config):
+        return "speech recognition", "its CTranslate2 Whisper layout"
+    if formats.has_mlx_whisper_weights(names):
+        return "speech recognition", "its MLX Whisper weights"
+    if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
+        return "image generation", "its MLX diffusion components"
+    return None
 
 
 def _has_torch_weights(snapshot_dir: str) -> bool:
@@ -645,6 +694,15 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         names = set(os.listdir(snapshot))
     except OSError:
         names = set()
+    # The snapshot's top-level FOLDERS, and the repo this is. Both are read here
+    # rather than beside the `loaders` call below, because the evidence chain
+    # now uses them too: an mflux conversion is recognised by its component
+    # folders and by its id being one this build can name a variant class for.
+    try:
+        dirnames = {e.name for e in os.scandir(snapshot) if _entry_is_dir(e)}
+    except OSError:
+        dirnames = set()
+    repo_id = _repo_id_of(os.path.basename(os.path.normpath(repo_dir)))
 
     front = _front_matter(snapshot)
     library = front.get("library_name")
@@ -690,19 +748,31 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     if any(n.lower().endswith(".gguf") for n in names):
         library = library or "gguf"
 
-    # Last, and only where nothing above answered: the WEIGHT LAYOUT. A
-    # CTranslate2 conversion carries no pipeline_tag and no `architectures`, so
-    # this app's own recommended speech model showed a card with no task line
-    # and no Load button — while `faster_whisper/worker.py` recognises it from
-    # one filename. Same for an MLX conversion, whose `weights.npz` is a
-    # Whisper checkpoint and can be nothing else.
-    if meta.task is None:
-        if formats.is_ct2_whisper(names, config):
-            meta.task, meta.task_source = (
-                "speech recognition", "its CTranslate2 Whisper layout")
-        elif formats.has_mlx_whisper_weights(names):
-            meta.task, meta.task_source = (
-                "speech recognition", "its MLX Whisper weights")
+    # Last: the WEIGHT LAYOUT, which answers where nothing above did AND
+    # overrules an answer this app cannot act on.
+    #
+    # The first half is the CTranslate2 case — a conversion carries no
+    # pipeline_tag and no `architectures`, so this app's own recommended speech
+    # model showed a card with no task line and no Load button, while
+    # `faster_whisper/worker.py` recognises it from one filename.
+    #
+    # The second half is `mlx-community/FLUX.2-Klein-4B-4bit`, and it is why
+    # this runs when a task is already known: it has no config.json at all, so
+    # its card's `image-to-image` tag stood — a label in NO_RUNNER_YET — while
+    # the very same snapshot is an mflux image model this machine serves. That
+    # put ONE model on the page under two labels (the diffusers repo beside it
+    # reads "image generation"), and it put a Load button under a task the app
+    # says nothing can run, because the button keys on the FORMAT and the label
+    # did not. Decisive format evidence settles both, so they cannot disagree.
+    #
+    # Only where the current answer maps to no capability, which is what keeps
+    # this from overruling a card that was right: a genuine img2img repo with no
+    # such evidence keeps its label, and so does a VLM whose label already
+    # resolves to text generation.
+    if meta.task is None or _ai_registry.capability_for_task(meta.task) is None:
+        found = _format_task(repo_id, names, dirnames, config)
+        if found:
+            meta.task, meta.task_source = found
 
     if meta.task:
         meta.task_help = _TASK_HELP.get(meta.task)
@@ -730,12 +800,8 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # and asked of `formats`, never re-derived here: a second copy of "what a
     # CTranslate2 repo looks like" is how a card comes to promise a load the
     # runner refuses.
-    try:
-        dirnames = {e.name for e in os.scandir(snapshot) if _entry_is_dir(e)}
-    except OSError:
-        dirnames = set()
     meta.loaders = formats.loaders(
-        repo_id=_repo_id_of(os.path.basename(os.path.normpath(repo_dir))),
+        repo_id=repo_id,
         names=names,
         dirnames=dirnames,
         config=config,
