@@ -45,10 +45,21 @@ class FakeBase:
     def __init__(self):
         self.ticks = []
         self.CANCEL = threading.Event()
+        #: Every `download_file` call, with the row it was told to report to.
+        self.fetches = []
         #: Set by a test to have the NEXT tick answer "the ✕ was pressed",
         #: which is how a real cancel reaches a worker (the reply to the tick
         #: it was sending anyway).
         self.cancel_on_tick = None
+
+    def download_file(self, repo_id, filename, detail=None, job=None, row=None):
+        # `job`/`row` recorded rather than ignored: the diarization models are
+        # fetched DURING a transcription, so a tick without them goes to this
+        # process's `JOB_ID` — the model's own finished load row — reopening it
+        # as a running download while the row the page watches says nothing.
+        self.fetches.append({"repo": repo_id, "file": filename,
+                             "job": job, "row": row})
+        return f"/snapshots/{repo_id}/{filename}"
 
     def report(self, job=None, **fields):
         self.ticks.append({"job": job, **fields})
@@ -110,6 +121,10 @@ class FakeModel:
     def __init__(self, segments, duration=180.0, decode_seconds=0.0, language="en"):
         self.segments = segments
         self.info = types.SimpleNamespace(duration=duration, language=language)
+        # The rate `transcribe()` would have decoded a path at. Read rather than
+        # assumed, because it is NOT an argument of `transcribe()` — an array
+        # decoded at a different rate transcribes a chipmunk with no error.
+        self.feature_extractor = types.SimpleNamespace(sampling_rate=16000)
         self.decode_seconds = decode_seconds
         self.calls = []
         #: How many decodes were ever running at once. One model, one process —
@@ -568,6 +583,193 @@ def test_an_explicit_null_vad_means_the_DEFAULT_not_off(worker, tmp_path):
 def test_generating_with_no_model_loaded_says_so(worker, tmp_path):
     with pytest.raises(RuntimeError):
         worker.generate(_request(tmp_path))
+
+
+# -- speaker labels, and the waveform this runner does not normally hold ---------
+#
+# The diarization itself is `tests/test_ai_diarize.py`'s — the ONE module both
+# engines import. What is driven here is this runner's particular problem:
+# `transcribe()` is handed a PATH and decodes inside the library, so the samples
+# sherpa-onnx needs do not exist in this process at all.
+
+
+def _decoder(monkeypatch, samples=None, rate_seen=None):
+    """Stand in for `faster_whisper.audio.decode_audio`, which `_waveform`
+    imports at call time — so injecting the module is enough."""
+    import numpy as np
+
+    calls = []
+
+    def decode_audio(input_file, sampling_rate=16000, **kwargs):
+        calls.append({"path": input_file, "rate": sampling_rate})
+        return np.zeros(samples if samples is not None else 160, dtype=np.float32)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper.audio",
+                        types.SimpleNamespace(decode_audio=decode_audio))
+    return calls
+
+
+def _diarizes(monkeypatch, turns, seen=None):
+    """The pipeline, with no sherpa-onnx and no models. `model_paths` stays
+    REAL — the row its fetch reports to is one of the things under test."""
+    import diarize as diarize_module
+
+    # `seen if seen is not None`, never `seen or {}`: an empty dict is falsy,
+    # so the `or` would hand every update to a throwaway and the caller's dict
+    # would stay empty — a stub that records nothing and fails silently.
+    record = seen if seen is not None else {}
+    monkeypatch.setattr(diarize_module, "diarizer",
+                        lambda seg, emb, speakers: record.update(
+                            speakers=speakers) or object())
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        lambda audio, session, rate, **kw: record.update(
+                            samples=len(audio), rate=rate) or list(turns))
+
+
+def test_diarization_is_OFF_unless_asked_for(worker, tmp_path, monkeypatch):
+    """Additive, and the ordinary path does not even change shape: without
+    `diarize` the PATH still goes to `transcribe()`, so nothing about an
+    existing transcription is decoded, reported or written differently."""
+    model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker._loaded["model"] = model
+    calls = _decoder(monkeypatch)
+    request = _request(tmp_path)
+
+    result = worker.generate(request)
+
+    assert calls == [], "an undiarized run must not decode the file itself"
+    assert model.calls[0]["source"] == request["path"]
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert "speakers" not in written and "speakers" not in result
+    assert "speaker" not in written["segments"][0]
+
+
+def test_diarizing_decodes_ONCE_and_hands_the_ARRAY_to_transcribe(
+        worker, tmp_path, monkeypatch):
+    """The whole risk of putting diarization on this engine. `transcribe(path)`
+    would decode a second time — a 90-minute recording twice over — so the
+    samples come from faster-whisper's OWN `decode_audio` (the function
+    `transcribe()` calls on a path) and go back to `transcribe()`, which takes
+    an ndarray on the same argument. One decode, one library, no new dependency
+    and no second definition of what 16 kHz mono means."""
+    import numpy as np
+
+    model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker._loaded["model"] = model
+    calls = _decoder(monkeypatch, samples=16000 * 4)
+    seen = {}
+    _diarizes(monkeypatch, [(0.0, 4.0, 0)], seen)
+    request = _request(tmp_path, diarize=True, speakers=2)
+
+    worker.generate(request)
+
+    assert len(calls) == 1, calls
+    assert calls[0]["path"] == request["path"]
+    # …at the rate the MODEL wants, not a hardcoded one: `transcribe()` does not
+    # expose `sampling_rate`, so an array decoded at another rate is a chipmunk
+    # with no error anywhere.
+    assert calls[0]["rate"] == model.feature_extractor.sampling_rate
+    assert isinstance(model.calls[0]["source"], np.ndarray)
+    assert len(model.calls[0]["source"]) == 16000 * 4
+    # The pre-pass saw the SAME samples, whole — not the VAD's regions.
+    assert seen["samples"] == 16000 * 4 and seen["rate"] == 16000
+
+
+def test_the_speaker_count_reaches_the_clustering(worker, tmp_path, monkeypatch):
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    _decoder(monkeypatch)
+    seen = {}
+    _diarizes(monkeypatch, [(0.0, 4.0, 0)], seen)
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=5))
+    assert seen["speakers"] == 5
+
+
+@pytest.mark.parametrize("speakers", [None, 0, -1, True, 2.5, "2"])
+def test_a_bad_speaker_count_is_refused_BEFORE_anything_is_decoded(
+        worker, tmp_path, monkeypatch, speakers):
+    """Neither the bridge nor the server is the only door into this process."""
+    model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker._loaded["model"] = model
+    calls = _decoder(monkeypatch)
+
+    with pytest.raises(ValueError, match="speakers"):
+        worker.generate(_request(tmp_path, diarize=True, speakers=speakers))
+    assert calls == [] and model.calls == []
+
+
+def test_every_segment_is_LABELLED_and_the_json_gains_the_legend(
+        worker, tmp_path, monkeypatch):
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 2.0, "hello"), FakeSegment(12.0, 14.0, "hi there")],
+        duration=20.0)
+    _decoder(monkeypatch, samples=16000 * 20)
+    _diarizes(monkeypatch, [(0.0, 10.0, 0), (10.0, 20.0, 1)])
+    request = _request(tmp_path, diarize=True, speakers=2)
+
+    result = worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1", "Speaker 2"]
+    assert written["speakers"] == ["Speaker 1", "Speaker 2"]
+    assert result["speakers"] == ["Speaker 1", "Speaker 2"]
+
+
+def test_the_pre_pass_does_NOT_inflate_the_progress_total(
+        worker, base, tmp_path, monkeypatch):
+    """`done`/`total` are SECONDS OF AUDIO of the TRANSCRIPT (AI-10a). A bar
+    that counted the pre-pass would run to 100% before a word was decoded."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 12.0, "hi")],
+                                        duration=180.0)
+    _decoder(monkeypatch)
+    _diarizes(monkeypatch, [(0.0, 180.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2))
+
+    totals = {t.get("total") for t in base.ticks if t.get("total") is not None}
+    assert totals == {180.0}, totals
+    # …and the stage is its own line with an indeterminate bar — what the job
+    # record already offers for a phase with no position to report.
+    finding = [t for t in base.ticks if t.get("detail") == "Finding speakers…"]
+    assert finding, base.ticks
+    assert all(t.get("done") is None and t.get("total") is None for t in finding)
+
+
+def test_the_component_fetch_reports_to_the_row_the_USER_is_watching(
+        worker, base, tmp_path, monkeypatch):
+    """It happens inside a TRANSCRIPTION, so an unbound `download_file` ticks
+    into this process's `JOB_ID` — the model's own load row, finished long ago."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    _decoder(monkeypatch)
+    _diarizes(monkeypatch, [(0.0, 4.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2,
+                             job="sys:ai-transcribe:zzz"))
+
+    assert len(base.fetches) == 2, base.fetches
+    for fetch in base.fetches:
+        assert fetch["job"] == "sys:ai-transcribe:zzz", fetch
+        assert fetch["row"] == ROW, fetch
+
+
+def test_BOTH_engines_fetch_the_SAME_two_component_repos(worker, base, tmp_path,
+                                                         monkeypatch):
+    """"Same models" is half of AI-10c's parity promise, and it is structural:
+    both runners call `diarize.model_paths`, which reads the ids out of
+    `formats.COMPONENT_REPOS`. This pins that the ids reaching the network are
+    those two and not a copy that drifted."""
+    import diarize as diarize_module
+
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    _decoder(monkeypatch)
+    _diarizes(monkeypatch, [(0.0, 4.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True, speakers=2))
+
+    assert [(f["repo"], f["file"]) for f in base.fetches] == [
+        (diarize_module.SEGMENTATION_REPO, diarize_module.SEGMENTATION_FILE),
+        (diarize_module.EMBEDDING_REPO, diarize_module.EMBEDDING_FILE),
+    ]
 
 
 # -- the format trap ------------------------------------------------------------

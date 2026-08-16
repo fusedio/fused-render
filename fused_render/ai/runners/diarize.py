@@ -150,9 +150,11 @@ def model_paths(download_file):
     """Fetch both ONNX models, returning `(segmentation, embedding)` paths.
 
     Takes the downloader as an ARGUMENT rather than importing `worker_base`, the
-    way `vad.py` does: it keeps this module free of the runner's plumbing, lets
-    a test drive it with local files, and `worker_base.download_file` reports
-    its own progress so the ~33MB lands on the job row like anything else.
+    way `vad.py` does: it keeps this module free of the runner's plumbing and
+    lets a test drive it with local files. It also carries the caller's job row,
+    which matters here more than it does for the detector — this fetch happens
+    inside a TRANSCRIPTION, so the caller passes a downloader already bound to
+    the row the user is watching rather than to the model's own load row.
 
     **Not pre-fetched by Download, unlike the VAD, and that asymmetry is the
     point.** `vad` defaults to TRUE, so a whisper model downloaded on wifi and

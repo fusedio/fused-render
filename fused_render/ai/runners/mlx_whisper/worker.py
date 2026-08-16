@@ -773,8 +773,15 @@ def _speech_regions(audio, total, job, row):
     sess = _loaded.get("vad")
     if sess is None:
         try:
-            sess = vad_module.session(
-                vad_module.model_path(worker_base.download_file))
+            # Bound to THIS row, for the reason `_speaker_turns` gives. `download`
+            # pre-fetches the detector so this is normally a cache hit, but a
+            # machine whose whisper download predates AI-10f reaches the network
+            # here — and used to reopen the model's finished load row to say so.
+            def fetch(repo_id, filename, detail=None):
+                return worker_base.download_file(repo_id, filename, detail=detail,
+                                                 job=job, row=row)
+
+            sess = vad_module.session(vad_module.model_path(fetch))
         except _FETCH_FAILED + _onnx_failures() as error:
             print(f"speech detection unavailable, transcribing the whole file: "
                   f"{error.__class__.__name__}: {error}", file=sys.stderr,
@@ -823,7 +830,14 @@ def _speaker_turns(audio, speakers, job, row):
     already has the field for this — `detail` — and an indeterminate bar under
     its own sentence is what the audio decode above already does.
     """
-    segmentation, embedding = diarize.model_paths(worker_base.download_file)
+    # Bound to THIS request's row: the fetch happens inside a transcription, so
+    # an unbound `download_file` would tick into `JOB_ID` — the model's own
+    # finished load row — while the row the user is watching said nothing.
+    def fetch(repo_id, filename, detail=None):
+        return worker_base.download_file(repo_id, filename, detail=detail,
+                                         job=job, row=row)
+
+    segmentation, embedding = diarize.model_paths(fetch)
     worker_base.report(job=job, **row, state="running", done=None, total=None,
                        detail="Finding speakers…")
     session = diarize.diarizer(segmentation, embedding, speakers)

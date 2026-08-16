@@ -400,7 +400,14 @@ def _speaker_turns(audio, sample_rate, speakers, job, row):
     `_STOP` flag to offer — a cancel here abandons the thread and lets it
     finish, which is the same trade `_call_with_ticks` documents for the decode.
     """
-    segmentation, embedding = diarize.model_paths(worker_base.download_file)
+    # Bound to THIS request's row — see the MLX runner's identical closure: the
+    # fetch happens inside a transcription, so an unbound `download_file` would
+    # tick into `JOB_ID`, the model's own finished load row.
+    def fetch(repo_id, filename, detail=None):
+        return worker_base.download_file(repo_id, filename, detail=detail,
+                                         job=job, row=row)
+
+    segmentation, embedding = diarize.model_paths(fetch)
     worker_base.report(job=job, **row, state="running", done=None, total=None,
                        detail="Finding speakers…")
     session = diarize.diarizer(segmentation, embedding, speakers)
