@@ -29,7 +29,7 @@ function mac(over: Partial<CapabilityEngine> = {}): CapabilityEngine {
       },
       {
         code: "faster-whisper",
-        label: "faster-whisper (CTranslate2)",
+        label: "Faster Whisper (CTranslate2)",
         note: null,
         available: true,
         reason: null,
@@ -45,8 +45,8 @@ function windows(): CapabilityEngine {
   return mac({
     selected: "mlx-whisper",
     effective: "faster-whisper",
-    effectiveLabel: "faster-whisper (CTranslate2)",
-    effectiveShortLabel: "faster-whisper",
+    effectiveLabel: "Faster Whisper (CTranslate2)",
+    effectiveShortLabel: "Faster Whisper",
     ignoredReason:
       "needs Apple Silicon — MLX runs on Metal only (this is windows/amd64)",
     choices: [
@@ -59,7 +59,7 @@ function windows(): CapabilityEngine {
       },
       {
         code: "faster-whisper",
-        label: "faster-whisper (CTranslate2)",
+        label: "Faster Whisper (CTranslate2)",
         note: null,
         available: true,
         reason: null,
@@ -76,7 +76,7 @@ describe("servingLine", () => {
     // The SHORT name: this line sits under the picker, which is the one
     // surface that keeps the platform qualifier. What the test is about is
     // WHICH runner gets named, and that is unchanged.
-    expect(servingLine(windows())).toContain("faster-whisper");
+    expect(servingLine(windows())).toContain("Faster Whisper");
     expect(servingLine(windows())).not.toContain("CTranslate2");
     expect(servingLine(windows())).not.toContain("MLX");
   });
@@ -180,8 +180,8 @@ describe("wouldChangeEngine", () => {
     const row = mac({
       selected: "faster-whisper",
       effective: "faster-whisper",
-      effectiveLabel: "faster-whisper (CTranslate2)",
-      effectiveShortLabel: "faster-whisper",
+      effectiveLabel: "Faster Whisper (CTranslate2)",
+      effectiveShortLabel: "Faster Whisper",
     });
     expect(wouldChangeEngine(row, AUTO, AUTO)).toBe(true);
   });

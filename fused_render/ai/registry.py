@@ -114,6 +114,19 @@ class Runner:
     #: saying "MLX FLUX (Apple Silicon)" tells someone on a Mac nothing they did
     #: not know, and costs roughly double the width of a tag that has to fit
     #: beside the task and the size.
+    #:
+    #: **Both names are PRODUCT NAMES, and they are Title Case with acronyms
+    #: left uppercase — "MLX Whisper", "Diffusers", "Faster Whisper".** The AI
+    #: Models page prints these six side by side in one column, so a name that
+    #: keeps its upstream punctuation reads as a different KIND of thing than
+    #: its neighbours rather than as a faithful citation; `faster-whisper` sat
+    #: next to `Diffusers` and `MLX FLUX` and looked like a package, not a
+    #: choice. The exact upstream spelling is not lost by this: the card's
+    #: library tag one column over is the literal identifier (`ctranslate2`,
+    #: `diffusers`, `mlx`, `gguf`) and stays lowercase, which is the split that
+    #: earns the rename. Anywhere a runner is IDENTIFIED rather than named —
+    #: `code`, the folder, the pyproject, the catalog keys — the upstream
+    #: spelling is load-bearing and must not be touched.
     short_label: str = ""
     #: What using this backend is LIKE, for the page to say before anything is
     #: loaded. A standing fact about the runner, never a claim about this
@@ -300,8 +313,10 @@ _RUNNERS: tuple[Runner, ...] = (
         code="faster-whisper",
         capability=SPEECH_TO_TEXT,
         folder=os.path.join(RUNNERS_DIR, "faster_whisper"),
-        label="faster-whisper (CTranslate2)",
-        short_label="faster-whisper",
+        # "Faster Whisper", not the upstream "faster-whisper": the tag column is
+        # product names, and `code` above still carries the exact spelling.
+        label="Faster Whisper (CTranslate2)",
+        short_label="Faster Whisper",
         # `_always`, and that is why speech to text SHIPPED on CTranslate2
         # rather than on MLX: text generation was already Apple-Silicon-only,
         # and a second capability that existed on a Mac and nowhere else would
