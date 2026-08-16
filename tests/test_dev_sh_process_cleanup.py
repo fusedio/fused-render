@@ -256,6 +256,33 @@ def test_pidfile_path_is_keyed_on_the_worktree_not_the_branch(tmp_path):
     assert len(paths) == 1, f"the pidfile key still moves with the branch: {paths}"
 
 
+def test_repo_root_is_physical_so_a_symlinked_invocation_agrees(tmp_path):
+    """`pwd`, not `pwd -P`, made the recorded root depend on how you typed it.
+
+    The recorded repo root is now the ONLY field in the record that names a
+    worktree, and it is compared as a string. With a logical `pwd`, running
+    dev.sh once through a symlinked path and once through the physical one gave
+    two different $REPO_ROOT values for the SAME .dev-pids/ directory: the
+    second run read the live record, decided `want_root != REPO_ROOT`, called it
+    not-ours, and started a second tree — with the record gone, unrecoverably.
+    """
+    real = _fake_root(tmp_path, "real")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    via_link = _run_lib_at(link, "dev_pidfile_path")
+    assert via_link.returncode == 0, via_link.stderr
+    via_real = _run_lib_at(real, "dev_pidfile_path")
+    assert via_real.returncode == 0, via_real.stderr
+    assert via_link.stdout.strip() == via_real.stdout.strip(), (
+        f"the recorded root moves with the spelling of the path: "
+        f"{via_link.stdout.strip()!r} vs {via_real.stdout.strip()!r}"
+    )
+    assert via_link.stdout.strip() == os.path.join(
+        os.path.realpath(str(real)), ".dev-pids", "dev.sh.pid"
+    ), via_link.stdout
+
+
 def test_pidfile_path_still_differs_between_worktrees(tmp_path):
     """The isolation property that must NOT regress with the branch gone.
 
@@ -479,6 +506,110 @@ def test_a_long_command_line_is_still_recognized(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# the startup sweep over .dev-pids/
+#
+# These drive the real script end to end — `dev.sh --cleanup` in a throwaway
+# $REPO_ROOT — because the sweep lives BELOW the library-mode return and is the
+# part that actually decides who gets signalled and whose record survives.
+# --cleanup exits before the venv bootstrap, so this costs nothing but the
+# process spawn.
+# --------------------------------------------------------------------------
+
+def _record(root, name, pid, start, rec_root):
+    path = root / ".dev-pids" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{pid}\n{start}\n{rec_root}\n")
+    return path
+
+
+def _run_cleanup_at(root, timeout=120):
+    env = dict(os.environ)
+    env["FUSED_RENDER_BRANCH"] = "test-branch"
+    env.pop("FUSED_RENDER_DEV_SH_LIB", None)
+    return subprocess.run(
+        ["bash", os.path.join(str(root), "scripts", "dev.sh"), "--cleanup"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=timeout,
+        close_fds=False,
+    )
+
+
+def test_the_sweep_reaps_a_record_left_under_the_old_branch_name(tmp_path):
+    """The migration case: a pre-fix dev.sh is still running under its old key.
+
+    Before this change the pidfile was named after the sanitized branch ref, so
+    an upgrade (or a `git checkout` mid-run) leaves a live tree recorded under a
+    name the fixed key never looks at. Honouring only the new name would strand
+    it, and finding it again would take the pattern kill this file forbids.
+    """
+    root = _fake_root(tmp_path, "wt")
+    stub_dir = root / "legacy"
+    stub_dir.mkdir()
+    proc = _spawn_stub(stub_dir / "dev.sh")
+    try:
+        rec = _record(
+            root, "feature-old", proc.pid, _lstart(proc.pid), os.path.realpath(str(root))
+        )
+        res = _run_cleanup_at(root)
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert not _alive(proc.pid), "the legacy record's tree survived the sweep"
+        assert not rec.exists(), "a reaped record must not be left behind"
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_the_sweep_deletes_dead_records_but_keeps_live_unverifiable_ones(tmp_path):
+    """Deleting every file the check rejected threw away the only live handle.
+
+    dev_pidfile_is_ours fails closed, so it says "not ours" for recoverable
+    reasons too — a `ps` that failed under load, a start time that read empty, a
+    $REPO_ROOT skew. If the record is removed on that answer, the tree it names
+    becomes unfindable by anything but a pattern kill. So: a record whose pid is
+    gone is definitively dead and gets cleaned up; a record whose pid is still
+    ALIVE but unverifiable stays on disk for a later run to re-evaluate.
+    """
+    root = _fake_root(tmp_path, "wt")
+    dead = _record(root, "dead-branch", 99999999, "Sat Jan  1 00:00:00 2000",
+                   os.path.realpath(str(root)))
+    # Alive, real start time, right root — rejected only because its argv says
+    # `sleep`, standing in for any of the recoverable rejections above.
+    alien = subprocess.Popen(["sleep", "60"], close_fds=False)
+    time.sleep(0.3)
+    try:
+        live = _record(root, "live-branch", alien.pid, _lstart(alien.pid),
+                       os.path.realpath(str(root)))
+        res = _run_cleanup_at(root)
+        assert res.returncode == 0, res.stdout + res.stderr
+        assert not dead.exists(), "a record whose process is gone was not cleaned up"
+        assert live.exists(), (
+            "an unverifiable record for a LIVE pid was deleted; that is the only "
+            f"handle on that tree.\n{res.stdout}{res.stderr}"
+        )
+        assert _alive(alien.pid), "an unverified pid was signalled"
+        assert str(live.name) in res.stdout + res.stderr, (
+            f"the kept record is not named in the output:\n{res.stdout}{res.stderr}"
+        )
+    finally:
+        alien.kill()
+        alien.wait(timeout=10)
+
+
+def test_the_sweep_reports_stale_records_once_not_once_per_file(tmp_path):
+    """Several leftover branch names must not read as several stale processes."""
+    root = _fake_root(tmp_path, "wt")
+    for name in ("a-branch", "b-branch", "c-branch"):
+        _record(root, name, 99999999, "Sat Jan  1 00:00:00 2000",
+                os.path.realpath(str(root)))
+    res = _run_cleanup_at(root)
+    assert res.returncode == 0, res.stdout + res.stderr
+    stale_lines = [ln for ln in res.stdout.splitlines() if "stale" in ln]
+    assert len(stale_lines) == 1, f"one line per leftover file:\n{res.stdout}"
+
+
+# --------------------------------------------------------------------------
 # --port extraction
 # --------------------------------------------------------------------------
 
@@ -563,9 +694,22 @@ def test_the_startup_reap_reads_every_record_in_the_dir():
     )
     assert loop, "the startup reap no longer walks .dev-pids/"
     body = loop.group(1)
-    assert "dev_pidfile_is_ours" in body, "a record is reaped without the identity check"
-    assert "kill_tree_hard" in body
-    assert 'rm -f "$_pf"' in body, "an unverifiable leftover is never cleaned up"
+    # The kill must sit INSIDE the `if dev_pidfile_is_ours` arm, not merely
+    # somewhere in the same loop: hoisting it out would reap unverified records —
+    # someone else's process, the exact failure this file exists to prevent — and
+    # a "both names appear in the body" assertion would stay green through it.
+    guarded = re.search(
+        r"^  if dev_pidfile_is_ours [^\n]*; then\n(.*?)^  (?:elif|else|fi)\b",
+        body,
+        re.M | re.S,
+    )
+    assert guarded, "the identity check no longer guards the reap"
+    assert "kill_tree_hard" in guarded.group(1), (
+        "kill_tree_hard escaped the dev_pidfile_is_ours guard"
+    )
+    assert body.count("kill_tree_hard") == 1, (
+        "a second kill in the sweep — every signal must be behind the guard"
+    )
 
 
 def test_no_broad_pattern_kill():

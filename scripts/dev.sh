@@ -41,7 +41,19 @@
 # dev.sh falls back to the original single-launch behavior.
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# PHYSICAL, not logical: `cd -P` + `pwd -P` resolve every symlink, so this is
+# the same string no matter how the developer spelled the path they invoked
+# (a symlinked checkout, /tmp vs /private/tmp on macOS, an alias into a worktree).
+# That matters because $REPO_ROOT is what dev_pidfile_is_ours compares the
+# recorded root against, and it is the only field in the record that names a
+# worktree at all. With a logical `pwd`, one run through a symlink and the next
+# through the real path derived two different roots for the SAME .dev-pids/
+# directory: the second called the live record not-ours, deleted it, and started
+# a second tree — the duplicate-vite bug, now with no record left to find it by.
+# `cd -P` twice rather than `cd "…/.."` because a logical `..` is applied
+# textually and would jump to the wrong parent when it is `scripts` itself that
+# is the symlink.
+REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && cd -P .. && pwd -P)"
 FRONTEND="$REPO_ROOT/frontend"
 
 # --cleanup is dev.sh's own flag and must not reach the server: cli.py's parser
@@ -208,10 +220,13 @@ kill_tree_hard() {
 }
 
 # A python that can import this worktree's fused_render._branch. Deliberately
-# NOT the $PY resolved further down: the pidfile has to be readable before the
-# venv bootstrap runs (and by `--cleanup`, which bootstraps nothing). _branch is
-# stdlib-only and is imported from the source tree via cwd, so any python3 gives
-# the same answer the server will.
+# NOT the $PY resolved further down: its two callers — dev_effective_port and
+# port_is_open — both run BEFORE the venv bootstrap, because the reap has to know
+# which port to wait on before this run starts rebuilding anything, and because
+# `--cleanup` bootstraps nothing at all. _branch is stdlib-only and is imported
+# from the source tree via cwd, so any python3 gives the same answer the server
+# will. (The pidfile used to be a third caller; it no longer resolves an
+# interpreter for anything — see dev_pidfile_path.)
 dev_python() {
   if [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
     printf '%s\n' "$VIRTUAL_ENV/bin/python"
@@ -393,11 +408,33 @@ REAPED=0
 # reading the current one: .dev-pids/ lives inside $REPO_ROOT, so every file in
 # it describes a process started from THIS worktree, and each one still has to
 # pass all of dev_pidfile_is_ours (live, argv says dev.sh, start time matches,
-# recorded root == $REPO_ROOT) before anything is signalled. A leftover that
-# cannot be verified is simply deleted, so the directory does not accumulate dead
-# branch names. The glob is second so the current name is handled first and the
-# messages come out in the order the developer expects; the `-f` test skips the
-# repeat (already removed) and the no-match literal when the dir does not exist.
+# recorded root == $REPO_ROOT) before anything is signalled. The glob is second
+# so the current name is handled first and the messages come out in the order the
+# developer expects; the `-f` test skips the repeat (already handled) and the
+# no-match literal when the dir does not exist.
+#
+# What gets DELETED is a separate question from what gets reaped, and the two
+# must not be conflated. dev_pidfile_is_ours fails closed, so "not ours" also
+# covers recoverable answers — a `ps` that failed under load, a start time that
+# read back empty, a $REPO_ROOT that skewed. Deleting on that answer throws away
+# the only handle on a tree that may well be alive, and the sole way back would
+# be the pattern kill this section forbids. So only two kinds of record are
+# removed: one we just reaped (its process is now gone), and one whose recorded
+# pid is not alive at all (definitively dead — nothing can be lost with it).
+# Anything else stays on disk for a later run to re-evaluate, and is named in the
+# output so the developer can look at it. (One record cannot actually be kept:
+# the CURRENT filename is where this run has to write its own pid a few lines
+# down, so an unverifiable record there is overwritten regardless. That is why
+# the note below is loud and names the pid — it is the developer's only chance to
+# act on it.)
+#
+# `!= $$` in the alive test is not redundant with the same check inside
+# dev_pidfile_is_ours: a record carrying THIS pid means our pid was recycled from
+# the dev.sh that wrote it, so that process is gone and the record is genuinely
+# dead. Without the guard `pid_alive` would answer yes about ourselves and the
+# file would be kept forever.
+STALE_DEAD=0
+STALE_KEPT=""
 for _pf in "$DEV_PIDFILE" "$REPO_ROOT"/.dev-pids/*; do
   [[ -f "$_pf" ]] || continue
   rec_pid="" rec_start="" rec_root=""
@@ -406,18 +443,38 @@ for _pf in "$DEV_PIDFILE" "$REPO_ROOT"/.dev-pids/*; do
     echo "==> reaping the dev.sh already running for this worktree (pid $rec_pid)"
     kill_tree_hard "$rec_pid"
     REAPED=1
+    rm -f "$_pf"
+  elif [[ "$rec_pid" =~ ^[0-9]+$ ]] && [[ "$rec_pid" != "$$" ]] && pid_alive "$rec_pid"; then
+    STALE_KEPT="$STALE_KEPT $(basename "$_pf")(pid $rec_pid)"
   else
-    echo "==> ignoring a stale dev.sh pidfile (pid ${rec_pid:-?} is gone or is not ours)"
+    STALE_DEAD=$((STALE_DEAD + 1))
+    rm -f "$_pf"
   fi
-  rm -f "$_pf"
 done
+
+# One line per OUTCOME, not one per file: a worktree upgraded from the
+# branch-keyed naming can hold several leftovers at once, and a burst of
+# identical "stale pidfile" lines reads as several stale processes when it is
+# really one directory being tidied.
+if [[ "$STALE_DEAD" -gt 0 ]]; then
+  echo "==> discarded $STALE_DEAD stale dev.sh pidfile(s) — their processes are gone"
+fi
+if [[ -n "${STALE_KEPT// /}" ]]; then
+  echo "==> NOTE: pidfile(s) naming a LIVE pid this run could not verify:$STALE_KEPT" >&2
+  echo "    left in place rather than deleted (verification fails closed, so this" >&2
+  echo "    can be a transient ps failure as easily as a foreign process). Check" >&2
+  echo "    with: pgrep -laf dev.sh — and stop it yourself if it is a dev.sh for" >&2
+  echo "    this worktree, because this run will not signal it." >&2
+fi
 
 # Wait for the port to actually free: the old server holds the bind for a beat
 # after its process dies, and cli.py's port guard would SystemExit on it.
 # Bounded — a port still busy after this belongs to something else, and the guard
 # should say so loudly rather than have dev.sh hang here. Done once, after the
-# whole loop, because every record above belongs to this worktree and so every
-# reaped server was contending for the same port.
+# whole loop, and deliberately only for $PORT: a leftover record written before a
+# `git checkout` names a server on the OTHER branch's port, which this run is not
+# about to bind and therefore need not wait on. $PORT is the only port whose
+# release can block us.
 if [[ "$REAPED" -eq 1 && -n "$PORT" ]]; then
   for _ in $(seq 1 40); do
     port_is_open "$PORT" || break
