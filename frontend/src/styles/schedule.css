@@ -1142,8 +1142,11 @@ input.schedule-when-field {
    item, the hovered row is the only tinted row — the selected one keeps its
    weight (so it stays findable) but yields the wash. :has(), so hovering the
    panel's padding does not strip the selection's tint. */
-.schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover),
-.deploy-body .schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover) {
+/* …but never the KEYBOARD cursor: arrows move .is-active independently of
+   the pointer, and stripping its wash left Enter committing an invisible
+   target while the hovered row looked chosen (Bugbot, PR #548). */
+.schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover):not(.is-active),
+.deploy-body .schedule-pop--menu:has(.schedule-menu-item:hover) .schedule-menu-item.is-selected:not(:hover):not(.is-active) {
   background: transparent;
 }
 
