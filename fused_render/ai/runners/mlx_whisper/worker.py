@@ -811,13 +811,26 @@ def _transcribe_regions(audio, clips, fetched, task, language, initial_prompt,
             # seeking a player — reads them as positions in the FILE. Getting
             # this wrong is silent: a transcript that looks perfect and whose
             # every timestamp after the first gap is early.
+            # BOTH ends are clamped to the region, because Whisper times against
+            # a padded 30s window: the last segment of a two-second clip can end
+            # at 29, and a hallucination in the padding can START there too.
+            # Unclamped, either one places speech inside the silence that was
+            # removed and reorders it against the next region.
+            at = min(float(segment.get("start") or 0.0) + start, end)
+            until = min(float(segment.get("end") or 0.0) + start, end)
+            if at >= until:
+                # Clamping alone is not enough for a segment that begins past
+                # the clip: end-only clamping emitted `{start: 15.0, end: 12.0}`
+                # — a segment running BACKWARDS — and clamping both would flatten
+                # it to zero length at the boundary, which is text asserted to
+                # have been spoken during silence that was cut out. Nothing was
+                # said there, so the honest transcript omits it. Real speech that
+                # merely overruns its region still survives, clamped: it starts
+                # inside, so `at < until`.
+                continue
             segments.append({
-                "start": round(float(segment.get("start") or 0.0) + start, 2),
-                # Clamped to the region, because Whisper times against a padded
-                # 30s window and the last segment of a short clip can end past
-                # it — which would place speech inside the silence that was
-                # removed, and could reorder it against the next region.
-                "end": round(min(float(segment.get("end") or 0.0) + start, end), 2),
+                "start": round(at, 2),
+                "end": round(until, 2),
                 "text": str(segment.get("text") or "").strip(),
             })
         if late_cancel.get("late"):

@@ -896,6 +896,49 @@ def test_a_segment_running_past_its_region_is_CLAMPED(monkeypatch, loaded, tmp_p
     assert written["segments"][0]["end"] == 12.0
 
 
+def test_a_segment_STARTING_past_its_region_is_dropped(monkeypatch, loaded, tmp_path):
+    """The same 30-second padded window, seen from the other end.
+
+    If a relative END of 29.0 on a two-second clip is a shape this file accepts
+    — and the clamp test above says it is — then a relative START past the clip
+    is the same shape, and it is what a hallucination in the padding looks like.
+    Clamping only the end emitted `{"start": 15.0, "end": 12.0}`: a segment that
+    runs backwards, sorts wrongly against the next region, and would make a
+    caption track or a seeking player do something visibly strange.
+
+    Dropped rather than pinned to the region's end, because a zero-length
+    segment at the boundary is text asserted to have been spoken during silence
+    that was cut. There is nothing there; the honest transcript omits it.
+    """
+    worker, transcribe = loaded(
+        windows=(100,), audio_seconds=40.0,
+        segments=[_segment(0.0, 1.0, "hello"), _segment(5.0, 8.0, "thanks for watching")])
+    _regions(monkeypatch, worker, [(10.0, 12.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(10.0, 11.0)]
+    assert "watching" not in written["text"]
+
+
+def test_a_segment_starting_INSIDE_its_region_survives_a_long_end(
+        monkeypatch, loaded, tmp_path):
+    """The drop above must not swallow the clamp's own case: a segment that
+    begins in the region and merely overruns it is real speech, and keeping it
+    (clamped) is the whole point of the clamp."""
+    worker, transcribe = loaded(windows=(100,), audio_seconds=40.0,
+                                segments=[_segment(1.5, 29.0, "hello")])
+    _regions(monkeypatch, worker, [(10.0, 12.0)])
+    request = _request(tmp_path)
+
+    worker.generate(request)
+
+    written = json.load(open(request["out"], encoding="utf-8"))
+    assert [(s["start"], s["end"]) for s in written["segments"]] == [(11.5, 12.0)]
+
+
 def test_progress_is_seconds_of_the_ORIGINAL_audio_not_of_the_speech(
         monkeypatch, loaded, base, tmp_path):
     """The contract SPEC AI-10a and `runtime.js` both state, and the thing
