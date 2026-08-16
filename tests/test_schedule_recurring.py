@@ -69,7 +69,10 @@ def test_create_with_repeats_stores_template_and_first_occurrence(target):
     occurrence = occurrences[0]
     assert occurrence["state"] == schedule.PENDING
     assert occurrence["repeats"] == ""
-    assert occurrence["max_late"] == schedule._OCCURRENCE_MAX_LATE_S
+    # No per-occurrence late bound any more: the 120-second skip-not-catch-up
+    # rule was replaced by coalescing (`_coalesce`), which sends the latest
+    # missed run instead of discarding it.
+    assert "max_late" not in occurrence
     # The occurrence is on the cron grid, in the future, and the template's own
     # `due` mirrors it.
     due = schedule.parse_due(occurrence["due"])
@@ -116,22 +119,35 @@ def test_fired_occurrence_is_followed_by_the_next_one(target, spawned):
     assert schedule.parse_due(fresh["due"]) == first_due + timedelta(minutes=5)
 
 
-def test_overdue_occurrence_is_skipped_not_caught_up(target, spawned):
+def test_an_overdue_backlog_coalesces_into_one_run(target, spawned):
+    """UPDATED POLICY. This test used to assert that an overdue occurrence was
+    marked `missed` and never sent — the 120-second `max_late` bound. That bound
+    is gone; a missed recurring run is now COALESCED, so the latest one runs and
+    the rest are counted.
+
+    The half that survives unchanged is the important half: the backlog is never
+    replayed. Three runs came due while the app was closed and exactly one send
+    happens."""
     template = schedule.create(str(target), "run", repeats="*/5 * * * *")
     first = _occurrences(template["id"])[0]
     first_due = schedule.parse_due(first["due"])
 
-    # Ten minutes late — far past the occurrence bound, well inside the global
-    # day that would have SENT a one-shot.
+    # Ten minutes late: the grid holds runs at first_due, +5 and +10, of which
+    # only ONE is in the store — the others exist in the cron line alone.
     late = first_due + timedelta(minutes=10)
     fired = schedule.tick(now=late)
-    assert fired == []
-    assert spawned == []
-    assert _entries()[first["id"]]["state"] == schedule.MISSED
-    assert "skipped" in _entries()[first["id"]]["error"]
 
-    # The replacement lands on the next pass, on the grid AFTER the gap —
-    # nothing between first_due and `late` is offered again.
+    assert [e["id"] for e in fired] == [first["id"]]
+    assert [c["message"] for c in spawned] == ["run"]
+    ran = _entries()[first["id"]]
+    assert ran["state"] == schedule.SENT
+    # It ran as the LATEST missed occurrence, not as the one it was created for.
+    assert schedule.parse_due(ran["due"]) == late
+    assert ran["skipped"] == 2
+    assert ran["skipped_note"] == "2 earlier runs skipped"
+
+    # The successor lands on the next pass, ahead of now — nothing between
+    # first_due and `late` is ever offered again.
     schedule.tick(now=late)
     fresh = [o for o in _occurrences(template["id"])
              if o["state"] == schedule.PENDING]
@@ -139,14 +155,123 @@ def test_overdue_occurrence_is_skipped_not_caught_up(target, spawned):
     assert schedule.parse_due(fresh[0]["due"]) > late
 
 
-def test_one_shot_still_catches_up_a_day(target, spawned):
-    # The tiny bound is the occurrence's alone; a plain message keeps the
-    # day-long catch-up this feature shipped with.
+def test_a_single_missed_occurrence_still_runs_with_nothing_reported_skipped(
+        target, spawned):
+    """Coalescing must not turn "one run, late" into a report about skipping.
+    Nothing was skipped: the backlog is one deep."""
+    template = schedule.create(str(target), "run", repeats="0 * * * *")
+    first = _occurrences(template["id"])[0]
+    first_due = schedule.parse_due(first["due"])
+
+    fired = schedule.tick(now=first_due + timedelta(minutes=20))
+
+    assert [e["id"] for e in fired] == [first["id"]]
+    assert len(spawned) == 1
+    ran = _entries()[first["id"]]
+    assert schedule.parse_due(ran["due"]) == first_due  # not moved
+    assert "skipped" not in ran
+    # ...and nothing was narrated about it. (The event ring is process-global,
+    # so this asks about THIS entry rather than about the ring being empty.)
+    assert [e for e in schedule.event_log()
+            if e["entry_id"] == first["id"]] == []
+
+
+def test_one_shot_catches_up_however_late(target, spawned):
+    """A one-off is not coalesced with anything — there is nothing to coalesce
+    it WITH — so it simply runs, however long the app was closed."""
     entry = schedule.create(str(target), "one shot",
-                            datetime.now(timezone.utc) - timedelta(hours=2))
+                            datetime.now(timezone.utc) - timedelta(days=3))
     fired = schedule.tick()
     assert [e["id"] for e in fired] == [entry["id"]]
     assert len(spawned) == 1
+
+
+# ------------------------------------------------ what an occurrence inherits
+#
+# An occurrence is the template's run, so what the user wrote about the work has
+# to travel with it — a list of runs must be able to name one without going back
+# to the template for the label. `session_id` is the exception that is really the
+# feature: whether it travels is what "new task each run" means.
+
+
+def test_an_occurrence_inherits_the_templates_title_and_description(target):
+    template = schedule.create(str(target), "pull the news", repeats="0 9 * * *",
+                               title="Morning digest",
+                               description="Reads the feeds")
+    occurrence = _occurrences(template["id"])[0]
+
+    assert occurrence["title"] == "Morning digest"
+    assert occurrence["description"] == "Reads the feeds"
+    assert occurrence["message"] == "pull the news"
+
+
+def test_by_default_every_run_appends_to_the_same_thread(target, spawned):
+    """A task IS a Claude session, so chaining is the default by construction:
+    the occurrence inherits the template's session id, and the send therefore
+    resumes that conversation rather than opening a new one."""
+    template = schedule.create(str(target), "run", repeats="*/5 * * * *",
+                               session_id="sess-thread")
+    first = _occurrences(template["id"])[0]
+    assert first["session_id"] == "sess-thread"
+    assert first["new_task_each_run"] is False
+
+    schedule.tick(now=schedule.parse_due(first["due"]) + timedelta(seconds=1))
+    assert spawned[0]["session_id"] == "sess-thread"
+
+
+def test_new_task_each_run_gives_every_occurrence_a_fresh_session(target, spawned):
+    """The opposite ask, and one line of `_materialize` is the whole feature:
+    the occurrence is made with `session_id: ""`, which is how the rest of the
+    module already spells "start a fresh session" — `_send` hands the empty
+    string to the helper, and `_busy_sessions` treats it as colliding with
+    nothing, so independent runs are not serialised against each other."""
+    template = schedule.create(str(target), "run", repeats="*/5 * * * *",
+                               session_id="sess-thread",
+                               new_task_each_run=True)
+    first = _occurrences(template["id"])[0]
+
+    assert first["session_id"] == ""
+    assert first["new_task_each_run"] is True
+    # The TEMPLATE keeps its own id — the flag changes what occurrences get, not
+    # what the schedule was created against.
+    assert _entries()[template["id"]]["session_id"] == "sess-thread"
+
+    first_due = schedule.parse_due(first["due"])
+    schedule.tick(now=first_due + timedelta(seconds=1))
+    schedule.tick(now=first_due + timedelta(seconds=2))
+    second = next(o for o in _occurrences(template["id"])
+                  if o["id"] != first["id"])
+
+    assert spawned[0]["session_id"] == ""
+    assert second["session_id"] == ""
+
+
+def test_a_hand_edited_flag_degrades_rather_than_flipping_the_threading(target):
+    """`bool("false")` is True, so reading the flag with it would silently turn a
+    chained schedule into an unchained one on a store somebody edited by hand."""
+    import json
+    template = schedule.create(str(target), "run", repeats="0 * * * *",
+                               session_id="sess-thread")
+    occurrence = _occurrences(template["id"])[0]
+    schedule.cancel(occurrence["id"])   # so the next tick has to materialize
+
+    path = schedule.store_path()
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    for entry in data["entries"]:
+        if entry["id"] == template["id"]:
+            entry["new_task_each_run"] = "false"
+            entry["title"] = 42
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+
+    schedule.tick()
+
+    fresh = [o for o in _occurrences(template["id"])
+             if o["state"] == schedule.PENDING][0]
+    assert fresh["new_task_each_run"] is False
+    assert fresh["session_id"] == "sess-thread"     # still the same thread
+    assert fresh["title"] == ""
 
 
 # ---------------------------------------------------------------- cancelling

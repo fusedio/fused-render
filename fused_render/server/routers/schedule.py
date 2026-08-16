@@ -34,7 +34,11 @@ def api_schedule():
     `max_late_seconds` rides along because the UI cannot explain a `missed`
     entry without it — the bound is configurable (FUSED_RENDER_SCHEDULE_MAX_LATE),
     so the number has to come from the server rather than be restated in the
-    page."""
+    page. **It is now null by default**: catch-up is unbounded, missed work
+    queues instead of expiring, and only an install that sets the env var can
+    produce a `missed` one-off at all. Null rather than a sentinel number, so a
+    page that shows the bound has to decide what to say when there is none
+    rather than printing a made-up one."""
     entries = schedule.list_entries()
     for entry in entries:
         # Server-side recurrence math, so the calendar can draw a recurring
@@ -167,15 +171,74 @@ def api_schedule_create(body: dict = Body(...),
             return _error("delay_seconds: must be positive", status=400)
         due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
+    # `title`, `description` and `new_task_each_run` are passed straight through
+    # and normalised by the model (`_text`/`_flag`), not here. Deliberately NOT
+    # validated into a 400: the form omits them when they are blank or unticked,
+    # so "absent" and "empty" have to mean the same thing, and a request that
+    # carries a stray null for one of them should still schedule the message
+    # rather than be refused over a label. What this layer must not do is DROP
+    # them — a body-dict endpoint silently ignores what it does not name, which
+    # is how they went missing in the first place.
     try:
         entry = schedule.create(
             resolved, body.get("message"), due,
             session_id=str(body.get("session_id") or ""),
             permission_mode=str(body.get("permission_mode") or ""),
-            repeats=repeats, rule=rule)
+            repeats=repeats, rule=rule,
+            title=body.get("title"), description=body.get("description"),
+            new_task_each_run=body.get("new_task_each_run"))
     except ValueError as exc:
         return _error(str(exc), status=400)
     return {"entry": entry}
+
+
+@router.get("/api/schedule/queue")
+def api_schedule_queue():
+    """What is past due and waiting, and what is mid-flight.
+
+    A separate endpoint from the listing rather than a field on it, and for the
+    reason that shapes both: the listing is the whole schedule (everything ever
+    created, with a recurrence projection computed per template), while this is
+    the handful of rows the queue popover draws on app open. Folding it in would
+    make a poll for "is anything waiting?" pay for the page's payload; splitting
+    it out also lets the popover ask again after a cancel without redrawing the
+    calendar.
+
+    Unguarded like the other reads, and side-effect-free on purpose — the tick
+    owns every state change, so opening the popover cannot change what runs."""
+    return schedule.queue()
+
+
+@router.post("/api/schedule/queue/cancel")
+def api_schedule_queue_cancel(body: dict = Body(...),
+                              x_fused: str | None = Header(default=None)):
+    """Cancel queued messages: `{"entry_ids": [...]}` or `{"all": true}`.
+
+    Guarded like the other writes — it stops unattended agent turns, which is
+    exactly the pair (schedule / unschedule) D3's header guard covers.
+
+    **Partial success is the normal outcome, not an error**, which is why this
+    answers 200 with two lists rather than a status code. Cancelling races the
+    claim: an entry already taken for sending is refused rather than corrupted
+    (see `schedule.cancel_queued`), and it comes back in `refused` with a reason
+    so the popover can say "already running" instead of silently dropping a row
+    the user thought they had stopped. A request naming ten entries where one
+    got away is nine cancellations and one honest report."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    all_queued = bool(body.get("all"))
+    entry_ids = body.get("entry_ids")
+    if not all_queued:
+        if not isinstance(entry_ids, list) or not entry_ids:
+            return _error("expected `entry_ids` (a non-empty list of ids) or "
+                          "`all: true`", status=400)
+        if not all(isinstance(i, str) and i for i in entry_ids):
+            return _error("entry_ids: expected a list of entry id strings",
+                          status=400)
+    result = schedule.cancel_queued(entry_ids=entry_ids, all_queued=all_queued)
+    return {"ok": True, **result}
 
 
 @router.post("/api/schedule/restore")

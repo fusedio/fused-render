@@ -208,6 +208,57 @@ def test_the_loop_is_not_started_by_building_the_app(tmp_path, monkeypatch):
     assert started == [True]
 
 
+# -------------------------------------------------- the form's three fields
+
+def test_the_forms_three_new_fields_survive_the_round_trip(client, target):
+    """The regression this test exists for: `/api/schedule` takes a raw dict, so
+    a field the endpoint does not name is silently dropped — no 400, just gone.
+    All three of the form's newest controls went that way, which made the user's
+    own title never persist, description write-only, and "New task each run" a
+    checkbox that did nothing.
+
+    The form reads them back under these exact names when it opens on an
+    existing task, so the names are part of the contract rather than an internal
+    detail."""
+    created = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "pull news",
+                                "repeats": "0 9 * * *",
+                                "title": "Morning digest",
+                                "description": "Reads the feeds",
+                                "new_task_each_run": True})
+    assert created.status_code == 200
+    entry = created.json()["entry"]
+    assert entry["title"] == "Morning digest"
+    assert entry["description"] == "Reads the feeds"
+    assert entry["new_task_each_run"] is True
+
+    listed = client.get("/api/schedule").json()["entries"]
+    template = next(e for e in listed if e["id"] == entry["id"])
+    assert template["title"] == "Morning digest"
+    # The occurrence carries the words and, because the box is ticked, opens its
+    # own session rather than inheriting the template's thread.
+    occurrence = next(e for e in listed if e.get("template_id") == entry["id"])
+    assert occurrence["title"] == "Morning digest"
+    assert occurrence["description"] == "Reads the feeds"
+    assert occurrence["session_id"] == ""
+
+
+def test_the_three_fields_are_optional_and_never_a_400(client, target):
+    """The form omits them when blank or unticked, and a stray null must still
+    schedule the message — they are labels and a threading preference, not
+    inputs a request can be refused over."""
+    for body in ({}, {"title": None, "description": None,
+                      "new_task_each_run": None}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600, **body})
+        assert res.status_code == 200
+        entry = res.json()["entry"]
+        assert entry["title"] == ""
+        assert entry["description"] == ""
+        assert entry["new_task_each_run"] is False
+
+
 # ----------------------------------------------------------------- recurring
 
 def test_repeats_creates_a_template_and_lists_its_projection(client, target):
