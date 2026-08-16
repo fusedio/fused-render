@@ -1,0 +1,810 @@
+"""Tasks over HTTP (server/routers/tasks.py).
+
+`GET /api/tasks` is the List page: every task, newest first, each carrying its
+three newest messages. `GET /api/tasks/{key}/messages` is Show more.
+`POST /api/tasks/read` marks one message read.
+
+The rules under test are the ones that make a task and a session the same
+thing: a scheduled message that fired is the transcript prompt it became (one
+message, not two), a task with no session yet is still a row, and the title is
+the one Claude Code already writes into the transcript.
+
+Nothing here reads the real ~/.claude — every path is under tmp_path.
+"""
+import json
+import os
+
+import pytest
+from fastapi.testclient import TestClient
+
+from fused_render import schedule, tasks_store
+from fused_render.server import create_app
+from fused_render.server.routers import claude_sessions as sessions_mod
+from fused_render.server.routers import tasks as tasks_mod
+
+
+@pytest.fixture(autouse=True)
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
+@pytest.fixture(autouse=True)
+def projects_dir(tmp_path, monkeypatch):
+    d = tmp_path / "claude-projects"
+    d.mkdir()
+    monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(d))
+    return d
+
+
+@pytest.fixture(autouse=True)
+def state_dir(tmp_path, monkeypatch):
+    d = tmp_path / "state" / "claude-sessions"
+    d.mkdir(parents=True)
+    # Both modules keep their state in the SAME global directory — task numbers
+    # and read marks next to the triage the sessions router writes.
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(d))
+    monkeypatch.setattr(sessions_mod, "STATE_DIR", str(d))
+    return d
+
+
+@pytest.fixture(autouse=True)
+def _clear_caches():
+    tasks_mod.reset_cache()
+    sessions_mod._HEAD_CACHE.clear()
+    yield
+    tasks_mod.reset_cache()
+    sessions_mod._HEAD_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_real_wake(monkeypatch):
+    from fused_render import schedule_wake
+    monkeypatch.setattr(schedule_wake, "sync", lambda due: None)
+
+
+@pytest.fixture()
+def client(tmp_path):
+    return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+# ------------------------------------------------------------------ fixtures
+
+
+def _user(text, ts, uuid=None):
+    record = {"type": "user", "timestamp": ts,
+              "message": {"role": "user",
+                          "content": [{"type": "text", "text": text}]}}
+    if uuid is not None:
+        record["uuid"] = uuid
+    return record
+
+
+def _assistant(text, ts):
+    return {"type": "assistant", "timestamp": ts,
+            "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": text}]}}
+
+
+def _ai_title(title, session_id="s"):
+    return {"type": "ai-title", "aiTitle": title, "sessionId": session_id}
+
+
+def _write_transcript(projects_dir, session_id, cwd, records, encoded=None):
+    d = projects_dir / (encoded or "-encoded-" + session_id)
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{session_id}.jsonl"
+    lines = []
+    for i, record in enumerate(records):
+        record = dict(record)
+        record.setdefault("cwd", cwd)
+        record.setdefault("sessionId", session_id)
+        record.setdefault("uuid", f"{session_id}-{i}")
+        lines.append(json.dumps(record))
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _entry(entry_id, message, due, **fields):
+    entry = {"id": entry_id, "target": "/tmp", "message": message, "due": due,
+             "session_id": "", "permission_mode": "auto",
+             "state": schedule.PENDING, "repeats": "", "rule": None,
+             "created": due, "fired": "", "run_id": "", "error": "",
+             "turn": "", "claude_session_id": ""}
+    entry.update(fields)
+    return entry
+
+
+def _seed_schedule(entries):
+    schedule._write(entries)
+
+
+def _already_using(state_dir):
+    """A read store that has already been through its day-one baseline, so
+    anything a test writes afterwards counts as genuinely new. Without this
+    every message would be below the baseline and therefore read."""
+    (state_dir / "read.json").write_text(
+        json.dumps({tasks_store.INIT_KEY: 0.0}))
+
+
+def _tasks(client):
+    r = client.get("/api/tasks")
+    assert r.status_code == 200, r.text
+    return r.json()["tasks"]
+
+
+def _by_key(client):
+    return {t["key"]: t for t in _tasks(client)}
+
+
+T9 = "2026-08-16T09:00:00Z"
+T10 = "2026-08-16T10:00:00Z"
+T11 = "2026-08-16T11:00:00Z"
+T12 = "2026-08-16T12:00:00Z"
+
+
+# ------------------------------------------------------------- the plain case
+
+
+def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
+    """No schedule anywhere near it. A session the user typed into is a task —
+    the Tasks page absorbs the Inbox, so it lists every session, not just the
+    scheduled ones."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
+        _user("pull today's news", T9),
+        _assistant("done", T10),
+        _ai_title("Pull today's news"),
+    ])
+
+    tasks = _tasks(client)
+    assert len(tasks) == 1
+    task = tasks[0]
+    assert task["key"] == "sess-a"
+    assert task["session_id"] == "sess-a"
+    assert task["task_id"] == "TASK-001"
+    assert task["project"] == "/home/me/proj"
+    assert task["target"] == "/home/me/proj"
+    assert task["title"] == "Pull today's news"
+    assert task["title_source"] == "ai"
+    assert task["description"] == ""
+    assert task["status"] == "done"
+    assert task["failed"] is False
+    assert task["live"] is False
+    assert task["message_count"] == 1
+    assert [m["message_id"] for m in task["messages"]] == ["MSG-001"]
+    message = task["messages"][0]
+    assert message["kind"] == "chat"
+    assert message["body"] == "pull today's news"
+    assert message["entry_id"] == ""
+    assert message["anchor"] == "sess-a-0", "the record uuid, for scroll-to"
+    assert message["unread"] is True
+
+
+def test_the_last_ai_title_wins(client, projects_dir):
+    """Claude Code re-emits the record every turn and the title tracks the
+    conversation — the first one is what the session looked like before it was
+    about anything."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hello", T9),
+        _ai_title("Untitled exploration"),
+        _user("now build the parser", T10),
+        _ai_title("Build the transcript parser"),
+    ])
+    task = _tasks(client)[0]
+    assert task["title"] == "Build the transcript parser"
+    assert task["title_source"] == "ai"
+
+
+def test_the_title_falls_back_to_the_first_message(client, projects_dir):
+    """A session with no ai-title yet still needs a name, and the first line of
+    the first message is what the user will recognise."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("check the deploy\nand tell me what broke", T9),
+        _assistant("ok", T10),
+    ])
+    task = _tasks(client)[0]
+    assert task["title"] == "check the deploy"
+    assert task["title_source"] == "message"
+
+
+def test_an_explicit_user_title_beats_the_ai_one(client, projects_dir):
+    """What the user called it wins over what Claude Code called it."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9), _ai_title("News puller"),
+    ])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="Morning briefing")])
+    task = _tasks(client)[0]
+    assert task["title"] == "Morning briefing"
+    assert task["title_source"] == "user"
+
+
+def test_a_corrupt_line_costs_that_line_and_nothing_else(client, projects_dir):
+    """A truncated write — the shape a transcript takes for the seconds a turn
+    is in flight — must not take the listing down with it."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("first", T9), _ai_title("A title"),
+    ])
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"type": "user", "message": {"role": "us\n')
+        f.write(json.dumps(_user("second", T10, uuid="u2")) + "\n")
+
+    task = _tasks(client)[0]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == ["second", "first"]
+
+
+def test_the_machinery_claude_code_writes_is_not_a_message(client,
+                                                           projects_dir):
+    """A finished subagent reporting back, a slash command's name and its
+    stdout: `type: user` records the user did not write. On a real machine they
+    were a third of everything in the store."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("fix the parser", T9, uuid="u1"),
+        _user("<task-notification>\n<task-id>b</task-id>", T10, uuid="u2"),
+        _user("<local-command-stdout>Set mode</local-command-stdout>", T11,
+              uuid="u3"),
+        {"type": "user", "timestamp": T11, "uuid": "u4", "isMeta": True,
+         "message": {"role": "user", "content": "Caveat: the messages below"}},
+        _user("now ship it <system-reminder>be careful</system-reminder>", T12,
+              uuid="u5"),
+    ])
+    task = _tasks(client)[0]
+    assert task["message_count"] == 2
+    assert [m["body"] for m in task["messages"]] == [
+        "now ship it <system-reminder>be careful</system-reminder>",
+        "fix the parser",
+    ], "a tag further in leaves a real message real"
+
+
+def test_an_unreadable_transcript_does_not_hide_the_others(client, projects_dir):
+    d = projects_dir / "-broken"
+    d.mkdir()
+    (d / "sess-bad.jsonl").write_text("not json at all\n")
+    _write_transcript(projects_dir, "sess-ok", "/p", [_user("hi", T9)])
+
+    keys = {t["key"] for t in _tasks(client)}
+    assert "sess-ok" in keys
+
+
+# ------------------------------------------------------- messages and numbers
+
+
+def test_only_the_three_newest_messages_ride_along(client, projects_dir):
+    """The accordion shows three and offers Show more; the ids still count from
+    the bottom of the whole thread."""
+    records = []
+    for n in range(1, 6):
+        records.append(_user(f"message {n}", f"2026-08-16T0{n}:00:00Z",
+                             uuid=f"u{n}"))
+    _write_transcript(projects_dir, "sess-a", "/p", records)
+
+    task = _tasks(client)[0]
+    assert task["message_count"] == 5
+    assert [m["message_id"] for m in task["messages"]] == [
+        "MSG-005", "MSG-004", "MSG-003"]
+    assert [m["body"] for m in task["messages"]] == [
+        "message 5", "message 4", "message 3"]
+
+
+def test_show_more_returns_the_whole_thread_newest_first(client, projects_dir):
+    records = [_user(f"message {n}", f"2026-08-16T0{n}:00:00Z", uuid=f"u{n}")
+               for n in range(1, 6)]
+    _write_transcript(projects_dir, "sess-a", "/p", records)
+
+    r = client.get("/api/tasks/sess-a/messages")
+    assert r.status_code == 200
+    messages = r.json()["messages"]
+    assert [m["message_id"] for m in messages] == [
+        "MSG-005", "MSG-004", "MSG-003", "MSG-002", "MSG-001"]
+    assert messages[0]["body"] == "message 5"
+
+
+def test_an_unknown_task_is_a_404(client):
+    assert client.get("/api/tasks/nope/messages").status_code == 404
+
+
+def test_numbers_restart_per_project_and_survive_a_new_session(client,
+                                                               projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/home/a", [_user("a", T9)])
+    _write_transcript(projects_dir, "sess-b", "/home/a", [_user("b", T10)])
+    _write_transcript(projects_dir, "sess-c", "/home/b", [_user("c", T11)])
+
+    numbers = {t["key"]: t["task_id"] for t in _tasks(client)}
+    assert numbers == {"sess-a": "TASK-001", "sess-b": "TASK-002",
+                       "sess-c": "TASK-001"}
+
+    # A later session must not disturb what is already numbered.
+    _write_transcript(projects_dir, "sess-d", "/home/a", [_user("d", T12)])
+    tasks_mod.reset_cache()
+    again = {t["key"]: t["task_id"] for t in _tasks(client)}
+    assert again["sess-a"] == "TASK-001"
+    assert again["sess-d"] == "TASK-003"
+
+
+def test_tasks_are_sorted_by_last_activity(client, projects_dir):
+    _write_transcript(projects_dir, "old", "/p", [_user("old", T9)])
+    _write_transcript(projects_dir, "new", "/p", [_user("new", T12)])
+    assert [t["key"] for t in _tasks(client)] == ["new", "old"]
+
+
+# --------------------------------------------------------------- the schedule
+
+
+def test_a_pending_scheduled_message_is_a_task_with_no_session(client,
+                                                               tmp_path,
+                                                               state_dir):
+    """§5: the row exists from creation, with an empty session id. Without it
+    the Board's Upcoming column would always be empty, which is most of the
+    point of the Board."""
+    _already_using(state_dir)
+    target = tmp_path / "proj" / "report.py"
+    target.parent.mkdir()
+    target.write_text("x = 1\n")
+    _seed_schedule([_entry("20260817-090000-abc", "pull today's news", T12,
+                           target=str(target))])
+
+    task = _tasks(client)[0]
+    assert task["key"] == "pending:20260817-090000-abc"
+    assert task["session_id"] == ""
+    assert task["task_id"] == "TASK-001"
+    # A task on a FILE belongs to the folder (§2) — files and folders do not get
+    # separate session pools — and keeps the file as its displayed target.
+    assert task["project"] == str(target.parent)
+    assert task["target"] == str(target)
+    assert task["status"] == "upcoming"
+    assert task["message_count"] == 1
+    message = task["messages"][0]
+    assert message["kind"] == "scheduled"
+    assert message["state"] == "pending"
+    assert message["entry_id"] == "20260817-090000-abc"
+    assert message["unread"] is False, "nothing has happened to read yet"
+    assert task["unread"] == 0
+
+
+def test_a_fired_scheduled_message_is_one_message_not_two(client, projects_dir):
+    """The send hands the entry's body to the session verbatim, so the entry
+    and the transcript prompt are the SAME message. Listing both is the bug this
+    join exists to prevent."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull today's news", T9, uuid="anchor-1"),
+        _assistant("here it is", T10),
+    ])
+    _seed_schedule([_entry("e1", "pull today's news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a")])
+
+    task = _tasks(client)[0]
+    assert task["message_count"] == 1
+    message = task["messages"][0]
+    assert message["kind"] == "scheduled"
+    assert message["entry_id"] == "e1"
+    assert message["anchor"] == "anchor-1", "the join keeps the scroll target"
+    assert message["turn"] == "done"
+
+
+def test_a_thread_mixes_scheduled_and_typed_messages(client, projects_dir):
+    """A task is a bag of messages and does not care where each came from."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull today's news", T9, uuid="a1"),
+        _user("now summarise it", T10, uuid="a2"),
+    ])
+    _seed_schedule([
+        _entry("e1", "pull today's news", T9, state=schedule.SENT, fired=T9,
+               turn="ok", claude_session_id="sess-a"),
+        _entry("e2", "pull today's news", T12, claude_session_id="sess-a"),
+    ])
+
+    r = client.get("/api/tasks/sess-a/messages")
+    messages = r.json()["messages"]
+    assert [(m["message_id"], m["kind"], m["state"]) for m in messages] == [
+        ("MSG-003", "scheduled", "pending"),
+        ("MSG-002", "chat", "sent"),
+        ("MSG-001", "scheduled", "sent"),
+    ]
+    assert _tasks(client)[0]["message_count"] == 3
+
+
+def test_a_recurring_template_is_not_a_message(client, projects_dir):
+    """A template never fires — its materialised occurrence is the message."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("tpl", "every morning", T9, state=schedule.RECURRING,
+               repeats="0 9 * * *", claude_session_id="sess-a"),
+        _entry("occ", "every morning", T12, claude_session_id="sess-a",
+               template_id="tpl"),
+    ])
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 2
+    assert [m["entry_id"] for m in task["messages"]] == ["occ", ""]
+    assert task["messages"][0]["template_id"] == "tpl"
+
+
+def test_a_skipped_occurrence_reads_as_skipped_and_archives_the_task(
+        client, projects_dir):
+    """The user's skip and the loop's own missed verdict are the same fact about
+    a repeating run, and schedule-lib.ts files both under Archive."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("occ", "every morning", T12, state=schedule.MISSED,
+                           claude_session_id="sess-a", template_id="tpl")])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["state"] == "skipped"
+    assert task["status"] == "archived"
+
+
+def test_a_task_whose_session_has_no_transcript_still_lists(client, tmp_path):
+    """The session may be seconds old, or its transcript may have moved. Either
+    way the user's message is not dropped on the floor."""
+    _seed_schedule([_entry("e1", "hello", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="ghost",
+                           target=str(tmp_path))])
+    task = _by_key(client)["ghost"]
+    assert task["session_id"] == "ghost"
+    assert task["message_count"] == 1
+    assert task["messages"][0]["kind"] == "scheduled"
+
+
+def test_a_pending_row_keeps_its_number_when_it_finally_runs(client,
+                                                             projects_dir,
+                                                             tmp_path):
+    """§5's whole point: the number is allocated at creation and the session id
+    fills in later, so the row the user has been watching does not renumber the
+    moment it does something."""
+    _seed_schedule([_entry("e1", "pull the news", T9, target=str(tmp_path))])
+    pending = _tasks(client)[0]
+    assert pending["key"] == "pending:e1"
+    number = pending["task_id"]
+
+    # The first run mints a session id and writes a transcript.
+    _write_transcript(projects_dir, "sess-a", str(tmp_path),
+                      [_user("pull the news", T9, uuid="a1")])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           target=str(tmp_path))])
+    tasks_mod.reset_cache()
+
+    tasks = _tasks(client)
+    assert len(tasks) == 1, "the pending row and the session are one task"
+    assert tasks[0]["key"] == "sess-a"
+    assert tasks[0]["task_id"] == number
+
+
+# --------------------------------------------------------------- the calendar
+
+
+def _epoch(iso):
+    return tasks_store.epoch(iso)
+
+
+def _scheduled(client, frm, to):
+    r = client.get("/api/tasks/scheduled", params={"from": frm, "to": to})
+    assert r.status_code == 200, r.text
+    return r.json()["items"]
+
+
+DAY_START = _epoch("2026-08-16T00:00:00Z")
+DAY_END = _epoch("2026-08-17T00:00:00Z")
+
+
+def test_the_window_is_from_inclusive_and_to_exclusive(client, tmp_path):
+    """The client sends local-midnight bounds because its columns are local
+    days. A message at 23:59 on the last column has to survive; the one at the
+    next midnight belongs to the next column."""
+    _seed_schedule([
+        _entry("at-from", "first", "2026-08-16T00:00:00Z", target=str(tmp_path)),
+        _entry("late", "last minute", "2026-08-16T23:59:00Z",
+               target=str(tmp_path)),
+        _entry("at-to", "next day", "2026-08-17T00:00:00Z",
+               target=str(tmp_path)),
+    ])
+    items = _scheduled(client, DAY_START, DAY_END)
+    assert [i["message"]["body"] for i in items] == ["first", "last minute"]
+
+
+def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
+    """The same shape the listing returns — not a trimmed pair — and `kind` is
+    present and "scheduled" so the client's own filter stays a no-op."""
+    _seed_schedule([_entry("e1", "pull the news", "2026-08-16T09:00:00Z",
+                           target=str(tmp_path), template_id="tpl")])
+    item = _scheduled(client, DAY_START, DAY_END)[0]
+    assert item["task_key"] == "pending:e1"
+    assert set(item["message"]) == {
+        "message_id", "kind", "body", "at", "state", "unread", "entry_id",
+        "template_id", "turn", "anchor"}
+    assert item["message"]["kind"] == "scheduled"
+    assert item["message"]["message_id"] == "MSG-001"
+    assert item["message"]["entry_id"] == "e1"
+    assert item["message"]["template_id"] == "tpl"
+    assert item["message"]["at"] == _epoch("2026-08-16T09:00:00Z")
+
+
+def test_the_window_carries_every_message_a_task_has_in_it(client,
+                                                           projects_dir):
+    """The regression this endpoint exists for: the listing's three-message
+    tail under-draws a time axis, so an hourly message drew three chips instead
+    of a day of them."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("start", T9,
+                                                           uuid="u1")])
+    entries = []
+    for hour in range(40):
+        due = _epoch("2026-08-16T00:00:00Z") + hour * 1800
+        entries.append(_entry(
+            f"e{hour}", f"run {hour}",
+            __import__("datetime").datetime.fromtimestamp(
+                due, __import__("datetime").timezone.utc).isoformat(),
+            claude_session_id="sess-a", template_id="tpl"))
+    _seed_schedule(entries)
+
+    items = _scheduled(client, DAY_START, DAY_END)
+    assert len(items) == 40
+    assert all(i["task_key"] == "sess-a" for i in items)
+    # And the ids still count from the bottom of the WHOLE thread — the typed
+    # message at 09:00 takes its place in the middle of the run.
+    assert items[0]["message"]["message_id"] == "MSG-001"
+    assert items[-1]["message"]["message_id"] == "MSG-041"
+
+
+def test_chat_messages_never_appear_on_the_calendar(client, projects_dir):
+    """A typed message has no time the calendar could place it at."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("typed today", "2026-08-16T09:00:00Z", uuid="u1")])
+    _seed_schedule([_entry("e1", "scheduled today", "2026-08-16T10:00:00Z",
+                           claude_session_id="sess-a")])
+    items = _scheduled(client, DAY_START, DAY_END)
+    assert [i["message"]["body"] for i in items] == ["scheduled today"]
+
+
+def test_a_fired_message_is_placed_where_it_actually_ran(client, projects_dir):
+    """A handled message sits where it ACTED, which is the join's timestamp —
+    the same instant the thread shows it at."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", "2026-08-16T09:05:00Z", uuid="u1")])
+    _seed_schedule([_entry("e1", "pull the news", "2026-08-16T09:00:00Z",
+                           state=schedule.SENT, fired="2026-08-16T09:05:00Z",
+                           turn="ok", claude_session_id="sess-a")])
+    item = _scheduled(client, DAY_START, DAY_END)[0]
+    assert item["message"]["at"] == _epoch("2026-08-16T09:05:00Z")
+    assert item["message"]["state"] == "sent"
+    assert item["message"]["anchor"] == "u1"
+
+
+def test_an_empty_window_is_an_empty_list(client, tmp_path):
+    _seed_schedule([_entry("e1", "later", "2026-09-01T09:00:00Z",
+                           target=str(tmp_path))])
+    assert _scheduled(client, DAY_START, DAY_END) == []
+    # An inverted window is a question with an empty answer, not an error: the
+    # calendar can ask for one while it is still settling on its bounds.
+    assert _scheduled(client, DAY_END, DAY_START) == []
+
+
+def test_the_window_is_cached_but_notices_a_change(client, tmp_path):
+    _seed_schedule([_entry("e1", "one", "2026-08-16T09:00:00Z",
+                           target=str(tmp_path))])
+    assert len(_scheduled(client, DAY_START, DAY_END)) == 1
+    _seed_schedule([
+        _entry("e1", "one", "2026-08-16T09:00:00Z", target=str(tmp_path)),
+        _entry("e2", "two", "2026-08-16T10:00:00Z", target=str(tmp_path))])
+    assert len(_scheduled(client, DAY_START, DAY_END)) == 2
+
+
+def test_a_recurring_template_is_not_drawn(client, tmp_path):
+    """A template never fires; its materialised occurrence is what the calendar
+    has to place."""
+    _seed_schedule([
+        _entry("tpl", "every morning", "2026-08-16T09:00:00Z",
+               state=schedule.RECURRING, repeats="0 9 * * *",
+               target=str(tmp_path)),
+        _entry("occ", "every morning", "2026-08-16T09:00:00Z",
+               template_id="tpl", target=str(tmp_path)),
+    ])
+    items = _scheduled(client, DAY_START, DAY_END)
+    assert [i["message"]["entry_id"] for i in items] == ["occ"]
+
+
+# ----------------------------------------------------------------- the status
+
+
+@pytest.mark.parametrize("fields,expected", [
+    ({}, "upcoming"),
+    ({"state": schedule.SENDING}, "in_progress"),
+    ({"state": schedule.SENT, "turn": "ok", "fired": T12}, "done"),
+    ({"state": schedule.MISSED}, "done"),
+    ({"state": schedule.CANCELLED}, "archived"),
+])
+def test_status_follows_the_newest_message(client, projects_dir, fields,
+                                           expected):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a",
+                           **fields)])
+    assert _by_key(client)["sess-a"]["status"] == expected
+
+
+def test_triage_wins_where_it_disagrees(client, projects_dir, state_dir):
+    """The user dragged the card. A derivation that undid that on the next poll
+    would make the board unusable."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
+    assert _by_key(client)["sess-a"]["status"] == "upcoming"
+
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "archived"}}))
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+
+def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
+    """`sent` only means the SESSION STARTED; reporting a dead turn as a clean
+    send sends the user looking in the wrong place."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9, uuid="a1")])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="failed", claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["failed"] is True
+    assert task["messages"][0]["state"] == "error"
+    assert task["status"] == "done"
+
+
+# ----------------------------------------------------------------- the unread
+
+
+def test_marking_one_message_read_leaves_the_older_one_unread(client,
+                                                              projects_dir,
+                                                              state_dir):
+    """Clicking MSG-003 says nothing about the MSG-002 the user scrolled past.
+    A moving watermark would swallow it silently, which is the one failure
+    unread exists to prevent."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("one", T9, uuid="u1"),
+        _user("two", T10, uuid="u2"),
+        _user("three", T11, uuid="u3"),
+    ])
+    assert _by_key(client)["sess-a"]["unread"] == 3
+
+    r = client.post("/api/tasks/read",
+                    json={"key": "sess-a", "message_id": "MSG-003"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "unread": 2}
+
+    messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    read = {m["message_id"]: m["unread"] for m in messages}
+    assert read == {"MSG-003": False, "MSG-002": True, "MSG-001": True}
+    assert _by_key(client)["sess-a"]["unread"] == 2
+
+
+def test_reading_a_thread_through_clears_it(client, projects_dir, state_dir):
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("one", T9, uuid="u1"), _user("two", T10, uuid="u2")])
+    for message_id in ("MSG-001", "MSG-002"):
+        client.post("/api/tasks/read",
+                    json={"key": "sess-a", "message_id": message_id})
+    task = _by_key(client)["sess-a"]
+    assert task["unread"] == 0
+    assert all(m["unread"] is False for m in task["messages"])
+
+
+def test_a_future_message_is_not_unread(client, projects_dir, state_dir):
+    """A task scheduled for tomorrow has no response to have missed."""
+    _already_using(state_dir)
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("one", T9,
+                                                           uuid="u1")])
+    _seed_schedule([_entry("e1", "later", T12, claude_session_id="sess-a")])
+    client.post("/api/tasks/read", json={"key": "sess-a",
+                                         "message_id": "MSG-001"})
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 2
+    assert task["unread"] == 0
+
+
+def test_day_one_is_quiet_and_only_what_arrives_after_it_is_unread(
+        client, projects_dir, state_dir):
+    """Unread means "arrived since I started using this", not "exists". A store
+    that has never existed would otherwise light up every row on the machine,
+    which is a badge on everything and therefore a badge that means nothing."""
+    records = [_user(f"message {n}", f"2026-08-16T0{n}:00:00Z", uuid=f"u{n}")
+               for n in range(1, 10)] + [_user("message 10", T10, uuid="u10")]
+    path = _write_transcript(projects_dir, "sess-a", "/p", records)
+
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 10
+    assert task["unread"] == 0
+    assert all(m["unread"] is False for m in task["messages"])
+    assert tasks_store.initialized(tasks_store.read_state())
+
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(_user("message 11", T11, uuid="u11")) + "\n")
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 11
+    assert task["unread"] == 1
+    assert task["messages"][0]["message_id"] == "MSG-011"
+    assert task["messages"][0]["unread"] is True
+    assert task["messages"][1]["unread"] is False
+
+
+def test_the_baseline_is_stamped_once_and_never_moves(client, projects_dir,
+                                                      state_dir):
+    """A later run must not re-stamp: that would silently mark unread things
+    read, which is the failure the baseline exists to avoid the reverse of."""
+    path = _write_transcript(projects_dir, "sess-a", "/p",
+                             [_user("one", T9, uuid="u1")])
+    _by_key(client)
+    stamped = json.loads((state_dir / "read.json").read_text())[
+        tasks_store.INIT_KEY]
+
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(_user("two", T10, uuid="u2")) + "\n")
+    for _ in range(3):
+        tasks = _by_key(client)
+    assert tasks["sess-a"]["unread"] == 1
+    assert json.loads((state_dir / "read.json").read_text())[
+        tasks_store.INIT_KEY] == stamped
+
+
+def test_a_task_that_appears_after_the_baseline_is_unread(client,
+                                                          projects_dir):
+    """The baseline is a per-task floor, not one global clock, so a session
+    created afterwards has its first message land unread."""
+    _write_transcript(projects_dir, "old", "/p", [_user("old", T9, uuid="u1")])
+    assert _by_key(client)["old"]["unread"] == 0
+
+    _write_transcript(projects_dir, "new", "/p", [_user("new", T10, uuid="u2")])
+    tasks = _by_key(client)
+    assert tasks["new"]["unread"] == 1
+    assert tasks["old"]["unread"] == 0
+
+
+def test_the_read_endpoint_refuses_nonsense(client):
+    bad = client.post("/api/tasks/read", json={"key": "s", "message_id": "12"})
+    assert bad.status_code == 400
+    assert "MSG-nnn" in bad.json()["detail"]
+    assert client.post("/api/tasks/read",
+                       json={"key": "  ", "message_id": "MSG-001"}
+                       ).status_code == 400
+
+
+def test_marking_a_task_that_no_longer_exists_is_not_an_error(client):
+    r = client.post("/api/tasks/read",
+                    json={"key": "gone", "message_id": "MSG-001"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "unread": 0}
+
+
+# ------------------------------------------------------------------ the cache
+
+
+def test_a_growing_transcript_is_read_incrementally(client, projects_dir):
+    """Transcripts are append-only, so a poll pays for the turn that happened
+    since — not for the file again."""
+    path = _write_transcript(projects_dir, "sess-a", "/p",
+                             [_user("one", T9, uuid="u1")])
+    assert _by_key(client)["sess-a"]["message_count"] == 1
+
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(_user("two", T10, uuid="u2")) + "\n")
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 2
+    assert task["messages"][0]["body"] == "two"
+
+    # A half-written line is re-read whole on the next poll rather than dropped.
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"type": "user", "timestamp": "2026-08-16T13:00:00Z", '
+                '"uuid": "u3", "message": {"role": "user", "cont')
+    assert _by_key(client)["sess-a"]["message_count"] == 2
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('ent": [{"type": "text", "text": "three"}]}}\n')
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 3
+    assert task["messages"][0]["body"] == "three"
+
+
+def test_a_replaced_transcript_is_re_read_from_the_top(client, projects_dir):
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("one", T9, uuid="u1"), _user("two", T10, uuid="u2")])
+    assert _by_key(client)["sess-a"]["message_count"] == 2
+
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("only", T9)],
+                      encoded=os.path.basename(os.path.dirname(str(path))))
+    task = _by_key(client)["sess-a"]
+    assert task["message_count"] == 1
+    assert task["messages"][0]["body"] == "only"
