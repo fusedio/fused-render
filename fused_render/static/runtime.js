@@ -2903,6 +2903,17 @@
         );
         err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
         err.jobId = started.jobId;
+        // Where the salvage is. A run that dies at minute 80 of 90 writes no
+        // `.json` at all, and the worker deliberately LEAVES its
+        // `.partial.jsonl` behind — every segment that decoded before it fell
+        // over. The POST reply named that path, but a caller of this bridge
+        // never sees the reply, only this rejection, so without these two the
+        // file is written for a situation it cannot be reached from. Carried
+        // on a `cancelled` too, where the file is gone and the fields simply
+        // describe what would have been: one shape for both, rather than a
+        // caller having to know which rejection populates them.
+        err.output = started.output;
+        err.outputPartial = started.outputPartial;
         throw err;
       });
     });

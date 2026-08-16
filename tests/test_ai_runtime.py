@@ -2660,7 +2660,8 @@ def test_a_queued_transcription_resolves_its_MODEL_only_once_it_has_the_lock(mon
     assert resolved == ["org/default", "org/other"], resolved
 
 
-def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}'):
+def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a"}',
+                       extra=None):
     """Run `aiTranscribe` out of runtime.js under node, against stubs.
 
     The same extraction the claude suites use (`tests/test_claude_narrow.py`):
@@ -2672,7 +2673,9 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
     `readfile` is JS for the body of the stub `readFile`; `record` is the job
     row `watch` resolves with; `opts` is the argument object as JS, so a caller
     can drive the argument checks that reject before any of the stubs are ever
-    reached. Returns the settled outcome as a dict.
+    reached. `extra` is one more JS `key: expression` reported alongside the
+    rejection, for a test that cares about a field beyond the usual three.
+    Returns the settled outcome as a dict.
     """
     import shutil
     import subprocess
@@ -2688,7 +2691,8 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
 
     prelude = f"""
       const started = {{jobId: "sys:ai-transcribe:x", output: "/t/out.json",
-                        outputText: "/t/out.txt", path: "/t/a.m4a",
+                        outputText: "/t/out.txt",
+                        outputPartial: "/t/out.partial.jsonl", path: "/t/a.m4a",
                         model: "m", task: "transcribe"}};
       const window = {{location: {{search: "?path=/pages/p.html"}}}};
       const aiPost = () => Promise.resolve(started);
@@ -2707,9 +2711,10 @@ def _run_ai_transcribe(readfile, record, node_required=True, opts='{path: "a.m4a
       aiTranscribe(OPTS).then(
         (value) => console.log(JSON.stringify({ok: true, value})),
         (err) => console.log(JSON.stringify(
-          {ok: false, message: err.message, type: err.type, jobId: err.jobId})),
+          {ok: false, message: err.message, type: err.type, jobId: err.jobId,
+           EXTRA})),
       );
-    """.replace("OPTS", opts)
+    """.replace("OPTS", opts).replace("EXTRA", extra or '"_": null')
     out = subprocess.run(["node", "-e", prelude + fn + call],
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
@@ -2839,6 +2844,20 @@ def test_a_call_that_does_not_ask_for_speakers_is_unchanged():
     assert settled["ok"] is True, settled
     assert "speakers" not in settled["value"]
     assert "speaker" not in settled["value"]["segments"][0]
+
+
+def test_a_FAILED_transcription_still_says_where_the_salvage_is():
+    """A run that dies at minute 80 of 90 writes no `.json` at all, and the
+    `.partial.jsonl` the worker deliberately LEAVES behind is the only place
+    those 80 minutes survive. The POST reply named that path — but the caller
+    of `fused.ai.transcribe` never sees the reply, only the rejection, so
+    without this the file is documented, written, and unreachable from the one
+    situation it exists for."""
+    settled = _run_ai_transcribe('Promise.reject(new Error("no file"))',
+                                 '{state: "error", message: "the decoder exploded"}',
+                                 extra="outputPartial: err.outputPartial")
+    assert settled["ok"] is False and settled["type"] == "ai_error"
+    assert settled["outputPartial"] == "/t/out.partial.jsonl"
 
 
 def test_a_cancelled_row_rejects_as_cancelled_not_as_an_error():
