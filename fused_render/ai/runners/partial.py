@@ -134,10 +134,19 @@ class Sink:
         self._handle.flush()
 
     def discard(self) -> None:
-        """Close and remove the file, if there is one. Never raises for its
-        absence: a run cancelled during the audio decode reaches this having
-        never written a segment, and turning that into a FileNotFoundError
-        would replace a cancel with a crash."""
+        """Close and remove the file, if there is one. Best-effort by design.
+
+        This runs on the way OUT of the context manager, which a clean exit
+        reaches only after the real `.json` and `.txt` have already been
+        written — so anything raised here reports a finished transcript as a
+        failed run, in exchange for a tidier directory. That trade is never
+        worth taking, so every `os.remove` failure is swallowed, not just the
+        absent-file one: a run cancelled during the audio decode arrives having
+        never written a segment (FileNotFoundError), and a page tailing this
+        file through `/api/fs/raw` can be holding a Windows lock over it
+        (PermissionError) at the exact moment the transcript lands. A partial
+        file that outlives its run is duplicate bytes; a crash here is the
+        result."""
         if self._handle is not None:
             self._handle.close()
             self._handle = None
@@ -145,7 +154,7 @@ class Sink:
             return
         try:
             os.remove(self.path)
-        except FileNotFoundError:
+        except OSError:
             pass
 
     def close(self) -> None:

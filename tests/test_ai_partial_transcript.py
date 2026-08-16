@@ -265,6 +265,30 @@ def test_discarding_a_file_that_was_never_written_is_not_an_error(partial, tmp_p
     assert not os.path.exists(out)
 
 
+def test_a_partial_file_that_will_not_DELETE_does_not_fail_a_finished_run(
+        partial, monkeypatch, tmp_path):
+    """The cleanup runs AFTER the real `.json` and `.txt` have landed, so a
+    failure here reports a finished transcript as a failed one.
+
+    It is reachable: the page tails this file through `/api/fs/raw`, and on
+    Windows a read still open over it makes `os.remove` raise PermissionError
+    rather than FileNotFoundError. Antivirus and a backup agent hold the same
+    lock. The tidy-up is worth nothing next to the result it would destroy, so
+    every `os.remove` failure is swallowed, not just the absent-file one.
+    """
+    out = str(tmp_path / "t.partial.jsonl")
+
+    def locked(path):
+        raise PermissionError(32, "The process cannot access the file")
+
+    with partial.sink(out) as sink:
+        sink.add({"start": 0.0, "end": 1.0, "text": "hi"})
+        monkeypatch.setattr(partial.os, "remove", locked)
+    # The file survives — nothing can be done about that — but the run does not
+    # die on it, and the handle is closed either way.
+    assert os.path.exists(out)
+
+
 def test_a_partial_file_left_by_an_EARLIER_run_is_not_appended_to(partial, tmp_path):
     """The uid in `out_base` makes a collision impossible in practice, and
     "impossible in practice" is how a transcript ends up with somebody else's
