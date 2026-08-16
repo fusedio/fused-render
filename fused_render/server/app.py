@@ -61,6 +61,7 @@ from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
+from fused_render.server.routers.selffix import router as selffix_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.update import router as update_router
@@ -242,6 +243,16 @@ def create_app(start_dir: str) -> FastAPI:
 
         schedule.start()
 
+    # Has a modified installation been put back? (selffix.reconcile). A startup
+    # event rather than the create_app body for the usual reason — tests build
+    # apps without running lifespan — and on its own thread because it hashes
+    # the whole package when, and only when, a marker is actually there.
+    @app.on_event("startup")
+    async def _startup_selffix_reconcile():
+        from fused_render import selffix
+
+        selffix.start_reconcile()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
@@ -349,6 +360,11 @@ def create_app(start_dir: str) -> FastAPI:
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.
     app.include_router(update_router)
+    # Self-fix (routers/selffix.py): a Claude session on this INSTALLATION when
+    # something failed on the user's machine, and the modified-install mark it
+    # leaves behind. Sibling of the updater above on purpose — one of them
+    # changes this install, the other replaces it.
+    app.include_router(selffix_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)

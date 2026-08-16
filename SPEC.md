@@ -6844,3 +6844,157 @@ world from one the user typed.
   continuation, not a cliff. Cancelling a template cascades to its pending
   occurrence; cancelling just the occurrence means "skip this one" and the
   schedule continues.
+
+---
+
+## 42. Self-Fix — A Claude Session on This Installation (D305)
+
+Goal: when the app fails on a machine we cannot see, the user has one more
+option than "dismiss it and hope" — they can ask Claude to look at the failure
+*in the installed app itself*, watch it work, and send the account of what it
+found back to us.
+
+Before this, a failed row in the download manager was terminal in both senses:
+the work had stopped, and so had the app's usefulness about it. The error text
+was the whole story, the code that produced it was invisible, and the only
+channel back to the developers was the user's own retelling of what they saw.
+
+The feature has two halves that meet at a file on disk — a session that changes
+the installation, and the mark that says so.
+
+### 42.1 The session
+
+- **SF-1** **The trigger is an option on a FAILURE**, not a menu entry: a row in
+  the download manager (§36) whose `state` is `error` grows a **Fix this** button
+  beside its ✕. That placement is the whole argument — a failure is the one
+  moment the app has already admitted it cannot do the thing, so an offer to go
+  and look at why is not an interruption. On a running row it would be noise; on
+  a finished one, a question nobody asked. The trigger is a plain function over a
+  title and a message (`platform/lib/selffix.ts`), so any other surface that
+  learns to report a failure can offer the same option without a second
+  mechanism.
+- **SF-2** **The session opens on the INSTALL ROOT** — the installed
+  `fused_render` package (`selffix.install_root`), which is the code we wrote
+  plus the templates and built shell we ship with it. Deliberately not its
+  parent: that is `site-packages` (in the mac app,
+  `Contents/Resources/lib/python3.12`), and handing an agent every third-party
+  dependency as its working directory invites a "fix" inside pydantic — neither
+  ours to change nor anything a report could usefully describe.
+- **SF-3** **The user LANDS IN IT.** `POST /api/selffix/start` spawns the
+  detached session (the fork-safe helper in `claude_spawn.py`, same discipline as
+  the app scaffolder and scheduled messages) and answers `{run_id, target,
+  incident, report}`; the shell then navigates to
+  `/explorer/view/<install>?_side=claude&run=<run_id>` — the explorer's companion
+  column, attached to the run that was just started, the same `_side=claude`
+  handoff the Inbox and scheduled messages use. Without the run id the sidebar
+  opens on the folder, sees nothing, and shows an empty composer while a session
+  works three feet away in a process nobody is watching.
+- **SF-4** **Permission mode is `prompt`, not `auto`.** The app scaffolder runs
+  unattended and takes the broadest mode it offers; this session edits the
+  application itself, and a user who asked for a local fix has not thereby agreed
+  to let a model rewrite their installation unwatched. Affordable here precisely
+  because SF-3 puts the session in front of them: every escalation is a card they
+  answer in the sidebar they are already looking at.
+- **SF-5** **The incident is written down first, and the report exists before the
+  session writes a word of it.** `record_incident` writes both files into the
+  state dir: the failure (operation, detail, error text, page, app version,
+  Python, platform, install root) and a report **pre-filled with it**. Two
+  reasons, the second being the real one — a version chip that promises a report
+  must always have a file to open, and what a developer most needs is known *now*
+  and is not something a summarising model should be trusted to copy back
+  accurately. The session rewrites the file; if it never gets that far, what
+  survives is still the more useful half.
+- **SF-5a** **The prompt fences the agent in.** It establishes where it is (an
+  installed copy: no test suite, no git history, no PR to open), what it may
+  touch (only under the install root; source and text only — never a compiled
+  artefact, never the minified `static/shell-dist/`, never the bundle's binaries
+  or `Info.plist`; no package installs; not `~/.claude` or `~/.fused-render`),
+  and that **the report is the deliverable** — the fix helps one machine, the
+  report is the only thing that can help everyone else. "I could not fix this
+  here" is stated as a good outcome, so the model is not pushed into a guess.
+
+### 42.2 The mark
+
+- **SF-6** **The mark lives INSIDE the installation**, at
+  `<install root>/.fused-render-selffix/` — never in `~/.fused-render`. A
+  per-user file would be a lie in both directions: a second account on the same
+  machine runs the same modified bytes and would see a clean badge, and a user
+  who reinstalls would keep a badge for an install that no longer contains the
+  change. The placement is not bookkeeping, it *is* the mechanism: **replacing
+  the installation removes the mark, with no uninstall hook anyone has to
+  remember to run.** The dir holds the marker, the pristine baseline, the
+  incidents and the reports; it is gitignored, excluded from the wheel by the
+  same rule, and — crucially — excluded from the digest below, so writing an
+  incident is not itself a modification of the installation.
+- **SF-7** **The APP decides that something changed, not the model.** A session
+  asked to stamp its own work is a session that can forget to, and the one thing
+  this feature must not do is leave an installation quietly carrying somebody's
+  patch. So the server takes a **content digest** of the install tree before the
+  spawn (`ensure_baseline` — the last moment it is still what we shipped; nothing
+  runs at install time, so there is no earlier hook), and the watcher re-hashes
+  on the session's `done` tick and every ~16s in between. Different from the
+  baseline ⇒ marked. Content, never mtimes: a reinstall rewrites every mtime
+  without changing a byte. `__pycache__` and `.pyc` are excluded, or every
+  installation would be "modified" the first time it ran.
+- **SF-7a** **Only a self-fix session ever sets it.** There is deliberately no
+  continuous verification. What is recorded is a *provenance* claim — "Claude
+  changed this installation while fixing something, here is its report" — and not
+  an *integrity* claim ("these bytes differ from the release"), which cannot be
+  made honestly without shipping a signed per-file manifest. The cost is that a
+  modification made some other way is not marked, which is the right silence: a
+  source checkout rebuilds `static/shell-dist` on every watch tick, and a badge
+  that lit up for that would mean nothing anywhere else.
+- **SF-8** **Reinstalling ALWAYS clears it**, and two independent checks back
+  that up because "the tree was replaced" is not something the app may merely
+  assume:
+  * a **version stamp** in the marker, checked on every read (`status`). `pip
+    uninstall` removes only what its RECORD lists, so a marker can outlive an
+    upgrade that replaced everything around it. A marker whose version is not the
+    running one describes an installation that is gone and is deleted on sight —
+    on the READ path, so the badge is gone the moment the new version serves its
+    first request, not after the next restart, and without a walk that a config
+    poll must never pay for.
+  * a **digest reconciliation** at startup (`reconcile`), on a thread, and only
+    when a marker exists. This catches what the version stamp cannot see: a
+    *same-version* reinstall — the repair install someone does precisely because
+    the app is behaving oddly. If the tree hashes back to the recorded baseline,
+    the modification is gone and so is the marker.
+- **SF-9** **The version indicator is the badge** (`platform/ui/VersionChip`).
+  Not a badge beside it: "v0.4.18" is a claim about which bytes are running, and
+  once a session has edited this copy the number names the release it *came
+  from*, not what it *is*. A separate badge would leave a confident, wrong version
+  string sitting next to it. Amber, not red — nothing is broken, a fix was
+  applied, possibly successfully; the chip says "this is not stock", which is a
+  caveat. It carries a mark as well as a colour, and the accessible name says in
+  words what the colour says.
+- **SF-10** **Clicking it answers three questions in the order people ask them**:
+  what happened (**Open the report** — navigates to the markdown file in the
+  app's own viewer; plus copy-to-clipboard for pasting elsewhere), who needs to
+  know (**Open an issue**, prefilled with version, platform and the report's
+  path — never the report body, which is a document and would blow the URL
+  length), and how to get a normal copy back (**reinstall**, worded for *this*
+  install: `brew reinstall --cask`, the DMG drag, the installer, `pip install
+  --force-reinstall`, or `git status` for a checkout — with the promise from SF-6
+  said out loud). A quiet **Dismiss this badge** clears the marker and nothing
+  else: the badge is a claim about this machine and the person at it may have
+  settled it by hand, but the report files are not theirs to lose by dismissing a
+  badge.
+- **SF-11** **Cheap on the poll, expensive on the click.** The chip's PRESENCE
+  rides `/api/config`'s `modified_install` (one small JSON read; present only
+  when modified, so there is no `modified: false` shape to truthiness-check). The
+  panel's CONTENTS — the report listing, and on a mac a `brew list` subprocess to
+  word the reinstall — are `GET /api/selffix`, fetched once when the panel opens.
+- **SF-12** **The badge appears while you are watching.** The mark is set
+  server-side mid-session, and nothing pushes that to a shell that read
+  `/api/config` at boot; left there, the badge for a fix you just watched happen
+  would show up on your next launch. So the chip polls at two cadences — 60s
+  always, 5s for 30 minutes after a fix STARTS — keyed off a `localStorage`
+  timestamp (`fused-render:selffix-ping`) written at start, which also crosses
+  tabs through the `storage` event, the same mechanism the download manager's own
+  ping uses. A clock that has gone backwards past the stamp reads as *not*
+  watching: a badge a minute late costs nothing, a permanent 5s poll costs a
+  request every 5s for the life of the app.
+- **SF-13** **A read-only installation is refused BEFORE the spawn** (409, with
+  the path). A session that cannot write spends several minutes reading and then
+  reports a fix that was never applied — which, to the user watching, reads
+  exactly like a fix that was.

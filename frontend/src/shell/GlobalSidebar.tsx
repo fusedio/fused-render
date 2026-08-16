@@ -279,7 +279,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     (deployEnabled && accountLoggedIn ? <span className="account-signedin-dot" /> : undefined);
 
   return (
-    <SidebarFrame title="Render" version={config.version} homeHref="/home" rail={rail}>
+    <SidebarFrame
+      title="Render"
+      version={config.version}
+      modifiedInstall={config.modified_install ?? null}
+      homeHref="/home"
+      rail={rail}
+    >
       <div className="sidebar-section sidebar-group">
         <NavItem
           href="/home"

@@ -35,6 +35,8 @@ import {
   JOB_PING_KEY,
   type Job,
 } from "@platform/lib/jobs";
+import { navigateUrl } from "@platform/lib/router";
+import { failureContextFromJob, fixSessionUrl, startSelfFix } from "@platform/lib/selffix";
 
 const COLLAPSED_KEY = "fused-render:jobs-collapsed";
 
@@ -206,6 +208,49 @@ function Bar({ job }: { job: Job }) {
   );
 }
 
+// "Fix this" — the self-fix trigger (SPEC §42, SF-1). Offered on a FAILED row
+// and nowhere else, which is the whole of its placement argument: a failure is
+// the one moment where the app has already admitted it cannot do the thing, so
+// an offer to go and look at why is not an interruption. On a running row it
+// would be noise; on a finished one it would be a question nobody asked.
+//
+// Starting the session is only half the click. The other half is LANDING THE
+// USER IN IT: the shell navigates to the install folder with the chat sidebar
+// attached to the run that was just started, so what happens next is something
+// they watch and answer permission cards for, not something that happens to
+// their app while they look at a spinner.
+function FixButton({ job, onError }: { job: Job; onError: (msg: string | null) => void }) {
+  const [busy, setBusy] = useState(false);
+
+  const start = async () => {
+    setBusy(true);
+    onError(null);
+    try {
+      const started = await startSelfFix(failureContextFromJob(job));
+      navigateUrl(fixSessionUrl(started));
+    } catch (e) {
+      // Reported ON THE ROW (the caller renders it under the status line)
+      // rather than as a toast: the row is what the user clicked, and the most
+      // likely refusal — "this installation is read-only" — is a fact about the
+      // app that they need in front of the thing that failed.
+      onError(String((e as Error)?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      className="dl-fix"
+      onClick={start}
+      disabled={busy}
+      title="Open a Claude session on this installation and try to fix it here"
+    >
+      {busy ? "Starting…" : "Fix this"}
+    </button>
+  );
+}
+
 function JobRow({
   job,
   onChanged,
@@ -216,6 +261,9 @@ function JobRow({
   onPatch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Why the self-fix start's failure lives on the ROW rather than in the button
+  // that raised it: see FixButton.
+  const [fixError, setFixError] = useState<string | null>(null);
   const running = isRunning(job);
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
@@ -262,6 +310,7 @@ function JobRow({
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
         )}
+        {job.state === "error" && <FixButton job={job} onError={setFixError} />}
         {(canCancel || canDismiss) && (
           <button
             className="dl-x"
@@ -276,6 +325,7 @@ function JobRow({
       </div>
       <Bar job={job} />
       {status && <div className="dl-status">{status}</div>}
+      {fixError && <div className="dl-status dl-fix-error">{fixError}</div>}
     </div>
   );
 }

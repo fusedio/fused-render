@@ -222,6 +222,134 @@ a.sidebar-rail-btn {
   flex-shrink: 0;
 }
 
+/* -- Modified installation (platform/ui/VersionChip, SPEC §42) --------------
+ *
+ * The chip stops being a label and becomes a control once a self-fix session
+ * has changed this copy: same size and position, amber instead of muted, and
+ * carrying a mark so the state survives a monochrome screen or a colour-blind
+ * reader. It is deliberately NOT loud — nothing is broken, the version string
+ * has simply stopped being the whole truth about what is running. */
+.sidebar-brand .brand-version-host {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+}
+
+.sidebar-brand button.brand-version {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sidebar-brand button.brand-version.is-modified {
+  color: var(--warning);
+  border-color: rgba(var(--warning-rgb), 0.4);
+  background: rgba(var(--warning-rgb), 0.12);
+}
+
+.sidebar-brand button.brand-version.is-modified:hover {
+  background: rgba(var(--warning-rgb), 0.2);
+}
+
+.brand-version-mark {
+  font-size: 9px;
+  line-height: 1;
+}
+
+/* `position: fixed`, measured off the chip in VersionChip — NOT absolute inside
+   it. `#sidebar` scrolls and clips horizontally (see its rule at the top of
+   this file), so an absolute child would be a sidebar-wide sliver that scrolled
+   away with the nav: the same trap the schedule modal's dropdowns hit (D304),
+   and the same fix the sidebar's own Settings menu uses. The width is likewise
+   fixed rather than inherited — the sidebar drags down to 180px and this holds
+   a shell command. Keep it in step with PANEL_WIDTH in VersionChip.tsx. */
+.version-panel {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  box-shadow: 0 6px 20px var(--shadow-md);
+  font-size: 12px;
+  color: var(--fg);
+  cursor: default;
+  /* The brand row clips its children (the title ellipsis); a popover that
+     inherited that would be a 20px sliver. */
+  white-space: normal;
+}
+
+.version-panel-head {
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.version-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.version-panel-label {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* The report's file name under the button that opens it: the button says what
+   happens, this says which file it lands on — a report is a thing the user may
+   have to find again by hand, or attach to an email. */
+.version-panel-file {
+  color: var(--fg-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.version-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.version-panel-link {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  text-decoration: underline;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.version-panel-link:hover {
+  color: var(--fg);
+}
+
+/* Anchors styled as .update-badge-action (the "Open an issue" link) need the
+   button's box back — an <a> has no padding and does not centre its text. */
+a.update-badge-action {
+  display: inline-block;
+  text-decoration: none;
+}
+
 .sidebar-section {
   padding: 8px;
 }
