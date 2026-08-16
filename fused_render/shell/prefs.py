@@ -526,6 +526,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    unloaded: list[str] | None = None
     if "engines" in body:
         # AFTER the write, because the reconciliation reads the new preference
         # rather than being told what changed — see `evict_stale_engines`. One
@@ -534,7 +535,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         # nothing will route to again.
         from fused_render.ai import supervisor
 
-        supervisor.evict_stale_engines()
+        # KEPT, not discarded. The page tells the user "Loaded model unloaded."
+        # and nothing in the prefs payload could say whether one was: residency
+        # is not part of `describe_engines`, and the usual case — a fresh app
+        # with nothing loaded yet — evicts nothing at all, so the page was
+        # confidently reporting an eviction that never happened. Only the
+        # server knows, so only the server can answer.
+        unloaded = supervisor.evict_stale_engines()
     # The call log caches this snapshot for a second to keep prefs.json off its
     # hot path; drop it so a toggle here is visible on the very next call.
     from fused_render import calls as _calls
@@ -543,4 +550,10 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     # The new state, so the page re-renders from the response (the engine pref
     # is persisted even while FUSED_RENDER_ENGINE forces — it applies once the
     # override is removed; the response's forced_by says so).
-    return _prefs_response()
+    response = _prefs_response()
+    if unloaded is not None:
+        # Added here rather than inside `_prefs_response` because it is not
+        # STATE: it is what this one request did, and a GET reporting `[]`
+        # would invite the page to say "nothing was unloaded" about a read.
+        response["engines"]["unloaded"] = unloaded
+    return response

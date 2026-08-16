@@ -771,13 +771,47 @@ def test_changing_an_engine_EVICTS_the_resident_model_for_that_capability(
                                runner_code="mlx-whisper", state="ready")
     supervisor._workers[registry.SPEECH_TO_TEXT] = worker
     try:
-        client.put("/api/prefs",
-                   json={"engines": {"automatic-speech-recognition": "faster-whisper"}},
-                   headers=FUSED)
+        body = client.put(
+            "/api/prefs",
+            json={"engines": {"automatic-speech-recognition": "faster-whisper"}},
+            headers=FUSED).json()
         assert [w.model for w in stopped] == [worker.model]
         assert registry.SPEECH_TO_TEXT not in supervisor._workers
+        # …and the reply SAYS which, because the page claims an unload happened
+        # and has no other way to know whether one did.
+        assert body["engines"]["unloaded"] == [worker.model]
     finally:
         supervisor.reset()
+
+
+def test_a_switch_that_unloaded_NOTHING_reports_an_empty_list(tmp_path, monkeypatch):
+    """The common case, and the one the page used to lie about: nothing is
+    resident until a first transcription, so a fresh app switching engines
+    evicts nothing at all. An empty list is a different answer from an absent
+    key — it is the server saying it looked."""
+    from fused_render.ai import registry
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    client, _ = _client(tmp_path, monkeypatch)
+
+    body = client.put(
+        "/api/prefs",
+        json={"engines": {"automatic-speech-recognition": "faster-whisper"}},
+        headers=FUSED).json()
+
+    assert body["engines"]["unloaded"] == []
+
+
+def test_only_an_ENGINE_put_reports_unloads(tmp_path, monkeypatch):
+    """A GET, and a PUT about something else, describe state; `unloaded` is a
+    record of what THIS request did. Reporting `[]` on a read would invite the
+    page to render "nothing was unloaded" about a request that never could."""
+    client, _ = _client(tmp_path, monkeypatch)
+
+    assert "unloaded" not in client.get("/api/prefs").json()["engines"]
+    body = client.put("/api/prefs", json={"deploy_enabled": True}, headers=FUSED).json()
+    assert "unloaded" not in body["engines"]
 
 
 def test_a_resident_model_the_switch_does_not_affect_is_LEFT_ALONE(

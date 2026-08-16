@@ -426,7 +426,7 @@ function CapabilityEngineRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [changed, setChanged] = useState<string | null>(null);
+  const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
   const warning = ignoredWarning(row);
 
   const choose = async (code: string) => {
@@ -438,8 +438,18 @@ function CapabilityEngineRow({
     setBusy(true);
     setError(null);
     try {
-      onChange(await putEngineForCapability(row.capability, code));
-      setChanged(consequential ? code : null);
+      const next = await putEngineForCapability(row.capability, code);
+      onChange(next);
+      // **Whether a model was unloaded is the SERVER's answer, not a guess from
+      // here.** Nothing in this payload says what is resident, and the usual
+      // case is that nothing is: a fresh app has loaded no model until the
+      // first transcription, so switching engines evicts nothing — and the page
+      // was announcing an eviction that had not happened. `consequential` still
+      // decides whether the switch is worth mentioning at all, because it
+      // answers a different question (did the effective engine move, which also
+      // rewrites the AI Models suggestions); the server decides which sentence.
+      const unloaded = (next.engines.unloaded?.length ?? 0) > 0;
+      setChanged(unloaded ? "unloaded" : consequential ? "switched" : null);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -477,12 +487,20 @@ function CapabilityEngineRow({
       </label>
       <div className="deploy-muted">{servingLine(row)}</div>
       {warning && <div className="deploy-muted">{warning}</div>}
-      {/* The consequence, in four words. It stays because an unload is a real
-          thing that just happened to the user's machine and nothing else on
-          screen would report it — but the paragraph explaining WHY the model
+      {/* The consequence, in four words at most. It stays because an unload is
+          a real thing that just happened to the user's machine and nothing else
+          on screen would report it — but the paragraph explaining WHY the model
           was unloaded and how suggestion lists work was an essay after picking
-          a menu item. */}
-      {changed && <div className="deploy-muted">Switched. Loaded model unloaded.</div>}
+          a menu item.
+
+          TWO sentences because there are two outcomes, and the shorter one is
+          not a weaker version of the longer: "Switched." is the whole truth
+          when the engine moved and no model was resident to lose. */}
+      {changed && (
+        <div className="deploy-muted">
+          {changed === "unloaded" ? "Switched. Loaded model unloaded." : "Switched."}
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );

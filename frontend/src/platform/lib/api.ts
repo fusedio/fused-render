@@ -1143,6 +1143,12 @@ export interface EnginesPrefs {
   // the value rather than hardcoded here, for the same reason `model.choices`
   // is: the page must not be able to send a value a PUT would reject.
   auto: string;
+  // The models an engine PUT actually evicted, and ONLY on such a PUT — absent
+  // from a GET, which describes state rather than reporting what a request
+  // did. Residency is not otherwise in this payload, so the page cannot know:
+  // switching engines with nothing loaded (the usual case on a fresh app)
+  // unloads nothing, and the confirmation used to claim it had.
+  unloaded?: string[];
 }
 
 export interface CapabilityEngine {
