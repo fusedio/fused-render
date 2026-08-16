@@ -354,7 +354,7 @@ export default function ListingPreviewPane({
           className="pane-frame"
           src={withNoFocus(
             `/render?path=${encodeURIComponent(sideEntry.path)}` +
-              `&_file=${encodeURIComponent(target)}${chatOnly}`
+              `&_file=${encodeURIComponent(target)}${chatOnly}&_preview=1`
           )}
           title={modeTitle(side)}
         />
@@ -505,7 +505,11 @@ export default function ListingPreviewPane({
   // chat template resolves the folder's entry page and renders the app inside
   // this column. paneChatOnly is the single rule both ask.
   const srcFor = (t: TemplateEntry): string => {
-    if (t.mode === "_render") return withNoFocus(`/render?path=${encodeURIComponent(view.path)}`);
+    // `_preview=1`: a listing's side pane is a preview, not an open — without
+    // it the server would record recency (and register an external folder) for
+    // every file the user merely selects (D301).
+    if (t.mode === "_render")
+      return withNoFocus(`/render?path=${encodeURIComponent(view.path)}&_preview=1`);
     const remote = info.remote ? "&_remote=1" : "";
     const chatOnly = paneChatOnly(t.mode) ? CHAT_ONLY_PARAM : "";
     return withNoFocus(

@@ -3648,9 +3648,9 @@ const PANE_SKIP_MODES = new Set(["claude"]);
 
 // What the left pane should frame. TWO shapes and a NO-PANE case (D235, D239):
 //
-//   * an APP FOLDER — the app's entry html (index.html, or its single top-level
-//     html — the same rule as the shell's "Open as app" button), resolved by
-//     ./app.py;
+//   * an APP FOLDER — the app's entry html (its first top-level page carrying
+//     `<meta name="fused-app">`, D301 — the same rule as the shell's "Open as
+//     app" button), resolved by ./app.py;
 //   * a FILE — the file in its OWN default view, i.e. exactly what the
 //     explorer's preview pane would show it in: `.py` in `code`, `.parquet`
 //     in `duckdb`, an `.html` page rendered as itself. That is what makes the
@@ -4120,7 +4120,7 @@ function applyLeftMode() {
 //
 // Removed rather than hidden, because there is no state in which any of it is
 // wanted again: the target's kind does not change mid-session (a folder that
-// grows an index.html gets its pane on the next open, which is where the
+// grows a tagged entry page gets its pane on the next open, which is where the
 // predicate is read). Two subtrees go whole:
 //   * #left — the frame, the pins, the highlight and the note popover;
 //   * #divider — no two columns, no ratio to drag;
