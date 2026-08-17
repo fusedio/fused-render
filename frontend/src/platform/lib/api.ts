@@ -2614,7 +2614,25 @@ export interface AiCatalogModel {
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
-  note: string;
+  /** Why you would or would not pick this one. Null on a CACHED entry: nobody
+   *  wrote a note for a repo the user found themselves, and null says so where
+   *  prose generated from a repo id would claim otherwise. */
+  note: string | null;
+  /** Which half of the payload this came from (D323). "curated" is the
+   *  hand-maintained shortlist; "cached" is a repo found on this disk that the
+   *  curation has never heard of — downloaded from the Discover tab's Hub
+   *  search, and previously invisible to every picker in the app.
+   *
+   *  The Discover tab's "Suggested models" grid renders the CURATED half only:
+   *  the Local tab is already the answer to "what is on my disk", and the same
+   *  repo in both grids would read as two different things. */
+  source: "curated" | "cached";
+  /** Whether it is on this disk. Always true for a cached entry; on a curated
+   *  one it is what the checkmark means. */
+  downloaded: boolean;
+  /** Whether a worker is holding it RIGHT NOW — read live from the supervisor,
+   *  unlike `downloaded`, which comes from a memoised disk scan. */
+  loaded: boolean;
 }
 
 export interface AiCatalogCapability {

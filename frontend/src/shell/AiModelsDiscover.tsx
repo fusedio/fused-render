@@ -313,6 +313,11 @@ function sizeTitle(model: HubModel): string | undefined {
 // These lists used to live inside the apps that used them — three MLX models in
 // local_chat, one FLUX model hard-coded in the image worker — which put the
 // curation where nobody browsing for a model would ever see it.
+//
+// CURATED entries only — the caller filters (see `suggested`). Since D323 the
+// catalog payload also carries the uncurated repos found on this disk, so that
+// pages' model pickers can offer them; this grid is the shortlist, and the Local
+// tab is where "what is on my disk" is answered.
 function Suggested({
   catalog,
   downloads,
@@ -509,10 +514,14 @@ export default function AiModelsDiscover({
   }, []);
 
   useEffect(() => {
-    // Just the curation. Whether each entry is on this disk is the PAGE's
-    // answer, arriving as `onDisk` — this used to run its own cache walk beside
-    // the page's, which meant two definitions of "downloaded" and two moments
-    // they were true.
+    // Since D323 the payload carries BOTH halves — the curation and the repos
+    // found on this disk, each entry stamped `source`, `downloaded` and `loaded`.
+    // This page still takes "is it downloaded" from its own `onDisk`, and that is
+    // not stubbornness: `onDisk` covers every repo in the cache, including the
+    // datasets, components and unloadable formats the catalog deliberately leaves
+    // out, and the Local tab beside this one is drawn from the same set. Two
+    // definitions of "downloaded" on one page would be two moments they were true.
+    // Pages OUTSIDE the shell have no cache endpoint and should read the flags.
     getAiCatalog().then(
       (cat) => setCatalog(cat.capabilities),
       () => setCatalog([]),
@@ -609,7 +618,18 @@ export default function AiModelsDiscover({
   // the server let through after its supported-tag pass, and the cards the
   // catalog actually renders — a number here that disagreed with the grid under
   // it would be worse than no number.
-  const suggestedCount = (catalog ?? []).reduce((n, g) => n + g.models.length, 0);
+  //
+  // The CURATED half of each capability only (D323). `/api/ai/catalog` now also
+  // carries the repos found on THIS DISK that the curation has never heard of, so
+  // that a page's model picker can offer a model the user downloaded from the Hub
+  // search above — but this grid is headed "Suggested models", and the Local tab
+  // is already the answer to "what is on my disk". A repo appearing in both grids
+  // would read as two different models rather than as one seen twice.
+  const suggested = (catalog ?? []).map((group) => ({
+    ...group,
+    models: group.models.filter((m) => m.source === "curated"),
+  }));
+  const suggestedCount = suggested.reduce((n, g) => n + g.models.length, 0);
   const summary = searching
     ? resultsSummary(settled.q, models?.length ?? null, host, !!error)
     : suggestedCount > 0
@@ -798,7 +818,7 @@ export default function AiModelsDiscover({
               </p>
             )}
             {catalog === null && <p className="cc-empty">Reading the model catalog…</p>}
-            {catalog !== null && <Suggested catalog={catalog} downloads={downloads} />}
+            {catalog !== null && <Suggested catalog={suggested} downloads={downloads} />}
           </>
         )}
       </section>
