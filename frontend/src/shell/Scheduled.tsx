@@ -9,11 +9,12 @@
 // counted, already ordered. See
 // docs/superpowers/specs/2026-08-16-tasks-threads-messages-design.md.
 //
-// List and Board show tasks. So does the Calendar — the chip IS a task, not a
-// message. What the time axis adds is placement, not a different unit: one chip
-// per task per day, anchored at that task's earliest message that day, the rest
-// nested behind a `+N`. All three views therefore answer the same question with
-// the same noun, which is the point.
+// List and Board show tasks. So does the Calendar — a chip carries a task's
+// title and colour and opens the task's thread. What the time axis adds is
+// placement, and placement is per RUN: one chip per scheduled message, at its own
+// time, so a task at 3am, 5am and 7am is three chips of one colour. The earlier
+// rule (one chip a day, the rest behind a `+N`) was rejected in review — see
+// ScheduleCalendar.tsx.
 //
 // Their markup lives in shell/ScheduleTaskViews.tsx (List and Board) and
 // shell/ScheduleCalendar.tsx; this file owns the page: the poll, the toggle,

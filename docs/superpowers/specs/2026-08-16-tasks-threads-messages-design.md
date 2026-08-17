@@ -239,38 +239,58 @@ correct — the task is not finished.
 
 Only **scheduled** work appears; a chat message has no time.
 
-The chip **is a task**, not a message — the same unit the other two views show.
-It carries the task's title, the task's colour, and opens the task's thread.
-What the time axis adds is placement:
+A chip carries the **task's** title, the task's colour, and opens the **task's**
+thread — the same unit the other two views show. What the time axis adds is
+placement, and placement is per **run**:
 
-> **One chip per task per day**, anchored at that task's **earliest** message
-> that day. Any later message the same day nests inside it, and the anchor chip
-> carries the count.
+> **One chip per scheduled message**, at its own time. A task that runs at 3am,
+> 5am and 7am draws three chips, on the 3am, 5am and 7am lines.
 
 ```
         MON 17            TUE 18            WED 19
- 5 AM  ▍Pull news  +1     ▍Pull news        ▍Pull news
-       └ also 7 PM
+ 3 AM  ▍Pull news ↻
+ 5 AM  ▍Pull news ↻       ▍Pull news ↻      ▍Pull news ↻
+ 7 AM  ▍Pull news ↻
  9 AM  ▍Review PRs                          ▍Review PRs
 ```
 
-* Clicking a chip opens a popover listing the task's thread, that day's messages
-  first, with their real times.
-* Chips of the same task share **one colour** across the grid, so five days of a
-  daily task read as one thing. Recurring chips carry a small `↻`.
+* Clicking **any** chip opens the same popover it always did: the task's thread,
+  that day's messages first, with their real times. Three chips of one task on
+  one day open three identical panels.
+* Chips of the same task share **one colour** across the grid and carry the same
+  `↻`, which is what makes the three chips above read as one task seen three
+  times rather than three unrelated things.
 * Unrelated tasks are unrelated chips. Three tasks at 9am / 2pm / 6pm are three
   chips.
 * Chips are **fixed one-line height** — a message has a start time and no
   duration, so there is nothing for a variable height to encode. This matches
   how Google Calendar renders a short event.
-* An hourly recurring message still produces one chip per day, not 24 — the
-  anchor sits at the first run and carries `+23`.
+* Each chip's wash is **its own run's** outcome, not the day's: a 9am that ran
+  clean stays clean beside a 2pm that failed.
+* An hourly recurring message produces about **24 chips** a day. That volume is
+  intended. At a 44px hour against a 21px chip they sit one to an hour line with
+  air between them; anything denser than every 30 minutes splits into
+  side-by-side lanes, the same packing that already separates unrelated tasks
+  starting together.
 
-**The known cost of this rule, accepted deliberately:** a task's 7pm run has no
-chip at 7pm. The `+N` badge and the `also 7 PM` sub-line on the anchor are the
-mitigation — the later runs are named, just not placed. The alternative (a chip
-per message) was rejected because it shows one task many times in a single day,
-which the other two views never do.
+**The earlier rule was tried and rejected in review.** This document specified
+*one chip per task per day*, anchored at the day's earliest run, with later runs
+folded into a `+N` badge and an `also 7 PM` sub-line — and accepted, as a
+deliberate cost, that "a task's 7pm run has no chip at 7pm". That cost turned out
+not to be acceptable (Akshil, 2026-08-17: *"if I have a task at 3 a.m., then at
+5 a.m., and then 7 a.m. As of now, we only show the 3 am task, and when you click
+on it, we show the 5 and 7 am as a thread. I want all these three to show"*). A
+badge naming 7 PM in a tooltip is not placement; on a view whose entire job is to
+say *when*, two of three runs were off the axis, and a reader had to open a
+popover to learn that anything happened after breakfast.
+
+The old objection — that a chip per message shows one task many times in a single
+day, which List and Board never do — was answered rather than overruled: the
+shared colour and the `↻` carry that weight, and the popover was left untouched so
+every chip of a day still opens the one task-scoped thread (*"when you click on
+them you just see the thread as is no change"*). The `+N` badge and its `also
+5 AM, 7 AM` accessible-name clause are **gone**, not zeroed — with every run
+placed, they could only ever count and name chips already on screen.
 
 #### New: 4-day view
 
@@ -395,7 +415,10 @@ would have fired before.
 
 * Auto-filling `description` from a chat summary — Claude Code stores no
   summary, so this needs an LLM call. Deferred.
-* A per-day chip cap on the calendar.
+* A per-day chip cap on the calendar. Still deferred, and now the thing to watch:
+  with a chip per run, the ceiling on how many a column can hold is lane packing
+  and a 34px minimum width, not a badge. Hourly is comfortable; a sub-15-minute
+  rule is where a cap would start to earn its keep.
 * Confirm/undo on archiving a task.
 * The DST spring-forward duplicate ghost chip (cosmetic; firing is already
   safe).

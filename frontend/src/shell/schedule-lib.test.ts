@@ -280,7 +280,7 @@ describe("entryRepeatText", () => {
 
 // ---- The calendar's layout maths --------------------------------------------
 // Everything the grid gets wrong when it is wrong lives in these functions:
-// which chip anchors a day, what the `+N` counts, how the 4-day window steps,
+// how many chips a day gets and where each one sits, how the 4-day window steps,
 // and the two dates a year where a day is not 24 hours long. None of it needs a
 // DOM, so none of it is tested through one.
 import {
@@ -292,7 +292,6 @@ import {
   cancelOutcome,
   columnLabel,
   dayKey,
-  dayTone,
   firstLine,
   lateBy,
   lateText,
@@ -471,30 +470,66 @@ describe("DST days", () => {
   }
 });
 
-// ---- one chip per task per day -------------------------------------------------
+// ---- one chip per scheduled message --------------------------------------------
+// The rule this file used to assert was the opposite — one chip per task per day,
+// anchored at the earliest run, the rest behind a `+N` — and it was rejected in
+// review (Akshil, 2026-08-17: "if I have a task at 3 a.m., then at 5 a.m., and
+// then 7 a.m. As of now, we only show the 3 am task... I want all these three to
+// show"). These tests are the new rule, and they are deliberately the same cases:
+// the 3/5/7 day, the hourly day, the midnight boundary.
 
 describe("taskChips", () => {
   const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
 
-  it("anchors the day at the task's EARLIEST message and counts the rest", () => {
+  it("draws a chip for EVERY scheduled message, each at its own time", () => {
     const t = task({
       key: "news",
       messages: [
-        msg({ message_id: "MSG-3", at: at(2026, 7, 17, 19) }),
-        msg({ message_id: "MSG-1", at: at(2026, 7, 17, 5) }),
-        msg({ message_id: "MSG-2", at: at(2026, 7, 17, 12) }),
+        msg({ message_id: "MSG-3", at: at(2026, 7, 17, 7) }),
+        msg({ message_id: "MSG-1", at: at(2026, 7, 17, 3) }),
+        msg({ message_id: "MSG-2", at: at(2026, 7, 17, 5) }),
       ],
     });
     const chips = taskChips([t], days).get("2026-08-17")!;
-    expect(chips.length).toBe(1); // ONE chip, not three
-    expect(chips[0].anchor.message_id).toBe("MSG-1");
-    expect(minutesOfDay(chips[0].time)).toBe(5 * 60);
-    expect(chips[0].extra).toBe(2); // the +N
-    // The later runs are still IN the chip — that is what the popover lists.
-    expect(chips[0].messages.map((m) => m.message_id)).toEqual(["MSG-1", "MSG-2", "MSG-3"]);
+    expect(chips.length).toBe(3); // THREE chips, not one with +2
+    expect(chips.map((c) => c.message.message_id)).toEqual(["MSG-1", "MSG-2", "MSG-3"]);
+    expect(chips.map((c) => minutesOfDay(c.time))).toEqual([3 * 60, 5 * 60, 7 * 60]);
+    // Same task, so one colour: three chips still read as one thing.
+    expect(new Set(chips.map((c) => c.colour)).size).toBe(1);
   });
 
-  it("an hourly rule is ONE chip carrying +23, not 24 chips", () => {
+  it("hands every chip of a day the SAME thread, so the popover is unchanged", () => {
+    // The user's condition on the whole change: "when you click on them you just
+    // see the thread as is no change". Each chip carries its day's full list,
+    // its own message included, in time order.
+    const t = task({
+      key: "news",
+      messages: [
+        msg({ message_id: "MSG-1", at: at(2026, 7, 17, 3) }),
+        msg({ message_id: "MSG-2", at: at(2026, 7, 17, 5) }),
+        msg({ message_id: "MSG-3", at: at(2026, 7, 17, 7) }),
+      ],
+    });
+    const chips = taskChips([t], days).get("2026-08-17")!;
+    for (const chip of chips) {
+      expect(chip.messages.map((m) => m.message_id)).toEqual(["MSG-1", "MSG-2", "MSG-3"]);
+      expect(chip.day).toBe("2026-08-17");
+    }
+  });
+
+  it("keys each chip off its MESSAGE, so a day's chips are distinct", () => {
+    const t = task({
+      key: "news",
+      messages: [
+        msg({ message_id: "MSG-1", at: at(2026, 7, 17, 3) }),
+        msg({ message_id: "MSG-2", at: at(2026, 7, 17, 5) }),
+      ],
+    });
+    const chips = taskChips([t], days).get("2026-08-17")!;
+    expect(new Set(chips.map((c) => c.key)).size).toBe(2);
+  });
+
+  it("an hourly rule is 24 chips, one an hour — the volume is the point", () => {
     const t = task({
       key: "hourly",
       messages: Array.from({ length: 24 }, (_, h) =>
@@ -502,10 +537,14 @@ describe("taskChips", () => {
       ),
     });
     const chips = taskChips([t], days).get("2026-08-18")!;
-    expect(chips.length).toBe(1);
-    expect(chips[0].extra).toBe(23);
-    expect(minutesOfDay(chips[0].time)).toBe(0); // the midnight run anchors it
-    expect(chips[0].recurring).toBe(true);
+    expect(chips.length).toBe(24);
+    expect(chips.map((c) => minutesOfDay(c.time))).toEqual(
+      Array.from({ length: 24 }, (_, h) => h * 60),
+    );
+    expect(chips.every((c) => c.recurring)).toBe(true);
+    // 60 minutes clears CHIP_MIN, so the column is 24 full-width chips rather
+    // than a pile of slivers — the legibility claim, asserted.
+    expect(new Set(assignLanes(chips).map((c) => c.lanes))).toEqual(new Set([1]));
   });
 
   it("23:50 and 00:10 are two chips on two days, not one", () => {
@@ -519,7 +558,6 @@ describe("taskChips", () => {
     const byDay = taskChips([t], days);
     expect(byDay.get("2026-08-17")!.length).toBe(1);
     expect(byDay.get("2026-08-18")!.length).toBe(1);
-    expect(byDay.get("2026-08-17")![0].extra).toBe(0);
     expect(minutesOfDay(byDay.get("2026-08-17")![0].time)).toBe(23 * 60 + 50);
     expect(minutesOfDay(byDay.get("2026-08-18")![0].time)).toBe(10);
   });
@@ -532,6 +570,22 @@ describe("taskChips", () => {
     expect(chips.length).toBe(3);
     // Sorted by time, so the column reads top to bottom.
     expect(chips.map((ch) => minutesOfDay(ch.time))).toEqual([540, 840, 1080]);
+    // Different tasks, so different hues: what tells them apart from the 3/5/7
+    // case above, which is one task three times.
+    expect(new Set(chips.map((ch) => ch.colour)).size).toBeGreaterThan(1);
+  });
+
+  it("sorts a day's chips by time even across tasks", () => {
+    const a = task({ key: "a", messages: [msg({ message_id: "a2", at: at(2026, 7, 19, 16) })] });
+    const b = task({
+      key: "b",
+      messages: [
+        msg({ message_id: "b1", at: at(2026, 7, 19, 8) }),
+        msg({ message_id: "b2", at: at(2026, 7, 19, 20) }),
+      ],
+    });
+    const chips = taskChips([a, b], days).get("2026-08-19")!;
+    expect(chips.map((c) => c.message.message_id)).toEqual(["b1", "a2", "b2"]);
   });
 
   it("a daily task is one chip a day, all five sharing one colour", () => {
@@ -555,8 +609,24 @@ describe("taskChips", () => {
     });
     const chips = taskChips([t], days).get("2026-08-19")!;
     expect(chips.length).toBe(1);
-    expect(chips[0].anchor.message_id).toBe("s1");
-    expect(chips[0].extra).toBe(0);
+    expect(chips[0].message.message_id).toBe("s1");
+  });
+
+  it("reads the recurrence off the CHIP'S OWN message, not the day's", () => {
+    // The case the old anchor rule had to fudge: a one-off at 5am sharing a day
+    // with a daily rule at 9. It used to hunt the day for any template_id and
+    // hang it on the anchor, so the one-off wore the rule's ↻. Each chip answers
+    // for itself now.
+    const t = task({
+      key: "k",
+      messages: [
+        msg({ message_id: "one-off", at: at(2026, 7, 17, 5) }),
+        msg({ message_id: "ruled", at: at(2026, 7, 17, 9), template_id: "t1" }),
+      ],
+    });
+    const chips = taskChips([t], days).get("2026-08-17")!;
+    expect(chips.map((c) => c.recurring)).toEqual([false, true]);
+    expect(chips.map((c) => c.templateId)).toEqual(["", "t1"]);
   });
 
   it("ignores messages outside the window and never invents a column", () => {
@@ -574,8 +644,14 @@ describe("taskChips", () => {
         msg({ message_id: "full-2", at: at(2026, 7, 17, 9) }),
       ],
     }).get("2026-08-17")!;
-    expect(chips[0].anchor.message_id).toBe("full-1");
-    expect(chips[0].extra).toBe(1);
+    expect(chips.map((c) => c.message.message_id)).toEqual(["full-1", "full-2"]);
+  });
+
+  it("never draws one message twice, however many feeds mention it", () => {
+    const dupe = msg({ message_id: "same", at: at(2026, 7, 17, 9) });
+    const chips = taskChips([task({ key: "k" })], days, { k: [dupe, { ...dupe }] })
+      .get("2026-08-17")!;
+    expect(chips.length).toBe(1);
   });
 });
 
@@ -654,25 +730,47 @@ describe("stateLabel / isLive on an unheard-of turn", () => {
   });
 });
 
-// ---- tone: a day answers for all of its messages -------------------------------
+// ---- tone: a chip answers for ITS OWN run --------------------------------------
+// There used to be a `dayTone` here, folding a day's messages into one worst-case
+// wash — the chip carried the whole day, so its colour had to. A chip is one
+// message again, so each one wears messageTone directly and the fold is gone.
 
-describe("dayTone", () => {
-  it("a failure in the day beats a clean run — the chip must not read green", () => {
-    expect(dayTone([
-      msg({ at: 1, state: "sent", turn: "done" }),
-      msg({ at: 2, state: "error" }),
-    ])).toBe("error");
-    expect(dayTone([msg({ at: 1, state: "sent", turn: "done" })])).toBe("ran");
-    expect(dayTone([msg({ at: 1, state: "missed" })])).toBe("missed");
-    // A skipped run alongside one still to come reads as still to come.
-    expect(dayTone([
-      msg({ at: 1, state: "cancelled" }),
-      msg({ at: 2, state: "pending" }),
-    ])).toBe("upcoming");
-    // A sent message whose turn has not reported yet is work in flight.
-    expect(dayTone([msg({ at: 1, state: "sent", turn: "" })])).toBe("sending");
-    // "unknown" is the watch ending with no verdict — a failure, not a run.
-    expect(dayTone([msg({ at: 1, state: "sent", turn: "unknown" })])).toBe("error");
+describe("a day of mixed outcomes paints per chip", () => {
+  const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
+
+  it("gives the clean run a clean chip and the failure a failed one", () => {
+    const t = task({
+      key: "mixed",
+      messages: [
+        msg({ message_id: "ok", at: at(2026, 7, 17, 9), state: "sent", turn: "done" }),
+        msg({ message_id: "bad", at: at(2026, 7, 17, 14), state: "error" }),
+      ],
+    });
+    const chips = taskChips([t], days).get("2026-08-17")!;
+    expect(chips.map((c) => c.tone)).toEqual(["ran", "error"]);
+    // The old rule painted BOTH of these "error", because one chip had to
+    // answer for the pair. Nothing has to now.
+    expect(chips[0].tone).not.toBe(chips[1].tone);
+  });
+
+  it("reads each message's own state, exactly as messageTone does", () => {
+    const cases: [Partial<TaskMessage>, string][] = [
+      [{ state: "sent", turn: "done" }, "ran"],
+      [{ state: "missed" }, "missed"],
+      [{ state: "cancelled" }, "skipped"],
+      [{ state: "pending" }, "upcoming"],
+      // A sent message whose turn has not reported yet is work in flight.
+      [{ state: "sent", turn: "" }, "sending"],
+      // "unknown" is the watch ending with no verdict — a failure, not a run.
+      [{ state: "sent", turn: "unknown" }, "error"],
+    ];
+    cases.forEach(([over, tone], i) => {
+      const t = task({
+        key: `k${i}`,
+        messages: [msg({ message_id: `m${i}`, at: at(2026, 7, 17, 9), ...over })],
+      });
+      expect(taskChips([t], days).get("2026-08-17")![0].tone).toBe(tone);
+    });
   });
 });
 
@@ -954,9 +1052,11 @@ describe("past ghosts", () => {
     expect(sat.tone).toBe("missed");
   });
 
-  // The volume case, and the reason the one-chip-per-task-per-day rule is not
-  // negotiable: hourly, anchored three days back, is ~72 slots behind now.
-  it("an hourly rule anchored 3 days back is ONE chip a day, not 72 chips", () => {
+  // The volume case, and it is now the INTENDED outcome rather than the thing
+  // being avoided: hourly, anchored three days back, is ~72 slots behind now, and
+  // every one of them draws. The old rule folded each day into one chip with +23;
+  // review rejected that (Akshil, 2026-08-17), so the assertion is inverted.
+  it("an hourly rule anchored 3 days back draws every slot — 24 chips a day", () => {
     const t = task({ key: "pending:t1", messages: [] });
     const from = new Date(2026, 7, 14);
     const out = projectedMessages(
@@ -966,11 +1066,19 @@ describe("past ghosts", () => {
     expect(out["pending:t1"].length).toBe(24 * 3 + 11);
     const byDay = taskChips([t], rangeDays(from, "week"), out);
     for (const key of ["2026-08-14", "2026-08-15", "2026-08-16"]) {
-      expect(byDay.get(key)!.length).toBe(1);
-      expect(byDay.get(key)![0].extra).toBe(23);
+      const day = byDay.get(key)!;
+      expect(day.length).toBe(24);
+      // On the hour lines, in order, and none of them overlapping: an hourly
+      // gap clears CHIP_MIN, so the column stays one chip wide.
+      expect(day.map((c) => minutesOfDay(c.time))).toEqual(
+        Array.from({ length: 24 }, (_, h) => h * 60),
+      );
+      expect(assignLanes(day).every((c) => c.lanes === 1)).toBe(true);
+      expect(day.every((c) => c.projected)).toBe(true);
     }
-    expect(byDay.get("2026-08-17")!.length).toBe(1);
-    expect(byDay.get("2026-08-17")![0].extra).toBe(10);
+    // Up to 11am and no further: NOW is noon, and nothing draws ahead of the
+    // server's own forecast.
+    expect(byDay.get("2026-08-17")!.length).toBe(11);
   });
 
   it("walks back only as far as the window on screen", () => {
@@ -1021,8 +1129,8 @@ describe("past ghosts", () => {
 
 // ---- archived tasks come off the grid -------------------------------------------------
 // Akshil, 2026-08-17: three chips at one time, two of them struck through, read
-// as noise. They were three genuinely different tasks, so one-chip-per-task-per-
-// day held — the filed-away ones were the problem.
+// as noise. They were three genuinely different tasks, so how many chips a task
+// draws was never the problem — the filed-away ones were.
 
 describe("archived tasks", () => {
   const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
@@ -1041,8 +1149,9 @@ describe("archived tasks", () => {
   });
 
   it("keeps a LIVE task that merely has a skipped occurrence", () => {
-    // The nuance: it is the task's status, never a run's. The skip shows as an
-    // Archive row inside the popover thread, where it belongs.
+    // The nuance: it is the task's status, never a run's. Both runs draw, and the
+    // skipped one is struck through where it sits; its word ("Archive") is on its
+    // row inside the popover thread, where it belongs.
     const t = task({
       key: "k", status: "upcoming",
       messages: [
@@ -1051,9 +1160,9 @@ describe("archived tasks", () => {
       ],
     });
     const chips = taskChips([t], days).get("2026-08-18")!;
-    expect(chips.length).toBe(1);
-    expect(chips[0].extra).toBe(1);
-    const skipped = chips[0].messages[0];
+    expect(chips.length).toBe(2);
+    expect(chips.map((c) => c.tone)).toEqual(["skipped", "upcoming"]);
+    const skipped = chips[0].message;
     expect(runStatus(skipped, taskMessageTone(skipped)).label).toBe("Archive");
   });
 
@@ -1077,11 +1186,12 @@ describe("archived tasks", () => {
 });
 
 // ---- where the grid opens -------------------------------------------------------------
-// One chip per task per day anchors at the day's EARLIEST slot, so an hourly
-// rule's whole day is a single chip at 00:00 — which the old fixed 7am opened
-// seven hours below, on a column that then read as empty. Past ghosts turned that
-// from a rare oddity into the common case, so the OPENING SCROLL moved. The
-// anchor rule itself is right and stays.
+// An hourly rule's first run of the day is at 00:00 — which the old fixed 7am
+// opened seven hours below, on a column that then read as empty until somebody
+// scrolled up. Past ghosts turned that from a rare oddity into the common case, so
+// the OPENING SCROLL moved. It aims at the EARLIEST chip in the range, which is
+// the same instant whether a day draws one chip or twenty-four, so the rule below
+// survived chips going per-message untouched.
 
 describe("scrollTarget", () => {
   const H = 44;                 // HOUR_H, mirrored from ScheduleCalendar
@@ -1464,35 +1574,36 @@ describe("the one status vocabulary", () => {
     expect(pillOf(t, false).projected).toBe(false);
   });
 
-  it("leaves the chip's own day-level cue alone — a failing day still LOOKS different", () => {
-    // The word came off the pill; the pixels did not come off the grid.
-    // dayTone is the chip's wash and it is still day-scoped, which is the whole
-    // point: a day holding a failure must not look like a clean one.
+  it("leaves the chip's own cue alone — a failed run still LOOKS different", () => {
+    // The word came off the pill; the pixels did not come off the grid. Each chip
+    // wears its own run's wash, which is what makes a failure visible without a
+    // second word: two runs, two chips, two tones.
     const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
     const messages = [
       msg({ message_id: "MSG-1", at: at(2026, 7, 17, 9), state: "sent", turn: "done" }),
       msg({ message_id: "MSG-2", at: at(2026, 7, 17, 14), state: "error" }),
     ];
     const t = task({ key: "mixed", status: "upcoming", failed: false, messages });
-    const chip = taskChips([t], days).get("2026-08-17")![0];
-    expect(chip.tone).toBe("error");
-    expect(chip.tone).not.toBe(dayTone([messages[0]])); // a clean day differs
-    // ...while the pill above it is the task's own word.
-    expect(pillOf(t, chip.projected)).toMatchObject({ label: "Upcoming", projected: false });
-    // A day of nothing but cron arithmetic is still outlined, and that flag is
-    // what the pill's dashes now come from.
+    const chips = taskChips([t], days).get("2026-08-17")!;
+    expect(chips.map((c) => c.tone)).toEqual(["ran", "error"]);
+    // ...while the pill above either of them is the task's own word.
+    for (const chip of chips)
+      expect(pillOf(t, chip.projected))
+        .toMatchObject({ label: "Upcoming", projected: false });
+    // Cron arithmetic is still outlined, and that flag is what the pill's dashes
+    // come from. It is now per RUN: a ghost is projected whoever it shares a day
+    // with, and a materialized run beside it is not.
     const ghosts = [
       msg({ message_id: `${GHOST_PREFIX}1`, at: at(2026, 7, 18, 9), template_id: "t1" }),
       msg({ message_id: `${GHOST_PREFIX}2`, at: at(2026, 7, 18, 10), template_id: "t1" }),
     ];
-    const g = taskChips([task({ key: "g", messages: ghosts })], days).get("2026-08-18")![0];
-    expect(g.projected).toBe(true);
-    // One materialized run makes the day a commitment, not a forecast.
+    const g = taskChips([task({ key: "g", messages: ghosts })], days).get("2026-08-18")!;
+    expect(g.map((c) => c.projected)).toEqual([true, true]);
     const mixed = taskChips(
       [task({ key: "g2", messages: [ghosts[0], msg({ at: at(2026, 7, 18, 11) })] })],
       days,
-    ).get("2026-08-18")![0];
-    expect(mixed.projected).toBe(false);
+    ).get("2026-08-18")!;
+    expect(mixed.map((c) => c.projected)).toEqual([true, false]);
   });
 });
 
@@ -1608,11 +1719,13 @@ describe("chipAccessibleName", () => {
       .toBe("Pull today's news — Daily, 5:00 AM");
   });
 
-  it("names the runs that have no chip of their own", () => {
-    expect(chipAccessibleName("Pull today's news", "Daily", "5:00 AM", ["7:00 PM"]))
-      .toBe("Pull today's news — Daily, 5:00 AM, also 7:00 PM");
-    expect(chipAccessibleName("Hourly sweep", "Hourly", "12:00 AM", ["1:00 AM", "2:00 AM"]))
-      .toBe("Hourly sweep — Hourly, 12:00 AM, also 1:00 AM, 2:00 AM");
+  it("names ONE time — its own — and never lists the day's other runs", () => {
+    // There used to be an `, also 7:00 PM` clause here, for runs with no chip of
+    // their own. They all have one now, each announcing its own time, so the list
+    // would have every chip reading out its neighbours.
+    const name = chipAccessibleName("Pull today's news", "Daily", "5:00 AM");
+    expect(name).toBe("Pull today's news — Daily, 5:00 AM");
+    expect(name).not.toContain("also");
   });
 
   it("drops the recurrence clause entirely for a one-off", () => {
@@ -1627,9 +1740,10 @@ describe("chipAccessibleName", () => {
 });
 
 describe("chip templateId", () => {
-  it("finds the rule anywhere in the day, not just under the anchor", () => {
-    // A one-off at 5am holds the chip; the DAILY rule runs at 9. The chip is
-    // still a recurring one and must be able to say which rule it belongs to.
+  it("is the CHIP'S OWN rule, so it can name the recurrence in words", () => {
+    // A one-off at 5am and a DAILY rule at 9, on one day. The old anchor rule
+    // hunted the day for any template_id and hung it on the 5am chip, which then
+    // claimed a recurrence it did not have. Each chip answers for its own run.
     const t = task({
       key: "k",
       messages: [
@@ -1638,11 +1752,12 @@ describe("chip templateId", () => {
       ],
     });
     const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
-    const chip = taskChips([t], days).get("2026-08-17")![0];
-    expect(chip.anchor.message_id).toBe("one-off");
-    expect(chip.recurring).toBe(true);
-    expect(chip.templateId).toBe("t1");
-    expect(repeatTextFor(chip.templateId, [
+    const [first, second] = taskChips([t], days).get("2026-08-17")!;
+    expect(first.message.message_id).toBe("one-off");
+    expect(first.recurring).toBe(false);
+    expect(first.templateId).toBe("");
+    expect(second.templateId).toBe("t1");
+    expect(repeatTextFor(second.templateId, [
       entry({ id: "t1", state: "recurring", rule: { freq: "day" } }),
     ])).toBe("Daily");
   });
@@ -1738,11 +1853,11 @@ describe("calendarThreads", () => {
     );
     const full = taskChips([t], days, calendarThreads([t], [], windowed));
     expect(days.every((d) => full.get(dayKey(d))!.length === 1)).toBe(true);
-    // Still ONE chip a day, and still one colour across the week.
+    // One run a day is still one chip a day, and one colour across the week.
     expect(new Set(days.map((d) => full.get(dayKey(d))![0].colour)).size).toBe(1);
   });
 
-  it("an hourly rule in-window is one chip with +23, from real windowed rows", () => {
+  it("an hourly rule in-window draws 24 chips, from real windowed rows", () => {
     // The shape the endpoint actually returns: one row per (task, message).
     const items = Array.from({ length: 24 }, (_, h) => ({
       task_key: "hourly",
@@ -1762,14 +1877,15 @@ describe("calendarThreads", () => {
     });
     const chips = taskChips([t], days, calendarThreads([t], [], groupScheduled(items)));
     const day = chips.get("2026-08-18")!;
-    expect(day.length).toBe(1);
-    expect(day[0].extra).toBe(23);
+    expect(day.length).toBe(24);
     expect(minutesOfDay(day[0].time)).toBe(0);
-    expect(day[0].recurring).toBe(true);
-    expect(day[0].templateId).toBe("t1");
-    // The morning ran and the afternoon has not — the chip answers for both,
-    // and "still work coming" is the honest reading.
-    expect(day[0].tone).toBe("upcoming");
+    expect(minutesOfDay(day[23].time)).toBe(23 * 60);
+    expect(day.every((c) => c.recurring && c.templateId === "t1")).toBe(true);
+    // The morning ran and the afternoon has not, and the column now SHOWS the
+    // turn: twelve chips that read as done, twelve still to come. One chip used
+    // to have to fold both into a single "still work coming" wash.
+    expect(day.slice(0, 12).every((c) => c.tone === "ran")).toBe(true);
+    expect(day.slice(12).every((c) => c.tone === "upcoming")).toBe(true);
   });
 
   it("falls back to the task's own messages when the window fetch failed", () => {

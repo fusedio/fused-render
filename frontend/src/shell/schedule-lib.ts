@@ -220,6 +220,11 @@ export function calendarEvents(
 // instead of widening the whole cluster (Bugbot, PR #538). `lanes` is the
 // cluster's width: every chip in one overlapping run shares it, and a
 // cluster closes when a gap of CHIP_MIN goes by with nothing on screen.
+//
+// It separates TWO RUNS OF ONE TASK as readily as two different tasks, and has
+// since chips became per-message: a rule firing every 15 minutes is two lanes of
+// the same colour. Hourly and sparser never overlap at all — 60 minutes clears
+// CHIP_MIN — so the common dense case stays a single full-width column.
 
 export const CHIP_MIN = 30;
 
@@ -656,53 +661,64 @@ export function messageTone(m: TaskMessage): string {
   }
 }
 
-// One chip carries a whole day of a task, so its tone has to answer for all of
-// them. Failures win, then work in flight, then work still coming: a day whose
-// 9am ran fine and whose 2pm died must not read green.
-const TONE_RANK = ["error", "missed", "sending", "upcoming", "skipped", "ran"];
-
-export function dayTone(messages: TaskMessage[]): string {
-  let best = "ran";
-  for (const m of messages) {
-    const tone = messageTone(m);
-    if (TONE_RANK.indexOf(tone) < TONE_RANK.indexOf(best)) best = tone;
-  }
-  return best;
-}
-
 // ---- Chips ----------------------------------------------------------------------
+//
+// ONE CHIP PER SCHEDULED MESSAGE, at its own time. A task that runs at 3am, 5am
+// and 7am draws three chips on the 3rd, 5th and 7th hour lines.
+//
+// This reverses the rule the calendar shipped with — one chip per task per day,
+// anchored at the day's earliest run, later runs folded into a `+N` — which was
+// tried and rejected in review (Akshil, 2026-08-17: "if I have a task at 3 a.m.,
+// then at 5 a.m., and then 7 a.m. As of now, we only show the 3 am task... I want
+// all these three to show"). A time axis whose whole job is to say WHEN cannot
+// leave two of three runs off the axis; a badge that names 5 AM and 7 AM in a
+// tooltip is not placement, and the reader has to open a popover to learn that
+// anything happens after breakfast.
+//
+// What keeps the grid from reading as three unrelated things is unchanged and
+// carries the whole weight of the trade: chips of one task share ONE COLOUR and
+// the ↻ marker, so three chips at 3/5/7 read as one task seen three times. And
+// CLICKING ANY OF THEM OPENS THE SAME DAY-SCOPED THREAD — which is why each chip
+// still carries its day's full message list (Akshil: "when you click on them you
+// just see the thread as is no change").
+//
+// THE VOLUME IS NOW INTENDED. An hourly rule draws ~24 chips in a day where it
+// drew one, and at HOUR_H = 44px against a 21px chip they sit one to an hour line
+// with room to spare. Denser than every 30 minutes and lane packing (assignLanes,
+// CHIP_MIN) splits them side by side, exactly as it already does for unrelated
+// tasks that start together.
 
 export interface CalendarChip {
   key: string;
   day: string; // dayKey of the column it belongs to
   task: Task;
-  // The earliest scheduled message that day — what the chip is placed at.
-  anchor: TaskMessage;
+  // The one scheduled message this chip IS, and what it is placed at.
+  message: TaskMessage;
   time: Date;
-  // Every scheduled message that day, earliest first (the anchor included).
+  // Every scheduled message this task has that day, earliest first, INCLUDING
+  // this chip's own. Not what the chip draws — what the popover opens: every
+  // chip of a day hands over the same list, so all three of a 3/5/7 task open
+  // the identical thread.
   messages: TaskMessage[];
-  // How many messages nest INSIDE the anchor — the chip's `+N`. An hourly rule
-  // is 23 here, not 23 extra chips.
-  extra: number;
   recurring: boolean;
-  // The recurring rule these runs are occurrences OF; "" for a one-off. Carried
+  // The recurring rule this run is an occurrence OF; "" for a one-off. Carried
   // so the chip can NAME its recurrence ("Daily") instead of only flagging it:
   // a ↻ is a glyph, and a glyph is not an accessible name.
   templateId: string;
   colour: number;
   tone: string;
-  // NOTHING on this day is a real message — every run in it is cron arithmetic,
-  // drawn rather than written down. True in both directions: a day still ahead
-  // of the next materialized run, and a day BEHIND now whose slots a
-  // past-anchored rule skipped and will never fill. Either way it is outlined
-  // rather than filled, because the calendar has nothing recorded to point at.
+  // This run is not a real message — it is cron arithmetic, drawn rather than
+  // written down. True in both directions: a slot ahead of the next materialized
+  // run, and a slot BEHIND now that a past-anchored rule went by and will never
+  // fill. Either way it is outlined rather than filled, because the calendar has
+  // nothing recorded to point at.
   projected: boolean;
 }
 
 // An ARCHIVED task draws NO CHIP AT ALL. Three chips at one time, two of them
 // struck through, read as noise on the grid (Akshil, 2026-08-17) — and they were
-// three genuinely different tasks, so the one-chip-per-task-per-day rule was not
-// the problem: the filed-away ones were. The calendar is for what is going to
+// three genuinely different tasks, so how many chips a task draws was not the
+// problem: the filed-away ones were. The calendar is for what is going to
 // happen and what did; a task that was cancelled or skipped outright is neither,
 // and the Board's Archive lane is where it is read.
 //
@@ -740,25 +756,31 @@ export function taskChips(
     }
     for (const [key, list] of byDay) {
       list.sort((a, b) => a.at - b.at);
-      const anchor = list[0];
-      // The anchor is not necessarily the recurring one — a one-off at 5am can
-      // hold the chip for a daily rule that runs at 9 — so the rule is looked
-      // for across the day, not read off the anchor.
-      const templateId = list.find((m) => m.template_id)?.template_id ?? "";
-      out.get(key)!.push({
-        key: `${task.key}@${key}`,
-        day: key,
-        task,
-        anchor,
-        time: new Date(anchor.at * 1000),
-        messages: list,
-        extra: list.length - 1,
-        recurring: !!templateId,
-        templateId,
-        colour: taskColour(task.key),
-        tone: dayTone(list),
-        projected: list.every(isProjected),
-      });
+      for (const m of list) {
+        // Each fact is now read off the MESSAGE, which is the point of the
+        // change: the rule it belongs to (so a one-off at 5am no longer wears
+        // the ↻ of a daily rule that happens to fire at 9 the same day), its own
+        // tone (a 9am that ran clean stays clean beside a 2pm that died), and its
+        // own projected flag (a materialized run and a ghost on one day are two
+        // chips, drawn differently, rather than one chip that has to pick).
+        const templateId = m.template_id ?? "";
+        out.get(key)!.push({
+          // The MESSAGE id, not the day: a day now holds several of these and
+          // React needs them distinct. Ghost ids are their own ISO instant, so
+          // projections are as stable across a poll as materialized runs.
+          key: `${task.key}@${m.message_id}`,
+          day: key,
+          task,
+          message: m,
+          time: new Date(m.at * 1000),
+          messages: list,
+          recurring: !!templateId,
+          templateId,
+          colour: taskColour(task.key),
+          tone: messageTone(m),
+          projected: isProjected(m),
+        });
+      }
     }
   }
   for (const list of out.values())
@@ -773,11 +795,12 @@ export function taskChips(
 // actually schedules into — and it stopped being right the day the calendar
 // started drawing a rule's whole past (2026-08-17).
 //
-// The collision: ONE CHIP PER TASK PER DAY anchors at the day's EARLIEST slot, so
-// an hourly rule's day is a single chip at 00:00 carrying +23. Seven hours above
-// the fold, on a column that then reads as EMPTY. That was a rare oddity while
-// only future runs were drawn; past ghosts make it the common case. The anchor
-// rule is right and was argued over — the opening scroll was the wrong part.
+// The collision: an hourly rule's first run of the day is at 00:00, seven hours
+// above the fold, on a column that then reads as EMPTY until somebody scrolls up.
+// That was a rare oddity while only future runs were drawn; past ghosts make it
+// the common case. (It was worse under the old one-chip-per-day rule, where 00:00
+// was the day's ONLY chip; a chip per run means there is now something at 07:00
+// too, and the opening scroll is still the part worth getting right.)
 //
 // THE RULE, in order:
 //
@@ -896,18 +919,19 @@ export function repeatTextFor(
 // label hits a chip instead. Naming the chip here fixes all three: the glyph
 // goes decorative, the recurrence is spoken in words, and the name is stable
 // even when CSS hides the time in a narrow lane.
+// A fourth part used to hang off the end — `, also 5 AM, 7 AM`, naming the runs
+// that had no chip of their own. Every run has its own chip now, so the list
+// would name chips that are already on screen and already say their own time.
 export function chipAccessibleName(
   title: string,
   repeat: string,
   time: string,
-  later: string[] = [],
 ): string {
   // Recurrence before clock time, matching how the popover reads: what kind of
   // thing this is, then when it happens.
   const when = [repeat, time].filter(Boolean).join(", ");
-  const also = later.length ? `, also ${later.join(", ")}` : "";
-  if (!title) return `${when}${also}`;
-  return when ? `${title} — ${when}${also}` : `${title}${also}`;
+  if (!title) return when;
+  return when ? `${title} — ${when}` : title;
 }
 
 // ---- A rule's own occurrences, walked here ---------------------------------------
@@ -1561,9 +1585,10 @@ export function lateText(m: TaskMessage): string {
 // a cycle. `RunTone` is that answer's shape, structurally — the caller hands
 // messageTone's result straight in, and a second mapping never gets written.
 //
-// schedule-lib.messageTone / dayTone survive alongside this, and are now
-// PIXELS ONLY: they name a CSS class per chip (missed amber, skipped struck
-// through) and no longer put any word on the screen.
+// schedule-lib.messageTone survives alongside this, and is now PIXELS ONLY: it
+// names a CSS class per chip (missed amber, skipped struck through) and no longer
+// puts any word on the screen. Its day-level sibling, dayTone, is gone — a chip
+// is one message again, so there is no day for a tone to answer for.
 
 export interface RunTone {
   column: BoardColumn;

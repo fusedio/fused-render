@@ -4,16 +4,21 @@
 // The rule the whole file is built on, and the one thing to understand before
 // changing anything here:
 //
-//   ONE CHIP PER TASK PER DAY, anchored at that task's EARLIEST message that
-//   day. Later messages the same day nest INSIDE it and the anchor carries the
-//   count. An hourly rule is therefore one chip with `+23`, not 24 chips.
+//   ONE CHIP PER SCHEDULED MESSAGE, at its own time. A task that runs at 3am,
+//   5am and 7am draws three chips. An hourly rule draws about 24 in a day.
 //
-// All three views show tasks; the calendar is the one with a time axis, so the
-// axis decides PLACEMENT — it does not get to change the unit. The accepted cost
-// is that a task's 7pm run has no chip at 7pm; the `+N` badge names it and the
-// popover lists it with its real time, which is why the popover is not an
-// afterthought here. The rejected alternative (a chip per message) shows one
-// task many times in a single day, which the other two views never do.
+// This file was built on the opposite rule — one chip per task per day, anchored
+// at the day's earliest run, the rest folded into a `+N` — and that rule was
+// REJECTED IN REVIEW (Akshil, 2026-08-17: "I want all these three to show"). Its
+// accepted cost, that a 7pm run had no chip at 7pm, turned out not to be
+// acceptable: a badge naming 7 PM in a tooltip is not placement, and the reader
+// had to open a popover to find out that anything happened after breakfast.
+//
+// The unit did not change with it — the chip is still a TASK's run and still
+// opens the TASK's thread. What holds the three chips together as one task is
+// their shared colour and ↻ (schedule-lib.taskColour), and the popover, which is
+// untouched: every chip of a day carries that day's whole message list, so
+// clicking the 3am, the 5am or the 7am opens the identical panel.
 //
 // Chips are a FIXED one line tall. A message has a start time and no duration,
 // so there is nothing for a variable height to encode — the same reason Google
@@ -67,9 +72,16 @@
 // List and the Board show, so the same word. Each ROW is its own run's status.
 // The pill used to be the day's WORST run, which is how it came to read "Failed"
 // beside a "Run now" button on a rule whose task was merely upcoming; the memo
-// that fixed it carries the argument. Day-level facts still reach the eye
-// through pixels — the chip's wash (schedule-lib.dayTone) and the dashed ring on
-// a projected row — never through a second, contradicting word.
+// that fixed it carries the argument. Per-run facts still reach the eye through
+// pixels — the chip's wash (schedule-lib.messageTone) and the dashed ring on a
+// projected row — never through a second, contradicting word.
+//
+// ONE CHIP PER SCHEDULED MESSAGE (2026-08-17). A task at 3am, 5am and 7am is
+// three chips on three hour lines, sharing one colour and one ↻ so they still
+// read as one task. The popover is untouched by that: every chip of a day hands
+// over the same day-scoped thread, so clicking any of the three opens the same
+// panel it always did. See schedule-lib.taskChips for why the earlier
+// one-chip-per-day rule was reversed.
 //
 // RUN NOW / RE-RUN IS IN THE POPOVER FOOTER, and it is the List's button rather
 // than a second one: tasks-lib.taskRunIntent decides whether it appears, which
@@ -507,11 +519,13 @@ function ChipPopover({
   // labelling that task and not that column. Each run's own outcome is still on
   // its own row in the thread below, which is where a day-level word belongs.
   //
-  // `chip.projected` is the one day-scoped thing left on it and is not a word:
-  // the dashes say nothing on this day is written down yet. The chip on the grid
-  // keeps its own day-level cues (schedule-lib.dayTone paints the wash, and a
-  // day holding a failure still reads differently from a clean one) — those are
-  // pixels, they were never the duplicated fact, and they stay.
+  // `chip.projected` is the one run-scoped thing left on it and is not a word:
+  // the dashes say the run this chip was opened from is not written down yet.
+  // Since chips became per-message it is that run's own flag rather than the
+  // day's, so a day holding one materialized run and three ghosts no longer has
+  // to pick — each chip's popover says the truth about the chip you clicked.
+  // Everything else the chip carries is pixels (schedule-lib.messageTone paints
+  // the wash), which were never the duplicated fact, and they stay.
   const pill = useMemo(
     () => taskStatus(taskColumn(task), task.failed, chip.projected),
     [task, chip.projected],
@@ -636,7 +650,7 @@ function ChipPopover({
         </span>
       </div>
 
-      <p className="schedule-pop-title">{task.title || firstLine(chip.anchor.body)}</p>
+      <p className="schedule-pop-title">{task.title || firstLine(chip.message.body)}</p>
 
       <div className="schedule-pop-rows">
         {repeat && (
@@ -671,9 +685,9 @@ function ChipPopover({
       {error && <p className="schedule-card-why">{error}</p>}
 
       <div className="schedule-card-actions">
-        {onEditEntry && chip.anchor.entry_id && (
+        {onEditEntry && chip.message.entry_id && (
           <button type="button" className="btn btn-secondary"
-                  onClick={() => { onEditEntry(chip.anchor.template_id || chip.anchor.entry_id); onClose(); }}>
+                  onClick={() => { onEditEntry(chip.message.template_id || chip.message.entry_id); onClose(); }}>
             {ICON_EDIT} Edit
           </button>
         )}
@@ -823,10 +837,9 @@ export default function ScheduleCalendar({
   //
   // The target is schedule-lib.scrollTarget and is tested there: today's now-line
   // when today is in view with anything on it, otherwise the earliest chip in the
-  // range, otherwise the old 7am. It exists because one chip per task per day
-  // anchors at the day's EARLIEST slot, so an hourly rule's whole day is a single
-  // chip at 00:00 — which the old fixed 7am opened seven hours below, on a column
-  // that then read as empty.
+  // range, otherwise the old 7am. It exists because an hourly rule's first run of
+  // the day is at 00:00 — which the old fixed 7am opened seven hours below, on a
+  // column that then read as empty until somebody scrolled up.
   //
   // THE PLACEMENT BELONGS TO THE RANGE, NOT TO THE DATA. Arrows, Today and the
   // week/4-day toggle move the window and earn a re-place; the 20s poll does not.
@@ -953,9 +966,9 @@ export default function ScheduleCalendar({
           {days.map((day) => {
             const key = dayKey(day);
             // Lane packing is Google's side-by-side split for chips that
-            // overlap. It is doing LESS work than it used to: one task can no
-            // longer produce two chips in a day, so lanes only ever separate
-            // DIFFERENT tasks that happen to start close together.
+            // overlap. It is doing MORE work than it used to: one task draws a
+            // chip per run now, so a rule denser than CHIP_MIN splits into lanes
+            // of one colour, alongside the different tasks it already separated.
             const chips = assignLanes(chipsByDay.get(key) ?? []);
             return (
               <div key={key}
@@ -966,19 +979,15 @@ export default function ScheduleCalendar({
                        style={{ top: (now.getHours() + now.getMinutes() / 60) * HOUR_H }} />
                 )}
                 {chips.map((chip) => {
-                  const later = chip.messages
-                    .slice(1)
-                    .map((m) => clockTime(new Date(m.at * 1000)));
                   // One string for the tooltip AND the accessible name. Named
                   // explicitly rather than left to fall out of the visible
                   // text: the name then survives the narrow-lane rule that
                   // hides the time, and the ↻ can go decorative instead of
                   // announcing a bare "Repeats" (audit 2026-08-17).
                   const name = chipAccessibleName(
-                    chip.task.title || firstLine(chip.anchor.body),
+                    chip.task.title || firstLine(chip.message.body),
                     repeatByTemplate.get(chip.templateId) ?? "",
                     clockTime(chip.time),
-                    later,
                   );
                   return (
                     <button
@@ -988,11 +997,20 @@ export default function ScheduleCalendar({
                         "schedule-cal-chip schedule-cal-chip--" + chip.tone +
                         (chip.projected ? " is-projected" : "") +
                         (chip.time < now ? " is-past" : "") +
-                        // Three lanes leave a chip ~70px wide, which cannot hold
-                        // both the title and the clock — the title collapsed to
-                        // two characters (audit 2026-08-16). The CSS drops the
-                        // time; the hour ruler already carries it.
-                        (chip.lanes >= 3 ? " is-narrow" : "")
+                        // A split lane cannot hold both the title and the clock
+                        // — the title collapses to a character or two (audit
+                        // 2026-08-16, and again on 2026-08-17 the moment chips
+                        // went per-message: a task landing on an hourly rule's
+                        // own slot is a two-lane split, which used to keep the
+                        // time and show "P ↻ 3:00 AM"). The CSS drops the time;
+                        // the hour ruler and the chip's own name still carry it.
+                        //
+                        // TWO classes because the two ranges have different room:
+                        // a week column halves to ~78px and loses the clock at
+                        // TWO lanes, while a 4-day column halves to ~145px and
+                        // can still read both — it only gives up at three.
+                        (chip.lanes >= 2 ? " is-narrow" : "") +
+                        (chip.lanes >= 3 ? " is-tight" : "")
                       }
                       style={{
                         top: (minutesOfDay(chip.time) / 60) * HOUR_H,
@@ -1014,7 +1032,7 @@ export default function ScheduleCalendar({
                       }}
                     >
                       <span className="schedule-cal-chip-text">
-                        {chip.task.title || firstLine(chip.anchor.body)}
+                        {chip.task.title || firstLine(chip.message.body)}
                       </span>
                       {chip.recurring && (
                         // Decorative. The recurrence is in the chip's own
@@ -1023,15 +1041,10 @@ export default function ScheduleCalendar({
                         // form's own "Repeats" control.
                         <span className="schedule-cal-chip-rep" aria-hidden="true">↻</span>
                       )}
-                      {chip.extra > 0 && (
-                        // The mitigation, named: the later runs of the day have
-                        // no chip of their own, so the anchor counts them and
-                        // the popover lists them with their real times.
-                        <span className="schedule-cal-chip-more"
-                              title={`also ${later.join(", ")}`}>
-                          +{chip.extra}
-                        </span>
-                      )}
+                      {/* No `+N` badge. It counted the day's other runs while
+                          they had no chip of their own; they each have one now,
+                          on their own hour line, so the count would only ever
+                          read +0. */}
                       <span className="schedule-cal-chip-time">{clockTime(chip.time)}</span>
                     </button>
                   );

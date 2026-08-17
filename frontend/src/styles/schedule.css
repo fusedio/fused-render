@@ -434,17 +434,24 @@
   background: var(--error);
 }
 
-/* -- The chip: one task, one day ------------------------------------------------
+/* -- The chip: one scheduled message -------------------------------------------
    A coloured bar plus a tint of the same colour, not a solid fill: the colour
    here identifies the TASK (eight hues, --task-c0…7, indexed off the task key),
    and eight solid fills would each need their own readable text colour in two
    themes. A bar and a wash keep the text at --fg throughout, so a hue only has
-   to be distinguishable — which is what it is for.
+   to be distinguishable — which is what it is for. That shared hue is what makes
+   a task's 3am, 5am and 7am chips read as one task rather than three.
 
    FIXED one line tall, always. A message has a start time and no duration, so
    there is nothing for a height to encode; Google draws a short event exactly
-   this way. Do not make this grow with the message count — that is what the
-   `+N` badge is for. */
+   this way — and 21px against the 44px hour means an hourly rule's 24 chips sit
+   one to an hour line with air between them.
+
+   The min-width is the floor for a very dense day: past six or so lanes an equal
+   split would leave slivers, so the chips OVERLAP instead — each keeping its
+   colour bar and its left edge, the later lane over the earlier one (the z-index
+   below), and any of them raised in full by :hover. Google's own cascade, and it
+   fails by hiding a title rather than by shrinking every chip to unreadable. */
 .schedule-cal .schedule-cal-chip {
   position: absolute;
   /* --lane is set inline per chip; the z-index computed HERE rather than
@@ -454,6 +461,7 @@
   gap: 4px;
   align-items: center;
   height: 21px;
+  min-width: 34px;
   padding: 0 6px;
   border: none;
   border-left: 3px solid var(--chip, var(--accent));
@@ -516,18 +524,9 @@
   font-size: 11px;
 }
 
-/* The `+N`: how many MORE of this task's messages fall on this day, nested
-   inside the anchor. An hourly rule reads `+23` here rather than filling the
-   column with 24 identical chips. */
-.schedule-cal .schedule-cal-chip-more {
-  flex: none;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--chip, var(--accent)) 55%, var(--bg-alt));
-  color: var(--fg);
-  font-size: 10px;
-  font-weight: 600;
-}
+/* There is no `+N` badge. It used to count the day's other runs, which had no
+   chip of their own; every run has one now, at its own time on the ruler, so the
+   badge could only ever read +0. */
 
 .schedule-cal .schedule-cal-chip-time {
   flex: 0 0 auto;
@@ -535,12 +534,20 @@
   color: var(--fg-muted);
 }
 
-/* Three or more lanes and the chip has no room for both facts. The title is
-   the one that identifies the task; the time is already read off the chip's
-   position on the hour ruler, so it is what goes. The class is set from
-   `lanes` in ScheduleCalendar (the number is already computed there) rather
-   than a container query — one source, no second layout system. */
-.schedule-cal .schedule-cal-chip.is-narrow .schedule-cal-chip-time {
+/* A split lane has no room for both facts. The title is the one that identifies
+   the task; the time is already read off the chip's position on the hour ruler
+   (and out of its accessible name), so the time is what goes. Both classes are
+   set from `lanes` in ScheduleCalendar (the number is already computed there)
+   rather than a container query — one source, no second layout system.
+
+   The threshold differs by range because the room does: a week column halves to
+   about 78px and cannot hold "Pull news ↻ 3:00 AM" at two lanes, while a 4-day
+   column halves to about 145px and can. Two lanes stopped being an edge case the
+   day chips went per-message — any task landing on an hourly rule's own slot is
+   one — and at two lanes the old rule kept the clock and ate the title down to
+   "P". */
+.schedule-cal:not(.is-wide) .schedule-cal-chip.is-narrow .schedule-cal-chip-time,
+.schedule-cal.is-wide .schedule-cal-chip.is-tight .schedule-cal-chip-time {
   display: none;
 }
 
