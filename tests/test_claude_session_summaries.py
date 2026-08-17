@@ -318,6 +318,8 @@ def test_triage_write_sets_status_and_reads_back(projects_dir, state_dir, client
 
 
 def test_triage_write_preserves_the_records_other_keys(state_dir, client):
+    """`status` and its stamp are the only fields this endpoint touches — a note
+    the user typed in the Inbox must survive a drag on the Board."""
     path = os.path.join(str(state_dir), "triage.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"s1": {"status": "done", "note": "keep me", "read": "1"}}, f)
@@ -326,7 +328,14 @@ def test_triage_write_preserves_the_records_other_keys(state_dir, client):
     assert r.status_code == 200
     with open(path, encoding="utf-8") as f:
         rec = json.load(f)["s1"]
-    assert rec == {"status": "in_progress", "note": "keep me", "read": "1"}
+    assert rec["note"] == "keep me"
+    assert rec["read"] == "1"
+    assert rec["status"] == "in_progress"
+    # Stamped, so `_pin_holds` can tell this deliberate pin from an automatic
+    # one. The set of keys is asserted whole so a future field has to be a
+    # decision rather than a leak.
+    assert set(rec) == {"status", "note", "read", "at"}
+    assert float(rec["at"]) > 0
 
 
 def test_triage_write_refuses_a_status_it_does_not_speak(state_dir, client):

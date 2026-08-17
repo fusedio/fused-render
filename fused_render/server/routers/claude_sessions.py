@@ -358,6 +358,15 @@ def api_claude_session_triage(patch: TriagePatch):
     Board drags cards between the same three columns the Inbox uses. Same
     file, same locking, same merge semantics: only `status` changes, and the
     record's other keys (note, tags, read) survive untouched.
+
+    **The write is stamped.** `at` is when this status was chosen, and the Tasks
+    router's `_pin_holds` needs it to tell a deliberate `in_progress` — the
+    reopen drag — from the ones `autoFlow` writes automatically and cannot take
+    back once its page is closed. A pin with no stamp reads as older than
+    anything that has happened and is reapable, which is the right answer for
+    every automatic one: `autoFlow` sends `{status}` alone, and this is the only
+    writer that knows the status came from a person. Stringified because that is
+    the shape of the record — `set_triage.py` coerces every field it writes.
     """
     session_id = patch.session_id.strip()
     if not session_id:
@@ -376,6 +385,7 @@ def api_claude_session_triage(patch: TriagePatch):
         if not isinstance(rec, dict):
             rec = {}
         rec["status"] = patch.status
+        rec["at"] = str(datetime.now(timezone.utc).timestamp())
         triage[session_id] = rec
         with open(triage_path, "w", encoding="utf-8") as f:
             json.dump(triage, f, indent=2, ensure_ascii=False)
