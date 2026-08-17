@@ -7804,3 +7804,14 @@ the installation, and the mark that says so.
   what it is dropping: each claim carries a token, and a release whose token does
   not match is a no-op. Unconditional, the first watcher's `finally` wiped the
   newer claim on its way out and let a third agent into the tree.
+- **SF-13c** **A watcher that cannot START keeps the slot too**, which is a
+  reversal of the obvious handling. The spawn has already succeeded by then, so
+  releasing says *nothing is running* while something is, and hands a second
+  agent the tree — trading the one thing the slot exists to prevent for the one
+  thing it is allowed to cost. Holding it says something TRUE: the next Fix this
+  is refused with "a fix session is already running", which is exactly the case,
+  and the TTL above is the release. The price is that this session goes
+  unwatched and therefore unstamped, and nothing else can recover that — the
+  mark is a provenance claim only a watched session can make (SF-7a), never
+  inferred from a digest. That is the smaller loss, and reaching this branch at
+  all means the interpreter could not start a thread.

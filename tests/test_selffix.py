@@ -851,3 +851,38 @@ def test_clear_endpoint(client, install):
     assert client.post("/api/selffix/clear").status_code == 403
     assert post(client, "/api/selffix/clear").json() == {"cleared": True}
     assert "modified_install" not in client.get("/api/config").json()
+
+
+def test_a_watcher_that_cannot_start_still_holds_the_slot(client, monkeypatch):
+    """The one case where the app must refuse rather than free the guard.
+
+    If the watcher thread cannot be started the session is ALREADY RUNNING, and
+    releasing the slot then says "nothing is running" while something is —
+    letting a second agent into the same tree, which is the single outcome the
+    slot exists to prevent. Holding it says something true instead, and the TTL
+    is the release. The cost, an unstamped session, is the smaller one and is
+    not recoverable by any other means (the mark is provenance, never inferred).
+    """
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", lambda *a, **k: {"run_id": "r1"})
+    monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
+
+    class NoThreads:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    real_thread = selffix_routes.threading.Thread
+    monkeypatch.setattr(selffix_routes.threading, "Thread", NoThreads)
+
+    # The start still succeeds — the session really is running, and the user is
+    # about to land in it.
+    assert post(client, "/api/selffix/start", {"title": "a"}).status_code == 200
+    # ...so the next one is refused, naming the run that holds the tree. Only
+    # Thread is put back: the spawn stub stays, so a refusal that did NOT happen
+    # would be a test failure rather than a real `claude` process.
+    monkeypatch.setattr(selffix_routes.threading, "Thread", real_thread)
+    second = post(client, "/api/selffix/start", {"title": "b"})
+    assert second.status_code == 409
+    assert "already running" in second.json()["error"]
