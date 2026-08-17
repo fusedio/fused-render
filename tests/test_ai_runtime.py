@@ -26,6 +26,8 @@ from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
+from fused_render.server.routers import ai_runtime
+from fused_render.server.routers.ai_models import CachedModel
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
 #: The runner fixtures stub it (nothing is ever built in these tests), so a test
@@ -3943,3 +3945,208 @@ def test_download_refuses_an_unreadable_cached_repo_too(client, hub, dispatched)
     assert response.status_code == 400
     assert "org/gguf-only" in response.json()["error"]
     assert dispatched == []
+
+
+# -- a downloaded model joins the catalog's picker (D323) -----------------------
+# The reported bug: a user finds a model on the Discover tab's Hub search, presses
+# Download, the bytes land in the hub cache — and the model then appears in NO
+# page's picker, because every page reads `fused.ai.models.catalog()` and that was
+# the curation and nothing else. The cache scan the AI Models page already does is
+# now joined onto the catalog, so a downloaded repo shows up beside the suggested
+# ones with the same `{id, label, size_gb, note}` keys the apps read.
+#
+# The rule the union must not break is `catalog.py`'s: SMALLEST FIRST, AND THE
+# DEFAULT FOLLOWS POSITION 0, over the CURATED list only. `default_for()` is what
+# a bare `fused.ai.image()` loads, so an arbitrary repo off the disk reaching
+# position 0 would make a no-model call load unvetted weights.
+
+
+def _catalog(client):
+    response = client.get("/api/ai/catalog")
+    assert response.status_code == 200
+    return {row["capability"]: row for row in response.json()["capabilities"]}
+
+
+def _entry(client, capability, repo_id):
+    return next((m for m in _catalog(client)[capability]["models"] if m["id"] == repo_id), None)
+
+
+def _text_repo(hub, repo_id, *, size=0):
+    """A cached repo whose config says text generation beyond doubt, sized."""
+    repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
+                        config={"architectures": ["LlamaForCausalLM"]})
+    (repo / "snapshots" / "c0ffee" / "model.safetensors").write_bytes(b"x" * size)
+    return repo
+
+
+def test_a_downloaded_repo_the_curation_never_heard_of_joins_its_capability(client, hub):
+    """The bug, end to end: a repo the SUGGESTIONS dict has never contained is on
+    the disk, and the payload three real apps read now offers it."""
+    repo_id = "some-org/a-model-nobody-curated"
+    # The fixture defends itself: the whole point is a repo the curation does not
+    # know, so a future SUGGESTIONS edit that happened to add this id must fail
+    # here rather than turn the test into a tautology about a curated entry.
+    assert repo_id not in catalog.all_suggested_ids()
+    _text_repo(hub, repo_id, size=2048)
+    entry = _entry(client, registry.TEXT_GENERATION, repo_id)
+    assert entry is not None
+    assert entry["downloaded"] is True
+    assert entry["source"] == "cached"
+    # Every key the three apps read, present and the right type on a cached entry
+    # too — they render `m.label || m.id` and `m.size_gb`, so a missing label or a
+    # string where a number belongs is a broken picker, not a cosmetic slip.
+    assert isinstance(entry["label"], str) and entry["label"]
+    assert isinstance(entry["size_gb"], float)
+    assert entry["note"] is None
+
+
+def test_a_cached_entrys_size_is_its_real_measured_footprint(client, hub):
+    """Measured, not guessed: the field means "every byte on the disk", the same
+    thing it means for a curated entry (see catalog.py's docstring)."""
+    _text_repo(hub, "some-org/three-gb", size=3_000_000_000)
+    entry = _entry(client, registry.TEXT_GENERATION, "some-org/three-gb")
+    assert entry["size_gb"] == 3.0
+
+
+def test_an_uncurated_repo_on_disk_cannot_take_position_0_or_the_default(client, hub):
+    """The regression guard for catalog.py's ordering rule.
+
+    A NEARLY EMPTY repo is the dangerous case, not a huge one: the list is sorted
+    smallest first and position 0 is the default, so a naive merge would promote a
+    3KB folder off the disk to "what a bare `fused.ai()` call loads".
+    """
+    before_default = catalog.default_for(registry.TEXT_GENERATION)
+    before_curated = [m["id"] for m in catalog.for_capability(registry.TEXT_GENERATION)]
+    assert before_default and before_curated
+    _text_repo(hub, "some-org/tiny-but-uncurated", size=3_000)
+    _text_repo(hub, "some-org/enormous-and-uncurated", size=9_000_000)
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    # The three answers a bare call goes through, all untouched.
+    assert row["default"] == before_default
+    assert catalog.default_for(registry.TEXT_GENERATION) == before_default
+    assert [m["id"] for m in catalog.for_capability(registry.TEXT_GENERATION)] == before_curated
+    # …and the payload's own ordering: every curated entry, in its curated order,
+    # before anything that came off the disk.
+    ids = [m["id"] for m in row["models"]]
+    assert ids[:len(before_curated)] == before_curated
+    assert set(ids[len(before_curated):]) == {
+        "some-org/tiny-but-uncurated", "some-org/enormous-and-uncurated"}
+
+
+def test_the_cached_tail_is_smallest_first_with_unknown_sizes_last(client, hub):
+    """catalog.py's ordering rule, applied to the tail as well as the head."""
+    _text_repo(hub, "some-org/big", size=9_000_000)
+    _text_repo(hub, "some-org/small", size=2_000)
+    curated = len(catalog.for_capability(registry.TEXT_GENERATION))
+    ids = [m["id"] for m in _catalog(client)[registry.TEXT_GENERATION]["models"]]
+    assert ids[curated:] == ["some-org/small", "some-org/big"]
+
+
+def test_an_unmeasured_cached_entry_sorts_last_rather_than_first():
+    """The defensive half of the same rule, on the sort key itself: nothing
+    measurable means "nobody knows how big this is", and catalog.py is explicit that
+    an unknown download must never be promoted into the smallest slot. Not reachable
+    from a real scan today — a cache repo always has at least its `refs/main` on
+    disk — which is exactly why it is pinned here rather than left to be noticed
+    once something makes it reachable."""
+    models = [CachedModel("c", registry.TEXT_GENERATION, 0),
+              CachedModel("b", registry.TEXT_GENERATION, 5_000),
+              CachedModel("a", registry.TEXT_GENERATION, 1_000)]
+    ordered = sorted(models, key=ai_runtime._cached_order)
+    assert [m.repo_id for m in ordered] == ["a", "b", "c"]
+
+
+def test_a_curated_repo_that_is_also_on_disk_appears_once_marked_downloaded(client, hub):
+    """Deduplicated, and it is the CURATED entry that survives — the hand-written
+    label and note are the point of curating it."""
+    repo_id = catalog.default_for(registry.TEXT_GENERATION)
+    curated = next(m for m in catalog.for_capability(registry.TEXT_GENERATION)
+                   if m["id"] == repo_id)
+    _text_repo(hub, repo_id, size=2048)
+    matches = [m for m in _catalog(client)[registry.TEXT_GENERATION]["models"]
+               if m["id"] == repo_id]
+    assert len(matches) == 1
+    assert matches[0]["downloaded"] is True
+    assert matches[0]["source"] == "curated"
+    assert matches[0]["label"] == curated["label"]
+    assert matches[0]["note"] == curated["note"]
+    assert matches[0]["size_gb"] == curated["size_gb"]
+
+
+def test_a_curated_repo_that_is_not_on_disk_says_so(client, hub):
+    """The other side of the flag, and what makes it worth a field: an empty cache
+    means every curated entry reads `downloaded: false` rather than nothing."""
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    assert row["models"]
+    assert all(m["downloaded"] is False for m in row["models"])
+    assert all(m["source"] == "curated" for m in row["models"])
+
+
+def test_a_component_repo_an_engine_fetched_is_never_offered_as_a_model(client, hub):
+    """The Local tab files these under "Fetched by engines" and disables their
+    Load; a picker must not offer one either. `formats.COMPONENT_REPOS` is the one
+    list of them, asked rather than restated."""
+    repo_id = next(iter(formats.COMPONENT_REPOS))
+    _text_repo(hub, repo_id, size=2048)
+    rows = _catalog(client)
+    assert not any(m["id"] == repo_id for row in rows.values() for m in row["models"])
+
+
+def test_a_repo_no_engine_can_read_joins_no_capability(client, hub):
+    """A GGUF-only folder has no inferable capability, and inventing one for it is
+    how `load()` came to send a diffusion repo to mlx-lm (D321)."""
+    _cached_repo(hub, "some-org/gguf-only", files=("model.gguf", "README.md"))
+    rows = _catalog(client)
+    assert not any(m["id"] == "some-org/gguf-only"
+                   for row in rows.values() for m in row["models"])
+
+
+def test_a_dataset_in_the_cache_joins_no_capability(client, hub):
+    """Nothing loads a dataset into a runner, whatever its config.json says."""
+    repo = hub / "datasets--some-org--corpus"
+    snapshot = repo / "snapshots" / "c0ffee"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text(json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    (repo / "refs").mkdir(parents=True)
+    (repo / "refs" / "main").write_text("c0ffee")
+    rows = _catalog(client)
+    assert not any(m["id"] == "some-org/corpus" for row in rows.values() for m in row["models"])
+
+
+def test_a_model_downloaded_after_a_read_appears_on_the_very_next_one(client, hub):
+    """The cache-staleness trap, pinned. The scan is memoised because a page polls
+    this route, and a memo that outlived a completed download would reproduce
+    exactly the bug this change fixes — the model the user just fetched missing
+    from the picker."""
+    repo_id = "some-org/arrived-late"
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is None
+    _text_repo(hub, repo_id, size=2048)
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is not None
+
+
+def test_a_resident_model_is_marked_loaded(client, hub, monkeypatch):
+    """The third state a picker wants: on the disk is not the same as held in
+    memory, and a page showing "loaded" beside one entry should not have to join
+    two endpoints to know which.
+
+    Read LIVE from the supervisor rather than through the memoised scan — residency
+    changes on a second's notice and the disk inventory does not, so a stale
+    "loaded" would be a worse lie than a stale size.
+    """
+    repo_id = "some-org/resident"
+    _text_repo(hub, repo_id, size=2048)
+    assert _entry(client, registry.TEXT_GENERATION, repo_id)["loaded"] is False
+    monkeypatch.setattr(supervisor, "resident_models", lambda: {repo_id})
+    assert _entry(client, registry.TEXT_GENERATION, repo_id)["loaded"] is True
+
+
+def test_resident_models_reports_a_held_worker_without_probing_it(client, fake_runner):
+    """The other half of that flag, against a real worker. `resident_models()` is a
+    dict read under the lock — no health request per worker, which is what makes it
+    affordable on a route a page polls, and what `describe()` cannot offer."""
+    assert supervisor.resident_models() == set()
+    client.post("/api/ai/runtime/load",
+                json={"model": "org/chat", "capability": registry.TEXT_GENERATION},
+                headers={"X-Fused": "1"})
+    _wait_ready("org/chat")
+    assert supervisor.resident_models() == {"org/chat"}
