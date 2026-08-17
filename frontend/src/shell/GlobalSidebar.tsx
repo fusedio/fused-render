@@ -152,16 +152,26 @@ function PreferencesPopover({
   pos,
   entries,
   onClose,
+  triggerRef,
 }: {
   pos: { left: number; bottom: number };
   entries: (PrefsMenuEntry | "separator")[];
   onClose: () => void;
+  /** The element that opened this popover. A click there is NOT an outside
+      click — it's the trigger's own toggle-closed, and must be left to that
+      handler. Otherwise pointerdown closes it here first, and by the time
+      the paired click re-checks "is it open" (React 18 batches the setState
+      before that click fires), it sees closed and reopens it right back. */
+  triggerRef: React.RefObject<HTMLElement | null>;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -276,11 +286,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // mounted whichever trigger (expanded row vs. collapsed rail icon) opened
   // it — the two live in subtrees SidebarFrame never renders together.
   const [prefsPos, setPrefsPos] = useState<{ left: number; bottom: number } | null>(null);
+  // Which trigger opened it — the popover's outside-click check must not
+  // treat a re-click on this element as "outside" (see PreferencesPopover).
+  const prefsTriggerRef = useRef<HTMLElement | null>(null);
   const togglePrefsMenu = (el: HTMLElement) => {
     if (prefsPos) {
       setPrefsPos(null);
       return;
     }
+    prefsTriggerRef.current = el;
     const r = el.getBoundingClientRect();
     // Grows upward: pinned by its bottom edge just above the trigger.
     setPrefsPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
@@ -341,6 +355,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           pos={prefsPos}
           entries={menuEntries}
           onClose={() => setPrefsPos(null)}
+          triggerRef={prefsTriggerRef}
         />
       )}
     </>
