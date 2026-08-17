@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from fused_render import claude_spawn, schedule, schedule_wake
+from fused_render import claude_spawn, jobs, schedule, schedule_wake
 from fused_render.server import create_app
 
 WRITE = {"X-Fused": "1"}
@@ -55,9 +55,13 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule_wake, "sync", lambda due: None)
     schedule._events.clear()
     schedule._watched.clear()
+    # The job registry is a process-global too, and a scheduled send writes to it —
+    # so the half of the card the queue does NOT draw has to be isolated the same way.
+    jobs.reset()
     yield
     schedule._events.clear()
     schedule._watched.clear()
+    jobs.reset()
 
 
 @pytest.fixture()
@@ -122,6 +126,48 @@ def test_a_live_turn_is_listed_with_what_a_link_needs(client, target, spawned):
     assert body["queued"] == []
 
 
+def test_exactly_one_half_owns_the_run_at_each_step(client, target, spawned):
+    """The two halves of the one list must not both draw a run, and must not both
+    skip it. The queue half draws whatever `/api/schedule/queue` lists; the job half
+    draws `/api/jobs` minus the runs it is TOLD the queue is drawing. So the property
+    to pin on the server side is which of the two even has a record at each step, and
+    that they key on the same entry id.
+
+        queued   — in `queued`, and NO job row yet (the row is written at spawn)
+        live     — in `live`, and a `running` job row: the one overlap, and the only
+                   step where the client has to choose. It chooses by entry id, so
+                   the id in the queue list and the id inside `sys:schedule:<id>`
+                   have to be the same string.
+        finished — out of every queue list, and the job row is terminal: the outcome
+                   report, and the only row left."""
+    entry = schedule.create(str(target), "get me something", _at(-60))
+    job_id = f"sys:schedule:{entry['id']}"
+
+    # queued: the queue half alone
+    body = client.get("/api/schedule/queue").json()
+    assert [e["id"] for e in body["queued"]] == [entry["id"]]
+    assert [j["id"] for j in client.get("/api/jobs").json()["jobs"]] == []
+
+    # live: both have a record, and the id the client joins on is the same one
+    schedule.tick()
+    body = client.get("/api/schedule/queue").json()
+    assert [e["id"] for e in body["live"]] == [entry["id"]]
+    assert body["queued"] == [] and body["running"] == []
+    live_job = [j for j in client.get("/api/jobs").json()["jobs"] if j["id"] == job_id]
+    assert len(live_job) == 1
+    assert live_job[0]["state"] == "running"
+    # and it can really be stopped, which is what the row's ✕ promises
+    assert live_job[0]["cancellable"] is True
+
+    # finished: the queue half is out and the job row is the whole story
+    schedule._update(entry["id"], turn="ok")
+    schedule._report(entry["id"], state="done", detail="finished")
+    body = client.get("/api/schedule/queue").json()
+    assert (body["live"], body["queued"], body["running"]) == ([], [], [])
+    done = [j for j in client.get("/api/jobs").json()["jobs"] if j["id"] == job_id]
+    assert [j["state"] for j in done] == ["done"]
+
+
 def test_a_finished_turn_leaves_the_dock(client, target, spawned):
     """`live` is work IN FLIGHT, not history. A turn that ended has a `turn`
     verdict written on it, and the dock is a picture of what is about to happen —
@@ -131,6 +177,38 @@ def test_a_finished_turn_leaves_the_dock(client, target, spawned):
     schedule._update(entry["id"], turn="ok")
 
     assert client.get("/api/schedule/queue").json()["live"] == []
+
+
+def test_the_only_overlap_the_server_leaves_is_the_mirror_image(client, target, spawned):
+    """WHICH WAY the two records can disagree, because it decides which half has to
+    cope. `_watch_turn` writes the entry's `turn` verdict BEFORE reporting the job
+    terminal, and `live` is "sent with no turn" — so between those two writes the entry
+    is out of every queue list while its job row is still `running`. That is the mirror
+    image, it happens on every single run, and the job half is what draws it: one row,
+    with the ✕ that really stops the process.
+
+    The other direction — a live queue entry whose job row is already terminal — is not
+    a state the server passes through at all. It was a CLIENT artifact: /api/jobs is
+    polled about once a second and /api/schedule/queue every six, so the job half knew
+    the turn had ended while the queue half was still painting it live, and a terminal
+    job row exempt from the handover appeared beside it. Hence `jobRows` dropping a
+    drawn run whatever its state, and `openRows` retiring the row against the job
+    snapshot instead of the next queue read."""
+    entry = schedule.create(str(target), "get me something", _at(-60))
+    job_id = f"sys:schedule:{entry['id']}"
+    schedule.tick()
+
+    schedule._update(entry["id"], turn="ok")  # the verdict, before the job report
+    body = client.get("/api/schedule/queue").json()
+    assert (body["live"], body["queued"], body["running"]) == ([], [], [])
+    mid = [j for j in client.get("/api/jobs").json()["jobs"] if j["id"] == job_id]
+    assert [j["state"] for j in mid] == ["running"]
+    assert mid[0]["cancellable"] is True  # and its stop is still real
+
+    # and the job report lands second, which is when the row becomes the outcome
+    schedule._report(entry["id"], state="done", detail="finished")
+    after = [j for j in client.get("/api/jobs").json()["jobs"] if j["id"] == job_id]
+    assert [j["state"] for j in after] == ["done"]
 
 
 def test_the_queue_read_stays_open_and_changes_nothing(client, target):
@@ -211,9 +289,100 @@ def test_there_is_one_card_not_two(dock, card):
         assert f".{gone} {{" not in css, f"the second card's .{gone} rule survives"
     # the rows land in the card's one list, above the job rows
     assert "{queue?.rows}" in card
-    assert card.index("{queue?.rows}") < card.index("jobs.map((job)")
+    assert card.index("{queue?.rows}") < card.index("listed.map((job)")
     # and the one header count is told about them
     assert "jobsSummary(jobs, count)" in card
+
+
+def test_the_fold_takes_the_job_rows_and_not_the_queue_s(card):
+    """A queue row's ✕ is the only cancel a queued message or a live turn has, and
+    the collapse is a PERSISTED preference — so folding the whole list left a card
+    someone collapsed weeks ago showing scheduled work with no reachable way to stop
+    it. The fold takes the job rows (the download history it was set to fold away);
+    the queue's rows stay, in the same one list, with their controls."""
+    assert "rowsShown(collapsed, count)" in card
+    assert "(shown.queue || listed.length > 0) &&" in card
+    assert "{queue?.rows}" in card, "the queue's rows must not sit behind the fold"
+    # exactly one half is folded, and it is the jobs' — minus the one job row that
+    # stands in for a missing queue row, which goes through the fold for the same
+    # reason a queue row does (jobs.ts `foldedJobRows`).
+    assert "shown.jobs ? jobs : foldedJobRows(jobs)" in card
+    assert ".dl-rows.is-folded {" in _read(_CSS), "the folded list needs its own cap"
+
+
+def test_the_job_half_is_told_which_runs_the_queue_draws(dock, card):
+    """One row per unit of work needs the two halves to AGREE on who draws what, and
+    the job half used to guess: it dropped every running `sys:schedule:*` job on the
+    assumption that a queue row for it existed. Two ways for that to be false — the
+    queue read fails (no rows, and after a failed first read no last snapshot either)
+    or the card is mounted bare with nothing filling the slot — and either way a turn
+    that was genuinely executing had no row in either half, so no title, no status
+    line and no reachable stop. Worse than the invisible-and-unreachable run this
+    whole surface was asked for.
+
+    So the ids travel through the same slot the rows do, and they come off the same
+    array the rows are rendered from."""
+    assert "drawn: string[]" in card, "the slot has to carry the ids, not just the rows"
+    assert "jobRows(reported, queue?.drawn)" in card
+    assert "drawn: drawnIds(rows)" in dock
+    # and the guess is gone from the rule itself
+    jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
+    assert "export function jobRows(jobs: Job[], drawn?" in jobs_ts
+    assert "startsWith(SCHEDULE_JOB_PREFIX) && isRunning(j)" not in jobs_ts, \
+        "the unconditional drop is what left a live run with no row anywhere"
+
+
+def test_the_two_halves_share_one_job_snapshot_so_the_handover_is_not_a_race(dock, card):
+    """The ids only mean one row per run if both halves are talking about the same
+    moment, and they were not: the card polls /api/jobs about every second and this half
+    polled its queue every six. So a run that ended was terminal in the card while the
+    queue half still called it live, and terminal job rows were EXEMPT from the handover
+    ("a finished run has left the queue") — two rows for one run, for as long as several
+    seconds. Two halves of one fix:
+
+    * `jobRows` drops a drawn run whatever its state, so a duplicate is impossible at
+      every instant rather than whenever two timers happen to agree;
+    * the card hands its snapshot back up (`onJobs`) and the queue half retires the row
+      against it (`openRows`), so the outcome row waits a render rather than a poll —
+      and is not stranded at all when the queue read is failing and its last snapshot
+      is (rightly) kept.
+
+    It also deletes what used to be a second forever-poll of the same endpoint."""
+    assert "onJobs?: (jobs: Job[]) => void" in card, "the slot has to carry the way back"
+    assert "onJobs?.(reported)" in card, "the FULL list, not the rows this card draws"
+    assert "onJobs: setJobs" in dock
+    assert "openRows(queueRows(" in dock, "the rows are filtered before anything is told"
+    assert "fetchJobs" not in dock, "the queue half must not poll the job registry itself"
+    # and the exemption that was the duplicate is gone from the rule
+    jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
+    assert "if (!isRunning(j)) return true;" not in jobs_ts, \
+        "a terminal row exempt from `drawn` is the same run twice for a poll"
+    assert 'return entry === "" || !ids.has(entry);' in jobs_ts
+    lib = _read(os.path.join(_FRONT, "shell", "queue-dock-lib.ts"))
+    assert "export function openRows(rows: QueueRow[], jobs: Job[]): QueueRow[]" in lib
+    # only a LIVE row is handed over: a queued or sending row's terminal job belongs to
+    # the previous run of a re-queued entry, and retiring it would cost the entry its
+    # only row in either half.
+    assert 'r.role === "live" && ended.has(' in lib
+
+
+def test_a_stand_in_job_row_survives_the_fold(card):
+    """A live run the queue half is NOT drawing has exactly one row, and it is a job
+    row — so the fold must not take it, or the hole reopens for anybody whose card has
+    been collapsed since before any of this existed. Only unattended work in flight
+    goes through: a download's ✕ is a request for work the user started themselves,
+    and a finished run's row is a report, so both still fold."""
+    assert "foldedJobRows" in card
+    jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
+    assert "export function foldedJobRows(jobs: Job[]): Job[]" in jobs_ts
+
+
+def test_the_stored_fold_is_only_ever_written_by_a_press(card):
+    """No auto-expand and no silent rewrite: the preference is the user's. A card
+    folded on purpose stays folded — it just stops swallowing the queue's cancels.
+    One setter call (the header toggle) and one write beside it."""
+    assert card.count("setCollapsed(") == 1
+    assert card.count("saveCollapsed(") == 2  # the writer, and its one call site
 
 
 def test_the_column_owns_where_it_sits(dock, card):

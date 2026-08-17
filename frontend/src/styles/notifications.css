@@ -228,6 +228,21 @@
   border-top: 1px solid var(--border);
 }
 
+/* FOLDED, the same list holds the rows that carry a control for unattended work and
+   nothing else: the collapse takes the job rows (a session's download history, which
+   is what it was set to fold away) and never the only cancel a queued message or a
+   live turn has — see DownloadManager, jobs.ts `rowsShown` and `foldedJobRows`. That
+   is usually the queue's rows; when the queue read failed it is a JOB row standing in
+   for one, which wears .dl-row and lands in the same 16px control column (measured:
+   every .q-x, .q-spin and .dl-x sits at the same offset, so the column does not step
+   sideways where the row kind changes). Capped shorter than the open list so
+   the fold still buys a small card when a dozen messages come due at once, e.g.
+   after a laptop wake. Same rows, same hairlines, same controls; only the ceiling
+   moves, so nothing shifts sideways as the card opens and closes. */
+.dl-rows.is-folded {
+  max-height: min(30vh, 172px);
+}
+
 /* One rule for every row in the list, whatever kind it is — a queue row above a
    job row gets the same hairline as two job rows do. Stated on the container
    rather than as `.dl-row + .dl-row` / `.q-row + .q-row` pairs, which is exactly

@@ -47,7 +47,12 @@ import { IS_EMBED } from "@platform/lib/router";
 //
 // Omitted, the bare download manager stands in its place: platform is not made to
 // depend on a shell that may not be there, and a host mounted without a scheduler
-// above it still shows the jobs pages report.
+// above it still shows the jobs pages report — INCLUDING a live scheduled run, which
+// is the case a bare mount used to lose. The card dropped every running scheduled job
+// on the assumption that a queue row above was drawing it, and with no queue slot
+// filled there was none, so the run had no row and no stop. It is told which runs the
+// slot covers now (DownloadManager's `QueueSlot.drawn`), and told nothing means it
+// draws them itself.
 export default function NotificationHost({ activity }: { activity?: ReactNode }) {
   const toasts = useToasts();
   return (

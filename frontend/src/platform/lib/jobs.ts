@@ -78,25 +78,87 @@ export function isRunning(job: Job): boolean {
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
+/** The entry id inside a scheduled run's job id, or "" for every other job — the
+ *  one place the `sys:schedule:<entry id>` spelling is taken apart. */
+function scheduleEntryId(jobId: string): string {
+  return jobId.startsWith(SCHEDULE_JOB_PREFIX) ? jobId.slice(SCHEDULE_JOB_PREFIX.length) : "";
+}
+
 /**
  * Which jobs get a row of their own, which is not every job the card knows.
  *
  * ONE ROW PER UNIT OF WORK, and since the queue and the jobs now share a single
  * card (Akshil, 2026-08-17 — "this queue and notification thing should be same
  * no?") that rule is enforced inside one list rather than between two cards. A
- * scheduled message whose turn is live already has a row at the top of this card:
- * the queue's, which carries the link to the session it is running in and a
- * cancel that knows what it is cancelling, and which prints THIS job's status
- * line under its title (queue-dock-lib `roleText`). A job row beside it would be
- * the same run twice, each half saying half of the same thing.
+ * scheduled message whose turn is live gets a row at the top of this card from the
+ * queue half: it carries the link to the session it is running in and a cancel that
+ * knows what it is cancelling, and it prints THIS job's status line under its title
+ * (queue-dock-lib `roleText`). A job row beside it would be the same run twice,
+ * each half saying half of the same thing.
  *
- * Only while it is RUNNING. Once the turn has ended the entry drops out of the
- * server's queue entirely, and this job row is the outcome report (finished,
- * failed, cancelled) — the last state of the one lifecycle the card draws. So a
- * terminal row keeps its place, its ✕, and its place in Clear.
+ * `drawn` IS WHICH RUNS THAT HALF ACTUALLY HAS A ROW FOR, by entry id, and it is
+ * passed in rather than assumed. It used to be assumed: every running
+ * `sys:schedule:*` job was dropped on the theory that something above was drawing
+ * it, and the theory is false two ways. `GET /api/schedule/queue` can fail or time
+ * out — after a failed FIRST read the queue half has no rows at all — and this card
+ * can be mounted bare, with nothing filling the `queue` slot by construction. In
+ * both cases a turn that was genuinely executing had no row in EITHER half: no
+ * title, no status line, and no reachable `cancelJob("sys:schedule:<id>")` in any
+ * fold state. That is the invisible-and-unreachable run this whole surface was asked
+ * for, made worse — the earlier bug at least left a row saying "waiting for
+ * permission".
+ *
+ * So being told nothing means "draw it yourself", never "somebody else has it": no
+ * ids ⇒ one row, in the job half, without the Explorer link but with its stop. Told
+ * an id ⇒ the queue half owns that run and this half keeps quiet, which is exact
+ * (the ids come off the very array the rows are rendered from, queue-dock-lib
+ * `drawnIds`) rather than a guess about a category of job.
+ *
+ * `drawn` WINS WHATEVER THE JOB'S STATE, and the terminal rows are the ones that
+ * taught us why. They used to be exempt — "once the turn has ended the entry leaves
+ * the server's queue, so a terminal row cannot be a duplicate" — and the premise is
+ * true of the SERVER and false of the two clocks reading it. This half polls
+ * /api/jobs about once a second and the queue half polls /api/schedule/queue every
+ * six, so for as long as several seconds this half can know the turn ended while the
+ * other is still painting the same run as live: a terminal job row and a live queue
+ * row, two rows for one run, which is the single lifecycle this card was built to
+ * be. One row per run AT EVERY INSTANT is the invariant, and a rule that holds only
+ * when two independent timers agree is not one.
+ *
+ * The cost is that the outcome row waits for the queue half to let go of the run,
+ * and that cost is paid where it can be made small rather than here: the queue half
+ * retires a live row the moment the job registry says the run ended (queue-dock-lib
+ * `openRows`), reading the SAME fast snapshot this half polls (DownloadManager hands
+ * it up through the slot), so the handover is a render apart rather than a poll
+ * apart. Nothing about this function depends on that being quick — it is what keeps
+ * a duplicate impossible; `openRows` is what keeps the outcome prompt.
  */
-export function jobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => !(j.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(j)));
+export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
+  const ids = drawn instanceof Set ? drawn : new Set(drawn ?? []);
+  return jobs.filter((j) => {
+    const entry = scheduleEntryId(j.id);
+    return entry === "" || !ids.has(entry);
+  });
+}
+
+/**
+ * The job rows the FOLD does not take — pass it what `jobRows` returned.
+ *
+ * A live scheduled run that reaches the job half is there because the queue half is
+ * not drawing it (that is exactly what `jobRows` filtered on), so this row is the
+ * only one that run has anywhere, and its ✕ is the only way to stop it. Folding it
+ * away would re-create the bug `rowsShown` exists to prevent, one level down: a card
+ * collapsed weeks ago, a turn running unattended, and nothing on screen to stop it
+ * or to say that expanding would help.
+ *
+ * Nothing else survives. A download's ✕ is a cancel REQUEST for work the user
+ * started themselves and is one expand away, which is what the preference was set
+ * to fold; and a terminal scheduled row is a report, not a control, so it folds with
+ * the rest of the history. Only work that is still running and still unattended
+ * earns a place through the fold.
+ */
+export function foldedJobRows(jobs: Job[]): Job[] {
+  return jobs.filter((j) => isRunning(j) && scheduleEntryId(j.id) !== "");
 }
 
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
@@ -218,6 +280,51 @@ export interface QueueCount {
 }
 
 const NO_QUEUE: QueueCount = { waiting: 0, running: 0 };
+
+/** Which of the card's two kinds of row are on screen (see `rowsShown`). */
+export interface RowsShown {
+  /** The queue's rows — work about to run or running now. */
+  queue: boolean;
+  /** The job rows — everything a page reported, and the outcome of a run. */
+  jobs: boolean;
+}
+
+/**
+ * What the FOLD takes, which is not the whole list — and this is the one place
+ * that decides it, because getting it wrong hides a control rather than a detail.
+ *
+ * The collapse is a persisted preference (`fused-render:jobs-collapsed`), and it
+ * was set against the card as it used to be: a download history that grows all
+ * session and is worth folding away. Then the queue moved into this same card, and
+ * folding the whole list started taking the ONLY cancel a queued message or a live
+ * turn has with it — a card someone collapsed weeks ago left scheduled work
+ * arriving with no reachable way to stop it, and nothing on screen to say that
+ * expanding would give them one. That is the bug this split fixes.
+ *
+ * So the fold applies to the JOB rows only:
+ *
+ * * **queue rows always show** while there are any. They are bounded (past due
+ *   and about to run, not a session's history), each one is a claim on attention
+ *   the user did not make, and each carries the only control that can stop it —
+ *   a queued message's withdrawal, or a live turn's stop. Three rows about to run
+ *   is not what anybody folded a downloads card to avoid.
+ * * **job rows fold**, which is what the preference was set for. A download's ✕ is
+ *   a cancel REQUEST for work the user started themselves, one expand away; the
+ *   header still counts it and the overall bar still says it is running.
+ *
+ * `jobs: false` is still not quite "no job rows": `foldedJobRows` keeps the one kind
+ * that must not be folded — a live scheduled run the queue half is not drawing,
+ * which is the same argument as above applied to the row that stands in for a queue
+ * row when the queue read failed. Everything the preference was set for still folds.
+ *
+ * Nothing here writes the preference: the stored fold is only ever changed by the
+ * user pressing the header, so a card folded on purpose stays folded — it just
+ * stops swallowing the queue's controls. Both false means no list at all, which
+ * with an empty queue is exactly the collapsed download card as it always was.
+ */
+export function rowsShown(collapsed: boolean, queue: QueueCount = NO_QUEUE): RowsShown {
+  return { queue: queue.waiting + queue.running > 0, jobs: !collapsed };
+}
 
 // The one header line for the whole card — the queue's rows and the job rows
 // under a single count, because they are one list of one kind of thing and two

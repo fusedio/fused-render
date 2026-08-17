@@ -45,7 +45,6 @@ import {
 } from "@platform/lib/api";
 import {
   cancelJob,
-  fetchJobs,
   isRunning,
   jobStatusLine,
   SCHEDULE_JOB_PREFIX,
@@ -55,6 +54,8 @@ import { navigateUrl } from "@platform/lib/router";
 import DownloadManager from "@platform/ui/DownloadManager";
 import { cancelOutcome, explorerUrl, firstLine } from "@shell/schedule-lib";
 import {
+  drawnIds,
+  openRows,
   queueCount,
   queueRows,
   roleText,
@@ -71,8 +72,20 @@ const POLL_MS = 6000;
 // The job registry is where a LIVE turn reports its progress, and its line —
 // "waiting for permission", "working · 4210 tokens" — is the most useful string
 // in this card, so the row joins it onto the entry by id rather than inventing a
-// status of its own. That same job is filtered out of the job rows below
-// (`jobRows`), so one run occupies one row in one list.
+// status of its own. That same job is filtered out of the job rows below — by being
+// NAMED in the slot's `drawn` list, not by its id looking schedule-shaped — so one
+// run occupies one row in one list, and a poll that comes back empty or fails hands
+// the run to the job half rather than leaving it with no row anywhere.
+//
+// THOSE JOBS ARRIVE FROM THE CARD (`onJobs`) rather than from a poll of our own, and
+// that is what keeps the one-row rule true at every instant instead of only when two
+// timers agree. This half reads its queue every six seconds; the card reads
+// /api/jobs about every second. A run that ended was therefore terminal in the card
+// and still live here for seconds, and since `jobRows` drops a drawn run whatever its
+// state (it has to — a state-dependent rule was exactly the duplicate), those seconds
+// would be the outcome row's wait. Sharing the card's snapshot means this half lets
+// the run go as soon as the card knows (`openRows`), and it also deletes what used to
+// be a second forever-poll of the same endpoint.
 interface Snapshot {
   queued: ScheduledMessage[];
   running: ScheduledMessage[];
@@ -89,9 +102,8 @@ type QueuePayload = Awaited<ReturnType<typeof getScheduleQueue>> & {
   live?: ScheduledMessage[];
 };
 
-function useQueue(): { snap: Snapshot; jobs: Job[]; refresh: () => void } {
+function useQueue(): { snap: Snapshot; refresh: () => void } {
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const pollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -102,11 +114,9 @@ function useQueue(): { snap: Snapshot; jobs: Job[]; refresh: () => void } {
       // A hidden tab is not being read, and its throttled timers fire in a clump
       // on return anyway — keep the loop alive rather than reading in the dark.
       if (document.visibilityState !== "hidden") {
-        let live = 0;
         try {
           const r = (await getScheduleQueue()) as QueuePayload;
           if (disposed) return;
-          live = (r.live ?? []).length;
           setSnap({
             queued: r.queued ?? [],
             running: r.running ?? [],
@@ -114,22 +124,18 @@ function useQueue(): { snap: Snapshot; jobs: Job[]; refresh: () => void } {
           });
         } catch {
           // The LAST snapshot stays. An unreadable queue is not an empty one, and
-          // blanking these rows would take a live run off the screen (they are
-          // where it lives — the job rows drop it) on one bad probe.
-        }
-        // Only when there is a live turn to describe. The status line comes from
-        // the job registry, which DownloadManager is already polling — asking for
-        // it again with nothing running would be a second forever-poll in every
-        // shell, bought for a line nothing on screen is waiting to print.
-        if (live > 0) {
-          try {
-            const snapshot = await fetchJobs();
-            if (!disposed) setJobs(snapshot.jobs);
-          } catch {
-            /* a status line goes stale; the row does not disappear */
-          }
-        } else if (!disposed) {
-          setJobs((was) => (was.length ? [] : was));
+          // blanking these rows on one bad probe would move a live run from the row
+          // with its Explorer link to the plainer job row for no reason.
+          //
+          // It is no longer the difference between a row and NO row — that was the
+          // hole: with the first read failing there is no last snapshot, so this
+          // half drew nothing while the job half had already dropped the run on the
+          // assumption that it had. The slot now says what these rows cover, and an
+          // empty list means the job half draws the run itself.
+          //
+          // Nor does keeping it strand a finished run's outcome behind a stale live
+          // row: `openRows` retires that row against the job snapshot, which comes
+          // from the card and does not depend on this read ever succeeding again.
         }
       }
       if (!disposed) timer = window.setTimeout(poll, POLL_MS);
@@ -153,7 +159,7 @@ function useQueue(): { snap: Snapshot; jobs: Job[]; refresh: () => void } {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { snap, jobs, refresh };
+  return { snap, refresh };
 }
 
 // lucide `external-link`, drawn here rather than pulled in as a package — the
@@ -279,11 +285,21 @@ function Row({
 }
 
 export default function QueueDock() {
-  const { snap, jobs, refresh } = useQueue();
+  const { snap, refresh } = useQueue();
+  // The card's own job snapshot, handed up on every one of its polls — about once a
+  // second while anything is live, against this half's six. It is what the status
+  // lines are read from AND what decides when this half lets a run go.
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const rows = queueRows(snap.live, snap.running, snap.queued);
+  // What this half still owns: its rows minus any live one whose run the registry
+  // says has ended. Without that the outcome row would wait for the next queue read
+  // to drop the entry — up to a full poll, or forever while that read is failing and
+  // its last snapshot stands — because the job half drops a drawn run whatever its
+  // state. queue-dock-lib `openRows` holds the argument and the three rows it must
+  // NOT retire.
+  const rows = openRows(queueRows(snap.live, snap.running, snap.queued), jobs);
   // Nothing about to run and nothing running means NO ROWS, not an empty state —
   // and whether that leaves a card at all is the card's own question now, because
   // the job rows share it. DownloadManager renders nothing when both halves are
@@ -319,6 +335,14 @@ export default function QueueDock() {
     <DownloadManager
       queue={{
         ...queueCount(rows),
+        // Which runs these rows cover, so the job half drops exactly them. Taken
+        // from the same array as the rows below — the two cannot disagree — and
+        // empty when a failed read left this half with nothing, which is what
+        // hands a live run back to the job half instead of losing it.
+        drawn: drawnIds(rows),
+        // And the way back: the card's job snapshot, which is how this half learns a
+        // run ended without waiting for its own slower read (see `rows` above).
+        onJobs: setJobs,
         rows: rows.map((row) => (
           <Row
             key={row.entry.id}

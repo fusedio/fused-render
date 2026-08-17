@@ -29,6 +29,39 @@
 // card owns everything shared — the plate, the one header, the one count, the one
 // scrolling list, the collapse, and Clear.
 //
+// THE FOLD TAKES THE JOB ROWS ONLY, and that is deliberate (jobs.ts `rowsShown`
+// holds the rule and the full argument). The collapse is a persisted preference,
+// so it was set against the card as it used to be — a download history worth
+// folding away — and once the queue arrived in the same card, folding the list
+// took the only cancel a queued message or a live turn has with it. A card
+// somebody collapsed weeks ago then left scheduled work arriving with nothing to
+// stop it. The queue's rows therefore stay on screen whatever the fold says; the
+// job rows are the half that folds; and nothing here rewrites the stored
+// preference, because the user set it on purpose.
+//
+// WHICH HALF OWNS A RUN IS TOLD, NOT GUESSED (`queue.drawn`, jobs.ts `jobRows`).
+// One row per unit of work needs the two halves to agree on who is drawing what, and
+// this half used to assume: it dropped every running `sys:schedule:*` job because a
+// queue row for it probably existed. It does not always exist — the queue read can
+// fail, and this card can be mounted bare with nothing filling the slot — and a run
+// that was genuinely executing then had no row in either half, so no stop anywhere.
+// The slot now carries the entry ids its rows cover; this half drops exactly those
+// and draws the rest itself, which for a live run is a row with the same title, the
+// same status line and the same ✕, only without the Explorer link that needs shell.
+// `foldedJobRows` keeps that stand-in row through the fold, for the same reason the
+// queue's own rows go through it.
+//
+// AND IT IS TOLD ABOUT A RUN, NOT ABOUT A STATE: a drawn run is dropped here whether
+// its job is running or finished. The exemption terminal rows used to have was an
+// argument about the server (a turn that has ended has left the queue) applied to two
+// clocks reading it — this poll runs about every second, the queue's every six — so a
+// run that ended had its outcome row here while the other half still painted it live,
+// two rows for the one lifecycle, for as long as several seconds. The other side of
+// that trade is that the outcome row waits for the queue half to let go, so this card
+// hands its snapshot BACK through the slot (`onJobs`) and the queue half retires the
+// row against it (queue-dock-lib `openRows`): the handover is a render apart instead
+// of a poll apart, and it does not depend on the queue endpoint answering at all.
+//
 // Placement and stacking still belong to NotificationHost: this component
 // positions nothing. It sits ABOVE the server card and BELOW the toasts, because
 // those are the three lifetimes in the column — a toast is seconds, work in
@@ -45,6 +78,7 @@ import {
   clearFinishedJobs,
   dismissJob,
   fetchJobs,
+  foldedJobRows,
   isRunning,
   jobAmount,
   jobFraction,
@@ -53,6 +87,7 @@ import {
   jobsSummary,
   overallFraction,
   pollInterval,
+  rowsShown,
   JOB_PING_KEY,
   type Job,
   type QueueCount,
@@ -314,6 +349,33 @@ export interface QueueSlot extends QueueCount {
   /** The queue's rows, already rendered, in lifecycle order (running first, then
    *  starting, then waiting). Each is a `.q-row`, a sibling of the `.dl-row`s. */
   rows: ReactNode;
+  /** Which scheduled runs those rows cover, by entry id (queue-dock-lib
+   *  `drawnIds`) — so the job half can drop exactly them and nothing else.
+   *
+   *  Rendered nodes are opaque, so the ids travel beside them rather than being
+   *  read back out of them; they come off the same array, so the two cannot
+   *  disagree. An EMPTY list is meaningful and not a bug: it says this half is
+   *  drawing nothing (a failed queue read keeps its last snapshot, which after a
+   *  failed first read is empty), and the job half then draws the run itself
+   *  instead of assuming somebody else has. See `jobRows`. */
+  drawn: string[];
+  /** This card's job snapshot, handed BACK to the queue half on every poll.
+   *
+   *  The ids above only work if the two halves are looking at the same run at the
+   *  same moment, and they were not: this card polls /api/jobs about once a second
+   *  and the queue half polls its own endpoint every six, so a run that ended was
+   *  terminal here while it was still live there — one run, two rows, for seconds.
+   *  `jobRows` now drops a drawn run whatever its state, which makes the duplicate
+   *  impossible and leaves the outcome row waiting on the queue half to let go; this
+   *  callback is what makes it let go promptly, by giving it the very snapshot that
+   *  says the turn is over (queue-dock-lib `openRows`) instead of its own read six
+   *  seconds later — or never, if that read is failing and its last snapshot stands.
+   *
+   *  It is the FULL list, not the filtered one: what the queue half needs is the
+   *  registry as it stands, including the runs this card is not drawing because that
+   *  half is. It also spares the queue half a second forever-poll of the same
+   *  endpoint, which is what it did before. */
+  onJobs?: (jobs: Job[]) => void;
   /** Cancel all, when the shell has 2+ genuinely withdrawable rows. */
   cancelAll?: ReactNode;
   /** What a cancel actually did, including the half that was refused. */
@@ -323,11 +385,23 @@ export interface QueueSlot extends QueueCount {
 export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
   const { jobs: reported, refresh, patch } = useJobs();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
-  // Everything the poll returned MINUS the live scheduled runs the queue's own
-  // rows are already drawing, one row per unit of work in one list.
+  // Hand this poll's snapshot back to the queue half, so the run it is drawing is
+  // retired against the same evidence this half is acting on rather than against a
+  // read six seconds behind it (`QueueSlot.onJobs`, queue-dock-lib `openRows`). In an
+  // effect and not in the render body: it sets state in the parent, and doing that
+  // while rendering is what React warns about. Keyed on the array identity, which
+  // changes exactly once per response or per local patch.
+  const onJobs = queue?.onJobs;
+  useEffect(() => {
+    onJobs?.(reported);
+  }, [onJobs, reported]);
+  // Everything the poll returned MINUS the scheduled runs the queue's own rows are
+  // actually drawing — told, never assumed (`queue.drawn`), so a queue read that
+  // failed and a card mounted with no queue at all both leave the run one row here
+  // rather than none anywhere. jobs.ts `jobRows` owns the argument.
   // `patch`/`refresh` still work on the full list — the filter is what this card
   // SHOWS, not what it knows.
-  const jobs = jobRows(reported);
+  const jobs = jobRows(reported, queue?.drawn);
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;
 
@@ -338,6 +412,17 @@ export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
   if (jobs.length === 0 && queued === 0) return null;
 
   const overall = overallFraction(jobs);
+  // WHAT THE FOLD TAKES, and it is not the whole list — jobs.ts `rowsShown` owns
+  // the rule and says why. Short version: the collapse is a persisted preference
+  // set against a growing download history, and once the queue moved into this
+  // card, folding the list took the only cancel a queued message or a live turn
+  // has with it. So the queue's rows stay whatever the fold says, and the job rows
+  // are the half that folds.
+  const shown = rowsShown(collapsed, count);
+  // The job rows this card is DRAWING: all of them open, and folded only the ones
+  // the fold must not take — a live scheduled run standing in for a queue row that
+  // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
+  const listed = shown.jobs ? jobs : foldedJobRows(jobs);
   // What "Clear" would actually take — which includes stalled rows, since those
   // are dismissible too. Counting only finished ones hid the button in exactly
   // the case a user most wants it: a column of rows nobody is reporting on.
@@ -388,28 +473,32 @@ export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
           </button>
         )}
       </div>
-      {/* Collapsed still shows the overall bar: folding the rows away should
+      {/* Collapsed still shows the overall bar: folding the job rows away should
           hide the detail, not the fact that something is running. With nothing
           running there is no bar — a sweep under a header reading "2 finished"
           would animate work that is over. */}
-      {collapsed ? (
-        jobs.some(isRunning) && (
-          <div className="dl-bar">
-            <div
-              className={"dl-bar-fill" + (overall === null ? " is-indeterminate" : "")}
-              data-indeterminate={overall === null ? "1" : undefined}
-              style={overall === null ? undefined : { width: `${overall * 100}%` }}
-            />
-          </div>
-        )
-      ) : (
-        // ONE list, in lifecycle order: the queue's rows first (running, then
-        // starting, then waiting) and the job rows under them, which is where the
-        // same run lands once its turn has ended. A scheduled message therefore
-        // moves down this list rather than jumping between two cards.
-        <div className="dl-rows">
+      {collapsed && jobs.some(isRunning) && (
+        <div className="dl-bar">
+          <div
+            className={"dl-bar-fill" + (overall === null ? " is-indeterminate" : "")}
+            data-indeterminate={overall === null ? "1" : undefined}
+            style={overall === null ? undefined : { width: `${overall * 100}%` }}
+          />
+        </div>
+      )}
+      {/* ONE list, in lifecycle order: the queue's rows first (running, then
+          starting, then waiting) and the job rows under them, which is where the
+          same run lands once its turn has ended. A scheduled message therefore
+          moves down this list rather than jumping between two cards.
+          Folded, the same list holds the queue's rows alone — `is-folded` caps it
+          shorter, so the fold still buys a small card even with a dozen entries
+          past due after a wake. Cancel all keeps its 2+ threshold precisely
+          because of this: for a single row the row's own ✕ is reachable either
+          way, and it is the same action with a better name on it. */}
+      {(shown.queue || listed.length > 0) && (
+        <div className={"dl-rows" + (shown.jobs ? "" : " is-folded")}>
           {queue?.rows}
-          {jobs.map((job) => (
+          {listed.map((job) => (
             <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
           ))}
         </div>
