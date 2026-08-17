@@ -46,7 +46,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [error, setError] = useState<string | null>(null);
   // Bumped when push_seq moves → remounts the iframe so the editor shows the
   // pushed code (the hosted workbench never reloads itself on push).
-  const [frameEpoch, setFrameEpoch] = useState(0);
+  const [frameEpoch] = useState(0);
   const lastPushSeq = useRef<number | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
@@ -115,9 +115,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           setDir((d) => d ?? s.dir);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
-          if (lastPushSeq.current !== null && s.push_seq !== lastPushSeq.current) {
-            setFrameEpoch((n) => n + 1);
-          }
+          // Push-driven reload disabled for now — it made the workbench
+          // unusable while edits streamed in (reload on every push).
+          // if (lastPushSeq.current !== null && s.push_seq !== lastPushSeq.current) {
+          //   setFrameEpoch((n) => n + 1);
+          // }
           lastPushSeq.current = s.push_seq;
         })
         .catch(() => undefined);
