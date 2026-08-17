@@ -722,16 +722,24 @@ def test_a_failed_spawn_does_not_wedge_the_one_session_slot(client, monkeypatch)
 class _FakeAgent:
     """Stands in for the claude template's agent module.
 
-    `live` is the run the runs directory would report for the install root —
-    which is what the guard asks, so a test sets it the way the real thing would
-    end up set: empty until a session is running, that run's id afterwards.
+    Two things the guard asks it, mirroring the real one: `_live_run` is the
+    BOUNDED scan of the runs directory, and `_alive` answers for a run named
+    directly. `alive` is the set of run ids whose process is still going;
+    `scanned` is what the (limited) scan would find, which a test can leave
+    empty to model a run that has scrolled out of the window.
     """
 
-    def __init__(self, live: str = ""):
+    RUNS = "/runs"
+
+    def __init__(self, live: str = "", alive: set[str] | None = None):
         self.live = live
+        self.alive = set(alive or ([live] if live else []))
 
     def _live_run(self, target: str, session_id: str = "") -> dict:
         return {"run_id": self.live}
+
+    def _alive(self, run_dir: str) -> bool:
+        return os.path.basename(run_dir) in self.alive
 
 
 def test_only_one_fix_session_runs_at_a_time(client, monkeypatch):
@@ -896,3 +904,38 @@ def test_a_session_whose_watcher_died_still_excludes_a_second_one(client, monkey
     second = post(client, "/api/selffix/start", {"title": "b"})
     assert second.status_code == 409
     assert "r1" in second.json()["error"]
+
+
+def test_a_long_fix_still_excludes_a_second_one_after_the_scan_forgets_it(
+        client, monkeypatch, install):
+    """The scan is BOUNDED — it reads the newest runs on the machine before
+    filtering by target — and a fix session is the long-running case by
+    construction. A machine running scheduled tasks can start enough runs beside
+    it that the scan stops seeing the very session it is guarding, so the run we
+    started is also named directly and asked about by pid."""
+    selffix.note_session("r-long")
+    # The scan finds nothing: this run scrolled out of its window.
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive={"r-long"}))
+    monkeypatch.setattr(selffix_routes, "_spawn_helper",
+                        lambda *a, **k: pytest.fail("must not spawn beside a live fix"))
+
+    refused = post(client, "/api/selffix/start", {"title": "second"})
+    assert refused.status_code == 409
+    assert "r-long" in refused.json()["error"]
+
+
+def test_a_recorded_run_that_has_finished_does_not_block_anything(
+        client, monkeypatch, install):
+    """The pointer is not a lease: nothing expires it, because liveness is the
+    process. A record left by a finished session — or by a machine that lost
+    power mid-fix — reads as "not running" the moment its pid is gone."""
+    selffix.note_session("r-dead")
+    monkeypatch.setattr(selffix_routes, "_load_agent",
+                        lambda: _FakeAgent(live="", alive=set()))
+    monkeypatch.setattr(selffix_routes, "_spawn_helper", lambda *a, **k: {"run_id": "r2"})
+    monkeypatch.setattr(selffix_routes, "_record_session_when_ready", lambda *a, **k: None)
+
+    assert post(client, "/api/selffix/start", {"title": "a"}).status_code == 200
+    # ...and the new run took its place in the record.
+    assert selffix.active_run() == "r2"

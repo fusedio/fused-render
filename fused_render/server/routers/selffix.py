@@ -22,6 +22,7 @@ else.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 
 from fastapi import APIRouter, Body, Header
@@ -84,6 +85,24 @@ _record_session_when_ready = claude_spawn.record_session_when_ready
 def _live_session_in(root: str) -> str:
     """The id of a Claude run still going in `root`, or "" if there is none.
 
+    TWO LOOKUPS, and they are not two answers to be reconciled — either one
+    saying "busy" is enough, because each covers a case the other cannot.
+
+      the run we RECORDED   `selffix.active_run()` names the fix started here,
+                            however long ago. Checked by pid, so the record is
+                            a pointer and never a lease.
+      the runs DIRECTORY    `agent._live_run(root)` finds anything else live in
+                            this tree — including a chat the user opened on the
+                            install folder by hand, which nothing we record
+                            could know about.
+
+    The recorded half exists because the scan is BOUNDED: `_live_run` reads the
+    newest `_LIVE_SCAN_LIMIT` runs on the machine before filtering by target,
+    which is right for a chat turn ("a turn does not outlive 60 later ones") and
+    wrong for this one. A fix session is the long-running case by construction,
+    and a machine running scheduled tasks can start 60 runs beside it — at which
+    point the scan stops seeing the very session it is meant to be guarding.
+
     Never raises: a lookup that cannot answer must not be the reason a fix
     cannot start. Failing OPEN is the right direction here and not a coin toss —
     everything this can fail on (the agent not loading, the runs dir being
@@ -91,9 +110,24 @@ def _live_session_in(root: str) -> str:
     what actually went wrong instead of "already running".
     """
     try:
-        return str(_load_agent()._live_run(root).get("run_id") or "")
+        agent = _load_agent()
     except Exception:  # noqa: BLE001 — see the docstring
-        logger.debug("live-run lookup failed for %s", root, exc_info=True)
+        logger.debug("could not load the agent to check for a live session",
+                     exc_info=True)
+        return ""
+
+    recorded = selffix.active_run()
+    if recorded:
+        try:
+            if agent._alive(os.path.join(agent.RUNS, recorded)):
+                return recorded
+        except Exception:  # noqa: BLE001
+            logger.debug("liveness check failed for run %s", recorded, exc_info=True)
+
+    try:
+        return str(agent._live_run(root).get("run_id") or "")
+    except Exception:  # noqa: BLE001
+        logger.debug("live-run scan failed for %s", root, exc_info=True)
         return ""
 
 
@@ -244,6 +278,10 @@ def api_selffix_start(body: dict = Body(default={}),
         if res.get("error") or not run_id:
             return _error(str(res.get("error") or "could not start the fix session"),
                           status=502)
+        # Recorded INSIDE the lock and before it is dropped, so the next request
+        # to take it already sees this run — the mutex only has to cover the
+        # window in which nothing on disk names the session yet.
+        selffix.note_session(str(run_id))
 
     # The marker's label for this fix. A described problem has no operation
     # name, so its first line stands in — the panel lists fixes by this, and

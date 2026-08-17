@@ -7841,6 +7841,23 @@ the installation, and the mark that says so.
   it: unwatched means unstamped, so the badge will not appear for what that
   session changes, since the mark is a provenance claim only a watched session
   can make (SF-7a) and is never inferred from a digest.
+- **SF-13c1** **The guard asks TWICE, and either "busy" is enough.** The scan is
+  BOUNDED — `_live_run` reads the newest runs on the machine before filtering by
+  target — which is right for a chat turn ("a turn does not outlive 60 later
+  ones") and wrong for this one: a fix session is the long-running case by
+  construction, and a machine firing scheduled tasks can start 60 runs beside it,
+  at which point the scan stops seeing the very session it is guarding. So the
+  run this app started is ALSO named directly, in
+  `<state dir>/session.json`, and asked about by pid. That file is a **pointer,
+  not a lease**, and the distinction is the whole design: nothing expires it,
+  nothing recovers it at startup, and a record left by a finished session — or by
+  a machine that lost power mid-fix — reads as "not running" the moment its pid
+  is gone. The next start overwrites it. Writing it is best-effort, because a
+  pointer that could not be written costs the long-session half of the guard
+  while the scan still covers the ordinary case, and refusing to start a fix over
+  that is the wrong trade. The two lookups are not two answers to reconcile: each
+  covers a case the other cannot (the pointer knows our own long run; the scan
+  knows the chat someone opened on the folder by hand).
 - **SF-13d** **The lookup fails OPEN**, reasoned rather than a coin toss:
   everything it can fail on (the agent not loading, an unreadable runs directory)
   fails the spawn moments later too, with a message naming what actually went
