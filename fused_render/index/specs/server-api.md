@@ -167,6 +167,11 @@ all of it billed to a keystroke. The warm moves it to idle.
   A root whose scan was **debounce-skipped** has no entry and is not waited on: no new
   run is coming and its index is already on disk. The persisted verdict pool
   (`server/index_gitignore.py`) is what covers restarts.
+- The warm and the **first keystroke overlap by design** — the warm runs for ~2.2 s and
+  the user is typing inside it — so `server/index_gitignore.py` coordinates them: the
+  second caller to want verdicts for the same base waits on the sweep already in flight
+  (`_inflight`, `SWEEP_WAIT_MAX_S`) and reads the pool it produced, instead of shelling
+  out to `git check-ignore` over the same 200k entries a second time.
 - It **never raises**: nobody joins the thread.
 
 Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`
