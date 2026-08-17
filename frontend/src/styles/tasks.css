@@ -63,7 +63,8 @@
    messages outrank the task they belong to; then the message row's unread DOT was
    found doing the identical thing one indent in, which also left the thread
    reading as a different dialect from the row above it (Akshil, 2026-08-17). Both
-   trail their titles now — `.tasks-count` and `.tasks-dot`.
+   trail their titles now, and by the end of that day they were one mark rather than
+   two — `.tasks-dot`, the count deleted.
 
    The dot's departure is why `--tasks-msg-ring-x` is written down. The message
    row's ring used to be pushed into its column by the empty slot the dot reserved
@@ -100,6 +101,19 @@
 
 .tasks-row:hover {
   background: var(--row-bg-hover);
+}
+
+/* A row whose press does nothing does not look pressed-able either: a task that
+   has never run has no session to open and no thread to expand (ScheduleTaskViews
+   `pressable`), and a pointer cursor over a lit background is a promise it cannot
+   keep — which is the very complaint the click itself was fixed for. Two classes
+   plus the pseudo, so this outranks the rules above without !important. */
+.tasks-row.is-inert {
+  cursor: default;
+}
+
+.tasks-row.is-inert:hover {
+  background: transparent;
 }
 
 /* An open task keeps a tint under its header so the thread beneath it reads as
@@ -163,33 +177,65 @@
 }
 
 /* -- Unread ------------------------------------------------------------------
-   The MESSAGE row's dot, in `--activity` — the hue the page reserves for
-   something happening or waiting to be seen, and the same one the live ping
-   wears. This is the alert half of unread: one loud mark per unread message. The
-   task row's COUNT is the quiet half — a total rather than an alert — and is
-   deliberately not this colour any more; see `.tasks-count`.
+   THE ONE MARK for unread, worn by an unread MESSAGE row and by any TASK that has
+   something unread — the List row and the Board card alike.
 
-   It sits immediately AFTER the message's title (2026-08-17), where the count sits
-   on the row above. Leading the row, in a reserved slot on the rail, it was the
-   same inverted priority the count had — the mark announced before the words it is
-   about — and it was that on the one page whose other half had already been fixed,
-   so a thread read as a different dialect from the task it hangs under. Only the
-   position moved: same hue, same meaning.
+   GREY, not blue (Akshil, 2026-08-17, on a screenshot of `TASK-058 sho time ●`:
+   make it "a subtle grey dot instead of a blue dot"). It wore `--activity` while
+   it spoke for one message at a time, and a column of blue dots down a list of
+   tasks read as a page full of alerts. Unread is news, not an alarm: the mark has
+   to be FINDABLE, which is a matter of it being there at all, and it stops needing
+   a hue to do that once it is the only thing in that slot.
+
+   `--fg-muted` outright, the token the row's own metadata already speaks in, so no
+   new colour enters the page. It stays legible rather than merely present: 7.0:1 on
+   the resting row and 5.6:1 on the hover fill in dark, 5.9:1 and 4.7:1 in light,
+   6.0:1 on a board card's panel — the blue it replaced was 5.2–7.2:1, so nothing
+   was traded away except the shouting.
+
+   `--activity` KEEPS everything it was split out for — the live ping, Run now,
+   the drag-to-run outline, the calendar's run button. That token exists precisely
+   so those could stay blue when Upcoming went grey, and only the unread mark moved.
+
+   The one collision worth naming: `--status-upcoming` is also `--fg-muted`, so an
+   Upcoming row now carries two grey marks. They do not twin — the ring is a 16px
+   HOLLOW circle in the left rail, this is a 7px FILLED disc after the last word of
+   the title, and the row's whole width sits between them. Checked on screen in both
+   themes before this shipped.
+
+   There were two marks until 2026-08-17: this dot on a message, and a neutral
+   numeric pill (`.tasks-count`) on the task. Akshil asked for "only show a single
+   dot like the notification that we show", and the number had no reader — the one
+   decision a task's unread total feeds is "is there anything new in here?", which
+   is a single bit that `211` spent three characters on. So the pill is gone and a
+   task wears this. The COUNT is not lost, only unprinted: it is the mark's
+   accessible name and its tooltip (tasks-lib.taskUnreadLabel, "3 unread
+   messages").
+
+   It sits immediately AFTER the title on both rows (2026-08-17). Leading the row,
+   in a reserved slot on the rail, it was an inverted reading priority — the mark
+   announced before the words it is about — and the task row above had already been
+   fixed, so a thread read as a different dialect from the task it hangs under.
 
    `flex: 0 0 7px` and no margin. The row's `gap` is the separation; an `auto`
    margin here would be the second one in the row, and flex answers two by
    splitting the free space between them, which re-centres the trailing group
-   instead of pushing it to the end.
+   instead of pushing it to the end. `display: inline-block` is what lets the Board
+   card put the same mark INSIDE its title's text flow, where it lands after the
+   last word however many lines the title takes; the two declarations that needs on
+   top of this (a leading margin and `vertical-align`) are stated beside that title
+   in schedule.css, because they are true of the card and not of the row.
 
-   Nothing is drawn at all on a read message. Trailing a title there is no column
-   to hold open — which is the whole reason the empty rail slot could go with it. */
+   Nothing is drawn at all on a read message or an all-read task. Trailing a title
+   there is no column to hold open — which is the whole reason the empty rail slot
+   could go with it. */
 .tasks-dot {
   display: inline-block;
   width: 7px;
   height: 7px;
   flex: 0 0 7px;
   border-radius: 999px;
-  background: var(--activity);
+  background: var(--fg-muted);
 }
 
 /* No reserved slot at the head of a MESSAGE row any more. There was one — the ring
@@ -201,63 +247,57 @@
    into. Deleting the slot without that would have slid every message row 24px left
    into the task row's own column. */
 
-/* The count — the task row's "and there are N of them", sitting immediately
-   AFTER the title text (2026-08-17). Two things changed together and they are one
-   decision:
+/* No `.tasks-count` any more. It was a 16px neutral pill printing the task's
+   unread total after its title — position and weight both hard-won (it led the row
+   for a day, in `--activity`, and inverted the reading priority) — and then the
+   number itself was dropped: a total nobody acts on per unit, where `.tasks-dot`
+   above already answers the only question asked of it. The pill's own history is
+   kept there rather than here, with the mark that replaced it. */
 
-   POSITION. It used to lead the row, on the rail, and that inverted the reading
-   priority: a reader scanning a list wants the titles, and a bold number in front
-   of every one of them announced the messages before the work they are about.
-   Title first, count after — the indentation break the page needed.
+/* The time a task ROW prints, beside its folder chip (2026-08-17: "let's show the
+   time as well for like besides the folder. Let's do that for every task"). Until
+   then a time was only ever visible inside an expanded thread, so a one-message
+   task — which has nothing to expand — showed none at all.
 
-   WEIGHT. Leading, it had to be a solid fill to read as the same mark as the dots
-   under it. Trailing the title it is metadata, not an alert, so the FILL is a
-   quiet neutral wash of --fg-muted instead of a hue. The dots in the thread keep
-   the blue and keep the alerting — one loud mark per unread MESSAGE, one quiet
-   total on the TASK. Deliberately not `--activity`: a blue pill beside a title is
-   a badge demanding a press, which is exactly what it stopped being.
+   Deliberately `.tasks-msg-time`'s own size, colour and tabular figures rather
+   than a register of its own: a task's time and its messages' times are the same
+   kind of fact, and two weights for one fact is how the row and the thread under it
+   start reading as different pages. Which run it is (next, or last) is in the
+   tooltip, not in the ink — tasks-lib.taskWhen.
 
-   The INK is --fg rather than --fg-muted, and that is a legibility decision, not
-   a loudness one. Muted ink on an 18% muted wash lands at 3.8:1 in light mode,
-   which is under AA for 10px digits — the chip would be quiet by being unreadable.
-   Full ink on the same wash clears 11:1 in both themes, and the chip still reads
-   as subordinate because it is 10px against a 13px title. Quiet comes from the
-   size and the fill; the number itself still has to be readable.
-
-   min-width keeps one digit a circle; two grow it into a short pill. Past 99 the
-   text is capped at "99+" (tasks-lib.unreadCount) and the true number stays in
-   the label. 16px flat rather than the rail's variable, because the pill is no
-   longer in the rail and the Board's card wears it from outside `.tasks-node`
-   where that variable does not resolve at all. */
-.tasks-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+   `flex: 0 0 auto`, like the chip beside it, so the TITLE is the element that
+   gives way: a long title ellipsises (`.tasks-title`) instead of squeezing the
+   time out of a row that has room for it. And no margin — `.tasks-grow` is this
+   row's one spacer, and a second `auto` margin would take half the free space with
+   it. */
+.tasks-row-time {
   flex: 0 0 auto;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
-  color: var(--fg);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
+  font-size: 11px;
+  color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-/* `inline-flex` is what lets the Board card put this pill INSIDE its title, in
-   the text flow, where it lands after the last word however many lines that title
-   takes. The two lines it needs on top of this — the leading margin and
-   `vertical-align` — are stated next to that title in schedule.css, because they
-   are true of the card and not of the List row: the row keeps the pill as a flex
-   sibling on a single ellipsised line and takes its spacing from the row's own
-   `gap`. */
+/* The folder chip is `flex: 0 1 auto` where schedule.css defines it, because on a
+   board card it is the thing that must shrink. On a task ROW it is not: the title
+   is, and a chip that shrank alongside it would ellipsise a folder name while the
+   title still had room. Scoped here so the card keeps its own answer. */
+.tasks-row .schedule-tv-id {
+  flex: 0 0 auto;
+}
 
 /* -- Quiet row action (Open chat) ---------------------------------------------
    Hidden until the row is pointed at: it applies to every task that has run,
    and a permanent icon on every row would out-shout the work itself. Kept
-   reachable by keyboard — focus-within reveals it. */
+   reachable by keyboard — focus-within reveals it.
+
+   NOTE, 2026-08-17: the TASK ROW's and the BOARD CARD's strips are not rendered at
+   all right now — `SHOW_ROW_ACTIONS` in ScheduleTaskViews.tsx, off at Akshil's
+   request. These rules stay untouched and stay tested, because they are what the
+   strip comes back to when the flag flips; and hiding those buttons was done by not
+   rendering them rather than by turning this `opacity` permanent, since an
+   invisible button is still in the tab order. The rules below are still LIVE for
+   the message row's own Edit and Cancel, which are not part of that strip. */
 .tasks-act,
 .prefs-section .tasks-act {
   display: inline-flex;
@@ -314,13 +354,13 @@
 }
 
 /* Mark read. Same group, same size, same silence at rest — and NEUTRAL under the
-   pointer, not the unread dot's own `--activity`. That hue is already spoken for
-   twice over: it is what the thread's dots are painted in, so wearing it here
-   would read as "this IS unread" rather than "clear it"; and it is also the hue
-   Run now takes on hover, which sits directly beside this button on every row that
-   offers both. Two adjacent buttons in one colour, one of which starts a Claude
-   turn, is the confusion worth spending a hue to avoid. The glyph carries the
-   meaning; the skin only has to say "this is a control". */
+   pointer, rather than `--activity`. That hue is the one Run now takes on hover,
+   and Run now sits directly beside this button on every row that offers both: two
+   adjacent buttons in one colour, one of which starts a Claude turn, is the
+   confusion worth spending a hue to avoid. (It used to be the unread dot's colour
+   too, which was a second reason; the dot went grey on 2026-08-17 and this
+   reasoning did not need it.) The glyph carries the meaning; the skin only has to
+   say "this is a control". */
 .tasks-act--seen:hover:not(:disabled),
 .prefs-section .tasks-act--seen:hover:not(:disabled) {
   color: var(--fg);
@@ -394,7 +434,13 @@
 
    The strip itself takes no clicks: it is an invisible box over the top-right of
    a card that IS a button, and the 2px between its children must not swallow the
-   press that opens the chat. Only the buttons take them back. */
+   press that opens the chat. Only the buttons take them back.
+
+   Nothing renders into this strip while `SHOW_ROW_ACTIONS` is off (2026-08-17) and
+   the geometry below is kept anyway, on purpose: the `top` is derived from the
+   card's padding and `--tasks-card-head-h`, it took two corrections to land on the
+   head rather than above it, and re-deriving it later from a stylesheet that had
+   forgotten it is how the strip comes back in the wrong place. */
 .tasks-card-acts {
   position: absolute;
   /* Centred on the head's line: the card's own top padding plus half of
@@ -547,6 +593,10 @@
   font-weight: 600;
 }
 
+/* The message row's one time. Relative and one unit wide since 2026-08-17
+   (tasks-lib.relativeWhen), same as the task row above it — `tabular-nums` still
+   earns its place, because a column of "30m ago" / "12h ago" only lines up if the
+   digits are one width. */
 .tasks-msg-time {
   flex: 0 0 auto;
   font-size: 11px;
@@ -555,17 +605,12 @@
   white-space: nowrap;
 }
 
-/* "ran 07:12 today" — drawn only when the run and the due time are different
-   facts (tasks-lib.ranNote), which is a minority of rows, so it is quieter than
-   the due time it qualifies rather than a second column beside it. */
-.tasks-msg-ran {
-  flex: 0 0 auto;
-  font-size: 10.5px;
-  color: var(--fg-muted);
-  opacity: 0.8;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
+/* No `.tasks-msg-ran` any more. It printed "ran 07:12 today" beside the due time
+   whenever the two were different facts, and it went on 2026-08-17 with the rest of
+   the evening's trimming: "I don't think I need this as well, the RAND Today stuff"
+   (Akshil). A row carrying two absolute times is the crowding, and the surviving
+   time is now one relative unit with the full story in its tooltip — both instants,
+   named, whenever they differ (tasks-lib.messageWhenTitle). */
 
 /* The message row's own unread mark is `.tasks-dot`, defined with the rest of the
    unread vocabulary near the top of this file — beside the task row's count,

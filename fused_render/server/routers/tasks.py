@@ -138,40 +138,63 @@ def reset_cache() -> None:
 # --------------------------------------------------------------- transcripts
 
 
-# User-role records Claude Code writes on the user's behalf rather than the
-# user writing them: a finished subagent reporting back, a slash command's name
-# and its stdout, the app's own state injection. They are `type: user` and carry
-# no `isMeta`, so the role alone cannot tell them apart — and on a real machine
-# they were a THIRD of every "message" in the store (88 task-notifications in
-# 270 records), which would have made a thread mostly machinery. Matched at the
-# very start of the body, where they always sit; a tag appearing further in
-# (`<system-reminder>` appended to something a human typed) leaves a real
-# message real.
-_MACHINERY = (
-    "<task-notification>", "<command-name>", "<command-message>",
-    "<local-command-stdout>", "<local-command-stderr>", "<live-app-state>",
-    "<user-prompt-submit-hook>", "<system-reminder>",
-)
-
-
 def _prompt(obj) -> dict | None:
     """One transcript record as a chat message, or None if it isn't one.
 
-    `isMeta` records (Claude Code's own caveats), tool-result-only user records
-    and the machinery above are not things a human said, and a thread that
-    listed them would be mostly machinery."""
+    Three kinds of `type: user` record are not things a human said. `isMeta`
+    records are Claude Code's own caveats. Tool-result-only content has no words
+    in it at all. And a whole class is written on the user's BEHALF — a finished
+    subagent reporting back, a slash command's envelope, the stdout it captured —
+    which on a real machine were a third of every "message" in the store (889
+    task-notifications in 2519 records), enough to make a thread mostly
+    machinery.
+
+    That last class used to be a local list of leading tags and a blanket drop,
+    and the drop was half wrong. `<live-app-state>` and `<pane-shot>` are not
+    machinery-only: they are blocks the fused-render Claude page PREPENDS to what
+    the user typed, so dropping the record threw the human's words away with
+    them — 43 rows in one real store reported no messages at all, and 33 of them
+    were this. `tasks_store` now owns the policy and splits the two cases (see
+    its tag lists for the corpus counts); this asks it both questions, because
+    they are different questions: is the record machinery WHOLE, and if not, what
+    is left once the prefixes come off.
+    """
     if obj.get("type") != "user" or obj.get("isMeta"):
         return None
     message = obj.get("message")
     if not isinstance(message, dict) or message.get("role") != "user":
         return None
     text = tasks_store.first_text(message.get("content")).strip()
-    if not text or text.startswith(_MACHINERY):
+    if not text or tasks_store.is_machinery(text):
+        return None
+    # The remainder can still be empty — annotations or a screenshot sent with no
+    # typed words. That IS something the user did, and the chat page labels it
+    # with a marker, but a listing row has no body to show for it and an empty
+    # bubble in a thread is worse than none.
+    body = tasks_store.strip_machinery(text)
+    if not body:
         return None
     anchor = obj.get("uuid")
-    return {"body": text,
+    return {"body": body,
             "at": tasks_store.epoch(obj.get("timestamp")),
             "anchor": anchor if isinstance(anchor, str) else ""}
+
+
+def _command(obj) -> str:
+    """The slash command a non-message user record carries, or "".
+
+    Read only from records `_prompt` has just refused, which is the only place it
+    can come from — the envelope IS the whole record. Its one consumer is
+    `_title`: a session containing nothing but `/making-a-release` has no prose
+    to be named from, and the command the user typed is a truer name than
+    nothing."""
+    if obj.get("type") != "user":
+        return ""
+    message = obj.get("message")
+    if not isinstance(message, dict):
+        return ""
+    return tasks_store.slash_command(
+        tasks_store.first_text(message.get("content")))
 
 
 def _absorb(rec: dict, line: str) -> None:
@@ -194,6 +217,11 @@ def _absorb(rec: dict, line: str) -> None:
         return
     prompt = _prompt(obj)
     if prompt is None:
+        # Not a message — but a slash-command envelope is still worth ONE fact,
+        # and for some sessions it is the only fact there is. First one wins,
+        # like every other "first message" in this module. See `_title`.
+        if not rec.get("command"):
+            rec["command"] = _command(obj)
         return
     prompt["body"] = prompt["body"][:_BODY_MAX]
     rec["count"] += 1
@@ -203,7 +231,11 @@ def _absorb(rec: dict, line: str) -> None:
 
 
 def _new_scan() -> dict:
-    return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": ""}
+    # Every reader of `command` uses `.get`, so a record built before this key
+    # existed — one already in `_SCAN` when the module is hot-reloaded under the
+    # dev server — degrades to "no command" instead of raising.
+    return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
+            "command": ""}
 
 
 def _scan(path: str) -> dict | None:
@@ -629,7 +661,7 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
     the first line of the first message. No summarisation call anywhere — the
     title we want is already written into the transcript once per turn.
 
-    FOUR sources, because the last step has two and they are not equally
+    FIVE sources, because the last step has three and they are not equally
     trustworthy:
 
     * `message` — the session's own first prompt, read out of the transcript
@@ -640,13 +672,27 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
       still the best name here, but for a task scheduled from the New task form
       it is the very message being scheduled, so a client prefilling a Title
       field from it writes the description into the name.
+    * `command` — the slash command the session ran, when it contains no prose
+      at all. Some sessions really are just `/making-a-release` or `/clear`, and
+      that is worth saying: six of the ten genuinely-wordless rows on one real
+      machine are this shape, and the row's alternative was the envelope quoted
+      back at the user as the name of their own conversation
+      (`<command-message>making-a-release</command-message>` — a real title on a
+      real machine before this).
 
-    The two are the same shape of string and the client has no way to tell them
-    apart by looking. It used to guess — refusing a `message` title whenever the
-    composed ask began with it — and a guess cannot tell a continuation ("pull
-    today's news" as the session's real first prompt, "pull today's news and file
-    it" as the new ask) from an echo, so a session lost the name the app already
-    knew. Naming the source is the same information without the guess."""
+    `message` and `entry` are the same shape of string and the client has no way
+    to tell them apart by looking. It used to guess — refusing a `message` title
+    whenever the composed ask began with it — and a guess cannot tell a
+    continuation ("pull today's news" as the session's real first prompt, "pull
+    today's news and file it" as the new ask) from an echo, so a session lost the
+    name the app already knew. Naming the source is the same information without
+    the guess.
+
+    Nothing at all is a real answer, and it stays "": a session with no prose and
+    no command has nothing true to be called, and the WORDING of that absence is
+    the client's to choose. A placeholder invented here would not stay a
+    placeholder — it is what the New task form prefills a Title field with, and a
+    prefill the user saves becomes the task's permanent name."""
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
         if title:
@@ -661,6 +707,11 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
                 body, source = text, "entry"
                 break
     line = body.strip().splitlines()[0].strip() if body.strip() else ""
+    if not line and rec is not None and rec.get("command"):
+        # No prose anywhere, but the session is not featureless — it ran a slash
+        # command, and `_absorb` kept the first one for exactly this. Taken
+        # verbatim: it is already a name, and a name a user typed.
+        return str(rec["command"])[:200], "command"
     return line[:200], source
 
 

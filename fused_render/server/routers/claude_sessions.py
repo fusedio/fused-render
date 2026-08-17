@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from fused_render import session_liveness
+from fused_render import session_liveness, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
 
 try:
@@ -211,7 +211,15 @@ _parse_ts = session_liveness.parse_ts
 
 def _parse_head(path: str) -> tuple[str | None, str | None, str]:
     """(cwd, first timestamp, first user prompt), streaming from the top and
-    stopping as soon as all three are known — normally within a few lines."""
+    stopping as soon as all three are known — normally within a few lines.
+
+    The prompt is what a HUMAN typed, which is not the same as the first
+    `type: user` record: this reader used to take the record verbatim and named
+    the picker's rows `<live-app-state>` — the fused-render Claude page's own
+    wire, addressed to the model, quoted back at the user as the name of their
+    conversation. `tasks_store` owns that policy for every reader of it now
+    (`strip_machinery`), so this surface and the Tasks list cannot disagree about
+    what a session is called."""
     cwd: str | None = None
     first_ts: str | None = None
     prompt = ""
@@ -239,12 +247,21 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                     ts = obj.get("timestamp")
                     if isinstance(ts, str) and ts:
                         first_ts = ts
-                if not prompt and obj.get("type") == "user":
+                # `isMeta` (Claude Code's local-command caveat, written FOR the
+                # user) and `isSidechain` (a subagent's brief, which can be a
+                # whole task description) are both records the user never typed.
+                # Neither was skipped here, while the sibling reader in
+                # tasks_store skipped one of them — the divergence this file's
+                # half of the fix exists to end.
+                if (not prompt and obj.get("type") == "user"
+                        and not obj.get("isMeta") and not obj.get("isSidechain")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
-                        text = _first_text(msg.get("content")).strip()
-                        if text:
-                            prompt = text
+                        # Stripped, and an empty remainder keeps the scan going
+                        # to the next user record rather than settling for a
+                        # nameless row — see tasks_store.strip_machinery.
+                        prompt = tasks_store.strip_machinery(
+                            _first_text(msg.get("content")))
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:

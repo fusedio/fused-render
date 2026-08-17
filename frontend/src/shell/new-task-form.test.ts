@@ -27,6 +27,7 @@ let deleteActionFor: typeof import("./NewJobModal").deleteActionFor;
 let deleteFailureText: typeof import("./NewJobModal").deleteFailureText;
 let sessionTitleOf: typeof import("./NewJobModal").sessionTitleOf;
 let initialTitleOf: typeof import("./NewJobModal").initialTitleOf;
+let initialTitleStateOf: typeof import("./NewJobModal").initialTitleStateOf;
 let firstLine: typeof import("./NewJobModal").firstLine;
 let shortTitle: typeof import("./NewJobModal").shortTitle;
 let TITLE_MAX: typeof import("./NewJobModal").TITLE_MAX;
@@ -48,6 +49,7 @@ beforeAll(async () => {
   deleteFailureText = mod.deleteFailureText;
   sessionTitleOf = mod.sessionTitleOf;
   initialTitleOf = mod.initialTitleOf;
+  initialTitleStateOf = mod.initialTitleStateOf;
   firstLine = mod.firstLine;
   shortTitle = mod.shortTitle;
   TITLE_MAX = mod.TITLE_MAX;
@@ -720,6 +722,105 @@ describe("naming the task", () => {
       pickedOk: true,
       replaced: false,
     })).toBe(true);
+  });
+
+  // A GUARD, not the fix. The fix is server-side: four readers of a transcript's
+  // first user message each had their own idea of what counted as machinery, so
+  // /api/tasks served rows titled `<live-app-state>` and
+  // `<command-message>making-a-release</command-message>` (44 of them in one real
+  // store). Those are gone at the source. This refuses them anyway, because of
+  // what happens to a bad prefill HERE and nowhere else: a `user`-set title
+  // outranks every other source forever, so one leaked string the user does not
+  // notice before pressing Save becomes that task's permanent name. One already
+  // is, in one real store — which is the proof that the cost is asymmetric and
+  // worth a second check the server has already made.
+  test("a leaked machinery string is never prefilled into the Title field", () => {
+    for (const leaked of [
+      "<live-app-state>",
+      "<command-message>making-a-release</command-message>",
+      "<command-name>/clear</command-name>",
+      "<pane-shot>",
+      // The annotation block opens with a sentence, not a tag, so a "<" test
+      // alone would have let this one straight through.
+      "The user annotated 1 element in the left preview of this file. anchorId =",
+    ]) {
+      // Every source, including the ones that are normally taken verbatim: a
+      // `user` title is exactly how the one bad row in the real store got there,
+      // so re-prefilling it on an Edit would keep the mistake alive.
+      for (const source of ["user", "ai", "message", "entry"]) {
+        expect(sessionTitleOf([task({ title: leaked, title_source: source })], "sess-1")).toBe("");
+      }
+      expect(initialTitleOf(entry({ title: leaked }))).toBe("");
+    }
+  });
+
+  // THE REVIEW FINDING on the guard above (2026-08-18): refusing the prefill is
+  // only half a rescue. The field opened on `initialTitleOf`, which blanks a
+  // leaked title, while the /api/tasks lookup gated on the RAW stored field — so
+  // on exactly the rows the guard exists to rescue the two halves disagreed. A
+  // non-empty leaked string short-circuited the lookup, the field arrived blank
+  // and STAYED blank, and Title is required, so Save was refused on a task the
+  // user cannot easily rename. One answer now serves both halves.
+  test("a leaked stored title still lets the session's own name through", () => {
+    const stored = entry({ title: "<live-app-state>", session_id: "sess-1" });
+    const open = initialTitleStateOf(stored, stored.session_id);
+    // Nothing usable is stored, so the field opens blank…
+    expect(open.title).toBe("");
+    // …and the session lookup must RUN — this is the half that used to see the
+    // leaked string and return early.
+    expect(open.lookupSession).toBe("sess-1");
+    // …landing the session's own resolved name, exactly as if no title had ever
+    // been stored, because as far as this form is concerned none usable was.
+    const resolved = sessionTitleOf([task()], open.lookupSession);
+    expect(resolved).toBe("Porting the parquet reader");
+    // Which is a name, so the requirement is met without the user retyping one.
+    expect(saveEnabled({
+      message: "pull today's news",
+      title: resolved,
+      target: "/tmp/work",
+      pathError: null,
+      repeatOn: false,
+      repeat: "none",
+      customRule: null,
+      legacyCron: "",
+      pickedOk: true,
+      replaced: false,
+    })).toBe(true);
+  });
+
+  test("a real stored title asks for no lookup at all", () => {
+    const open = initialTitleStateOf(entry({ title: "Morning news", session_id: "sess-1" }), "sess-1");
+    expect(open.title).toBe("Morning news");
+    // "" means "do not fetch": step 1 is the top of the precedence and an async
+    // overwrite of a stored name would be data loss.
+    expect(open.lookupSession).toBe("");
+    // The other refusal the same "" carries: nothing to ask about.
+    expect(initialTitleStateOf(null, "").lookupSession).toBe("");
+    expect(initialTitleStateOf(entry({ title: "   " }), "").lookupSession).toBe("");
+  });
+
+  test("…and markup the user typed as a name is still their name to keep", () => {
+    // The guard is deliberately narrow. It refuses a prefill that OPENS with a
+    // tag or with the annotation sentence; it does not go hunting for angle
+    // brackets, because "<div> renders twice" is a perfectly good name for a
+    // thread about that bug and refusing it would be the same class of mistake
+    // as the drop that started all this.
+    expect(sessionTitleOf([task({ title: "fix why <div> renders twice" })], "sess-1")).toBe(
+      "fix why <div> renders twice",
+    );
+    expect(initialTitleOf(entry({ title: "annotated elements are misaligned" }))).toBe(
+      "annotated elements are misaligned",
+    );
+  });
+
+  test("a slash-command title is a name the server read, and it survives", () => {
+    // The server's new fifth source (`title_source: "command"`): a session whose
+    // only user records are `/making-a-release` is named that, because it is true
+    // and useful. Taken verbatim like the other names — it is already one — and
+    // NOT caught by the guard above, which tests the opening tag, not the slash.
+    expect(
+      sessionTitleOf([task({ title: "/making-a-release", title_source: "command" })], "sess-1"),
+    ).toBe("/making-a-release");
   });
 
   test("step 1: a stored title outranks everything, and an edit never loses it", () => {

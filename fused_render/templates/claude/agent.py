@@ -1321,8 +1321,92 @@ _APP_STATE_BLOCK = re.compile(
 
 def _strip_app_state(text: str) -> str:
     """`text` without any pushed app-state block. Non-greedy and anchored on
-    the closing tag, so text that merely mentions the tag survives intact."""
+    the closing tag, so text that merely mentions the tag survives intact.
+
+    POSITION-INDEPENDENT, which is what separates it from `_strip_machinery`
+    below: this one removes the block from wherever it sits (meta.json, the
+    restored transcript), because those callers know the block is theirs. The
+    other one only ever peels a LEADING block, because it runs over records
+    nobody here wrote and a tag further in may be something a human typed."""
     return _APP_STATE_BLOCK.sub("", text or "").strip()
+
+
+# ------------------------------------------------ machinery on a user record
+#
+# A MIRROR of `fused_render/tasks_store.py`'s `strip_machinery` — same tag
+# lists, same discipline, same answers — because a template may not import
+# fused_render (SPEC PY-15 / D166) and this file has to read the same
+# `~/.claude/projects` records the server's Tasks list reads. Two copies is the
+# established shape for a rule that straddles that line (D253's model gate and
+# reader, D301's `app_entry`); what keeps them honest is a test that pins the
+# two to identical output over a corpus of real records, plus one that pins the
+# lists themselves — see tests/test_claude_sessions_merged.py.
+#
+# **Change one, change the other.** tasks_store carries the corpus counts that
+# justify the DROP/STRIP split; the short version is that DROP tags are Claude
+# Code writing a `type: user` record on the user's behalf (never any prose after
+# them), while STRIP tags are blocks THIS PAGE prepends to what the user typed
+# (always prose after them). Putting a tag in the wrong list either surfaces
+# machinery as a session's name or deletes the human's words.
+_MACHINERY_DROP = (
+    "task-notification",
+    "command-message", "command-name", "command-args",
+    "local-command-stdout", "local-command-stderr",
+    "bash-input", "bash-stdout", "bash-stderr",
+    "user-prompt-submit-hook", "system-reminder",
+)
+
+# Spelled out rather than built from `APP_STATE_TAG`: the parity test compares
+# this tuple to the server's literal one, and a wire tag renamed on one side of
+# that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
+# constant on this side at all — only template.html, which writes the block,
+# names it.)
+_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+
+_MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
+_LEADING_MACHINERY = re.compile(
+    r"<(%s)>.*?</\1>\s*" % "|".join(_MACHINERY_TAGS), re.DOTALL)
+_LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
+
+# `formatAnnotations`' preamble, which has no tag at all — the inverse of
+# template.html's `stripAnnBlock`, anchored on the json fence for the same
+# reason it is.
+_ANN_PREAMBLE = "The user annotated "
+_ANN_FENCE_OPEN = "\n```json\n"
+_ANN_FENCE_CLOSE = "\n```"
+
+
+def _strip_ann_block(text: str) -> str:
+    if not text.startswith(_ANN_PREAMBLE):
+        return text
+    open_at = text.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return text
+    close_at = text.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return text
+    return text[close_at + len(_ANN_FENCE_CLOSE):].lstrip("\n")
+
+
+def _strip_machinery(text: str) -> str:
+    """What a human actually typed in one transcript record — every
+    machine-written PREFIX peeled off — or "" if they typed no words at all.
+
+    Loops because one send carries the blocks in combination (`composeOutgoing`
+    fixes the order: state, pictures, notes, words) and peeling one exposes the
+    next. A leading opener still standing at the end has no close in the string
+    (a record caught mid-flush, or a head read cut inside a block), and
+    everything from a machinery opener on is machinery whatever follows it."""
+    out = (text or "").strip()
+    while True:
+        before = out
+        match = _LEADING_MACHINERY.match(out)
+        if match:
+            out = out[match.end():].strip()
+        out = _strip_ann_block(out).strip()
+        if out == before:
+            break
+    return "" if _LEADING_MACHINERY_OPEN.match(out) else out
 
 
 def _app_state_requests(run_dir: str) -> list:
@@ -2542,9 +2626,17 @@ def _cli_preview(path: str, workdir: str) -> str:
 
     Skipped rows: `isMeta` (the local-command caveat Claude Code writes for the
     user), `isSidechain` (a subagent's prompt, which the user never typed), and
-    anything opening with "<" — a slash command's `<command-name>` envelope, or
-    this template's own APP_STATE_TAG block, neither of which the user wrote as
-    prose.
+    any row that is machinery all the way down once `_strip_machinery` has had
+    it — a slash command's envelope, a subagent reporting back, a wordless
+    screenshot send.
+
+    That last test used to be `startswith("<")`, and it was too blunt by exactly
+    one case: the case THIS PAGE causes. `composeOutgoing` prepends the app-state
+    block and the pane shots to what the user typed, so the only message in a
+    session can open with "<" and still be the user's own words — the row went
+    nameless while the words sat right there after the block. The annotation
+    preamble it never caught at all, having no tag to open with, so those rows
+    were titled "The user annotated 1 element in the left previe…".
     """
     try:
         with open(path, "rb") as fh:
@@ -2586,8 +2678,8 @@ def _cli_preview(path: str, workdir: str) -> str:
                                if isinstance(b, dict) and b.get("type") == "text")
         if not isinstance(content, str):
             continue
-        content = content.strip()
-        if not content or content.startswith("<"):
+        content = _strip_machinery(content)
+        if not content:
             continue
         return content[:80] if cwd_seen else ""
     return ""
