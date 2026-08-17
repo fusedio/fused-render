@@ -262,13 +262,24 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
         if login is None or login.proc.poll() is not None:
             env = child_env(cli)
             env["PYTHONUNBUFFERED"] = "1"
+            # The CLI's own login gives the browser only 30s before its
+            # callback server dies (fused.workbench._auth), which loses real
+            # human sign-ins. When the CLI is our own interpreter, run the
+            # long-timeout driver instead (same PKCE flow via the package's
+            # helpers); an external FUSED_RENDER_FUSED_BIN may not even be a
+            # Python we can drive, so it keeps the CLI's login.
+            if cli.external:
+                command = [*cli.command, "workbench", "login"]
+            else:
+                driver = os.path.join(os.path.dirname(__file__), "_fused_login.py")
+                command = [cli.command[0], driver]
             try:
                 # Unlike `cloud login --no-browser`, plain `fused login` opens
                 # the browser itself (webbrowser.open) and never prints the
                 # authorize URL — so there is nothing to capture; the client
                 # polls /api/canvases/status until logged_in flips.
                 proc = subprocess.Popen(
-                    [*cli.command, "workbench", "login"],
+                    command,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
