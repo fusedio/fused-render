@@ -1739,6 +1739,39 @@ def test_the_worker_is_told_where_to_write_the_preview(client, fake_image_runner
     _wait_job(started["jobId"])
 
 
+def _skill_section(title):
+    """The body of one `## ` section of `skills/fused-render-ai/SKILL.md`.
+
+    That file is what a page author actually reads — the bridge's own comments
+    are for whoever maintains the bridge — so it is the copy of this API that
+    can be wrong without anything noticing.
+    """
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skills", "fused-render-ai", "SKILL.md")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("## " + title)
+    end = source.find("\n## ", start + 1)
+    return source[start:end if end != -1 else len(source)]
+
+
+def test_the_SKILL_names_every_field_an_image_resolves_with(client, fake_image_runner):
+    """Read off the ENDPOINT rather than listed here, because a hand-written
+    list in a test is a third copy that can drift with the other two. This is
+    the check that would have caught `previewPath` and `previewUrl` shipping
+    with the skill still describing the API without them: the route grew two
+    fields and the document a page author reads did not.
+
+    `url` and `previewUrl` are added because they are the bridge's own, built
+    on top of the reply rather than returned by it.
+    """
+    started = client.post("/api/ai/image", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    fields = set(started) | {"url", "previewUrl"}
+    section = _skill_section("Images: `fused.ai.image({prompt, ...})`")
+    assert sorted(field for field in fields if field not in section) == []
+    _wait_job(started["jobId"])
+
+
 def test_a_runner_that_writes_no_preview_leaves_NOTHING_behind(client,
                                                                fake_image_runner):
     """The preview is a promise about a path, not about a file. A model with no

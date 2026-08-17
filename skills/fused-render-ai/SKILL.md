@@ -162,9 +162,14 @@ Runtime calls reject with `.type` `"unavailable"` (409 — a fact about this mac
 The one call in the bridge that **resolves with a file**. Text streams, so `fused.ai` hands back words; an image is an artefact, so this hands back somewhere to point an `<img>`.
 
 ```js
+el.onerror = () => el.hidden = true;    // an early tick has no frame yet — see below
+
 const img = await fused.ai.image({
   prompt: "a topographic map of an island, engraved",
-  onProgress: (job) => bar.value = job.done / job.total,   // DENOISING STEPS, not bytes
+  onProgress: (job) => {
+    bar.value = job.done / job.total;   // DENOISING STEPS, not bytes
+    if (job.previewUrl) { el.src = job.previewUrl; el.hidden = false; }
+  },
 });
 el.src = img.url;        // ready-made /api/fs/raw url — no need to build it
 el.dataset.seed = img.seed;
@@ -172,8 +177,13 @@ el.dataset.seed = img.seed;
 
 Options: `prompt` (required), `model`, `width`, `height`, `steps`, `guidance`, `seed`, `onProgress`.
 
+Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}` — the render that will actually happen, not the one you asked for (sides are snapped to a multiple of 16 and clamped, steps and guidance clamped).
+
 - **`seed` comes back whether or not you passed one** — invented server-side, so "make that one again" is always one call away.
 - **Minutes, not seconds.** `onProgress` fires per denoising step with the download-manager record, and that row's ✕ really stops it (the work is the server's, not the page's).
+- **Watch it being made: `job.previewUrl`.** Every tick carries a ready-made URL for a ~32px thumbnail of the image *so far* — the worker rewrites that one file each denoising step, so a page that keeps an `<img>` on it gets a picture emerging out of noise instead of a number going up. It is tiny on purpose (the whole feature costs about 1% of the render); blur it and scale it up in CSS, which is where that decision belongs. `previewPath` is the same file as a path, if you want to read it yourself.
+- **It goes null at the end, and that is the cue to swap.** The preview file is deleted the moment the real PNG lands, so `previewUrl` is null on the last tick and on the resolved object — end on `img.url`, which is the full-resolution picture. It is also null throughout for a model with no preview support.
+- **An early tick can 404**, because the first denoising step writes no frame (two steps are needed to guess at a picture). That is ordinary, not an error: give the `<img>` an `onerror` that hides it, as above.
 - Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` (no image runner here — reason in the message).
 - **`model` comes from `catalog()` here too.** The Diffusers and MLX FLUX runners take *different repos for the same model* — `black-forest-labs/FLUX.2-klein-4B` against `mlx-community/FLUX.2-Klein-4B-4bit` — so a hard-coded id becomes an unloadable download the moment the other one is serving.
 
@@ -309,7 +319,7 @@ Don't try to smuggle the call past the textual match by aliasing it — that tra
 
 `fused.trackJob` exports fine — it no-ops on a hosted page. `fused.ai` never will.
 
-**The DOTTED calls are a trap, and in the opposite direction.** The check matches `fused.ai(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it: a page using only those **exports cleanly and then fails at the reader**, since a hosted page has no worker, no `<home>/ai/transcripts/`, and no filesystem to read a transcript off. Gate them on `fused.env === "local"` yourself — nothing will stop you at export time. (Whether that gap should be closed is an open question, recorded in `docs/EXPORT.md`; today it is the behaviour.)
+**The DOTTED calls are a trap, and in the opposite direction.** The check matches `fused.ai(` specifically, so `fused.ai.image(`, `fused.ai.transcribe(` and `fused.ai.models.*` slip past it: a page using only those **exports cleanly and then fails at the reader**, since a hosted page has no worker, no `<home>/ai/images/` or `<home>/ai/transcripts/`, and no `/api/fs/raw` — so every `url`, `previewUrl` and `output` those calls hand back is a dead address there too. Gate them on `fused.env === "local"` yourself — nothing will stop you at export time. (Whether that gap should be closed is an open question, recorded in `docs/EXPORT.md`; today it is the behaviour.)
 
 ## Debugging
 
