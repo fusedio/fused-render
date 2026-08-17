@@ -69,6 +69,10 @@ MARKER_NAME = "modified.json"
 BASELINE_NAME = "baseline.json"
 # Which tree state the user dismissed the badge for — see `clear`.
 DISMISSED_NAME = "dismissed.json"
+# The run id of the last fix session started here. A POINTER, not a lease: it
+# carries no expiry and needs no cleanup, because whether that run is still
+# going is answered by its process, never by this file (see `active_run`).
+SESSION_NAME = "session.json"
 REPORTS_DIR = "reports"
 INCIDENTS_DIR = "incidents"
 
@@ -374,6 +378,41 @@ def dismissed_digest() -> str:
     if record.get("version") != __version__:
         return ""
     return str(record.get("digest") or "")
+
+
+def session_path() -> str:
+    return os.path.join(state_dir(), SESSION_NAME)
+
+
+def note_session(run_id: str) -> None:
+    """Record which run is fixing this installation.
+
+    Written for ONE reason: the runs directory is shared by every chat on the
+    machine and the live-run scan only looks at the newest few, so a fix session
+    that runs while enough other conversations start would scroll out of that
+    window and stop excluding a second one. This pointer does not scroll — it
+    names a run directly, and the guard asks that run's process whether it is
+    still going.
+
+    NOT a lease, and the difference is the whole design: nothing here expires,
+    nothing recovers it at startup, and a record left behind by a session that
+    ended (or by a machine that lost power mid-fix) reads as "not running" the
+    moment its pid is gone. The next start overwrites it.
+
+    Best-effort. A pointer that could not be written costs the long-session half
+    of the guard, and the scan still covers the ordinary case; refusing to start
+    a fix over it would be the wrong trade.
+    """
+    try:
+        _write_json(session_path(), {"schema": 1, "run_id": str(run_id)})
+    except OSError:
+        logger.debug("could not record the fix session id", exc_info=True)
+
+
+def active_run() -> str:
+    """The run id last recorded here, or "". Says nothing about liveness — the
+    caller asks the process, which is the only thing that knows."""
+    return str((_read_json(session_path()) or {}).get("run_id") or "")
 
 
 def clear(*, now: float | None = None) -> bool:
