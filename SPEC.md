@@ -5695,7 +5695,7 @@ loads weights, imports a framework, or touches the network.
 
 ---
 
-## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313)
+## 39. Discover — The Hub, Narrowed to What This App Can Run (D255, D313, D314)
 
 Goal: §37 answers "what did I already download". This answers the other half —
 "what is out there" — and the two are only worth anything **together**, because
@@ -5736,12 +5736,25 @@ three weeks ago, and would cost nothing to open.
   than stacking under them, and clearing the box brings them back. The box sits
   above the sections because it is what the tab is for; underneath them, the
   only way to reach it was to scroll past the thing it is an alternative to.
-  The curated view names itself ("Suggested models — picked to run on this
-  machine..."), because three capability headings and a grid do not distinguish
-  "a handful somebody picked" from "everything installable". That line, the
-  grid and the host disclosure are one decision in one place
-  (`shell/discoverView.ts`), since every way they can disagree is the page
-  making a false claim about itself.
+- **HS-0c** **Each face names itself, in the same slot, in the same words'
+  worth of chrome** (D314). One grid replacing another is only legible if the
+  new one says what it is: `SUGGESTED MODELS` and `SEARCH RESULTS`, in the
+  ALL-CAPS section-head treatment the capability groups already use, each with
+  one muted right-hand fact — `11 picked for this machine` against
+  `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
+  one line. Under each heading sits its own note, in the same place: why these
+  eleven for the shortlist, which host is being asked for the results. The two
+  faces are therefore heading, note, grid in that order either way, and the
+  difference between them is a label rather than the presence or absence of a
+  paragraph — which was a difference only visible to somebody watching it
+  happen, so a reader who searched, scrolled and looked back up had nothing on
+  screen telling them which grid they were in. The heading is one string, not
+  two conditions (`chrome.heading`), so the page cannot claim to be both; it
+  carries a **heavier rule and an unmuted title** so it reads as the parent of
+  the capability heads below rather than as a fourth one among them. The
+  heading, that line, the grid and the host disclosure are one decision in one
+  place (`shell/discoverView.ts`), since every way they can disagree is the
+  page making a false claim about itself.
 - **HS-1** **AMENDED (D258): downloading is offered, and the reasoning is
   unchanged.** The original rule was that a download needs a progress surface, a
   cancel and an answer for a half-finished pull — none of which existed, so the

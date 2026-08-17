@@ -590,6 +590,9 @@
   outline-offset: -1px;
 }
 
+/* The host disclosure, under the SEARCH RESULTS heading — the same slot
+   .am-suggested-lede occupies under the other one, so the two faces of the tab
+   are heading, note, grid in that order either way. */
 .am-hub-note {
   margin: 0 0 14px;
 }
@@ -813,11 +816,41 @@
 }
 
 /* -- Suggested (the curated shortlist, SPEC §40) ------------------------------
-   The whole of the Discover tab now that the Hub search box is gone. It is laid
-   out in the LOCAL tab's vocabulary — .am-section per capability, and the
-   .am-section-head / .am-subgroup-title pair for the heading — so a group of
-   cards means the same thing on either tab. What is left here is only the two
-   things that hang off that heading. */
+   One of the Discover tab's two faces, laid out in the LOCAL tab's vocabulary —
+   .am-section per capability, and the .am-section-head / .am-subgroup-title
+   pair for the heading — so a group of cards means the same thing on either
+   tab. What is left here is only the things that hang off that heading. */
+
+/* The heading that names WHICH face is on screen — SUGGESTED MODELS or SEARCH
+   RESULTS — sitting above everything either one renders.
+
+   It reuses .am-section-head so the two titles are unmistakably the same kind
+   of thing (that is the point: a swap between them should read as one label
+   changing, not as the page rearranging itself), and then differs in exactly
+   two ways so it does not read as a FOURTH capability section stacked with the
+   three below it: a heavier rule, and a title at full strength where a
+   capability's is muted. Parent, not sibling — stated by weight, which is the
+   only vocabulary a run of identical ALL-CAPS heads has left. */
+.am-discover-head {
+  border-bottom-width: 2px;
+  margin-bottom: 12px;
+}
+
+.am-discover-title {
+  color: var(--fg);
+}
+
+/* How many, and from where — the right-hand slot the capability heads fill with
+   "via MLX Whisper". This is the half of the distinction a title alone cannot
+   carry: "11 picked for this machine" against '"whisper" · 24 on
+   huggingface.co' says in one line both what you are looking at and who chose
+   it. Same size and colour as the runner label beside it, for the same reason:
+   it qualifies the heading rather than competing with it. */
+.am-discover-summary {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
 
 /* Why a capability cannot run here, and which backend serves it when it can.
    Both live in the head's right-hand slot, where the Local tab puts a byte
@@ -845,12 +878,13 @@
   margin-top: -2px;
 }
 
-/* The line that names the curated view for what it is, above the first
-   capability heading. Rides .am-group-note — it is the same kind of sentence
-   as the notes under the headings below it, and giving it its own size or
-   colour would make the tab's opening line look like a banner. The extra
+/* Why these particular models, under the SUGGESTED MODELS heading and above
+   the first capability heading. Rides .am-group-note — it is the same kind of
+   sentence as the notes under the headings below it, and giving it its own size
+   or colour would make the tab's opening line look like a banner. The extra
    bottom margin is the only difference: it is introducing a run of sections
-   rather than captioning the one grid under it. */
+   rather than captioning the one grid under it. Its opposite number is
+   .am-hub-note, which sits in the same place under the other heading. */
 .am-suggested-lede {
   margin-bottom: 16px;
 }

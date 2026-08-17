@@ -49,7 +49,7 @@ import type { Job } from "@platform/lib/jobs";
 import { formatSize, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { discoverChrome } from "@shell/discoverView";
+import { discoverChrome, resultsSummary, suggestedSummary } from "@shell/discoverView";
 
 // Long enough that a typed word is one request rather than five, short enough
 // that the results feel like they are following the query.
@@ -510,6 +510,18 @@ export default function AiModelsDiscover({
   const hostUrl = endpoint || "https://huggingface.co";
   const host = hostUrl.replace(/^https?:\/\//, "");
 
+  // The muted fact beside the heading, in the slot the capability sections put
+  // "via MLX Whisper" in. Counting what is ON SCREEN, in both cases: the rows
+  // the server let through after its supported-tag pass, and the cards the
+  // catalog actually renders — a number here that disagreed with the grid under
+  // it would be worse than no number.
+  const suggestedCount = (catalog ?? []).reduce((n, g) => n + g.models.length, 0);
+  const summary = searching
+    ? resultsSummary(settled.q, models?.length ?? null, host)
+    : suggestedCount > 0
+      ? suggestedSummary(suggestedCount)
+      : null;
+
   return (
     <>
       {/* At the TOP, above everything. It is what someone came to this tab to
@@ -554,33 +566,54 @@ export default function AiModelsDiscover({
           ))}
         </select>
       </div>
-      {/* Said plainly, once, and only while a query is live: this is the one
-          place in the app that asks a third party a question. It no longer has
-          to admit that the answers are useless — the sentence that used to end
-          "Search results are read-only" is gone because the results are not. */}
-      {chrome.showsSearchNote && (
-        <p className="cc-caption am-hub-note">
-          Searching{" "}
-          <a
-            className="am-hub-host"
-            href={hostUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={`Open ${host} in a new tab`}
-          >
-            {host}
-          </a>
-          , limited to models an engine here can load.
-        </p>
-      )}
-
       {downloadError && <ErrorBanner>{downloadError}</ErrorBanner>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
+
+      {/* WHICH of the two grids this is, named, in the same heading language
+          the capability sections below use — an ALL-CAPS title over a rule with
+          one muted fact at the far right. It exists because the two faces of
+          this tab used to differ only by whether a paragraph of prose was
+          present: search, scroll through the results, look back up, and nothing
+          on screen said whether these cards were vetted suggestions or whatever
+          the Hub returned.
+
+          The rule under it is heavier and the title is not muted, which is what
+          keeps it from reading as a fourth capability: it is the PARENT of the
+          section heads below, not another one of them. `chrome.heading` is one
+          string rather than two conditions, so the page cannot claim to be
+          both. */}
+      <div className="am-section-head am-discover-head">
+        <h3 className="am-subgroup-title am-discover-title">{chrome.heading}</h3>
+        {summary && <span className="am-discover-summary">{summary}</span>}
+      </div>
 
       {/* One grid at a time. A query replaces the shortlist; clearing the box
           brings it back, which is what makes the box safe to type in. */}
       {searching ? (
         <>
+          {/* Said plainly, once, and only while a query is live: this is the
+              one place in the app that asks a third party a question. Under the
+              heading it belongs to, where the shortlist puts its own note — the
+              two states are the same three things in the same order, which is
+              what makes swapping one for the other legible. It no longer has to
+              admit that the answers are useless: the sentence that used to end
+              "Search results are read-only" is gone because the results are
+              not. */}
+          {chrome.showsSearchNote && (
+            <p className="cc-caption am-hub-note">
+              Searching{" "}
+              <a
+                className="am-hub-host"
+                href={hostUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Open ${host} in a new tab`}
+              >
+                {host}
+              </a>
+              , limited to models an engine here can load.
+            </p>
+          )}
           {loading && models === null && <p className="cc-empty">Asking {host}…</p>}
           {models !== null && models.length === 0 && !error && (
             <p className="cc-empty">
@@ -597,15 +630,13 @@ export default function AiModelsDiscover({
         </>
       ) : (
         <>
-          {/* What these sections ARE. Without it the tab opens on three
-              capability headings and a grid, and nothing on the page
-              distinguishes "a handful somebody picked for this machine" from
-              "everything you can install" — which are very different answers
-              to the question the reader arrived with, and the second one is
-              the wrong impression to leave when the list is eleven models
-              long. It also names the way out, because the control that
-              answers "and if I want something else?" is the box directly
-              above this line.
+          {/* Why these particular eleven, under the heading that named them.
+              The heading says WHICH grid this is; this says what "suggested"
+              was decided by, because "a handful somebody picked for this
+              machine" and "everything you can install" are very different
+              answers to the question the reader arrived with. It also names the
+              way out, since the control that answers "and if I want something
+              else?" is the box at the top of the tab.
 
               It renders with the sections and never over the results grid
               (`showsPreamble`, pinned in discoverView.test.ts): a line reading
@@ -613,8 +644,8 @@ export default function AiModelsDiscover({
               search results describes cards that are not there. */}
           {chrome.showsPreamble && catalog !== null && catalog.length > 0 && (
             <p className="am-group-note am-suggested-lede">
-              <b>Suggested models</b> — picked to run on this machine with the engines you
-              have. Search above for anything else on Hugging Face.
+              Picked to run on this machine with the engines you have. Search above for
+              anything else on Hugging Face.
             </p>
           )}
           {catalog === null && <p className="cc-empty">Reading the model catalog…</p>}
