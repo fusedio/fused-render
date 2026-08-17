@@ -1196,6 +1196,88 @@ export function applyRepeatToggle(
   return current;
 }
 
+// -- What a time already gone actually MEANS ---------------------------------
+// A past time is not refused, by this form or by the server (design §9). What
+// the form owes instead is a sentence naming which of the TWO things will
+// happen, because a one-off and a rule answer differently:
+//
+//   * one-off — the queue sorts it to the head and sends it (SCH-3b). Once.
+//   * rule    — SCH-13b. A rule template with nothing materialized yet walks
+//     anchor → now and creates ONE occurrence, on the latest slot at or before
+//     now, marked `catch_up`; it is overdue the instant it exists, so it goes
+//     on the next tick. Every slot it stepped past is never materialized and
+//     never runs — the same collapse `_coalesce` applies to a backlog
+//     (SCH-13) — so an anchor a year back is still exactly one run, not a
+//     year of them. The series then continues from now in the ordinary way.
+//
+// Two sentences rather than one, because "runs as soon as it can" is a promise
+// a repeat does not keep: it runs once now AND then keeps its pattern.
+export const PAST_NOTE_ONE_OFF =
+  "This time has passed — the task will run as soon as it can.";
+export const PAST_NOTE_CATCH_UP =
+  "This time has passed — one catch-up run goes now, then the task keeps to "
+  + "its schedule. Just the one, however many have gone by.";
+
+// The series' FIRST slot, given the picked date as its anchor — null once the
+// rule's `until` has already cut the series off before it began.
+//
+// Mirrors recur._walk's opening step, and for four of the five frequencies
+// there is nothing to mirror: hourly, daily, monthly and annually all include
+// the anchor itself (a monthly nth-weekday reads "the second Wednesday" OFF
+// the anchor, so the anchor's own month always has it; a Feb 29 anchor is in a
+// leap year by construction). Only a WEEKLY rule can start later than its
+// anchor, and only because the chosen days are free of it: the anchor's week
+// is a partial one (`when >= anchor` in _walk_week), so a Tuesday anchor with
+// only Thursday ticked starts on that Thursday, and a Tuesday anchor with only
+// Monday ticked starts `interval` weeks on.
+export function firstRuleSlot(rule: RecurrenceRule, anchor: Date): Date | null {
+  let first = anchor;
+  if (rule.freq === "week" && rule.byday?.length) {
+    const days = [...rule.byday].sort((a, b) => a - b);
+    // Sunday-anchored blocks, counted from the anchor's OWN week — the unit
+    // that repeats is the week, not "7·interval days from each run".
+    const sunday = anchor.getDate() - anchor.getDay();
+    const slot = (day: number, weeks: number) =>
+      new Date(anchor.getFullYear(), anchor.getMonth(), sunday + day + weeks * 7,
+               anchor.getHours(), anchor.getMinutes());
+    const thisWeek = days
+      .map((d) => slot(d, 0))
+      .find((d) => d.getTime() >= anchor.getTime());
+    first = thisWeek ?? slot(days[0], rule.interval ?? 1);
+  }
+  if (rule.until) {
+    // INCLUSIVE, and compared on the DATE, so the time of day cannot decide
+    // it — recur._walk's rule exactly.
+    const [y, m, d] = rule.until.split("-").map(Number);
+    if (first.getTime() > new Date(y, m - 1, d, 23, 59, 59, 999).getTime())
+      return null;
+  }
+  return first;
+}
+
+// The note the when-row prints, or null for silence. Silence is the answer for
+// a future time, and also for the two repeats with no anchor to catch up FROM:
+// a legacy cron template (`create` computes its first run from now by
+// construction, and cron never reads `due` at all — Bugbot, PR #541) and a
+// half-finished Custom, which Save refuses anyway. Never a refusal: it does
+// not touch `ready`, because "start this pattern, and run the one I missed" is
+// a legitimate thing to ask for.
+export function pastNoteFor(
+  picked: Date | null,
+  repeatOn: boolean,
+  rule: RecurrenceRule | null,
+  now: Date,
+): string | null {
+  if (!picked || Number.isNaN(picked.getTime())) return null;
+  if (picked.getTime() > now.getTime()) return null;
+  if (!repeatOn) return PAST_NOTE_ONE_OFF;
+  if (!rule) return null;
+  const first = firstRuleSlot(rule, picked);
+  return first !== null && first.getTime() <= now.getTime()
+    ? PAST_NOTE_CATCH_UP
+    : null;
+}
+
 // The body POSTed to /api/schedule — api.ts's own parameter type, nothing
 // added to it. That type models `title`, `description` and `new_task_each_run`
 // itself, so this alias only names what the builder returns.
@@ -1615,10 +1697,11 @@ export default function NewJobModal({
   const picked = useMemo(() => new Date(when), [when]);
   const pickedOk = !Number.isNaN(picked.getTime());
 
-  // Ids so the two refusals this form can print are ATTACHED to the controls
-  // they refuse, not merely near them: a screen reader announcing the date chip
-  // otherwise read a bare label with an unrelated red line somewhere below
-  // (audit 2026-08-16).
+  // Ids so the lines this form prints are ATTACHED to the controls they are
+  // about, not merely near them: a screen reader announcing the date chip
+  // otherwise read a bare label with an unrelated line somewhere below (audit
+  // 2026-08-16). Only pathError is a refusal; the past-time note states a
+  // consequence and never blocks Save.
   const pastHintId = useId();
   const pathErrorId = useId();
   // …and the third: what the repeat does to this task's thread, attached to
@@ -1850,11 +1933,18 @@ export default function NewJobModal({
   // A past time is no longer refused — by this form or by the server (design
   // §9): missed work is queued and runs when the app next opens, so picking
   // yesterday is a legitimate way to say "run this as soon as you can". What
-  // is left is a NOTE saying so, and only for a one-off: for a rule the picked
-  // time is the series' anchor — "Daily at 9am" saved in the afternoon starts
-  // tomorrow, which is not "as soon as it can" — and cron never reads `due` at
-  // all (Bugbot, PR #541).
-  const dueIsPast = !repeatOn && pickedOk && picked.getTime() <= Date.now();
+  // is left is a NOTE saying which of the two things happens.
+  //
+  // It used to be scoped to a one-off, on the reasoning that a rule's picked
+  // time is only the series' ANCHOR — it sets the pattern and nothing runs
+  // until the next future slot, so "as soon as it can" would have been a lie.
+  // SCH-13b ended that: a past-anchored rule now materializes a catch-up on
+  // its latest past slot and fires on the next tick, so a repeat kept silent
+  // here fired with nothing on the form saying so (Bugbot, PR #555). The
+  // anchor's pattern role is untouched — a monthly rule anchored on a past
+  // second Wednesday still means the second Wednesday — which is exactly why
+  // the two wordings differ rather than one covering both. See pastNoteFor.
+  const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
 
   const ready =
     !replaced &&
@@ -2087,7 +2177,7 @@ export default function NewJobModal({
             >
               <button ref={dateBtnRef} type="button"
                       className="schedule-when-field"
-                      aria-describedby={dueIsPast ? pastHintId : undefined}
+                      aria-describedby={pastNote ? pastHintId : undefined}
                       aria-expanded={dateOpen}
                       onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
                 {dateLabel}
@@ -2097,8 +2187,15 @@ export default function NewJobModal({
                      onMouseDown={(e) => e.preventDefault()}>
                   {/* No floor at all now. A past day is a one-off saying "run
                       this as soon as you can" (design §9), and for a rule it
-                      was always legitimate — the date is the series' anchor,
-                      and the server materializes from the next future run. */}
+                      is legitimate too — it says "start this pattern, and run
+                      the one I missed". The date is still the series' ANCHOR,
+                      which is what makes "monthly on the second Wednesday"
+                      expressible by picking a past second Wednesday; what
+                      changed is that the server no longer waits for the next
+                      future slot to materialize from. It catches up on the
+                      latest past one first (SCH-13b), which is why picking a
+                      past day under a standing Repeat prints a note of its own
+                      rather than nothing. */}
                   <MiniCalendar
                     selected={pickedOk ? picked : new Date()}
                     onPick={(d) => { setDatePart(d); setDateOpen(false); }}
@@ -2117,7 +2214,7 @@ export default function NewJobModal({
                 ref={timeRef}
                 type="text"
                 className="schedule-when-field schedule-when-time"
-                aria-describedby={dueIsPast ? pastHintId : undefined}
+                aria-describedby={pastNote ? pastHintId : undefined}
                 aria-expanded={timeOpen}
                 aria-label="Time"
                 value={timeText}
@@ -2154,13 +2251,21 @@ export default function NewJobModal({
         </div>
         {/* Not a refusal any more: past-due work is queued and runs when the
             app next opens (design §9), so this says what will happen instead
-            of asking for a different answer. Still directly under the row it
-            is about — printed after the repeat row it read as a complaint
-            about the recurrence rule (audit 2026-08-16). */}
-        {dueIsPast && (
+            of asking for a different answer. WHICH of the two things it says is
+            pastNoteFor's decision — a repeat's past anchor gets its own
+            sentence, because SCH-13b makes it one catch-up run and then the
+            pattern, not "as soon as it can" full stop.
+
+            One element for both wordings, so it keeps the id the date and time
+            fields point `aria-describedby` at, and stays directly under the row
+            it is about: printed after the repeat row it read as a complaint
+            about the recurrence rule (audit 2026-08-16). `role="status"` earns
+            its keep twice over now — ticking Repeat rewrites this line in
+            place, and a silent swap is the one thing worse than no line. */}
+        {pastNote && (
           <span id={pastHintId} className="field-hint new-task-past schedule-form-sub"
                 role="status">
-            This time has passed — the task will run as soon as it can.
+            {pastNote}
           </span>
         )}
         {repeatOn && (

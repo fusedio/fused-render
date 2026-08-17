@@ -130,7 +130,13 @@
 /* -- The past-time note ------------------------------------------------------
    Was a refusal in the error voice; scheduling into the past is now a
    legitimate way to say "run this now" (design §9), so it states what will
-   happen in the ordinary hint voice. */
+   happen in the ordinary hint voice.
+
+   One rule for BOTH wordings — the one-off's and the repeat's catch-up sentence
+   (pastNoteFor) — because they are the same kind of line about the same row and
+   differ only in what they say. The repeat's runs to two lines at this width,
+   which needs nothing: the note is a plain inline span in the form's own 12px
+   rhythm, so it grows downwards and the sub-row below it moves. */
 .new-task-past {
   color: var(--fg-muted);
 }

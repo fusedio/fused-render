@@ -29,6 +29,9 @@ let sessionTitleOf: typeof import("./NewJobModal").sessionTitleOf;
 let titlePlaceholderFor: typeof import("./NewJobModal").titlePlaceholderFor;
 let deletePress: typeof import("./NewJobModal").deletePress;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
+let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
+let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
+let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -43,6 +46,9 @@ beforeAll(async () => {
   titlePlaceholderFor = mod.titlePlaceholderFor;
   deletePress = mod.deletePress;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
+  pastNoteFor = mod.pastNoteFor;
+  PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
+  PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -578,5 +584,118 @@ describe("the Title placeholder", () => {
     expect(
       buildSchedulePayload(form({ sessionId: "sess-1", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
+  });
+});
+
+// What the when-row says about a time already gone. Two answers, because the
+// server has two behaviours: a one-off runs once as soon as it can (SCH-3b),
+// and a past-ANCHORED rule materializes one catch-up on its latest past slot
+// and then keeps its pattern (SCH-13b). The note used to be scoped to the
+// one-off, which left a repeat firing on save with the form silent about it
+// (Bugbot, PR #555).
+describe("the past-time note", () => {
+  // Wednesday 10:00. The week these dates sit in starts Sunday Aug 16.
+  const NOW = new Date("2026-08-19T10:00");
+  const at = (iso: string) => new Date(iso);
+  const TUE = at("2026-08-18T09:00"); // past
+  const THU = at("2026-08-20T09:00"); // future
+  const note = (
+    picked: Date | null,
+    repeatOn: boolean,
+    rule: RecurrenceRule | null,
+    now = NOW,
+  ) => pastNoteFor(picked, repeatOn, rule, now);
+
+  test("a past one-off says it runs as soon as it can", () => {
+    expect(note(TUE, false, null)).toBe(PAST_NOTE_ONE_OFF);
+    // The boundary is inclusive: this instant has passed.
+    expect(note(NOW, false, null)).toBe(PAST_NOTE_ONE_OFF);
+  });
+
+  test("a past ANCHOR under a ticked Repeat says its own thing instead", () => {
+    expect(note(TUE, true, DAILY)).toBe(PAST_NOTE_CATCH_UP);
+  });
+
+  test("and the two sentences are genuinely different, because the outcome is", () => {
+    expect(PAST_NOTE_CATCH_UP).not.toBe(PAST_NOTE_ONE_OFF);
+    // The repeat's promise is the pair the one-off cannot make: one run now,
+    // and then the pattern.
+    expect(PAST_NOTE_CATCH_UP).toContain("catch-up");
+    expect(PAST_NOTE_CATCH_UP).toContain("schedule");
+  });
+
+  test("an anchor a YEAR back is still that one sentence — never a backlog", () => {
+    // `_coalesce` collapses every intervening slot, so the wording must not
+    // scale with how far back the anchor is, and neither may the note.
+    expect(note(at("2025-01-01T09:00"), true, DAILY)).toBe(PAST_NOTE_CATCH_UP);
+    expect(note(at("2025-01-01T09:00"), true, { freq: "hour" })).toBe(PAST_NOTE_CATCH_UP);
+    expect(PAST_NOTE_CATCH_UP).toContain("Just the one");
+  });
+
+  test("a FUTURE time is silent, Repeat ticked or not", () => {
+    expect(note(THU, false, null)).toBeNull();
+    expect(note(THU, true, DAILY)).toBeNull();
+    expect(note(THU, true, { freq: "month", monthly: "nth-weekday" })).toBeNull();
+  });
+
+  test("a repeat with no anchor to catch up from is silent too", () => {
+    // A legacy cron template computes its first run from now by construction,
+    // and an unfinished Custom cannot be saved at all. Neither is the one-off
+    // wording — that would promise a run the rule will not make.
+    expect(note(TUE, true, null)).toBeNull();
+  });
+
+  test("a past anchor whose FIRST slot is still ahead is silent", () => {
+    // Tuesday anchor, only Thursday ticked: the series starts on the Thursday
+    // (recur's partial first week), which has not come round yet.
+    expect(note(TUE, true, { freq: "week", byday: [4] })).toBeNull();
+    // Tuesday anchor, only Monday ticked: the anchor's own Monday is behind
+    // the anchor, so the series starts a week on.
+    expect(note(TUE, true, { freq: "week", byday: [1] })).toBeNull();
+  });
+
+  test("…but one whose first slot has already gone is not", () => {
+    // The anchor's own day counts when it is one of the chosen ones.
+    expect(note(TUE, true, { freq: "week", byday: [1, 2] })).toBe(PAST_NOTE_CATCH_UP);
+    // Sunday anchor, Wednesday ticked: the first slot is this morning, gone an
+    // hour ago — the walk forward from the anchor, not the anchor itself.
+    expect(note(at("2026-08-16T09:00"), true, { freq: "week", byday: [3] })).toBe(
+      PAST_NOTE_CATCH_UP,
+    );
+  });
+
+  test("a rule whose `until` ran out before it began is silent", () => {
+    const anchor = at("2026-08-10T09:00");
+    expect(note(anchor, true, { ...DAILY, until: "2026-08-09" })).toBeNull();
+    // Inclusive on the DATE, so an end ON the first slot's day still runs it.
+    expect(note(anchor, true, { ...DAILY, until: "2026-08-10" })).toBe(PAST_NOTE_CATCH_UP);
+  });
+
+  test("an unparseable time says nothing at all", () => {
+    expect(note(new Date("nonsense"), false, null)).toBeNull();
+    expect(note(null, true, DAILY)).toBeNull();
+  });
+});
+
+// The note is a STATEMENT, not an objection: "start this pattern, and run the
+// one I missed" is a legitimate ask, so Save stays armed. Asserted against the
+// source because `ready` is the component's own local — the guard that matters
+// is that it never learns about the note.
+describe("the past-time note never blocks Save", () => {
+  test("`ready` does not consult it", async () => {
+    const src = await Bun.file(
+      new URL("./NewJobModal.tsx", import.meta.url).pathname,
+    ).text();
+    const ready = src.slice(src.indexOf("const ready ="));
+    expect(ready).not.toBe("");
+    expect(ready.slice(0, ready.indexOf(";"))).not.toContain("pastNote");
+  });
+
+  test("and a past-anchored repeat still builds a whole payload", () => {
+    const body = buildSchedulePayload(
+      form({ when: "2025-01-01T09:00", rule: DAILY, repeat: "daily" }),
+    );
+    expect(body.rule).toEqual(DAILY);
+    expect(body.due).toBe("2025-01-01T09:00");
   });
 });
