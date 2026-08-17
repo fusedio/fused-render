@@ -18,6 +18,7 @@ X-Fused-guarded despite being reads: they execute a caller-shaped statement, so
 neither should be reachable from a crafted link.
 """
 import asyncio
+import gzip
 import json
 import logging
 import os
@@ -26,13 +27,13 @@ import threading
 
 from fastapi import APIRouter, Body, Header, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from fused_render.index import freshness, runner
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
-from fused_render.index.ignore import default_ignore, norm
+from fused_render.index.ignore import MountGuard, default_ignore, norm
 from fused_render.index.query import MAX_CORPUS
 from fused_render.index.query import lookup as index_lookup
 from fused_render.index.query import search_under as index_search
@@ -84,13 +85,25 @@ def scan_roots(cfg: IndexConfig, start_dir: str | None = None) -> list:
     return [runner.canonical_root("~")]
 
 
+# root -> the run id this process started for it at startup, for the warm
+# below to wait on. Only the runs THIS boot spawned: a root that was
+# debounce-skipped, refused, or failed leaves no entry, which is exactly the
+# "there is nothing to wait for" signal the warm needs. Bounded by the number
+# of scan roots (a handful), and rewritten from scratch on every call.
+_startup_runs: dict = {}
+
+
 def run_startup_scan(start_dir: str | None = None) -> None:
     """Reclaim old run dirs and kick off one incremental scan per root.
 
     Never raises and never blocks: the scan itself is a detached worker, so
     this is a `Popen` per root and nothing more. A scan that ran recently is
     skipped (SCAN_DEBOUNCE_S), and a root that no longer exists is ignored
-    rather than reported — the config outlives the folders it names."""
+    rather than reported — the config outlives the folders it names.
+
+    Records each started run in `_startup_runs` for `run_startup_warm`, which
+    warms only after the run covering its root has finished."""
+    _startup_runs.clear()
     try:
         cfg = load_config()
         runner.prune_runs(cfg, keep=KEEP_RUNS)
@@ -108,8 +121,11 @@ def run_startup_scan(start_dir: str | None = None) -> None:
                             root, now - last)
                 continue
             started = runner.start(cfg, root)
+            run_id = (started or {}).get("run_id")
+            if run_id:
+                _startup_runs[root] = run_id
             logger.info("index: started background scan of %s (run %s)",
-                        root, (started or {}).get("run_id"))
+                        root, run_id)
         except ValueError as e:
             # A root that no longer exists, or one that turned out to be
             # mount-backed — skip it quietly; the config outlives the folders
@@ -124,6 +140,160 @@ def run_startup_scan(start_dir: str | None = None) -> None:
 async def startup_scan(start_dir: str | None = None) -> None:
     """The create_app hook. Off the event loop because it touches the disk."""
     await asyncio.to_thread(run_startup_scan, start_dir)
+
+
+# ------------------------------------------------------------- startup warm
+
+def warm_root() -> str:
+    """The root the explorer's home page will search.
+
+    FilesHome searches `config.home` — `expanduser("~")` from
+    routers/config.py — and NOT the folder the app was opened on, so a warm
+    aimed anywhere else fills a pool the first keystroke never reads. In
+    `canonical_root` spelling because that is the spelling every store key and
+    every scan-root comparison uses (see `scan_roots`)."""
+    return runner.canonical_root("~")
+
+
+# How often the warm re-reads the event log of the one scan it is waiting for.
+# Nothing signals this thread when a detached worker finishes, so the wait
+# reads that log (`runner.has_ended`, cursored so only new lines are decoded).
+# Half a second is the worker's own progress cadence, so a finer poll would
+# mostly re-read a file with nothing new in it, and half a second of latency is
+# nothing against the ~2.2 s the warm is saving.
+WARM_WAIT_POLL_S = 0.5
+# ...and the hard ceiling on that wait. The first-ever whole-home scan that
+# motivated this took 9.2 s (570k files, 74k dirs); six minutes is ~40x that,
+# so even a much larger home on a much slower disk still gets warmed. This is
+# the LAST resort, not the usual exit: a worker killed mid-walk never writes
+# `run_end`, and the wait spots that within ABANDONED_RUN_S (5 min) through the
+# same mtime check `runner.status` uses. The ceiling sits just past that so the
+# common death takes the specific path, and covers only the pathological rest —
+# a worker alive but wedged — so the thread can never poll for the process
+# lifetime.
+WARM_WAIT_DEADLINE_S = 6 * 60.0
+
+
+def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
+    """Block until `run_id` stops running; False if the deadline beat it.
+
+    One-shot and bounded, on a daemon thread nobody joins: it waits for one
+    named run and then it is done, whichever way that run ended.
+
+    The return value says how the WAIT ended, and nothing more — the caller
+    warms either way, because how a scan ended does not tell you whether the
+    index covers the root. It exists so the two ways of not-finishing can be
+    told apart in a log and in a test.
+
+    Deliberately NOT `runner.status`, which is the status panel's call: it
+    folds the whole event log from line 0 every time, so polling it would
+    re-parse a log the waited-on scan is appending to twice a second — work
+    quadratic in that scan's length, spent competing with it for the disk.
+    `runner.has_ended` carries a cursor and decodes only what is new, and the
+    dead-worker case is the same `_looks_abandoned` mtime check `status`
+    applies (a worker killed mid-walk never writes `run_end`, so without it
+    this would wait out the whole deadline for the most common death)."""
+    import time
+
+    try:
+        run_dir = runner._run_dir(cfg, run_id)
+    except ValueError:
+        # The run dir is gone (pruned, or a stubbed start that never made
+        # one). Nothing left to wait for; whether the index covers the root is
+        # a question for the search that follows, not for this.
+        return True
+    deadline = time.monotonic() + WARM_WAIT_DEADLINE_S
+    cursor = 0
+    while True:
+        ended, cursor = runner.has_ended(run_dir, cursor)
+        if ended:
+            return True
+        if runner._looks_abandoned(run_dir, time.time(), runner.ABANDONED_RUN_S):
+            logger.info("index: scan %s stopped reporting; warming with "
+                        "whatever the index holds", run_id)
+            return False
+        if time.monotonic() >= deadline:
+            # Once, at info: this is a diagnosis of a stuck scan, not a
+            # failure of the warm, which goes ahead regardless.
+            logger.info("index: gave up waiting %.0fs for scan %s; warming "
+                        "with whatever the index holds",
+                        WARM_WAIT_DEADLINE_S, run_id)
+            return False
+        time.sleep(WARM_WAIT_POLL_S)
+
+
+def run_startup_warm() -> None:
+    """Pay the first search's cold cost at idle instead of on a keystroke.
+
+    Everything the corpus path caches is PER PROCESS and starts empty: the
+    gitignore verdict pool (server/index_gitignore.py) knows nothing until
+    some request sweeps `git check-ignore` over the whole corpus, and duckdb
+    is not even imported until the first query. Measured on a 164k-entry home:
+    ~2.2 s for the first search of a fresh process against ~0.8 s for the next
+    one — and all of it was billed to the user's first keystroke.
+
+    So it runs exactly the pair of calls `api_index_search` makes, with the
+    same root and the same pool key. Usually that is all: an index is already
+    on disk, the search answers `covered: true`, and the sweep lands in the
+    pool immediately.
+
+    On a first-ever boot it is not. The index has not covered home yet, the
+    search answers `covered: false` cheaply, and there is nothing to sweep —
+    which is exactly the boot the warm exists for. So when that happens it
+    waits for the ONE scan `run_startup_scan` just spawned for this root
+    (`_startup_runs`) and then warms — warms unconditionally, however that wait
+    ended. That is not the general "poll for scans" scheduler this deliberately
+    is not: it is one bounded wait on one named run, with a definite end
+    (WARM_WAIT_DEADLINE_S) on a thread nobody joins. A root whose scan was
+    debounce-skipped has no entry and is not waited on — there is no new run
+    coming, and its index is already there.
+
+    Never raises: it runs on a thread nobody joins."""
+    try:
+        root = warm_root()
+        # A mount-backed home is refused by the index anyway, so the warm
+        # could only answer `covered: false` — after aiming kernel I/O at a
+        # mount path, which is the one thing this codebase never does
+        # speculatively. Exactly the check `runner.start` makes, and what it
+        # guarantees is what matters here: a path INSIDE the mounts dir matches
+        # on `abspath` alone and is refused before any syscall touches it. It
+        # is not free for everyone else — a local home falls through to
+        # `is_mount_backed`, which realpaths the mounts dir and the path — but
+        # those two realpaths are off the mount by construction.
+        if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
+            return
+        cfg = load_config()
+        out = index_search(cfg, root)
+        if not out.get("covered"):
+            run_id = _startup_runs.get(root)
+            if run_id is not None:
+                # Searching again is unconditional — how the wait ENDED does
+                # not tell us whether the index covers the root. A run dir
+                # pruned mid-wait reads as a dead scan here, but `prune_runs`
+                # only removes run dirs and never touches the store, so the
+                # index may well be complete. A still-uncovered index costs
+                # one cheap `covered: false`, which is exactly what the
+                # original single-shot warm already paid.
+                _wait_for_scan(cfg, run_id)
+                out = index_search(cfg, root)
+        # Unconditional, including the uncovered cases: filter_corpus is a
+        # no-op on a response that is not covered, and the point is to run
+        # precisely what the route runs.
+        filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
+                                                     out.get("root") or root))
+    except Exception:  # noqa: BLE001 - a warm must never take the server down
+        logger.exception("could not warm the index search path")
+
+
+def startup_warm() -> None:
+    """The create_app hook. A detached daemon thread, not `to_thread`: the
+    startup hook must COMPLETE before the app serves, and this is seconds of
+    duckdb and `git check-ignore` — the very cost the warm exists to move off
+    the request path — and, on a first boot, a bounded wait for the startup
+    scan on top of that. Nobody joins it and it cannot raise (above); `daemon`
+    is what guarantees a warm still waiting cannot hold the process open."""
+    threading.Thread(target=run_startup_warm, name="index-warm",
+                     daemon=True).start()
 
 
 # ------------------------------------------------------ open-folder freshness
@@ -340,9 +510,19 @@ def api_index_lookup(q: str = Query(default=""), limit: int = Query(default=100)
                            sort=sort)}
 
 
+# The one value of `fmt` that means anything. Anything else — including the
+# empty default every existing caller sends — is the classic `entries` shape:
+# the JS bridge (`fused.fileIndex.search`, static/runtime.js) and any page a
+# user has written against it must not change under them, and a 400 on an
+# unknown format would break exactly the callers that never asked.
+COLUMNS_FMT = "columns"
+
+
 @router.get("/api/index/search")
 def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
-                     limit: int = Query(default=MAX_CORPUS)):
+                     limit: int = Query(default=MAX_CORPUS),
+                     fmt: str = Query(default=""),
+                     accept_encoding: str | None = Header(default=None)):
     """The explorer's in-folder corpus, index-backed.
 
     Same entry shape as /api/fs/walk, plus `covered`/`fresh` so the client can
@@ -353,7 +533,12 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
 
     Entries pass through the gitignore filter before leaving: the walk this
     corpus replaces prunes gitignored entries, and the swap must not change
-    what search shows (server/index_gitignore.py)."""
+    what search shows (server/index_gitignore.py).
+
+    `fmt=columns` asks for the same corpus as parallel arrays instead of one
+    object per entry (§6 of index/specs/server-api.md) — the home page's
+    corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
+    fetched in one shot on the user's first keystroke."""
     if not root.strip():
         return _error("'root' is required")
     cfg = load_config()
@@ -365,7 +550,94 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     # canonical spelling the corpus rels are relative to.
     index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
     out = filter_corpus(out, index_root=index_root)
-    return {"ok": True, **out}
+    if fmt != COLUMNS_FMT:
+        return {"ok": True, **out}
+    return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
+
+
+def _columnar(out: dict) -> dict:
+    """`entries` re-cut as parallel arrays; everything else untouched.
+
+    Every entry carries the same four keys, so the classic shape spends ~40
+    bytes per entry spelling `rel`/`is_dir`/`size`/`mtime` out again — a third
+    of a 164k-entry corpus. The arrays are index-aligned and the same length;
+    `size`/`mtime` stay nullable (a directory legitimately has neither) and
+    `is_dir` travels as 0/1 because `false` costs three more bytes 164k times.
+
+    Deliberately NOT a cleverer packing. Front-coding the rels (they arrive
+    depth-then-path ordered, so neighbours share long prefixes) takes the body
+    from 21 MB to 12 MB — but costs 0.45 s of Python per corpus against the
+    0.07 s the whole serialization takes, so it spends more of the first
+    search's budget than it saves. Compression buys more for a fraction of
+    that (below)."""
+    entries = out.get("entries") or []
+    body = {k: v for k, v in out.items() if k != "entries"}
+    body["fmt"] = COLUMNS_FMT
+    body["rels"] = [e["rel"] for e in entries]
+    body["dirs"] = [1 if e["is_dir"] else 0 for e in entries]
+    body["sizes"] = [e["size"] for e in entries]
+    body["mtimes"] = [e["mtime"] for e in entries]
+    return body
+
+
+def _corpus_response(body: dict, accept_encoding: str | None) -> Response:
+    """The compact corpus, gzipped when the caller says it can take it.
+
+    Level 1, not the default 9: measured on the 164k-entry corpus this route
+    exists for, level 1 takes the compact body from 21 MB to 5.0 MB in 0.06 s
+    — a fifth of the bytes for less CPU than the JSON encoding itself. Higher
+    levels spend several seconds to shave a few percent off a body that is
+    read once and thrown away.
+
+    Per-route rather than a GZip middleware: this app also streams the live
+    walk and serves file bytes raw, and compressing those on a LOCAL server
+    would be CPU spent against loopback for nothing. This one response is the
+    outlier — a single 25 MB read on a keystroke.
+
+    `Accept-Encoding` is honoured rather than assumed: browsers and the JS
+    bridge all send gzip, but a client that cannot decompress must still be
+    able to read the corpus. `Vary` goes on both answers because both live at
+    the same URL — an intermediary keyed on the URL alone would otherwise hand
+    a gzipped body to the client that asked for identity, or the reverse."""
+    payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    headers = {"Vary": "Accept-Encoding"}
+    if not _accepts_gzip(accept_encoding):
+        return Response(content=payload, media_type="application/json",
+                        headers=headers)
+    return Response(content=gzip.compress(payload, 1),
+                    media_type="application/json",
+                    headers={**headers, "Content-Encoding": "gzip"})
+
+
+def _accepts_gzip(accept_encoding: str | None) -> bool:
+    """Whether the caller will take a gzipped body, per RFC 9110 §12.5.3.
+
+    A substring test for "gzip" is not that test: `gzip;q=0` is the explicit
+    spelling of "I cannot decode this", and reading it as consent hands such a
+    client 5 MB it has no way to open. So the qvalue is parsed, an explicit
+    `gzip` (or the legacy `x-gzip`) beats the `*` wildcard, and anything
+    unparseable is treated as a refusal — being wrong the safe way costs a
+    bigger body, not an unreadable one."""
+    explicit = star = None
+    for part in (accept_encoding or "").split(","):
+        token, _, params = part.strip().partition(";")
+        token = token.strip().lower()
+        if token not in ("gzip", "x-gzip", "*"):
+            continue
+        q = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 0.0
+        if token == "*":
+            star = q if star is None else max(star, q)
+        else:
+            explicit = q if explicit is None else max(explicit, q)
+    q = explicit if explicit is not None else star
+    return q is not None and q > 0
 
 
 # ------------------------------------------------------------------ user SQL

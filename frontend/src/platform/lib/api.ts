@@ -343,14 +343,42 @@ export interface IndexSearchResult {
   age_s: number | null;
 }
 
-export function indexSearch(
+// The same corpus as parallel arrays — what `fmt=columns` answers with. Every
+// entry carries the same four keys, so the object-per-entry shape spends a
+// third of its bytes spelling those keys out again: 25.7 MB on a 164k-entry
+// home, fetched in one shot on the user's first keystroke.
+//
+// The decode back to WalkEntry[] happens HERE, at the API-client boundary, so
+// the corpus consumers (listing/index-corpus.ts, FilesHome, useWalkSearch)
+// never learn about the wire format. `is_dir` travels as 0/1; `size` and
+// `mtime` stay nullable — a directory legitimately has neither.
+interface IndexSearchColumns extends Omit<IndexSearchResult, "entries"> {
+  fmt: "columns";
+  rels: string[];
+  dirs: number[];
+  sizes: (number | null)[];
+  mtimes: (number | null)[];
+}
+
+export async function indexSearch(
   fsPath: string,
   opts: { signal?: AbortSignal } = {},
 ): Promise<IndexSearchResult> {
-  return getJson<IndexSearchResult>(
-    "/api/index/search?root=" + encodeURIComponent(fsPath),
+  const body = await getJson<IndexSearchColumns>(
+    "/api/index/search?fmt=columns&root=" + encodeURIComponent(fsPath),
     { signal: opts.signal },
   );
+  const { fmt, rels, dirs, sizes, mtimes, ...rest } = body;
+  const entries: WalkEntry[] = new Array(rels.length);
+  for (let i = 0; i < rels.length; i++) {
+    entries[i] = {
+      rel: rels[i],
+      is_dir: dirs[i] === 1,
+      size: sizes[i],
+      mtime: mtimes[i],
+    };
+  }
+  return { ...rest, entries };
 }
 
 // GET /api/index/status with no run id — the state of the most recent scan,

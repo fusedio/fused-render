@@ -463,5 +463,10 @@ def create_app(start_dir: str) -> FastAPI:
     @app.on_event("startup")
     async def _startup_index_scan():
         await index_routes.startup_scan(start_dir)
+        # ...and warm the corpus path the explorer's home search reads, on a
+        # detached thread, so the gitignore sweep and the duckdb import are
+        # paid at idle rather than by the user's first keystroke
+        # (index/specs/server-api.md §4).
+        index_routes.startup_warm()
 
     return app

@@ -655,6 +655,401 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     assert started == [str(ok)]
 
 
+# -- the compact corpus --------------------------------------------------------
+
+def _corpus(n=3):
+    """A corpus in the shape search_under answers with, nulls included."""
+    entries = [{"rel": "d", "is_dir": True, "size": None, "mtime": None}]
+    entries += [{"rel": f"d/f{i}.txt", "is_dir": False, "size": i,
+                 "mtime": 1700000000.5 + i} for i in range(n)]
+    return {"covered": True, "fresh": True, "updated": 1.0, "age_s": 2.0,
+            "root": "/r", "entries": entries, "truncated": False,
+            "total": len(entries), "scanned_partitions": 1,
+            "of_partitions": 1}
+
+
+def _stub_corpus(monkeypatch, out):
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: dict(out))
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None: out)
+
+
+def test_search_answers_in_columns_when_asked(home, tmp_path, monkeypatch):
+    """The corpus is the home page's whole ranking set — 25.7 MB of
+    `{rel,is_dir,size,mtime}` objects on a 164k-entry home, most of it repeated
+    key names. `fmt=columns` sends parallel arrays instead."""
+    _stub_corpus(monkeypatch, _corpus())
+    body = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "columns"}).json()
+    assert body["fmt"] == "columns"
+    assert "entries" not in body
+    assert body["rels"] == ["d", "d/f0.txt", "d/f1.txt", "d/f2.txt"]
+    assert body["dirs"] == [1, 0, 0, 0]
+    # Nulls are entries a directory legitimately has, not missing data.
+    assert body["sizes"] == [None, 0, 1, 2]
+    assert body["mtimes"] == [None, 1700000000.5, 1700000001.5, 1700000002.5]
+
+
+def test_the_two_formats_carry_the_same_corpus_and_metadata(home, tmp_path,
+                                                            monkeypatch):
+    """`fmt` changes the encoding of the entries and nothing else: every
+    client decision (covered/fresh/truncated/…) reads the same fields."""
+    _stub_corpus(monkeypatch, _corpus())
+    client = _client(tmp_path)
+    classic = client.get("/api/index/search", params={"root": "/r"}).json()
+    columns = client.get("/api/index/search",
+                         params={"root": "/r", "fmt": "columns"}).json()
+    assert "fmt" not in classic and classic["entries"] == _corpus()["entries"]
+    decoded = [{"rel": r, "is_dir": bool(d), "size": s, "mtime": m}
+               for r, d, s, m in zip(columns["rels"], columns["dirs"],
+                                     columns["sizes"], columns["mtimes"])]
+    assert decoded == classic["entries"]
+    assert ({k: v for k, v in classic.items() if k != "entries"}
+            == {k: v for k, v in columns.items()
+                if k not in ("fmt", "rels", "dirs", "sizes", "mtimes")})
+
+
+def test_an_unknown_fmt_answers_in_the_classic_shape(home, tmp_path, monkeypatch):
+    """The bridge (`fused.fileIndex.search`, static/runtime.js) and every other
+    caller ask with no `fmt` at all, so anything but the one known value has to
+    be the old shape rather than an error."""
+    _stub_corpus(monkeypatch, _corpus())
+    body = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "parquet"}).json()
+    assert [e["rel"] for e in body["entries"]] == ["d", "d/f0.txt", "d/f1.txt",
+                                                   "d/f2.txt"]
+
+
+def test_columns_are_several_times_smaller_on_the_wire(home, tmp_path, monkeypatch):
+    """The transfer is the third of the three costs of the first search (25.7 MB
+    on a 164k-entry home). Content-Length, not the decoded body: the compact
+    format is also gzipped, and both halves are the win."""
+    _stub_corpus(monkeypatch, _corpus(n=2000))
+    client = _client(tmp_path)
+    classic = client.get("/api/index/search", params={"root": "/r"})
+    columns = client.get("/api/index/search",
+                         params={"root": "/r", "fmt": "columns"})
+    assert columns.headers["content-encoding"] == "gzip"
+    wire = (int(classic.headers["content-length"]),
+            int(columns.headers["content-length"]))
+    assert wire[0] / wire[1] >= 3.0, wire
+
+
+@pytest.mark.parametrize("accept,gzipped", [
+    ("gzip", True),
+    ("gzip, deflate, br", True),
+    ("x-gzip", True),
+    ("gzip;q=0.5", True),
+    ("*", True),
+    # `q=0` is the explicit "I cannot take this encoding" spelling, and a
+    # substring match read it as consent — handing a client a 5 MB body it
+    # just said it could not decode.
+    ("gzip;q=0", False),
+    ("gzip; q=0.0", False),
+    ("*;q=0", False),
+    ("identity", False),
+    ("", False),
+])
+def test_gzip_is_negotiated_by_q_value_not_by_substring(home, tmp_path,
+                                                        monkeypatch, accept,
+                                                        gzipped):
+    _stub_corpus(monkeypatch, _corpus())
+    resp = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "columns"},
+                                 headers={"Accept-Encoding": accept})
+    assert (resp.headers.get("content-encoding") == "gzip") is gzipped
+    # Both bodies live at one URL, so an intermediary keyed on the URL alone
+    # would otherwise serve either one to either client.
+    assert resp.headers["vary"] == "Accept-Encoding"
+    assert resp.json()["rels"] == ["d", "d/f0.txt", "d/f1.txt", "d/f2.txt"]
+
+
+def test_a_client_that_cannot_gunzip_still_gets_the_columns(home, tmp_path,
+                                                            monkeypatch):
+    """Encoding is negotiated, not assumed: `Accept-Encoding` decides whether
+    the body is compressed, and the document inside it is the same either way."""
+    _stub_corpus(monkeypatch, _corpus())
+    resp = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "columns"},
+                                 headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in resp.headers
+    assert resp.json()["rels"] == ["d", "d/f0.txt", "d/f1.txt", "d/f2.txt"]
+
+
+# -- the startup warm ----------------------------------------------------------
+
+def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypatch):
+    """The warm must ask for exactly what the home page asks for.
+
+    FilesHome searches `config.home` (routers/config.py — `expanduser("~")`),
+    not the folder the app was opened on, so a warm aimed anywhere else fills
+    a pool the first keystroke never reads."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    seen = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: seen.append(("search", root))
+                        or {"covered": True, "root": root, "entries": []})
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None:
+                        seen.append(("filter", index_root)) or out)
+    cfg = load_config()
+    cfg.roots = [str(tmp_path)]
+    index_router.save_config(cfg)
+    index_router.run_startup_warm()
+    # Same pair of calls the route makes, and pooled under the same index root:
+    # a warm that filtered under a different key would fill a second pool.
+    assert seen == [("search", index_router.runner.canonical_root("~")),
+                    ("filter", str(tmp_path))]
+
+
+def test_startup_warm_never_raises(home, tmp_path, monkeypatch):
+    """It runs on a background thread nobody joins: a raise here would be an
+    unhandled exception in the log and a permanently cold pool."""
+    def boom(*a, **k):
+        raise RuntimeError("duckdb on fire")
+
+    monkeypatch.setattr(index_router, "index_search", boom)
+    index_router.run_startup_warm()  # no exception
+
+
+def test_startup_warm_refuses_a_mount_backed_home(home, tmp_path, monkeypatch):
+    """The index refuses to scan mounts, so a warm aimed at one could only
+    ever answer `covered: false` — after paying kernel I/O on a mount path,
+    which is the one thing this codebase never does speculatively."""
+    monkeypatch.setattr(index_router.MountGuard, "blocks_root",
+                        lambda self, root: True)
+    called = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: called.append(root) or {})
+    index_router.run_startup_warm()
+    assert called == []
+
+
+def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypatch):
+    """The point of the warm, end to end: after a real scan the first search
+    pays a full check-ignore sweep of the whole corpus (~1.5 s on a home dir).
+    Once the warm has run, that sweep is already in the pool."""
+    from fused_render.server import index_gitignore
+
+    src = _tree(tmp_path)
+    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (src / "noise.log").write_text("x", encoding="utf-8")
+    client = _client(tmp_path)
+    started = client.post("/api/index/scan", json={"root": str(src)},
+                          headers={"X-Fused": "1"})
+    run_id = started.json()["run_id"]
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        if not client.get("/api/index/status",
+                          params={"run_id": run_id}).json()["running"]:
+            break
+        time.sleep(0.2)
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_gitignore._cache.clear()
+    # HOME is what the warm aims at; point it at the scanned tree so the warm
+    # answers `covered` and actually sweeps.
+    monkeypatch.setenv("HOME", str(src))
+    index_router.run_startup_warm()
+    pool = index_gitignore._cache.get(str(src))
+    assert pool is not None
+    assert "noise.log" in pool.ignored
+    assert "alpha.txt" in pool.decider
+
+
+def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
+    """The warm waits on the run THIS process started, so the scheduler has to
+    hand it over — `run_startup_scan` used to drop `runner.start`'s run id on
+    the floor."""
+    src = _tree(tmp_path)
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: {"run_id": "r-42",
+                                                       "root": root})
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+    assert index_router._startup_runs == {runner.canonical_root(str(src)): "r-42"}
+
+
+def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch):
+    """The first-ever boot, end to end — the case the warm exists for.
+
+    On a fresh index the warm's first search answers `covered: false` cheaply
+    and there is nothing to sweep; the scan this process just spawned finishes
+    seconds later. Sampling once left the user's first keystroke paying the
+    whole cold cost anyway (2.3 s, observed). Waiting for that one run and
+    warming after it is what fills the pool."""
+    from fused_render.server import index_gitignore
+
+    src = _tree(tmp_path)
+    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (src / "noise.log").write_text("x", encoding="utf-8")
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_gitignore._cache.clear()
+    # HOME is what the warm aims at, and what the scheduler scans.
+    monkeypatch.setenv("HOME", str(src))
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+
+    # Force the uncovered branch rather than racing the worker: the first
+    # search must answer `covered: false` for this to be the boot being tested.
+    real_search = index_router.index_search
+    calls = []
+
+    def uncovered_once(cfg, root, **kw):
+        calls.append(root)
+        if len(calls) == 1:
+            return {"covered": False, "root": root}
+        return real_search(cfg, root, **kw)
+
+    monkeypatch.setattr(index_router, "index_search", uncovered_once)
+    monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.05)
+    monkeypatch.setattr(index_router, "WARM_WAIT_DEADLINE_S", 60.0)
+    index_router.run_startup_warm()
+
+    assert len(calls) == 2, "the warm did not search again after the scan"
+    pool = index_gitignore._cache.get(str(src))
+    assert pool is not None
+    assert "noise.log" in pool.ignored
+    assert "alpha.txt" in pool.decider
+
+
+def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
+                                                             monkeypatch):
+    """A worker alive but wedged — writing nothing, dying never — must not
+    leave a thread polling for the process lifetime: the wait is
+    deadline-bounded and the warm simply does not happen."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    run_dir = tmp_path / "wedged-run"
+    run_dir.mkdir()
+    calls = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: calls.append(root)
+                        or {"covered": False, "root": root})
+    monkeypatch.setattr(index_router.runner, "_run_dir",
+                        lambda cfg, run_id: str(run_dir))
+    # Alive, so the dead-worker exit cannot fire: only the deadline can end it.
+    monkeypatch.setattr(index_router.runner, "_looks_abandoned",
+                        lambda run_dir, now, threshold_s: False)
+    monkeypatch.setattr(index_router, "WARM_WAIT_DEADLINE_S", 0.05)
+    monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-that-hangs")
+    began = time.monotonic()
+    index_router.run_startup_warm()
+    assert time.monotonic() - began < 5, "the wait is not deadline-bounded"
+    # It still searches: how the wait ended says nothing about whether the
+    # index covers the root, and an uncovered one costs a cheap `covered:
+    # false` — exactly what the original single-shot warm already paid.
+    assert len(calls) == 2
+
+
+def test_startup_warm_stops_waiting_on_a_worker_that_died(home, tmp_path,
+                                                          monkeypatch):
+    """A worker killed mid-walk never writes `run_end`, so the log alone would
+    keep the wait going until the deadline. runner's own mtime liveness check
+    is what ends it in seconds instead."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    run_dir = tmp_path / "dead-run"
+    run_dir.mkdir()
+    calls = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: calls.append(root)
+                        or {"covered": False, "root": root})
+    monkeypatch.setattr(index_router.runner, "_run_dir",
+                        lambda cfg, run_id: str(run_dir))
+    monkeypatch.setattr(index_router.runner, "_looks_abandoned",
+                        lambda run_dir, now, threshold_s: True)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-that-died")
+    began = time.monotonic()
+    index_router.run_startup_warm()
+    assert time.monotonic() - began < 5
+    assert len(calls) == 2
+
+
+def test_startup_warm_searches_again_when_the_run_dir_vanishes_mid_wait(
+        home, tmp_path, monkeypatch):
+    """`prune_runs` reclaims run DIRS; it never touches the store. So a run
+    dir that disappears while the warm is waiting on it says nothing about
+    whether the index covers the root — reading it as "the scan died, skip the
+    warm" silently left the pool cold for an index that was complete."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    run_dir = tmp_path / "pruned-run"
+    run_dir.mkdir()
+    calls, filtered = [], []
+
+    def search(cfg, root, **kw):
+        calls.append(root)
+        if len(calls) == 1:
+            run_dir.rmdir()  # pruned out from under the wait
+            return {"covered": False, "root": root}
+        return {"covered": True, "root": root, "entries": []}
+
+    monkeypatch.setattr(index_router, "index_search", search)
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setattr(index_router.runner, "_run_dir",
+                        lambda cfg, run_id: str(run_dir))
+    monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-that-was-pruned")
+    index_router.run_startup_warm()
+    assert len(calls) == 2
+    assert [out.get("covered") for out in filtered] == [True]
+
+
+def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
+                                                             monkeypatch):
+    """The overwhelmingly common boot: an index is already there, so the warm
+    is the same two calls it always was, with no wait in the way."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    waited, filtered = [], []
+    monkeypatch.setattr(index_router, "_wait_for_scan",
+                        lambda cfg, run_id: waited.append(run_id) or True)
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: {"covered": True, "root": root,
+                                                 "entries": []})
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-1")
+    index_router.run_startup_warm()
+    assert waited == []
+    assert len(filtered) == 1
+
+
+def test_startup_warm_does_not_wait_when_the_scan_was_debounced(home, tmp_path,
+                                                                monkeypatch):
+    """No run was started, so there is nothing to wait for — and a debounced
+    root was scanned within SCAN_DEBOUNCE_S, so the index is already there.
+    Waiting here would block the warm on a run that never comes."""
+    src = _tree(tmp_path)
+    monkeypatch.setenv("HOME", str(src))
+    monkeypatch.setattr(
+        index_router.runner, "start",
+        lambda cfg, root, full=False: pytest.fail("debounced root was scanned"))
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    runner._record_scan(cfg, runner.canonical_root(str(src)))
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+
+    waited, calls = [], []
+    monkeypatch.setattr(index_router, "_wait_for_scan",
+                        lambda cfg, run_id: waited.append(run_id) or True)
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: calls.append(root)
+                        or {"covered": False, "root": root})
+    index_router.run_startup_warm()
+    assert waited == []
+    assert len(calls) == 1
+
+
 def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
     """Roots are paths, not ignore patterns: clean_patterns rstrips '/' into
     the empty string and silently drops the root."""
