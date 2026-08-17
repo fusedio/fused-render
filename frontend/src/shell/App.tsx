@@ -61,6 +61,14 @@ const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
 );
 const BookmarkOpen = lazy(() => import("@apps/explorer/BookmarkOpen"));
+// Canvases (legacy-workbench local development): the listing and the
+// per-canvas workspace with the embedded live workbench.
+const Canvases = lazy(() =>
+  import("@apps/canvases").then((m) => ({ default: m.Canvases })),
+);
+const CanvasWorkspace = lazy(() =>
+  import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
+);
 
 type StatState =
   | { status: "loading" }
@@ -570,6 +578,11 @@ export default function App({ config }: { config: Config }) {
   const isLearn = pathname === "/learn";
   const isSessions = pathname === "/sessions";
   const isClaudeConfig = pathname === "/claude-config";
+  // Canvases: the listing plus the parameterized workspace route. The name is
+  // constrained to the CLI's own canvas-name alphabet, so the match below is
+  // also the validation.
+  const isCanvases = pathname === "/canvases";
+  const canvasWorkspaceName = /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
@@ -579,7 +592,7 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. Anything under /apps that isn't the hub falls
   // through to the "Unrecognized URL" branch below, deliberately unredirected.
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isHome || isLearn || isSessions || isClaudeConfig || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isScheduled || isAiModels || isApps || isExplorerHome || isHome || isLearn || isSessions || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -613,6 +626,10 @@ export default function App({ config }: { config: Config }) {
                       ? "Sessions"
                       : isClaudeConfig
                       ? "Claude Config"
+                      : isCanvases
+                      ? "Canvases"
+                      : canvasWorkspaceName
+                      ? `Canvas: ${canvasWorkspaceName}`
                       : isBookmark || bookmarkFile
                       ? "Bookmark"
                       : fsPath
@@ -707,6 +724,26 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <Scheduled key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isCanvases) {
+    // Canvases listing — same chrome-free settings pattern as Scheduled.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <Canvases key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (canvasWorkspaceName !== null) {
+    // Canvas workspace: the embedded workbench + sync strip. Keyed on the
+    // canvas name (not epoch): the page holds a live iframe and a token
+    // handshake, and its only same-route churn is its own sync poll.
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <CanvasWorkspace key={canvasWorkspaceName} name={canvasWorkspaceName} />
         </Suspense>
       </div>
     );

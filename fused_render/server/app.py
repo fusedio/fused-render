@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from fused_render import calls as shell_calls
 from fused_render.account import router as account_router
+from fused_render.canvases import router as canvases_router
 from fused_render.deploy import router as deploy_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
@@ -416,6 +417,10 @@ def create_app(start_dir: str) -> FastAPI:
     # Fused account (in-app `fused cloud login/logout`, account.py) — the
     # sign-in the managed-env deploys need, without a terminal.
     app.include_router(account_router)
+    # Canvases (canvases.py) — local development on legacy-workbench canvases:
+    # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
+    # sync loop, and the access token the workspace iframe is seeded with.
+    app.include_router(canvases_router)
     # Template management (templates_api.py) — the Templates view backend:
     # inventory across sources, registry bindings edit, import/export. It owns
     # GET /api/templates/registry (the extended §2.2 shape). Imported here
