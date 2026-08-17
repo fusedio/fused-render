@@ -798,6 +798,74 @@ export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
   return { kind: "triage", status };
 }
 
+// ---- filing it away, without the drag ----------------------------------------
+// "Can a task be deleted?" — no, and it never will be: a task IS a Claude
+// session and this app does not destroy transcripts (D306). What it can be is
+// ARCHIVED, which is the honest answer to that question — but only while
+// archiving is something a person can actually reach. Until now it was one
+// gesture on one view: drag the card onto the Archive lane, which starts
+// COLLAPSED. "Switch to Board, expand a lane, drag" is not an affordance.
+//
+// So the same move gets a button, and the rule behind it lives here rather than
+// in either component. It is deliberately not a second predicate: the whole
+// decision is asked of dropAction, on the lane the Board's drag would have used,
+// so the button and the drop cannot disagree about who may archive what. That
+// is why this sits after dropAction instead of up beside runNowIntent — it is
+// the same shape of function, and it is defined below the one function it is
+// only a re-reading of.
+//
+// It is a TWO-WAY door on purpose. The Board's drag can already pull a card back
+// out of Archive, and an action whose only direction is away is a trap: the row
+// that offers Archive must be the row that offers the way back once it is taken.
+// Returning to In Progress rather than Done is the same choice dropLanes makes
+// for a drag out of Archive — "back in play" is a claim about attention, and
+// Done would assert something about the work that archiving never recorded.
+
+/** The two statuses this action ever sends — setSessionTriage's union, less
+ * `done`, which filing away and un-filing never means. */
+export type ArchiveStatus = "archived" | "in_progress";
+
+export interface ArchiveIntent {
+  /** The lane this move puts the card in: the same lane the Board's drop would
+   * have targeted, which is what makes the two agree by construction. */
+  lane: BoardColumn;
+  /** What setSessionTriage is given. */
+  status: ArchiveStatus;
+  /** Whether this is the way BACK — i.e. the task is archived right now. */
+  restore: boolean;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: what happens, and the thing a person deleting would fear. */
+  title: string;
+}
+
+/**
+ * Whether this task can be filed away (or brought back), and what that says.
+ * Null when there is nothing to triage — which is exactly the `pending:<entry>`
+ * case: triage is an overlay on triage.json keyed by SESSION id, and a task
+ * that has never run has no session to key. Offering a button there would be
+ * offering a call that can only fail, so it is offered nowhere instead.
+ */
+export function archiveIntent(task: Task): ArchiveIntent | null {
+  const restore = taskColumn(task) === "archived";
+  const lane: BoardColumn = restore ? "in_progress" : "archived";
+  // The one question, asked of the one function that already answers it.
+  const action = dropAction(task, lane);
+  if (!action || action.kind !== "triage") return null;
+  // Narrowing, not a re-decision: dropAction's status IS the lane it was asked
+  // about, and neither of the two lanes above is `done`.
+  if (action.status === "done") return null;
+  return {
+    lane,
+    status: action.status,
+    restore,
+    label: restore ? "Unarchive" : "Archive",
+    title: restore
+      ? "Unarchive — puts this back in In Progress"
+      : "Archive — files this away; the conversation is kept",
+  };
+}
+
 // ---- filtering ---------------------------------------------------------------
 
 export interface TaskFilters {

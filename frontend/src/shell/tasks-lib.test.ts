@@ -12,6 +12,7 @@ import {
   PREVIEW_MESSAGES,
   UNREAD_COUNT_CAP,
   UNREAD_LABEL,
+  archiveIntent,
   basename,
   canCancel,
   canRunNow,
@@ -699,6 +700,85 @@ describe("taskRunIntent", () => {
   });
 });
 
+// ---- filing it away ----------------------------------------------------------
+// "Can a task be deleted?" is answered "no — it is archived, the transcript is
+// kept" (D306), and that answer is only true while archiving is reachable. It
+// used to be one gesture on one view, onto a lane that starts COLLAPSED.
+
+describe("archiveIntent", () => {
+  it("offers Archive on a task that has run", () => {
+    const a = archiveIntent(task({ status: "done" }))!;
+    expect(a.label).toBe("Archive");
+    expect(a.status).toBe("archived");
+    expect(a.lane).toBe("archived");
+    expect(a.restore).toBe(false);
+    // The half a person reaching for Delete is actually asking about.
+    expect(a.title).toContain("kept");
+  });
+
+  it("offers the way BACK on a task already archived", () => {
+    // Archiving with no way out is a trap, and the Board's drag can already
+    // pull a card out of Archive — so the List must not be a one-way door.
+    const a = archiveIntent(task({ status: "archived" }))!;
+    expect(a.label).toBe("Unarchive");
+    expect(a.status).toBe("in_progress");
+    expect(a.lane).toBe("in_progress");
+    expect(a.restore).toBe(true);
+    // Never Done: archiving recorded nothing about whether the work finished.
+    expect(a.status).not.toBe("done");
+  });
+
+  it("offers nothing on a task with no session to triage", () => {
+    // `pending:<entry>` — triage is an overlay on triage.json keyed by SESSION
+    // id, and a task that has never run has none. A button here would be a
+    // button that can only fail.
+    expect(archiveIntent(task({ key: "pending:e1", session_id: "", status: "upcoming" })))
+      .toBe(null);
+    // ...even when it is otherwise draggable, because run-now needs no session.
+    const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
+    expect(isDraggable(fresh)).toBe(true);
+    expect(archiveIntent(fresh)).toBe(null);
+  });
+
+  it("is offered from every lane a session-bearing task can sit in", () => {
+    for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
+      expect(archiveIntent(task({ status }))).not.toBe(null);
+    }
+    // Including the one lane Done is refused from — filing a failed run away is
+    // exactly what a person wants to do with it.
+    expect(archiveIntent(task({ status: FAILED }))!.status).toBe("archived");
+  });
+
+  it("never disagrees with the drop the Board already makes", () => {
+    const shapes: Task[] = [
+      task({ status: "done" }),
+      task({ status: "in_progress" }),
+      task({ status: "archived" }),
+      task({ status: FAILED }),
+      upcoming([T9]),
+      upcoming([T18, T9], { status: FAILED }),
+      // The two that offer nothing.
+      task({ key: "pending:e1", session_id: "", status: "upcoming" }),
+      upcoming([T9], { key: "pending:e1", session_id: "" }),
+    ];
+    for (const t of shapes) {
+      const a = archiveIntent(t);
+      for (const col of BOARD_COLUMNS) {
+        const action = dropAction(t, col.key);
+        if (a && col.key === a.lane) {
+          // The button makes the drop's call, on the drop's own lane.
+          expect(action).toEqual({ kind: "triage", status: a.status });
+          expect(dropLanes(t)).toContain(a.lane);
+        } else if (!a) {
+          // Offering nothing is only correct while the drag has no filing move
+          // either — a run-now drop is a different verb and may still be legal.
+          expect(action === null || action.kind === "run").toBe(true);
+        }
+      }
+    }
+  });
+});
+
 // ---- where the marks are drawn -------------------------------------------------
 // Two claims the pure half cannot hold on its own: WHICH END of a row the
 // unread mark is at, and whether the task row's rail and its thread's dots are
@@ -749,6 +829,64 @@ describe("the unread rail", () => {
     // puts a 7px dot and a count pill on the same centre line.
     expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*justify-content:\s*center/);
     expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*flex:\s*0 0 var\(--tasks-rail-w\)/);
+  });
+});
+
+// ---- where Archive is drawn ----------------------------------------------------
+// Two claims the pure half cannot hold: that the action EXISTS on both views,
+// and that it is silent until the row or card is pointed at. The second is the
+// whole reason it was allowed onto a row at all, so it is read out of the source
+// rather than left to a screenshot.
+
+describe("the archive action", () => {
+  it("sits in the List row's hover-revealed group, conditional on the intent", () => {
+    const from = VIEWS.indexOf('className={"tasks-row"');
+    const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
+    // Only when there is something to file — a session-less row grows nothing.
+    expect(row).toContain("{file && (");
+    // The same class Run now / Edit / Cancel wear, which is what makes it quiet.
+    expect(row).toMatch(/"tasks-act (?:.|\n)*?tasks-act--unarchive/);
+    expect(row).toContain("ICON_ARCHIVE");
+    expect(row).toContain("ICON_UNARCHIVE");
+    // Both directions, and the label comes from tasks-lib rather than the row.
+    expect(row).toContain("file.status");
+    expect(row).toContain("aria-label={file.label}");
+  });
+
+  it("is absent at rest and present on hover or focus", () => {
+    // The group's resting state is invisible...
+    const head = TASKS_CSS.indexOf(".tasks-act,\n.prefs-section .tasks-act {");
+    expect(head).toBeGreaterThan(-1);
+    expect(TASKS_CSS.slice(head, TASKS_CSS.indexOf("}", head))).toContain("opacity: 0;");
+    // ...and both a pointer and a keyboard bring it back, on the row...
+    expect(TASKS_CSS).toContain(".tasks-row:hover .tasks-act");
+    expect(TASKS_CSS).toContain(".tasks-row:focus-within .tasks-act");
+    // ...and on a board card, which is not a row and needs its own pair.
+    expect(TASKS_CSS).toContain(".tasks-card-wrap:hover .tasks-card-act");
+    expect(TASKS_CSS).toContain(".tasks-card-wrap:focus-within .tasks-card-act");
+    // Reachable with a visible ring either way.
+    expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
+    // House rule: never the property that animates layout and skin together.
+    // As a DECLARATION — the file's own header names it in prose to forbid it.
+    expect(TASKS_CSS).not.toMatch(/^\s*transition: all/m);
+  });
+
+  it("gives the board card the same action, so the drag is not the only way", () => {
+    const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
+    expect(card).toContain("archiveIntent(task)");
+    expect(card).toContain("tasks-card-act");
+    // A button cannot be nested inside a button, which is what the wrapper is
+    // for — and what it is positioned against.
+    expect(card).toContain("tasks-card-wrap");
+    expect(TASKS_CSS).toMatch(/\.tasks-card-wrap\s*\{[^}]*position: relative/);
+  });
+
+  it("never paints it red — archiving destroys nothing", () => {
+    // Cancel's hue is the destructive one and the two are one flick apart; using
+    // it here would assert the very thing archiving exists to deny.
+    const at = TASKS_CSS.indexOf(".tasks-act--archive:hover");
+    expect(at).toBeGreaterThan(-1);
+    expect(TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at))).not.toContain("--error");
   });
 });
 
