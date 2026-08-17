@@ -470,7 +470,7 @@ def all_suggested_ids() -> set[str]:
 def capability_of(repo_id: str) -> str | None:
     """The capability a SUGGESTED repo belongs to, or None for anything not here.
 
-    The cheap pre-cache signal a load needs (D307): inferring a capability from
+    The cheap pre-cache signal a load needs (D321): inferring a capability from
     the weight layout requires a snapshot on disk, and a cold load has none —
     but for every repo this app itself recommends, the curation already knows,
     and knowing costs a dict lookup rather than a Hub round trip.

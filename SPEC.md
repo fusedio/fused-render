@@ -6623,7 +6623,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   windows over a 198-second file. What that verification did NOT cover is
   transcription quality, the container formats users will point at it, and the
   behaviour of a recording long enough to matter.
-- **AI-10f** **`vad` means the same thing on both whisper engines** (D306).
+- **AI-10f** **`vad` means the same thing on both whisper engines** (D320).
   `fused.ai.transcribe` has always taken the flag, and until now the two
   runners answered it differently: faster-whisper runs a Silero VAD filter and
   drops the silence, while the MLX runner could only map it onto mlx-whisper's

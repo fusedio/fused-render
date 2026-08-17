@@ -1599,7 +1599,7 @@ def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, h
     assert engine["code"] == "transformers-text" and engine["available"] is True
 
 
-# -- and the same reading answers a load that omitted one (D307) -----------------
+# -- and the same reading answers a load that omitted one (D321) -----------------
 # `cached_capability` is this page's join, exported for `ai_runtime.py`: a load
 # with no `capability` used to mean text generation whatever was on disk, which
 # sent an MLX diffusion repo to mlx-lm. The card and the load must agree, so
@@ -1726,7 +1726,7 @@ def test_an_ordinary_model_is_not_a_component(client, hub):
 
 @requires_symlinks
 def test_loading_a_component_is_refused_by_name(client, hub):
-    """`cached_capability` is what the load route refuses with (D307). "a
+    """`cached_capability` is what the load route refuses with (D321). "a
     speech detector that belongs to MLX transcription" is a far more useful
     sentence than the "model repo" reading it used to produce."""
     _repo(hub, "models--onnx-community--silero-vad", blobs={"w": 10},

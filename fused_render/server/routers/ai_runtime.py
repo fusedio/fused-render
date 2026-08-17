@@ -14,7 +14,7 @@ Four routes and one rule each:
 * `POST /api/ai/runtime/load` — make a model resident. Returns a JOB ID
   immediately; a cold load is a multi-GB download and nothing waits on it. A
   `capability` left out is INFERRED from what the repo is, never defaulted —
-  see `_inferred_capability`, and D307 for the bug that made it so.
+  see `_inferred_capability`, and D321 for the bug that made it so.
 * `POST /api/ai/runtime/unload` — release the weights.
 * `POST /api/ai/runtime/download` — fetch without loading, for the AI Models
   page, where the verb is "Download" and the user is not asking to run anything
@@ -109,7 +109,7 @@ def _model_of(body: dict) -> str:
 def _inferred_capability(model: str) -> tuple[str | None, str | None]:
     """What to load `model` AS when the caller did not say, or why we cannot tell.
 
-    **The omitted `capability` used to mean text generation, silently** (D307),
+    **The omitted `capability` used to mean text generation, silently** (D321),
     which is a wrong-runner dispatch dressed up as a corrupt model: an MLX
     diffusion repo reached mlx-lm and raised `FileNotFoundError: config.json`,
     a repo that has never had one, while `/api/ai/image` rendered from the same
@@ -435,7 +435,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     # The rule comes from `runners/diarize.py`, the module the workers import
     # out of their own venvs, so the sentence a caller reads here is the same
     # sentence the worker would have raised. `bool(...)` and not `is None`: this
-    # one has no true default to invert (D306's trap), it is off unless asked
+    # one has no true default to invert (D320's trap), it is off unless asked
     # for, so a JSON null and an absent key mean the same thing.
     diarizing = bool(body.get("diarize"))
     speakers = None

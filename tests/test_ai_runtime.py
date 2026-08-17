@@ -3785,7 +3785,7 @@ def test_both_ai_paths_close_a_stream_the_same_way(client, fake_runner, monkeypa
     assert set(done["result"]) == {"text", "model", "usage"}
 
 
-# -- which capability a load without one gets (D307) ---------------------------
+# -- which capability a load without one gets (D321) ---------------------------
 # The trap this closes: an omitted `capability` used to mean TEXT GENERATION
 # unconditionally, so `fused.ai.models.load("mlx-community/FLUX.2-Klein-4B-4bit")`
 # went to mlx-lm and surfaced as a FileNotFoundError about a config.json the repo

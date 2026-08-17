@@ -3014,7 +3014,7 @@
     // `opts.capability` says WHICH RUNNER gets the repo ("text-generation",
     // "text-to-image", "automatic-speech-recognition"). Left out, the server
     // infers it from what the repo is — the cached snapshot's format first, then
-    // the catalog, then text generation for a cold unknown id (D307). Pass it
+    // the catalog, then text generation for a cold unknown id (D321). Pass it
     // whenever the page already knows: inference cannot read a repo that is not
     // downloaded yet, and this argument is the difference between a whisper
     // model loading and mlx-lm reporting it as a corrupt text model.

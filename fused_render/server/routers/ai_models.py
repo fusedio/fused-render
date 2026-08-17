@@ -1002,7 +1002,7 @@ class CacheReading(NamedTuple):
 def cached_capability(repo_id: str) -> CacheReading:
     """Which capability `repo_id` would load as, read off the local snapshot.
 
-    **Exported, and read by the load route** (`ai_runtime.py`, D307). A load
+    **Exported, and read by the load route** (`ai_runtime.py`, D321). A load
     that omitted `capability` used to mean text generation unconditionally, so
     an MLX diffusion repo went to mlx-lm and came back as a FileNotFoundError
     about a `config.json` that repo has never had. The evidence that settles it
