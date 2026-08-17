@@ -192,7 +192,7 @@ for (const s of rec.segments) addCue(s.start, s.end, s.text);   // {start, end, 
 
 Options: `path` (required), `model`, `language`, `task`, `initialPrompt`, `vad`, `diarize`, `speakers`, `onProgress`, `onSegment`.
 
-Resolves with `{jobId, path, output, outputText, outputPartial, model, task, url, text, segments, language, duration, speakers}`.
+Resolves with `{jobId, path, output, outputText, outputPartial, model, task, url, text, segments, language, duration, speakers, estimatedSpeakers}`.
 
 **The result is read off DISK, not returned by the job** — this is the part that is not obvious. The worker writes `~/.fused-render/ai/transcripts/<time>-<name>-<uid>.json` plus a `.txt` beside it, and when the row reaches `done` the bridge does `readFile(output)` → `JSON.parse` and hands you the parsed fields. So:
 
@@ -209,7 +209,7 @@ Everything else worth knowing:
 - **`model` omitted loads the SMALLEST model the active engine offers** — `Systran/faster-whisper-small` or `mlx-community/whisper-small-mlx`, not the turbo one. That is deliberate: the catalog is ordered smallest-first and the default is simply its first entry, so a bare call is the cheapest download rather than the most accurate transcript. If accuracy matters, **pass a `model`** from `catalog()`; the turbo entries are the ones to reach for.
 - `vad` (default `true`) runs a Silero speech detector and skips the silence — the same filter on both engines. Because it does, `job.done` legitimately finishes short of `job.total` on a recording that trails off quietly — that is not an off-by-one to work around. Timestamps are always positions in the original file, never in the filtered audio.
 - **Hours, not minutes.** One transcription runs at a time; a second call **queues**, says so on its row, and its ✕ works while it waits.
-- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, an unknown `task`, or `diarize` without a usable `speakers`).
+- Rejects with `.type` `"cancelled"` | `"ai_error"` | `"unavailable"` | `"bad_request"` (a missing path, a path that is not a file, an unknown `task`, or a `speakers` that is present and unusable).
 
 ### As it decodes: `onSegment`
 
@@ -259,13 +259,16 @@ try {
 const rec = await fused.ai.transcribe({
   path: "meeting.m4a",
   diarize: true,
-  speakers: 3,          // REQUIRED with diarize — how many people are in the room
+  speakers: 3,          // OPTIONAL — leave it out and the count is estimated
 });
 rec.speakers;                       // ["Speaker 1", "Speaker 2", "Speaker 3"]
 rec.segments[0].speaker;            // "Speaker 1"  (or null — see below)
+rec.estimatedSpeakers;              // 3 — only on a run that had to work it out
 ```
 
-- **`speakers` is required and must be a whole number ≥ 1.** Omitting it, or passing `true`, `"3"` or `2.5`, rejects `bad_request` **before a job opens**. It is not an optimisation the app could work out for you: underneath, the clustering takes either a speaker count or a similarity threshold, and the threshold answers 2, 4 or 7 on the same recording across its plausible range. A guess would relabel the whole transcript with total confidence, so the app asks instead.
+- **`speakers` is an optional hint.** Give it (a whole number 1–100) and the clustering is fixed to exactly that many voices. Leave it out — `undefined`, `null` or `""` — and the count is **estimated** from the recording by cosine distance, and the reply carries `estimatedSpeakers` saying what it decided. Passing a count that is present and unusable (`0`, `2.5`, `"3"`, `true`, over 100) still rejects `bad_request` **before a job opens**: that is a typo, not a request to estimate.
+- **An estimate can be wrong**, in either direction — one person across two microphones can split, two similar voices can merge — so pass the count whenever you actually know it. `estimatedSpeakers` is how a page can show what was assumed and let someone re-run with a correction.
+- `estimatedSpeakers` counts the voices the **segmenter** heard, which can be more than `speakers.length`: someone who spoke where Whisper transcribed no words is counted in the first and absent from the second.
 - Every segment gains **`speaker`**, and the reply gains **`speakers`** — the list of labels that actually landed on a segment, ready to build a colour map from without walking thousands of segments.
 - **`speaker` is `null` where Whisper heard words but the segmenter heard nobody.** Handle it; do not assume a label.
 - **Both engines run the same two models through the same code**, so the labels do not depend on which one served you.

@@ -420,11 +420,16 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
             f"'task' must be {_TRANSCRIBE_TASKS[0]!r} (same language) or "
             f"{_TRANSCRIBE_TASKS[1]!r} (into English), not {task!r}", status=400)
 
-    # Speaker labels, and the count that cannot be left out. Checked BEFORE the
-    # model is resolved and before a job row exists, with the other arguments a
-    # typo deserves an answer about — `runtime.js` refuses the same request
-    # first, but the bridge is not the only door: a page can POST here, and so
-    # can anything else on this machine holding the `X-Fused` header.
+    # Speaker labels, and the optional count that fixes how many there are.
+    # Checked BEFORE the model is resolved and before a job row exists, with the
+    # other arguments a typo deserves an answer about — `runtime.js` refuses the
+    # same request first, but the bridge is not the only door: a page can POST
+    # here, and so can anything else on this machine holding the `X-Fused`
+    # header.
+    #
+    # An ABSENT count is not a refusal (D318): `speakers_or_raise` answers None
+    # and the worker's clustering estimates it. Only a bad explicit value —
+    # `0`, `-1`, `true`, `"2"` — is a 400, and it still is.
     #
     # The rule comes from `runners/diarize.py`, the module the workers import
     # out of their own venvs, so the sentence a caller reads here is the same
@@ -481,7 +486,11 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # is byte-identical — and `speakers` is only sent when it is meaningful,
         # rather than as a null the worker would have to re-validate as absent.
         "diarize": diarizing,
-        **({"speakers": speakers} if diarizing else {}),
+        # `speakers is not None`, not `diarizing`: a diarized run whose count
+        # was left out sends no key at all rather than a null the worker would
+        # have to re-read as absence. Same rule as before D318 made the count
+        # optional — the key is present exactly when it carries a number.
+        **({"speakers": speakers} if speakers is not None else {}),
         "out": out_base + ".json",
         "outText": out_base + ".txt",
         # …and where the segments land AS they are decoded, so a page has a

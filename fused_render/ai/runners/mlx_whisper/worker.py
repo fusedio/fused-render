@@ -1118,6 +1118,10 @@ def generate(body):
     # and the server both check it first, but neither is the only door into
     # this process, and a `speakers` refused after ninety seconds of `av` is a
     # refusal the user paid for.
+    #
+    # **None is a legitimate answer** (D318): it means the caller did not say
+    # how many people are in the recording, and `diarize.diarizer` clusters by
+    # distance instead of by count. Only a bad EXPLICIT value raises here.
     speakers = diarize.speakers_or_raise(body.get("speakers")) if diarizing else None
     job = body.get("job") or None
     # The row's IDENTITY, carried on every tick — see
@@ -1219,6 +1223,14 @@ def generate(body):
             # segment — so a page can build a colour map without walking
             # thousands of segments first.
             payload["speakers"] = speaker_list
+            if speakers is None:
+                # …and additive AGAIN, for the same reason one layer in: a run
+                # that GAVE the count writes exactly the bytes it wrote before
+                # estimation existed, because it already knows this number.
+                # An estimating run is the only one that learned something,
+                # and this is where it says what (D318). It is the SEGMENTER's
+                # count, which can exceed the legend — see `speaker_count`.
+                payload["estimatedSpeakers"] = diarize.speaker_count(turns)
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as handle:
             json.dump({**payload, "text": text}, handle, ensure_ascii=False, indent=1)

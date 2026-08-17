@@ -873,16 +873,64 @@ def test_the_speaker_count_reaches_the_clustering(monkeypatch, loaded, tmp_path)
     assert seen == {"speakers": 4}
 
 
-@pytest.mark.parametrize("speakers", [None, 0, -1, True, 2.5, "2"])
+def test_an_ABSENT_count_reaches_the_clustering_as_None_to_estimate(
+        monkeypatch, loaded, tmp_path):
+    """D318: the request simply has no `speakers` key, and what the clustering
+    is handed is None — which `diarize.diarizer` turns into threshold
+    clustering. The worker does not invent a number of its own on the way."""
+    worker, _ = loaded(windows=(100,))
+    seen = {}
+    import diarize as diarize_module
+    monkeypatch.setattr(diarize_module, "diarizer",
+                        lambda seg, emb, speakers: seen.update(speakers=speakers))
+    monkeypatch.setattr(diarize_module, "speaker_turns",
+                        lambda *a, **k: [(0.0, 10.0, 0)])
+
+    worker.generate(_request(tmp_path, diarize=True))
+    assert seen == {"speakers": None}
+
+
+@pytest.mark.parametrize("speakers", [0, -1, True, 2.5, "2"])
 def test_a_bad_speaker_count_is_refused_BEFORE_the_audio_is_decoded(
         monkeypatch, loaded, tmp_path, speakers):
     """The bridge and the server refuse it first, but neither is the only door
     into this process — and a refusal that arrives after ninety seconds of `av`
-    is a refusal the user paid for."""
+    is a refusal the user paid for. `None` is NOT in this list since D318: it
+    is the estimating path, not a typo."""
     worker, transcribe = loaded(windows=(100,))
     with pytest.raises(ValueError, match="speakers"):
         worker.generate(_request(tmp_path, diarize=True, speakers=speakers))
     assert transcribe.calls == []
+
+
+def test_an_ESTIMATED_count_is_reported_and_a_GIVEN_one_is_not(
+        monkeypatch, loaded, tmp_path):
+    """`estimatedSpeakers` means "worked out", not "resolved" (D318): a run
+    that supplied the count already knows it and its transcript keeps exactly
+    the bytes it had before estimation existed.
+
+    The estimate is the SEGMENTER's count, so it can exceed the legend — here
+    three voices were clustered and only two of them said anything Whisper
+    transcribed."""
+    worker, _ = loaded(windows=(100,), audio_seconds=20.0,
+                       segments=[_segment(0.0, 2.0, "hello"),
+                                 _segment(12.0, 14.0, "hi there")])
+    turns = [(0.0, 10.0, 0), (10.0, 20.0, 1), (20.0, 25.0, 2)]
+
+    _diarizes(monkeypatch, worker, turns)
+    request = _request(tmp_path, diarize=True, vad=False)
+    result = worker.generate(request)
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert result["estimatedSpeakers"] == 3
+    assert written["estimatedSpeakers"] == 3
+    assert written["speakers"] == ["Speaker 1", "Speaker 2"]
+
+    _diarizes(monkeypatch, worker, turns)
+    request = _request(tmp_path, diarize=True, speakers=3, vad=False)
+    result = worker.generate(request)
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert "estimatedSpeakers" not in result
+    assert "estimatedSpeakers" not in written
 
 
 def test_every_segment_is_LABELLED_and_the_json_gains_the_legend(

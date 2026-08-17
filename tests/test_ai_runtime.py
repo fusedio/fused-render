@@ -1949,21 +1949,21 @@ def test_an_explicit_null_vad_reaches_the_worker_as_the_default(
         _wait_job(started["jobId"])
 
 
-def test_diarizing_without_a_speaker_count_is_refused_before_a_job_opens(
+def test_a_BAD_speaker_count_is_refused_before_a_job_opens(
         client, fake_transcribe_runner, recording):
-    """`speakers` is REQUIRED with `diarize`, and this is the server's copy of
+    """A count that was meant and is unusable, and this is the server's copy of
     that rule — `runtime.js` refuses first, but the bridge is not the only door
     into this endpoint and a rule enforced only in JavaScript is not enforced.
 
-    Refused with a 400 rather than guessed, for the reason `diarize.py` states:
-    the alternative to a cluster count is a cosine threshold nobody outside a
-    lab can set, so a guess relabels the whole transcript with total confidence.
+    None of these is a request to estimate: `0` and `-1` are arithmetic gone
+    wrong, `true` is a copy-paste of the `diarize` flag, `"2"` is an <input>
+    read without a parseInt. Reading any of them as "work it out yourself"
+    would turn a caller's mistake into a quietly different transcript.
+
     Before a job row opens, like the `path` check above — this one would
     otherwise open a row that survives a multi-second model load to die.
     """
-    for sent in ({"diarize": True},
-                 {"diarize": True, "speakers": None},
-                 {"diarize": True, "speakers": 0},
+    for sent in ({"diarize": True, "speakers": 0},
                  {"diarize": True, "speakers": -1},
                  {"diarize": True, "speakers": True},
                  {"diarize": True, "speakers": 2.5},
@@ -1976,7 +1976,30 @@ def test_diarizing_without_a_speaker_count_is_refused_before_a_job_opens(
                 if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
 
 
-def test_the_server_and_the_workers_refuse_a_speaker_count_by_the_SAME_rule(
+def test_diarizing_WITHOUT_a_count_is_accepted_and_estimates_it(
+        client, fake_transcribe_runner, recording, monkeypatch):
+    """D318: the count is a hint. Omitted — or sent as an explicit null, which
+    is what a page spreading an options object with an unset key produces — the
+    job starts and the worker is told to diarize with no `speakers` key at all,
+    which its clustering reads as "estimate"."""
+    seen = {}
+    real = supervisor.start_transcribe
+    monkeypatch.setattr(supervisor, "start_transcribe",
+                        lambda model, request, job: (seen.update(request),
+                                                     real(model, request, job)))
+    for sent in ({"diarize": True}, {"diarize": True, "speakers": None},
+                 {"diarize": True, "speakers": ""}):
+        seen.clear()
+        response = _post_transcribe(client, path=recording, **sent)
+        assert response.status_code == 200, (sent, response.json())
+        assert seen["diarize"] is True, sent
+        # ABSENT rather than null: the worker never has to tell an unspecified
+        # count from one that arrived as a null.
+        assert "speakers" not in seen, sent
+        _wait_job(response.json()["jobId"])
+
+
+def test_the_server_and_the_workers_READ_a_speaker_count_by_the_SAME_rule(
         client, fake_transcribe_runner, recording):
     """One sentence, one place. The endpoint hands the caller whatever
     `runners/diarize.py` raises, so a rule that changes there changes here —
@@ -1984,9 +2007,9 @@ def test_the_server_and_the_workers_refuse_a_speaker_count_by_the_SAME_rule(
     rather than restating it."""
     from fused_render.ai.runners import diarize
 
-    response = _post_transcribe(client, path=recording, diarize=True)
+    response = _post_transcribe(client, path=recording, diarize=True, speakers=0)
     with pytest.raises(ValueError) as raised:
-        diarize.speakers_or_raise(None)
+        diarize.speakers_or_raise(0)
     assert response.json()["error"] == str(raised.value)
 
 
@@ -2811,8 +2834,6 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
 
 
 @pytest.mark.parametrize("opts", [
-    '{path: "a.m4a", diarize: true}',
-    '{path: "a.m4a", diarize: true, speakers: null}',
     '{path: "a.m4a", diarize: true, speakers: 0}',
     '{path: "a.m4a", diarize: true, speakers: -2}',
     '{path: "a.m4a", diarize: true, speakers: true}',
@@ -2821,10 +2842,14 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     '{path: "a.m4a", diarize: true, speakers: NaN}',
     '{path: "a.m4a", diarize: true, speakers: 101}',
 ])
-def test_diarizing_without_a_usable_speaker_count_rejects_BEFORE_a_job_opens(opts):
-    """The bridge's half of the required argument, beside the `path` check and
-    for the same reason: the caller fails synchronously with an actionable
-    sentence instead of watching a row open and die.
+def test_diarizing_with_an_UNUSABLE_speaker_count_rejects_BEFORE_a_job_opens(opts):
+    """The bridge's half of the count check, beside the `path` check and for
+    the same reason: the caller fails synchronously with an actionable sentence
+    instead of watching a row open and die.
+
+    Every value here is a count that was MEANT — omitting it is the estimating
+    path (D318) and is tested below, but a wrong number is a typo and reading
+    it as "estimate" would hide it.
 
     `speakers: true` is in the list deliberately — `{diarize: true, speakers:
     true}` is a plausible copy-paste, and a language where `true` is not a
@@ -2884,6 +2909,37 @@ def test_asking_for_speakers_properly_gets_the_labels_and_the_legend_back():
     assert settled["ok"] is True, settled
     assert settled["value"]["speakers"] == ["Speaker 1", "Speaker 2"]
     assert settled["value"]["segments"][1]["speaker"] == "Speaker 2"
+
+
+@pytest.mark.parametrize("opts", [
+    '{path: "a.m4a", diarize: true}',
+    '{path: "a.m4a", diarize: true, speakers: null}',
+    '{path: "a.m4a", diarize: true, speakers: ""}',
+])
+def test_diarizing_WITHOUT_a_count_is_the_estimating_path_not_a_rejection(opts):
+    """D318. All three spellings of "I did not say" reach the server, and the
+    reply carries `estimatedSpeakers` — the count the clustering settled on,
+    which a caller who passed one would already know and does not get."""
+    written = ('Promise.resolve(JSON.stringify({text: "hello hi", '
+               'segments: [{start: 0, end: 1, text: "hello", speaker: "Speaker 1"}], '
+               'speakers: ["Speaker 1"], estimatedSpeakers: 2, '
+               'language: "en", duration: 2}))')
+    settled = _run_ai_transcribe(written, '{state: "done"}', opts=opts)
+    assert settled["ok"] is True, settled
+    assert settled["value"]["estimatedSpeakers"] == 2
+    assert settled["value"]["speakers"] == ["Speaker 1"]
+
+
+def test_a_run_that_was_GIVEN_the_count_reports_no_estimate():
+    """The field means "estimated", not "resolved": a caller who supplied the
+    number gets no key back, and the transcript on disk has none either."""
+    written = ('Promise.resolve(JSON.stringify({text: "hi", '
+               'segments: [{start: 0, end: 1, text: "hi", speaker: "Speaker 1"}], '
+               'speakers: ["Speaker 1"], language: "en", duration: 1}))')
+    settled = _run_ai_transcribe(written, '{state: "done"}',
+                                 opts='{path: "a.m4a", diarize: true, speakers: 1}')
+    assert settled["ok"] is True, settled
+    assert "estimatedSpeakers" not in settled["value"]
 
 
 def test_a_call_that_does_not_ask_for_speakers_is_unchanged():

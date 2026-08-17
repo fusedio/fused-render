@@ -25,13 +25,19 @@ unattended download fails without a Hub token on a machine nobody is sitting at.
 sherpa-onnx runs on ONNX Runtime, which the MLX runner already carries for the
 VAD, and both models below are ungated.
 
-**The count is REQUIRED, never guessed.** `speakers` is not an optimisation:
-sherpa's clustering either takes a cluster count or a distance threshold, and a
-threshold is a number nobody outside a lab can set meaningfully — the same
-recording answers 2, 4 or 7 across its plausible range. Guessing produces a
-transcript that is confidently wrong about how many people are in the room,
-which is worse than a refusal. So it is validated in three places (the bridge,
-the server and each worker) and the rule is written down once, here.
+**The count is a HINT: given, it is obeyed; omitted, it is estimated** (D318).
+sherpa's clustering takes either a cluster count or a cosine distance
+threshold, and this module offers both — `speakers: 3` fixes three clusters and
+is the path that existed first, while an absent `speakers` clusters by distance
+and lets the recording answer. The earlier reading of this file said the
+threshold was a number nobody outside a lab could set and therefore REFUSED the
+absent case; what that missed is that the app can set it once, for everyone,
+which is what every other transcription product does. A wrong estimate is still
+a real cost — it is why the count remains the better answer whenever the caller
+has one — but a refusal is not the alternative it was taken to be. The value is
+still validated in three places (the bridge, the server and each worker),
+because a BAD count (`0`, `-1`, `true`, `"2"`) is a typo either way, and the
+rule is written down once, here.
 
 **Diarization runs on the FULL waveform, independent of the VAD.** It is the
 segmenter's own job to find the silence, it is much better at it than a
@@ -105,12 +111,26 @@ _TIE_S = 1e-6
 #: is minutes of clustering for an answer nobody wanted.
 MAX_SPEAKERS = 100
 
+#: The cosine distance at which two voices stop being the same person, used
+#: when the caller did not say how many there are.
+#:
+#: **sherpa-onnx's own default**, restated here for the reason `MIN_DURATION_ON`
+#: is: the number a transcript's speaker labels come out of must not be
+#: whatever the installed wheel happens to default to this month, and the two
+#: engines must not be able to pick up different ones. Larger merges more —
+#: two people become one — and smaller splits one person across a cough or a
+#: change of microphone distance. 0.5 is where sherpa's own examples sit for the
+#: WeSpeaker embeddings this module uses, which is the pairing the number was
+#: chosen against; there is no measurement of our own behind it, and that is
+#: exactly why a caller who KNOWS the count should still pass it.
+CLUSTER_THRESHOLD = 0.5
+
 
 # ------------------------------------------------------------------ the argument
 
 
 def speakers_or_raise(value):
-    """`speakers` as an int, or `ValueError` naming what is wrong with it.
+    """`speakers` as an int, `None` when it is absent, or `ValueError`.
 
     The rule in one place, called from the server (turned into a 400) and from
     each worker (a `ValueError` the supervisor reports). `runtime.js` states the
@@ -118,16 +138,22 @@ def speakers_or_raise(value):
     exists — three implementations of one sentence, which is why the sentence is
     pinned by a test rather than trusted to stay in step.
 
+    **None is an ANSWER, not a failure** (D318): it means "estimate it", and
+    `diarizer` turns it into threshold clustering. An empty string answers the
+    same way, because that is what an untouched number input sends and a
+    documented default reachable only by deleting the key is not a default.
+
+    A bad EXPLICIT value is still refused, and that half is unchanged: `0`,
+    `-1`, `2.7` and `"2"` are typos whether or not the argument is optional,
+    and reading them as "estimate" would turn a caller's mistake into a
+    silently different transcript.
+
     `bool` is rejected explicitly because `True` is an `int` in Python and
     `diarize: true, speakers: true` is a plausible typo that would otherwise
     read as one speaker and produce a transcript labelled entirely "Speaker 1".
     """
     if value is None or value == "":
-        raise ValueError(
-            "'speakers' is required when 'diarize' is true — say how many "
-            "people are in the recording, e.g. {diarize: true, speakers: 2}. "
-            "It cannot be guessed reliably, and a wrong guess relabels the "
-            "whole transcript.")
+        return None
     if isinstance(value, bool) or not isinstance(value, int):
         # A float is refused rather than truncated: `2.0` is harmless and `2.7`
         # is a caller who computed the count and got it wrong, and there is no
@@ -171,11 +197,20 @@ def model_paths(download_file):
 
 
 def diarizer(segmentation_path, embedding_path, speakers):
-    """A configured `sherpa_onnx.OfflineSpeakerDiarization` for `speakers` people.
+    """A configured `sherpa_onnx.OfflineSpeakerDiarization`.
 
-    `num_clusters=speakers` is the whole reason the count is required: the other
-    branch of sherpa's clustering is a cosine `threshold`, and that number is
-    not one a page author can hold an opinion about (see the module docstring).
+    `speakers` is a count, or **None to estimate it** (D318), and that single
+    argument chooses between the two branches of sherpa's clustering:
+
+    * a count fixes `num_clusters`, and the recording is cut into exactly that
+      many voices whether or not that is how many spoke;
+    * None leaves `num_clusters` negative and hands over `CLUSTER_THRESHOLD`
+      instead, so voices merge by cosine distance and the count falls out.
+
+    The fixed branch is spelled exactly as it was before the other one existed,
+    with no `threshold` passed: a caller who gives the count must get the same
+    transcript they got yesterday, byte for byte, and the surest way to promise
+    that is to leave its call untouched.
 
     CPU provider explicitly, for `vad.py`'s reason: 33MB of ONNX that runs in
     seconds does not need a second accelerator backend beside the one holding
@@ -199,7 +234,15 @@ def diarizer(segmentation_path, embedding_path, speakers):
             num_threads=1, provider="cpu"),
         embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
             model=embedding_path, num_threads=1, provider="cpu"),
-        clustering=sherpa_onnx.FastClusteringConfig(num_clusters=int(speakers)),
+        clustering=(
+            sherpa_onnx.FastClusteringConfig(num_clusters=int(speakers))
+            if speakers is not None else
+            # -1 rather than 0, which sherpa also reads as "not fixed": it is
+            # the value sherpa's own default carries, so a config printed into
+            # the worker log looks like the library's rather than like a
+            # sentinel this app invented.
+            sherpa_onnx.FastClusteringConfig(num_clusters=-1,
+                                             threshold=CLUSTER_THRESHOLD)),
         min_duration_on=MIN_DURATION_ON,
         min_duration_off=MIN_DURATION_OFF)
     if not config.validate():
@@ -268,6 +311,25 @@ def speaker_turns(audio, session, sample_rate, should_stop=None):
         raise DiarizationCancelled()
     return [(float(turn.start), float(turn.end), int(turn.speaker))
             for turn in result.sort_by_start_time()]
+
+
+def speaker_count(turns):
+    """How many distinct people the clustering settled on.
+
+    What an ESTIMATING run reports back to its caller — the resolved count that
+    a fixed run already knows because it supplied it. Derived from the turns
+    rather than asked of sherpa, because the turns are the only thing either
+    worker keeps hold of and they are what the labels come from, so this number
+    and the transcript's legend cannot describe different recordings.
+
+    It counts the SEGMENTER's answer, not the transcript's: a person the
+    segmenter heard during a stretch Whisper found no words in is counted here
+    and is absent from the legend (`assign_speakers` explains why the legend is
+    the narrower list). Both are true and they answer different questions —
+    "how many people are in this recording" and "how many are quoted in this
+    transcript".
+    """
+    return len({int(speaker) for _, _, speaker in turns})
 
 
 class DiarizationCancelled(Exception):

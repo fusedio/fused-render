@@ -450,7 +450,8 @@ def generate(body):
     # no separate decode.
     diarizing = bool(body.get("diarize"))
     # Validated HERE too, by the shared rule. The bridge and the server both
-    # check it first, but neither is the only door into this process.
+    # check it first, but neither is the only door into this process. None
+    # means the caller did not say, and the clustering estimates it (D318).
     speakers = diarize.speakers_or_raise(body.get("speakers")) if diarizing else None
     job = body.get("job") or None
     # The row's IDENTITY, decided by the server and carried on every tick this
@@ -588,6 +589,13 @@ def generate(body):
             # exactly the bytes it always did, key for key. The list is the
             # transcript's legend — the labels that landed on a segment.
             result["speakers"] = speaker_list
+            if speakers is None:
+                # The MLX runner's key, by the same rule and with the same
+                # meaning (D318): present only on a run that ESTIMATED the
+                # count, because a run that was told it already knows. A page
+                # must not be able to tell which engine served it (AI-10c), so
+                # this one is written on both or on neither.
+                result["estimatedSpeakers"] = diarize.speaker_count(turns)
         os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
         with open(out, "w", encoding="utf-8") as handle:
             json.dump({**result, "text": text}, handle, ensure_ascii=False, indent=1)

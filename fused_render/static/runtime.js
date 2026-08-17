@@ -68,11 +68,14 @@
  *     never ahead of one. The MODEL is not interchangeable between them — each
  *     engine loads its own format — so pick a repo from
  *     fused.ai.models.catalog() rather than hardcoding one.
- *     `diarize: true` labels WHO said each segment, and then `speakers` is
- *     REQUIRED — the number of people in the recording. It cannot be guessed
- *     reliably and a wrong guess relabels the whole transcript, so an omitted
- *     or non-integer count rejects immediately with .type "bad_request" rather
- *     than opening a job. Every segment then gains `speaker` ("Speaker 1",
+ *     `diarize: true` labels WHO said each segment. `speakers` — the number of
+ *     people in the recording — is an OPTIONAL hint: give it and it is obeyed
+ *     exactly, leave it out and the count is estimated from the voices, and the
+ *     reply then carries `estimatedSpeakers` saying what it decided. An
+ *     estimate can be wrong, so pass the count whenever you know it. A count
+ *     that is present and unusable (0, 2.5, "2", true, over 100) still rejects
+ *     immediately with .type "bad_request" rather than opening a job — it is a
+ *     typo, not a request to estimate. Every segment gains `speaker` ("Speaker 1",
  *     "Speaker 2", … — or null where the recording has words but nobody the
  *     segmenter could hear), and the reply gains `speakers`, the list of labels
  *     that actually landed on a segment, ready to build a colour map from.
@@ -2639,17 +2642,21 @@
       err.type = "bad_request";
       return Promise.reject(err);
     }
-    // `speakers` is REQUIRED with `diarize`, and refused HERE so the caller
-    // fails before a job row exists — the same place `path` is checked, for the
-    // same reason: a row that opens and immediately dies is a worse answer than
-    // a rejection, and this one would open after a multi-second model load.
+    // `speakers` is OPTIONAL with `diarize` (D318) — omitted, the clustering
+    // estimates how many people are in the recording; given, it is obeyed
+    // exactly. What is refused HERE is a count that was MEANT and is wrong, in
+    // the same place `path` is checked and for the same reason: a row that
+    // opens and immediately dies is a worse answer than a rejection, and this
+    // one would open after a multi-second model load.
     //
-    // The count is not an optimisation. Underneath, the clustering takes either
-    // a number of speakers or a cosine threshold, and a threshold is a number
-    // nobody outside a lab can set meaningfully — so a guess would relabel the
-    // whole transcript with complete confidence. The server and both workers
-    // enforce the identical rule (fused_render/ai/runners/diarize.py); this
-    // copy exists to make the failure instant, not to be the only one.
+    // Underneath, the clustering takes either a number of speakers or a cosine
+    // distance threshold; this app sets that threshold once (diarize.py's
+    // CLUSTER_THRESHOLD) so a caller never has to. An estimate can be wrong,
+    // which is why a caller who KNOWS the count should still pass it — the
+    // reply carries `estimatedSpeakers` when it was worked out rather than
+    // given. The server and both workers enforce the identical rule
+    // (fused_render/ai/runners/diarize.py); this copy exists to make the
+    // failure instant, not to be the only one.
     //
     // `Number.isInteger` and not `typeof === "number"`: `2.7` is a caller who
     // computed the count and got it wrong, and NaN is what a bad parseInt
@@ -2663,7 +2670,12 @@
     // one copy no Python test can reach. `tests/test_ai_runtime.py` reads this
     // number back out of the source and drives it through the real function,
     // so the two cannot drift silently.
-    if (opts.diarize) {
+    // undefined / null / "" are the three spellings of "I did not say", and
+    // they have to be the same three Python reads that way (`speakers_or_raise`
+    // answers None for all of them) — otherwise a form that submits an empty
+    // field is refused by the bridge and accepted by the endpoint.
+    if (opts.diarize && opts.speakers !== undefined && opts.speakers !== null
+        && opts.speakers !== "") {
       const MAX_SPEAKERS = 100;
       if (
         !Number.isInteger(opts.speakers) ||
@@ -2671,10 +2683,10 @@
         opts.speakers > MAX_SPEAKERS
       ) {
         const err = new Error(
-          "fused.ai.transcribe({diarize: true}): 'speakers' is required and must be a " +
+          "fused.ai.transcribe({diarize: true}): 'speakers' must be a " +
             "whole number of people from 1 to " + MAX_SPEAKERS +
-            ", e.g. {diarize: true, speakers: 2}. It cannot be " +
-            "guessed reliably, and a wrong guess relabels the whole transcript.",
+            ", e.g. {diarize: true, speakers: 2} — or leave it out and the " +
+            "count is estimated from the recording.",
         );
         err.type = "bad_request";
         return Promise.reject(err);
@@ -2882,6 +2894,12 @@
             // asked for. Read from the FILE like everything else here, so a
             // page never has to know which engine wrote it.
             speakers: written.speakers,
+            // …and how many people the clustering decided there were, present
+            // only on a run that had to work it out (D318). A caller who
+            // passed `speakers` already has this number and gets undefined
+            // here, which is the honest shape: the field means "estimated",
+            // not "resolved".
+            estimatedSpeakers: written.estimatedSpeakers,
           }))
           .catch((cause) => {
             const err = new Error(

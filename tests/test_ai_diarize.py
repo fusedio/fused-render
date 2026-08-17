@@ -23,6 +23,7 @@ weights with sherpa's metadata added, and is what ships.
 """
 import importlib.util
 import os
+import sys
 
 import pytest
 
@@ -53,15 +54,16 @@ def test_a_whole_number_of_people_is_accepted(diarize, value):
     assert diarize.speakers_or_raise(value) == value
 
 
-def test_an_ABSENT_count_is_refused_with_the_reason_and_an_example(diarize):
-    """The refusal has to carry both, because the caller reading it is a page
-    author who passed `diarize: true` and expected it to be enough."""
+def test_an_ABSENT_count_means_ESTIMATE_IT_rather_than_a_refusal(diarize):
+    """`speakers` is a HINT, not a requirement (D318). Omitting it is the
+    ordinary case — a page that has a recording and no idea who is on it — and
+    the answer is None, which `diarizer` reads as "cluster by threshold".
+
+    An empty string is the same answer as an absent key on purpose: it is what
+    an untouched `<input type="number">` sends, and refusing it would make the
+    documented default reachable only by deleting the key."""
     for missing in (None, ""):
-        with pytest.raises(ValueError) as raised:
-            diarize.speakers_or_raise(missing)
-        message = str(raised.value)
-        assert "'speakers' is required" in message
-        assert "diarize: true, speakers: 2" in message
+        assert diarize.speakers_or_raise(missing) is None
 
 
 def test_TRUE_is_refused_rather_than_read_as_one_speaker(diarize):
@@ -93,6 +95,112 @@ def test_an_absurd_count_is_refused_rather_than_clustered(diarize):
     at its word is minutes of clustering for an answer nobody wanted."""
     with pytest.raises(ValueError, match="at most 100"):
         diarize.speakers_or_raise(diarize.MAX_SPEAKERS + 1)
+
+
+# -- the clustering the count does or does not fix --------------------------------
+
+
+class FakeSherpa:
+    """`sherpa_onnx`, with the ONNX taken out — enough of it to read back the
+    CONFIG `diarizer` builds.
+
+    The real package is a C++ extension and 33MB of models, and what matters
+    here is a decision rather than a computation: whether the clustering was
+    handed a fixed number of clusters or a distance threshold. That is one
+    dataclass, and it is the whole of the difference between a count the caller
+    gave and a count this app works out."""
+
+    def __init__(self):
+        self.clustering = None
+
+    class _Config:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    def __getattr__(self, name):
+        # Every other config class sherpa exposes: a bag of keywords. Only the
+        # clustering one is inspected, so the rest need only construct.
+        return FakeSherpa._Config
+
+    def FastClusteringConfig(self, **kwargs):  # noqa: N802 - sherpa's own name
+        self.clustering = FakeSherpa._Config(**kwargs)
+        return self.clustering
+
+    def OfflineSpeakerDiarizationConfig(self, **kwargs):  # noqa: N802 - sherpa's
+        config = FakeSherpa._Config(**kwargs)
+        config.validate = lambda: True
+        return config
+
+    def OfflineSpeakerDiarization(self, config):  # noqa: N802 - sherpa's own name
+        return ("session", config)
+
+
+@pytest.fixture
+def sherpa(monkeypatch):
+    fake = FakeSherpa()
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    return fake
+
+
+@pytest.fixture
+def models(tmp_path):
+    """Two files that merely EXIST — `diarizer` checks for them by name before
+    it imports anything, and a missing one is sherpa aborting the process."""
+    paths = []
+    for name in ("segmentation.onnx", "embedding.onnx"):
+        path = tmp_path / name
+        path.write_bytes(b"")
+        paths.append(str(path))
+    return paths
+
+
+def test_a_GIVEN_count_FIXES_the_cluster_count(diarize, sherpa, models):
+    """The behaviour that existed before the count became optional, unchanged:
+    a caller who says three people gets exactly three clusters, and the
+    threshold is left at whatever sherpa's own default is."""
+    diarize.diarizer(*models, 3)
+    assert sherpa.clustering.num_clusters == 3
+    assert "threshold" not in sherpa.clustering.__dict__
+
+
+def test_an_ABSENT_count_clusters_by_DISTANCE_instead(diarize, sherpa, models):
+    """The estimating path (D318). sherpa's fast clustering takes either a
+    cluster count or a cosine threshold, and `num_clusters <= 0` is how it is
+    told to use the second — so the count comes out of the recording rather
+    than out of the caller."""
+    diarize.diarizer(*models, None)
+    assert sherpa.clustering.num_clusters <= 0
+    assert sherpa.clustering.threshold == diarize.CLUSTER_THRESHOLD
+
+
+def test_the_estimating_threshold_is_a_real_distance_not_a_placeholder(diarize):
+    """Cosine distance, so anything outside (0, 2) clusters everything into one
+    speaker or nothing into any."""
+    assert 0 < diarize.CLUSTER_THRESHOLD < 2
+
+
+def test_a_missing_model_file_is_named_rather_than_aborting_the_process(
+        diarize, sherpa, tmp_path):
+    """sherpa's own answer to a missing file is a C++ log line and a process
+    abort, which reaches the job row as "the transcription process did not
+    answer"."""
+    with pytest.raises(FileNotFoundError, match="speaker segmenter"):
+        diarize.diarizer(str(tmp_path / "nope.onnx"), str(tmp_path / "no.onnx"), 2)
+
+
+# -- what the clustering settled on ----------------------------------------------
+
+
+def test_the_resolved_count_is_the_distinct_speakers_in_the_TURNS(diarize):
+    """What an estimating run reports back. Read off the turns rather than
+    asked of sherpa, because the turns are the only thing either engine keeps —
+    and they are what the labels are derived from, so the number and the legend
+    cannot disagree."""
+    assert diarize.speaker_count([(0.0, 1.0, 0), (1.0, 2.0, 1), (2.0, 3.0, 0)]) == 2
+
+
+def test_a_recording_nobody_spoke_in_resolves_to_ZERO_speakers(diarize):
+    assert diarize.speaker_count([]) == 0
 
 
 # -- the rate the turns are denominated in ---------------------------------------

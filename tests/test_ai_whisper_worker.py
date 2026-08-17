@@ -685,10 +685,59 @@ def test_the_speaker_count_reaches_the_clustering(worker, tmp_path, monkeypatch)
     assert seen["speakers"] == 5
 
 
-@pytest.mark.parametrize("speakers", [None, 0, -1, True, 2.5, "2"])
+def test_an_ABSENT_count_reaches_the_clustering_as_None_to_estimate(
+        worker, tmp_path, monkeypatch):
+    """D318, on this engine too: no `speakers` key means the clustering is
+    handed None and works the count out by distance. Both engines must mean the
+    same thing by the same request (AI-10c)."""
+    worker._loaded["model"] = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    _decoder(monkeypatch)
+    seen = {}
+    _diarizes(monkeypatch, [(0.0, 4.0, 0)], seen)
+
+    worker.generate(_request(tmp_path, diarize=True))
+    assert seen["speakers"] is None
+
+
+def test_an_ESTIMATED_count_is_reported_and_a_GIVEN_one_is_not(
+        worker, tmp_path, monkeypatch):
+    """The MLX runner's key, written by the same rule here (D318) — a page must
+    not be able to tell which engine served it."""
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 2.0, "hello")], duration=20.0)
+    _decoder(monkeypatch, samples=16000 * 20)
+    _diarizes(monkeypatch, [(0.0, 10.0, 0), (10.0, 20.0, 1)])
+    request = _request(tmp_path, diarize=True)
+
+    result = worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert result["estimatedSpeakers"] == 2
+    assert written["estimatedSpeakers"] == 2
+    # …and the legend stays the narrower list: only Speaker 1 said anything.
+    assert written["speakers"] == ["Speaker 1"]
+
+
+def test_a_run_that_was_GIVEN_the_count_reports_no_estimate(
+        worker, tmp_path, monkeypatch):
+    worker._loaded["model"] = FakeModel(
+        [FakeSegment(0.0, 2.0, "hello")], duration=20.0)
+    _decoder(monkeypatch, samples=16000 * 20)
+    _diarizes(monkeypatch, [(0.0, 10.0, 0), (10.0, 20.0, 1)])
+    request = _request(tmp_path, diarize=True, speakers=2)
+
+    result = worker.generate(request)
+
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert "estimatedSpeakers" not in result
+    assert "estimatedSpeakers" not in written
+
+
+@pytest.mark.parametrize("speakers", [0, -1, True, 2.5, "2"])
 def test_a_bad_speaker_count_is_refused_BEFORE_anything_is_decoded(
         worker, tmp_path, monkeypatch, speakers):
-    """Neither the bridge nor the server is the only door into this process."""
+    """Neither the bridge nor the server is the only door into this process.
+    `None` is absent from this list since D318 — it is the estimating path."""
     model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
     worker._loaded["model"] = model
     calls = _decoder(monkeypatch)
