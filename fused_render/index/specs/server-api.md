@@ -19,7 +19,7 @@ unguarded like every other read endpoint and none of them can write.
 | `GET /api/index/runs` | — | the 20 most recent runs with their folded state |
 | `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
 | `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
-| `GET /api/index/search?root=&q=&limit=` | — | the explorer's in-folder corpus (`query.md §6`) |
+| `GET /api/index/search?root=&q=&limit=&fmt=` | — | the explorer's in-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6) |
 | `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |
 | `POST /api/index/ask` `{prompt, limit?}` | X-Fused | compile a question to SQL through the AI relay, run it under the same guard, echo the `sql` (`query.md §5`) |
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
@@ -161,6 +161,44 @@ all of it billed to a keystroke. The warm moves it to idle.
 
 Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`
 directly.
+
+## 6. The compact corpus — `fmt=columns`
+
+`GET /api/index/search` answers with one object per entry
+(`{rel, is_dir, size, mtime}`), which is the shape `/api/fs/walk` streams and the
+shape every existing caller — including the JS bridge `fused.fileIndex.search`
+(`static/runtime.js`) — reads. That shape stays the default, and an unrecognized
+`fmt` falls back to it rather than 400ing: a format nobody asked for must not be able
+to break a page someone wrote.
+
+`fmt=columns` re-cuts the same corpus as index-aligned parallel arrays —
+`rels`, `dirs` (0/1), `sizes`, `mtimes`, plus `fmt: "columns"` — and leaves every other
+field (`covered`, `fresh`, `truncated`, `total`, `updated`, `age_s`, …) exactly as it is.
+`size`/`mtime` stay nullable: a directory legitimately has neither. The explorer asks
+for it and decodes back to the walk's entry shape at the API-client boundary
+(`platform/lib/api.ts`), so the corpus consumers never learn the wire format.
+
+Why, measured on the 164k-entry home corpus this route exists for (25.7 MB, fetched in
+one shot on the user's **first keystroke**):
+
+| Body | Bytes |
+|---|---|
+| `entries` objects | 27.7 MB |
+| `fmt=columns` | 21.1 MB |
+| `fmt=columns`, gzip level 1 | 5.0 MB |
+
+The compact response is therefore also **gzipped** — level 1, and only when
+`Accept-Encoding` says the caller can take it. Level 1 costs 0.06 s, less than the JSON
+encoding itself (0.07 s); the higher levels spend seconds to shave a few percent off a
+body that is read once. It is done per-route rather than with a GZip middleware because
+this app also streams the live walk and serves file bytes raw, and compressing those on
+a **local** server is CPU spent against loopback for nothing — this one response is the
+outlier.
+
+Rejected: front-coding the rels (they arrive depth-then-path ordered, so neighbours
+share long prefixes). It takes the body to 12.4 MB, but costs 0.45 s of Python per
+corpus — more of the first search's budget than it saves, and gzip finds most of the
+same redundancy for an eighth of the time.
 
 ## Non-goals
 

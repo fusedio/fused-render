@@ -655,6 +655,99 @@ def test_startup_scan_skips_a_root_that_is_gone(home, tmp_path, monkeypatch):
     assert started == [str(ok)]
 
 
+# -- the compact corpus --------------------------------------------------------
+
+def _corpus(n=3):
+    """A corpus in the shape search_under answers with, nulls included."""
+    entries = [{"rel": "d", "is_dir": True, "size": None, "mtime": None}]
+    entries += [{"rel": f"d/f{i}.txt", "is_dir": False, "size": i,
+                 "mtime": 1700000000.5 + i} for i in range(n)]
+    return {"covered": True, "fresh": True, "updated": 1.0, "age_s": 2.0,
+            "root": "/r", "entries": entries, "truncated": False,
+            "total": len(entries), "scanned_partitions": 1,
+            "of_partitions": 1}
+
+
+def _stub_corpus(monkeypatch, out):
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: dict(out))
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None: out)
+
+
+def test_search_answers_in_columns_when_asked(home, tmp_path, monkeypatch):
+    """The corpus is the home page's whole ranking set — 25.7 MB of
+    `{rel,is_dir,size,mtime}` objects on a 164k-entry home, most of it repeated
+    key names. `fmt=columns` sends parallel arrays instead."""
+    _stub_corpus(monkeypatch, _corpus())
+    body = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "columns"}).json()
+    assert body["fmt"] == "columns"
+    assert "entries" not in body
+    assert body["rels"] == ["d", "d/f0.txt", "d/f1.txt", "d/f2.txt"]
+    assert body["dirs"] == [1, 0, 0, 0]
+    # Nulls are entries a directory legitimately has, not missing data.
+    assert body["sizes"] == [None, 0, 1, 2]
+    assert body["mtimes"] == [None, 1700000000.5, 1700000001.5, 1700000002.5]
+
+
+def test_the_two_formats_carry_the_same_corpus_and_metadata(home, tmp_path,
+                                                            monkeypatch):
+    """`fmt` changes the encoding of the entries and nothing else: every
+    client decision (covered/fresh/truncated/…) reads the same fields."""
+    _stub_corpus(monkeypatch, _corpus())
+    client = _client(tmp_path)
+    classic = client.get("/api/index/search", params={"root": "/r"}).json()
+    columns = client.get("/api/index/search",
+                         params={"root": "/r", "fmt": "columns"}).json()
+    assert "fmt" not in classic and classic["entries"] == _corpus()["entries"]
+    decoded = [{"rel": r, "is_dir": bool(d), "size": s, "mtime": m}
+               for r, d, s, m in zip(columns["rels"], columns["dirs"],
+                                     columns["sizes"], columns["mtimes"])]
+    assert decoded == classic["entries"]
+    assert ({k: v for k, v in classic.items() if k != "entries"}
+            == {k: v for k, v in columns.items()
+                if k not in ("fmt", "rels", "dirs", "sizes", "mtimes")})
+
+
+def test_an_unknown_fmt_answers_in_the_classic_shape(home, tmp_path, monkeypatch):
+    """The bridge (`fused.fileIndex.search`, static/runtime.js) and every other
+    caller ask with no `fmt` at all, so anything but the one known value has to
+    be the old shape rather than an error."""
+    _stub_corpus(monkeypatch, _corpus())
+    body = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "parquet"}).json()
+    assert [e["rel"] for e in body["entries"]] == ["d", "d/f0.txt", "d/f1.txt",
+                                                   "d/f2.txt"]
+
+
+def test_columns_are_several_times_smaller_on_the_wire(home, tmp_path, monkeypatch):
+    """The transfer is the third of the three costs of the first search (25.7 MB
+    on a 164k-entry home). Content-Length, not the decoded body: the compact
+    format is also gzipped, and both halves are the win."""
+    _stub_corpus(monkeypatch, _corpus(n=2000))
+    client = _client(tmp_path)
+    classic = client.get("/api/index/search", params={"root": "/r"})
+    columns = client.get("/api/index/search",
+                         params={"root": "/r", "fmt": "columns"})
+    assert columns.headers["content-encoding"] == "gzip"
+    wire = (int(classic.headers["content-length"]),
+            int(columns.headers["content-length"]))
+    assert wire[0] / wire[1] >= 3.0, wire
+
+
+def test_a_client_that_cannot_gunzip_still_gets_the_columns(home, tmp_path,
+                                                            monkeypatch):
+    """Encoding is negotiated, not assumed: `Accept-Encoding` decides whether
+    the body is compressed, and the document inside it is the same either way."""
+    _stub_corpus(monkeypatch, _corpus())
+    resp = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "columns"},
+                                 headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in resp.headers
+    assert resp.json()["rels"] == ["d", "d/f0.txt", "d/f1.txt", "d/f2.txt"]
+
+
 # -- the startup warm ----------------------------------------------------------
 
 def test_startup_warm_runs_the_home_pages_first_search(home, tmp_path, monkeypatch):

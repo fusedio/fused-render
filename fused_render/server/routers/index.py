@@ -18,6 +18,7 @@ X-Fused-guarded despite being reads: they execute a caller-shaped statement, so
 neither should be reachable from a crafted link.
 """
 import asyncio
+import gzip
 import json
 import logging
 import os
@@ -26,7 +27,7 @@ import threading
 
 from fastapi import APIRouter, Body, Header, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from fused_render.index import freshness, runner
 from fused_render.index.freshness import enclosing_root
@@ -397,9 +398,19 @@ def api_index_lookup(q: str = Query(default=""), limit: int = Query(default=100)
                            sort=sort)}
 
 
+# The one value of `fmt` that means anything. Anything else — including the
+# empty default every existing caller sends — is the classic `entries` shape:
+# the JS bridge (`fused.fileIndex.search`, static/runtime.js) and any page a
+# user has written against it must not change under them, and a 400 on an
+# unknown format would break exactly the callers that never asked.
+COLUMNS_FMT = "columns"
+
+
 @router.get("/api/index/search")
 def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
-                     limit: int = Query(default=MAX_CORPUS)):
+                     limit: int = Query(default=MAX_CORPUS),
+                     fmt: str = Query(default=""),
+                     accept_encoding: str | None = Header(default=None)):
     """The explorer's in-folder corpus, index-backed.
 
     Same entry shape as /api/fs/walk, plus `covered`/`fresh` so the client can
@@ -410,7 +421,12 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
 
     Entries pass through the gitignore filter before leaving: the walk this
     corpus replaces prunes gitignored entries, and the swap must not change
-    what search shows (server/index_gitignore.py)."""
+    what search shows (server/index_gitignore.py).
+
+    `fmt=columns` asks for the same corpus as parallel arrays instead of one
+    object per entry (§6 of index/specs/server-api.md) — the home page's
+    corpus is the whole ranking set, 25.7 MB on a 164k-entry home, and it is
+    fetched in one shot on the user's first keystroke."""
     if not root.strip():
         return _error("'root' is required")
     cfg = load_config()
@@ -422,7 +438,59 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     # canonical spelling the corpus rels are relative to.
     index_root = enclosing_root(scan_roots(cfg), out.get("root") or root)
     out = filter_corpus(out, index_root=index_root)
-    return {"ok": True, **out}
+    if fmt != COLUMNS_FMT:
+        return {"ok": True, **out}
+    return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
+
+
+def _columnar(out: dict) -> dict:
+    """`entries` re-cut as parallel arrays; everything else untouched.
+
+    Every entry carries the same four keys, so the classic shape spends ~40
+    bytes per entry spelling `rel`/`is_dir`/`size`/`mtime` out again — a third
+    of a 164k-entry corpus. The arrays are index-aligned and the same length;
+    `size`/`mtime` stay nullable (a directory legitimately has neither) and
+    `is_dir` travels as 0/1 because `false` costs three more bytes 164k times.
+
+    Deliberately NOT a cleverer packing. Front-coding the rels (they arrive
+    depth-then-path ordered, so neighbours share long prefixes) takes the body
+    from 21 MB to 12 MB — but costs 0.45 s of Python per corpus against the
+    0.07 s the whole serialization takes, so it spends more of the first
+    search's budget than it saves. Compression buys more for a fraction of
+    that (below)."""
+    entries = out.get("entries") or []
+    body = {k: v for k, v in out.items() if k != "entries"}
+    body["fmt"] = COLUMNS_FMT
+    body["rels"] = [e["rel"] for e in entries]
+    body["dirs"] = [1 if e["is_dir"] else 0 for e in entries]
+    body["sizes"] = [e["size"] for e in entries]
+    body["mtimes"] = [e["mtime"] for e in entries]
+    return body
+
+
+def _corpus_response(body: dict, accept_encoding: str | None) -> Response:
+    """The compact corpus, gzipped when the caller says it can take it.
+
+    Level 1, not the default 9: measured on the 164k-entry corpus this route
+    exists for, level 1 takes the compact body from 21 MB to 5.0 MB in 0.06 s
+    — a fifth of the bytes for less CPU than the JSON encoding itself. Higher
+    levels spend several seconds to shave a few percent off a body that is
+    read once and thrown away.
+
+    Per-route rather than a GZip middleware: this app also streams the live
+    walk and serves file bytes raw, and compressing those on a LOCAL server
+    would be CPU spent against loopback for nothing. This one response is the
+    outlier — a single 25 MB read on a keystroke.
+
+    `Accept-Encoding` is honoured rather than assumed: browsers and the JS
+    bridge all send gzip, but a client that cannot decompress must still be
+    able to read the corpus."""
+    payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    if "gzip" not in (accept_encoding or "").lower():
+        return Response(content=payload, media_type="application/json")
+    return Response(content=gzip.compress(payload, 1),
+                    media_type="application/json",
+                    headers={"Content-Encoding": "gzip"})
 
 
 # ------------------------------------------------------------------ user SQL
