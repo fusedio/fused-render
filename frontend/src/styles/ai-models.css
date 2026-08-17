@@ -145,11 +145,23 @@
 }
 
 /* The sentence under a heading that needs one — what a group IS, when its two
-   or three words cannot carry it. Capped rather than full-bleed: this is prose
-   to be read once, and prose set to the width of a four-card grid is not. */
+   or three words cannot carry it.
+
+   Capped, but only just. 68ch is the textbook measure for a paragraph somebody
+   settles in to read, and these are not that: they are one or two sentences
+   under a heading, glanced at on the way to the cards. At 68ch on a wide
+   window "Transcribes on the GPU. Several times quicker than the CPU path on
+   the same Mac." broke a line for the word "Mac", which turns a caption into a
+   block and makes the reader's eye do a return sweep for one syllable. 110ch
+   fits the sentences these actually are on a normal window while still
+   stopping a note running the full 1800px of a maximised one — unbounded is
+   the worse failure, and it is the one this rule was written to prevent.
+
+   The note INSIDE a model card is a different rule (.am-suggest-note) and
+   still wraps: that one is half a card wide, which is the card's business. */
 .am-group-note {
   margin: 0 0 10px;
-  max-width: 68ch;
+  max-width: 110ch;
   font-size: 12px;
   line-height: 1.5;
   color: var(--fg-muted);
@@ -824,11 +836,13 @@
    MUTED, and it used to be `--warning`. Three orange paragraphs down one page
    is how a reader learns that orange on this page means nothing; none of these
    sentences reports a problem, they describe what a backend is LIKE, which is
-   context for a choice and not an alarm about one. It rides .am-group-note for
-   the rest — the same prose treatment the Local tab's group notes get. */
+   context for a choice and not an alarm about one.
+
+   It rides .am-group-note for everything else INCLUDING the measure — the
+   62ch override that used to be here made these the narrowest prose on the
+   page, and they are the longest sentences on it. */
 .am-suggested-note {
   margin-top: -2px;
-  max-width: 62ch;
 }
 
 /* The line that names the curated view for what it is, above the first
