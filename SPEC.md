@@ -6875,7 +6875,23 @@ world from one the user typed.
   written, so the entry stays `pending` and cannot be swept `missed` (catch-up is
   unbounded by default). An unreadable or absent transcript answers "not live", so a
   bad read can never park a message for ever. The user is never blocked from their
-  own chat — the machine waits, not the person.
+  own chat — the machine waits, not the person. **That rule holds at the OTHER end
+  too, and it cost a feature to keep.** The claude template shows a banner directly
+  above the composer while a pending message names the session on screen (the Tasks
+  list view's own row — ring, `TASK-nnn`, name, state and time — clicking through to
+  that task on the calendar, with `Stop the repeat` / `Cancel this message` as its
+  one action, two presses for a repeat since that spends every future run). For half
+  of 2026-08-17 that banner also **disabled the composer** — a greyed textarea, a
+  "Waiting on a scheduled message…" placeholder and an early return in `submitChat`
+  that caught annotation-only sends too — on the CONTEXT POLLUTION argument: a task
+  is a session, so anything sent first is inside the context the scheduled run
+  reads. **The block is WITHDRAWN** (Akshil, 2026-08-17 — "when there is a scheduled
+  message, we block the chat. Let's not do that. Let's keep the banner, but let's not
+  block the chat for now"). The argument was sound and the remedy was not: pendency
+  has no ceiling, so a message due next Tuesday shut the box for six days, and the
+  person typing is the person who scheduled the message. **The banner now WARNS** —
+  "A scheduled message runs in this chat. Anything you send now joins its context."
+  — and the composer types, queues, attaches and sends throughout.
 - **SCH-13d** **`POST /api/schedule/run-now` sends a pending message early and
   leaves its `due` alone.** The Board's Upcoming → In Progress drag means "run it
   now", and the schedule time is a fact about what was asked for, so history keeps

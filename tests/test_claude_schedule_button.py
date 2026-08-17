@@ -121,10 +121,11 @@ def test_the_composer_no_longer_offers_to_send_later(code):
     # send is a send and a schedule is the hop to the Schedule page.
     #
     # TWO requests now, not one (Akshil, 2026-08-17): the watcher's read, and the
-    # block banner's cancel. The cancel is a write, and it is allowed here for a
-    # reason the pill never had — it schedules nothing, it withdraws the message
-    # holding this composer shut, so the control that explains the block and the
-    # control that lifts it are the same one. See test_claude_composer_block.py.
+    # scheduled-message banner's cancel. The cancel is a write, and it is allowed
+    # here for a reason the pill never had — it schedules nothing, it withdraws the
+    # message the banner is warning about, so the control that names the message and
+    # the control that calls it off are the same one. That banner WARNS and does not
+    # block: the composer under it stays live. See test_claude_composer_block.py.
     assert code.count("/api/schedule") == 2
     assert 'fetch("/api/schedule")' in code
     assert '"/api/schedule/cancel"' in code

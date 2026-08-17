@@ -1,22 +1,33 @@
-"""A pending scheduled message closes this chat's composer.
+"""A pending scheduled message WARNS this chat's composer. It does not close it.
 
-The reason is CONTEXT POLLUTION, and it is the whole feature: a task IS a Claude
-session, so a message scheduled to run in this conversation reads whatever is in
-it when it fires. Anything typed first joins that task's context, and nothing can
-take it back out once the turn has read it (Akshil, 2026-08-17).
+The banner is the feature; the block was withdrawn. For half of 2026-08-17 a
+pending message disabled the textarea, swapped its placeholder for "Waiting on a
+scheduled message…" and made `submitChat` return early — and the owner took all
+three back out: "when there is a scheduled message, we block the chat. Let's not
+do that. Let's keep the banner, but let's not block the chat for now." So the
+tests below pin the banner AND pin the absence of the block, because a lock is the
+easy thing to reintroduce here by accident.
 
-The block is the PENDENCY, not the proximity. A one-hour window was offered and
+The reason the banner exists is still true, and it is the second half of what it
+says: a task IS a Claude session, so a message scheduled to run in this
+conversation reads whatever is in it when it fires, and anything sent first joins
+that task's context (Akshil, 2026-08-17). What changed is who decides — the
+person typing is the person who scheduled the message, so they are told rather
+than stopped.
+
+The notice is the PENDENCY, not the proximity. A one-hour window was offered and
 refused — "why can't we block it until the next task is scheduled? why only one
-hour?" — because a message due tomorrow pollutes exactly as much as one due in
-ten minutes.
+hour?" — because a message due tomorrow lands in this thread exactly as much as
+one due in ten minutes. (It also became the argument against the lock: pendency
+has no ceiling, so a message due next Tuesday shut the box for six days.)
 
 The ESCAPE is not the same control in the two cases, and getting that wrong was
-the banner's first shape (Akshil, 2026-08-17). A one-off unblocks when it is
-cancelled. A repeat does not: `_materialize` arms the next occurrence, so
-cancelling one run moves the block instead of lifting it, and rescheduling leaves
-the message pending so the block survives that too. The only thing that reopens
-the box for a repeat is stopping the repeat — `schedule.cancel(template_id)` —
-and because that spends every future run, it takes two presses.
+the banner's first shape (Akshil, 2026-08-17). A one-off is finished when it is
+cancelled. A repeat is not: `_materialize` arms the next occurrence, so cancelling
+one run moves the notice instead of clearing it, and rescheduling leaves the
+message pending. The only thing that ends a repeat is stopping the repeat —
+`schedule.cancel(template_id)` — and because that spends every future run, it
+takes two presses.
 
 WHAT IT SHOWS is the Tasks list view's own row, and that was the third shape.
 Prose plus a bare dump of the message underneath was rejected outright (Akshil,
@@ -27,15 +38,16 @@ at the right end. It does NOT show the folder or the session id — "you will no
 show the folder because you are already in that folder, you are not showing the
 session ID because you are already there" — and the row is the LINK to the task,
 which is what let "Edit schedule" go: two doors to one room, and the banner's own
-door could not unblock.
+door could not stop the run.
 
 Structural assertions over the template source, the same approach
 test_claude_message_anchor.py and test_claude_schedule_pill.py take: inline
 vanilla JS in a 12000-line document, so what can be pinned is that the wiring
 exists and that the properties it would be easy to get wrong stay true. Here
-those are: it blocks on a pending entry naming THIS session, it does NOT block
-when the schedule cannot be read, the row carries four facts and no fifth, it
-sits against the composer it is shutting, and its one action actually unblocks.
+those are: it appears for a pending entry naming THIS session, it shows nothing
+when the schedule cannot be read, it never disables the composer or gates a send,
+the row carries four facts and no fifth, it sits against the composer without
+moving it, and its one action actually stops the message.
 """
 import os
 import re
@@ -67,10 +79,10 @@ def _fn(code: str, opening: str) -> str:
     return body[:body.index("\n}")]
 
 
-# ------------------------------------------------------- what blocks the box
+# ---------------------------------------------------- what raises the banner
 
 
-def test_a_pending_message_naming_this_session_blocks_the_composer(code):
+def test_a_pending_message_naming_this_session_raises_the_banner(code):
     """The two ids mean the same thing here: `session_id` is what the entry was
     told to resume, `claude_session_id` is what the run reported it landed in, and
     either naming the session on screen means these words are going into THIS
@@ -85,80 +97,105 @@ def test_a_pending_message_naming_this_session_blocks_the_composer(code):
     assert "if (!mine) return [];" in body
 
 
-def test_the_box_is_shut_and_the_send_path_is_guarded(code):
-    """Disabled for the eye, guarded for the hand: an annotation- or
-    screenshot-only send needs no typing at all and would walk straight past a
-    disabled textarea."""
-    state = _fn(code, "function applyComposerBlockState(")
-    assert "box.disabled = blocked" in state
+def test_the_composer_is_not_disabled_and_the_placeholder_is_not_swapped(code):
+    """THE WITHDRAWAL, pinned. The banner shipped with a lock — a disabled textarea
+    and a substituted placeholder — and the owner took it back the same day: "let's
+    keep the banner, but let's not block the chat for now." Both halves are asserted
+    absent from the whole template, not just from this function, because the next
+    hand reaching for "make it obvious" has two obvious places to put it back."""
+    state = _fn(code, "function applySchedNoticeState(")
+    assert "disabled" not in state, "the notice must not disable anything"
+    assert "placeholder" not in state, "the composer keeps its own placeholder"
+    assert "box.disabled" not in code
+    assert "Waiting on a scheduled message" not in code
+    assert "BOX_PLACEHOLDER" not in code, "nothing saves a placeholder to restore"
+    # and nothing in this template disables the composer by any other route, so the
+    # greyed-out styling for it is gone too
+    assert "#box:disabled" not in code
+
+
+def test_a_send_is_never_gated_on_a_pending_message(code):
+    """The third half of the block was an early return in `submitChat`, above the
+    queue branch, which caught a typed line, a queued one AND an annotation- or
+    screenshot-only send. It is gone with the other two, and so is the predicate it
+    read: nothing left in the template asks "is this chat blocked?"."""
+    assert "schedBlocked" not in code, "the block's predicate outlived the block"
     submit = _fn(code, "function submitChat()")
-    assert "if (schedBlocked()) return;" in submit
-    # ABOVE the queue branch: parking text for the live turn to drain puts it in
-    # the very context the block exists to keep clean
-    assert submit.index("schedBlocked()") < submit.index("if (activeRun)")
+    assert "schedPending" not in submit
+    assert "return;" not in submit[:submit.index("if (activeRun)")], \
+        "nothing refuses a send before the queue branch"
 
 
 def test_the_send_button_is_never_disabled(code):
-    """While a run is live that button is the STOP button, and a chat that cannot
-    stop its own running turn is a worse state than the one this prevents."""
-    state = _fn(code, "function applyComposerBlockState(")
-    assert "disabled = blocked" in state
-    assert state.count("disabled = blocked") == 1, "only the textarea"
+    """It was left alone even while the block existed — while a run is live it is
+    the STOP button, and a chat that cannot stop its own running turn is worse than
+    anything this prevents. Now nothing in the notice disables anything, and the
+    only `disabled` it writes is the stop button's own in-flight guard."""
+    state = _fn(code, "function applySchedNoticeState(")
+    assert "disabled" not in state
+    render = _fn(code, "function renderSchedBlock(")
+    assert "disabled" not in render
+    handler = code[code.index('schedBlockStop.addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    assert handler.count("schedBlockStop.disabled") == 2, "the stop button only"
 
 
 def test_there_is_no_time_window_anywhere(code):
-    """The rejected design. A block that expires on a clock would reopen the box
-    while the message is still pending, which is the pollution it prevents."""
+    """The rejected design, and it stays rejected: a notice that expires on a clock
+    goes quiet while the message is still pending, which is the one thing the reader
+    needs to know. "Why can't we block it until the next task is scheduled? why
+    only one hour?" (Akshil, 2026-08-17)."""
     for gone in ("BLOCK_WINDOW", "blockWindow", "ONE_HOUR", "BLOCK_LEAD"):
-        assert gone not in code, f"{gone} is a time window on the block"
+        assert gone not in code, f"{gone} is a time window on the notice"
     # the decision itself: what is in the list is every pending entry for this
     # session, filtered by nothing but the session
     body = _fn(code, "function schedPendingHere(")
-    assert "Date.now()" not in body, "the block must not consult the clock"
+    assert "Date.now()" not in body, "the notice must not consult the clock"
 
 
-# ------------------------------------------------------- what does NOT block
+# --------------------------------------------------- what shows NO banner
 
 
-def test_an_unreadable_schedule_blocks_nothing(code):
-    """A chat that locks itself because one fetch failed is worse than the
-    pollution the lock prevents: the user loses a working composer over a blip,
-    and the schedule is the only thing that could ever explain it."""
-    clear = _fn(code, "function clearComposerBlock(")
-    assert "schedBlockers = []" in clear
+def test_an_unreadable_schedule_shows_nothing(code):
+    """A banner raised over a network blip warns about a message nobody can name —
+    and the card's own control is a destructive one aimed at an id we are no longer
+    sure of. Both failure paths clear it."""
+    clear = _fn(code, "function clearSchedNotice(")
+    assert "schedPending = []" in clear
     poll = code[code.index("async function pollScheduledRuns("):]
     poll = poll[:poll.index("\npollScheduledRuns();")]
     # both failure paths — a non-2xx answer and a throw
-    assert "if (!res.ok) { clearComposerBlock(); return; }" in poll
-    assert poll.count("clearComposerBlock()") >= 2
+    assert "if (!res.ok) { clearSchedNotice(); return; }" in poll
+    assert poll.count("clearSchedNotice()") >= 2
 
 
-def test_the_landing_page_composer_is_never_blocked(code):
-    """No session on the URL means no conversation to pollute yet — the landing
-    page starts one that does not exist."""
+def test_the_landing_page_never_carries_the_notice(code):
+    """No session on the URL means no conversation for a message to land in — the
+    landing page starts one that does not exist yet."""
     body = _fn(code, "function schedPendingHere(")
     assert "if (!mine) return [];" in body
 
 
-def test_the_block_reads_the_poll_that_already_runs(code):
+def test_the_notice_reads_the_poll_that_already_runs(code):
     """No second poll and no endpoint of its own: a pending message is one of the
     entries the run-watcher already fetches. It is applied BEFORE the home-view
-    return and before the baseline — the block is a fact about the schedule, not
+    return and before the baseline — the notice is a fact about the schedule, not
     about what this frame has rendered."""
     poll = code[code.index("async function pollScheduledRuns("):]
     poll = poll[:poll.index("\npollScheduledRuns();")]
-    assert "applyComposerBlock(data.entries || []);" in poll
-    assert poll.index("applyComposerBlock(") < poll.index('classList.contains("home")')
-    assert poll.index("applyComposerBlock(") < poll.index("scheduleBaselined")
+    assert "applySchedNotice(data.entries || []);" in poll
+    assert poll.index("applySchedNotice(") < poll.index('classList.contains("home")')
+    assert poll.index("applySchedNotice(") < poll.index("scheduleBaselined")
 
 
 # ------------------------------------------------------- what the banner says
 
 
 def test_the_banner_sits_directly_above_the_composer(source):
-    """It explains a box that will not type, so it belongs against that box. Above
-    the LOG it was a pane-height away from the thing it was about (Akshil,
-    2026-08-17) — a notice about the composer, docked to the top bar."""
+    """It is about what happens to what you send, so it belongs against the thing
+    you send with. Above the LOG it was a pane-height away from the thing it was
+    about (Akshil, 2026-08-17) — a notice about the composer, docked to the top
+    bar."""
     assert '<div id="schedblock"' in source
     at = source.index('<div id="schedblock"')
     assert source.index('<div id="logwrap">') < at, "below the transcript"
@@ -180,7 +217,7 @@ def test_the_arriving_banner_does_not_move_the_composer(code, source):
     child, so the height comes out of the transcript and the composer stays put.
     The transcript's last line is what moves, so a reader who was at the bottom is
     put back there — measured before the render, applied on the shown edge only."""
-    state = _fn(code, "function applyComposerBlockState(")
+    state = _fn(code, "function applySchedNoticeState(")
     assert "const wasHidden = schedBlockEl.hidden;" in state
     assert "const pinned = wasHidden && nearBottom();" in state
     assert state.index("nearBottom()") < state.index("renderSchedBlock()")
@@ -194,7 +231,7 @@ def test_the_arriving_banner_does_not_move_the_composer(code, source):
 
 def test_the_body_is_the_tasks_list_views_own_row(code, source):
     """"This UI is not good... it does not give me what I want" (Akshil,
-    2026-08-17) — of a banner that explained the block in prose and then dumped the
+    2026-08-17) — of a banner that explained itself in prose and then dumped the
     message under it as bare left-aligned text. So the body is the shape the Tasks
     LIST view already uses for exactly this object: a status ring, TASK-nnn, the
     name, one spacer, and the state and time at the right end. A reader who knows
@@ -275,9 +312,9 @@ def test_the_state_and_the_time_are_the_shells_own_vocabulary(code):
 
 def test_the_number_and_the_name_come_from_the_tasks_listing_and_fail_open(code):
     """TASK-nnn is allocated per project by tasks_store and only /api/tasks hands it
-    out, so the row is filled from two reads. The BLOCK still depends on exactly one
-    of them: an unreadable listing costs the number and the state, never the row and
-    never the block."""
+    out, so the row is filled from two reads. The BANNER still depends on exactly
+    one of them: an unreadable listing costs the number and the state, never the row
+    and never the notice."""
     load = _fn(code, "async function schedLoadTaskRow(")
     assert 'fetch("/api/tasks")' in load
     # no `schedTaskRowFor` recorded on a failure, so the next poll tries again
@@ -289,10 +326,11 @@ def test_the_number_and_the_name_come_from_the_tasks_listing_and_fail_open(code)
     assert "schedTaskRowFor === id" in load
     rec = _fn(code, "function schedTaskRec(")
     assert 'schedTaskRowFor === String(entry.id)' in rec
-    # and it is fetched only once the box is already shut
-    state = _fn(code, "function applyComposerBlockState(")
-    assert "if (blocked) schedLoadTaskRow(schedBlockers[0]);" in state
-    assert state.index("box.disabled") < state.index("schedLoadTaskRow")
+    # and it is fetched only once the card is already on screen: the schedule is
+    # what raises the banner, the listing only decorates its row
+    state = _fn(code, "function applySchedNoticeState(")
+    assert "if (schedPending.length) schedLoadTaskRow(schedPending[0]);" in state
+    assert state.index("renderSchedBlock()") < state.index("schedLoadTaskRow")
 
 
 def test_the_listing_row_is_found_by_the_session_before_the_message(code):
@@ -338,25 +376,35 @@ def test_it_names_the_soonest_and_counts_the_rest(code):
     sort = _fn(code, "function schedPendingHere(")
     assert 'String(a.due || "").localeCompare(String(b.due || ""))' in sort
     render = _fn(code, "function renderSchedBlock(")
-    assert "const next = schedBlockers[0];" in render
-    assert "const others = schedBlockers.length - 1;" in render
+    assert "const next = schedPending[0];" in render
+    assert "const others = schedPending.length - 1;" in render
     assert 'why += " " + others + " more after it.";' in render
 
 
-def test_the_reason_is_one_short_line_and_nothing_else_in_words(code):
-    """ONE reason, and the row underneath carries the facts. "Too much prose" was
-    the complaint twice over (Akshil, 2026-08-17 — "use less words", then "this UI
-    is not good"): the first banner spent four lines on context pollution and the
-    second still spent a sentence on it. The state and the time live on the row now,
-    so the line only has to say the box is shut and why."""
+def test_the_line_is_a_heads_up_and_never_claims_a_lock(code):
+    """TWO clauses: what is coming, and what sending now costs. The line used to
+    open "Blocked —", which is a claim about a lock that no longer exists, and a
+    banner saying "blocked" over a working composer is worse than either behaviour
+    on its own. The half that was always true is the half that stayed. Still no
+    third clause: the state and the time live on the row (Akshil, 2026-08-17 —
+    "use less words")."""
     render = _fn(code, "function renderSchedBlock(")
-    assert '"Blocked — a scheduled message runs in this chat."' in render
-    assert '"Blocked — a repeating message runs in this chat."' in render
-    # the sentences it replaced are gone, in both generations
+    one_off = ('"A scheduled message runs in this chat. '
+               'Anything you send now joins its context."')
+    repeat = ('"A repeating message runs in this chat. '
+              'Anything you send now joins its context."')
+    assert one_off in render
+    assert repeat in render
+    # no word for a state the page is not in — no lock, no waiting, no apology
+    for gone in ("Blocked", "blocked", "read-only", "Read-only", "cannot type",
+                 "Waiting on", "Sorry", "sorry", "unfortunately"):
+        assert gone not in render, f"the line still claims {gone!r}"
+    # the sentences it replaced are gone, in every generation
     for gone in ("read-only for as long as", "moves the block to the next one",
                  "would join this task's context", "Reschedule to change",
                  "anything you type joins it", "Repeats here, next ",
-                 "Runs here "):
+                 "Runs here ", "Blocked — a scheduled message",
+                 "Blocked — a repeating message"):
         assert gone not in code, f"the old copy survives: {gone!r}"
 
 
@@ -373,9 +421,9 @@ def test_a_recurring_occurrence_is_recognised(code):
 
 
 def test_the_primary_action_is_the_one_that_actually_unblocks(code):
-    """THE substantive fix. Cancelling one occurrence of a repeat unblocks nothing
-    — `_materialize` arms the next one and it blocks again — so the id posted for a
-    repeat is the TEMPLATE's. `schedule.cancel` reads a template id as "no further
+    """THE substantive fix. Cancelling one occurrence of a repeat settles nothing
+    — `_materialize` arms the next one — so the id posted for a repeat is the
+    TEMPLATE's. `schedule.cancel` reads a template id as "no further
     runs" and cancels the materialized occurrence with it, which is exactly the
     escape this case needs; one endpoint still serves both."""
     target = _fn(code, "function schedStopTarget(")
@@ -417,7 +465,7 @@ def test_backing_out_of_an_armed_stop_is_the_pages_own_dismissal_contract(code):
     disarm = _fn(code, "function schedDisarmStop(")
     assert "if (!schedStopArmed) return;" in disarm
     assert 'schedStopArmed = "";' in disarm
-    assert "applyComposerBlockState();" in disarm
+    assert "applySchedNoticeState();" in disarm
     assert "if (schedStopArmed && !schedBlockEl.contains(ev.target)) schedDisarmStop();" in code
     esc = code[code.index('if (ev.key !== "Escape" || !schedStopArmed) return;'):]
     esc = esc[:esc.index("}, true);")]
@@ -459,9 +507,9 @@ def test_the_stop_is_the_one_write_and_it_carries_the_guard(code):
     # a STOPPED repeat takes every blocker that belongs to it, not just the first:
     # the template is gone, so an occurrence of it left in the list would have the
     # banner naming a run the server has already dropped
-    assert "schedBlockers = repeat" in handler
-    assert "schedBlockers.filter((e) => schedStopTarget(e) !== target)" in handler
-    assert "schedBlockers.slice(1)" in handler
+    assert "schedPending = repeat" in handler
+    assert "schedPending.filter((e) => schedStopTarget(e) !== target)" in handler
+    assert "schedPending.slice(1)" in handler
 
 
 def test_a_refused_stop_survives_the_poll_that_follows_it(code):
@@ -469,7 +517,7 @@ def test_a_refused_stop_survives_the_poll_that_follows_it(code):
     the same click asks for a reconciling read, and a message written straight onto
     the banner was wiped by the re-render a second later. So the refusal is
     recorded against the ENTRY and re-stated every render until that entry is no
-    longer the one holding the composer shut."""
+    longer the one the banner is about."""
     handler = code[code.index('schedBlockStop.addEventListener("click"'):]
     handler = handler[:handler.index("\n});")]
     assert "schedStopRefused = String(next.id);" in handler
@@ -485,8 +533,9 @@ def test_a_refused_stop_survives_the_poll_that_follows_it(code):
 def test_edit_schedule_is_gone_and_the_row_is_the_door(code, source):
     """It was put there so a schedule could be changed without losing the message.
     The row now lands on the task where Edit lives with its full popover, so the
-    banner was two doors to one room — and its own door could not unblock (Akshil,
-    2026-08-17). TWO controls in the card: the row, and the one that unblocks."""
+    banner was two doors to one room — and its own door could not stop the run
+    (Akshil, 2026-08-17). TWO controls in the card: the row, and the one that calls
+    the message off."""
     assert "sb-edit" not in source
     assert "sb-quiet" not in source
     assert "schedBlockEdit" not in source
@@ -517,14 +566,14 @@ def test_the_row_is_keyboard_reachable_before_the_destructive_button(source):
     # motion is opt-IN: the only animated thing here is the in-progress ring, and
     # it is inside a `no-preference` query rather than switched off in a `reduce` one
     assert "@media (prefers-reduced-motion: no-preference) {" in source
-    css = source[source.index("  #schedblock {"):source.index("  #box:disabled")]
+    css = source[source.index("  #schedblock {"):source.index("  /* message log */")]
     assert "transition: all" not in css
     assert css.count("animation") == 1, "only the in-progress ring"
 
 
 def test_the_row_lands_on_the_task_and_prefers_the_calendar(code):
     """Clicking the row goes to the task, and the calendar is the view that answers
-    what a blocked chat is asking — "when does this let go?". Scheduled.tsx has no
+    what this notice raises — "what else is coming, and when?". Scheduled.tsx has no
     URL param for its view, only the remembered-view row it reads on mount, so the
     hop writes that row: the same gesture as pressing the page's Calendar button.
     A denied store leaves the page on whichever view the reader last used — one
@@ -543,14 +592,14 @@ def test_the_row_lands_on_the_task_and_prefers_the_calendar(code):
     assert "?new=1" not in opener
     handler = code[code.index('schedBlockRow.addEventListener("click"'):]
     handler = handler[:handler.index("\n});")]
-    assert "if (!schedBlockers[0]) return;" in handler
+    assert "if (!schedPending[0]) return;" in handler
     assert "openTaskOnCalendar();" in handler
 
 
-def test_the_block_goes_with_the_conversation_it_belongs_to(code):
+def test_the_notice_goes_with_the_conversation_it_belongs_to(code):
     """Switching sessions must not leave the previous thread's banner hanging over
-    the next one for a poll interval. Unblocking is the safe direction to be
+    the next one for a poll interval. Saying nothing is the safe direction to be
     briefly wrong in."""
     reset = _fn(code, "function scheduleResetForNewTranscript(")
-    assert "clearComposerBlock();" in reset
+    assert "clearSchedNotice();" in reset
     assert "pollScheduledRuns();" in reset

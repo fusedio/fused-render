@@ -837,13 +837,13 @@
   }
   #back:hover { color: var(--fg); border-color: var(--border-strong); background: var(--surface); }
 
-  /* the scheduled-message block (see the #schedblock markup)
+  /* the scheduled-message notice (see the #schedblock markup)
      It rides the COMPOSER'S column — same 720px measure, same 20px gutter as
-     #composer-chat below it — so it reads as a lid on that box rather than as a
+     #composer-chat below it — so it reads as a note ON that box rather than as a
      band across the pane. No entry animation and no reserved space: the composer
      is anchored at the bottom of #chat's flex column and #logwrap is the only
      child that grows, so this appears into height the transcript gives up and the
-     box under the reader's cursor does not move (see applyComposerBlockState,
+     box under the reader's cursor does not move (see applySchedNoticeState,
      which puts a bottom-pinned transcript back at the bottom). */
   #schedblock {
     flex-shrink: 0;
@@ -866,8 +866,8 @@
     gap: 6px;
     padding: 8px 11px;
     border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
-    /* Slightly tighter than the composer's 20px: a lid, not a second box of
-       equal weight. */
+    /* Slightly tighter than the composer's 20px: a note on the box, not a second
+       box of equal weight. */
     border-radius: 14px;
     /* A tint of the accent rather than a solid band: the notice has to read as
        a state this pane is IN, not as a message in the transcript above it. */
@@ -934,7 +934,7 @@
   }
   /* An EMPTY id is "/api/tasks could not be read", not "this task has no number":
      the cell disappears rather than holding a gap open, and the rest of the row
-     still says which message is holding the box shut (see schedTaskRec). */
+     still says which message is on its way here (see schedTaskRec). */
   #schedblock .sb-id:empty { display: none; }
   /* The name, and it is the one thing here allowed to be long — so it is the one
      thing that gives way. */
@@ -1038,12 +1038,10 @@
       animation: sb-pulse 2s ease-in-out infinite;
     }
   }
-  /* The box itself says it is shut, since the banner is at the other end of the
-     pane and a reader who clicks into a dead textarea is owed an answer there. */
-  #box:disabled {
-    opacity: .6;
-    cursor: not-allowed;
-  }
+  /* No `#box:disabled` rule, and that absence is the point: nothing in this
+     template disables the composer any more (the scheduled-message block was
+     withdrawn — see #schedblock and applySchedNoticeState), so a greyed,
+     not-allowed textarea is a state this page cannot reach. */
 
   /* message log */
   #logwrap { flex: 1; overflow-y: auto; }
@@ -2997,32 +2995,38 @@
       <span id="session" class="mono"></span>
     </div>
     <div id="logwrap"><div id="log"></div><div id="queue"></div></div>
-    <!-- A scheduled message pending IN THIS SESSION closes the composer, and this
-         is the notice that says why (Akshil, 2026-08-17). The reason is CONTEXT
-         POLLUTION, not politeness: a task is a session, so anything typed before
-         a scheduled message fires ends up inside that task's context — the run
-         reads a conversation the person who scheduled it never wrote.
+    <!-- A scheduled message pending IN THIS SESSION is going to read this thread,
+         and this is the heads-up that says so (Akshil, 2026-08-17). A task is a
+         session, so anything sent before that message fires ends up inside the
+         task's context — the run answers a conversation the person who scheduled
+         it never wrote.
 
-         DIRECTLY ABOVE THE COMPOSER, not above the log: it explains a box that
-         will not type, and a notice about a dead control belongs against the
-         control. It used to sit under the top bar, one pane-height away from the
-         thing it was about (Akshil, 2026-08-17). Arriving here costs the reader
-         nothing, because #logwrap is #chat's only `flex: 1` child — the height
-         this takes comes out of the TRANSCRIPT and the composer does not move.
+         IT WARNS, IT DOES NOT BLOCK. This banner shipped alongside a composer that
+         disabled itself for as long as a message was pending, and the block was
+         withdrawn the same day ("let's keep the banner, but let's not block the
+         chat for now"): the box types, sends, queues and takes annotations
+         throughout, and the notice is a fact the reader weighs rather than a
+         locked door they have to argue with.
 
-         A banner and not a modal: the transcript stays readable and the chat
-         stays navigable, which is the whole difference between "you cannot type
-         here" and "you cannot use this page". `hidden` until a pending entry
-         names this session — the block is a fact about the schedule, so a
-         schedule that cannot be read shows nothing and blocks nothing (see
-         applyComposerBlock).
+         DIRECTLY ABOVE THE COMPOSER, not above the log: it is about what happens
+         to what you send, so it belongs against the thing you send with. It used
+         to sit under the top bar, one pane-height away from the thing it was about
+         (Akshil, 2026-08-17). Arriving here costs the reader nothing, because
+         #logwrap is #chat's only `flex: 1` child — the height this takes comes out
+         of the TRANSCRIPT and the composer does not move.
+
+         A banner and not a modal, and now not a lock either: the transcript stays
+         readable, the chat stays navigable and the composer stays live. `hidden`
+         until a pending entry names this session — it is a fact about the
+         schedule, so a schedule that cannot be read shows nothing (see
+         applySchedNotice).
 
          The BODY IS A TASK ROW, and it is the Tasks LIST view's row rather than a
          shape invented here (Akshil, 2026-08-17 — "this UI does not make sense to
          me, it does not give me what I want"): a status ring, TASK-nnn, the name,
-         and when it runs at the right end. The reason above it is ONE short line,
-         because a paragraph explaining context pollution described the block
-         instead of showing what is doing it.
+         and when it runs at the right end. The line above it is TWO clauses — what
+         is coming, and what sending now costs — because a paragraph on context
+         pollution explained itself instead of showing what it was about.
 
          What the row does NOT carry is the folder and the session id, and that is
          the user's own reasoning: "you will not show the folder because you are
@@ -3049,11 +3053,11 @@
           <span class="sb-meta"></span>
         </button>
         <div class="sb-note"></div>
-        <!-- Exactly ONE control, and it is the one that actually reopens the box —
+        <!-- Exactly ONE control, and it is the one that actually stops the message —
              cancel for a one-off, stop-the-repeat for a repeat. "Edit schedule"
              used to sit beside it and is GONE: the row now lands on the task where
              Edit lives with its full popover, so the banner was two doors to one
-             room and its own door did not unblock (Akshil, 2026-08-17). The label
+             room and its own door could not stop a run (Akshil, 2026-08-17). The label
              is written by renderSchedBlock, which is the only place that knows
              which of the two cases this is. -->
         <div class="sb-acts">
@@ -7932,7 +7936,7 @@ function backHere() {
 // NO CALLER IN THIS TEMPLATE passes it any more. The blocked-composer banner used
 // to, as its "Edit schedule" control, and that control is gone: its row lands on
 // the task where Edit lives with its full popover instead (Akshil, 2026-08-17 —
-// two doors to one room, and the banner's did not unblock). The parameter stays
+// two doors to one room, and the banner's could not stop anything). The parameter stays
 // because it is the deep link's shape, not this template's private argument.
 function openScheduler(draft, editId) {
   // The draft SURVIVES the trip: leaving for the schedule page unloads this
@@ -11099,51 +11103,60 @@ function scheduleResetForNewTranscript() {
   SCHEDULE_ATTACHED.clear();
   SCHEDULE_NOTED.clear();
   scheduleBaselined = false;
-  // The block belongs to the conversation that WAS on screen, so it goes with it
-  // rather than hanging over the next one for up to a poll interval. Unblocking
-  // is the safe direction to be briefly wrong in (see applyComposerBlock), and
-  // the poll fired underneath re-establishes it for this session immediately.
-  clearComposerBlock();
+  // The notice belongs to the conversation that WAS on screen, so it goes with it
+  // rather than hanging over the next one for up to a poll interval. Saying
+  // nothing is the safe direction to be briefly wrong in (see clearSchedNotice),
+  // and the poll fired underneath re-raises it for this session immediately.
+  clearSchedNotice();
   pollScheduledRuns();
 }
 
-// ── the composer block: a pending scheduled message owns this thread ────────
+// ── the scheduled-message notice: a pending message will land in this thread ─
 //
 // A task IS a session, so a message scheduled to run in THIS conversation will
-// read whatever is in it when it fires. Typing here first is not getting ahead —
-// it is CONTEXT POLLUTION: the run answers a conversation the person who
-// scheduled it never wrote, and nothing can take those words back out of the
-// context once the turn has read them.
+// read whatever is in it when it fires. Typing here first is not getting ahead:
+// the run answers a conversation the person who scheduled it never wrote, and
+// nothing can take those words back out of the context once the turn has read
+// them.
 //
-// So the composer closes for as long as the schedule holds a pending message for
-// this session, and NOT for a window. An hour was offered first and is arbitrary
-// in the wrong direction (Akshil, 2026-08-17 — "why can't we block it until the
-// next task is scheduled? why only one hour?"): a message due tomorrow pollutes
-// exactly as much as one due in ten minutes, so the block is the pendency, not
-// the proximity.
+// THAT IS A WARNING, NOT A LOCK, and the lock was tried first. For half a day
+// this pane DISABLED the composer for as long as the schedule held a pending
+// message for the session — the textarea went grey, its placeholder read
+// "Waiting on a scheduled message…", and `submitChat` refused even an
+// annotation-only send. WITHDRAWN by the owner (Akshil, 2026-08-17 — "when there
+// is a scheduled message, we block the chat. Let's not do that. Let's keep the
+// banner, but let's not block the chat for now."). The reasoning above is not
+// wrong; it is just not worth a dead chat. Pendency has no ceiling — a message
+// due next Tuesday shut the box for six days — and the person typing is the same
+// person who scheduled the message, so the app was refusing them the one thing
+// they came here to do in order to protect them from a consequence they can
+// read off the banner and judge for themselves. Being told beats being stopped.
 //
-// A BANNER, not a modal: the transcript stays readable and the session list
-// stays reachable. It carries ONE action, and that action is whichever one
-// actually reopens the box — which is not the same control in the two cases:
+// So this is a HEADS-UP: the banner says a scheduled message is coming and that
+// anything sent now joins its context, and the composer works throughout.
 //
-//   * a one-off pending message: cancelling it unblocks, full stop;
-//   * a REPEAT: cancelling the occurrence unblocks nothing, because
-//     `_materialize` arms the next one and it blocks again. The only thing that
-//     reopens the box is stopping the repeat itself — `schedule.cancel(template_id)`,
-//     which already means "no further runs" and takes the pending occurrence
-//     with it.
+// A BANNER, not a modal, and that never changed: the transcript stays readable
+// and the session list stays reachable. It carries ONE action, and that action is
+// whichever one actually stops the message from landing — which is not the same
+// control in the two cases:
+//
+//   * a one-off pending message: cancelling it is the end of it, full stop;
+//   * a REPEAT: cancelling the occurrence settles nothing, because `_materialize`
+//     arms the next one. The only thing that ends it is stopping the repeat
+//     itself — `schedule.cancel(template_id)`, which already means "no further
+//     runs" and takes the pending occurrence with it.
 //
 // The banner used to offer "Cancel this run" and "Reschedule" for both, and both
-// were wrong for a repeat: rescheduling leaves the message pending, so the block
-// survives it, and cancelling one run only moved the block to the next one — the
-// old copy said so in its own body, which was an admission that its own button
-// did not work (Akshil, 2026-08-17). A control whose only outcome leaves the user
-// still blocked does not belong in a notice about being blocked.
+// were wrong for a repeat: rescheduling leaves the message pending, and
+// cancelling one run only moved the notice to the next one — the old copy said so
+// in its own body, which was an admission that its own button did not work
+// (Akshil, 2026-08-17). A control whose only outcome leaves the situation
+// unchanged does not belong in a notice about it.
 //
 // WHAT IT SHOWS is the Tasks list view's own row — a status ring, TASK-nnn, the
 // name, and the state and time at the right end — because the second shape was
 // still wrong (Akshil, 2026-08-17 — "this UI is not good... it does not give me
-// what I want"): it explained the block in prose and then dumped the message
+// what I want"): it explained itself in prose and then dumped the message
 // underneath as bare left-aligned text. A reader who knows the Tasks page already
 // knows how to read this row, and reusing that vocabulary is what makes the
 // banner a view of the schedule rather than a paragraph about it.
@@ -11162,12 +11175,12 @@ const schedBlockName = schedBlockEl.querySelector(".sb-name");
 const schedBlockMeta = schedBlockEl.querySelector(".sb-meta");
 const schedBlockNote = schedBlockEl.querySelector(".sb-note");
 const schedBlockStop = document.getElementById("sb-stop");
-const BOX_PLACEHOLDER = box.placeholder;
 
 // The pending messages that would land in this conversation, soonest first.
-// EMPTY is the only state in which the composer works — and it is also the state
-// a schedule that could not be read leaves behind (applyComposerBlock).
-let schedBlockers = [];
+// EMPTY hides the banner, and it is also the state a schedule that could not be
+// read leaves behind (clearSchedNotice). It gates NOTHING else: the composer
+// types and sends whatever is in this list (see the withdrawal note above).
+let schedPending = [];
 // The entry whose cancel came back refused (it was already away). Kept by ID so
 // the sentence belongs to a message rather than to the banner — see
 // renderSchedBlock.
@@ -11184,14 +11197,12 @@ let schedStopRefused = "";
 // was aimed at the repeat that was on screen.
 let schedStopArmed = "";
 
-function schedBlocked() { return schedBlockers.length > 0; }
-
 // Which pending messages are aimed at THIS conversation. `session_id` is the
 // input ("resume this one") and `claude_session_id` is what a run reported it
 // landed in; either naming the session on screen means the same thing here —
 // this thread is where those words are going. With no session on the URL nothing
 // can be pending in it (the landing page's conversation does not exist yet), so
-// the home composer is never blocked.
+// the landing page never carries this notice.
 function schedPendingHere(entries) {
   const mine = fused.params.get("session_id") || "";
   if (!mine) return [];
@@ -11250,10 +11261,10 @@ function schedMsgLine(entry) {
 // TASK-nnn, the task's name and its state are NOT in /api/schedule — the numbers
 // are allocated per project by tasks_store and only /api/tasks hands them out.
 // So the row is filled from two reads: the schedule says what is pending and
-// when (and is the only thing the BLOCK depends on), the tasks listing says what
+// when (and is the only thing the NOTICE depends on), the tasks listing says what
 // to call it.
 //
-// Cached against the blocking entry's id and refetched only when that changes,
+// Cached against the pending entry's id and refetched only when that changes,
 // because the listing carries every task on the machine and this poll runs every
 // 15 seconds: what it is fetched for — a number and a name — does not change
 // while one message sits pending. `state` can go stale by a poll, which is the
@@ -11274,7 +11285,7 @@ const SB_STATES = {
   archived: "Archive",
 };
 
-// The listing row for the message holding this box shut. Three ways in, cheapest
+// The listing row for the message this banner is about. Three ways in, cheapest
 // first: a task keyed by THIS session (a scheduled entry naming a session is
 // folded into that session's task — routers/tasks.py `_collect`), a task keyed
 // `pending:<entry id>` (the entry has no session yet), and failing both a scan
@@ -11296,14 +11307,14 @@ function schedFindTask(tasks, entry) {
 }
 
 // What the row knows about this entry, or null. Keyed by id so a cache belonging
-// to the message that WAS blocking cannot label the one that is.
+// to the message that WAS pending cannot label the one that is.
 function schedTaskRec(entry) {
   return entry && schedTaskRowFor === String(entry.id) ? schedTaskRow : null;
 }
 
 // FAILS OPEN, like everything else here: an unreadable listing costs the number
-// and the state, never the row and never the block — the schedule already said
-// this message is pending, and that is the fact the composer is shut on. No
+// and the state, never the row and never the banner — the schedule already said
+// this message is pending, and that is the fact the notice stands on. No
 // `schedTaskRowFor` is recorded on a failure, so the next poll tries again.
 async function schedLoadTaskRow(entry) {
   const id = String((entry && entry.id) || "");
@@ -11326,7 +11337,7 @@ async function schedLoadTaskRow(entry) {
 }
 
 // Where the row LANDS: the Tasks page, on the calendar, which is the view that
-// answers the question a blocked chat is asking — "when does this let go?".
+// answers the question this notice raises — "what else is coming, and when?".
 //
 // The view is chosen by writing the shell's own remembered-view row rather than
 // by a param, because Scheduled.tsx reads that preference on mount and has no URL
@@ -11359,23 +11370,23 @@ function openTaskOnCalendar() {
 }
 
 // A pending OCCURRENCE of a repeat carries `template_id`; a template itself
-// carries `repeats` or `rule`. Either way the honest word is "repeats", and the
-// banner has to say what that costs — see below.
+// carries `repeats` or `rule`. Either way the honest word is "repeats", and it
+// decides both the copy and which id the one write posts — see below.
 function schedIsRepeat(entry) {
   return !!(entry && (entry.template_id || entry.repeats || entry.rule));
 }
 
-// What id, posted to /api/schedule/cancel, actually reopens this box. For a
-// repeat that is the TEMPLATE — the occurrence is replaced the moment it is
-// skipped, so cancelling it moves the block rather than lifting it.
+// What id, posted to /api/schedule/cancel, actually stops this message arriving.
+// For a repeat that is the TEMPLATE — the occurrence is replaced the moment it is
+// skipped, so cancelling it moves the notice rather than clearing it.
 function schedStopTarget(entry) {
   return schedIsRepeat(entry) && entry.template_id
     ? String(entry.template_id) : String((entry && entry.id) || "");
 }
 
 function renderSchedBlock() {
-  const next = schedBlockers[0];
-  // Nothing blocking: hide it, and put the button back cold. A hidden card left
+  const next = schedPending[0];
+  // Nothing pending: hide it, and put the button back cold. A hidden card left
   // holding an armed press is a destructive control one poll away from being on
   // screen again — the class goes with the state that justified it.
   if (!next) {
@@ -11384,20 +11395,24 @@ function renderSchedBlock() {
     schedBlockStop.classList.remove("armed");
     return;
   }
-  const others = schedBlockers.length - 1;
+  const others = schedPending.length - 1;
   const repeat = schedIsRepeat(next);
-  // ONE SHORT REASON, and nothing else in words: the state and the time moved onto
-  // the row below, where the list view keeps them. The old line spent a sentence
-  // explaining context pollution, which described the block instead of showing
-  // what was doing it (Akshil, 2026-08-17 — "use less words", and then "this UI
-  // does not make sense to me").
+  // A HEADS-UP, in two short clauses: what is coming, and what typing here costs.
+  // It used to open "Blocked —", which described a lock that has since been
+  // withdrawn (Akshil, 2026-08-17 — "let's keep the banner, but let's not block
+  // the chat for now"), and a banner that still said "blocked" over a working
+  // composer would be the one thing worse than either behaviour. The half that was
+  // always true is the half that stayed: the run reads this thread, so anything
+  // sent now is in its context.
   //
-  // The SOONEST is named by the row and the rest are counted here, because naming
-  // one is what answers "what is coming?" and a list of five would be the Tasks
-  // page in a strip above a chat.
+  // It stays TWO CLAUSES because the state and the time live on the row below,
+  // where the list view keeps them (Akshil, 2026-08-17 — "use less words"). The
+  // SOONEST is named by that row and the rest are counted here: naming one answers
+  // "what is coming?", and a list of five would be the Tasks page in a strip above
+  // a chat.
   let why = repeat
-    ? "Blocked — a repeating message runs in this chat."
-    : "Blocked — a scheduled message runs in this chat.";
+    ? "A repeating message runs in this chat. Anything you send now joins its context."
+    : "A scheduled message runs in this chat. Anything you send now joins its context.";
   if (others > 0) why += " " + others + " more after it.";
   schedBlockWhen.textContent = why;
   // ── the row ──
@@ -11438,14 +11453,14 @@ function renderSchedBlock() {
   const armed = schedStopArmed === next.id;
   // Say what the control DOES, and for the repeat say what it costs on the press
   // that spends it. "Stop the repeat" is the only label here that is true: it is
-  // the one action that reopens this box, and the second press names the loss
-  // because no control on this page can put those runs back.
+  // the one action that stops the message landing at all, and the second press
+  // names the loss because no control on this page can put those runs back.
   schedBlockStop.textContent = repeat
     ? (armed ? "Cancel every future run" : "Stop the repeat")
     : "Cancel this message";
   schedBlockStop.title = repeat
-    ? "Stops the repeating task: this chat reopens and no further runs are scheduled"
-    : "Cancels this scheduled message, and this chat reopens";
+    ? "Stops the repeating task: nothing lands in this chat and no further runs are scheduled"
+    : "Cancels this scheduled message, so nothing lands in this chat";
   schedBlockStop.classList.toggle("armed", armed);
   // A title belongs to the text that was measured, and this render just replaced
   // it — schedNameTitle writes the next one, when there is a pointer to write it
@@ -11476,21 +11491,20 @@ function schedNameTitle() {
 schedBlockRow.addEventListener("pointerenter", schedNameTitle);
 schedBlockRow.addEventListener("focus", schedNameTitle);
 
-// Paint the block and shut the box. The box is disabled rather than merely
-// guarded so the state is visible where the hands are; `submitChat` guards
-// anyway, because an annotation- or screenshot-only send needs no typing at all
-// and would otherwise walk straight past a disabled textarea.
-//
-// The SEND BUTTON is deliberately left alone: while a run is live it is the STOP
-// button, and a chat that cannot stop its own running turn is a worse state than
-// the one this feature prevents.
-function applyComposerBlockState() {
+// Paint the banner. THAT IS ALL IT DOES to the composer — nothing here touches
+// `box.disabled`, `box.placeholder` or the send button, and `submitChat` has no
+// guard of its own (Akshil, 2026-08-17: "let's keep the banner, but let's not
+// block the chat for now"). The three of them were the whole block and they went
+// together: a greyed textarea, a substituted placeholder, and an early return that
+// also caught annotation- and screenshot-only sends, which need no typing and
+// would otherwise walk straight past a disabled box.
+function applySchedNoticeState() {
   // THE LAYOUT SHIFT, handled rather than reserved. The card sits directly above
   // the composer, so the one thing it must never do is move the box a reader is
   // reaching for — and it does not: #logwrap is the only `flex: 1` child of
   // #chat, so the height the card takes is height the TRANSCRIPT gives up and
   // the composer stays exactly where it was. Nothing is animated and no space is
-  // reserved; an empty strip above every unblocked composer would be a permanent
+  // reserved; an empty strip above every quiet composer would be a permanent
   // cost paid for a rare state.
   //
   // What DOES move is the transcript's last line, by the card's height, so a
@@ -11501,35 +11515,29 @@ function applyComposerBlockState() {
   const pinned = wasHidden && nearBottom();
   renderSchedBlock();
   if (pinned && !schedBlockEl.hidden) scrollBottom();
-  const blocked = schedBlocked();
-  box.disabled = blocked;
-  // Short, because this box is 300px wide in the side pane and a longer line is
-  // simply clipped. The banner above carries the explanation; this only has to
-  // say the box is not broken.
-  box.placeholder = blocked ? "Waiting on a scheduled message…" : BOX_PLACEHOLDER;
-  // The row's number and name, fetched AFTER the card is on screen and never
-  // before the block: what shuts the composer is the schedule, and the listing
-  // only decorates the row (see schedLoadTaskRow). Guarded there against refetching
-  // for the same entry, so the 15s poll costs one read per blocking message.
-  if (blocked) schedLoadTaskRow(schedBlockers[0]);
+  // The row's number and name, fetched AFTER the card is on screen: what raises
+  // the banner is the schedule, and the listing only decorates the row (see
+  // schedLoadTaskRow). Guarded there against refetching for the same entry, so
+  // the 15s poll costs one read per pending message.
+  if (schedPending.length) schedLoadTaskRow(schedPending[0]);
 }
 
-function applyComposerBlock(entries) {
-  schedBlockers = schedPendingHere(entries);
-  applyComposerBlockState();
+function applySchedNotice(entries) {
+  schedPending = schedPendingHere(entries);
+  applySchedNoticeState();
 }
 
-// A schedule that could not be read blocks NOTHING. A chat that locks itself
-// because one fetch failed is worse than the pollution the lock prevents — the
-// user loses a working composer over a network blip, and the schedule is the
-// only thing that could ever tell them why.
-function clearComposerBlock() {
-  schedBlockers = [];
-  applyComposerBlockState();
+// A schedule that could not be read says NOTHING. A banner raised over a network
+// blip is a warning about a message nobody can name — and since the card's own
+// stop button is the thing it would be offering, a card built on an unreadable
+// schedule is a destructive control aimed at an id we are no longer sure of.
+function clearSchedNotice() {
+  schedPending = [];
+  applySchedNoticeState();
 }
 
 schedBlockStop.addEventListener("click", async () => {
-  const next = schedBlockers[0];
+  const next = schedPending[0];
   if (!next || !next.id) return;
   const repeat = schedIsRepeat(next);
   const target = schedStopTarget(next);
@@ -11546,7 +11554,7 @@ schedBlockStop.addEventListener("click", async () => {
   // dialog over a chat the reader may be about to keep using.
   if (repeat && schedStopArmed !== next.id) {
     schedStopArmed = String(next.id);
-    applyComposerBlockState();
+    applySchedNoticeState();
     return;
   }
   schedStopArmed = "";
@@ -11575,17 +11583,17 @@ schedBlockStop.addEventListener("click", async () => {
     // the template is cancelled, so an occurrence of it left in the list would
     // have the banner naming a run the server has already dropped.
     schedStopRefused = "";
-    schedBlockers = repeat
-      ? schedBlockers.filter((e) => schedStopTarget(e) !== target)
-      : schedBlockers.slice(1);
-    applyComposerBlockState();
+    schedPending = repeat
+      ? schedPending.filter((e) => schedStopTarget(e) !== target)
+      : schedPending.slice(1);
+    applySchedNoticeState();
   } catch (err) {
     // A cancel that raced the send is refused, not silently swallowed: the entry
-    // is away, the composer stays shut, and that is the true state. Recorded
+    // is away, the banner stays up, and that is the true state. Recorded
     // against the ENTRY so the reconciling poll below re-renders it rather than
     // wiping it (renderSchedBlock).
     schedStopRefused = String(next.id);
-    applyComposerBlockState();
+    applySchedNoticeState();
   } finally {
     schedBlockStop.disabled = false;
   }
@@ -11596,13 +11604,13 @@ schedBlockStop.addEventListener("click", async () => {
 // (Akshil, 2026-08-17). The banner used to carry an Edit control so a schedule
 // could be changed without losing the message; the row now lands on the task
 // where Edit lives with its whole popover, so the two were two doors to one room
-// — and the banner's door was the one that could not unblock.
+// — and the banner's door was the one that could not stop the run.
 //
-// It does NOT reopen the composer and does not pretend to: leaving a blocked chat
-// to look at the thing blocking it is a different errand from unblocking it, and
-// the button beside it is still the only control that does the second.
+// It changes NOTHING about the schedule and does not pretend to: going to look at
+// the message is a different errand from calling it off, and the button beside it
+// is still the only control that does the second.
 schedBlockRow.addEventListener("click", () => {
-  if (!schedBlockers[0]) return;
+  if (!schedPending[0]) return;
   openTaskOnCalendar();
 });
 
@@ -11616,7 +11624,7 @@ schedBlockRow.addEventListener("click", () => {
 function schedDisarmStop() {
   if (!schedStopArmed) return;
   schedStopArmed = "";
-  applyComposerBlockState();
+  applySchedNoticeState();
 }
 
 document.addEventListener("pointerdown", (ev) => {
@@ -11636,13 +11644,13 @@ async function pollScheduledRuns() {
   let data;
   try {
     const res = await fetch("/api/schedule");
-    if (!res.ok) { clearComposerBlock(); return; }
+    if (!res.ok) { clearSchedNotice(); return; }
     data = await res.json();
   } catch (e) {
     // Fail OPEN, both halves: no turn to attach and no block to impose. See
-    // clearComposerBlock — a composer that shuts itself over an unreadable
+    // clearSchedNotice — a composer that shuts itself over an unreadable
     // schedule is a worse failure than the pollution the block prevents.
-    clearComposerBlock();
+    clearSchedNotice();
     return;  // a blip; the next tick tries again
   }
   // The composer block reads the SAME payload this watcher already fetches — a
@@ -11650,7 +11658,7 @@ async function pollScheduledRuns() {
   // poll and no endpoint of its own. It is applied before the home-view return
   // below, and before the baseline: a block is a fact about the schedule, not
   // about what this frame has rendered.
-  applyComposerBlock(data.entries || []);
+  applySchedNotice(data.entries || []);
   if (chatEl.classList.contains("home")) return;  // nothing to render into
   const fired = (data.entries || []).filter((e) => e.target === FILE && e.run_id);
   // The FIRST pass is a silent baseline: every run already recorded happened
@@ -11806,11 +11814,13 @@ async function resumeRun(run_id, opts) {
 }
 
 function submitChat() {
-  // Nothing leaves this composer while a scheduled message is pending in this
-  // session — not a typed line, not a queued one, not an annotation-only send.
-  // The guard sits above the queue branch on purpose: parking text for the turn
-  // to drain puts it in the same context the block exists to keep clean.
-  if (schedBlocked()) return;
+  // A PENDING SCHEDULED MESSAGE DOES NOT STOP A SEND. There was a `schedBlocked()`
+  // early return here, above the queue branch, so that not even a queued line or an
+  // annotation-only send could reach a thread a scheduled run was about to read; it
+  // is gone with the rest of the block (Akshil, 2026-08-17 — "let's not block the
+  // chat for now"). The banner over this composer says what it costs, and the
+  // person typing is the person who scheduled the message.
+  //
   // Send is a send, always. Deferral used to be decided HERE, above the queue
   // branch, and the whole question left the composer with the When pill — so what
   // this key does no longer depends on a dropdown two controls away, which was
