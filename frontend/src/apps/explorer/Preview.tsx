@@ -15,7 +15,7 @@ import {
   deleteEntry,
 } from "@platform/lib/api";
 import type { Deployment, StatResult, TemplateEntry } from "@platform/lib/api";
-import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath, replaceSearch, IS_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import { useRefreshOnReturn } from "@platform/lib/hooks";
 import { useDeployEnabled } from "@platform/lib/prefs";
@@ -1009,13 +1009,18 @@ function TemplatePreview({
   // page makes through `fused.*` does resolve to the revision, and the write gate
   // applies.
   const remote = stat.remote ? "&_remote=1" : "";
+  // A shell loaded as a card thumbnail (IS_PREVIEW) forwards the flag onto
+  // every render it triggers, so peeking at an app's entry page is not
+  // recorded as opening the app (D301 records on GET /render by default).
+  const preview = IS_PREVIEW ? "&_preview=1" : "";
   const srcFor = (m: string): string | null => {
     if (m === "_listing") return null;
-    if (m === "_render") return revSrc(`/render?path=${encodeURIComponent(fsPath)}`, rev);
+    if (m === "_render")
+      return revSrc(`/render?path=${encodeURIComponent(fsPath)}${preview}`, rev);
     const t = templates.find((x) => x.mode === m);
     return t
       ? revSrc(
-          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}`,
+          `/render?path=${encodeURIComponent(t.path as string)}&_file=${encodeURIComponent(fsPath)}${remote}${preview}`,
           rev
         )
       : null;
@@ -1055,7 +1060,7 @@ function TemplatePreview({
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
     return (
       `/render?path=${encodeURIComponent(t.path)}` +
-      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}`
+      `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${preview}`
     );
   };
 
