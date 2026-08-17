@@ -1180,9 +1180,18 @@
 }
 
 /* -- New task modal: Google Calendar's event card ------------------------------
-   A big borderless title, icon-led rows, everything else behind More options.
-   The title underlines on focus the way Google's does — the field reads as a
-   place to type, not a boxed form control. */
+   Two big borderless fields, then icon-led rows, then everything else behind
+   More options. Both big fields underline on focus the way Google's title does
+   — they read as places to type, not as boxed form controls.
+
+   `.schedule-form-title` is the SHARED prominence, worn by both of the two
+   fields that matter: Title (first, an <input>) and the ask/description
+   (second, a <textarea>). It was one field's class; it is a vocabulary now
+   (Akshil, 2026-08-17: "the first field CSS should be similar for the title and
+   the description field because both of them are important"). What differs
+   between the two is only how they handle a long value, and that is why the
+   element-qualified blocks below exist rather than a second class: one line vs
+   many is a property of the ELEMENT each field is. */
 
 .schedule-form-title {
   font: inherit;
@@ -1195,13 +1204,21 @@
   border-bottom: 1px solid var(--border);
   border-radius: 0;
   padding: 4px 2px 8px;
+  /* Both fields are direct children of the column-flex .schedule-form, so
+     `align-items: stretch` gives them the card's width — but an <input> carries
+     an intrinsic `size` width that would otherwise fight a narrow card. */
+  min-width: 0;
+}
+
+/* The ask only: it GROWS like a note. JS sets height from scrollHeight on every
+   change, up to five lines of the 20px face, then it scrolls — the cap is what
+   keeps a long brief from shoving the when/where rows off the card (Akshil,
+   2026-08-15). The face came DOWN from 24px: at 24 the description shouted over
+   every other row in a 460px card (audit 2026-08-16), and the calc has to
+   follow it. `resize: none` because the grow is measured, not dragged. */
+textarea.schedule-form-title {
   resize: none;
   overflow-wrap: anywhere;
-  /* Grows with the text (JS sets height from scrollHeight) to five lines of
-     the 20px face, then scrolls — the cap is what keeps a long brief from
-     shoving the when/where rows off the card (Akshil, 2026-08-15). The face
-     came DOWN from 24px: at 24 the description shouted over every other row
-     in a 460px card (audit 2026-08-16), and the calc has to follow it. */
   max-height: calc(20px * 1.35 * 5 + 14px);
   overflow-y: auto;
 }

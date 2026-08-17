@@ -128,16 +128,10 @@ const ICON_FILE = (
   </svg>
 );
 
-// lucide "type" — the serif T of a title field. Inline, like every other glyph
-// in this file: no icon package in this repo.
-const ICON_TITLE = (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <polyline points="4 7 4 4 20 4 20 7" />
-    <line x1="9" y1="20" x2="15" y2="20" />
-    <line x1="12" y1="4" x2="12" y2="20" />
-  </svg>
-);
+// There was a lucide "type" glyph here — the serif T that led the Title row
+// while Title was one of the form's quiet icon rows. Title is a prominent
+// peer of the ask now and neither of the two takes an icon, so the glyph went
+// with the row (see the form's markup for why).
 
 // lucide "check", at tick scale.
 const ICON_CHECK = (
@@ -1285,15 +1279,17 @@ export type SchedulePayload = Parameters<typeof scheduleMessage>[0];
 
 export function buildSchedulePayload(form: {
   target: string;
-  // The big field, and the ONLY prose the form asks for: what Claude is sent,
-  // and — same text, no second field — the task's description (Akshil,
+  // The SECOND field on the card and the required one: what Claude is sent,
+  // and — same text, no third field — the task's description (Akshil,
   // 2026-08-17: "the big field is the description, that is the first message").
   // It rides the wire twice, once as each, because the server stores them as
   // two things and a task page that showed nothing under a task would be the
-  // only alternative.
+  // only alternative. Never blank by the time it gets here: `saveEnabled`
+  // refuses Save on an empty one.
   message: string;
-  // Optional, and empty is the ordinary case: the server fills a missing title
-  // in from the transcript's `ai-title` (design §4).
+  // The FIRST field on the card, and still optional: empty is the ordinary case
+  // and the server fills a missing title in from the transcript's `ai-title`
+  // (design §4). Its position and its prominence changed; the contract did not.
   title: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
@@ -1371,6 +1367,46 @@ export function buildSchedulePayload(form: {
   };
 }
 
+// WHAT SAVE REFUSES. Pulled out of the component (it was an inline `ready`
+// expression) so the one rule this pass added is assertable: the description —
+// the big second field, the text Claude is actually sent — is REQUIRED, and
+// Title, first field though it now is, is not (design §4: left blank, the
+// server names the task from the transcript's `ai-title`, then the message's
+// first line).
+//
+// It is the SAME gate as before, deliberately: the form has always refused a
+// blank ask, and this change only moved that field down one row and gave it the
+// other field's clothes. `.trim()`, because a textarea full of newlines is not
+// an instruction. Save is `disabled` on a false — nothing here is a submit
+// handler that could be reached another way.
+export function saveEnabled(f: {
+  // The ask / description. Required.
+  message: string;
+  // Where it runs. Required, and the async existence check must not be failing.
+  target: string;
+  pathError: string | null;
+  // A "custom" repeat is only a choice once the recurrence dialog produced a
+  // rule; a legacy cron template needs its line; everything else needs a
+  // parseable date-time.
+  repeatOn: boolean;
+  repeat: string;
+  customRule: RecurrenceRule | null;
+  legacyCron: string;
+  pickedOk: boolean;
+  // The entry has already been re-created by this modal — saving twice would
+  // schedule it twice.
+  replaced: boolean;
+}): boolean {
+  return (
+    !f.replaced &&
+    f.message.trim() !== "" &&
+    f.target.trim() !== "" &&
+    f.pathError === null &&
+    (f.repeatOn && f.repeat === "custom" ? f.customRule !== null : true) &&
+    (f.repeat === "cron" ? f.legacyCron !== "" : f.pickedOk)
+  );
+}
+
 export default function NewJobModal({
   initialTime,
   initialTarget,
@@ -1418,11 +1454,13 @@ export default function NewJobModal({
   // modal (QA 2026-08-14).
   const initialAsk = initialAskOf(editing, initialMessage);
   const [message, setMessage] = useState(initialAsk);
-  // Optional and new (design §4), and normally left blank — Claude Code writes
-  // its own one-liner into the transcript and the server prefers that — so the
-  // field asks for nothing and the placeholder says so. Absent on the stored
-  // entry reads as empty, which is what an entry written before this field
-  // existed means.
+  // The FIRST field on the card now (Akshil, 2026-08-17) but still optional and
+  // still normally left blank — Claude Code writes its own one-liner into the
+  // transcript and the server prefers that (design §4) — so the field asks for
+  // nothing and the placeholder says so. Being first changed where it sits and
+  // what it looks like, not what it means. Absent on the stored entry reads as
+  // empty, which is what an entry written before this field existed means, and
+  // is what makes the Edit round trip work either way.
   const [title, setTitle] = useState(editing?.title ?? "");
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -1616,10 +1654,12 @@ export default function NewJobModal({
     };
   }, [target]);
 
-  // The ask wears the title's clothes but grows like a note: with the text, up
-  // to the CSS max-height (~5 lines), then scrolls. Measured on every change
-  // because "auto then scrollHeight" is the one reflow-safe way to shrink back
-  // when lines are deleted.
+  // The ask wears the SAME clothes as Title above it and grows like a note:
+  // with the text, up to the CSS max-height (~5 lines), then scrolls. This
+  // measuring is the whole difference between the two fields — Title is an
+  // <input> and has no height to measure. Measured on every change because
+  // "auto then scrollHeight" is the one reflow-safe way to shrink back when
+  // lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
@@ -1946,13 +1986,18 @@ export default function NewJobModal({
   // the two wordings differ rather than one covering both. See pastNoteFor.
   const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
 
-  const ready =
-    !replaced &&
-    message.trim() !== "" &&
-    target.trim() !== "" &&
-    pathError === null &&
-    (repeatOn && repeat === "custom" ? customRule !== null : true) &&
-    (repeat === "cron" ? legacyCron !== "" : pickedOk);
+  // See saveEnabled: the description is required, Title is not.
+  const ready = saveEnabled({
+    message,
+    target,
+    pathError,
+    repeatOn,
+    repeat,
+    customRule,
+    legacyCron,
+    pickedOk,
+    replaced,
+  });
 
   return (
     <Modal
@@ -2000,45 +2045,66 @@ export default function NewJobModal({
       }
     >
       <div className="schedule-form">
-        {/* The ask leads, wearing the title's clothes, and it is now the ONLY
-            prose the form collects: what the user types here is what Claude is
-            sent AND what the task is described as (Akshil, 2026-08-17 — three
-            text fields for one thought did not make sense). The separate
-            "Description (optional)" textarea that used to sit a row below is
-            gone; Title, still optional, is the one field left under it.
-            The placeholder stays "What should Claude do?": the field's job did
-            not change — you type the instruction — and "Description" is what
-            the server calls that text, not a second thing to write. */}
+        {/* TITLE FIRST, and as prominent as the ask below it (Akshil,
+            2026-08-17: "title will be the first field and then description will
+            be the second field… make both of those like the main field that we
+            have"). It swapped places with the ask and put on the same clothes —
+            same 20px face, same weight, same underline — because the two of
+            them are what the task IS; the folder and the time are facts about
+            it and stay quiet beneath.
+
+            NEITHER of the two carries a leading icon now. The 26px icon gutter
+            is the QUIET rows' vocabulary (📁 folder, 🕐 when) and a 14px glyph
+            beside a 20px face read as debris; Title used to wear a `T` only
+            because it was one of those rows. Peers wear the same clothes, so
+            the choice was both or neither, and neither is what keeps the
+            gutter meaning "this is a detail".
+
+            Still OPTIONAL, and normally left alone: Claude Code writes its own
+            one-line title into the transcript and the server prefers that,
+            falling back to the first line of the message (design §4). The
+            placeholder says so, because a blank prominent field reads as
+            something you owe the form — and when this form was opened from a
+            chat it says it by showing that conversation's CURRENT name (see
+            titlePlaceholderFor: a preview, deliberately not a value, because a
+            value would freeze the name).
+
+            An <input>, not a textarea, and that is the whole overflow answer:
+            one line that never wraps and never grows. Long text scrolls
+            horizontally under the caret while the field has focus and ellipses
+            when it does not — see `.new-task-title` in new-task.css. */}
+        <input
+          type="text"
+          className="schedule-form-title new-task-title"
+          aria-label="Title"
+          placeholder={titlePlaceholderFor(sessionTitle, repeatOn)}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          autoFocus
+        />
+
+        {/* …and the ask SECOND, still the only other prose the form collects:
+            what the user types here is what Claude is sent AND what the task is
+            described as (design §4 — three text fields for one thought did not
+            make sense, so `description` and `message` are one field). Which is
+            also why it is REQUIRED where Title is not: an empty one is a task
+            with nothing to do. `ready` below refuses Save on it, and
+            aria-required says so to a screen reader rather than leaving a
+            disabled button as the only hint.
+
+            It keeps the growth Title deliberately does not have: multi-line,
+            autogrowing with the text up to the CSS max-height (~5 lines), then
+            scrolling. */}
         <textarea
           ref={askRef}
           className="schedule-form-title"
           rows={2}
           aria-label="What should Claude do?"
+          aria-required="true"
           placeholder="What should Claude do?"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          autoFocus
         />
-
-        {/* Optional, and normally left alone: Claude Code writes its own
-            one-line title into the transcript and the server prefers that,
-            falling back to the first line of the message. The placeholder says
-            so, because a blank field with a "Title" label reads as something
-            you owe the form — and when this form was opened from a chat, it
-            says it by showing that conversation's CURRENT name (see
-            titlePlaceholderFor: a preview, deliberately not a value, because a
-            value would freeze the name). */}
-        <div className="schedule-form-line">
-          {ICON_TITLE}
-          <input
-            type="text"
-            className="field-control new-task-title"
-            aria-label="Title"
-            placeholder={titlePlaceholderFor(sessionTitle, repeatOn)}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </div>
 
         {/* The path is a combobox, Google-style: focusing it drops the last
             few folders the user scheduled against, with Browse as the

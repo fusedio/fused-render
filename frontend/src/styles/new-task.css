@@ -119,13 +119,48 @@
 }
 
 /* -- Title -------------------------------------------------------------------
-   One optional row under the ask, a plain field-control in the icon gutter
-   every other row hangs from.
+   FIRST field on the card, and a prominent peer of the ask below it (Akshil,
+   2026-08-17). It is not a row in the icon gutter any more and not a
+   `.field-control`: it wears `.schedule-form-title`, the shared prominence
+   defined in schedule.css, so the 20px face, the weight, the transparent
+   background and the 2px underline are one definition worn by both fields
+   rather than two that can drift apart.
 
-   There used to be a second row here, a "Description (optional)" textarea
-   (.new-task-desc / .new-task-desc-line), and its rules went with it: the big
-   field IS the description now (Akshil, 2026-08-17), so there is no second
-   piece of prose to style. */
+   What is left for this file is the ONE thing Title does differently: it is a
+   single line, for ever. Never wraps, never grows, and a 200-character title
+   does not push the folder and time rows off the card.
+
+   OVERFLOW, decided: the value SCROLLS horizontally under the caret while the
+   field has focus — that is the native <input> behaviour and the only one that
+   lets you edit the far end of a long title — and ELLIPSES when focus leaves,
+   so a title too long to show says so instead of appearing to end mid-word.
+   `text-overflow` is what buys the second half, and it only takes effect on an
+   unfocused input, which is exactly the split we want. (Chrome's UA sheet
+   already forces `overflow: clip` on a text input — measured: the computed
+   value is `clip`, not the `hidden` declared here — so this declaration is
+   belt-and-braces for engines that do not, not the thing doing the work.)
+   Measured at 200 characters in both themes: height 41px either way, scrollLeft
+   2558 while focused and 0 once blurred, and the card the same 373px tall as
+   with a one-word title.
+
+   Every property is declared, not inherited: this file lands after deploy.css's
+   `.modal-body :where(input…, textarea)` block, which is the same specificity
+   and would otherwise repaint an unarmored input back into a boxed control.
+
+   (There used to be a second row in this section too, a
+   "Description (optional)" textarea — .new-task-desc / .new-task-desc-line —
+   and its rules went with it: the big field IS the description, so there is no
+   third piece of prose to style.) */
+.new-task-title {
+  /* One line. `pre` rather than `nowrap` so a pasted value's own spacing is not
+     collapsed on the way in — an <input> strips the newlines either way. */
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* No autogrow and no drag-grow: the height is one line of the shared 20px
+     face plus the shared padding, and it never changes. */
+  resize: none;
+}
 
 /* -- The past-time note ------------------------------------------------------
    Was a refusal in the error voice; scheduling into the past is now a

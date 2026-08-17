@@ -28,6 +28,7 @@ let deleteFailureText: typeof import("./NewJobModal").deleteFailureText;
 let sessionTitleOf: typeof import("./NewJobModal").sessionTitleOf;
 let titlePlaceholderFor: typeof import("./NewJobModal").titlePlaceholderFor;
 let deletePress: typeof import("./NewJobModal").deletePress;
+let saveEnabled: typeof import("./NewJobModal").saveEnabled;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
@@ -45,6 +46,7 @@ beforeAll(async () => {
   sessionTitleOf = mod.sessionTitleOf;
   titlePlaceholderFor = mod.titlePlaceholderFor;
   deletePress = mod.deletePress;
+  saveEnabled = mod.saveEnabled;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   pastNoteFor = mod.pastNoteFor;
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
@@ -73,9 +75,11 @@ const DAILY: RecurrenceRule = { freq: "day" };
 
 const form = (over: Partial<Form> = {}): Form => ({
   target: " /tmp/work ",
-  // The big field: the message AND the description. There is no third text
-  // field on the form any more (Akshil, 2026-08-17).
+  // The SECOND field, and the required one: the message AND the description.
+  // There is no third text field on the form (Akshil, 2026-08-17).
   message: "pull today's news",
+  // The FIRST field, and optional — blank is the ordinary case, which is why
+  // that is the default here.
   title: "",
   when: "2026-08-17T09:00",
   rule: null,
@@ -208,6 +212,65 @@ describe("the payload", () => {
     expect(
       buildSchedulePayload(form({ sessionId: "abc", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
+  });
+});
+
+// The two prominent fields are NOT equally optional, and this is where that
+// asymmetry lives (Akshil, 2026-08-17): Title is first and optional — the
+// server names the task from the transcript when it is blank (design §4) — and
+// the description below it is second and REQUIRED, because it is the text
+// Claude is actually sent and a task with nothing to do is not a task.
+describe("what Save refuses", () => {
+  // Everything Save wants, so each test can take exactly one thing away.
+  const gate = (over: Partial<Parameters<typeof saveEnabled>[0]> = {}) => ({
+    message: "pull today's news",
+    target: "/tmp/work",
+    pathError: null,
+    repeatOn: false,
+    repeat: "none",
+    customRule: null,
+    legacyCron: "",
+    pickedOk: true,
+    replaced: false,
+    ...over,
+  });
+
+  test("a filled form saves", () => {
+    expect(saveEnabled(gate())).toBe(true);
+  });
+
+  test("an EMPTY description is refused — it is the one required text field", () => {
+    expect(saveEnabled(gate({ message: "" }))).toBe(false);
+    // Whitespace is not an instruction, and a textarea collects plenty of it.
+    expect(saveEnabled(gate({ message: "   " }))).toBe(false);
+    expect(saveEnabled(gate({ message: "\n\n  \t\n" }))).toBe(false);
+  });
+
+  test("…and an empty TITLE is not, because the server names the task", () => {
+    // The whole point of the precedence in design §4: blank Title is the
+    // ordinary case, so it cannot be a reason to refuse. There is no `title` in
+    // the gate at all — Save does not read it.
+    expect(saveEnabled(gate())).toBe(true);
+    expect("title" in gate()).toBe(false);
+    // …and the payload agrees: no title key, and Save was still available.
+    expect("title" in buildSchedulePayload(form({ title: "" }))).toBe(false);
+  });
+
+  test("the rest of the gate is unchanged by the swap", () => {
+    // These were the other refusals before this pass and they still are — the
+    // change moved a field, it did not loosen anything.
+    expect(saveEnabled(gate({ target: "  " }))).toBe(false);
+    expect(saveEnabled(gate({ pathError: "This folder or file doesn't exist" }))).toBe(false);
+    expect(saveEnabled(gate({ replaced: true }))).toBe(false);
+    expect(saveEnabled(gate({ pickedOk: false }))).toBe(false);
+    // A "custom" repeat is only a choice once the dialog produced a rule…
+    expect(saveEnabled(gate({ repeatOn: true, repeat: "custom", customRule: null }))).toBe(false);
+    expect(saveEnabled(gate({ repeatOn: true, repeat: "custom", customRule: DAILY }))).toBe(true);
+    // …and a legacy cron template needs its line, but not a parseable date.
+    expect(saveEnabled(gate({ repeat: "cron", legacyCron: "" }))).toBe(false);
+    expect(saveEnabled(gate({ repeat: "cron", legacyCron: "0 9 * * *", pickedOk: false }))).toBe(
+      true,
+    );
   });
 });
 
