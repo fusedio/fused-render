@@ -1518,16 +1518,31 @@ def refresh_memory() -> None:
 
 
 def resident_models() -> set[str]:
-    """Which models are HELD right now — no probe, no refresh, one dict read.
+    """Which models are HELD right now — the weights in memory, ready to answer.
 
     `describe()` answers the same question far better (state, device, bytes) and
     charges a health request per live worker for it, which is the right trade for
     the sidebar and the wrong one for `/api/ai/catalog`: that route is a slow
     inventory a picker polls, and it only needs the boolean. Split out rather than
     folded into `describe()` so the cheap answer stays cheap.
+
+    **`state == "ready"`, not merely "in the table".** A Worker is inserted at
+    `starting` and passes through `venv`, `downloading` and `loading` on its way —
+    which for a first-ever bring-up is a multi-minute `uv sync` followed by a
+    multi-GB fetch. Reporting every row would have flipped a picker's "loaded" mark
+    the instant the button was pressed and left it lit through the whole download,
+    which is the opposite of what the mark promises.
+
+    **And still running.** `_alive` is `proc.poll()` — no signal, no request, and it
+    reaps the zombie as it asks — so a worker that crashed after reaching `ready`
+    reads as gone here rather than as loaded forever. Without it this path would be
+    the one place in the supervisor that trusts `state` alone: `refresh_memory()`
+    reaps on exactly this check, and skipping the probe is not a licence to skip the
+    liveness too.
     """
     with _lock:
-        return {w.model for w in _workers.values()}
+        return {w.model for w in _workers.values()
+                if w.state == "ready" and _alive(w)}
 
 
 def describe() -> dict:
