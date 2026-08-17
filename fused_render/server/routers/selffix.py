@@ -28,6 +28,7 @@ import threading
 from fastapi import APIRouter, Body, Header
 
 from fused_render import claude_spawn, selffix
+from fused_render.server import templates as _server_templates
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
@@ -317,7 +318,18 @@ def api_selffix_start(body: dict = Body(default={}),
 def api_selffix():
     """Everything the version chip's panel shows. See the module docstring for
     why this is not folded into /api/config."""
-    return selffix.snapshot()
+    snapshot = selffix.snapshot()
+    # The registry's health rides along because this tab is where "something is
+    # wrong with the app" lives (SF-14b), and because the toast that announces a
+    # broken registry needs somewhere to send the user that holds the WHOLE
+    # error and a way to copy it — a toast clamps at four lines.
+    #
+    # Added HERE rather than inside selffix.py, which deliberately imports
+    # nothing from `server`. The router is the layer allowed to know both.
+    error = _server_templates.registry_error()
+    if error:
+        snapshot["template_error"] = error
+    return snapshot
 
 
 @router.post("/api/selffix/clear")

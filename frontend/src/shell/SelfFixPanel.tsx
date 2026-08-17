@@ -23,6 +23,8 @@ import { useEffect, useState } from "react";
 
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { TroubleCard } from "@platform/ui/TroubleCard";
+import type { TroubleFacts } from "@platform/lib/trouble";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Field, TextArea } from "@platform/ui/field/fields";
 import {
@@ -32,6 +34,7 @@ import {
   fixSessionUrl,
   getSelfFix,
   isSelfFixStorageKey,
+  troubleFacts,
   issueUrl,
   startSelfFix,
   unlistedReports,
@@ -53,7 +56,14 @@ function basename(path: string): string {
 // which subsystem is at fault (that is the session's job to find out), and a
 // dropdown of our subsystem names would ask them to guess it before they are
 // allowed to ask for help.
-function DescribeSection({ writable }: { writable: boolean }) {
+function DescribeSection({
+  writable,
+  facts,
+}: {
+  writable: boolean;
+  /** For the copyable report when a start fails — see TroubleCard. */
+  facts: TroubleFacts;
+}) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,10 +102,6 @@ function DescribeSection({ writable }: { writable: boolean }) {
           value={note}
           onChange={(e) => setNote(e.target.value)}
           rows={4}
-          placeholder={
-            "e.g. Opening a folder with a few thousand files takes about ten " +
-            "seconds and the window is frozen the whole time. It was quick last week."
-          }
         />
       </Field>
       {!writable && (
@@ -105,7 +111,19 @@ function DescribeSection({ writable }: { writable: boolean }) {
           own.
         </ErrorBanner>
       )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {/* NOT an ErrorBanner. Two of the three things that fail here — Claude
+          Code missing, Claude not signed in — are fixable by the user in a
+          minute if they are told which minute, and unreadable otherwise. The
+          third (a session already running) is our own sentence and reads fine
+          in the same card. */}
+      {error && (
+        <TroubleCard
+          what="starting a fix session on this installation"
+          error={error}
+          facts={facts}
+          onRetry={() => setError(null)}
+        />
+      )}
       <button
         type="button"
         onClick={start}
@@ -128,7 +146,7 @@ function InstallationSection({
   onDismissed: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
-  const { marker, reinstall } = snapshot;
+  const { marker } = snapshot;
   const otherReports = unlistedReports(snapshot.reports, marker);
 
   return (
@@ -254,34 +272,6 @@ function InstallationSection({
         </>
       )}
 
-      <h2>{reinstall.headline}</h2>
-      <p className="deploy-muted">{reinstall.note}</p>
-      {reinstall.command && (
-        <div className="update-badge-command">
-          <code>{reinstall.command}</code>
-          <button
-            type="button"
-            className="update-badge-copy"
-            onClick={() => navigator.clipboard.writeText(reinstall.command)}
-          >
-            Copy
-          </button>
-        </div>
-      )}
-      <p>
-        <a
-          className={reinstall.command ? "version-panel-link" : "update-badge-action"}
-          href={reinstall.url}
-          target="_blank"
-          rel="noreferrer"
-        >
-          {reinstall.url_label ?? reinstall.url} ↗
-        </a>
-      </p>
-      <p className="deploy-muted">
-        Reinstalling always clears the modified badge: the record lives inside
-        the installation folder, so replacing that folder removes it.
-      </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -355,7 +345,27 @@ export function SelfFixPanel() {
   return (
     <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      <DescribeSection writable={snapshot.writable} />
+      {/* THE REGISTRY, when it will not parse. Here because this tab is where
+          "something is wrong with the app" lives (SF-14b), and because the
+          toast that announces it clamps at four lines — the user needs one
+          place holding the whole error with a button that copies it. Above the
+          describe box on purpose: if this is what is wrong, it is both the
+          answer and something they can fix without starting a session at all. */}
+      {snapshot.template_error && (
+        <TroubleCard
+          what="reading the template registry that decides which view opens a file"
+          title="Your template registry could not be read"
+          explain={
+            "Fused Render decides which view opens a file from a registry in " +
+            "~/.fused-render. Yours will not parse, so your own view bindings " +
+            "are not applying and files fall back to the built-in views. Fix " +
+            "the JSON below and it applies on the next file you open — no restart."
+          }
+          error={snapshot.template_error}
+          facts={troubleFacts(snapshot)}
+        />
+      )}
+      <DescribeSection writable={snapshot.writable} facts={troubleFacts(snapshot)} />
       <InstallationSection
         snapshot={snapshot}
         onDismissed={() =>

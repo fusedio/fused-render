@@ -18,6 +18,7 @@
 // that drops the run id lands the user in an empty chat, and an issue URL that
 // forgets the version is a bug report nobody can act on.
 import { getJson, postJson } from "@platform/lib/api";
+import type { TroubleFacts } from "@platform/lib/trouble";
 import { urlForFsPath } from "@platform/lib/router";
 
 // One recorded fix — a session that changed this installation. Absolute paths:
@@ -87,6 +88,10 @@ export interface SelfFixSnapshot {
   reinstall: ReinstallAdvice;
   issues_url: string;
   machine: Record<string, string | boolean>;
+  /** Why the template registries cannot be trusted, when they cannot (SPEC
+      §43, TR-9). Absent when they are fine — there is no healthy value to
+      check for. */
+  template_error?: string;
 }
 
 export interface SelfFixStart {
@@ -387,6 +392,25 @@ export function issueUrl(snapshot: SelfFixSnapshot): string {
     labels: "self-fix",
   });
   return `${snapshot.issues_url}?${params.toString()}`;
+}
+
+/** What the snapshot knows about this installation, in the shape the trouble
+    card's copyable report wants (lib/trouble). One place, because every surface
+    that can fail wants the same four facts and none of them should be
+    re-deriving "where is this installed" for itself. */
+const str = (v: string | boolean | undefined): string | undefined =>
+  typeof v === "string" ? v : undefined;
+
+export function troubleFacts(snapshot: SelfFixSnapshot): TroubleFacts {
+  return {
+    install_root: snapshot.install_root,
+    version: snapshot.version,
+    // `machine` is a loose map (it carries booleans too), so both are read as
+    // text or dropped — a `true` in the Platform line would be worse than none.
+    platform: str(snapshot.machine?.platform),
+    python: str(snapshot.machine?.python),
+    page: typeof location === "undefined" ? "" : location.pathname + location.search,
+  };
 }
 
 /** Reports on disk that the marker's `fixes` list does not already name.

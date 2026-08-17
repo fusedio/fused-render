@@ -580,6 +580,27 @@ def _load_registry(path: str, label: str):
     return registry, None
 
 
+def registry_error() -> str:
+    """Why the template registries cannot be trusted right now, or "".
+
+    Exists so the app can SAY it. Both registries are read per stat and their
+    failure already rides every payload as `template_error` (PT-8), but nothing
+    consumed it — and the failure is usually PARTIAL, since a broken user
+    registry leaves the built-in one matching, so files still preview and only
+    the user's own bindings quietly stop applying. That is a fault with no
+    symptom except the app being subtly wrong, which is the worst kind to leave
+    unnamed.
+
+    The user registry is checked first because it is the one a person edits.
+    """
+    for path, label in ((USER_REGISTRY, "registry.json"),
+                        (BUILTIN_REGISTRY, "built-in registry.json")):
+        _, error = _load_registry(path, label)
+        if error:
+            return error
+    return ""
+
+
 def _key_segments(key, is_dir: bool):
     """Parse a registry key into its match segments, or None when the key
     cannot apply to this stat. Keys are dot-anchored suffix patterns (SPEC

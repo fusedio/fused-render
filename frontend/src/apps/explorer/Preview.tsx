@@ -38,6 +38,8 @@ import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { pushToast } from "@platform/lib/toast";
+import { TroubleCard } from "@platform/ui/TroubleCard";
+import { shouldAnnounceTemplateError } from "@platform/lib/trouble";
 import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
@@ -1492,6 +1494,27 @@ function FallbackPreview({ fsPath, stat, actionsInTopbar }: { fsPath: string; st
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileMenu.onContextMenu} />}
       <div className="preview-body">
+        {/* WHY there is no view here, when the reason is our own registry
+            failing to parse rather than the file being unremarkable. The
+            server has always reported this (`template_error`, SPEC PT-8) and
+            nothing has ever read it, so a broken ~/.fused-render registry
+            presented as "this file just has no preview" — for every file at
+            once, with the reason sitting unread in the payload. That is a
+            registry the user can fix in a minute, and could not previously
+            know about. */}
+        {stat.template_error && (
+          <TroubleCard
+            what={`opening ${stat.name} — no view could be resolved for it`}
+            title="Your template registry could not be read"
+            explain={
+              "This file has no view, and the reason is ours rather than the " +
+              "file's: the registry that decides which view opens what will " +
+              "not parse. Fix the JSON and it applies on the next open."
+            }
+            error={stat.template_error}
+            facts={{ page: location.pathname + location.search }}
+          />
+        )}
         <div className="metadata-card">
           <dl>
             <dt>Name</dt>
@@ -1537,6 +1560,26 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
     (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
+  // A REGISTRY THAT WILL NOT PARSE, announced once (SPEC §43, TR-9).
+  //
+  // Said here rather than only in the fallback card below, because the failure
+  // is usually PARTIAL: the built-in registry still matches, so the file still
+  // previews and only the user's own bindings quietly stop applying — which is
+  // the reported symptom ("apps aren't rendering properly") and is invisible by
+  // construction. A toast rather than a card, because the error rides every
+  // stat and a card would be one per file; `shouldAnnounceTemplateError` is
+  // what makes it once per broken registry instead.
+  useEffect(() => {
+    if (!stat.template_error) return;
+    if (!shouldAnnounceTemplateError(stat.template_error)) return;
+    pushToast({
+      msg: `Your template registry could not be read, so your own view bindings are not applying: ${stat.template_error}`,
+      tone: "error",
+      ttlMs: 0,
+      action: { label: "Preferences", onClick: () => navigateUrl("/preferences?tab=selffix") },
+    });
+  }, [stat.template_error]);
+
   // The first unconditional template renders immediately — only an
   // ALL-conditional list has nothing safe to show and waits here.
   const conditions = useConditions(fsPath, templates);

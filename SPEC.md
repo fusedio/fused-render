@@ -7870,3 +7870,60 @@ the installation, and the mark that says so.
   everything it can fail on (the agent not loading, an unreadable runs directory)
   fails the spawn moments later too, with a message naming what actually went
   wrong instead of "already running".
+
+## 43. When Something Around the App Is Broken (D328)
+
+The self-fix feature above assumes Claude Code runs. When it does not — and in
+the other cases where the app is fine but something beside it is not — the user
+met a red string naming an endpoint or a CLI, in our vocabulary, with nowhere to
+go. Four failures, one answer.
+
+- **TR-1** **The four cases are the DOWNLOAD PAGE's four cases**, not a taxonomy
+  invented here: `notfound`, `login`, `limit`, `raw` (`lib/trouble.ts`,
+  matching render.fused.io's `data-err` tabs). The page already sorts these,
+  already explains each in plain words, and already accepts a deep link
+  (`#troubleshooting-<kind>`, read by its own `honorHash`), so the app links
+  straight to the answer instead of at a long page. Two vocabularies for one
+  problem is how a user ends up reading about installing something they have.
+- **TR-2** **A signed-out Claude is NOT a missing one**, which is the whole
+  reason classification is ordered and tested. "Not found" appears inside
+  messages whose real cause is named earlier in the same sentence, and telling
+  someone to install what they already installed spends the one minute they
+  needed. `login` and `limit` are therefore matched BEFORE the could-not-find
+  patterns, which are the broadest.
+- **TR-3** **`raw` is an answer, not a fallback.** The page has a tab for "some
+  other error message", so an unrecognised failure is routed somewhere real
+  rather than shrugged at.
+- **TR-4** **The copyable block is the point of the card.** Everything else
+  nudges the user toward a page; the copied text is what they can paste into
+  their own AI or an issue and get an actual answer from. It carries **what the
+  app was doing before it carries what went wrong** (a paste that opens with a
+  traceback makes the reader work out the question first), and it carries **the
+  installation** — the fact every diagnosis needs and the one nobody can look up
+  for themselves. Paths, a version, an OS string and the error; nothing read
+  from the user's files.
+- **TR-5** **The error is verbatim, always.** Rewording it makes it
+  unsearchable, and searching it is the first thing anyone does.
+- **TR-6** **It is WARNING-toned, not error-toned** — the same argument the
+  modified badge makes (SF-6). Nothing here is a crash: the app is running and
+  something beside it is not. A red card would say "this is broken" about the
+  wrong subject.
+- **TR-7** **Four surfaces, one component, two sizes.** The Preferences tab and
+  the preview's fallback card take the full card; a failed download row takes
+  the compact one (title, clamped error, copy, link) because that surface is a
+  340px notification and a wall of explanation in a corner popup is not read.
+  The boot failure takes the full card on an otherwise empty page.
+- **TR-8** **The boot failure cannot describe itself, and degrades rather than
+  printing empty labels.** `/api/config` is what failed, so there is no version,
+  install path or platform to report — the block falls back to the error and the
+  help link. It still beats one red line naming an endpoint, because the person
+  reading it has an unusable app and no idea whether to reinstall, restart, or
+  ask someone.
+- **TR-9** **A broken template registry is surfaced where it is FELT.** The
+  server has always reported it (`template_error`, PT-8) and nothing ever read
+  it, so a `~/.fused-render` registry that would not parse presented as "this
+  file has no preview" — for every file at once, with the reason sitting unread
+  in the payload. The fallback preview now says which registry failed and why.
+  That is a minute's fix the user could not previously know they needed.
+- **TR-10** **The install command is pinned by a test**, because it is shown as
+  a thing to copy into a terminal and a wrong one there is worse than none.
