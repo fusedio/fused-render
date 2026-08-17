@@ -112,6 +112,86 @@ def snapshot():
         return dict(STATE)
 
 
+def describe_failure(exc):
+    """What a user should be told about `exc` — the CHAIN, never the top frame.
+
+    `str(exc)` is the wrong answer whenever a library re-raises, and the
+    libraries a runner loads all do. transformers wraps every import failure
+    from its lazy-module machinery, so a missing stdlib module three layers
+    down arrived on the AI Models page as:
+
+        Could not import module 'AutoTokenizer'
+
+    while the actual exception it was raised `from` said:
+
+        ModuleNotFoundError: No module named 'filecmp'
+
+    One of those names a thing the user can act on; the other sends them
+    looking at the model, the repo and the download — all of which were fine.
+    So the chain is walked to its root and reported with the top message.
+
+    `__cause__` first, then `__context__`: an explicit `raise … from e` is the
+    library telling us what it wrapped, and an implicit context is the next-best
+    evidence when it did not bother.
+
+    `__suppress_context__` is honoured, which is the same rule `traceback`
+    itself follows and not a technicality here. `raise … from None` is a library
+    saying the exception it caught is NOT the explanation — the shape an
+    optional-dependency probe takes (`except ImportError: raise … from None`) —
+    and walking past it would let a deliberately hidden ImportError become our
+    "root cause", up to and including firing the stdlib hint about an
+    interpreter that is perfectly complete.
+    """
+    chain, seen = [], set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__)
+    text = f"{exc.__class__.__name__}: {exc}"
+    if len(chain) > 1:
+        root = chain[-1]
+        text += f" — caused by {root.__class__.__name__}: {root}"
+    hint = _stdlib_hint(chain)
+    return text + hint if hint else text
+
+
+def _stdlib_hint(chain):
+    """The sentence for a missing STDLIB module, or "".
+
+    This is a fact about the INTERPRETER, not about the environment built on
+    it, and the difference is the whole point: a missing third-party package is
+    fixed by rebuilding the runner's venv, while a missing stdlib module is
+    baked into the interpreter that venv was created from, so rebuilding
+    reproduces it exactly. Told the first story, a user retries forever.
+
+    **`ModuleNotFoundError`, not `ImportError`**, and that is not pedantry:
+    `from email import nope` raises a plain ImportError whose `.name` is
+    `email` — a package that is present and fine — so keying on ImportError
+    would accuse a complete interpreter of missing part of its stdlib and tell
+    the user a rebuild cannot help. That is the exact class of confidently
+    wrong cause this function exists to stop, which makes it worth being
+    strict: only "the module was not found" earns the accusation.
+
+    The TOP-LEVEL name decides, because `sys.stdlib_module_names` holds only
+    top-level names while a partial stdlib fails as `No module named
+    'email.mime'`. The full name is what gets reported — it is the thing that
+    is actually missing.
+    """
+    for exc in chain:
+        name = getattr(exc, "name", None) or ""
+        if isinstance(exc, ModuleNotFoundError) and name.partition(".")[0] in sys.stdlib_module_names:
+            return (
+                f"\n\n`{name}` is part of the PYTHON STANDARD LIBRARY, so this is "
+                f"the interpreter this environment was built on ({sys.base_prefix}) "
+                "shipping without it — not a problem with this model and not "
+                "something rebuilding the environment can fix. Please report it "
+                "with this message."
+            )
+    return ""
+
+
 class Cancelled(Exception):
     """Raised out of a progress callback when the app asked us to stop.
 
@@ -1494,8 +1574,9 @@ def _bring_up(model_id, download, load):
         # Deliberately broad and deliberately last: this thread is the only
         # thing that can say why a load failed, and an unhandled exception here
         # would leave /health saying "loading" forever.
-        set_state(state="error", error=f"{e.__class__.__name__}: {e}")
-        report(state="error", message=str(e) or e.__class__.__name__)
+        message = describe_failure(e)
+        set_state(state="error", error=message)
+        report(state="error", message=message)
         traceback.print_exc(file=sys.stderr)
 
 
@@ -1599,7 +1680,7 @@ def _handler(generate, streaming):
                     self._json({"ok": True, "cancelled": True})
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     traceback.print_exc(file=sys.stderr)
-                    self._json({"ok": False, "error": f"{e.__class__.__name__}: {e}"})
+                    self._json({"ok": False, "error": describe_failure(e)})
 
         def _stream(self, body):
             """NDJSON, chunked. `{"type":"chunk"}` lines closed by
@@ -1620,7 +1701,7 @@ def _handler(generate, streaming):
                     generate(body, write)
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     write({"type": "done", "ok": False,
-                           "error": f"{e.__class__.__name__}: {e}"})
+                           "error": describe_failure(e)})
                     traceback.print_exc(file=sys.stderr)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()

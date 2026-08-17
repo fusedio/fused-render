@@ -131,21 +131,27 @@ export async function freePastePath(parentDir: string, name: string, isDir: bool
   return join(dir, candidate);
 }
 
-// claude-cli:// deep link for a listing entry — Claude Code registers this
-// scheme OS-wide (see templates_api.api_open_in_claude, which builds the same
-// cwd shape for a template folder, but no starter q there). A dir opens with
-// its own path as cwd; a file opens with its parent as cwd. Both prime a
-// starter prompt telling Claude to load fused-render's skills first — a file's
-// prompt names it in quotes (not @-mention: names with spaces don't parse as
-// one mention) — with two trailing newlines so the user's actual ask lands on
-// a fresh line below (not auto-sent — the user still hits enter).
-export function claudeDeepLink(path: string, isDir: boolean, name: string, parentDir: string): string {
-  if (isDir) {
-    const q = "This is a fused-render project — load its skills first.\n\n";
-    return "claude-cli://open?cwd=" + encodeURIComponent(path) + "&q=" + encodeURIComponent(q);
-  }
-  const q = `This is a fused-render project — load its skills first, then read "${name}".\n\n`;
-  return "claude-cli://open?cwd=" + encodeURIComponent(normDir(parentDir)) + "&q=" + encodeURIComponent(q);
+// POSIX single-quote quoting for a path going into a shell command: wrap the
+// whole thing in ', and close/escape/reopen around each ' inside it. Paths with
+// spaces are the common case; a quote in a filename is the one that would
+// otherwise paste as a broken (or, worse, a differently-valid) command.
+function shellQuote(s: string): string {
+  return "'" + s.replace(/'/g, `'\\''`) + "'";
+}
+
+// The terminal command that starts a NEW Claude Code session on a listing
+// entry, for the CLIPBOARD — not a launch. It used to be a `claude-cli://`
+// deep link (the scheme Claude Code registers OS-wide, still how
+// templates_api.api_open_in_claude opens a template folder), which handed the
+// session to whichever app the OS picked. Copying instead is the same move the
+// plugin/marketplace install commands make: the user pastes it into the
+// terminal they already have open, in the session they want.
+//
+// A dir cd's into itself; a file cd's into its parent. No starter prompt: a
+// prompt passed on the command line (`claude "…"`) is SENT immediately, and the
+// deep link's `q` was deliberately a prefilled, unsent line.
+export function claudeTerminalCommand(path: string, isDir: boolean, parentDir: string): string {
+  return "cd " + shellQuote(isDir ? path : normDir(parentDir)) + " && claude";
 }
 
 // Re-exported, not defined here: the app-card context menu needs the same

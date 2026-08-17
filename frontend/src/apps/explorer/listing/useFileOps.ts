@@ -34,7 +34,7 @@ import {
   buildOpenWithItems,
   buildCompressItems,
   friendlyFsError,
-  claudeDeepLink,
+  claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
 import { moveEntriesInto } from "@apps/explorer/lib/fs-move";
 import { folderBarMenu } from "@apps/explorer/lib/bar-menus";
@@ -419,11 +419,14 @@ export function useFileOps({
     });
   };
 
-  // Open Claude Code via its claude-cli:// scheme handler — a dir cwd's into
-  // itself, a file cwd's into its parent and pre-fills an @-mention prompt.
-  // Setting location.href to a custom scheme does not navigate the SPA away.
-  const doOpenInClaude = (path: string, isDir: boolean, name: string, parentDir: string) => {
-    window.location.href = claudeDeepLink(path, isDir, name, parentDir);
+  // Hand the user the command instead of launching anything: a dir cd's into
+  // itself, a file into its parent, and the paste happens in the terminal (and
+  // the session) they already chose. Same shape as the config app's install
+  // commands — copy, then say so.
+  const doOpenInClaude = (path: string, isDir: boolean, parentDir: string) => {
+    copyToClipboard(claudeTerminalCommand(path, isDir, parentDir)).then((ok) => {
+      if (ok) pushToast({ msg: "Command copied — paste it in your terminal", tone: "info" });
+    });
   };
 
   const startNewFile = (dir: string) =>
@@ -643,7 +646,7 @@ export function useFileOps({
       {
         label: "Open in Claude Code",
         icon: MenuIcons.openWith,
-        onClick: () => doOpenInClaude(row.path, row.isDir, row.name, row.parentDir),
+        onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
       },
     ];
   };
@@ -662,7 +665,7 @@ export function useFileOps({
     {
       label: "Open in Claude Code",
       icon: MenuIcons.openWith,
-      onClick: () => doOpenInClaude(normDir(base), true, "", normDir(base)),
+      onClick: () => doOpenInClaude(normDir(base), true, normDir(base)),
     },
   ];
 

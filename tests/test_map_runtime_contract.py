@@ -4,6 +4,8 @@ from __future__ import annotations
 import builtins
 import importlib.util
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -445,29 +447,46 @@ def test_small_local_vector_keeps_oneshot_fallback_when_ui_supplies_proxy(
     )
 
 
-def test_map_daemon_follower_never_steals_a_fresh_start_lock(
-    monkeypatch,
-    tmp_path,
-):
+def test_map_daemon_spawns_are_serialized_by_a_kernel_lock(monkeypatch, tmp_path):
+    # The hand-rolled start lock (claim + stale-after timers) let a follower
+    # decide a lock was stale and spawn anyway — 20 orphaned daemons, each
+    # holding the geo stack. The kernel lock cannot go stale: it is released
+    # when its holder exits, so a follower blocks and then reuses the daemon
+    # the winner started.
     map_render = _load("map_render")
-    start_lock = tmp_path / "daemon-start.lock"
-    start_lock.write_text("owner", encoding="utf-8")
-    monkeypatch.setattr(map_render, "START_LOCK", start_lock)
-    monkeypatch.setattr(map_render, "_read_state", lambda: None)
-    monkeypatch.setattr(map_render, "_claim_start_lock", lambda: False)
-    monkeypatch.setattr(map_render, "_wait_for_service", lambda _timeout: None)
+    monkeypatch.setattr(map_render, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(map_render, "START_LOCK", tmp_path / "daemon.spawn.lock")
 
-    with pytest.raises(RuntimeError, match="already in progress"):
-        map_render._ensure_service()
+    started = {"port": 5, "token": "t", "version": map_render.VERSION}
+    box = {"state": None}
+    spawns = []
+    monkeypatch.setattr(map_render, "_read_state", lambda: box["state"])
+    monkeypatch.setattr(map_render, "_ping", lambda state, timeout=2.0: bool(state))
+    monkeypatch.setattr(map_render, "_retire_superseded", lambda: None)
 
-    assert start_lock.read_text(encoding="utf-8") == "owner"
-    assert (
-        map_render.FOLLOWER_WAIT_TIMEOUT
-        > map_render.SERVICE_START_TIMEOUT
-    )
-    assert (
-        map_render.START_LOCK_STALE_AFTER
-        > map_render.FOLLOWER_WAIT_TIMEOUT
+    def spawn():
+        spawns.append(1)
+        time.sleep(0.3)
+        box["state"] = started
+
+    monkeypatch.setattr(map_render, "_spawn_daemon", spawn)
+    monkeypatch.setattr(map_render, "_wait_for_service", lambda _timeout: box["state"])
+
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(map_render._ensure_service()))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(30)
+
+    assert spawns == [1], "a concurrent render spawned a second daemon"
+    assert results == [started, started]
+    assert map_render._ensure_service.__module__ == map_render.__name__
+    assert not hasattr(map_render, "_claim_start_lock"), (
+        "the hand-rolled start lock is back; file_lock is the whole point"
     )
 
 

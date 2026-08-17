@@ -1836,13 +1836,14 @@ def test_the_annotate_control_is_a_labelled_switch(html):
     assert "✎" not in html, "the pencil glyph is gone from the template"
 
 
-def test_annotate_mode_defaults_on_and_owns_pin_visibility(html):
-    """The one switch starts ON: an unset param means enabled, and only an
-    explicit "0" — the user sliding it off — disables. Encoded as `!== "0"`
-    rather than `=== "1"` so a first visit (no params at all) gets the default.
+def test_annotate_mode_defaults_off_and_owns_pin_visibility(html):
+    """The one switch starts OFF: only an explicit "1" — the user sliding it on
+    — arms it, and an unset param (a first visit, or a pane the reader just
+    opened) leaves the comment layer down, so clicks reach the app. Encoded as
+    `=== "1"` rather than `!== "0"` so ABSENT reads as disarmed.
     Pin visibility and auto-send have no params of their own any more: pins
     follow the mode, and a saved new note always auto-sends."""
-    assert 'annSetMode(fused.params.get("annmode") !== "0")' in html
+    assert 'annSetMode(fused.params.get("annmode") === "1")' in html
     assert "annshow" not in html
     assert "annautosend" not in html
     # pins gate on the mode itself, and toggling the mode repaints them
@@ -1850,14 +1851,13 @@ def test_annotate_mode_defaults_on_and_owns_pin_visibility(html):
     assert "renderAnn()" in _between(html, "function annSetMode(", "\n}")
     # ...and reading the default back through the one writer must not WRITE it.
     # runtime.js pushes a history entry on the first param write of a pristine
-    # entry (so Back reaches the URL as loaded), so this boot-time normalisation
-    # of an absent `annmode` to "1" burned a second entry: expanding the preview
-    # pane to full screen took TWO presses of Back to undo. The DOM and state
-    # work still runs; only the write is conditional, and only on a no-op —
-    # writing "0" over an absent param is a real disarm (a narrow pane boots
-    # that way) and still pushes.
+    # entry (so Back reaches the URL as loaded), so a boot-time normalisation of
+    # an absent `annmode` burns a second entry: expanding the preview pane to
+    # full screen took TWO presses of Back to undo. The DOM and state work still
+    # runs; only the write is conditional, and only on a no-op — writing "1"
+    # over an absent param is a real arm and still pushes.
     mode = _between(html, "function annSetMode(on) {", "\nannBtn.addEventListener")
-    assert 'if ((fused.params.get("annmode") !== "0") !== annOn) {' in mode
+    assert 'if ((fused.params.get("annmode") === "1") !== annOn) {' in mode
     assert mode.count('fused.params.set("annmode"') == 1
     # auto-send is unconditional (bar the in-flight / typed-draft guards)
     assert "if (isNew && filled && !sending) annAutoSubmit();" in html

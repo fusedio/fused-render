@@ -20,8 +20,9 @@ about the presence of a rule:
   hides the control while leaving the state armed. The reset guard used to test
   `narrowShown === true`, which only ever describes a Preview→Chat flip; a media
   crossing arrives with `narrowShown === false` from the wide boot call. It now
-  tests `narrowShown !== null`, which still excludes BOOT — writing `annmode=0`
-  there would clobber the ON-by-default the wide layout shares.
+  tests `narrowShown !== null`, which still excludes BOOT — boot has nothing to
+  disarm now that the mode starts OFF, and an explicit `annmode=1` in the URL it
+  loaded with belongs to the wide layout too.
 * **an auto-submitted note must not park a permission card in a hidden `#log`.**
   Saving an annotation sends immediately, and in Preview view the transcript is
   collapsed with the rest of the chat column. A permission card IS the prompt —
@@ -140,9 +141,9 @@ let narrowShown = null;
 
 
 def test_boot_never_touches_the_armed_controls(html):
-    """The one call that must NOT reset: boot is never a crossing, and disarming
-    there would write `annmode=0` the first time this view opened in a narrow
-    pane. `narrowShown === null` is what "boot" means here."""
+    """The one call that must NOT reset: boot is never a crossing, and a URL
+    that loaded with an explicit `annmode=1` keeps it — that param belongs to
+    the wide layout too. `narrowShown === null` is what "boot" means here."""
     out = _apply_narrow_view(html, _STUBS, """
 narrow = true; paneview = "chat"; annOn = true;
 applyNarrowView();

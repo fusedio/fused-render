@@ -1060,11 +1060,14 @@ def test_every_run_write_is_a_replace_write():
     new `run` write has to be looked at on purpose rather than inherited. The sixth
     is `pollScheduledRuns` attaching a scheduled send that fired while the chat was
     open (SCH-11f): in-flight bookkeeping of exactly the kind this rule is about,
-    and a `replace` write like its five siblings.
+    and a `replace` write like its five siblings. The seventh is `adoptLiveRun`
+    putting a rediscovered run back on the URL after the server was asked whether
+    this chat still has one — the same bookkeeping, arrived at by a question
+    instead of by starting the run, and the reader took no step to be recorded.
     """
     code = _pane_code()
     writes = re.findall(r'fused\.params\.set\("run",[^;]*;', code)
-    assert len(writes) == 6, writes
+    assert len(writes) == 7, writes
     for w in writes:
         assert 'history: "replace"' in w, w
 
@@ -1398,8 +1401,10 @@ def test_no_armed_preview_control_survives_leaving_the_preview_view():
     not a flip: a wide boot leaves `narrowShown === false`, so arming the mode
     with both columns on screen and then dragging the pane under 800px hid the
     control and kept the state. `narrowShown !== null` is the honest test: it
-    means "not boot", which is the one call that must not run the reset — writing
-    annmode=0 there would clobber the ON-by-default the wide layout shares.
+    means "not boot", which is the one call that must not run the reset — boot
+    has nothing to disarm now that the mode starts OFF, and a URL that arrived
+    carrying an explicit `annmode=1` is the reader's own choice, not a state to
+    clobber on the way in.
     The behaviour, including the crossing, is exercised under node in
     tests/test_claude_narrow.py; this is the source pin that keeps the shape.
 

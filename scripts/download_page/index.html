@@ -567,9 +567,11 @@
     max-width: 640px;
   }
 
-  /* DMG → Applications illustration (inline SVG next to the install steps). */
-  .dmg-art { margin: 18px 0 0; max-width: 640px; }
-  .dmg-art svg { width: 100%; height: auto; display: block; }
+  /* DMG → Applications: a screen recording of the real drag, not a diagram.
+     Held under the 640px the other guide shots use — the window is small and
+     upscaling a GIF past its own pixels only makes the dither visible. */
+  .dmg-art { max-width: 470px; }
+  .dmg-art img { width: 100%; height: auto; display: block; }
   @media (max-width: 760px) {
     .trouble-split { grid-template-columns: 1fr; }
   }
@@ -798,24 +800,10 @@
       <li><div><b>Drag it in.</b> Double-click the downloaded file — a window
       opens. Drag the Fused Render icon onto the Applications folder, like
       this:
-      <div class="dmg-art" aria-hidden="true">
-        <svg viewBox="0 0 640 200" fill="none">
-          <rect x="10" y="14" width="270" height="172" rx="14" stroke="#2e2e31" fill="#1b1b1d"/>
-          <circle cx="30" cy="34" r="4.5" fill="#3a3a3e"/>
-          <circle cx="46" cy="34" r="4.5" fill="#3a3a3e"/>
-          <circle cx="62" cy="34" r="4.5" fill="#3a3a3e"/>
-          <text x="145" y="39" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="11" fill="#b9b9bf">FusedRender.dmg</text>
-          <line x1="10" y1="52" x2="280" y2="52" stroke="#2e2e31"/>
-          <rect x="85" y="80" width="64" height="64" rx="15" fill="#141414" stroke="#e5ff44"/>
-          <text x="117" y="122" text-anchor="middle" font-size="30" fill="#e5ff44">✦</text>
-          <text x="117" y="166" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#b9b9bf">Fused Render</text>
-          <path d="M300 112 h96" stroke="#e5ff44" stroke-width="2.5" stroke-dasharray="7 7"/>
-          <path d="M388 102 l14 10 -14 10" stroke="#e5ff44" stroke-width="2.5" fill="none"/>
-          <rect x="430" y="14" width="200" height="172" rx="14" stroke="#2e2e31" fill="#1b1b1d"/>
-          <path d="M495 84 h22 l7 8 h44 a6 6 0 0 1 6 6 v38 a6 6 0 0 1 -6 6 h-73 a6 6 0 0 1 -6 -6 v-46 a6 6 0 0 1 6 -6 z" fill="#141414" stroke="#b9b9bf" stroke-width="2"/>
-          <text x="530" y="166" text-anchor="middle" font-family="system-ui, sans-serif" font-size="11" fill="#b9b9bf">Applications</text>
-        </svg>
-      </div></div></li>
+      <figure class="guide-shot dmg-art">
+        <img src="assets/guide_install_drag.gif" width="470" height="384" loading="lazy"
+             alt="The FusedRender disk image window: the Fused Render icon is dragged up onto the Applications folder, which highlights as it accepts the drop">
+      </figure></div></li>
       <li><div><b>Open it.</b> Find Fused Render in your Applications folder
       (or press <code>⌘ Space</code> and type its name). It opens like any
       other Mac app — no warnings, it's signed and notarized.</div></li>
