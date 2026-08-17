@@ -48,6 +48,51 @@ export const IS_EMBED =
   location.pathname.startsWith(EMBED_PREFIX) ||
   location.pathname === "/explorer/embed";
 
+// The param a display-only card peek stamps on its embed URL (BookmarkCards'
+// LivePreview), and the flag GET /render takes to skip open recording (D301).
+// One name end to end: the card marks the embed shell, the shell forwards it
+// onto every /render URL it builds (Preview.tsx), the server skips the record.
+export const PREVIEW_PARAM = "_preview";
+
+// A same-origin ancestor frame carrying the thumbnail stamp. Inheritance is
+// the point: a PREVIEWED page may itself embed other apps (the tutorial
+// example iframes the sine app via /embed/ and the full shell via /view/),
+// and those nested shells load with no flag of their own — so a card peek at
+// the tutorial recorded opens of the apps INSIDE it. Any ancestor being a
+// thumbnail makes this whole subtree a thumbnail, whatever prefix it loaded
+// under. Cross-origin ancestors (or no DOM at all, in tests) read as "no".
+function ancestorIsPreview(): boolean {
+  try {
+    let w: Window = window;
+    while (w.parent && w.parent !== w) {
+      w = w.parent;
+      if (new URLSearchParams(w.location.search).get(PREVIEW_PARAM) === "1") return true;
+    }
+  } catch {
+    /* cross-origin frame — not ours, so not our thumbnail */
+  }
+  return false;
+}
+
+// AM I A THUMBNAIL? Read once at module init like IS_EMBED — navigate() drops
+// the query on every in-app hop, but a card peek never navigates (its pointer
+// shield keeps every click on the card), so the load-time value is the truth
+// for the document's whole life. Without this, a folder card peeking at an
+// app's entry page RECORDS AN OPEN of that app every time the card scrolls
+// into view, and the /apps recency order rearranges itself.
+export const IS_PREVIEW =
+  (IS_EMBED && new URLSearchParams(location.search).get(PREVIEW_PARAM) === "1") ||
+  ancestorIsPreview();
+
+// Mark an embed/render URL as a thumbnail. Idempotent (a bookmark's stored
+// url may carry any query, and cards rebuild their src every render — an
+// accumulating param would reload the frame for nothing), same shape as
+// frame-focus's withNoFocus.
+export function withPreviewFlag(src: string): string {
+  if (new URLSearchParams(src.split("?")[1] ?? "").get(PREVIEW_PARAM) === "1") return src;
+  return src + (src.includes("?") ? "&" : "?") + PREVIEW_PARAM + "=1";
+}
+
 // A FROZEN TREE, not a live folder: the framing a view uses when it embeds a
 // materialised historical snapshot — a commit extracted into
 // ~/.fused-render/app-versions/<key>/<sha>/ with that directory framed.
