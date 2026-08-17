@@ -1365,22 +1365,26 @@ function TaskNode({
             me to handle". The absolute instant, and WHICH run it is, are in the
             tooltip — the ink cannot say that in one unit and does not try.
 
-            After the spacer and before the folder, both `flex: 0 0 auto`: the row
-            has exactly ONE auto margin (`.tasks-grow` above) and the title is the
+            After the spacer, both it and the folder `flex: 0 0 auto`: the row has
+            exactly ONE auto margin (`.tasks-grow` above) and the title is the
             element that shrinks, so a long title ellipsises rather than squeezing
             the time. Nothing is drawn when the task has neither run. */}
-        {when && (
-          <span className="tasks-row-time" title={when.title}>
-            {when.text}
-          </span>
-        )}
         {/* The folder, only when the list SPANS folders (tasks-lib.spansProjects,
             asked of the rows on screen rather than of the filter). Filtered to one
             project, every row was repeating the same word at the busiest end of the
             row — a chip that distinguishes nothing. The full path is still the
-            row's own tooltip either way. */}
+            row's own tooltip either way.
+
+            Folder FIRST, time last (Akshil, 2026-08-18). The two were the other way
+            round when the time arrived; at the end of a row the last thing before
+            the edge is the one a reader lands on, and the time is what changes. */}
         {showProject && (
           <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+        )}
+        {when && (
+          <span className="tasks-row-time" title={when.title}>
+            {when.text}
+          </span>
         )}
       </div>
 

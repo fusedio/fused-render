@@ -3125,13 +3125,15 @@ describe("the time a task row prints", () => {
     expect(when.title).toContain("Next run");
   });
 
-  it("sits after the row's ONE spacer, beside the folder, and shrinks nothing", () => {
+  it("sits after the row's ONE spacer, last in the row, and shrinks nothing", () => {
     const time = ROW.indexOf('className="tasks-row-time"');
     expect(time).toBeGreaterThan(-1);
     // After the spacer — so it belongs to the trailing metadata group rather than
-    // hugging the title — and before the folder chip it stands beside.
+    // hugging the title — and after the folder chip, which is the order the two
+    // were swapped into: the last thing before the row's edge is what a reader
+    // lands on, and the time is the half that changes.
     expect(time).toBeGreaterThan(ROW.indexOf('className="tasks-grow"'));
-    expect(time).toBeLessThan(ROW.indexOf("<IdentityChip"));
+    expect(time).toBeGreaterThan(ROW.indexOf("<IdentityChip"));
     // Still exactly one spacer and no auto margin anywhere: free space is split
     // equally among every `auto` margin, so a second would re-centre the group.
     expect((ROW.match(/className="tasks-grow"/g) ?? []).length).toBe(1);
