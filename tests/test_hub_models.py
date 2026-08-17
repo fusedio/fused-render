@@ -455,21 +455,51 @@ def test_every_result_carries_the_capability_that_would_load_it(client, hub_cach
     }
 
 
-@pytest.mark.parametrize("field,value", [("gated", "manual"), ("gated", "auto"),
-                                         ("private", True)])
-def test_a_result_nobody_could_download_is_dropped(client, hub_cache, monkeypatch,
-                                                   field, value):
-    """Gated and private repos go, and the pill that used to explain them goes
-    with them.
+def test_a_private_repo_is_dropped(client, hub_cache, monkeypatch):
+    """Private stays out, and it is a different case from gated (D316).
 
-    A `gated` pill was honest and still left a Download button that would 403:
-    the licence has to be accepted on the website first, which is not something
-    this page can do or wait for. Every card carries a button now, so a result
-    that would need something to happen elsewhere is not a result.
+    A private repo is visible here only because this machine happens to hold a
+    token that can see it, and there is no step an ordinary account can take to
+    reach it — no licence to accept, no queue to join. A card for one could
+    never be actioned by the person reading it.
     """
     monkeypatch.setattr(httpx, "get", _reply([
-        _hit("org/blocked", **{field: value}), _hit("org/open")]))
+        _hit("org/blocked", private=True), _hit("org/open")]))
     assert [m["id"] for m in _search(client).json()["models"]] == ["org/open"]
+
+
+@pytest.mark.parametrize("value,expected", [("auto", "auto"), ("manual", "manual"),
+                                            (True, "manual")])
+def test_a_gated_repo_survives_and_says_which_kind_of_gate(client, hub_cache, monkeypatch,
+                                                           value, expected):
+    """Gated repos come back, carrying the gate (D316).
+
+    They were dropped on the rule that every card must be downloadable now, and
+    that rule was drawn one step too tight: a gate you open by signing in and
+    accepting a licence is not the same as a repo nobody can have. Some of the
+    best-known models on the Hub are `auto`-gated, and a search that silently
+    omits them is answering a question the user did not ask.
+
+    `manual` is the distinct case the Hub does tell us about — access is granted
+    by the repo's owner, not by a click — so it travels as its own value rather
+    than being flattened into "gated". An unrecognised truthy gate is read as
+    `manual`: the stricter of the two, because guessing "just sign in" about a
+    gate nobody here understands is the guess that wastes someone's time.
+    """
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/llama", gated=value)]))
+    rows = _search(client).json()["models"]
+    assert [r["id"] for r in rows] == ["org/llama"]
+    assert rows[0]["gated"] == expected
+    # Still a real capability, so the card knows what it would be downloading.
+    assert rows[0]["capability"] == registry.TEXT_GENERATION
+
+
+def test_an_ungated_result_says_so_rather_than_saying_nothing(client, hub_cache, monkeypatch):
+    # Null, not absent and not False: the page tests one field for "is there a
+    # gate and what kind", and a missing key would make "no gate" and "a Hub
+    # that did not tell us" the same answer.
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/open"), _hit("org/also", gated=False)]))
+    assert [r["gated"] for r in _search(client).json()["models"]] == [None, None]
 
 
 def test_asking_for_a_task_nothing_here_runs_is_refused(client, hub_cache, monkeypatch):

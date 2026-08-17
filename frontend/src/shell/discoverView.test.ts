@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { discoverChrome, resultsSummary, suggestedSummary } from "./discoverView";
+import { discoverChrome, gateChrome, resultsSummary, suggestedSummary } from "./discoverView";
 
 // What the Discover tab is SHOWING, from the settled query alone. Three pieces
 // of chrome that must move together — the grid, the "these are suggestions"
@@ -33,6 +33,56 @@ describe("discoverChrome", () => {
     for (const [q, task] of [["", ""], ["whisper", ""], ["", "text-to-image"], ["a", "t"]]) {
       const chrome = discoverChrome(q, task);
       expect(chrome.heading).toBe(chrome.view === "results" ? "Search results" : "Suggested models");
+    }
+  });
+});
+
+// What a gated result offers instead of a bare Download button. Gated repos
+// are results again (D316) — a licence you accept by signing in is a step the
+// user can take — so the card has to say which gate and what opens it.
+describe("gateChrome", () => {
+  it("is nothing at all for an ordinary repo", () => {
+    // The overwhelming majority. No pill, no second action, no hedging.
+    expect(gateChrome(null, false)).toBe(null);
+    expect(gateChrome(null, true)).toBe(null);
+  });
+
+  it("offers the download when this machine has a token", () => {
+    // The token is what turns "you cannot have this" into "you may already
+    // have accepted this" — the download is the honest thing to offer, and the
+    // Hub is the one that gets to refuse.
+    const gate = gateChrome("auto", true)!;
+    expect(gate.canDownload).toBe(true);
+    expect(gate.action).toBe(null);
+    expect(gate.pill).toBe("gated");
+  });
+
+  it("sends an unauthenticated reader to the licence rather than to a 403", () => {
+    const gate = gateChrome("auto", false)!;
+    expect(gate.canDownload).toBe(false);
+    expect(gate.action).toBe("Accept terms");
+  });
+
+  it("says when a gate needs a person rather than a click", () => {
+    // "manual" is the one case that takes more than signing in: the repo's
+    // owner grants access by hand, and somebody told to "accept the terms"
+    // would go looking for a button that is not there.
+    const gate = gateChrome("manual", false)!;
+    expect(gate.action).toBe("Request access");
+    expect(gate.pill).toBe("gated — by approval");
+    expect(gate.title).toContain("owner");
+  });
+
+  it("always explains itself, in every combination", () => {
+    // The pill is two words; the sentence behind it is the whole of what the
+    // reader has to do, and a card that showed the badge with no explanation
+    // would be the "gated" pill D313 deleted for exactly that reason.
+    for (const gated of ["auto", "manual"] as const) {
+      for (const auth of [true, false]) {
+        const gate = gateChrome(gated, auth)!;
+        expect(gate.title.length).toBeGreaterThan(30);
+        expect(gate.pill.startsWith("gated")).toBe(true);
+      }
     }
   });
 });

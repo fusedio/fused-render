@@ -9,16 +9,22 @@
 // checkpoints nothing on screen mentions, so "≈16 GB" belongs next to a model's
 // name before anyone decides to fetch it, not after.
 //
-// **Everything on this tab is downloadable, and that is what the tab is for**
-// (D313). It used to be two features stacked: a curated list you could download
-// from, and under it a Hub search whose results were read-only — with a caption
-// admitting as much. The search returned whatever the Hub returned, which on a
-// page that runs four kinds of model meant embedding models, fill-mask models
-// and gated repos, none of which could be acted on. The search is still here,
-// because "what is out there" is a real question the shortlist cannot answer;
-// what changed is that the server now constrains it to repos a registered
-// runner can load (`routers/hub_models.py`), so a result is a card with a
-// working Download button rather than a link to somewhere else.
+// **Everything on this tab is ACTIONABLE, and that is what the tab is for**
+// (D313, narrowed by D316). It used to be two features stacked: a curated list
+// you could download from, and under it a Hub search whose results were
+// read-only — with a caption admitting as much. The search returned whatever
+// the Hub returned, which on a page that runs four kinds of model meant
+// embedding models and fill-mask models, none of which could be acted on. The
+// search is still here, because "what is out there" is a real question the
+// shortlist cannot answer; what changed is that the server now constrains it to
+// repos a registered runner can load (`routers/hub_models.py`), so a result is
+// a card with a working Download button rather than a link to somewhere else.
+//
+// A GATED repo is a result, and that is the one place the rule bends on
+// purpose: a licence you accept by signing in is a step the user can take, so
+// the card names the gate and offers the way through it (`gateChrome`) rather
+// than the search pretending the model is not there. Private repos still go —
+// nothing an ordinary account does reaches one.
 //
 // **The two are one surface, not two.** The search box is at the TOP — it is
 // the thing you came here to type in, and it was previously below three
@@ -49,7 +55,12 @@ import type { Job } from "@platform/lib/jobs";
 import { formatSize, formatParams, timeAgo } from "@platform/lib/format";
 import { navigate, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { discoverChrome, resultsSummary, suggestedSummary } from "@shell/discoverView";
+import {
+  discoverChrome,
+  gateChrome,
+  resultsSummary,
+  suggestedSummary,
+} from "@shell/discoverView";
 
 // Long enough that a typed word is one request rather than five, short enough
 // that the results feel like they are following the query.
@@ -142,8 +153,20 @@ function DownloadButton({
 // One search result. Same .cc-mdcard/.am-card as everything else on the page —
 // a model should not look like two different things depending on which grid
 // found it.
-function HubCard({ model, downloads }: { model: HubModel; downloads: Downloads }) {
+function HubCard({
+  model,
+  downloads,
+  authenticated,
+}: {
+  model: HubModel;
+  downloads: Downloads;
+  /** Whether this machine holds a Hub token. It belongs to the SEARCH, not to
+   *  the model, which is why it arrives beside the row rather than in it. */
+  authenticated: boolean;
+}) {
   const { busy, have } = cardState(model.id, downloads);
+  // What the Hub asks before it will hand this one over, when it asks anything.
+  const gate = gateChrome(model.gated, authenticated);
   // Only a COMPLETE download opens locally. "partial" means blobs with no
   // materialised snapshot, so there is no revision for the model card to
   // describe — linking there would hand someone a view that cannot load.
@@ -175,6 +198,15 @@ function HubCard({ model, downloads }: { model: HubModel; downloads: Downloads }
         {have && !busy && (
           <span className="am-suggest-have" title={`${model.id} is already on this machine`}>
             ✓ downloaded
+          </span>
+        )}
+        {/* The gate, named, with the whole of what to do about it on hover.
+            This is NOT the pill D313 deleted: that one announced a problem and
+            left a Download button beside it that would 403. Here the gate
+            decides the action too — see the footer. */}
+        {gate && !have && (
+          <span className="am-card-gate" title={gate.title}>
+            {gate.pill}
           </span>
         )}
         <span className="am-card-size" title={sizeTitle(model)}>
@@ -228,12 +260,29 @@ function HubCard({ model, downloads }: { model: HubModel; downloads: Downloads }
               Explore
             </a>
           )}
-          <DownloadButton
-            id={model.id}
-            capability={model.capability}
-            sizeHint={size}
-            downloads={downloads}
-          />
+          {/* A gate this machine cannot open gets the way to open it instead of
+              a button that cannot start. The link goes to the model's own Hub
+              page, which is where both the licence and the access request
+              live. */}
+          {gate?.action && !have && (
+            <a
+              className="am-card-power am-card-gate-link"
+              href={model.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={gate.title}
+            >
+              {gate.action}
+            </a>
+          )}
+          {(!gate || gate.canDownload) && (
+            <DownloadButton
+              id={model.id}
+              capability={model.capability}
+              sizeHint={size}
+              downloads={downloads}
+            />
+          )}
         </span>
       </div>
     </div>
@@ -401,6 +450,7 @@ export default function AiModelsDiscover({
   const [pending, setPending] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [endpoint, setEndpoint] = useState<string | null>(null);
+  const [authenticated, setAuthenticated] = useState(false);
   // Bumped by the debounce so the fetch effect re-runs on a settled query
   // rather than on every keystroke.
   const [settled, setSettled] = useState({ q: "", task: "", sort: "downloads" as HubSort });
@@ -465,6 +515,11 @@ export default function AiModelsDiscover({
         setError(data.error ?? null);
         setModels(data.models);
         setEndpoint(data.endpoint ?? null);
+        // Whether this machine holds a Hub token — never the token, only the
+        // fact. It decides what a gated card offers (`gateChrome`), and it
+        // comes from the same reply as the rows so the two cannot describe
+        // different moments.
+        setAuthenticated(!!data.authenticated);
       },
       (e: Error) => {
         if (!alive) return;
@@ -627,7 +682,12 @@ export default function AiModelsDiscover({
             {models !== null && models.length > 0 && (
               <div className={"cc-mdgrid am-grid" + (loading ? " am-hub-stale" : "")}>
                 {models.map((m) => (
-                  <HubCard key={m.id} model={m} downloads={downloads} />
+                  <HubCard
+                    key={m.id}
+                    model={m}
+                    downloads={downloads}
+                    authenticated={authenticated}
+                  />
                 ))}
               </div>
             )}

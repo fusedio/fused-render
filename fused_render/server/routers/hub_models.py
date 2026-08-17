@@ -9,22 +9,28 @@ read three weeks ago, and would cost nothing to open. Every result here is
 cross-referenced against the local scan before it is returned, so a card can say
 **downloaded**, **partly downloaded**, or **not downloaded, ~7.3 GB**.
 
-**Every result is downloadable, and that constraint is the feature** (D313).
-This search used to return whatever the Hub returned — `sentence-transformers`,
-`bert-base-uncased`, a fill-mask model, a gated repo — over a page that could
-load none of them, and it said so in a caption under the box: "Search results
-are read-only". A browsing surface over tens of thousands of repos in front of
-an app that runs about four kinds of model is not a feature with a rough edge.
-So the constraint moved into the module: a row survives only if
+**Every result is RUNNABLE HERE, and that constraint is the feature** (D313,
+narrowed by D316). This search used to return whatever the Hub returned —
+`sentence-transformers`, `bert-base-uncased`, a fill-mask model — over a page
+that could load none of them, and it said so in a caption under the box:
+"Search results are read-only". A browsing surface over tens of thousands of
+repos in front of an app that runs about four kinds of model is not a feature
+with a rough edge. So the constraint moved into the module: a row survives only
+if
 
 * its `pipeline_tag` maps, through the SAME table that decides whether a
   downloaded model gets a Load button (`registry.capability_for_task`), to a
   capability some registered runner serves. A repo with no pipeline tag at all
   is dropped too — we cannot promise something we cannot classify.
-* it is not `gated` and not `private`. Both are downloadable only after
-  something happens elsewhere (a licence accepted, an org membership), and a
-  card that has to hedge about whether its own button will work is the thing
-  this constraint exists to remove.
+* it is not `private`. There is no step an ordinary account can take to reach
+  one, so a card for it could never be actioned by the person reading it.
+
+**The constraint is "an engine here can run it", not "nothing further is asked
+of the user"** — that is D316's correction. Gated repos come BACK, carrying
+their gate (`gated`: "auto" | "manual" | None), because a licence you accept by
+signing in and clicking is a step the user can take, and several of the
+best-known models on the Hub sit behind exactly one. The card says what is
+needed instead of offering a button that 403s.
 
 Every row therefore carries a non-null `capability`, which is exactly what the
 page needs to hand to `POST /api/ai/runtime/download`. **The filter is by
@@ -327,30 +333,54 @@ def _local_state(cache_dir: str, dirname: str | None) -> dict:
     }
 
 
+def _gate(raw) -> str | None:
+    """The Hub's `gated` field as one of None / "auto" / "manual".
+
+    The Hub sends `False` for an open repo and the two strings for a gated one.
+    Anything else truthy is read as "manual": that is the stricter of the two
+    gates, and telling somebody a gate opens by signing in when it does not is
+    worse than telling them to go and look.
+    """
+    if not raw:
+        return None
+    return "auto" if raw == "auto" else "manual"
+
+
 def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
     """One Hub result, joined to the local cache — or None for a row this app
     has no business offering.
 
-    **Four ways to be dropped, and they are the search's whole contract**
-    (D313). A row that reaches the page comes with a Download button, so every
-    one of these is the difference between a button that works and a button
-    that apologises:
+    **Three ways to be dropped, and they are the search's whole contract**
+    (D313, narrowed by D316). A row that reaches the page comes with a Download
+    button or with the one sentence that says what to do first, so every one of
+    these is the difference between an actionable card and one that apologises:
 
     * no id — a row the page could not act on at all.
     * a `pipeline_tag` no registered runner serves, or none at all. The tag is
       classified by `capability_for_task`, the same function the Local tab's
       Load button asks, so "searchable" and "loadable" cannot come apart.
-    * `gated` — "auto"/"manual"/False on the Hub, and anything truthy means a
-      licence has to be accepted on the website first. It used to be surfaced
-      as a pill on the card, which was honest and still left a Download button
-      that would 403.
     * `private` — visible only because this machine happens to hold a token
-      that can see it, and not something the page can promise to fetch.
+      that can see it. There is no step an ordinary account can take to reach
+      one: no licence to accept, no queue to join, so a card for it could never
+      be actioned by the person reading it.
+
+    **`gated` is NOT a drop, and the distinction is the point** (D316). It was
+    one, on the rule that every card must be downloadable — a rule drawn one
+    step too tight. A gate you open by signing in and accepting a licence is
+    not a repo nobody can have; several of the best-known models on the Hub sit
+    behind exactly that, and a search that silently omitted them was answering
+    a question nobody asked. The gate TRAVELS instead (`gated`: "auto",
+    "manual" or None), so the card can say what is needed rather than offering
+    a button that 403s. `manual` — the owner grants access by hand — is the one
+    case that needs more than logging in, and the Hub does tell us, so it stays
+    its own value; a truthy gate we do not recognise is read as `manual`, the
+    stricter reading, because guessing "just sign in" about an unknown gate is
+    the guess that wastes someone's afternoon.
     """
     model_id = raw.get("id") or raw.get("modelId")
     if not isinstance(model_id, str) or not model_id:
         return None
-    if raw.get("gated") or raw.get("private"):
+    if raw.get("private"):
         return None
     task = _friendly_task(raw.get("pipeline_tag"))
     capability = capability_for_task(task)
@@ -368,6 +398,10 @@ def _model_row(raw: dict, cache_dir: str, dirs: dict[str, str]) -> dict | None:
         # `POST /api/ai/runtime/download`, which needs to know which runner is
         # being asked for.
         "capability": capability,
+        # None, "auto" or "manual" — never absent and never False, so the page
+        # tests one field for "is there a gate and what kind". A missing key
+        # would make "no gate" and "the Hub did not say" the same answer.
+        "gated": _gate(raw.get("gated")),
         "library": raw.get("library_name") if isinstance(raw.get("library_name"), str) else None,
         "downloads": raw.get("downloads") if isinstance(raw.get("downloads"), int) else None,
         "likes": raw.get("likes") if isinstance(raw.get("likes"), int) else None,

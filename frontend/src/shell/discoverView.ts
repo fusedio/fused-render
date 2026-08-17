@@ -100,3 +100,72 @@ export function resultsSummary(q: string, shown: number | null, host: string): s
 export function suggestedSummary(shown: number): string {
   return `${shown} picked for this machine`;
 }
+
+/** What the Hub asks of somebody before it will hand over a gated repo. */
+export interface GateChrome {
+  /** Two words on the card, in the same slot the "✓ downloaded" badge uses. */
+  pill: string;
+  /** The whole of what the reader has to DO, on hover. The pill without this
+   *  would be the badge D313 deleted: honest, and no help. */
+  title: string;
+  /** Whether to offer the Download button anyway. True exactly when this
+   *  machine holds a token — the token is what turns "you cannot have this"
+   *  into "you may already have accepted this", and the Hub is the one that
+   *  gets to refuse. */
+  canDownload: boolean;
+  /** The link to the model's Hub page, worded for the gate — or null when the
+   *  Download button is the action. */
+  action: string | null;
+}
+
+/** What a gated result offers instead of a bare Download button, or null.
+ *
+ *  Gated repos were dropped from the results entirely, on the rule that every
+ *  card must carry a working button (D313). D316 narrows that: the rule is
+ *  that an ENGINE HERE CAN RUN IT, not that nothing further is asked of the
+ *  user. A licence you accept by signing in and clicking is a step somebody can
+ *  take, several of the best-known models on the Hub sit behind exactly one,
+ *  and a search that silently omitted them was answering a question nobody
+ *  asked.
+ *
+ *  What must not come back is the old `gated` pill — a badge that named the
+ *  problem and left the button that would 403 sitting beside it. So the gate
+ *  decides the ACTION as well as the label: with no token the card's action is
+ *  the licence page rather than a download that cannot start.
+ *
+ *  `manual` is the one gate that takes more than signing in — the repo's owner
+ *  grants access by hand — and it is worth its own words, because somebody told
+ *  to "accept the terms" on one of those goes looking for a button that is not
+ *  there.
+ */
+export function gateChrome(
+  gated: "auto" | "manual" | null,
+  authenticated: boolean,
+): GateChrome | null {
+  if (!gated) return null;
+  const manual = gated === "manual";
+  const pill = manual ? "gated — by approval" : "gated";
+  if (authenticated) {
+    return {
+      pill,
+      title: manual
+        ? "Gated: this repo's owner grants access by hand. This machine has a Hugging Face " +
+          "token, so the download will work once they have — and fail until then."
+        : "Gated: accept this repo's licence on its Hub page if you have not already. This " +
+          "machine has a Hugging Face token, so the download can go ahead once you have.",
+      canDownload: true,
+      action: null,
+    };
+  }
+  return {
+    pill,
+    title:
+      (manual
+        ? "Gated: this repo's owner grants access by hand — request it on the Hub page. "
+        : "Gated: sign in on the Hub page and accept this repo's licence. ") +
+      "Downloading it here also needs a token on this machine (`huggingface-cli login`, or " +
+      "HF_TOKEN in the environment).",
+    canDownload: false,
+    action: manual ? "Request access" : "Accept terms",
+  };
+}

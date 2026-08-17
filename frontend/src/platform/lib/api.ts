@@ -2188,6 +2188,12 @@ export interface HubModel {
   /** Which runner would load this. Never null — the server drops rows it
    *  cannot classify rather than guessing a capability for them. */
   capability: string;
+  /** What stands between the reader and this repo, when anything does.
+   *  `"auto"` — accept the licence while signed in and it is yours; `"manual"`
+   *  — the owner grants access by hand; `null` — nothing. Gated repos are
+   *  RESULTS (D316): the card says which gate rather than the search pretending
+   *  the model does not exist. */
+  gated: "auto" | "manual" | null;
   library: string | null;
   downloads: number | null;
   likes: number | null;

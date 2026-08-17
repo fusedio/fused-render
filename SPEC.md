@@ -5703,10 +5703,10 @@ the Hub does not know your disk and a browser tab open on huggingface.co cannot
 tell you that the model you are reading about is already cached, was last read
 three weeks ago, and would cost nothing to open.
 
-- **HS-0** **Everything on this tab is downloadable, and the constraint is the
-  feature** (D313). A repo runs here only if a registered engine reads its
-  weight format, so a search that returned whatever the Hub returned put
-  embedding models, fill-mask models and gated repos in front of a page that
+- **HS-0** **Everything on this tab is RUNNABLE HERE, and the constraint is the
+  feature** (D313, narrowed by D316). A repo runs here only if a registered
+  engine reads its weight format, so a search that returned whatever the Hub
+  returned put embedding models and fill-mask models in front of a page that
   could act on none of them — and admitted it in a caption reading "Search
   results are read-only". **The filter is the registry's, not a list**: a
   candidate tag survives only if `registry.capability_for_task` maps it to a
@@ -5716,10 +5716,30 @@ three weeks ago, and would cost nothing to open.
   edit to the module that talks to the Hub. Four tags qualify today, against
   the twenty-six the menu used to offer. A row is dropped for an unrunnable
   tag, for NO tag (a repo that cannot be classified cannot be promised), and
-  for `gated`/`private` — both downloadable only after something happens
-  elsewhere, and a card that has to hedge about its own button is what this
-  rule exists to remove. Every surviving row carries a non-null `capability`,
-  which is what the Download button hands to the runtime.
+  for `private` — nothing an ordinary account does reaches a private repo, so
+  a card for one could never be actioned by the person reading it. Every
+  surviving row carries a non-null `capability`, which is what the Download
+  button hands to the runtime.
+- **HS-0d** **The constraint is "an engine here can run it", NOT "nothing
+  further is asked of the user" — so gated repos are results** (D316). They
+  were dropped alongside private ones, on the rule that every card must carry a
+  working button; that drew the line one step too tight and quietly removed
+  several of the best-known models on the Hub from a search that claimed to
+  cover it. **A gate the reader can open is a step, not a wall.** The gate
+  travels on the row (`gated`: `"auto"` — accept the licence while signed in;
+  `"manual"` — the owner grants access by hand; `null`), and the card spends it
+  on the ACTION as well as the label: with a token on this machine it is an
+  ordinary Download, and without one the button is replaced by a link to the
+  repo's own Hub page reading "Accept terms" or "Request access". That is what
+  keeps this from being the `gated` pill D313 deleted, which named the problem
+  and left a button that would 403 sitting next to it. `manual` earns its own
+  words because somebody told to "accept the terms" on an approval-gated repo
+  goes looking for a button that is not there; an unrecognised truthy gate is
+  read as `manual`, the stricter of the two. **There is no credentials UI and
+  this does not add one**: the token is read where `huggingface_hub` reads it
+  (`HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, `$HF_HOME/token`), the search reply
+  carries only the boolean `authenticated`, and the hover names
+  `huggingface-cli login` rather than offering a box to paste a secret into.
 - **HS-0a** **The menu constrains what can be ASKED; the row filter constrains
   what comes BACK.** They are not the same guarantee: an unfiltered query lets
   the Hub answer with anything it likes, so the supported-tag pass runs over

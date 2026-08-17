@@ -228,13 +228,18 @@ capability, library, downloads, likes, updated, params, estimatedSize, local,
 url}`, where `local` is `{state: "downloaded"|"partial"|"none", size, files,
 lastUsed, path, dir}`.
 
-**Every row is one this app could download AND load** (D313), which is what
-`capability` is for — it is never null and it is what the page hands to
+**Every row is one an engine here could LOAD** (D313, narrowed by D316), which
+is what `capability` is for — it is never null and it is what the page hands to
 `/api/ai/runtime/download`. `_model_row` drops a result whose `pipeline_tag` no
-registered runner serves, one with no tag at all, and anything `gated` or
-`private`. The classification is `registry.capability_for_task`, the same
-function behind the Local tab's Load button, so a search result and a cached
-card cannot disagree about whether a kind of model is runnable.
+registered runner serves, one with no tag at all, and anything `private`. The
+classification is `registry.capability_for_task`, the same function behind the
+Local tab's Load button, so a search result and a cached card cannot disagree
+about whether a kind of model is runnable. **Gated repos are NOT dropped**
+(D316): the row carries `gated` as `"auto"` (accept the licence while signed
+in), `"manual"` (the owner grants access by hand) or `null`, and the card turns
+that into a pill plus — when the reply's `authenticated` is false — a link to
+the repo's Hub page in place of the Download button, so a gate is a step rather
+than a missing search result.
 `GET /api/ai-models/hub/tasks` -> the offered filters as `{tag, label, help}`,
 built by running an editorially-ordered candidate tag list through that same
 function (`supported_tags()`): four tags today, twenty-six before. It is an

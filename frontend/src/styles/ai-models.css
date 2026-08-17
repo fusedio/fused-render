@@ -956,3 +956,29 @@
   background: var(--accent);
   white-space: nowrap;
 }
+
+/* "gated" / "gated — by approval", in the ✓'s slot on a search result.
+   OUTLINED and muted where the ✓ is a filled accent chip: the ✓ is good news
+   about a model you already have, and this is a condition on one you do not.
+   Quiet on purpose — a gate is a step, not a warning, and the sentence that
+   says which step is on the hover. It is not the pill D313 deleted, because
+   that one sat beside a Download button that would 403 and this one replaces
+   that button with the link that opens the gate (`gateChrome`). */
+.am-card-gate {
+  padding: 0 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+/* "Accept terms" / "Request access" — the Download button's twin, because it
+   is the same act from the card's point of view (start getting this model) and
+   only the first step differs. It rides .am-card-power for its metrics and
+   drops only what a link does not have. */
+.am-card-gate-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
