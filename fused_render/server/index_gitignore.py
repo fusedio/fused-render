@@ -311,7 +311,11 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
                 del _inflight[base]
         mine.set()
 
-    swept_at = decider = ignored = None
+    # The pool's parts to write back, or None for "nothing to write". One
+    # value, not three: they are only ever meaningful together, and three
+    # separate optionals let a later edit assign one without the others — a
+    # half-built snapshot nothing in the signature would object to.
+    to_save: tuple | None = None
     with _cache_lock:
         # A concurrent request may have swept the pool out from under us; its
         # verdicts are no less true, but they belong to the pool that asked for
@@ -332,10 +336,10 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
                 # Python loop over every rel. The copy is also what makes the
                 # snapshot safe to build outside — the pool itself keeps being
                 # mutated, by this module, only under this lock.
-                swept_at = pool.swept_at
-                decider, ignored = dict(pool.decider), set(pool.ignored)
-    if decider is not None:
-        _save_verdicts(base, _snapshot(base, swept_at, decider, ignored))
+                to_save = (pool.swept_at, dict(pool.decider),
+                           set(pool.ignored))
+    if to_save is not None:
+        _save_verdicts(base, _snapshot(base, *to_save))
     return drop | fresh
 
 
