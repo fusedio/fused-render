@@ -247,7 +247,7 @@ describe("describeRule", () => {
 });
 
 describe("repeatChoicesFor", () => {
-  it("is Google's list, derived from the picked date", () => {
+  it("is Google's list less the annual row, derived from the picked date", () => {
     expect(repeatChoicesFor(AUG12).map((c) => c.label)).toEqual([
       "Does not repeat",
       // Shortest first: Hourly sits above Daily, the order recur.FREQUENCIES
@@ -256,10 +256,26 @@ describe("repeatChoicesFor", () => {
       "Daily",
       "Weekly on Wednesday",
       "Monthly on the second Wednesday",
-      "Annually on August 12",
       "Every weekday (Monday to Friday)",
       "Custom…",
     ]);
+  });
+  it("offers no annual choice, and still leaves a yearly rule readable", () => {
+    // Dropped from the PICKER (Akshil, 2026-08-17) — not from the model. Nothing
+    // here can produce `freq: "year"` any more…
+    expect(repeatChoicesFor(AUG12).some((c) => c.rule?.freq === "year")).toBe(false);
+    // …and an entry already stored as yearly still describes itself in full and
+    // still walks, which is what keeps it editable: the modal finds no preset
+    // for it, opens it as Custom, and shows this sentence on that row.
+    expect(describeRule({ freq: "year" }, AUG12)).toBe("Annually on August 12");
+    expect(
+      ruleOccurrences(
+        { freq: "year" },
+        AUG12,
+        new Date(2026, 7, 12, 12),
+        new Date(2028, 0, 1),
+      ).map((d) => d.getFullYear()),
+    ).toEqual([2027]);
   });
   it("nthOfMonth counts the way the label reads", () => {
     expect(nthOfMonth(new Date(2026, 7, 1))).toBe(1);
@@ -717,20 +733,103 @@ describe("dayTone", () => {
 // ---- colour --------------------------------------------------------------------
 
 describe("taskColour", () => {
-  it("is stable, in range, and does not put every task on one hue", () => {
-    expect(taskColour("sess-abc")).toBe(taskColour("sess-abc"));
-    const keys = Array.from({ length: 40 }, (_, i) => `pending:entry-${i}`);
-    for (const k of keys) {
-      const c = taskColour(k);
+  it("is stable, in range, and does not put every folder on one hue", () => {
+    expect(taskColour("/Users/a/repo")).toBe(taskColour("/Users/a/repo"));
+    const folders = Array.from({ length: 40 }, (_, i) => `/Users/a/proj-${i}`);
+    for (const f of folders) {
+      const c = taskColour(f);
       expect(c).toBeGreaterThanOrEqual(0);
       expect(c).toBeLessThan(8);
     }
     // Not a perfect spread — a hash never is — but every hue gets used.
-    expect(new Set(keys.map(taskColour)).size).toBe(8);
+    expect(new Set(folders.map(taskColour)).size).toBe(8);
   });
 
-  it("does not collide on the anagrams task keys are full of", () => {
-    expect(taskColour("ab")).not.toBe(taskColour("ba"));
+  // The real corpus, measured: the 28 distinct `project` paths on the machine
+  // this was built for. Deep shared prefixes are the case that would cluster a
+  // weak mixer, and the assertion is what a clustered mixer would fail —
+  // every hue used, and no hue holding a quarter of the projects.
+  it("spreads the real project paths across the whole palette", () => {
+    const projects = [
+      "/Users/akshilthumar",
+      "/Users/akshilthumar/Desktop",
+      "/Users/akshilthumar/Desktop/claude-token-wrapped",
+      "/Users/akshilthumar/Desktop/fused",
+      "/Users/akshilthumar/Desktop/fused/annotate-test/claude-plugin-test",
+      "/Users/akshilthumar/Desktop/fused/annotate-test/preview-btn-demo",
+      "/Users/akshilthumar/Desktop/fused/flightdeck",
+      "/Users/akshilthumar/Desktop/fused/fused-render",
+      "/Users/akshilthumar/Desktop/fused/fused-render-wt-claude-select",
+      "/Users/akshilthumar/Desktop/fused/fused-render-wt/annotation-leak",
+      "/Users/akshilthumar/Desktop/fused/fused-render-worktrees/claude-template-view",
+      "/Users/akshilthumar/Desktop/fused/fused-render/docs",
+      "/Users/akshilthumar/Desktop/fused/fused-render/examples",
+      "/Users/akshilthumar/Desktop/fused/fused-render/frontend",
+      "/Users/akshilthumar/Desktop/fused/fused-render/scripts/vendor-sci",
+      "/Users/akshilthumar/Desktop/tribal-talk",
+      "/Users/akshilthumar/Desktop/tribal-talk-immersive",
+      "/Users/akshilthumar/Desktop/weekend proj/content-engine",
+      "/Users/akshilthumar/Documents/Fused",
+      "/Users/akshilthumar/Documents/Fused/showcase/sine-starter",
+      "/Users/akshilthumar/timepass/bali 07:26",
+      "/private/tmp",
+      "/private/tmp/ppt_ai_smoke",
+      "/private/tmp/ppt_ai_smoke2",
+    ];
+    const counts = new Array(8).fill(0);
+    for (const p of projects) counts[taskColour(p)] += 1;
+    expect(counts.filter((n) => n > 0).length).toBe(8);
+    expect(Math.max(...counts)).toBeLessThanOrEqual(6);
+  });
+
+  it("does not collide on the anagrams paths are full of", () => {
+    expect(taskColour("/x/a/b")).not.toBe(taskColour("/x/b/a"));
+  });
+});
+
+// Colour means "which project", so it has to hold across TASKS: two tasks in one
+// folder draw the same hue, and a task in another folder is free to differ (and
+// on these two paths, does).
+describe("chip colour is the folder's, not the task's", () => {
+  const at = (h: number) => new Date(2026, 7, 17, h, 0).getTime() / 1000;
+  const chipTask = (key: string, project: string, hour: number) =>
+    ({
+      key,
+      task_id: key,
+      project,
+      target: project,
+      session_id: key,
+      title: key,
+      title_source: "user",
+      description: "",
+      status: "upcoming",
+      failed: false,
+      live: false,
+      messages: [
+        {
+          message_id: `${key}-m`,
+          kind: "scheduled",
+          at: at(hour),
+          state: "pending",
+          turn: "",
+        },
+      ],
+    }) as never;
+
+  it("gives two tasks in one folder one colour", () => {
+    const day = new Date(2026, 7, 17);
+    const chips = taskChips(
+      [
+        chipTask("t1", "/Users/a/repo", 9),
+        chipTask("t2", "/Users/a/repo", 10),
+        chipTask("t3", "/Users/a/other", 11),
+      ],
+      [day],
+    ).get(dayKey(day))!;
+    expect(chips.length).toBe(3);
+    const [a, b, c] = chips;
+    expect(a.colour).toBe(b.colour);
+    expect(c.colour).not.toBe(a.colour);
   });
 });
 
@@ -1928,9 +2027,11 @@ describe("projection ownership", () => {
     expect(out["pending:t1"].length).toBe(2);
   });
 
-  it("the already-run occurrence keeps its own chip and its own colour", () => {
+  it("the already-run occurrence keeps its own chip, and its folder's colour", () => {
     // Two chips on the day the rule both ran and is still due — they are two
     // TASKS, which is exactly what "unrelated tasks are unrelated chips" means.
+    // Their COLOUR is the folder's, though (2026-08-17), and these two are the
+    // same rule in the same folder: one hue, told apart by tone, not by hue.
     const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
     const done = ran("sess-1", "sess-1", 17);
     const pending = task({
@@ -1942,7 +2043,7 @@ describe("projection ownership", () => {
       calendarThreads([pending, done], [rule()], null)).get("2026-08-17")!;
     expect(chips.length).toBe(2);
     expect(chips.map((c) => c.task.key)).toEqual(["sess-1", "pending:occ-9"]);
-    expect(chips[0].colour).not.toBe(chips[1].colour);
+    expect(chips[0].colour).toBe(chips[1].colour);
     expect(chips[0].tone).toBe("ran");
     expect(chips[1].tone).toBe("upcoming");
   });

@@ -121,11 +121,12 @@
   --icon-db: #82abbf;
   --icon-file: #868c93;
 
-  /* Task chip hues — the Calendar's per-task colour (shell/ScheduleCalendar.tsx,
-     indexed by schedule-lib.taskColour). Eight, hand-picked and evenly spread
-     around the wheel, because the calendar's whole read depends on "same task,
-     same colour": five days of a daily task must land as ONE thing, and two
-     unrelated tasks in the same hour must not. A generated hsl() would give
+  /* Task chip hues — the Calendar's per-PROJECT colour (shell/ScheduleCalendar.tsx,
+     indexed by schedule-lib.taskColour, which hashes the task's folder). Eight,
+     hand-picked and evenly spread around the wheel, because the calendar's whole
+     read depends on "same folder, same colour": five days of a daily task must
+     land as ONE thing, two tasks out of one repo must land as that repo, and two
+     unrelated projects in the same hour must not. A generated hsl() would give
      that too, and would also give hues that fight the theme in one mode or the
      other — so the palette is picked, not computed. Dark values first; light
      deepens each to the same weight against white, where they are read as a

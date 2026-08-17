@@ -749,6 +749,15 @@ function CustomRecurrence({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [freq, setFreq] = useState<RecurrenceRule["freq"]>(initial?.freq ?? "week");
+  // How often, as a list of units. `year` is NOT one of them any more (Akshil,
+  // 2026-08-17 — the annual preset went with it), with one exception: a rule
+  // that is ALREADY yearly keeps the row while it is being edited. That rule
+  // opens here (keyOfRule finds no preset for a yearly freq, so the modal opens
+  // it as Custom), and a unit dropdown that could not say "year" would show a
+  // value with no matching row — and would turn any other edit on the panel,
+  // the interval or the end date, into a silent change of frequency. Read off
+  // `initial` rather than the live `freq` so the row does not vanish mid-edit.
+  const units = initial?.freq === "year" ? LEGACY_RECUR_UNITS : RECUR_UNITS;
   const [interval, setIntervalN] = useState(initial?.interval ?? 1);
   const [byday, setByday] = useState<number[]>(
     initial?.byday?.length ? initial.byday : [anchor.getDay()],
@@ -812,7 +821,7 @@ function CustomRecurrence({
           ariaLabel="Repeat unit"
           className="schedule-recur-unit"
           value={interval > 1 ? `${freq}s` : freq}
-          options={(["hour", "day", "week", "month", "year"] as const).map((u) => ({
+          options={units.map((u) => ({
             key: u,
             label: interval > 1 ? `${u}s` : u,
           }))}
@@ -960,6 +969,13 @@ function untilLabel(ymd: string): string {
 }
 
 const NTH_LABELS = ["first", "second", "third", "fourth", "fifth"];
+
+// The custom panel's "repeat every N ___" units. Shortest first, the order
+// recur.FREQUENCIES is written in — and without `year`, which is off the menu
+// for anything new (see `units` in CustomRecurrence for the one exception, and
+// repeatChoicesFor for the preset row that went with it).
+const RECUR_UNITS: readonly RecurrenceRule["freq"][] = ["hour", "day", "week", "month"];
+const LEGACY_RECUR_UNITS: readonly RecurrenceRule["freq"][] = [...RECUR_UNITS, "year"];
 
 // How a permission mode is SAID. The keys are the server's contract and stay
 // exactly as they are on the wire; only the reading changes. A mode this map
@@ -1654,12 +1670,15 @@ export default function NewJobModal({
     };
   }, [target]);
 
-  // The ask wears the SAME clothes as Title above it and grows like a note:
-  // with the text, up to the CSS max-height (~5 lines), then scrolls. This
-  // measuring is the whole difference between the two fields — Title is an
-  // <input> and has no height to measure. Measured on every change because
-  // "auto then scrollHeight" is the one reflow-safe way to shrink back when
-  // lines are deleted.
+  // The ask shares Title's borderless surface but not its face, and it grows
+  // like a note: with the text, from the CSS floor (`.new-task-ask`'s
+  // min-height, which is what hands it the card's slack) up to the CSS
+  // max-height, then it scrolls. Both clamps hold against the inline height set
+  // here — min-/max-height bound the used value whatever `style.height` says —
+  // so this measuring only ever picks the size BETWEEN them. It is the whole
+  // difference between the two fields: Title is an <input> and has no height to
+  // measure. Measured on every change because "auto then scrollHeight" is the
+  // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
@@ -2045,20 +2064,25 @@ export default function NewJobModal({
       }
     >
       <div className="schedule-form">
-        {/* TITLE FIRST, and as prominent as the ask below it (Akshil,
-            2026-08-17: "title will be the first field and then description will
-            be the second field… make both of those like the main field that we
-            have"). It swapped places with the ask and put on the same clothes —
-            same 20px face, same weight, same underline — because the two of
-            them are what the task IS; the folder and the time are facts about
-            it and stay quiet beneath.
+        {/* ONE WRITING SURFACE, not two controls (Akshil, 2026-08-17, reference
+            image): the title and the description share a single borderless
+            area running from the header rule to the rows below it, the title
+            set large and the description quieter beneath it. Neither field
+            looks like an input — no border, no underline, no filled box — so
+            the top of the card reads as a document you type into rather than a
+            form with two fields in it. The wrapper is what makes that ONE
+            surface: it owns the block's vertical space and hands the slack to
+            the description, so a two-word entry does not leave the card
+            top-heavy. See `.new-task-write` in new-task.css for the whole
+            treatment, including what focus looks like when there is no box to
+            recolour.
 
-            NEITHER of the two carries a leading icon now. The 26px icon gutter
-            is the QUIET rows' vocabulary (📁 folder, 🕐 when) and a 14px glyph
-            beside a 20px face read as debris; Title used to wear a `T` only
-            because it was one of those rows. Peers wear the same clothes, so
-            the choice was both or neither, and neither is what keeps the
-            gutter meaning "this is a detail".
+            TITLE FIRST, and the prominent one (Akshil, 2026-08-17: "title will
+            be the first field and then description will be the second field").
+            The folder and the time are facts ABOUT the task and stay quiet
+            beneath in the 26px icon gutter; neither of these two carries a
+            leading icon, because a 14px glyph beside a 20px face read as
+            debris and the gutter is what says "this is a detail".
 
             Still OPTIONAL, and normally left alone: Claude Code writes its own
             one-line title into the transcript and the server prefers that,
@@ -2073,38 +2097,41 @@ export default function NewJobModal({
             one line that never wraps and never grows. Long text scrolls
             horizontally under the caret while the field has focus and ellipses
             when it does not — see `.new-task-title` in new-task.css. */}
-        <input
-          type="text"
-          className="schedule-form-title new-task-title"
-          aria-label="Title"
-          placeholder={titlePlaceholderFor(sessionTitle, repeatOn)}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          autoFocus
-        />
+        <div className="new-task-write">
+          <input
+            type="text"
+            className="new-task-field new-task-title"
+            aria-label="Title"
+            placeholder={titlePlaceholderFor(sessionTitle, repeatOn)}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            autoFocus
+          />
 
-        {/* …and the ask SECOND, still the only other prose the form collects:
-            what the user types here is what Claude is sent AND what the task is
-            described as (design §4 — three text fields for one thought did not
-            make sense, so `description` and `message` are one field). Which is
-            also why it is REQUIRED where Title is not: an empty one is a task
-            with nothing to do. `ready` below refuses Save on it, and
-            aria-required says so to a screen reader rather than leaving a
-            disabled button as the only hint.
+          {/* …and the ask SECOND, still the only other prose the form collects:
+              what the user types here is what Claude is sent AND what the task
+              is described as (design §4 — three text fields for one thought did
+              not make sense, so `description` and `message` are one field).
+              Which is also why it is REQUIRED where Title is not: an empty one
+              is a task with nothing to do. `ready` below refuses Save on it,
+              and aria-required says so to a screen reader rather than leaving a
+              disabled button as the only hint.
 
-            It keeps the growth Title deliberately does not have: multi-line,
-            autogrowing with the text up to the CSS max-height (~5 lines), then
-            scrolling. */}
-        <textarea
-          ref={askRef}
-          className="schedule-form-title"
-          rows={2}
-          aria-label="What should Claude do?"
-          aria-required="true"
-          placeholder="What should Claude do?"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-        />
+              Quieter and smaller than the title, and it keeps the growth Title
+              deliberately does not have: multi-line, autogrowing with the text
+              from the floor `.new-task-ask` sets up to its max-height, then
+              scrolling. */}
+          <textarea
+            ref={askRef}
+            className="new-task-field new-task-ask"
+            rows={2}
+            aria-label="What should Claude do?"
+            aria-required="true"
+            placeholder="What should Claude do?"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+        </div>
 
         {/* The path is a combobox, Google-style: focusing it drops the last
             few folders the user scheduled against, with Browse as the
