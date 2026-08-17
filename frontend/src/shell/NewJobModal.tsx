@@ -22,7 +22,7 @@ import type { RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
-import { ICON_CLOCK, ICON_FOLDER, ICON_NOTES } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_FOLDER } from "./ScheduleCalendar";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -999,6 +999,21 @@ export function initialRepeatKey(entry?: ScheduledMessage | null): string {
   return entry?.repeats ? "cron" : "none";
 }
 
+// What the big field opens with — the one prose field the form has, standing
+// for both of the two values the server stores. A new task opens on the chat
+// composer's draft, if it came from one; an Edit opens on what the entry has.
+//
+// `message` first, because every entry has one and it is what Claude was
+// actually sent; `description` as the fallback, so a task whose prose lives
+// only there still fills the field instead of opening blank and re-creating
+// itself empty. `||`, not `??`: "" is a missing answer here, not an answer.
+export function initialAskOf(
+  entry?: ScheduledMessage | null,
+  chatDraft?: string | null,
+): string {
+  return entry?.message || entry?.description || chatDraft || "";
+}
+
 // The thread a task ALREADY OWNS, if any. A repeating template LEARNS one: its
 // first run reports the session it ran in and the server writes that id back
 // onto the template, so run 2 resumes it (a task IS a session — design §6).
@@ -1048,11 +1063,16 @@ export type SchedulePayload = Parameters<typeof scheduleMessage>[0];
 
 export function buildSchedulePayload(form: {
   target: string;
+  // The big field, and the ONLY prose the form asks for: what Claude is sent,
+  // and — same text, no second field — the task's description (Akshil,
+  // 2026-08-17: "the big field is the description, that is the first message").
+  // It rides the wire twice, once as each, because the server stores them as
+  // two things and a task page that showed nothing under a task would be the
+  // only alternative.
   message: string;
   // Optional, and empty is the ordinary case: the server fills a missing title
   // in from the transcript's `ai-title` (design §4).
   title: string;
-  description: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
   // the legacy cron key, whose line is submitted verbatim instead.
@@ -1079,7 +1099,10 @@ export function buildSchedulePayload(form: {
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
-  const trimmedDescription = form.description.trim();
+  // The description IS the ask. Trimmed, because the padding a textarea
+  // collects is not part of what the task is about; `message` itself is sent
+  // verbatim, since that is what Claude actually receives.
+  const trimmedDescription = form.message.trim();
   // WHICH session, if any, the re-created entry continues. The two sources are
   // treated oppositely:
   //   · the task's own (learned) id survives everything except a template that
@@ -1116,7 +1139,8 @@ export function buildSchedulePayload(form: {
     ...(continued && carriesLearned ? { session_learned: true } : {}),
     // Empty means "the server decides" for the title and "there isn't one" for
     // the description — in both cases the key is better left off the wire than
-    // sent as "".
+    // sent as "". A blank description only happens if `message` is blank, which
+    // the Save button already refuses.
     ...(trimmedTitle ? { title: trimmedTitle } : {}),
     ...(trimmedDescription ? { description: trimmedDescription } : {}),
     // Only ever sent on a repeating task: on a one-off there is no "each run"
@@ -1145,7 +1169,7 @@ export default function NewJobModal({
   // offer when nobody said — and an Edit outranks both, having a stored target.
   initialTarget?: string | null;
   // The chat composer's handoff (Akshil, 2026-08-16): the draft the user had
-  // typed arrives as the description…
+  // typed arrives as the ask — which is the message AND the description…
   initialMessage?: string | null;
   // …the open conversation arrives as a session to CONTINUE — but only a
   // one-off resumes it; a repeating task always opens fresh chats, because
@@ -1166,15 +1190,18 @@ export default function NewJobModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [message, setMessage] = useState(editing?.message ?? initialMessage ?? "");
-  // Both optional, both new (design §4). The title is normally left blank —
-  // Claude Code writes its own one-liner into the transcript and the server
-  // prefers that — so the field asks for nothing and the placeholder says so.
-  // The description is empty by default and is not auto-filled in this pass.
-  // Absent on the stored entry reads as empty, which is what an entry written
-  // before these fields existed means.
+  // One field, two stored values — see initialAskOf. Held in a const because
+  // the BASELINE below (`initial`) has to be the identical value, or an Edit
+  // opens looking dirty and its ✕ arms the close-twice guard on an untouched
+  // modal (QA 2026-08-14).
+  const initialAsk = initialAskOf(editing, initialMessage);
+  const [message, setMessage] = useState(initialAsk);
+  // Optional and new (design §4), and normally left blank — Claude Code writes
+  // its own one-liner into the transcript and the server prefers that — so the
+  // field asks for nothing and the placeholder says so. Absent on the stored
+  // entry reads as empty, which is what an entry written before this field
+  // existed means.
   const [title, setTitle] = useState(editing?.title ?? "");
-  const [description, setDescription] = useState(editing?.description ?? "");
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
   // repeat choice reads its parts (minute, time, weekday) — Google's model.
@@ -1367,11 +1394,11 @@ export default function NewJobModal({
     };
   }, [target]);
 
-  // The description wears the title's clothes but grows like a note: with the
-  // text, up to the CSS max-height (~5 lines), then scrolls. Measured on every
-  // change because "auto then scrollHeight" is the one reflow-safe way to
-  // shrink back when lines are deleted.
-  const titleRef = useRef<HTMLTextAreaElement>(null);
+  // The ask wears the title's clothes but grows like a note: with the text, up
+  // to the CSS max-height (~5 lines), then scrolls. Measured on every change
+  // because "auto then scrollHeight" is the one reflow-safe way to shrink back
+  // when lines are deleted.
+  const askRef = useRef<HTMLTextAreaElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
   // list it just dismissed — the input's onFocus otherwise undoes the close
@@ -1382,7 +1409,7 @@ export default function NewJobModal({
   // just before onClose, so a ref is enough to tell the two closes apart.
   const pickedFromBrowser = useRef(false);
   useEffect(() => {
-    const el = titleRef.current;
+    const el = askRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
@@ -1422,9 +1449,8 @@ export default function NewJobModal({
     // close-twice guard on an untouched modal (the bug the getConfig effect's
     // setInitial exists for — this is the same one, one prefill earlier).
     target: editing?.target ?? initialTarget ?? "",
-    message: editing?.message ?? initialMessage ?? "",
+    message: initialAsk,
     title,
-    description,
     when,
     repeat,
     repeatOn,
@@ -1439,7 +1465,6 @@ export default function NewJobModal({
     target !== initial.target ||
     message !== initial.message ||
     title !== initial.title ||
-    description !== initial.description ||
     when !== initial.when ||
     repeat !== initial.repeat ||
     repeatOn !== initial.repeatOn ||
@@ -1554,7 +1579,6 @@ export default function NewJobModal({
           target,
           message,
           title,
-          description,
           when,
           rule,
           repeat,
@@ -1647,16 +1671,20 @@ export default function NewJobModal({
       }
     >
       <div className="schedule-form">
-        {/* The task text leads, wearing the title's clothes: this field is the
-            whole ask — what Claude should do. It is NOT the title: the two
-            rows under it are, and both are optional (design §4), which is why
-            this one keeps the big face and they do not. Its placeholder used
-            to read "Add description", which is now the name of a different
-            field one row down. */}
+        {/* The ask leads, wearing the title's clothes, and it is now the ONLY
+            prose the form collects: what the user types here is what Claude is
+            sent AND what the task is described as (Akshil, 2026-08-17 — three
+            text fields for one thought did not make sense). The separate
+            "Description (optional)" textarea that used to sit a row below is
+            gone; Title, still optional, is the one field left under it.
+            The placeholder stays "What should Claude do?": the field's job did
+            not change — you type the instruction — and "Description" is what
+            the server calls that text, not a second thing to write. */}
         <textarea
-          ref={titleRef}
+          ref={askRef}
           className="schedule-form-title"
           rows={2}
+          aria-label="What should Claude do?"
           placeholder="What should Claude do?"
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -1677,21 +1705,6 @@ export default function NewJobModal({
             placeholder="Title — optional, filled in automatically"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-          />
-        </div>
-
-        {/* Empty by default and not auto-filled in this pass: `ai-title` is a
-            title, not a summary, and Claude Code stores no summary (design
-            §4, §12). */}
-        <div className="schedule-form-line new-task-desc-line">
-          {ICON_NOTES}
-          <textarea
-            className="field-control new-task-desc"
-            rows={2}
-            aria-label="Description"
-            placeholder="Description (optional)"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
           />
         </div>
 

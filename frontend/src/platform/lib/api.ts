@@ -2088,7 +2088,25 @@ export interface TaskMessage {
   message_id: string; // MSG-001, per task, oldest first
   kind: "scheduled" | "chat";
   body: string;
-  at: number; // epoch seconds: due time if scheduled, sent time if chat
+  // TWO times, because a scheduled message has two and they are not the same
+  // fact. Both are epoch seconds.
+  //
+  //   at     — what it was SCHEDULED FOR. The time the user picked, and the
+  //            only thing the calendar places a chip by. It never moves.
+  //   ran_at — when it ACTUALLY RAN: the transcript's own timestamp for the
+  //            prompt, falling back to when the scheduler claimed it. 0 for a
+  //            message that has not run (pending, cancelled, missed).
+  //
+  // They differ whenever the app was not open at the due minute. Catch-up is
+  // unbounded, so a message scheduled for Thursday and caught up on Saturday is
+  // ordinary, not exotic — `at` is Thursday and `ran_at` is Saturday. Placing
+  // it by `ran_at` was the original bug: the chip left the day that was asked
+  // for and appeared on the day the app happened to reopen.
+  //
+  // For a chat message the two are equal: a typed message was scheduled for the
+  // moment it was typed.
+  at: number;
+  ran_at: number;
   state:
     | "pending"
     | "sending"
@@ -2115,7 +2133,24 @@ export interface Task {
   // `ai-title` record, or the first line of the first message.
   title_source: "user" | "ai" | "message";
   description: string;
-  status: "upcoming" | "in_progress" | "done" | "archived";
+  // Decided by the SERVER, once, for every view — List, Board and Calendar all
+  // read this rather than each deriving a column from the newest message.
+  //
+  // `failed` is a status of its own and not a kind of `done`: a run that
+  // started and broke is news, and filing it under done meant a view had to
+  // remember to read the boolean below to say so — which is how a failed task
+  // could simply not be shown.
+  //
+  // A SKIPPED occurrence is `archived`, not `failed`. It was filed away and
+  // never attempted (the coalescer dropped it, or the user cancelled it), which
+  // is a different thing from a run that tried and broke; only something that
+  // actually ran can fail.
+  status: "upcoming" | "in_progress" | "done" | "failed" | "archived";
+  // Did the newest message's run break? `status` is the authority on which
+  // column a task belongs in; this is the raw fact underneath it, and the two
+  // disagree in exactly one direction — a task triaged to `done`, or one whose
+  // session is live again, reads a different status while this stays true.
+  // Anything asking "which column" should read `status`.
   failed: boolean;
   live: boolean;
   unread: number;
@@ -2695,6 +2730,13 @@ export interface ScheduledMessage {
   made?: number;
   // On an occurrence: the template it was materialized from.
   template_id?: string;
+  // On an occurrence: this is the ONE catch-up run of a rule whose anchor was
+  // already in the past when it was created. Its `due` is the LATEST slot at or
+  // before the moment it was made (the anchor sets the pattern; the run that
+  // goes is this morning's, not last Saturday's), so it is overdue the instant
+  // it exists and goes on the next tick — the same thing a past-dated one-off
+  // does. The slots it collapsed past are never materialized and never run.
+  catch_up?: boolean;
   // On a `recurring` template in GET /api/schedule only: projected occurrence
   // times (UTC ISO) over the next two weeks — server-side cron math, so the
   // calendar can draw future runs without a client cron parser. Not stored.
@@ -2768,6 +2810,26 @@ export function scheduleMessage(body: {
 // not passed — a skip is the one cancel that can honestly be walked back.
 export function restoreScheduledMessage(id: string): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule/restore", { id });
+}
+
+// Send a pending message NOW — what dragging a card from Upcoming to In
+// Progress means on the Board.
+//
+// It does NOT move the entry's `due`. The schedule time is a fact about what
+// was asked for, so the row reads as having run early (due then, fired now)
+// rather than as having been scheduled for this minute — which is also what
+// keeps its calendar chip on the day the user picked.
+//
+// Rejects rather than silently doing nothing: 404 when there is no such entry,
+// 409 with a reason when there is one that cannot run — already sent, already
+// sending, cancelled, or its conversation has a turn open right now (two
+// `claude --resume` processes on one transcript is the one thing this must
+// never do). The reason is written to be shown.
+export function runScheduledNow(entryId: string): Promise<{ ok: boolean; entry: ScheduledMessage }> {
+  return postJson<{ ok: boolean; entry: ScheduledMessage }>(
+    "/api/schedule/run-now",
+    { entry_id: entryId },
+  );
 }
 
 // Rejects with the server's 404 message when the entry is no longer pending —

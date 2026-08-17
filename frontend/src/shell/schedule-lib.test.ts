@@ -112,11 +112,12 @@ describe("boardColumn", () => {
     // In flight is work happening NOW — the Inbox's In Progress, exactly.
     expect(boardColumn(entry({ state: "sending" }))).toBe("in_progress");
     expect(boardColumn(entry({ state: "sent", turn: "" , fired: "x"}))).toBe("in_progress");
-    // Every settled outcome folds into Done; the pill still says how it went.
+    // Settled WELL is Done; settled badly has had its own word since
+    // 2026-08-17, and every view says it rather than showing a red Done.
     expect(boardColumn(entry({ state: "sent", turn: "ok", fired: "x" }))).toBe("done");
-    expect(boardColumn(entry({ state: "sent", turn: "failed", fired: "x" }))).toBe("done");
-    expect(boardColumn(entry({ state: "missed" }))).toBe("done");
-    expect(boardColumn(entry({ state: "error" }))).toBe("done");
+    expect(boardColumn(entry({ state: "sent", turn: "failed", fired: "x" }))).toBe("failed");
+    expect(boardColumn(entry({ state: "missed" }))).toBe("failed");
+    expect(boardColumn(entry({ state: "error" }))).toBe("failed");
     expect(boardColumn(entry({ state: "cancelled" }))).toBe("archived");
     expect(boardColumn(entry({ state: "cancelled", template_id: "t" }))).toBe("archived");
   });
@@ -151,10 +152,11 @@ describe("missed recurring runs", () => {
     expect(stateLabelOf(missedOcc)).toBe("Skipped");
     expect(stateToneOf(missedOcc)).toBe("skipped");
     expect(boardColumn(missedOcc)).toBe("archived");
-    // A missed ONE-SHOT stays a fault — the day-long catch-up genuinely failed.
+    // A missed ONE-SHOT stays a fault — the day-long catch-up genuinely failed,
+    // and since 2026-08-17 the board has a word for that.
     const missedOneShot = entry({ state: "missed" });
     expect(stateLabelOf(missedOneShot)).toBe("Missed");
-    expect(boardColumn(missedOneShot)).toBe("done");
+    expect(boardColumn(missedOneShot)).toBe("failed");
   });
 });
 
@@ -282,19 +284,27 @@ describe("entryRepeatText", () => {
 // and the two dates a year where a day is not 24 hours long. None of it needs a
 // DOM, so none of it is tested through one.
 import {
+  GHOST_PREFIX,
   RANGE_DAYS,
   addDays,
   cancelOutcome,
+  columnLabel,
   dayKey,
+  dayStatus,
   dayTone,
   firstLine,
+  lateBy,
+  lateText,
   messageTone,
   minutesOfDay,
+  popoverPos,
   projectedMessages,
-  queueSummary,
+  queueRole,
+  queueRoles,
   rangeDays,
   rangeLabel,
   rangeStart,
+  runStatus,
   startOfWeek,
   stepRange,
   taskChips,
@@ -302,6 +312,11 @@ import {
   threadForDay,
   turnPhase,
 } from "./schedule-lib";
+// The one-vocabulary mapping is deliberately NOT re-derived in schedule-lib —
+// tasks-lib.messageTone is the app's single answer to "which column", and
+// runStatus consumes it. So the test composes exactly what the component
+// composes, rather than a fixture that could agree with neither.
+import { messageTone as taskMessageTone } from "./tasks-lib";
 import type { Task, TaskMessage } from "@platform/lib/api";
 
 // Local wall-clock seconds — the whole point of the day maths is that it reads
@@ -314,6 +329,9 @@ function msg(over: Partial<TaskMessage> & { at: number }): TaskMessage {
     message_id: `MSG-${over.at}`,
     kind: "scheduled",
     body: "pull today's news",
+    // Never run unless a case says so: `at` is what a message was scheduled
+    // for, `ran_at` is when it went, and 0 is "it has not".
+    ran_at: 0,
     state: "pending",
     unread: false,
     entry_id: "e1",
@@ -667,6 +685,10 @@ describe("taskColour", () => {
 describe("projectedMessages", () => {
   const entryOf = (over: Partial<import("@platform/lib/api").ScheduledMessage>) =>
     entry({ state: "recurring", ...over });
+  // Pinned, never `new Date()`: projections are decided against the clock now
+  // (nothing is drawn into the past), so a test that read the real one would
+  // start failing on a date nobody chose.
+  const NOW = new Date(2026, 7, 17, 12, 0);
 
   it("hangs a rule's future occurrences on the task that owns it", () => {
     const t = task({
@@ -678,7 +700,7 @@ describe("projectedMessages", () => {
         new Date(2026, 7, 18, 9).toISOString(),
         new Date(2026, 7, 19, 9).toISOString(),
       ] }),
-    ]);
+    ], {}, NOW);
     expect(out.k.length).toBe(3);
     const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
     const byDay = taskChips([t], days, out);
@@ -695,7 +717,7 @@ describe("projectedMessages", () => {
     });
     const out = projectedMessages([t], [
       entryOf({ id: "t1", upcoming: [new Date(2026, 7, 18, 9).toISOString()] }),
-    ]);
+    ], {}, NOW);
     expect(out.k.length).toBe(1);
   });
 
@@ -703,14 +725,60 @@ describe("projectedMessages", () => {
     const t = task({ key: "pending:t1", messages: [] });
     const out = projectedMessages([t], [
       entryOf({ id: "t1", upcoming: [new Date(2026, 7, 20, 7).toISOString()] }),
-    ]);
+    ], {}, NOW);
     expect(out["pending:t1"].length).toBe(1);
     expect(out["pending:t1"][0].template_id).toBe("t1");
   });
 
   it("drops a rule no task claims rather than inventing one", () => {
-    expect(projectedMessages([], [entryOf({ id: "t1", upcoming: ["2026-08-20T07:00:00Z"] })]))
-      .toEqual({});
+    expect(projectedMessages(
+      [], [entryOf({ id: "t1", upcoming: ["2026-08-20T07:00:00Z"] })], {}, NOW,
+    )).toEqual({});
+  });
+
+  // A repeat anchored BEHIND us: catch-up runs the most recent missed slot only,
+  // at that slot's own time, and the ones before it are dropped for good (§9,
+  // Akshil 2026-08-17). Drawing them would be the grid promising work that has
+  // already been decided against.
+  it("never projects into the past — the past shows what happened", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    const out = projectedMessages([t], [
+      entryOf({ id: "t1", upcoming: [
+        new Date(2026, 7, 15, 9).toISOString(), // two days behind NOW
+        new Date(2026, 7, 17, 9).toISOString(), // this morning, already gone
+        new Date(2026, 7, 18, 9).toISOString(), // tomorrow — the only forecast
+      ] }),
+    ], {}, NOW);
+    expect(out["pending:t1"].map((m) => m.at)).toEqual([at(2026, 7, 18, 9)]);
+  });
+
+  it("leaves the run that DID happen alone — only ghosts are suppressed", () => {
+    // The most recent missed slot, materialized by catch-up: a real message at
+    // its own past time. It is history, and history stays on the grid.
+    const ran = msg({
+      message_id: "MSG-1",
+      at: at(2026, 7, 15, 9),
+      ran_at: at(2026, 7, 17, 8),
+      state: "sent",
+      turn: "done",
+      template_id: "t1",
+    });
+    const t = task({ key: "k", messages: [ran] });
+    const out = projectedMessages([t], [
+      entryOf({ id: "t1", upcoming: [
+        new Date(2026, 7, 15, 9).toISOString(),
+        new Date(2026, 7, 18, 9).toISOString(),
+      ] }),
+    ], {}, NOW);
+    expect(out.k.map((m) => m.at)).toEqual([at(2026, 7, 15, 9), at(2026, 7, 18, 9)]);
+    // The week the run was DUE in — Saturday the 15th, not the week it was
+    // caught up in.
+    const days = rangeDays(rangeStart(new Date(2026, 7, 15), "week"), "week");
+    const byDay = taskChips([t], days, out);
+    // The chip stays on the day it was due, and says how late it ran.
+    expect(byDay.get("2026-08-15")!.length).toBe(1);
+    expect(byDay.get("2026-08-15")![0].projected).toBe(false);
+    expect(lateText(ran)).toBe("ran 2 days late");
   });
 });
 
@@ -731,18 +799,43 @@ describe("threadForDay", () => {
   });
 });
 
-// ---- the queued strip ---------------------------------------------------------------
+// ---- the queue, inside the thread ----------------------------------------------------
+// The Queued strip across the top of the grid is gone (Akshil, 2026-08-17):
+// queued work is a MESSAGE, and it is now marked on the thread row it already
+// had. What has to survive the move is the cancel and its honest refusal.
 
-describe("queue strip wording", () => {
+describe("queued and running, on the row", () => {
   const q = (id: string, message: string) =>
     entry({ id, message, state: "pending" });
+  const NOW = at(2026, 7, 17, 12, 0);
 
-  it("names what is running and counts what is behind it", () => {
-    expect(queueSummary([], [])).toBe("");
-    expect(queueSummary([q("a", "Pull news")], [])).toBe("Pull news");
-    expect(queueSummary([q("a", "Pull news"), q("b", "x")], [])).toBe("Pull news · 1 more waiting");
-    expect(queueSummary([q("a", "x"), q("b", "y")], [q("r", "Pull news")]))
-      .toBe("Pull news · 2 waiting");
+  it("takes the server's word for it, by entry id", () => {
+    const roles = queueRoles([q("e1", "waiting")], [q("e2", "going")]);
+    // Due in the FUTURE, so nothing about the message itself says queued — the
+    // queue endpoint is the only thing that knows, and it is believed.
+    expect(queueRole(msg({ at: NOW + 3600, entry_id: "e1" }), roles, NOW)).toBe("queued");
+    expect(queueRole(msg({ at: NOW + 3600, entry_id: "e2" }), roles, NOW)).toBe("running");
+  });
+
+  it("an entry in both lists reads as running — the half that limits Cancel", () => {
+    const roles = queueRoles([q("e1", "x")], [q("e1", "x")]);
+    expect(roles.get("e1")).toBe("running");
+  });
+
+  it("falls back to the message when the queue feed said nothing", () => {
+    const none = new Map<string, string>() as ReturnType<typeof queueRoles>;
+    // Past due and still pending IS the definition of queued.
+    expect(queueRole(msg({ at: NOW - 60 }), none, NOW)).toBe("queued");
+    expect(queueRole(msg({ at: NOW + 60 }), none, NOW)).toBe("");
+    expect(queueRole(msg({ at: NOW - 60, state: "sending" }), none, NOW)).toBe("running");
+    // Already ran: the queue is not holding it.
+    expect(queueRole(msg({ at: NOW - 60, state: "sent", turn: "done" }), none, NOW)).toBe("");
+  });
+
+  it("never calls a projection queued — nothing has been written down", () => {
+    const none = new Map<string, string>() as ReturnType<typeof queueRoles>;
+    const ghost = msg({ at: NOW - 60, message_id: `${GHOST_PREFIX}2026-08-17T11:59:00` });
+    expect(queueRole(ghost, none, NOW)).toBe("");
   });
 
   it("reads a pasted multi-line prompt by its first line", () => {
@@ -757,6 +850,185 @@ describe("queue strip wording", () => {
     expect(cancelOutcome(["a"], ["b", "c"])).toBe("Cancelled 1; 2 were already running.");
     expect(cancelOutcome([], ["b", "c"]))
       .toBe("2 were already running — too late to cancel.");
+  });
+});
+
+// ---- one status vocabulary -----------------------------------------------------------
+// Board, List and Calendar say the SAME four words. The two distinctions that
+// costs — a failed run, a projected one — are kept as visuals, and these are the
+// tests that stop either of them quietly becoming a fifth word again.
+
+describe("the one status vocabulary", () => {
+  const status = (m: TaskMessage) => runStatus(m, taskMessageTone(m));
+
+  it("speaks only the app's five words", () => {
+    expect(columnLabel("upcoming")).toBe("Upcoming");
+    expect(columnLabel("in_progress")).toBe("In Progress");
+    expect(columnLabel("done")).toBe("Done");
+    expect(columnLabel("failed")).toBe("Failed");
+    expect(columnLabel("archived")).toBe("Archive");
+    const words = [
+      status(msg({ at: 1, state: "pending" })),
+      status(msg({ at: 1, state: "sending" })),
+      status(msg({ at: 1, state: "sent", turn: "done" })),
+      status(msg({ at: 1, state: "error" })),
+      status(msg({ at: 1, state: "missed" })),
+      status(msg({ at: 1, state: "cancelled" })),
+      status(msg({ at: 1, state: "skipped" })),
+      status(msg({ at: 1, state: "sent", turn: "unknown" })),
+    ].map((s) => s.label);
+    expect(new Set(words)).toEqual(
+      new Set(["Upcoming", "In Progress", "Done", "Failed", "Archive"]),
+    );
+  });
+
+  it("a failed run SAYS Failed — the red is reinforcement, not the signal", () => {
+    const failed = status(msg({ at: 1, state: "error" }));
+    expect(failed.label).toBe("Failed");
+    expect(failed.failed).toBe(true);
+    const clean = status(msg({ at: 1, state: "sent", turn: "done" }));
+    expect(clean.label).toBe("Done");
+    expect(clean.failed).toBe(false);
+    // A turn that stopped reporting is a failure too, and says so.
+    expect(status(msg({ at: 1, state: "sent", turn: "unknown" })))
+      .toMatchObject({ label: "Failed", failed: true });
+    // A missed ONE-OFF is a fault: the run the user asked for never happened.
+    expect(status(msg({ at: 1, state: "missed" }))).toMatchObject({ label: "Failed" });
+  });
+
+  it("a skipped occurrence reads Archive — filed away, never attempted", () => {
+    expect(status(msg({ at: 1, state: "skipped" })))
+      .toMatchObject({ label: "Archive", failed: false });
+    expect(status(msg({ at: 1, state: "cancelled" })))
+      .toMatchObject({ label: "Archive", failed: false });
+    // The loop's own skip of a recurring occurrence is the same thing.
+    expect(status(msg({ at: 1, state: "missed", template_id: "t1" })))
+      .toMatchObject({ label: "Archive", failed: false });
+  });
+
+  it("a ghost reads Upcoming and is kept apart by its DASHES, not by a word", () => {
+    const ghost = status(msg({ at: 1, message_id: `${GHOST_PREFIX}2026-08-17T09:00:00` }));
+    const real = status(msg({ at: 1, state: "pending" }));
+    expect(ghost.label).toBe("Upcoming");
+    expect(real.label).toBe("Upcoming");
+    // Same word, and still distinguishable — which is the whole bargain.
+    expect(ghost.projected).toBe(true);
+    expect(real.projected).toBe(false);
+  });
+
+  it("keeps the finer reading for a tooltip, never as a sixth word", () => {
+    // "Missed" and "Stopped reporting" still say something a status cannot, so
+    // they survive — in `detail`, which only ever reaches a title attribute.
+    expect(status(msg({ at: 1, state: "missed" })).detail).toBe("Missed");
+    expect(status(msg({ at: 1, state: "sent", turn: "unknown" })).detail)
+      .toBe("Stopped reporting");
+    expect(status(msg({ at: 1, state: "sent", turn: "done" })).detail).toBe("Ran");
+  });
+
+  it("a day's pill answers for its worst run", () => {
+    const day = (...ms: TaskMessage[]) => dayStatus(ms.map(status));
+    // 9am ran fine, 2pm died: the day is not clean.
+    expect(day(
+      msg({ at: 1, state: "sent", turn: "done" }),
+      msg({ at: 2, state: "error" }),
+    )).toMatchObject({ label: "Failed", failed: true });
+    // Work in flight outranks work still coming.
+    expect(day(
+      msg({ at: 1, state: "pending" }),
+      msg({ at: 2, state: "sending" }),
+    )).toMatchObject({ label: "In Progress", failed: false });
+    // Something still to come outranks something filed away.
+    expect(day(
+      msg({ at: 1, state: "skipped" }),
+      msg({ at: 2, state: "pending" }),
+    )).toMatchObject({ label: "Upcoming" });
+    expect(day(msg({ at: 1, state: "sent", turn: "done" }))).toMatchObject({ label: "Done" });
+  });
+
+  it("a day is only projected when NOTHING in it is real", () => {
+    const ghost = (n: number) =>
+      msg({ at: n, message_id: `${GHOST_PREFIX}${n}` });
+    expect(dayStatus([ghost(1), ghost(2)].map(status)).projected).toBe(true);
+    // One materialized run makes the day a commitment, not a forecast.
+    expect(dayStatus([ghost(1), msg({ at: 2, state: "pending" })].map(status)).projected)
+      .toBe(false);
+    expect(dayStatus([]).projected).toBe(false);
+  });
+});
+
+// ---- late runs -----------------------------------------------------------------------
+// `at` is what was ASKED FOR and never moves; `ran_at` is when it went. The chip
+// stays on the day the user picked and the row says how far behind it ran —
+// which is the whole fix for a task jumping to the day the app happened to open.
+
+describe("a run that was late", () => {
+  const NOON = at(2026, 7, 17, 12, 0);
+
+  it("is derived from at vs ran_at, and nothing else", () => {
+    expect(lateBy(msg({ at: NOON, ran_at: NOON + 7200, state: "sent", turn: "done" })))
+      .toBe(7200);
+    // Never ran: there is no lateness to report, only a state.
+    expect(lateBy(msg({ at: NOON, ran_at: 0, state: "pending" }))).toBe(0);
+    // Ran early — or the clocks disagreed. Not a fact worth a sentence.
+    expect(lateBy(msg({ at: NOON, ran_at: NOON - 60, state: "sent" }))).toBe(0);
+  });
+
+  it("stays quiet about the scheduler's own granularity", () => {
+    expect(lateText(msg({ at: NOON, ran_at: NOON + 40, state: "sent" }))).toBe("");
+    expect(lateText(msg({ at: NOON, ran_at: NOON + 299, state: "sent" }))).toBe("");
+    expect(lateText(msg({ at: NOON, ran_at: NOON + 300, state: "sent" })))
+      .toBe("ran 5 minutes late");
+  });
+
+  it("says it in the unit a person would", () => {
+    const late = (secs: number) => lateText(msg({ at: NOON, ran_at: NOON + secs, state: "sent" }));
+    expect(late(3600)).toBe("ran 1 hour late");
+    expect(late(3 * 3600)).toBe("ran 3 hours late");
+    expect(late(2 * 86400)).toBe("ran 2 days late");
+    // No unit is ever printed at the value the NEXT unit owns.
+    expect(late(3599)).toBe("ran 1 hour late");
+    expect(late(86399)).toBe("ran 1 day late");
+  });
+
+  it("does not move the chip: a caught-up run keeps the day it was due", () => {
+    const days = [new Date(2026, 7, 17), new Date(2026, 7, 19)];
+    const t = task({ key: "t1", messages: [] });
+    const caughtUp = msg({
+      // Due Monday, ran Wednesday — the case that used to jump columns.
+      at: at(2026, 7, 17, 9),
+      ran_at: at(2026, 7, 19, 10),
+      state: "sent",
+      turn: "done",
+    });
+    const chips = taskChips([t], days, { t1: [caughtUp] });
+    expect(chips.get("2026-08-17")?.length).toBe(1);
+    expect(chips.get("2026-08-19")?.length).toBe(0);
+    expect(lateText(caughtUp)).toBe("ran 2 days late");
+  });
+});
+
+// ---- keeping the popover on screen ---------------------------------------------------
+
+describe("popoverPos", () => {
+  const VW = 1000;
+  const VH = 800;
+
+  it("sits below-right of the click when there is room", () => {
+    expect(popoverPos(100, 100, 360, 400, VW, VH)).toEqual({ left: 108, top: 108 });
+  });
+
+  it("flips to the other side rather than sliding under the edge", () => {
+    // A click near the right edge: the panel goes LEFT of the pointer.
+    expect(popoverPos(900, 100, 360, 400, VW, VH).left).toBe(900 - 360 - 8);
+    // Near the bottom: ABOVE it. This is the Open in Explorer case.
+    expect(popoverPos(100, 700, 360, 400, VW, VH).top).toBe(700 - 400 - 8);
+  });
+
+  it("clamps when neither side fits, and never goes off the top-left", () => {
+    // Taller than the window: pinned to the margin, and the thread scrolls
+    // inside it rather than the card running off the screen.
+    expect(popoverPos(100, 700, 360, 900, VW, VH)).toMatchObject({ top: 8 });
+    expect(popoverPos(0, 0, 360, 400, 200, 200)).toEqual({ left: 8, top: 8 });
   });
 });
 

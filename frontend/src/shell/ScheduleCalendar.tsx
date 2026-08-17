@@ -26,16 +26,41 @@
 // four days, Today snapping back. The 4-day range earns its place on width, so
 // its chips get a larger label.
 //
-// Above the grid, where Google puts its all-day row, sits the QUEUED strip: what
-// is past due waiting to be claimed and what is mid-flight (getScheduleQueue),
-// and the cancel surface for both. Cancelling races the claim, so an entry the
-// server has already handed to the sender comes back REFUSED — and is said so,
-// never silently dropped. Missed occurrences are NOT in the queue: they stay
-// greyed on their original past slot so history stays readable.
+// QUEUED work — past due and waiting to be claimed — has no strip across the top
+// of the grid. It is a MESSAGE, its siblings are already listed in the task's
+// popover thread, and a band across the week said otherwise (Akshil,
+// 2026-08-17). The queue's two states ride the thread row they belong to, and so
+// does the cancel: cancelling races the claim, so an entry the server has
+// already handed to the sender comes back REFUSED — and is said so, never
+// silently dropped. Missed occurrences are NOT in the queue: they stay greyed on
+// their original past slot so history stays readable.
+//
+// ONE STATUS VOCABULARY. The popover's pill and every thread row say the app's
+// five words — Upcoming / In Progress / Done / Failed / Archive — and nothing
+// else. Failure is a WORD, not just a red ring (Akshil, 2026-08-17); the red
+// stays as reinforcement. The two settled edge cases: a skipped occurrence reads
+// Archive (filed away, never attempted), and a projected run reads Upcoming with
+// a dashed ring, because a projection genuinely is upcoming and the outline is
+// what says nothing has been written down yet. The mapping is not this file's
+// (that would be a second answer to a question tasks-lib already answers): the
+// column comes from tasks-lib.messageTone, the wording from
+// schedule-lib.runStatus.
+//
+// CHIPS ARE PLACED BY `at`, which is always the time the message was SCHEDULED
+// for. `ran_at` is when it went. A task due Monday and caught up on Wednesday
+// stays in Monday's column and the popover row says "ran 2 days late" — moving
+// the chip would make the grid disagree with the schedule the user wrote.
 //
 // The layout maths is all in schedule-lib.ts and tested there; this file adds
 // pixels and nothing else.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   cancelQueued,
   cancelScheduledMessage,
@@ -50,30 +75,41 @@ import {
   calendarThreads,
   cancelOutcome,
   chipAccessibleName,
+  dayStatus,
   groupScheduled,
   dayKey,
   firstLine,
-  isProjected,
-  messageTone,
+  lateText,
   minutesOfDay,
-  queueSummary,
+  popoverPos,
+  queueRole,
+  queueRoles,
   rangeDays,
   rangeLabel,
   rangeStart,
-  relativeDue,
   repeatTextFor,
+  runStatus,
   sameDay,
   stepRange,
   taskChips,
   threadForDay,
   windowBounds,
 } from "./schedule-lib";
-import type { CalendarChip, CalendarRange } from "./schedule-lib";
+import type { CalendarChip, CalendarRange, QueueRole } from "./schedule-lib";
 // Where a click GOES is owned by tasks-lib, and by nothing else: taskHref opens
 // the thread, messageHref opens the one turn inside it. The calendar used to
 // build that url itself out of explorerUrl, which silently dropped the message
 // anchor and landed every reader at the top of the conversation.
-import { openMessageHref, taskHref } from "./tasks-lib";
+//
+// messageTone is imported for the same reason: WHICH COLUMN a message is in is
+// tasks-lib's answer, and the calendar now says the Board's words, so it asks
+// rather than deciding. Aliased because schedule-lib exports a same-named
+// function that produces a CSS class — the two are documented at both ends.
+import { messageTone as taskMessageTone, openMessageHref, taskHref } from "./tasks-lib";
+// The Board's own status ring, reused rather than re-drawn: one vocabulary means
+// one glyph too, so a Done row in the popover is the same mark as a Done card on
+// the board — red on Failed, and dashed (below) when it is only projected.
+import { StatusIcon } from "./ScheduleTaskViews";
 
 // One hour of grid, in px. 44 puts a full day at ~1050px — tall enough that two
 // runs half an hour apart do not collide, short enough that the 8am–6pm band a
@@ -110,19 +146,6 @@ export const ICON_CANCEL = icon(<><circle cx="12" cy="12" r="9" /><path d="M8 8l
 export const ICON_NOTES = icon(<><line x1="4" y1="7" x2="20" y2="7" /><line x1="4" y1="12" x2="20" y2="12" /><line x1="4" y1="17" x2="14" y2="17" /></>);
 export const ICON_RESTORE = icon(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /></>);
 export const ICON_INBOX = icon(<><path d="M22 12h-6l-2 3h-4l-2-3H2" /><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></>);
-// The queue's own glyph: work that has come due and is waiting to go up.
-export const ICON_QUEUE = icon(<><path d="M12 19V5" /><path d="M5 12l7-7 7 7" /></>);
-
-// A message's own words for what happened to it — the vocabulary the popover's
-// thread is read by. Short, because it sits beside a time on one line.
-const MESSAGE_LABELS: Record<string, string> = {
-  upcoming: "Scheduled",
-  sending: "Running",
-  ran: "Ran",
-  error: "Failed",
-  missed: "Missed",
-  skipped: "Skipped",
-};
 
 const clockTime = (d: Date) =>
   d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -150,13 +173,36 @@ function useDismiss(ref: React.RefObject<HTMLElement>, onClose: () => void) {
   }, [ref, onClose]);
 }
 
-// Keep a floating panel on screen: flip left of the click when the right edge
-// would clip, and clamp vertically. Sizes match the CSS.
-function anchorStyle(x: number, y: number, w: number, h: number) {
-  return {
-    left: Math.max(8, Math.min(x + 8, window.innerWidth - w - 16)),
-    top: Math.max(8, Math.min(y + 8, window.innerHeight - h - 16)),
-  };
+// Keep a floating panel on screen. The geometry (flip, then clamp) is
+// schedule-lib.popoverPos and tested there; what lives here is the MEASUREMENT,
+// which a pure function cannot do: the panel's height depends on how long the
+// thread is, and the thread arrives one fetch after the panel opens. So it is
+// placed from the CSS max-height first, then re-placed from the box it actually
+// became — a chip clicked near the bottom of a tall window otherwise opens a
+// popover whose action row is off-screen.
+const POPOVER_W = 360;
+// Mirrors `.schedule-cal-popover { max-height: min(70vh, 560px) }`.
+const popoverMaxH = () => Math.min(560, window.innerHeight * 0.7);
+
+function useAnchored(
+  ref: React.RefObject<HTMLElement>,
+  at: { x: number; y: number },
+  // One scalar standing for everything that can change the panel's height — the
+  // thread landing, an error line appearing — so the re-place happens on the
+  // same frame the box grows. A scalar rather than a spread dep list: a deps
+  // array whose LENGTH varies is the one thing the hooks rule cannot check.
+  sig: string,
+) {
+  const [pos, setPos] = useState(() =>
+    popoverPos(at.x, at.y, POPOVER_W, popoverMaxH(), window.innerWidth, window.innerHeight),
+  );
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const box = el.getBoundingClientRect();
+    setPos(popoverPos(at.x, at.y, box.width, box.height, window.innerWidth, window.innerHeight));
+  }, [ref, at.x, at.y, sig]);
+  return pos;
 }
 
 // ---- The chip popover ----------------------------------------------------------
@@ -168,6 +214,7 @@ function anchorStyle(x: number, y: number, w: number, h: number) {
 function ChipPopover({
   chip,
   repeat,
+  roles,
   at,
   onClose,
   onReload,
@@ -176,6 +223,9 @@ function ChipPopover({
   chip: CalendarChip;
   /** The recurrence in words ("Daily"), "" for a one-off. */
   repeat: string;
+  /** What the scheduler's queue says about each entry id — this is where the
+   * old all-day strip's two facts (queued, running) now live. */
+  roles: Map<string, QueueRole>;
   at: { x: number; y: number };
   onClose: () => void;
   onReload: () => void;
@@ -216,6 +266,11 @@ function ChipPopover({
     [messages, chip.day],
   );
 
+  // Placed once from the CSS cap, then again from the box it became — the
+  // thread lands a fetch later and an error line can appear under it, and both
+  // change the height that decides whether the panel fits below the click.
+  const pos = useAnchored(ref, at, `${today.length}:${rest.length}:${error}`);
+
   // Clicking a message opens the explorer's Claude chat ON THAT TURN, and that
   // click is what marks it read (§7). The url is messageHref's to build — the
   // same one the List uses — so the calendar lands the reader exactly where the
@@ -239,13 +294,26 @@ function ChipPopover({
   // same function the List's task row uses, and null when there is no session.
   const threadHref = taskHref(task);
 
-  const cancelMessage = async (m: TaskMessage) => {
+  // Two cancels, one button. A QUEUED or RUNNING entry goes through the queue
+  // endpoint, which is the only one that can answer honestly when the race is
+  // lost: an entry already claimed for sending comes back `refused`, and that
+  // sentence goes up rather than the popover closing as if it had worked.
+  // Everything still in the future is a plain schedule cancel.
+  const cancelMessage = async (m: TaskMessage, role: QueueRole) => {
     setBusy(m.message_id);
     setError("");
     try {
-      await cancelScheduledMessage(m.entry_id);
-      onReload();
-      onClose();
+      if (role) {
+        const r = await cancelQueued([m.entry_id]);
+        const said = cancelOutcome(r.cancelled ?? [], r.refused ?? []);
+        setError(said);
+        onReload();
+        if (!said) onClose();
+      } else {
+        await cancelScheduledMessage(m.entry_id);
+        onReload();
+        onClose();
+      }
     } catch (e) {
       // The likeliest failure is the honest race — it fired while the popover
       // was open — so the server's words go up and the page refreshes anyway.
@@ -256,26 +324,50 @@ function ChipPopover({
     }
   };
 
-  const pos = anchorStyle(at.x, at.y, 360, 420);
   const dayLabel = chip.time.toLocaleDateString(undefined, {
     weekday: "long",
     month: "short",
     day: "numeric",
   });
 
+  // The day's pill, in the one vocabulary: the column comes from tasks-lib, the
+  // word from schedule-lib, and the two facts the word folds away (failed,
+  // projected) come back as the pill's colour and its dashes.
+  const day = useMemo(
+    () => dayStatus(chip.messages.map((m) => runStatus(m, taskMessageTone(m)))),
+    [chip.messages],
+  );
+
+  const nowSec = Math.floor(Date.now() / 1000);
+
   const row = (m: TaskMessage, sameDayRow: boolean) => {
-    const tone = messageTone(m);
+    const status = runStatus(m, taskMessageTone(m));
+    const role = queueRole(m, roles, nowSec);
     const t = new Date(m.at * 1000);
-    const cancellable = m.state === "pending" && !!m.entry_id && !isProjected(m);
+    // A running entry is cancellable too — that is what the strip's own cancel
+    // did, and it is the burst case's only brake. The server still gets to
+    // refuse it, which is the whole point of routing through cancelQueued.
+    const cancellable =
+      !!m.entry_id && !status.projected && (m.state === "pending" || role === "running");
+    // The row's second line of fact, when there is one. A catch-up says how far
+    // behind it ran (`at` vs `ran_at` — never the chip's position); a queued one
+    // says it is waiting to be claimed, which "Upcoming" alone does not.
+    const note = lateText(m) || (role === "queued" ? "queued" : "");
     return (
       <li key={m.message_id} className="schedule-cal-msg">
         <button
           type="button"
           className={"schedule-cal-msg-open" + (canOpen(m) ? "" : " is-inert")}
           onClick={() => openMessage(m)}
-          title={t.toLocaleString()}
+          title={note ? `${t.toLocaleString()} — ${note}` : t.toLocaleString()}
         >
-          <span className={`schedule-cal-msg-dot schedule-cal-msg-dot--${tone}`} aria-hidden="true" />
+          {/* The Board's ring, at row scale. `is-ghost` is the one thing the
+              Board has no case for: a projected run, dashed because the word
+              beside it says "Upcoming" like any other scheduled run and
+              something has to tell the two apart. */}
+          <span className={"schedule-cal-ring" + (status.projected ? " is-ghost" : "")}>
+            <StatusIcon status={status.column} failed={status.failed} />
+          </span>
           <span className="schedule-cal-msg-time">
             {sameDayRow
               ? clockTime(t)
@@ -289,11 +381,9 @@ function ChipPopover({
           {m.unread && (
             <span className="schedule-cal-msg-unread" role="img" aria-label="Unread" />
           )}
-          <span className="schedule-cal-msg-state">
-            {/* "Projected", not "Scheduled": nothing has been written down for
-                this one yet — the rule simply says it will happen. */}
-            {isProjected(m) ? "Projected" : MESSAGE_LABELS[tone] ?? tone}
-          </span>
+          {note && <span className="schedule-cal-msg-note">{note}</span>}
+          {/* The app's word, and only ever one of its five. */}
+          <span className="schedule-cal-msg-state">{status.label}</span>
         </button>
         {cancellable && (
           <button
@@ -301,14 +391,22 @@ function ChipPopover({
             className="schedule-cal-msg-act"
             disabled={busy === m.message_id}
             aria-label={
-              m.template_id
-                ? `Skip the ${clockTime(t)} run`
-                : `Cancel the ${clockTime(t)} message`
+              role === "running"
+                ? `Cancel the ${clockTime(t)} run, which is already going`
+                : m.template_id
+                  ? `Skip the ${clockTime(t)} run`
+                  : `Cancel the ${clockTime(t)} message`
             }
-            title={m.template_id ? "Skip this run" : "Cancel this message"}
-            onClick={() => cancelMessage(m)}
+            title={
+              role === "running"
+                ? "Cancel this run"
+                : m.template_id
+                  ? "Skip this run"
+                  : "Cancel this message"
+            }
+            onClick={() => cancelMessage(m, role)}
           >
-            {m.template_id ? ICON_SKIP : ICON_CANCEL}
+            {m.template_id && role !== "running" ? ICON_SKIP : ICON_CANCEL}
           </button>
         )}
       </li>
@@ -335,8 +433,13 @@ function ChipPopover({
           // glyph carrying its own label only ever repeats a word.
           <span className="schedule-cal-pop-rep" aria-hidden="true">↻</span>
         )}
-        <span className={`schedule-state schedule-state--${chip.tone}`}>
-          {MESSAGE_LABELS[chip.tone] ?? chip.tone}
+        <span
+          className={
+            `schedule-state schedule-state--${day.column}` +
+            (day.projected ? " is-projected" : "")
+          }
+        >
+          {day.label}
         </span>
       </div>
 
@@ -392,107 +495,6 @@ function ChipPopover({
   );
 }
 
-// ---- The queued strip ----------------------------------------------------------
-
-function QueuePopover({
-  queued,
-  running,
-  at,
-  onClose,
-  onReload,
-}: {
-  queued: ScheduledMessage[];
-  running: ScheduledMessage[];
-  at: { x: number; y: number };
-  onClose: () => void;
-  onReload: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [busy, setBusy] = useState("");
-  const [note, setNote] = useState("");
-  useDismiss(ref, onClose);
-
-  const act = async (ids: string[] | "all", tag: string) => {
-    setBusy(tag);
-    setNote("");
-    try {
-      const r = await cancelQueued(ids);
-      // `refused` is the honest half of the answer: the server had already
-      // claimed that entry for sending. Say so — dropping it silently teaches
-      // the reader that the button lies.
-      setNote(cancelOutcome(r.cancelled ?? [], r.refused ?? []));
-      onReload();
-      if (!(r.refused ?? []).length) onClose();
-    } catch (e) {
-      setNote((e as Error).message);
-      onReload();
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const pos = anchorStyle(at.x, at.y, 360, 320);
-
-  const row = (entry: ScheduledMessage, live: boolean) => (
-    <li key={entry.id} className="schedule-cal-q-row">
-      {live ? (
-        // Decorative: the row's own "running" text three columns along is the
-        // fact; labelling the dot too says it twice.
-        <span className="schedule-tv-pulse" aria-hidden="true" />
-      ) : (
-        <span className="schedule-cal-q-dot" aria-hidden="true" />
-      )}
-      <span className="schedule-cal-q-body" title={entry.message}>
-        {firstLine(entry.message) || "(no prompt)"}
-      </span>
-      <span className="schedule-cal-q-when">
-        {live ? "running" : relativeDue(entry.due)}
-      </span>
-      <button
-        type="button"
-        className="schedule-cal-msg-act"
-        disabled={busy !== ""}
-        aria-label={
-          `Cancel ${live ? "the running" : "the queued"} message: ` +
-          (firstLine(entry.message) || "(no prompt)")
-        }
-        title={live ? "Cancel this run" : "Cancel this message"}
-        onClick={() => act([entry.id], entry.id)}
-      >
-        {ICON_CANCEL}
-      </button>
-    </li>
-  );
-
-  return (
-    <div ref={ref} className="schedule-cal-popover schedule-cal-qpop"
-         style={pos} role="dialog" aria-label="Queued messages">
-      <div className="schedule-cal-pop-head">
-        <span className="schedule-cal-pop-id">Queued</span>
-        <span className="schedule-cal-q-count">
-          {running.length + queued.length}
-        </span>
-      </div>
-      {/* The one thing this strip exists to be honest about: nothing fires
-          while the app is closed, so this is what came due meanwhile. */}
-      <p className="schedule-cal-q-note">
-        Past due while the app was closed. These run as soon as they are claimed.
-      </p>
-      <ul className="schedule-cal-msgs">
-        {running.map((e) => row(e, true))}
-        {queued.map((e) => row(e, false))}
-      </ul>
-      {note && <p className="schedule-card-why">{note}</p>}
-      <div className="schedule-card-actions">
-        <button type="button" className="btn btn-secondary" disabled={busy !== ""}
-                onClick={() => act("all", "all")}>
-          {ICON_CANCEL} {busy === "all" ? "Cancelling…" : "Cancel all"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 // ---- The grid ------------------------------------------------------------------
 
 export default function ScheduleCalendar({
@@ -513,9 +515,10 @@ export default function ScheduleCalendar({
    * stops at each rule's next materialized run.
    */
   entries?: ScheduledMessage[];
-  /** getScheduleQueue().queued — past due, waiting to be claimed. */
+  /** getScheduleQueue().queued — past due, waiting to be claimed. No longer a
+   * strip across the grid: it marks the thread rows those entries ARE. */
   queued?: ScheduledMessage[];
-  /** getScheduleQueue().running — mid-flight. */
+  /** getScheduleQueue().running — mid-flight, same treatment. */
   running?: ScheduledMessage[];
   onReload: () => void;
   onCreateAt: (time: Date) => void;
@@ -533,8 +536,11 @@ export default function ScheduleCalendar({
   });
   const [start, setStart] = useState(() => rangeStart(new Date(), range));
   const [openChip, setOpenChip] = useState<{ chip: CalendarChip; x: number; y: number } | null>(null);
-  const [openQueue, setOpenQueue] = useState<{ x: number; y: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // What the scheduler's queue says, by entry id — read by the popover's thread
+  // rows, which is the only place the queue is now shown.
+  const roles = useMemo(() => queueRoles(queued, running), [queued, running]);
 
   // First paint lands just above 7am, not midnight — the band where schedules
   // live. The 12px of slack keeps the 7am gutter label (centred on its line)
@@ -617,19 +623,15 @@ export default function ScheduleCalendar({
 
   const now = new Date();
   const label = rangeLabel(days);
-  const todayIndex = days.findIndex((d) => sameDay(d, now));
-  const queueCount = queued.length + running.length;
 
   const shift = (delta: number) => {
     setStart((s) => stepRange(s, range, delta));
     setOpenChip(null);
-    setOpenQueue(null);
   };
 
   const goToday = useCallback(() => {
     setStart(rangeStart(new Date(), range));
     setOpenChip(null);
-    setOpenQueue(null);
   }, [range]);
 
   const clickGrid = (day: Date, e: React.MouseEvent<HTMLDivElement>) => {
@@ -693,31 +695,9 @@ export default function ScheduleCalendar({
         ))}
       </div>
 
-      {/* An empty queue renders NOTHING — no strip, no empty-state chrome. The
-          row only exists when there is work in it. */}
-      {queueCount > 0 && (
-        <div className="schedule-cal-queue">
-          <span className="schedule-cal-queue-label">Queued</span>
-          <button
-            type="button"
-            className="schedule-cal-queue-strip"
-            // Today's column, running to the grid's right edge — the all-day
-            // row's position, on the one day the queue is about. When today is
-            // off-screen the strip still shows (the work is still real) and
-            // takes the whole row instead.
-            style={{ gridColumn: `${(todayIndex < 0 ? 0 : todayIndex) + 2} / -1` }}
-            onClick={(e) => setOpenQueue({ x: e.clientX, y: e.clientY })}
-          >
-            {running.length > 0 ? (
-              <span className="schedule-tv-pulse" aria-hidden="true" />
-            ) : (
-              <span className="schedule-cal-queue-icon" aria-hidden="true">{ICON_QUEUE}</span>
-            )}
-            <span className="schedule-cal-queue-text">{queueSummary(queued, running)}</span>
-            <span className="schedule-cal-queue-count">{queueCount}</span>
-          </button>
-        </div>
-      )}
+      {/* No all-day row. What used to sit here — the Queued strip — was a band
+          across the week for work that belongs to individual messages, and it
+          reads as one now: on the thread rows inside the chip popover. */}
 
       <div className="schedule-cal-scroll" ref={scrollRef}>
         <div className="schedule-cal-grid" style={{ height: 24 * HOUR_H }}>
@@ -824,19 +804,11 @@ export default function ScheduleCalendar({
         <ChipPopover
           chip={openChip.chip}
           repeat={repeatByTemplate.get(openChip.chip.templateId) ?? ""}
+          roles={roles}
           at={{ x: openChip.x, y: openChip.y }}
           onClose={() => setOpenChip(null)}
           onReload={onReload}
           onEditEntry={onEditEntry}
-        />
-      )}
-      {openQueue && queueCount > 0 && (
-        <QueuePopover
-          queued={queued}
-          running={running}
-          at={openQueue}
-          onClose={() => setOpenQueue(null)}
-          onReload={onReload}
         />
       )}
     </div>

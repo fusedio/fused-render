@@ -7265,6 +7265,49 @@ world from one the user typed.
   so an edit, which is cancel + re-create, can re-state it) and is never invented for
   a supplied id. Absent means NOT learned, which is what every entry stored before it
   existed is.
+- **SCH-13b** **A rule anchored in the PAST runs once, on its most recent slot.**
+  A past-anchored template used to run nothing until its next future slot, because
+  `_materialize` computes from `base = now` and the anchor only sets the pattern
+  (time of day, weekday, nth-weekday). That is right for "monthly on the second
+  Wednesday" but reads as broken beside a past one-off, which fires immediately.
+  So a rule template with no occurrences yet walks anchor → now and materializes
+  **the latest slot at or before now**, at that slot's own time, marked `catch_up`.
+  The latest, not the anchor: "the oldest thing you missed" is rarely what anyone
+  wants re-run, and this is the rule `_coalesce` already applies to a repeat missed
+  while the app was shut — the same walk, extracted as `_walk_latest` and shared,
+  with `spend=True` for the coalescer (it bills `made` and counts `skipped`) and
+  `spend=False` here. Intervening slots are never materialized and never reported:
+  nothing happened at those times, so nothing is drawn at them either.
+- **SCH-13c** **A due message DEFERS while that conversation has a live turn.**
+  `_busy_sessions` only ever knew about scheduled sends, so a message due while the
+  user was mid-turn in the same session spawned a second `claude --resume` against
+  one transcript. Liveness is now asked of the same rule the session badge uses —
+  extracted to `fused_render/session_liveness.py` rather than duplicated, because it
+  is a 16KB tail read plus a housekeeping filter plus a `turn_duration` end-marker
+  plus two windows, and a scheduler that disagreed with the badge on any one of them
+  would hold a message the page calls safe. **Deferred, never dropped:** nothing is
+  written, so the entry stays `pending` and cannot be swept `missed` (catch-up is
+  unbounded by default). An unreadable or absent transcript answers "not live", so a
+  bad read can never park a message for ever. The user is never blocked from their
+  own chat — the machine waits, not the person.
+- **SCH-13d** **`POST /api/schedule/run-now` sends a pending message early and
+  leaves its `due` alone.** The Board's Upcoming → In Progress drag means "run it
+  now", and the schedule time is a fact about what was asked for, so history keeps
+  it and the row reads as having run early (`at` is scheduled-for, `ran_at` is when
+  it went; see SCH-15). Reuses `_claim`, the single `pending → sending` transition,
+  so claim-before-spawn is unchanged and run-now races a tick exactly as two ticks
+  race each other. Anything not pending is refused 409 with its own sentence.
+  Running one occurrence early leaves its template's rule, `made` and `due` alone.
+  A conversation with a live turn is refused rather than forced — a drag gesture
+  cannot consent to two processes on one transcript (SCH-13c).
+- **SCH-15** **`at` is when a message was scheduled for and never moves; `ran_at`
+  is when it actually went.** They were one field, and matching a run to its
+  transcript prompt overwrote the due time — so a task scheduled two days ago and
+  caught up today jumped to today's column. A calendar places chips by `at`, so the
+  chip stays on the day the work was asked for and the row says it ran late; the
+  Board's run-now case is the same field pair read the other way round. `last_active`
+  maxes over both, so a caught-up task still sorts as today's news while its chip
+  stays put.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at

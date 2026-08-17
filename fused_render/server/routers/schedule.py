@@ -265,6 +265,38 @@ def api_schedule_restore(body: dict = Body(...),
     return {"entry": entry}
 
 
+@router.post("/api/schedule/run-now")
+def api_schedule_run_now(body: dict = Body(...),
+                         x_fused: str | None = Header(default=None)):
+    """Send a pending message NOW: `{"entry_id": "..."}` -> `{"ok", "entry"}`.
+
+    The Board's Upcoming -> In Progress drag. Guarded like every other write
+    here, and more obviously than most: this one starts an unattended agent turn
+    on the spot, which is the exact thing D3's header guard keeps a foreign page
+    from doing.
+
+    **It does not move `due`.** The schedule time is a fact about what was asked
+    for, so the row reads as having run early rather than as having been
+    scheduled for now — see `schedule.run_now`, which is where every rule about
+    this lives. This layer only maps the model's honest refusal onto a status
+    code: 404 when there is no such entry, 409 when there is one and it cannot
+    run (already sent, already sending, cancelled, or its conversation is
+    mid-turn). Both carry the model's sentence, because "it didn't run" without
+    a reason is what makes a dragged card feel broken."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    entry_id = body.get("entry_id")
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        return _error("entry_id: required", status=400)
+    result = schedule.run_now(entry_id.strip())
+    if not result["ok"]:
+        return _error(result["reason"],
+                      status=404 if not result["found"] else 409)
+    return {"ok": True, "entry": result["entry"]}
+
+
 @router.post("/api/schedule/cancel")
 def api_schedule_cancel(body: dict = Body(...),
                         x_fused: str | None = Header(default=None)):

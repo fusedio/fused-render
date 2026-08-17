@@ -63,7 +63,11 @@ make it survivable rather than silent:
   3. **Scheduling into the past is allowed** and is recorded with the due time
      the user picked, so history reads truthfully. Because the queue runs in
      due order, a due time in the past sorts ahead of everything later — it is
-     at the head of the queue and goes on the next tick.
+     at the head of the queue and goes on the next tick. **A REPEAT anchored in
+     the past reads the same way**: the LATEST slot at or before now is
+     materialized once and goes immediately, the slots before it never happen,
+     and the series then continues from now (`_catch_up_base`). That is rule (2)
+     arrived at from the other side, and it is literally the same walk.
 
   Nothing here counts ticks either: coalescing walks the recurrence with
   wall-clock arithmetic, asking "which occurrences lie between this entry's due
@@ -638,8 +642,10 @@ def create(target: str, message: str, due=None, session_id: str = "",
         when = when.astimezone(timezone.utc)
         # NO catch-up-bound refusal here, unlike a one-shot below. An anchor in
         # the past is a perfectly ordinary way to say "every other Monday, on
-        # the phase that started last Monday" — nothing fires late for it,
-        # because materialization only ever asks for occurrences after `now`.
+        # the phase that started last Monday" — the anchor sets the pattern, the
+        # LATEST slot at or before now is materialized once as a catch-up (see
+        # `_catch_up_base`), and the series then continues from now. A past
+        # anchor sets the phase AND runs, exactly the way a past one-shot does.
     elif repeats:
         # Parse errors surface here, at creation, with the field named —
         # never later in the loop against a stored line nobody can see.
@@ -1385,6 +1391,48 @@ def _busy_sessions(entries: list[dict]) -> set[str]:
     return busy
 
 
+def _session_live(session_id: str, now: datetime, seen: dict | None = None) -> bool:
+    """Is a HUMAN (or anything else) mid-turn in this session right now?
+
+    The other half of "busy", and the gap `tick`'s docstring used to name as
+    known and unfixable. `_busy_sessions` reads the schedule store, so it knows
+    about the sends THIS module has in flight and nothing whatever about the
+    user typing into the same conversation in the explorer's chat. Resuming a
+    session mid-turn is not a race to lose politely: `claude --resume S` and the
+    chat's own process both append to one transcript, and the transcript IS the
+    session.
+
+    The answer comes from the transcript itself (`session_liveness`), which is
+    the only place that records the turn regardless of who started it — and is
+    the same rule, one copy of it, that paints the `running` badge on the Inbox
+    and the Board. Imported from `fused_render`, never from a router: this
+    module is below `fused_render.server` and must stay there.
+
+    Unreadable, missing, or no transcript at all answers **False**, and that
+    direction is deliberate. A liveness read this module cannot make must not be
+    able to hold a message back for ever; not-live restores exactly the
+    behaviour that shipped before this check existed.
+
+    `seen` memoizes within one tick — a batch of messages into one conversation
+    would otherwise stat and tail-read the same file once each.
+    """
+    if not session_id:
+        return False
+    if seen is not None and session_id in seen:
+        return seen[session_id]
+    try:
+        from fused_render import session_liveness
+
+        live = session_liveness.session_running(session_id, now.timestamp())
+    except Exception:  # noqa: BLE001 — never stop a send over a failed read
+        logger.debug("could not read session liveness for %s", session_id,
+                     exc_info=True)
+        live = False
+    if seen is not None:
+        seen[session_id] = live
+    return live
+
+
 def _made(entry: dict) -> int:
     """How many occurrences a rule template has materialized. Read defensively:
     the store is a JSON file a human can edit, and a `made` that came back as a
@@ -1430,6 +1478,57 @@ def _skipped(entry: dict) -> int:
     `_made`: a hand-edited count must not stop the schedule."""
     value = entry.get("skipped")
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _walk_latest(template: dict, when: datetime, now: datetime,
+                 spend: bool) -> tuple[datetime, int]:
+    """Step a template's recurrence forward from `when` to the LATEST occurrence
+    still at or before `now`; returns (that time, how many steps it took).
+
+    The one walk, shared by the two callers that both mean "collapse a run of
+    past slots into the last of them, and never replay the rest":
+
+    * `_coalesce`, for a repeat the app slept through — those slots were on the
+      calendar, so `spend=True` bills each to `made` and the caller counts them
+      onto the survivor as `skipped`;
+    * `_catch_up_base`, for a rule created with an anchor already in the past —
+      those slots were never on any calendar, because the rule did not exist
+      when they went by, so `spend=False`: they cost the `count` budget nothing
+      and there is nothing to report as skipped. (That is also the rule
+      `_upcoming_rule` already projects by; Bugbot, PR #541.)
+
+    Three ways to stop, all of them load-bearing:
+
+    * **`ValueError`** — a hand-edited schedule that no longer parses. Left for
+      `_materialize`, which is where that verdict is announced; the caller keeps
+      the time it has already reached.
+    * **`None` or past `now`** — the ordinary end: the series is spent, or the
+      next slot is in the future and is therefore not a catch-up at all.
+    * **a step that does not MOVE.** Recurrence math is done on local
+      wall-clock time (a repeat is a wall-clock promise), so the autumn
+      fall-back — where one local hour happens twice — can hand back a later
+      local time that converts to an earlier or equal UTC instant. Stepping on
+      it would walk the same hour for as long as the cap allows. The repo
+      already accepts a cosmetic DST ghost as out of scope; this only refuses to
+      spin on one.
+
+    `_COALESCE_MAX_STEPS` bounds the WORK, never the lateness — see there.
+    """
+    steps = 0
+    while steps < _COALESCE_MAX_STEPS:
+        try:
+            following = _next_template_due(template, when)
+        except ValueError:
+            break
+        if following is None or following > now:
+            break
+        if following <= when:
+            break
+        when = following
+        steps += 1
+        if spend and isinstance(template.get("rule"), dict):
+            template["made"] = _made(template) + 1
+    return when, steps
 
 
 def _coalesce(now: datetime) -> None:
@@ -1483,6 +1582,14 @@ def _coalesce(now: datetime) -> None:
             tid = str(entry.get("template_id") or "")
             if not tid or entry.get("state") != PENDING:
                 continue
+            # A past-anchored rule's catch-up occurrence (`catch_up`) is NOT
+            # special-cased here, and that is worth stating because an earlier
+            # cut of this did. It is created already sitting on the latest slot
+            # at or before the moment it was made — by this very walk — so a
+            # coalesce in the same tick finds nothing to move. If it is still
+            # pending days later (held back by a busy conversation, say) then it
+            # genuinely IS a backlog by then, and collapsing it forward is the
+            # right answer rather than an exception to be carved out.
             try:
                 when = parse_due(entry.get("due"))
             except ValueError:
@@ -1504,31 +1611,9 @@ def _coalesce(now: datetime) -> None:
                 changed = True
             template = templates.get(tid)
             steps = 0
-            while template is not None and steps < _COALESCE_MAX_STEPS:
-                try:
-                    following = _next_template_due(template, when)
-                except ValueError:
-                    # A hand-edited schedule that no longer parses. Left for
-                    # `_materialize`, which is where that verdict is announced;
-                    # the survivor still fires at the time it already has.
-                    break
-                if following is None or following > now:
-                    break
-                if following <= when:
-                    # The walk must MOVE. Recurrence math is done on local
-                    # wall-clock time (a repeat is a wall-clock promise), so the
-                    # autumn fall-back — where one local hour happens twice —
-                    # can hand back a later local time that converts to an
-                    # earlier or equal UTC instant. Stepping on it would walk
-                    # the same hour for as long as the cap allows. The repo
-                    # already accepts a cosmetic DST ghost as out of scope; this
-                    # only refuses to spin on one.
-                    break
-                when = following
-                dropped += 1
-                steps += 1
-                if isinstance(template.get("rule"), dict):
-                    template["made"] = _made(template) + 1
+            if template is not None:
+                when, steps = _walk_latest(template, when, now, spend=True)
+                dropped += steps
             if steps:
                 # The survivor MOVES to the latest missed occurrence rather than
                 # a new entry being created for it: one run was missed many
@@ -1560,6 +1645,84 @@ def _coalesce(now: datetime) -> None:
         _sync_wake()
 
 
+def _catch_up_base(entry: dict, existing: list[dict],
+                   now: datetime) -> datetime | None:
+    """For a template anchored in the PAST that has never run: the instant to
+    materialize its ONE catch-up occurrence from. None for every other template,
+    which then materializes from `now` exactly as before.
+
+    **The inconsistency this fixes.** A one-off scheduled for last Tuesday runs
+    the moment the app opens — the queue sorts it to the head and sends it, and
+    the docstring on `create` is explicit that this is what picking a past date
+    means. A REPEAT anchored last Tuesday did nothing at all until the next slot
+    came round, because materialization computed from `now` and a past anchor
+    therefore only ever set the PHASE. Two ways of saying "starting last
+    Tuesday", two different answers, and nothing on the form to tell you which
+    one you were about to get.
+
+    **Which past slot runs is the LATEST one, not the anchor.** The anchor sets
+    the pattern; the run that goes is the most recent slot at or before now:
+
+        anchor Aug 15 09:00 · daily · now = Aug 17 10:00
+          Aug 15 09:00   no run        <- the anchor only sets the pattern
+          Aug 16 09:00   no run
+          Aug 17 09:00   RUNS NOW      <- one catch-up, due stays Aug 17 09:00
+          Aug 18 09:00   upcoming
+
+    That is the same rule `_coalesce` applies to a repeat the app slept through,
+    and it is the same walk (`_walk_latest`) — "daily at 9am" started last
+    Tuesday does not mean three mornings replayed, it means this morning's, run
+    late. The intervening slots are never materialized: they did not happen and
+    never will. And the `due` that survives is that slot's own real time, not
+    `now`, so the chip stays in the column it belongs to (see the `at` /
+    `ran_at` split on the Tasks side).
+
+    `spend=False` on the walk, because those slots cost the `count` budget
+    nothing — the rule did not exist when they went by, so nothing put them on a
+    calendar. Only the occurrence `_materialize` actually creates is billed, and
+    it bills it in the ordinary place. This is the same accounting
+    `_upcoming_rule` already projects by (Bugbot, PR #541).
+
+    Two conditions guard it, each preventing a double helping:
+
+    * **a rule template only.** A cron template has no anchor; `create` computes
+      its first occurrence from `now` by construction, so there is no past slot
+      to catch up to and nothing to decide.
+    * **no occurrences, ever.** `existing` empty AND `made` zero. A template
+      that has been running has its backlog handled by `_coalesce` already;
+      reaching back here as well would collapse the same run twice, and a
+      template whose only occurrence was CANCELLED must not have that cancel
+      undone by a fresh catch-up.
+
+    The returned base is a hair BEFORE the chosen slot, because
+    `recur.next_occurrence` is strictly-after and `_materialize` asks it for
+    "the next one after base" — this is how the slot itself comes back. Every
+    occurrence after it is computed from `now` in the ordinary way, so the
+    series continues rather than replaying.
+    """
+    if not isinstance(entry.get("rule"), dict):
+        return None
+    if existing or _made(entry):
+        return None
+    try:
+        anchor = parse_due(entry.get("anchor") or entry.get("due"))
+    except ValueError:
+        return None
+    if anchor >= now:
+        return None
+    try:
+        # The first slot of the series at or after the anchor. Not the anchor
+        # itself: a weekly rule anchored on a Tuesday with only Thursday chosen
+        # starts on the Thursday, and `recur` is the only thing that knows.
+        first = _next_template_due(entry, anchor - timedelta(microseconds=1))
+    except ValueError:
+        return None
+    if first is None or first > now:
+        return None
+    latest, _steps = _walk_latest(entry, first, now, spend=False)
+    return latest - timedelta(microseconds=1)
+
+
 def _materialize(now: datetime) -> None:
     """Ensure every live recurring template has exactly ONE pending occurrence.
 
@@ -1570,6 +1733,13 @@ def _materialize(now: datetime) -> None:
     time is computed from the LATEST occurrence ever materialized, not from
     `now`, so a run finishing early can never pull the next one earlier, and a
     cancelled occurrence stays skipped instead of being re-offered.
+
+    ONE exception, and it only ever fires once per template: a rule template
+    anchored in the past with nothing materialized yet computes from the LATEST
+    slot at or before now instead, so its first occurrence is already overdue
+    and runs immediately — the same thing a past-dated one-off does, and the
+    same collapse `_coalesce` performs on a backlog. `_catch_up_base` is the
+    whole of that decision and says why it is bounded to exactly one run.
 
     Both kinds of template come through here identically; `_next_template_due`
     is the only line that knows whether it is reading a cron expression or a
@@ -1602,6 +1772,9 @@ def _materialize(now: datetime) -> None:
                 except ValueError:
                     continue
                 base = max(base, when)
+            catch_up = _catch_up_base(entry, existing, now)
+            if catch_up is not None:
+                base = catch_up
             try:
                 next_due = _next_template_due(entry, base)
             except ValueError as exc:
@@ -1667,6 +1840,14 @@ def _materialize(now: datetime) -> None:
                 "state": PENDING,
                 "repeats": "",
                 "template_id": str(entry["id"]),
+                # The one run a rule created with an anchor already in the past
+                # catches up on (see `_catch_up_base`): the latest slot at or
+                # before now, overdue the instant it exists, so it goes on the
+                # next tick the way a past-dated one-off does. Recorded rather
+                # than inferred because nothing later can tell — an occurrence
+                # this old is otherwise indistinguishable from one the app slept
+                # through, and the two are different news to a reader.
+                "catch_up": catch_up is not None,
                 # NO `max_late`. An occurrence used to carry 120s — the
                 # skip-not-catch-up bound — and `_coalesce` is what replaced it:
                 # a missed recurring run is no longer discarded, it is collapsed
@@ -1807,19 +1988,28 @@ def tick(now: datetime | None = None) -> list[dict]:
     process dying inside one helper leaves its siblings `pending` — still
     sendable on the next tick — instead of stranded mid-claim (see `_claim_due`).
 
-    **One send at a time per resumed session.** A spawn returns as soon as the
-    detached process is away, not when the turn ends, so without this two messages
-    that resume the SAME session — two "in 5 minutes" landing in one tick, or a
-    follow-up coming due while an earlier one is still working — would run
-    concurrent `claude --resume` processes over one transcript. Entries targeting a
-    busy session are simply left `pending` and picked up by a later tick; they can
-    in principle be deferred until the catch-up bound calls them `missed`, which is
-    the honest outcome for "the conversation it belongs to never went quiet".
+    **One send at a time per session, whoever is holding it.** A spawn returns as
+    soon as the detached process is away, not when the turn ends, so without this
+    two messages that resume the SAME session — two "in 5 minutes" landing in one
+    tick, or a follow-up coming due while an earlier one is still working — would
+    run concurrent `claude --resume` processes over one transcript.
 
-    KNOWN GAP, stated rather than implied: this serialises the SCHEDULER against
-    itself. A scheduled resume can still land while the user's own interactive turn
-    on that session is live, which this module cannot see — the chat owns that run,
-    and the schedule store has no record of it.
+    Two things make a session busy and both are checked here, because the
+    scheduler is not the only thing that can be talking to it:
+
+    * **a scheduled send in flight** (`_busy_sessions`), read from this module's
+      own store;
+    * **a live turn**, read from the transcript (`_session_live`). That covers
+      the user typing in the explorer's chat, which the store cannot see and
+      which used to be a stated known gap here. The transcript records the turn
+      without recording who started it, which is exactly the property needed.
+
+    **Deferred, never dropped.** An entry targeting a busy session is left
+    `pending` and untouched — no state is written for it at all — so a later tick
+    sends it once the turn ends. Catch-up is unbounded by default, so waiting
+    costs it nothing; only an install that set `FUSED_RENDER_SCHEDULE_MAX_LATE`
+    can eventually see one swept to `missed`, which is that operator's bound
+    doing what they asked and is the same answer the hold has always given.
 
     Returns the entries actually claimed and attempted, which is the seam the
     tests drive directly instead of waiting on the loop."""
@@ -1844,12 +2034,20 @@ def tick(now: datetime | None = None) -> list[dict]:
     with _lock:
         entries = _read()
     busy = _busy_sessions(entries)
+    live_seen: dict[str, bool] = {}
     sessions = {str(e["id"]): str(e.get("session_id") or "") for e in entries}
     for entry_id in due:
         session = sessions.get(entry_id, "")
         if session and session in busy:
             logger.debug("holding %s: session %s already has a send in flight",
                          entry_id, session)
+            continue
+        if session and _session_live(session, now, live_seen):
+            # A turn is open in that conversation and it is not one of ours —
+            # the user is typing. Left PENDING, so this is a wait and not a
+            # verdict; the next tick after the turn ends sends it.
+            logger.debug("holding %s: session %s has a live turn", entry_id,
+                         session)
             continue
         entry = _claim(entry_id, now)
         if entry is None:
@@ -1861,6 +2059,100 @@ def tick(now: datetime | None = None) -> list[dict]:
         sent.append(entry)
         _send(entry)
     return sent
+
+
+def _run_now_refusal(entry: dict) -> str:
+    """Why this entry cannot be run now, in the words the user needs.
+
+    One sentence per terminal state rather than one "not pending" for all of
+    them: the Board's drag is a physical gesture the user believes in, and
+    "already sent" and "you cancelled this" are different pieces of news."""
+    state = str(entry.get("state") or "")
+    if state == SENDING:
+        return ("already sending — it was claimed for sending a moment before "
+                "this arrived")
+    if state == SENT:
+        return "already sent"
+    if state == CANCELLED:
+        return "cancelled — restore it before it can run"
+    if state == MISSED:
+        return "already missed — it was past its catch-up bound"
+    if state == ERROR:
+        return f"already tried and failed: {entry.get('error') or 'unknown error'}"
+    if state == RECURRING:
+        return ("that is a repeating schedule, not a single message — run one "
+                "of its occurrences instead")
+    return f"not pending (it is {state or 'in an unknown state'})"
+
+
+def run_now(entry_id: str, now: datetime | None = None) -> dict:
+    """Send one PENDING message immediately: `{"ok", "entry", "reason", "found"}`.
+
+    What the Board's Upcoming -> In Progress drag means. Everything about it is
+    the ordinary send brought forward; nothing about it is a second way to send.
+
+    **`due` is not touched, and that is the point.** The obvious implementation
+    rewrites the due time to now so the row "looks" consistent, and it destroys
+    the only record of what was asked for: the schedule time is a fact about the
+    ask, and a message that ran early is a message that ran early. The row reads
+    `due` in the future and `fired` now, which is exactly what happened — and it
+    is the same split `_entry_at` / `_entry_ran_at` draws on the Tasks side, so
+    the calendar still draws the chip on the day the user picked.
+
+    **The claim is reused, not reimplemented.** `_claim` is the single
+    `pending -> sending` transition in this module and it re-reads under the
+    lock, so run-now and the tick race each other exactly the way two ticks
+    would: one wins, the other is told the entry is no longer pending. Nothing
+    can be sent twice, and there is no second spawn path to keep in step with
+    claim-before-spawn.
+
+    **A recurring occurrence runs alone.** An occurrence is an ordinary one-shot
+    with a `template_id`; running it early leaves the template's `due`, its
+    `made`, and its rule untouched, and `_materialize` computes the successor
+    from that occurrence's own (unmoved) due time exactly as it would have if
+    the occurrence had fired at its proper minute. One run happened sooner; the
+    series did not move.
+
+    **A busy session is refused, not forced.** If a turn is already open in the
+    conversation this message resumes — one of ours, or the user's own typing —
+    sending would put two processes on one transcript, which is the hazard
+    `_session_live` exists for and is not one a drag gesture can consent to. The
+    entry stays pending, the reason says so, and the ordinary tick sends it when
+    the conversation goes quiet.
+
+    `found` distinguishes "no such id" (a 404) from "cannot run this one"
+    (a 409); the router is what turns them into status codes."""
+    now = now or _now()
+    with _lock:
+        entries = _read()
+        entry = next((e for e in entries
+                      if str(e.get("id") or "") == entry_id), None)
+        if entry is None:
+            return {"ok": False, "found": False, "entry": None,
+                    "reason": f"no scheduled message with id {entry_id!r}"}
+        if entry.get("state") != PENDING:
+            return {"ok": False, "found": True, "entry": dict(entry),
+                    "reason": _run_now_refusal(entry)}
+        session = str(entry.get("session_id") or "")
+        busy = _busy_sessions(entries)
+    if session and (session in busy or _session_live(session, now)):
+        return {"ok": False, "found": True, "entry": entry,
+                "reason": ("the conversation this message continues has a turn "
+                           "running right now — it will go on its own as soon "
+                           "as that turn ends")}
+    claimed = _claim(entry_id, now)
+    if claimed is None:
+        # Lost the race with a tick (or another run-now) between the read above
+        # and the claim. Refused rather than forced — the same answer
+        # `cancel_queued` gives to the same race, and for the same reason.
+        return {"ok": False, "found": True, "entry": None,
+                "reason": ("already claimed for sending — the scheduler got to "
+                           "it first")}
+    _send(claimed)
+    with _lock:
+        stored = next((e for e in _read()
+                       if str(e.get("id") or "") == entry_id), None)
+    return {"ok": True, "found": True, "entry": stored or claimed, "reason": ""}
 
 
 def _loop() -> None:

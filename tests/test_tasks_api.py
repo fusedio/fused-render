@@ -509,8 +509,8 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     item = _scheduled(client, DAY_START, DAY_END)[0]
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
-        "message_id", "kind", "body", "at", "state", "unread", "entry_id",
-        "template_id", "turn", "anchor"}
+        "message_id", "kind", "body", "at", "ran_at", "state", "unread",
+        "entry_id", "template_id", "turn", "anchor"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
@@ -554,18 +554,94 @@ def test_chat_messages_never_appear_on_the_calendar(client, projects_dir):
     assert [i["message"]["body"] for i in items] == ["scheduled today"]
 
 
-def test_a_fired_message_is_placed_where_it_actually_ran(client, projects_dir):
-    """A handled message sits where it ACTED, which is the join's timestamp —
-    the same instant the thread shows it at."""
+def test_a_fired_message_is_placed_at_the_time_it_was_scheduled_for(
+        client, projects_dir):
+    """`at` is the DUE time, always. The run supplies `ran_at`, and the join
+    supplies the anchor — neither may move the chip."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("pull the news", "2026-08-16T09:05:00Z", uuid="u1")])
     _seed_schedule([_entry("e1", "pull the news", "2026-08-16T09:00:00Z",
                            state=schedule.SENT, fired="2026-08-16T09:05:00Z",
                            turn="ok", claude_session_id="sess-a")])
     item = _scheduled(client, DAY_START, DAY_END)[0]
-    assert item["message"]["at"] == _epoch("2026-08-16T09:05:00Z")
+    assert item["message"]["at"] == _epoch("2026-08-16T09:00:00Z")
+    assert item["message"]["ran_at"] == _epoch("2026-08-16T09:05:00Z")
     assert item["message"]["state"] == "sent"
     assert item["message"]["anchor"] == "u1"
+
+
+def test_a_caught_up_message_keeps_the_day_it_was_scheduled_for(
+        client, projects_dir):
+    """The user-reported bug, at the size it actually happens.
+
+    A message scheduled for the 14th, run on the 16th because the app was shut
+    over the weekend, must stay in the 14th's column — catch-up is unbounded, so
+    this is the ordinary outcome and not an edge case. `at` said the 16th and the
+    chip jumped to today; now `at` says the 14th and `ran_at` says the 16th."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", "2026-08-16T09:05:00Z", uuid="u1")])
+    _seed_schedule([_entry("e1", "pull the news", "2026-08-14T09:00:00Z",
+                           state=schedule.SENT, fired="2026-08-16T09:04:00Z",
+                           turn="ok", claude_session_id="sess-a")])
+
+    # The 16th's column does not draw it…
+    assert _scheduled(client, DAY_START, DAY_END) == []
+    # …the 14th's does.
+    day14 = _epoch("2026-08-14T00:00:00Z")
+    item = _scheduled(client, day14, day14 + 86400)[0]
+    assert item["message"]["at"] == _epoch("2026-08-14T09:00:00Z")
+    # `ran_at` is the TRANSCRIPT's time, not the `fired` claim stamp: the
+    # session's own record of the prompt is the most accurate answer there is.
+    assert item["message"]["ran_at"] == _epoch("2026-08-16T09:05:00Z")
+    assert item["message"]["anchor"] == "u1", "the join still found its prompt"
+
+
+def test_an_unrun_message_has_not_run(client, tmp_path):
+    """`ran_at` is 0 for anything that has not happened, which is what makes it
+    readable as a fact rather than as a guess at one."""
+    _seed_schedule([_entry("e1", "later", "2026-08-16T09:00:00Z",
+                           target=str(tmp_path))])
+    item = _scheduled(client, DAY_START, DAY_END)[0]
+    assert item["message"]["at"] == _epoch("2026-08-16T09:00:00Z")
+    assert item["message"]["ran_at"] == 0.0
+
+
+def test_the_join_still_picks_the_nearest_prompt_for_each_run(client,
+                                                              projects_dir):
+    """The anchor match is unchanged — it still needs the distance heuristic to
+    tell N identical daily prompts apart, and each run must take its OWN. Only
+    what the match writes changed: `ran_at`, never `at`."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("daily news", "2026-08-14T09:02:00Z", uuid="day14"),
+        _user("daily news", "2026-08-15T09:03:00Z", uuid="day15"),
+        _user("daily news", "2026-08-16T09:01:00Z", uuid="day16"),
+    ])
+    _seed_schedule([
+        _entry(f"e{d}", "daily news", f"2026-08-{d}T09:00:00Z",
+               state=schedule.SENT, fired=f"2026-08-{d}T09:00:30Z", turn="ok",
+               claude_session_id="sess-a", template_id="tpl")
+        for d in (14, 15, 16)
+    ])
+
+    r = client.get("/api/tasks/sess-a/messages")
+    messages = list(reversed(r.json()["messages"]))  # oldest first
+    assert [m["anchor"] for m in messages] == ["day14", "day15", "day16"]
+    assert [m["at"] for m in messages] == [
+        _epoch("2026-08-14T09:00:00Z"), _epoch("2026-08-15T09:00:00Z"),
+        _epoch("2026-08-16T09:00:00Z")]
+    assert [m["ran_at"] for m in messages] == [
+        _epoch("2026-08-14T09:02:00Z"), _epoch("2026-08-15T09:03:00Z"),
+        _epoch("2026-08-16T09:01:00Z")]
+
+
+def test_a_typed_message_ran_when_it_was_typed(client, projects_dir):
+    """A chat message has no gap for the two stamps to disagree across."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("hello", T9, uuid="u1")])
+    message = _tasks(client)[0]["messages"][0]
+    assert message["kind"] == "chat"
+    assert message["at"] == _epoch(T9)
+    assert message["ran_at"] == _epoch(T9)
 
 
 def test_an_empty_window_is_an_empty_list(client, tmp_path):
@@ -610,6 +686,9 @@ def test_a_recurring_template_is_not_drawn(client, tmp_path):
     ({"state": schedule.SENT, "turn": "ok", "fired": T12}, "done"),
     ({"state": schedule.MISSED}, "done"),
     ({"state": schedule.CANCELLED}, "archived"),
+    ({"state": schedule.ERROR, "error": "target vanished"}, "failed"),
+    ({"state": schedule.SENT, "turn": "failed", "fired": T12}, "failed"),
+    ({"state": schedule.SENT, "turn": "unknown", "fired": T12}, "failed"),
 ])
 def test_status_follows_the_newest_message(client, projects_dir, fields,
                                            expected):
@@ -633,7 +712,11 @@ def test_triage_wins_where_it_disagrees(client, projects_dir, state_dir):
 
 def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
     """`sent` only means the SESSION STARTED; reporting a dead turn as a clean
-    send sends the user looking in the wrong place."""
+    send sends the user looking in the wrong place.
+
+    It is a STATUS, not only the flag beside it. As `done` with a flag, every
+    view had to remember to read the flag to say anything at all, and one that
+    did not simply never showed the failure."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("pull the news", T9, uuid="a1")])
     _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
@@ -641,7 +724,38 @@ def test_a_dead_turn_is_reported_as_a_failure(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["failed"] is True
     assert task["messages"][0]["state"] == "error"
+    assert task["status"] == "failed"
+
+
+def test_a_skipped_occurrence_is_archived_and_not_failed(client, projects_dir):
+    """A run the coalescer dropped was filed away and never attempted. Only
+    something that actually ran can fail, and calling a routine skip a failure
+    makes ordinary behaviour look like breakage."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "every morning", T12, template_id="tpl",
+                           state=schedule.MISSED,
+                           error="skipped: only the latest missed run is sent",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["messages"][0]["state"] == "skipped"
+    assert task["status"] == "archived"
+    assert task["failed"] is False
+
+
+def test_triage_still_wins_over_a_failure(client, projects_dir, state_dir):
+    """`failed` is derived and triage is the user's own act, so filing a broken
+    run under done is allowed to stick. The `failed` flag stays true underneath
+    it, which is the one direction the two are meant to disagree in."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
+                           turn="failed", claude_session_id="sess-a")])
+    assert _by_key(client)["sess-a"]["status"] == "failed"
+
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"status": "done"}}))
+    task = _by_key(client)["sess-a"]
     assert task["status"] == "done"
+    assert task["failed"] is True
 
 
 # ----------------------------------------------------------------- the unread

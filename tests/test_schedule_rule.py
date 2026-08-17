@@ -457,19 +457,111 @@ def test_a_rule_needs_a_due_and_refuses_a_second_schedule(target):
     assert schedule.list_entries() == []
 
 
-def test_an_anchor_in_the_past_is_a_phase_not_a_missed_message(target):
-    """A one-shot further back than the catch-up bound is refused; an anchor is
-    not. "Every other Monday, on the phase that started last Monday" is an
-    ordinary thing to mean, and nothing about it fires late — the first run
-    materialized is still in the future."""
+def test_an_anchor_in_the_past_runs_its_MOST_RECENT_slot(target, clock):
+    """A past anchor sets the PATTERN and runs the latest slot, once.
+
+    It used to set the pattern only, and that inconsistency was the bug: a
+    past-dated ONE-OFF sorts to the head of the queue and sends on the next
+    tick, while a past-anchored REPEAT did nothing at all until the next slot
+    came round. Two ways of writing "starting last Saturday", two different
+    answers, and nothing on the form to tell you which you were about to get.
+
+    Which slot runs is the second half of it, and the anchor is the wrong
+    answer: "daily at 9am, starting Saturday" asked on Monday morning does not
+    mean Saturday's run, it means THIS morning's, run late. Same rule
+    `_coalesce` applies to a repeat the app slept through, and the same walk."""
+    clock.set(datetime(2026, 8, 17, 10, 0).astimezone().astimezone(timezone.utc))
+    anchor = datetime(2026, 8, 15, 9, 0).astimezone()
+    template = schedule.create(str(target), "standing", due=anchor,
+                               rule={"freq": "day"})
+    assert template["state"] == schedule.RECURRING
+
+    made = _occurrences(template["id"])
+    assert len(made) == 1, "one catch-up, never a backlog"
+    first = made[0]
+    assert first["catch_up"] is True
+    assert first["state"] == schedule.PENDING
+    # The 17th's 9am — the latest slot at or before now — with its own real
+    # time, not `now` and not the anchor. The 15th and 16th never happen.
+    assert _local(first) == datetime(2026, 8, 17, 9, 0)
+    assert schedule.parse_due(first["due"]) < clock.now
+
+
+def test_the_catch_up_run_goes_once_and_the_series_continues(target, spawned,
+                                                             clock):
+    """One run, then the future. The catch-up fires on the first tick; the
+    occurrence after it is ahead of now and still on the anchor's phase, so the
+    thirty days between the anchor and today are never replayed."""
     template = schedule.create(str(target), "standing", due=_anchor(days=-30),
                                rule={"freq": "day", "interval": 7})
-    assert template["state"] == schedule.RECURRING
     first = _occurrences(template["id"])[0]
-    assert schedule.parse_due(first["due"]) > datetime.now(timezone.utc)
-    # Still on the anchor's phase: a whole number of weeks from it.
-    step = schedule.parse_due(first["due"]) - schedule.parse_due(template["anchor"])
-    assert step.total_seconds() % (7 * 86400) == 0
+    # 30 days back on a 7-day interval: the latest slot is 28 days after the
+    # anchor, i.e. two days ago — not the anchor, and not now.
+    assert schedule.parse_due(first["due"]) == (
+        schedule.parse_due(template["anchor"]) + timedelta(days=28))
+
+    fired = schedule.tick(now=clock.now)
+    assert [e["id"] for e in fired] == [first["id"]]
+    assert len(spawned) == 1
+
+    schedule.tick(now=clock.now)  # the successor is minted on the next pass
+    ahead = _pending(template["id"])
+    assert len(ahead) == 1
+    following = schedule.parse_due(ahead[0]["due"])
+    assert following > clock.now
+    step = following - schedule.parse_due(template["anchor"])
+    assert step.total_seconds() % (7 * 86400) == 0, "still on the anchor's phase"
+
+    # And a further tick mints nothing: the catch-up is a once-per-template
+    # event, not a state the coalescer can walk into again.
+    schedule.tick(now=clock.now)
+    assert len(_occurrences(template["id"])) == 2
+    assert len(spawned) == 1
+
+
+def test_the_slots_before_the_catch_up_are_never_materialized(target, clock):
+    """The point of collapsing rather than replaying: a year of a daily rule
+    anchored in the past is ONE row in the store, not 365 — and no `skipped`
+    report either, because nothing was ever scheduled to be skipped."""
+    schedule.create(str(target), "standing", due=_anchor(days=-365),
+                    rule={"freq": "day"})
+    occurrences = [e for e in schedule.list_entries() if e.get("template_id")]
+    assert len(occurrences) == 1
+    assert occurrences[0].get("skipped") is None
+    assert [e for e in schedule.event_log()
+            if e["kind"] == schedule.EVENT_MISSED] == []
+
+
+def test_a_past_anchored_nth_weekday_rule_keeps_its_pattern(target, clock):
+    """The legitimate "phase only" use, which the catch-up must not damage:
+    "monthly on the second Wednesday", anchored on a second Wednesday that has
+    already been. Here the anchor IS the latest slot at or before now — the next
+    one is a month out — so the catch-up lands on it, and the run after it is
+    the NEXT second Wednesday rather than the anchor's own day-of-month."""
+    clock.set(datetime(2026, 8, 20, 12, 0).astimezone().astimezone(timezone.utc))
+    anchor = datetime(2026, 8, 12, 9, 0).astimezone()  # a second Wednesday
+    template = schedule.create(str(target), "standing", due=anchor,
+                               rule={"freq": "month", "monthly": "nth-weekday"})
+    catch_up = _occurrences(template["id"])[0]
+    assert catch_up["catch_up"] is True
+    assert _local(catch_up) == datetime(2026, 8, 12, 9, 0)
+
+    schedule.tick(now=clock.now)  # sends the catch-up
+    schedule.tick(now=clock.now)  # materializes the successor
+    following = _pending(template["id"])
+    assert len(following) == 1
+    # 9 September 2026 is a Wednesday, and the second one of that month.
+    assert _local(following[0]) == datetime(2026, 9, 9, 9, 0)
+
+
+def test_a_catch_up_run_spends_exactly_one_of_the_count_budget(target):
+    """`made` counts what a template put on the calendar. The catch-up run is on
+    the calendar and costs one; the nine slots it collapsed past never were, so
+    they cost nothing — the rule did not exist when they went by."""
+    template = schedule.create(str(target), "run", due=_anchor(days=-10),
+                               rule={"freq": "day", "count": 3})
+    assert _entries()[template["id"]]["made"] == 1
+    assert len(_occurrences(template["id"])) == 1
 
 
 def test_a_fired_run_is_followed_by_the_next_one(target, spawned):
@@ -531,17 +623,22 @@ def test_count_stops_the_series_at_n_runs(target, spawned, clock):
 
 
 def test_count_projection_ignores_never_made_past_runs(target):
-    """A past anchor is phase, not history: theoretical runs between the
-    anchor and now were never materialized, so they cost the `count` budget
-    nothing — and the projection must bill it the way the SWEEP will, or the
-    calendar under-draws the series' tail (Bugbot, PR #541). Ten days of a
-    daily rule already lie 'behind' this anchor; all three runs are ahead."""
+    """A past anchor is phase, not history: theoretical runs between the anchor
+    and now were never materialized, so they cost the `count` budget nothing —
+    and the projection must bill it the way the SWEEP will, or the calendar
+    under-draws the series' tail (Bugbot, PR #541).
+
+    Ten days of a daily rule lie 'behind' this anchor and cost nothing. The ONE
+    thing that does cost is the catch-up run the past anchor materializes at the
+    anchor's own time, which is a real occurrence on the calendar — so two of
+    the three are still ahead, and none of the ten ghosts are billed."""
     template = schedule.create(str(target), "run",
                                due=_anchor(days=-10, minutes=5),
                                rule={"freq": "day", "count": 3})
     stored = _entries()[template["id"]]
+    assert stored["made"] == 1, "the catch-up run, and only it"
     ahead = schedule.upcoming(stored)
-    assert len(ahead) == 3
+    assert len(ahead) == 2
     assert all(schedule.parse_due(t) > schedule._now() for t in ahead)
 
 

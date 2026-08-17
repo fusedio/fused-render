@@ -3,14 +3,18 @@
 // one ordering promise the client makes (it keeps the server's).
 import { describe, expect, it } from "bun:test";
 import type { Task, TaskMessage } from "@platform/lib/api";
+import { BOARD_COLUMNS } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
   MESSAGE_ANCHOR_PARAM,
   PREVIEW_MESSAGES,
+  UNREAD_LABEL,
   basename,
   canCancel,
+  canRunNow,
   cancelIntent,
   dayLabel,
+  dropAction,
   dropLanes,
   filterTasks,
   firstLine,
@@ -19,11 +23,15 @@ import {
   isUnread,
   markRead,
   messageHref,
+  messageStamp,
   messageTime,
   messageTone,
+  messageWhenTitle,
   openMessageHref,
   projectOptions,
+  ranNote,
   readKey,
+  runNowTarget,
   taskColumn,
   taskHref,
   taskUnread,
@@ -31,6 +39,7 @@ import {
   tildePath,
   toggleExpanded,
   triageStatus,
+  unreadMarker,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -42,6 +51,8 @@ function msg(over: Partial<TaskMessage> = {}): TaskMessage {
     kind: "scheduled",
     body: "pull today's news",
     at: Math.floor(Date.parse("2026-08-16T09:00:00") / 1000),
+    // Ran when it was due — the ordinary case, and the one that prints no note.
+    ran_at: Math.floor(Date.parse("2026-08-16T09:00:00") / 1000),
     state: "sent",
     unread: false,
     entry_id: "e1",
@@ -170,6 +181,37 @@ describe("unread", () => {
     expect(taskUnread(seen, markRead(read, t.key, "MSG-002"))).toBe(3);
   });
 
+  // The marker LEADS the row now, and the word beside it is gone. Both halves
+  // matter: the slot is asked about on every message (a blank one holds the
+  // column open on read rows) and the word survives only as the dot's
+  // accessible name.
+  it("marks the row itself, and names it for a screen reader", () => {
+    const t = three();
+    expect(unreadMarker(t.key, t.messages[0], new Set())).toEqual({
+      unread: true,
+      label: UNREAD_LABEL,
+    });
+    expect(UNREAD_LABEL.toLowerCase()).toBe("unread");
+  });
+
+  it("returns a blank, unnamed marker for a read message", () => {
+    const t = three();
+    const read = markRead(new Set<string>(), t.key, "MSG-003");
+    // Locally cleared...
+    expect(unreadMarker(t.key, t.messages[0], read)).toEqual({ unread: false, label: "" });
+    // ...and the server's own answer, once the poll catches up.
+    const seen = msg({ message_id: "MSG-003", unread: false });
+    expect(unreadMarker(t.key, seen, new Set())).toEqual({ unread: false, label: "" });
+  });
+
+  it("agrees with isUnread on every message, so the row cannot say two things", () => {
+    const t = three();
+    const read = markRead(new Set<string>(), t.key, "MSG-002");
+    for (const m of t.messages) {
+      expect(unreadMarker(t.key, m, read).unread).toBe(isUnread(t.key, m, read));
+    }
+  });
+
   it("does not go negative when the poll has already caught up", () => {
     const t = { ...three(), unread: 0 };
     expect(taskUnread(t, markRead(new Set<string>(), t.key, "MSG-003"))).toBe(0);
@@ -251,12 +293,50 @@ describe("taskColumn", () => {
     expect(taskColumn(task({ status: "archived" }))).toBe("archived");
     expect(taskColumn({ ...task(), status: "weird" as Task["status"] })).toBe("done");
   });
+
+  it("speaks the board's five words, not a list of its own", () => {
+    // The fifth arrived a round after the first four; a hardcoded list here is
+    // how a real lane silently empties itself into Done.
+    for (const col of BOARD_COLUMNS) {
+      expect(taskColumn({ ...task(), status: col.key as Task["status"] })).toBe(col.key);
+    }
+    expect(BOARD_COLUMNS.map((c) => c.key)).toEqual([
+      "upcoming", "in_progress", "done", "failed", "archived",
+    ]);
+  });
 });
 
 // ---- drag --------------------------------------------------------------------
 
+/** An upcoming task holding `pending` messages at the given epoch-second times,
+ * newest first, as the server sends them. */
+function upcoming(dues: number[], over: Partial<Task> = {}): Task {
+  const messages = [...dues]
+    .sort((a, b) => b - a)
+    .map((at, i) =>
+      msg({
+        message_id: `MSG-${String(dues.length - i).padStart(3, "0")}`,
+        state: "pending",
+        entry_id: `e${dues.length - i}`,
+        at,
+        ran_at: 0, // it has not run: that is what pending means
+      }),
+    );
+  return task({ status: "upcoming", message_count: messages.length, messages, ...over });
+}
+
+const T9 = Math.floor(Date.parse("2026-08-17T09:00:00") / 1000);
+const T18 = Math.floor(Date.parse("2026-08-17T18:00:00") / 1000);
+
+/** The fifth status. Cast in ONE place because `Task.status` in api.ts is still
+ * the four-word union this round started with — the server writes the word and
+ * the board already draws its lane. The cast can go the moment that union
+ * gains it; nothing else in this file has to change when it does. */
+const FAILED = "failed" as Task["status"];
+
 describe("dropLanes", () => {
   it("a task with no session has nothing to triage, so it cannot lift", () => {
+    // ...and nothing pending either, so there is nothing to run early.
     const pending = task({ key: "pending:e1", session_id: "", status: "upcoming" });
     expect(dropLanes(pending)).toEqual([]);
     expect(isDraggable(pending)).toBe(false);
@@ -265,16 +345,139 @@ describe("dropLanes", () => {
   it("offers the other two triage lanes, never the one it is already in", () => {
     expect(dropLanes(task({ status: "done" }))).toEqual(["in_progress", "archived"]);
     expect(dropLanes(task({ status: "in_progress" }))).toEqual(["done", "archived"]);
-    // Upcoming is not a triage value, so a task there may move to all three.
-    expect(dropLanes(task({ status: "upcoming" }))).toEqual([
-      "in_progress", "done", "archived",
-    ]);
     expect(isDraggable(task({ status: "done" }))).toBe(true);
   });
 
   it("refuses to send a lane setSessionTriage does not accept", () => {
     expect(triageStatus("upcoming")).toBe(null);
     expect(triageStatus("done")).toBe("done");
+  });
+
+  // Upcoming → In Progress is a RUN, not a filing (Akshil, 2026-08-16). Its
+  // precondition is therefore a message to send, not a session to file under.
+  it("lets a never-run scheduled task into In Progress: run needs no session", () => {
+    const t = upcoming([T9], { key: "pending:e1", session_id: "" });
+    expect(dropLanes(t)).toEqual(["in_progress"]);
+    expect(isDraggable(t)).toBe(true);
+  });
+
+  it("refuses In Progress for an upcoming task with nothing pending", () => {
+    // A pure-chat task has no scheduled message anywhere in it — there is
+    // nothing to fire — so the drop is illegal BEFORE the card lands rather
+    // than a call that fails after it.
+    const chat = task({ status: "upcoming" }); // factory messages are `sent`
+    expect(dropLanes(chat)).toEqual(["done", "archived"]);
+    // Same for one whose only scheduled message was already cancelled.
+    const dead = task({
+      status: "upcoming",
+      messages: [msg({ state: "cancelled" })],
+    });
+    expect(dropLanes(dead).includes("in_progress")).toBe(false);
+  });
+
+  // Failed is the fifth lane and it is asymmetric: nothing goes in, and out of
+  // it there are exactly two moves.
+  it("never offers Failed as a destination, from any lane", () => {
+    for (const status of ["upcoming", "in_progress", "done", "archived"] as const) {
+      expect(dropLanes(task({ status })).includes("failed")).toBe(false);
+    }
+    expect(dropLanes(upcoming([T9])).includes("failed")).toBe(false);
+  });
+
+  it("lets a failed task out to In Progress (re-run) and Archive, never Done", () => {
+    // A run that broke did not finish, so filing it as Done would put back the
+    // exact lie the lane exists to remove.
+    const retryable = upcoming([T9], { status: FAILED });
+    expect(dropLanes(retryable)).toEqual(["in_progress", "archived"]);
+    // With nothing pending there is nothing to re-run — but it can still be
+    // filed away.
+    const spent = task({ status: FAILED });
+    expect(dropLanes(spent)).toEqual(["archived"]);
+    expect(isDraggable(spent)).toBe(true);
+  });
+
+  it("still refuses In Progress on a pending message with no entry id", () => {
+    const t = upcoming([T9]);
+    const orphan = { ...t, messages: [{ ...t.messages[0], entry_id: "" }] };
+    expect(dropLanes(orphan).includes("in_progress")).toBe(false);
+  });
+});
+
+describe("runNowTarget", () => {
+  it("picks the EARLIEST due of several pending messages", () => {
+    const t = upcoming([T18, T9]);
+    expect(runNowTarget(t)?.at).toBe(T9);
+    expect(canRunNow(t)).toBe(true);
+  });
+
+  it("ignores messages that are not pending", () => {
+    const t = task({
+      status: "upcoming",
+      messages: [
+        msg({ message_id: "MSG-003", state: "pending", entry_id: "e3", at: T18 }),
+        // Earlier, but already gone out: not a candidate.
+        msg({ message_id: "MSG-002", state: "sent", entry_id: "e2", at: T9 }),
+      ],
+    });
+    expect(runNowTarget(t)?.message_id).toBe("MSG-003");
+  });
+
+  it("takes the older message when two are due at the same second", () => {
+    const t = upcoming([T9, T9]);
+    expect(runNowTarget(t)?.message_id).toBe("MSG-001");
+  });
+
+  it("is null for a task with nothing pending", () => {
+    expect(runNowTarget(task())).toBe(null);
+    expect(canRunNow(task())).toBe(false);
+  });
+});
+
+describe("dropAction", () => {
+  it("reads Upcoming → In Progress as a run of the earliest pending message", () => {
+    const t = upcoming([T18, T9]);
+    expect(dropAction(t, "in_progress")).toEqual({
+      kind: "run",
+      entryId: "e1",
+      messageId: "MSG-001",
+    });
+  });
+
+  it("reads every other legal drop as a triage write", () => {
+    expect(dropAction(upcoming([T9]), "archived")).toEqual({
+      kind: "triage",
+      status: "archived",
+    });
+    expect(dropAction(task({ status: "done" }), "in_progress")).toEqual({
+      kind: "triage",
+      status: "in_progress",
+    });
+  });
+
+  it("reads Failed → In Progress as a re-run, not a triage write", () => {
+    expect(dropAction(upcoming([T9], { status: FAILED }), "in_progress")).toEqual({
+      kind: "run",
+      entryId: "e1",
+      messageId: "MSG-001",
+    });
+    // ...and Failed → Archive as an ordinary filing.
+    expect(dropAction(upcoming([T9], { status: FAILED }), "archived")).toEqual({
+      kind: "triage",
+      status: "archived",
+    });
+  });
+
+  it("is null for anything dropLanes would not have allowed", () => {
+    // The lane it is already in, a lane triage cannot express, and the run lane
+    // on a task with nothing to run.
+    expect(dropAction(task({ status: "done" }), "done")).toBe(null);
+    expect(dropAction(task({ status: "done" }), "upcoming")).toBe(null);
+    expect(dropAction(task({ status: "upcoming" }), "in_progress")).toBe(null);
+    expect(dropAction(task({ status: "done" }), "failed")).toBe(null);
+    expect(dropAction(upcoming([T9], { status: FAILED }), "done")).toBe(null);
+    // A never-run task may run, but may not be filed.
+    const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
+    expect(dropAction(fresh, "archived")).toBe(null);
   });
 });
 
@@ -341,9 +544,18 @@ describe("groupByColumn", () => {
       task({ key: "b", status: "upcoming" }),
       task({ key: "c", status: "done" }),
     ]);
-    expect([...map.keys()]).toEqual(["upcoming", "in_progress", "done", "archived"]);
+    // Every lane the board draws, in the board's own order — Failed between
+    // Done and Archive.
+    expect([...map.keys()]).toEqual(BOARD_COLUMNS.map((c) => c.key));
     expect(map.get("done")!.map((t) => t.key)).toEqual(["a", "c"]);
     expect(map.get("in_progress")).toEqual([]);
+    expect(map.get("failed")).toEqual([]);
+  });
+
+  it("files a failed task in its own lane, not in Done", () => {
+    const map = groupByColumn([task({ key: "x", status: FAILED })]);
+    expect(map.get("failed")!.map((t) => t.key)).toEqual(["x"]);
+    expect(map.get("done")).toEqual([]);
   });
 });
 
@@ -481,6 +693,36 @@ describe("messageTime", () => {
   it("prints nothing for a message with no time", () => {
     expect(messageTime(0, NOW)).toBe("");
     expect(dayLabel(new Date(NOW), new Date(NOW))).toBe("today");
+  });
+});
+
+describe("ranNote", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+  it("says nothing when the run and the due time are the same fact", () => {
+    expect(ranNote(msg(), NOW)).toBe("");
+    // A send is never instantaneous; a few seconds of drift is not news.
+    expect(ranNote(msg({ ran_at: at("2026-08-16T09:00:30") }), NOW)).toBe("");
+    // Nothing has run yet.
+    expect(ranNote(msg({ state: "pending", ran_at: 0 }), NOW)).toBe("");
+  });
+
+  it("names an EARLY run — a task dragged into In Progress", () => {
+    // Run-now leaves `due` alone, so 09:00 is still what the row says it was
+    // for, and this is the line that admits it went out at 07:12.
+    const early = msg({ ran_at: at("2026-08-16T07:12:00") });
+    expect(ranNote(early, NOW)).toBe("ran 07:12 today");
+    expect(messageWhenTitle(early, NOW)).toContain("ran ");
+  });
+
+  it("names a LATE run — caught up after the app was shut", () => {
+    expect(ranNote(msg({ ran_at: at("2026-08-17T10:30:00") }), NOW)).toBe(
+      "ran 10:30 tomorrow",
+    );
+  });
+
+  it("leaves the tooltip as the plain stamp when the two agree", () => {
+    expect(messageWhenTitle(msg(), NOW)).toBe(messageStamp(msg().at));
   });
 });
 

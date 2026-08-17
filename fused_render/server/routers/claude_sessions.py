@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from fused_render import session_liveness
 from fused_render._view_url_codec import canonical_fs_path
 
 try:
@@ -122,14 +123,15 @@ def api_claude_sessions():
 
 STATUSES = ("in_progress", "done", "archived")
 
-# Entry types Claude Code appends to a transcript after the turn is over
-# (idle housekeeping: away summaries, turn timing, last-prompt records).
-# These bump the file mtime but don't mean a session is active.
-_HOUSEKEEPING_TYPES = {"system", "last-prompt", "summary"}
-
-_RUNNING_WINDOW_SEC = 45  # same rule as the inbox UI: fresh activity = running
-_STALE_TAIL_SEC = 90      # older than this, the tail can't make it "running"
-_TAIL_BYTES = 16384
+# The liveness rule now lives in `fused_render/session_liveness.py`, because the
+# SCHEDULER needs the same answer and may not import a router (server/__init__ ->
+# app.py -> routers is the cycle). Aliased here rather than renamed at every use
+# site so this module — and the Tasks router next door, which reads these names
+# off it — keeps reading exactly as it did. See that module for the rule itself.
+_HOUSEKEEPING_TYPES = session_liveness.HOUSEKEEPING_TYPES
+_RUNNING_WINDOW_SEC = session_liveness.RUNNING_WINDOW_SEC
+_STALE_TAIL_SEC = session_liveness.STALE_TAIL_SEC
+_TAIL_BYTES = session_liveness.TAIL_BYTES
 # Hard caps on the head read so a huge transcript whose first user message
 # never arrives (tool-result-only opener, replayed session) still costs O(1).
 _HEAD_CHARS = 256 * 1024
@@ -204,16 +206,7 @@ def ai_title(record) -> str:
     return title.strip() if isinstance(title, str) else ""
 
 
-def _parse_ts(ts) -> datetime | None:
-    """Transcript timestamp -> aware UTC datetime, or None. Naive values are
-    read as UTC so output doesn't depend on the server's local zone."""
-    if not isinstance(ts, str) or not ts:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+_parse_ts = session_liveness.parse_ts
 
 
 def _parse_head(path: str) -> tuple[str | None, str | None, str]:
@@ -282,53 +275,7 @@ def _head(path: str, size: int) -> tuple[str | None, str | None, str]:
     return cwd, first_ts, prompt
 
 
-def _tail(path: str, mtime: float) -> tuple[float, datetime | None]:
-    """(activity timestamp, last real activity time) from a 16KB tail read.
-
-    Same rule as core_apps/sessions' _activity_mtime: housekeeping appends
-    bump the file mtime but aren't activity, and a turn_duration entry newer
-    than any real message means the turn just ended — the session is idle
-    right now, so it reports 0.0 rather than letting the 45s window keep the
-    badge lit.
-    """
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - _TAIL_BYTES))
-            chunk = f.read().decode("utf-8", "replace")
-    except OSError:
-        return mtime, None
-    lines = [ln for ln in chunk.split("\n") if ln.strip()]
-    if size > _TAIL_BYTES and lines:
-        lines = lines[1:]  # drop the partial first line from mid-file seek
-    activity: float | None = None
-    last: datetime | None = None
-    for line in reversed(lines):
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            if activity is None:
-                activity = mtime  # partial last line: a write is in flight
-            continue
-        if obj.get("type") in _HOUSEKEEPING_TYPES:
-            if activity is None and obj.get("subtype") == "turn_duration":
-                activity = 0.0
-            continue
-        ts = obj.get("timestamp")
-        if not ts:
-            continue
-        dt = _parse_ts(ts)
-        if dt is None:
-            if activity is None:
-                activity = mtime
-            continue
-        last = dt
-        if activity is None:
-            activity = dt.timestamp()
-        break
-    # nothing but housekeeping in the tail — not real activity
-    return (0.0 if activity is None else activity), last
+_tail = session_liveness.tail_activity
 
 
 def _summarize(path: str, now: float, names: dict, triage: dict) -> dict | None:

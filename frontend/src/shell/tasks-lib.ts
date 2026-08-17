@@ -16,7 +16,7 @@
 // is the server, and a client that guesses a second answer is a client that
 // disagrees with itself on the next poll.
 import type { Task, TaskMessage } from "@platform/lib/api";
-import { explorerUrl, isProjected, turnPhase } from "./schedule-lib";
+import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 
 // How many messages a collapsed-then-expanded task shows before Show more.
@@ -103,6 +103,37 @@ export function messageStamp(at: number): string {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
 }
 
+/** Under this, the two times are the same fact told twice — a send is never
+ * instantaneous and a second of drift is not news. */
+export const RAN_SKEW_SECONDS = 60;
+
+/**
+ * The second half of a scheduled message's time, printed only when there IS a
+ * second half: `at` is what was asked for and never moves, `ran_at` is when the
+ * turn actually started, and they part company two ways —
+ *
+ *   * late, when the app was shut at the due minute and the run was caught up,
+ *   * early, when someone dragged the task into In Progress and ran it now.
+ *
+ * The early case is the whole reason run-now leaves `due` alone (§2 of this
+ * round's fixes): the schedule keeps saying 09:00 and the row says it ran at
+ * 07:12, which is the truth. Rewriting `due` to the moment of the drag would
+ * have made the row read as if 07:12 had always been the plan.
+ */
+export function ranNote(m: TaskMessage, now: number = Date.now()): string {
+  if (!m.at || !m.ran_at) return "";
+  if (Math.abs(m.ran_at - m.at) < RAN_SKEW_SECONDS) return "";
+  return `ran ${messageTime(m.ran_at, now)}`;
+}
+
+/** The time cell's tooltip: the absolute stamp, and the run beside it when the
+ * two differ. */
+export function messageWhenTitle(m: TaskMessage, now: number = Date.now()): string {
+  const due = messageStamp(m.at);
+  if (!ranNote(m, now)) return due;
+  return `Scheduled for ${due} · ran ${messageStamp(m.ran_at)}`;
+}
+
 // ---- a message's own state ---------------------------------------------------
 // The task carries a status decided server-side; a MESSAGE does not, and the
 // ring beside each sub-row is the only place the thread says how a given run
@@ -179,15 +210,23 @@ export function messageTone(m: TaskMessage): MessageTone {
   }
 }
 
-/** The task's own column, narrowed. The server decides it (Task.status); this
+/**
+ * The task's own column, narrowed. The server decides it (Task.status); this
  * only keeps a value a newer server invented off the board's floor. An
  * unreadable status lands in Done, not Archive: a task the client cannot read
- * still HAPPENED, and filing it away hides it behind a collapsed lane. */
+ * still HAPPENED, and filing it away hides it behind a collapsed lane.
+ *
+ * Checked against BOARD_COLUMNS rather than a hand-written list of four words,
+ * so the board and this function cannot disagree about how many statuses there
+ * are — the fifth, `failed`, arrived a round after the first four and a
+ * hardcoded list is how that lane would have silently swallowed itself into
+ * Done. Read as a plain string on purpose: the union this file was compiled
+ * against is a snapshot of what the server said LAST time.
+ */
 export function taskColumn(task: Task): BoardColumn {
-  const s = task.status;
-  if (s === "upcoming" || s === "in_progress" || s === "done" || s === "archived")
-    return s;
-  return "done";
+  const s: string = task.status;
+  const known = BOARD_COLUMNS.find((c) => c.key === s);
+  return known ? known.key : "done";
 }
 
 // ---- unread ------------------------------------------------------------------
@@ -218,6 +257,47 @@ export function markRead(read: Set<string>, taskKey: string, messageId: string):
 
 export function isUnread(taskKey: string, m: TaskMessage, read: Set<string>): boolean {
   return m.unread && !read.has(readKey(taskKey, m.message_id));
+}
+
+/**
+ * What the LEADING slot of a message row draws.
+ *
+ * The dot used to ride at the far right of the row, beside the time, with the
+ * word "unread" after it — and it was missed entirely (Akshil, 2026-08-16: "on
+ * the right hand I missed it, I did not even see it"). A thread is read as a
+ * COLUMN, and a column is scanned down its left edge; a marker at the right end
+ * has to be tracked across every row to be found at all.
+ *
+ * So the slot is at the START of the row and it is ALWAYS THERE — filled on an
+ * unread message, blank on a read one. Always-there is the half that makes it
+ * scannable: a slot that only exists on unread rows shifts every other cell of
+ * that row right, and a ragged left edge is exactly the thing a scan cannot
+ * follow.
+ *
+ * The word is gone. A dot that LEADS is already the whole signal, and "unread"
+ * printed beside it was a caption for a symbol that no longer needs one. It
+ * survives where it always mattered — `label` is rendered as the marker's
+ * accessible name (role="img" + aria-label), so a screen reader still hears
+ * "Unread" on exactly the rows that are.
+ */
+export interface UnreadMarker {
+  /** Filled (a dot) or a blank spacer holding the column open. */
+  unread: boolean;
+  /** The accessible name, "" when there is nothing to announce. */
+  label: string;
+}
+
+/** The word a screen reader hears in place of the dot. */
+export const UNREAD_LABEL = "Unread";
+
+export function unreadMarker(
+  taskKey: string,
+  m: TaskMessage,
+  read: Set<string>,
+): UnreadMarker {
+  return isUnread(taskKey, m, read)
+    ? { unread: true, label: UNREAD_LABEL }
+    : { unread: false, label: "" };
 }
 
 /**
@@ -392,18 +472,93 @@ export function canCancel(m: TaskMessage): boolean {
 }
 
 // ---- drag --------------------------------------------------------------------
-// The Board's drag writes triage.json through setSessionTriage, which is keyed
-// by SESSION. A task that has not run has no session id (§5) — there is
-// nothing to triage — so it must be non-draggable rather than draggable into a
-// call that can only fail.
+// A drop on the Board means one of TWO things, and which one is decided by
+// where the card came from.
+//
+// 1. TRIAGE. Every other move writes triage.json through setSessionTriage,
+//    which is keyed by SESSION. A task that has not run has no session id (§5)
+//    — there is nothing to triage — so it must be non-draggable rather than
+//    draggable into a call that can only fail.
+//
+// 2. RUN IT NOW. Upcoming → In Progress is not a filing decision, it is an
+//    instruction (Akshil, 2026-08-16: "if I move a task from upcoming to in
+//    progress, don't change the time of it, but run it and run it at that
+//    point"). The server sends the pending message immediately and leaves its
+//    `due` alone, so the row goes on reading as the time it was MEANT to run
+//    and the thread honestly shows a run that happened early.
+//
+// The consequence for legality: a run-now drop needs a MESSAGE to fire, not a
+// session to file under, so a scheduled task that has never run — no session
+// id at all — may still be dragged into In Progress. And a pure-chat task,
+// which has nothing pending anywhere in it, may not: that drop is refused by
+// dropLanes before the card ever lifts, rather than by the server after it
+// lands.
+//
+// FAILED, the fifth lane, is asymmetric on purpose:
+//
+//   * nothing may be dropped INTO it. Failure is something that HAPPENED, not
+//     a verdict a person hands down, and a lane you can drag a healthy task
+//     into is a lane whose count means nothing.
+//   * out of it there are exactly two moves — In Progress re-runs the task
+//     (the same run-now path, with the same precondition: something pending to
+//     fire), and Archive files it away. Done is deliberately not offered: a run
+//     that broke did not finish, and letting it be filed as Done would put the
+//     lie back in the one place this lane exists to take it out of.
 
+/** The lanes a person may drop a card ON. `failed` is not among them — see
+ * above — and `upcoming` never was: a task cannot be un-run. */
 export const TRIAGE_LANES: BoardColumn[] = ["in_progress", "done", "archived"];
+
+/** Where a card may go once it is IN the failed lane. */
+const OUT_OF_FAILED: BoardColumn[] = ["in_progress", "archived"];
+
+/**
+ * Which pending message a run-now drop fires: the EARLIEST due.
+ *
+ * A task can hold several pending messages — a recurring rule's next
+ * occurrence sitting beside a one-off someone scheduled for Friday. The
+ * earliest is the one the scheduler itself would have sent next, so running it
+ * early is the only choice that does not reorder the thread: any other pick
+ * would fire a later message first and leave an older one still pending behind
+ * it. On an exact tie the OLDER message wins (the server's list is newest
+ * first, so the later element of a tie is the one that has waited longer).
+ *
+ * Only what we HOLD is considered — the listing carries the three newest, and
+ * pending messages are due in the future, which puts them at the head of that
+ * window. `entry_id` is required because it is what the call actually sends;
+ * a message without one cannot be fired.
+ */
+export function runNowTarget(task: Task): TaskMessage | null {
+  let best: TaskMessage | null = null;
+  for (const m of task.messages ?? []) {
+    if (m.state !== "pending" || !m.entry_id) continue;
+    if (!best || m.at <= best.at) best = m;
+  }
+  return best;
+}
+
+/** Whether this task has anything to run early at all. */
+export function canRunNow(task: Task): boolean {
+  return runNowTarget(task) !== null;
+}
 
 /** Which lanes this card may be dropped on. Empty ⇒ do not let it lift. */
 export function dropLanes(task: Task): BoardColumn[] {
-  if (!task.session_id) return [];
   const here = taskColumn(task);
-  return TRIAGE_LANES.filter((lane) => lane !== here);
+  const lanes: BoardColumn[] = [];
+  for (const lane of TRIAGE_LANES) {
+    if (lane === here) continue;
+    if (here === "failed" && !OUT_OF_FAILED.includes(lane)) continue;
+    // The run-now lane. Its precondition is a pending message, NOT a session:
+    // see the note above. It is the same move from either side — Upcoming runs
+    // the message early, Failed runs it again — and the same call makes both.
+    if (lane === "in_progress" && (here === "upcoming" || here === "failed")) {
+      if (canRunNow(task)) lanes.push(lane);
+      continue;
+    }
+    if (task.session_id) lanes.push(lane);
+  }
+  return lanes;
 }
 
 export function isDraggable(task: Task): boolean {
@@ -416,6 +571,28 @@ export function triageStatus(
   lane: BoardColumn,
 ): "in_progress" | "done" | "archived" | null {
   return lane === "in_progress" || lane === "done" || lane === "archived" ? lane : null;
+}
+
+/**
+ * What a drop on `lane` actually DOES — the one place the two meanings are told
+ * apart, so the Board's handler holds no rule of its own beyond which call to
+ * make. Null when the drop is illegal, which is the same answer dropLanes gave
+ * before the card lifted: the two agree because this asks it.
+ */
+export type DropAction =
+  | { kind: "run"; entryId: string; messageId: string }
+  | { kind: "triage"; status: "in_progress" | "done" | "archived" };
+
+export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
+  if (!dropLanes(task).includes(lane)) return null;
+  const here = taskColumn(task);
+  if (lane === "in_progress" && (here === "upcoming" || here === "failed")) {
+    const m = runNowTarget(task);
+    return m ? { kind: "run", entryId: m.entry_id, messageId: m.message_id } : null;
+  }
+  const status = triageStatus(lane);
+  if (!status || !task.session_id) return null;
+  return { kind: "triage", status };
 }
 
 // ---- filtering ---------------------------------------------------------------
@@ -471,14 +648,13 @@ export function filterTasks(tasks: Task[], filters: TaskFilters): Task[] {
   return tasks.filter((t) => taskMatches(t, filters));
 }
 
-/** The board's lanes, each keeping the server's order. */
+/** The board's lanes, each keeping the server's order. Seeded from
+ * BOARD_COLUMNS so a lane cannot exist on the board and be missing from this
+ * map — an empty lane must still be an empty lane, not an undefined one. */
 export function groupByColumn(tasks: Task[]): Map<BoardColumn, Task[]> {
-  const map = new Map<BoardColumn, Task[]>([
-    ["upcoming", []],
-    ["in_progress", []],
-    ["done", []],
-    ["archived", []],
-  ]);
+  const map = new Map<BoardColumn, Task[]>(
+    BOARD_COLUMNS.map((c) => [c.key, [] as Task[]]),
+  );
   for (const task of tasks) map.get(taskColumn(task))?.push(task);
   return map;
 }
