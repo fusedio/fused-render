@@ -90,6 +90,19 @@ _SKIP_DIRS = {"__pycache__", STATE_DIR_NAME}
 _SKIP_SUFFIXES = (".pyc", ".pyo")
 _SKIP_NAMES = {".DS_Store"}
 
+# The Vite build output, relative to the install root. Hashed on a SHIPPED
+# install — nothing rewrites it there, and a session that hand-patched the
+# bundle really has modified the app — but skipped on a SOURCE CHECKOUT, where
+# `scripts/dev.sh` runs `vite build --watch` beside the server and rewrites the
+# whole tree whenever the developer touches a frontend file. There that churn is
+# concurrent with a fix session and would be attributed to it: a badge, and a
+# `latest_report` pointing at a session that changed nothing.
+#
+# This is the one place the digest's answer depends on the KIND of install, and
+# it is the honest split rather than a convenience: on a checkout the build
+# output is the developer's own toolchain output, not part of "what we shipped".
+_BUILD_OUTPUT_REL = "static/shell-dist"
+
 # Where a user goes to get a clean copy. The download page is the one door that
 # is right for every platform; the releases page is where a wheel's URL lives.
 DOWNLOAD_URL = "https://render.fused.io"
@@ -127,6 +140,18 @@ def baseline_path() -> str:
     return os.path.join(state_dir(), BASELINE_NAME)
 
 
+def is_source_checkout(root: str | None = None) -> bool:
+    """Is this install a git working tree rather than something installed?
+
+    The repo ABOVE the package: an editable install and a plain
+    `python -m fused_render` from a clone look identical from in here. One
+    `isdir`, no subprocess — unlike `install_method`, which shells out to brew
+    and therefore may not be called from the digest path.
+    """
+    root = install_root() if root is None else root
+    return os.path.isdir(os.path.join(os.path.dirname(root), ".git"))
+
+
 def writable() -> bool:
     """Whether a fix session could actually change anything here.
 
@@ -161,11 +186,20 @@ def tree_digest(root: str | None = None) -> str:
 
     An unreadable file folds `<unreadable>` in rather than raising: a tree we
     cannot fully read must not hash equal to one we can.
+
+    On a SOURCE CHECKOUT the Vite build output is skipped — see
+    `_BUILD_OUTPUT_REL` for why, and why only there.
     """
     root = install_root() if root is None else root
+    skip_build = is_source_checkout(root)
     h = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
+        if skip_build:
+            here = os.path.relpath(dirpath, root).replace(os.sep, "/")
+            prefix = "" if here == "." else here + "/"
+            dirnames[:] = [d for d in dirnames
+                           if prefix + d != _BUILD_OUTPUT_REL]
         for name in sorted(filenames):
             if name in _SKIP_NAMES or name.endswith(_SKIP_SUFFIXES):
                 continue
@@ -389,6 +423,10 @@ def mark_modified(*, run_id: str = "", session_id: str = "", report: str = "",
 
     `report`/`incident` are absolute paths on the way in and stored relative to
     the state dir — see `_public` for why.
+
+    Returns the public marker, or **an empty dict when it declines** because
+    `digest` is the state the user has already dismissed (checked under the
+    lock — see there).
     """
     now = time.time() if now is None else now
     root = state_dir()
@@ -402,6 +440,16 @@ def mark_modified(*, run_id: str = "", session_id: str = "", report: str = "",
             return path
 
     with _lock:
+        # THE AUTHORITATIVE DISMISSAL CHECK. `settle` tests this too, but its
+        # test is only an optimisation: it runs before a tree walk that takes
+        # long enough for the user to click Dismiss in between, and this
+        # function's own write would then delete the dismissal it never saw —
+        # bringing the badge back for a change the user had just waved away.
+        # Exactly the window SF-16 closed for `reconcile`, one function over:
+        # the slow read is outside the lock, so the DECISION has to be remade
+        # inside it.
+        if digest and digest == dismissed_digest():
+            return {}
         marker = _read_json(marker_path()) or {}
         if marker.get("version") != __version__:
             # A marker from a version that is gone describes an installation
@@ -495,6 +543,10 @@ def settle(*, before: str, run_id: str = "", session_id: str = "",
         # seconds later by the next stamp of the very same change. Nothing has
         # happened since; when something does, the digest moves off this value
         # and the badge comes back on its own.
+        #
+        # An EARLY OUT, not the guarantee: a dismiss landing after this read
+        # would slip past it. `mark_modified` re-checks under the lock, which is
+        # where the promise actually holds.
         return True
     # The pristine digest for the record — read back rather than re-walked; the
     # baseline file is written by `begin_session` before any session starts.
@@ -914,10 +966,7 @@ def install_method() -> str:
         return "brew" if mac_update.detect_method(mac_update.bundle_path()) == "brew" else "dmg"
     if getattr(sys, "frozen", None):
         return "windows" if sys.platform == "win32" else "linux"
-    # A checkout is recognised by the repo ABOVE the package — an editable
-    # install and a plain `python -m fused_render` from a clone look identical
-    # from in here, and both want git's answer rather than pip's.
-    if os.path.isdir(os.path.join(os.path.dirname(install_root()), ".git")):
+    if is_source_checkout():
         return "source"
     return "pip"
 

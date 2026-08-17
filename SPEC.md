@@ -7063,12 +7063,27 @@ the installation, and the mark that says so.
   change something else moves the digest past it and the badge legitimately
   returns, retiring the spent record as it does. The dismissal expires with its
   version, like the marker and the baseline.
+- **SF-15a** **The build output is hashed on a shipped install and skipped on a
+  source checkout.** `scripts/dev.sh` runs `vite build --watch` beside the
+  server, so on a checkout `static/shell-dist` is rewritten whenever the
+  developer touches a frontend file — concurrently with a fix session, which
+  would then be blamed for it and get a badge plus a `latest_report` pointing at
+  a session that changed nothing. Nothing rewrites it on a real install, and a
+  session that hand-patched the bundle there really has modified the app, so it
+  stays covered. The one place the digest's answer depends on the KIND of
+  install, and the honest split rather than a convenience: on a checkout that
+  tree is the developer's own toolchain output, not part of what we shipped.
 - **SF-16** **`reconcile` re-reads under the lock after its walk.** Hashing the
   tree takes long enough for the world to move: a `clear` or a watcher's
   `mark_modified` can land mid-walk, and writing back the object read BEFORE it
   silently undid either — a dismissed badge reappearing, or a just-recorded fix
   losing its report. The slow walk stays outside the lock (it must); the
   decision and the write are made against a fresh read inside it.
+- **SF-16a** **…and so does `settle`.** Same shape, one function over: it tests
+  the dismissal before a walk long enough for the user to click Dismiss in the
+  middle, and `mark_modified` would then delete a dismissal it never saw. The
+  check in `settle` is an early out; the authoritative one is inside
+  `mark_modified`'s lock, where it declines to stamp at all.
 - **SF-13** **A read-only installation is refused BEFORE the spawn** (409, with
   the path). A session that cannot write spends several minutes reading and then
   reports a fix that was never applied — which, to the user watching, reads
