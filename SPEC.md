@@ -7513,11 +7513,27 @@ the installation, and the mark that says so.
   usually outstanding, and the request that resolves after a dismiss still
   carries the state from before it — so cancelling only the pending timer left
   the dismissed badge to come back a moment later, from a reply that was already
-  on the wire when the user clicked. Every read carries the epoch it was issued
-  under (`epochRef`, the idiom `DownloadManager` uses for the same hazard) and
-  applies only if that epoch is still current; a dismiss, a nudge and a new seed
-  each bump it. The panel's own optimistic clear goes through the same bump
-  rather than through the raw setter, so the two cannot disagree.
+  on the wire when the user clicked. Every read carries the generation it was
+  issued under (`PollGen`, descended from the `epochRef` idiom
+  `DownloadManager` uses for the same hazard) and applies only if that
+  generation is still current; a dismiss, a nudge and a new seed each move it.
+  The panel's own optimistic clear goes through the same move rather than
+  through the raw setter, so the two cannot disagree.
+- **SF-12c** **…and it is TWO counters, because a read can be stale without its
+  LOOP being stale.** Landing, a poll asks two questions — may I paint this, and
+  am I still the loop — and one number answers them both wrongly. Guarding only
+  the paint leaves the abandoned read to schedule the next tick anyway: the hook
+  holds ONE timer handle, so the orphan's `setTimeout` overwrites the live
+  loop's, and from then on two chains poll forever with nothing pointing at
+  either but the newest — not even the unmount cleanup. That is not a rare
+  interleaving; `noteFixStarted` writes both storage keys, so every OTHER tab
+  re-arms twice while the first read is open. Guarding both on one counter fails
+  the opposite way: a fresher `seed` prop overtakes the answer while starting no
+  new loop, so retiring the loop there leaves a chip that never polls again for
+  the life of the page. Hence `reads` (bumped by anything that overtakes an
+  answer) and `chain` (bumped only by a nudge, which does both), with the rule
+  itself in `lib/selffix` under test rather than as two `useRef`s a component
+  has to keep in step.
 - **SF-14** **The other way in is Preferences → "Fix this app"**, because most
   of what is wrong with an app never raises anything: a preview renders the
   wrong dates, a folder takes ten seconds to open, a button does nothing. No
