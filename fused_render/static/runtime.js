@@ -33,9 +33,11 @@
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
  *     always repeatable. Minutes long: onProgress fires per denoising step with
- *     the download-manager record, and that row's ✕ really stops it. Rejects
- *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
- *     this machine — the reason is in the message).
+ *     the download-manager record, and that row's ✕ really stops it. Each tick
+ *     also carries previewUrl — a ~32x32 thumbnail of the image so far, ready
+ *     for an <img> src — so there is a picture to watch rather than a counter;
+ *     swap to url on resolve. Rejects with .type "cancelled" | "ai_error" |
+ *     "unavailable" (no image runner on this machine — reason in the message).
  *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
  *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
@@ -2574,7 +2576,7 @@
     return data;
   }
 
-  // fused.ai.image({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  // fused.ai.image({prompt, ...}) -> Promise<{path, url, previewUrl, seed, ...}>
   //
   // The one call in this bridge that RESOLVES WITH A FILE. Text streams, so
   // fused.ai hands back words; an image is an artefact, so this hands back
@@ -2588,6 +2590,22 @@
   //
   // The seed comes back whether or not one was passed, so "make that one again"
   // is always a call away.
+  //
+  // And there is something to LOOK at while it runs: `previewUrl` on every
+  // onProgress tick points at a ~32x32 thumbnail of the image-in-progress that
+  // the worker rewrites each denoising step. A page sets it as an <img> src and
+  // gets a picture emerging out of noise instead of a number going up; blur it
+  // and scale it up with CSS, that part is the page's taste, not this API's.
+  //
+  // The URL is built HERE, cache-busted by step, for the same reason `url` is:
+  // otherwise every page that wants this writes the same two lines, and the one
+  // that forgets the cache-buster gets a browser showing frame 2 for a minute.
+  // It is null until the first frame exists (the first step has no preview —
+  // two latents are needed to estimate a picture) and stays null for a model
+  // whose latent space has no fitted projection, so a page must treat a broken
+  // or missing image as ordinary. On resolve, SWAP TO `url`: the last preview
+  // is the finished picture at a thirtieth of the resolution, and the file it
+  // points at is deleted the moment the real PNG lands.
   function aiImage(opts) {
     opts = opts || {};
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -2602,8 +2620,24 @@
     }
     return aiPost("/api/ai/image", body).then((started) => {
       const watcher = watchJob(started.jobId);
-      const done = () => ({ ...started, url: rawUrl(started.path) });
-      return watcher.watch(onProgress).then((record) => {
+      // `step` is the cache-buster and nothing more: the preview file is ONE
+      // path overwritten in place, so a browser handed the same URL twice shows
+      // the first frame forever. Keyed on the step rather than on Date.now() so
+      // two ticks of the same step are one image and not two requests.
+      const previewUrl = (step) =>
+        started.previewPath ? rawUrl(started.previewPath) + "&step=" + (step || 0) : null;
+      const done = () => ({
+        ...started,
+        url: rawUrl(started.path),
+        previewUrl: previewUrl(started.steps),
+      });
+      // The record is COPIED rather than annotated: it is the same object the
+      // job manager is drawing from, and a field written onto it here would
+      // travel to every other watcher of that row.
+      const tick = onProgress
+        ? (job) => onProgress({ ...job, previewUrl: previewUrl(job && job.done) })
+        : null;
+      return watcher.watch(tick).then((record) => {
         if (!record) {
           // The row aged out from under us — a backgrounded tab can sleep past
           // its retention on a render this long. The FILE is the other witness,

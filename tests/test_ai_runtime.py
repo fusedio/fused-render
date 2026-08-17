@@ -2955,6 +2955,102 @@ def test_the_transcription_bridge_resolves_with_the_words_and_the_url():
     assert value["url"] == "/api/fs/raw?path=/t/out.json"
 
 
+def _run_ai_image(record='{state: "done"}', ticks="[]", preview='"/t/a.preview.png"'):
+    """Run `aiImage` out of runtime.js under node, against stubs.
+
+    `_run_ai_transcribe`'s harness for the other half of the same API: the
+    function is lifted out and driven with its closure stubbed, because what
+    matters is the object it hands the page rather than the DOM it built it in.
+
+    `ticks` is a JS array of job records the fake watcher replays through
+    `onProgress`, and they are echoed back untouched so a test can prove the
+    bridge annotated a COPY rather than the row the manager is drawing.
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own image glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    start = source.index("  function aiImage(opts)")
+    end = source.index("\n  }\n", start) + 4
+    fn = source[start:end]
+
+    prelude = """
+      const started = {jobId: "sys:ai-image:x", path: "/t/a.png", seed: 7,
+                       steps: 4, previewPath: PREVIEW};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const rows = TICKS;
+      const watchJob = () => ({
+        watch: (cb) => {
+          for (const row of rows) if (cb) cb(row);
+          return Promise.resolve(RECORD);
+        },
+        get: () => Promise.resolve(RECORD),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const progress = [];
+    """.replace("PREVIEW", preview).replace("TICKS", ticks).replace("RECORD", record)
+    call = """
+      aiImage({prompt: "a fox", onProgress: (job) => progress.push(job)}).then(
+        (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, progress, rows})),
+      );
+    """
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_every_progress_tick_carries_a_READY_TO_USE_preview_url():
+    """A page sets this as an `<img>` src and gets a picture emerging out of
+    noise. Built here rather than by every caller, for the same reason `url`
+    is — and CACHE-BUSTED BY STEP, because the preview is one path overwritten
+    in place and a browser handed the same URL twice shows frame 2 forever."""
+    settled = _run_ai_image(ticks='[{done: 1, total: 4}, {done: 2, total: 4}]')
+    assert settled["ok"] is True, settled
+    assert [tick["previewUrl"] for tick in settled["progress"]] == [
+        "/api/fs/raw?path=/t/a.preview.png&step=1",
+        "/api/fs/raw?path=/t/a.preview.png&step=2",
+    ]
+
+
+def test_the_tick_a_page_sees_is_a_COPY_of_the_row_the_manager_is_drawing():
+    """The record belongs to the job manager and every other watcher of that
+    row sees the same object — a field written onto it here would travel."""
+    settled = _run_ai_image(ticks='[{done: 1, total: 4}]')
+    assert settled["rows"] == [{"done": 1, "total": 4}]
+    assert settled["progress"][0]["done"] == 1
+
+
+def test_the_resolved_image_carries_both_urls():
+    """`previewUrl` is on the resolved object too, and the doc comment says to
+    swap to `url`: the last preview is the finished picture at a thirtieth of
+    the resolution, and the file it points at is deleted the moment the real
+    PNG lands."""
+    settled = _run_ai_image()
+    assert settled["ok"] is True, settled
+    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.png"
+    assert settled["value"]["previewUrl"] == "/api/fs/raw?path=/t/a.preview.png&step=4"
+
+
+def test_a_render_with_no_preview_hands_the_page_NULL_rather_than_a_dead_url():
+    """A model whose latent space has no fitted projection writes no frames, and
+    a URL pointing at a file that will never exist is worse than nothing: a page
+    can test `previewUrl` but cannot test an `<img>` that 404s."""
+    settled = _run_ai_image(ticks='[{done: 1, total: 4}]', preview="undefined")
+    assert settled["ok"] is True, settled
+    assert settled["progress"][0]["previewUrl"] is None
+    assert settled["value"]["previewUrl"] is None
+
+
 @pytest.mark.parametrize("opts", [
     '{path: "a.m4a", diarize: true, speakers: 0}',
     '{path: "a.m4a", diarize: true, speakers: -2}',
