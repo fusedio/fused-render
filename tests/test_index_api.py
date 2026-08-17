@@ -830,6 +830,134 @@ def test_startup_warm_fills_the_gitignore_verdict_pool(home, tmp_path, monkeypat
     assert "alpha.txt" in pool.decider
 
 
+def test_startup_scan_records_the_run_the_warm_waits_on(home, tmp_path, monkeypatch):
+    """The warm waits on the run THIS process started, so the scheduler has to
+    hand it over — `run_startup_scan` used to drop `runner.start`'s run id on
+    the floor."""
+    src = _tree(tmp_path)
+    monkeypatch.setattr(index_router.runner, "start",
+                        lambda cfg, root, full=False: {"run_id": "r-42",
+                                                       "root": root})
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+    assert index_router._startup_runs == {runner.canonical_root(str(src)): "r-42"}
+
+
+def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch):
+    """The first-ever boot, end to end — the case the warm exists for.
+
+    On a fresh index the warm's first search answers `covered: false` cheaply
+    and there is nothing to sweep; the scan this process just spawned finishes
+    seconds later. Sampling once left the user's first keystroke paying the
+    whole cold cost anyway (2.3 s, observed). Waiting for that one run and
+    warming after it is what fills the pool."""
+    from fused_render.server import index_gitignore
+
+    src = _tree(tmp_path)
+    (src / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (src / "noise.log").write_text("x", encoding="utf-8")
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    index_gitignore._cache.clear()
+    # HOME is what the warm aims at, and what the scheduler scans.
+    monkeypatch.setenv("HOME", str(src))
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+
+    # Force the uncovered branch rather than racing the worker: the first
+    # search must answer `covered: false` for this to be the boot being tested.
+    real_search = index_router.index_search
+    calls = []
+
+    def uncovered_once(cfg, root, **kw):
+        calls.append(root)
+        if len(calls) == 1:
+            return {"covered": False, "root": root}
+        return real_search(cfg, root, **kw)
+
+    monkeypatch.setattr(index_router, "index_search", uncovered_once)
+    monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.05)
+    monkeypatch.setattr(index_router, "WARM_WAIT_DEADLINE_S", 60.0)
+    index_router.run_startup_warm()
+
+    assert len(calls) == 2, "the warm did not search again after the scan"
+    pool = index_gitignore._cache.get(str(src))
+    assert pool is not None
+    assert "noise.log" in pool.ignored
+    assert "alpha.txt" in pool.decider
+
+
+def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
+                                                             monkeypatch):
+    """A worker that hangs (or a status that never flips) must not leave a
+    thread polling for the process lifetime: the wait is deadline-bounded and
+    the warm simply does not happen."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: calls.append(root)
+                        or {"covered": False, "root": root})
+    monkeypatch.setattr(index_router.runner, "status",
+                        lambda cfg, run_id, since=0: {"state": {"running": True}})
+    monkeypatch.setattr(index_router, "WARM_WAIT_DEADLINE_S", 0.05)
+    monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-that-hangs")
+    began = time.monotonic()
+    index_router.run_startup_warm()
+    assert time.monotonic() - began < 5, "the wait is not deadline-bounded"
+    assert len(calls) == 1, "it searched again after giving up"
+
+
+def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,
+                                                             monkeypatch):
+    """The overwhelmingly common boot: an index is already there, so the warm
+    is the same two calls it always was, with no wait in the way."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    waited, filtered = [], []
+    monkeypatch.setattr(index_router, "_wait_for_scan",
+                        lambda cfg, run_id: waited.append(run_id) or True)
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: {"covered": True, "root": root,
+                                                 "entries": []})
+    monkeypatch.setattr(index_router, "filter_corpus",
+                        lambda out, index_root=None: filtered.append(out) or out)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-1")
+    index_router.run_startup_warm()
+    assert waited == []
+    assert len(filtered) == 1
+
+
+def test_startup_warm_does_not_wait_when_the_scan_was_debounced(home, tmp_path,
+                                                                monkeypatch):
+    """No run was started, so there is nothing to wait for — and a debounced
+    root was scanned within SCAN_DEBOUNCE_S, so the index is already there.
+    Waiting here would block the warm on a run that never comes."""
+    src = _tree(tmp_path)
+    monkeypatch.setenv("HOME", str(src))
+    monkeypatch.setattr(
+        index_router.runner, "start",
+        lambda cfg, root, full=False: pytest.fail("debounced root was scanned"))
+    cfg = load_config()
+    cfg.roots = [str(src)]
+    index_router.save_config(cfg)
+    runner._record_scan(cfg, runner.canonical_root(str(src)))
+    index_router.run_startup_scan(start_dir=str(tmp_path))
+
+    waited, calls = [], []
+    monkeypatch.setattr(index_router, "_wait_for_scan",
+                        lambda cfg, run_id: waited.append(run_id) or True)
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: calls.append(root)
+                        or {"covered": False, "root": root})
+    index_router.run_startup_warm()
+    assert waited == []
+    assert len(calls) == 1
+
+
 def test_a_root_of_slash_survives_the_config_write(home, tmp_path):
     """Roots are paths, not ignore patterns: clean_patterns rstrips '/' into
     the empty string and silently drops the root."""

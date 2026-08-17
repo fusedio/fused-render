@@ -152,11 +152,18 @@ all of it billed to a keystroke. The warm moves it to idle.
 - A **mount-backed** home is skipped on the string check alone (`MountGuard.blocks_root`),
   never a syscall: the index refuses to scan mounts, so the warm could only answer
   `covered: false` after aiming kernel I/O at a mount.
-- **One shot, never polled.** If the index has not covered home yet — first-ever boot —
-  the warm answers `covered: false` cheaply and pools nothing, so the first search after
-  that boot's scan still pays the sweep. A loop chasing the scan would be a second
-  scheduler; the persisted verdict pool (`server/index_gitignore.py`) is what covers
-  restarts instead.
+- **One bounded wait on a first boot.** Usually the index is already there, the search
+  answers `covered: true`, and the warm is those two calls and nothing else. When it
+  answers `covered: false` — first-ever boot, nothing to sweep — the warm waits for the
+  one scan `run_startup_scan` just spawned for that root (recorded in `_startup_runs`)
+  and then searches again. It is not a scheduler: one named run, polled every
+  `WARM_WAIT_POLL_S` (0.5 s, the worker's heartbeat cadence) with a hard
+  `WARM_WAIT_DEADLINE_S` ceiling (6 min — just past `runner.ABANDONED_RUN_S`, so a dead
+  worker is reported not-running before the ceiling is reached), on a daemon thread that
+  cannot hold the process open. Giving up is logged once and the corpus stays cold.
+  A root whose scan was **debounce-skipped** has no entry and is not waited on: no new
+  run is coming and its index is already on disk. The persisted verdict pool
+  (`server/index_gitignore.py`) is what covers restarts.
 - It **never raises**: nobody joins the thread.
 
 Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`

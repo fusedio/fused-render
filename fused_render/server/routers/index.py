@@ -85,13 +85,25 @@ def scan_roots(cfg: IndexConfig, start_dir: str | None = None) -> list:
     return [runner.canonical_root("~")]
 
 
+# root -> the run id this process started for it at startup, for the warm
+# below to wait on. Only the runs THIS boot spawned: a root that was
+# debounce-skipped, refused, or failed leaves no entry, which is exactly the
+# "there is nothing to wait for" signal the warm needs. Bounded by the number
+# of scan roots (a handful), and rewritten from scratch on every call.
+_startup_runs: dict = {}
+
+
 def run_startup_scan(start_dir: str | None = None) -> None:
     """Reclaim old run dirs and kick off one incremental scan per root.
 
     Never raises and never blocks: the scan itself is a detached worker, so
     this is a `Popen` per root and nothing more. A scan that ran recently is
     skipped (SCAN_DEBOUNCE_S), and a root that no longer exists is ignored
-    rather than reported — the config outlives the folders it names."""
+    rather than reported — the config outlives the folders it names.
+
+    Records each started run in `_startup_runs` for `run_startup_warm`, which
+    warms only after the run covering its root has finished."""
+    _startup_runs.clear()
     try:
         cfg = load_config()
         runner.prune_runs(cfg, keep=KEEP_RUNS)
@@ -109,8 +121,11 @@ def run_startup_scan(start_dir: str | None = None) -> None:
                             root, now - last)
                 continue
             started = runner.start(cfg, root)
+            run_id = (started or {}).get("run_id")
+            if run_id:
+                _startup_runs[root] = run_id
             logger.info("index: started background scan of %s (run %s)",
-                        root, (started or {}).get("run_id"))
+                        root, run_id)
         except ValueError as e:
             # A root that no longer exists, or one that turned out to be
             # mount-backed — skip it quietly; the config outlives the folders
@@ -140,6 +155,50 @@ def warm_root() -> str:
     return runner.canonical_root("~")
 
 
+# How often the warm re-reads the status of the one scan it is waiting for.
+# Nothing signals this thread when a detached worker finishes, so the wait is
+# a stat of that run's event log (runner.status folds it, and re-folds only
+# when the log moves). Half a second is the worker's own heartbeat cadence, so
+# a finer poll would mostly re-read an unchanged file, and half a second of
+# latency is nothing against the ~2.2 s the warm is saving.
+WARM_WAIT_POLL_S = 0.5
+# ...and the hard ceiling on that wait. The first-ever whole-home scan that
+# motivated this took 9.2 s (570k files, 74k dirs); six minutes is ~40x that,
+# so even a much larger home on a much slower disk still gets warmed. The
+# ceiling exists for the scan that never reports at all: a worker killed
+# mid-walk is reported not-running by runner's own liveness check after
+# ABANDONED_RUN_S (5 min), so this must sit just PAST that — otherwise the
+# common death gives up here instead of taking the (correct) finished path —
+# while still guaranteeing the thread cannot poll for the process lifetime.
+WARM_WAIT_DEADLINE_S = 6 * 60.0
+
+
+def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
+    """Block until `run_id` stops running; False if the deadline beat it.
+
+    One-shot and bounded, on a daemon thread nobody joins: it waits for one
+    named run and then it is done, whichever way that run ended."""
+    import time
+
+    deadline = time.monotonic() + WARM_WAIT_DEADLINE_S
+    while True:
+        try:
+            state = runner.status(cfg, run_id)["state"]
+        except ValueError:
+            # The run dir is gone (pruned, or a stubbed start that never made
+            # one). Nothing left to wait for, and the index is whatever it is.
+            return True
+        if not state.get("running"):
+            return True
+        if time.monotonic() >= deadline:
+            # Once, at info: this is a diagnosis of a stuck scan, not a
+            # failure of the warm — the next search just pays the old cost.
+            logger.info("index: gave up waiting %.0fs for scan %s; the search "
+                        "corpus stays cold", WARM_WAIT_DEADLINE_S, run_id)
+            return False
+        time.sleep(WARM_WAIT_POLL_S)
+
+
 def run_startup_warm() -> None:
     """Pay the first search's cold cost at idle instead of on a keystroke.
 
@@ -151,12 +210,19 @@ def run_startup_warm() -> None:
     one — and all of it was billed to the user's first keystroke.
 
     So it runs exactly the pair of calls `api_index_search` makes, with the
-    same root and the same pool key. An index that has not covered the home
-    root yet answers `covered: false` cheaply and pools nothing; a scan that
-    completes later therefore still leaves the first search paying the sweep.
-    Deliberately NOT polled or retried: a loop chasing the scan would be a
-    second scheduler, and the persisted pool (index_gitignore) is what covers
-    the restart case.
+    same root and the same pool key. Usually that is all: an index is already
+    on disk, the search answers `covered: true`, and the sweep lands in the
+    pool immediately.
+
+    On a first-ever boot it is not. The index has not covered home yet, the
+    search answers `covered: false` cheaply, and there is nothing to sweep —
+    which is exactly the boot the warm exists for. So when that happens it
+    waits for the ONE scan `run_startup_scan` just spawned for this root
+    (`_startup_runs`) and then warms. That is not the general "poll for scans"
+    scheduler this deliberately is not: it is one bounded wait on one named
+    run, with a definite end (WARM_WAIT_DEADLINE_S) on a thread nobody joins.
+    A root whose scan was debounce-skipped has no entry and is not waited on —
+    there is no new run coming, and its index is already there.
 
     Never raises: it runs on a thread nobody joins."""
     try:
@@ -169,6 +235,13 @@ def run_startup_warm() -> None:
             return
         cfg = load_config()
         out = index_search(cfg, root)
+        if not out.get("covered"):
+            run_id = _startup_runs.get(root)
+            if run_id is not None and _wait_for_scan(cfg, run_id):
+                out = index_search(cfg, root)
+        # Unconditional, including the uncovered cases: filter_corpus is a
+        # no-op on a response that is not covered, and the point is to run
+        # precisely what the route runs.
         filter_corpus(out, index_root=enclosing_root(scan_roots(cfg),
                                                      out.get("root") or root))
     except Exception:  # noqa: BLE001 - a warm must never take the server down
@@ -179,7 +252,9 @@ def startup_warm() -> None:
     """The create_app hook. A detached daemon thread, not `to_thread`: the
     startup hook must COMPLETE before the app serves, and this is seconds of
     duckdb and `git check-ignore` — the very cost the warm exists to move off
-    the request path. Nobody joins it and it cannot raise (above)."""
+    the request path — and, on a first boot, a bounded wait for the startup
+    scan on top of that. Nobody joins it and it cannot raise (above); `daemon`
+    is what guarantees a warm still waiting cannot hold the process open."""
     threading.Thread(target=run_startup_warm, name="index-warm",
                      daemon=True).start()
 
