@@ -76,13 +76,32 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
-# Base URL of the hosted workbench, for the workspace iframe. The CLI's own
-# env selection (FUSED_ENV) maps to different hosts; unstable is the current
-# default while embed-auth ships there first, and the override keeps other
-# environments testable.
-WORKBENCH_BASE_URL = os.environ.get(
-    "FUSED_RENDER_WORKBENCH_URL", "https://unstable.fused.io"
+# Fused environment the canvases feature targets. One knob drives BOTH the
+# workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
+# variable it reads) so the canvas the iframe shows is the same one the local
+# clone syncs against. Unstable is the current default while embed-auth ships
+# there first; FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
+WORKBENCH_ENV = os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "unstable")
+
+_ENV_WEB_URLS = {
+    "prod": "https://www.fused.io",
+    "unstable": "https://unstable.fused.io",
+    "stg": "https://staging.fused.io",
+    "staging": "https://staging.fused.io",
+    "dev": "http://localhost:3000",
+}
+
+WORKBENCH_BASE_URL = os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _ENV_WEB_URLS.get(
+    WORKBENCH_ENV, "https://unstable.fused.io"
 )
+
+
+def _cli_env(cli) -> dict[str, str]:
+    """child_env plus the env target, so CLI runs hit the same environment
+    the iframe shows."""
+    env = child_env(cli)
+    env["FUSED_ENV"] = WORKBENCH_ENV
+    return env
 
 
 def canvases_root() -> str:
@@ -148,7 +167,7 @@ def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProce
             capture_output=True,
             text=True,
             timeout=timeout,
-            env=child_env(cli),
+            env=_cli_env(cli),
         )
     except subprocess.TimeoutExpired:
         return None, _error(f"`{label}` timed out after {int(timeout)}s", 502)
@@ -267,7 +286,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
     with _LOGIN_LOCK:
         login = _active_login
         if login is None or login.proc.poll() is not None:
-            env = child_env(cli)
+            env = _cli_env(cli)
             env["PYTHONUNBUFFERED"] = "1"
             # The CLI's own login gives the browser only 30s before its
             # callback server dies (fused.workbench._auth), which loses real
@@ -345,7 +364,7 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
                 capture_output=True,
                 text=True,
                 timeout=TOKEN_TIMEOUT,
-                env=child_env(cli),
+                env=_cli_env(cli),
             )
         except subprocess.TimeoutExpired:
             return _error(f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
@@ -638,7 +657,7 @@ class _SyncManager:
                 capture_output=True,
                 text=True,
                 timeout=PUSH_TIMEOUT,
-                env=child_env(cli),
+                env=_cli_env(cli),
             )
         except subprocess.TimeoutExpired:
             self.push_state = "error"
@@ -686,7 +705,7 @@ class _SyncManager:
             probe = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
-                env=child_env(cli),
+                env=_cli_env(cli),
             )
         except (subprocess.TimeoutExpired, OSError):
             return
@@ -702,7 +721,7 @@ class _SyncManager:
             applied = subprocess.run(
                 [*cli.command, *base, "--force"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
-                env=child_env(cli),
+                env=_cli_env(cli),
             )
         except (subprocess.TimeoutExpired, OSError):
             return
@@ -716,7 +735,7 @@ class _SyncManager:
             recheck = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
-                env=child_env(cli),
+                env=_cli_env(cli),
             )
         except (subprocess.TimeoutExpired, OSError):
             recheck = None
