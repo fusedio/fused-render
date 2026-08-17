@@ -4774,10 +4774,6 @@ let annRecStartedAt = 0;     // performance.now() when the mic started
 let annRecIds = [];          // ids this recording stamped, oldest first
 let annRecorder = null, annRecChunks = [];
 let annRecTimerId = null;
-// Same window OpenPointer (the walkthrough tool this was modeled on) uses:
-// long enough to catch a click-then-explain, short enough not to bleed into
-// the PREVIOUS click's remark.
-const ANN_REC_LEAD = 2.0;
 
 function annLoad() {
   try {
@@ -5461,24 +5457,35 @@ function annRecMark(anchor) {
   annRecPaint();
 }
 
-// Each click owns the speech from ANN_REC_LEAD seconds before it until the
-// NEXT click in this same recording — OpenPointer's rule, unchanged: a remark
-// almost always starts just ahead of the click it is about, and ends where the
-// next one picks up.
+// Each SEGMENT goes to exactly one click — OpenPointer's fixed lead window
+// (each click owns "LEAD seconds before it until the next click") looked
+// right but double-counts by construction: click i's window reaches forward
+// to click i+1's own timestamp, and click i+1's window reaches the same
+// LEAD seconds backward from there, so anything said in that shared stretch
+// landed in BOTH notes the moment two clicks were less than LEAD apart —
+// which a quick "click, say one word, click again" walkthrough hits on
+// nearly every click. Nearest-by-start-time has no such overlap: a segment
+// can only be closest to one click, so it can only ever fill in one note.
+// It also self-adjusts to the pace of the recording instead of needing a
+// tuned constant — narrating right after a click (the common case) and
+// narrating just before one (also common) both resolve correctly because
+// "closest" means the same thing either direction.
 function annRecAssign(ids, segments) {
   const timed = ids.map((id) => annotations.find((a) => a.id === id))
                    .filter(Boolean).sort((a, b) => a.t - b.t);
-  if (!timed.length) return;
-  timed.forEach((c, i) => {
-    const from = Math.max(0, c.t - ANN_REC_LEAD);
-    const to = i + 1 < timed.length ? timed[i + 1].t : Infinity;
-    c.content = (segments || [])
-      .filter((s) => s.end > from && s.start < to)
-      .map((s) => s.text)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-  });
+  if (!timed.length || !segments || !segments.length) return;
+  const words = new Map(timed.map((c) => [c.id, []]));
+  for (const s of segments) {
+    let best = timed[0], bestDist = Math.abs(s.start - timed[0].t);
+    for (const c of timed) {
+      const dist = Math.abs(s.start - c.t);
+      if (dist < bestDist) { best = c; bestDist = dist; }
+    }
+    words.get(best.id).push(s.text);
+  }
+  for (const c of timed) {
+    c.content = words.get(c.id).join(" ").replace(/\s+/g, " ").trim();
+  }
   annSave();
 }
 
