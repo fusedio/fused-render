@@ -39,6 +39,7 @@ import { BOARD_COLUMNS } from "./schedule-lib";
 import type { BoardColumn } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
+  archiveIntent,
   basename,
   cancelIntent,
   dropAction,
@@ -64,7 +65,7 @@ import {
   unreadCount,
   unreadMarker,
 } from "./tasks-lib";
-import type { TaskFilters, TaskRunIntent } from "./tasks-lib";
+import type { ArchiveStatus, TaskFilters, TaskRunIntent } from "./tasks-lib";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -117,6 +118,25 @@ const ICON_PLAY = icon(<polygon points="6 3 20 12 6 21 6 3" />, 12);
 const ICON_RERUN = icon(
   <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
     <path d="M3 3v5h5" /></>, 13);
+// Filing away, and the way back. Drawn apart because the second is not the first
+// greyed out: a person looking at an archived row has to be able to SEE that the
+// door opens both ways, and one glyph with two meanings cannot say that
+// (tasks-lib.archiveIntent).
+//
+// The first is lucide `archive`. The second is lucide `archive-restore`'s ARROW
+// on the same closed box, rather than that icon whole: `archive-restore` splits
+// the box's two walls apart, and at 13px the gap reads as a broken glyph instead
+// of an open one (checked at 6x). Keeping the body identical and changing only
+// the mark inside it — a dash, or an arrow coming out — is what makes the pair
+// legible at the size it is actually drawn.
+const ICON_ARCHIVE = icon(
+  <><rect x="2" y="3" width="20" height="5" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+    <path d="M10 12h4" /></>, 13);
+const ICON_UNARCHIVE = icon(
+  <><rect x="2" y="3" width="20" height="5" rx="1" />
+    <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+    <path d="m9 15 3-3 3 3" /><path d="M12 12v6" /></>, 13);
 
 // ---- leaf components ---------------------------------------------------------
 
@@ -581,21 +601,29 @@ function TaskNode({
   // drag deliberately does not have, because a gesture cannot consent to
   // creating work that was never scheduled.
   const run = taskRunIntent(task);
+  // Archive / Unarchive. The Board's drop onto the Archive lane, reachable
+  // without switching view, expanding a collapsed lane and dragging — which is
+  // what "archive it" used to cost, and the reason the honest answer to "can a
+  // task be deleted?" (no: it is archived, D306) was barely true. tasks-lib
+  // decides everything, by asking dropAction the same question the drag does.
+  const file = archiveIntent(task);
 
   // The one cancel in flight, by message id, and whatever the server said about
   // the last one that failed. Per MESSAGE rather than per thread: the sentence
   // is about one row and belongs under it.
   const [cancelling, setCancelling] = useState("");
   const [cancelErrors, setCancelErrors] = useState<Record<string, string>>({});
-  // Run-now's own pair. Per TASK, unlike cancel's: the button is on the task
-  // row and the refusal is about the task's conversation, not about one message
-  // inside it.
-  const [running, setRunning] = useState(false);
-  const [runError, setRunError] = useState("");
+  // The task-level actions' own pair — run-now/re-send and archive share it.
+  // Per TASK, unlike cancel's: these buttons are on the task row and their
+  // refusals are about the task, not about one message inside it. ONE note
+  // line, because the two are one press apart and two stacked sentences under a
+  // row would leave the reader working out which press each answered.
+  const [acting, setActing] = useState(false);
+  const [note, setNote] = useState("");
 
   const runNow = async (intent: TaskRunIntent) => {
-    setRunning(true);
-    setRunError("");
+    setActing(true);
+    setNote("");
     try {
       // Which call is not decided here — `kind` came out of tasks-lib, and this
       // is the only place it is spent. Re-send answers 200 with a `note` when
@@ -603,7 +631,7 @@ function TaskNode({
       // mid-turn), which is news of the same quiet kind as the refusal below.
       if (intent.kind === "resend") {
         const res = await resendScheduledMessage(intent.entryId);
-        if (res.note) setRunError(res.note);
+        if (res.note) setNote(res.note);
       } else {
         await runScheduledNow(intent.entryId);
       }
@@ -614,9 +642,28 @@ function TaskNode({
       // happen — and that reads as "wait", not as "broken", which is why it is
       // said in the quiet note the board's drag already uses rather than in the
       // red line a failed cancel gets.
-      setRunError((e as Error).message);
+      setNote((e as Error).message);
     } finally {
-      setRunning(false);
+      setActing(false);
+      onReload?.();
+    }
+  };
+
+  // Archive / Unarchive. One call, and the same one the board's drop makes;
+  // `status` came out of tasks-lib and is only spent here.
+  const triage = async (status: ArchiveStatus) => {
+    setActing(true);
+    setNote("");
+    try {
+      await setSessionTriage(task.session_id, status);
+    } catch (e) {
+      // The server's own sentence, in the same quiet line run-now uses. A
+      // refusal here is news, not a fault: nothing was destroyed either way,
+      // which is the whole point of archiving rather than deleting.
+      setNote((e as Error).message);
+    } finally {
+      setActing(false);
+      // The row has to move lane (or come back), so re-read either way.
       onReload?.();
     }
   };
@@ -698,13 +745,37 @@ function TaskNode({
             className="tasks-act tasks-act--run"
             title={run.title}
             aria-label={run.label}
-            disabled={running}
+            disabled={acting}
             onClick={(e) => {
               e.stopPropagation();
               void runNow(run);
             }}
           >
             {run.rerun ? ICON_RERUN : ICON_PLAY}
+          </button>
+        )}
+        {/* The Board's drag onto Archive, as a press — and on an already
+            archived row, the way back, because an action with only one
+            direction is a trap. Same hover-revealed group, same size and same
+            silence at rest as Run now and Open chat: a task that has never run
+            has no session to triage and is offered nothing at all here, so this
+            must not be a permanent column of buttons half of which do nothing.
+            tasks-lib.archiveIntent decides both halves. */}
+        {file && (
+          <button
+            type="button"
+            className={
+              "tasks-act " + (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
+            }
+            title={file.title}
+            aria-label={file.label}
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void triage(file.status);
+            }}
+          >
+            {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
           </button>
         )}
         {href && (
@@ -725,8 +796,8 @@ function TaskNode({
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own
-          drag-error line, because this is the board's own call. */}
-      {runError && <p className="schedule-tv-note tasks-row-note">{runError}</p>}
+          drag-error line, because these are the board's own calls. */}
+      {note && <p className="schedule-tv-note tasks-row-note">{note}</p>}
 
       {open && (
         <div className="tasks-thread">
@@ -891,7 +962,10 @@ export function TaskBoard({
   // move needs nothing fancier than the platform's own.
   const [dragging, setDragging] = useState<Task | null>(null);
   const [overLane, setOverLane] = useState<BoardColumn | null>(null);
-  const [dragError, setDragError] = useState<string | null>(null);
+  // What the server said about the last move the board asked for — a drop, or a
+  // card's own Archive button. One line above the lanes, because both are the
+  // same kind of news about the same board.
+  const [note, setNote] = useState<string | null>(null);
 
   const allowed = useMemo(
     () => new Set(dragging ? dropLanes(dragging) : []),
@@ -918,7 +992,7 @@ export function TaskBoard({
     // message early — is tasks-lib's decision, not this handler's.
     const action = dropAction(task, lane);
     if (!action) return;
-    setDragError(null);
+    setNote(null);
     try {
       if (action.kind === "run") {
         // Upcoming → In Progress. The message goes out NOW and its `due` is
@@ -933,7 +1007,21 @@ export function TaskBoard({
       // have sent the message, or claimed it, while the card was in the air —
       // so the server's own sentence is what gets shown, and the board re-reads
       // either way.
-      setDragError((e as Error).message);
+      setNote((e as Error).message);
+    }
+    onReload();
+  };
+
+  // The same triage write the drop above makes, asked for by a card's own
+  // button instead of a gesture. It lives up here rather than in TaskCard so the
+  // refusal lands in the board's ONE note line, beside the drag's: a sentence
+  // tucked inside a 260px lane under one card is a sentence nobody reads.
+  const triage = async (task: Task, status: ArchiveStatus) => {
+    setNote(null);
+    try {
+      await setSessionTriage(task.session_id, status);
+    } catch (e) {
+      setNote((e as Error).message);
     }
     onReload();
   };
@@ -974,7 +1062,7 @@ export function TaskBoard({
 
   return (
     <>
-      {dragError && <p className="schedule-tv-note">{dragError}</p>}
+      {note && <p className="schedule-tv-note">{note}</p>}
       <div className="schedule-tv-board">
         {BOARD_COLUMNS.map((col) => {
           const lane = byLane.get(col.key) ?? [];
@@ -1041,6 +1129,7 @@ export function TaskBoard({
                       setDragging(null);
                       setOverLane(null);
                     }}
+                    onTriage={(status) => triage(task, status)}
                   />
                 ))}
                 {hidden > 0 && (
@@ -1077,12 +1166,16 @@ function TaskCard({
   isDragging,
   onDragStart,
   onDragEnd,
+  onTriage,
 }: {
   task: Task;
   home: string;
   isDragging: boolean;
   onDragStart: () => void;
   onDragEnd: () => void;
+  /** File this card away, or bring it back — the board owns the call so its
+   * refusal lands in the board's own note line. */
+  onTriage: (status: ArchiveStatus) => Promise<void>;
 }) {
   // Whether this card lifts at all, and it is not one question: a task with no
   // session (§5 — Claude Code mints the id on the first run) has nothing to
@@ -1091,47 +1184,86 @@ function TaskCard({
   // only fail. tasks-lib.dropLanes holds both halves.
   const draggable = isDraggable(task);
   const href = taskHref(task);
+  // Archive without dragging. The drag stays as the accelerator, but it cannot
+  // be the ONLY way: the lane it aims at is collapsed by default, so the whole
+  // gesture starts with "expand Archive first". Same predicate as the drop, by
+  // construction — archiveIntent asks dropAction.
+  const file = archiveIntent(task);
+  const [busy, setBusy] = useState(false);
+  const triage = async (status: ArchiveStatus) => {
+    setBusy(true);
+    try {
+      await onTriage(status);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <button
-      type="button"
-      className={
-        "schedule-tv-card" +
-        (draggable ? " is-draggable" : "") +
-        (isDragging ? " is-dragging" : "")
-      }
-      title={task.title}
-      draggable={draggable}
-      onDragStart={(ev) => {
-        // Some data is required for Firefox to start a drag at all; the task
-        // itself travels through React state, not dataTransfer.
-        ev.dataTransfer.setData("text/plain", task.key);
-        ev.dataTransfer.effectAllowed = "move";
-        onDragStart();
-      }}
-      onDragEnd={onDragEnd}
-      onClick={() => {
-        if (href) navigateUrl(href);
-      }}
-    >
-      {/* Unread leads here too — it sat at the far end of the head, which is
-          the same objection the List's task row just answered. What the card
-          does NOT take from the List is the always-drawn empty slot: a card's
-          head is one line above a title and a folder chip that both start at
-          the card's own edge, so reserving a permanent rail would indent the
-          ring away from the two lines under it — a worse misalignment than the
-          one it fixes. On a card the pill is simply first when there is one. */}
-      <span className="schedule-tv-card-head">
-        <UnreadPill count={task.unread} />
-        <StatusIcon status={taskColumn(task)} failed={task.failed} />
-        <IdChip id={task.task_id} kind="task" />
-        {task.live && <LivePulse />}
-      </span>
-      <span className="schedule-tv-card-title">
-        {firstLine(task.title) || "(untitled)"}
-      </span>
-      <span className="schedule-tv-card-foot">
-        <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
-      </span>
-    </button>
+    // A wrapper, only because the card IS a button and a button cannot hold
+    // one. The action is a SIBLING pinned over the card's head — where the head
+    // has spare room to its right on every card — rather than a nested control
+    // the browser would refuse to parse.
+    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}>
+      <button
+        type="button"
+        className={
+          "schedule-tv-card" +
+          (draggable ? " is-draggable" : "") +
+          (isDragging ? " is-dragging" : "")
+        }
+        title={task.title}
+        draggable={draggable}
+        onDragStart={(ev) => {
+          // Some data is required for Firefox to start a drag at all; the task
+          // itself travels through React state, not dataTransfer.
+          ev.dataTransfer.setData("text/plain", task.key);
+          ev.dataTransfer.effectAllowed = "move";
+          onDragStart();
+        }}
+        onDragEnd={onDragEnd}
+        onClick={() => {
+          if (href) navigateUrl(href);
+        }}
+      >
+        {/* Unread leads here too — it sat at the far end of the head, which is
+            the same objection the List's task row just answered. What the card
+            does NOT take from the List is the always-drawn empty slot: a card's
+            head is one line above a title and a folder chip that both start at
+            the card's own edge, so reserving a permanent rail would indent the
+            ring away from the two lines under it — a worse misalignment than the
+            one it fixes. On a card the pill is simply first when there is one. */}
+        <span className="schedule-tv-card-head">
+          <UnreadPill count={task.unread} />
+          <StatusIcon status={taskColumn(task)} failed={task.failed} />
+          <IdChip id={task.task_id} kind="task" />
+          {task.live && <LivePulse />}
+        </span>
+        <span className="schedule-tv-card-title">
+          {firstLine(task.title) || "(untitled)"}
+        </span>
+        <span className="schedule-tv-card-foot">
+          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+        </span>
+      </button>
+      {/* Quiet until the card is pointed at or focused, exactly like the List's
+          row actions: a lane is a column of cards, and a permanent glyph on
+          every one of them would compete with the titles the lane exists to
+          show. */}
+      {file && (
+        <button
+          type="button"
+          className={
+            "tasks-act tasks-card-act " +
+            (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
+          }
+          title={file.title}
+          aria-label={`${file.label} ${task.task_id}`}
+          disabled={busy}
+          onClick={() => void triage(file.status)}
+        >
+          {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
+        </button>
+      )}
+    </div>
   );
 }

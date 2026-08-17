@@ -266,6 +266,74 @@
   border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
 }
 
+/* Archive / Unarchive. Same group, same size, same silence at rest as Edit,
+   Cancel and Run now — and deliberately NEUTRAL under the pointer, not red.
+   Filing a task away destroys nothing (a task IS a Claude session and the
+   transcript is kept, D306), so borrowing Cancel's red would tell the reader
+   this is the destructive one, which is the exact misunderstanding archiving
+   exists to correct. The plain `.tasks-act` hover skin already says "this is a
+   control"; that is all this one needs to say. */
+.tasks-act--archive:hover:not(:disabled),
+.tasks-act--unarchive:hover:not(:disabled),
+.prefs-section .tasks-act--archive:hover:not(:disabled),
+.prefs-section .tasks-act--unarchive:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+/* -- The same action on a board card -------------------------------------------
+   The card is a `<button>`, so the action cannot live inside it — nested buttons
+   do not parse. It is a sibling, and this wrapper is what it is positioned
+   against; the wrapper takes the card's place as the lane's flex child and the
+   card still stretches to fill it.
+
+   It sits over the card HEAD's right end, which is empty on every card: the head
+   holds the unread pill, the ring, the id and the live ping, all left-aligned
+   and none of them growing. The title below is clamped to two lines and starts
+   on the next line down, so nothing is covered. */
+.tasks-card-wrap {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+}
+
+.tasks-card-act,
+.prefs-section .tasks-card-act {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  /* Above the card it overlays; the card sets no z-index of its own. */
+  z-index: 1;
+  /* The card paints `--bg`, and a transparent glyph sitting on it would read as
+     part of the head's own row of marks. */
+  background: var(--bg);
+}
+
+.tasks-card-wrap:hover .tasks-card-act,
+.tasks-card-wrap:focus-within .tasks-card-act,
+.tasks-card-act:focus-visible {
+  opacity: 1;
+}
+
+/* Mid-write, same as the row's: the card is being pointed at, so full opacity is
+   already on and dropping it is what says "asked, not answered yet". */
+.tasks-card-wrap:hover .tasks-card-act:disabled,
+.tasks-card-wrap:focus-within .tasks-card-act:disabled,
+.tasks-card-act:disabled:focus-visible {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* While the card is in the air it ghosts to 0.35 — an action button left at full
+   strength over a ghost would be the one solid thing on a card that is halfway
+   somewhere else, and it is not a drop target either. */
+.tasks-card-wrap.is-dragging .tasks-card-act,
+.prefs-section .tasks-card-wrap.is-dragging .tasks-card-act {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* What the server said when it would not run it. Under the row it is about,
    indented to the rail, and QUIET — `.schedule-tv-note` is the same muted line
    the board's drag refusal already uses, and it is muted on purpose: the common
