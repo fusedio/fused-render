@@ -187,6 +187,21 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "Better answers than the Qwen 4B for twice the download — "
                     "tight on 16GB, so close other heavy apps first.",
         },
+        # Qwen3.8 27B. The family ships two sizes and only this one is on the
+        # table: the other is 2.4T-A95B, which no laptop runs. Sits between the
+        # Qwen 9B and the Qwen3.6 27B on size, not at the bottom — smallest-first
+        # is about size_gb alone, not how confident the entry is.
+        {
+            "id": "mlx-community/Qwen3.8-27B-4bit",
+            "label": "Qwen3.8 27B (MLX 4-bit)",
+            # Measured from the repo's blob sizes, not estimated.
+            "size_gb": 16.1,
+            "note": "Newest Qwen, bigger than the 9B above — wants 32GB+, so it "
+                    "will not fit a 16GB machine. Its checkpoint is "
+                    "Qwen3_5ForConditionalGeneration, the same class mlx-lm "
+                    "already loads for the Qwen3.5 entries here, but that has "
+                    "not been confirmed on this specific repo.",
+        },
         # LAST, and the only entry here that is not a 16GB-machine model. It
         # lands at the bottom on size alone now, which happens to agree with
         # where its memory cost belongs: 20GB of weights resident is a 32GB Mac,
