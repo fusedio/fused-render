@@ -44,7 +44,15 @@ def _follow_block(html):
 
 # A scrollport whose geometry the test drives directly. `writes` records every
 # programmatic scroll so a test can tell "followed" from "left alone".
+#
+# `fused` is stubbed because the extracted block reads the page's own params at
+# top level (`MESSAGE_ANCHOR`, the scroll-to-a-turn deep link). The slice below
+# is taken by source position, so anything that lands between its two markers
+# runs here whether or not the follow logic cares about it — modelling the page
+# environment is cheaper than moving unrelated code out of the way, and it means
+# the next arrival in that range does not fail this file again.
 _STUBS = """
+const fused = { params: new Map() };
 const handlers = {};
 const writes = [];
 const logwrap = {
@@ -200,7 +208,10 @@ console.log(JSON.stringify({ followTail, lastWrite: writes[writes.length - 1] })
 def test_sending_a_message_re_arms_the_follow(html):
     """addUser sets the flag back to true — the answer to what the reader just
     asked has to stream in front of them, not somewhere below the fold."""
-    src = html[html.index("function addUser(text)"):]
+    # Matched on the name alone, not the full signature: `addUser` gained a
+    # `uuid` parameter for the scroll-to-a-turn deep link, and this test is about
+    # the flag it sets, not how many arguments it takes.
+    src = html[html.index("function addUser(text"):]
     body = src[:src.index("\n}\n")]
     assert "followTail = true;" in body
     assert "scrollBottom();" in body

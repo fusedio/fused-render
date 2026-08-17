@@ -1,0 +1,1672 @@
+// The Tasks page's pure half — everything the List accordion and the Board
+// decide, with no DOM and no React in it, so the rules are testable on their
+// own (shell/tasks-lib.test.ts) and the components are left holding markup.
+//
+// The model:
+//
+//   PROJECT (a folder)
+//   └─ TASK-002        one Claude session, one thread
+//      ├─ MSG-003      newest first
+//      ├─ MSG-002
+//      └─ MSG-001
+//
+// The server hands us that shape already merged, already titled, already
+// counted and already sorted (newest task first). Nothing here re-derives a
+// status or re-titles a row: the one place those are decided is the server, and
+// a client that guesses a second answer is a client that disagrees with itself
+// on the next poll.
+//
+// ORDER HAS EXACTLY ONE EXCEPTION, and it is named: sortLane, applied by
+// groupByColumn, which is the BOARD's alone. The List keeps the server's order
+// untouched (filterTasks below filters and nothing else) because a flat list of
+// every task has one honest question — what happened most recently — and the
+// server already answers it with `last_active` descending.
+//
+// A LANE is a narrower question, and Upcoming's is the opposite one. A column of
+// work that has not happened yet is read to find out what happens NEXT, and
+// "most recently touched" is not that: a task edited an hour ago and due in
+// October outranks the one firing in ten minutes (Akshil, 2026-08-17: "in
+// upcoming the most recent tasks [close to current time] would be on top, in
+// done and failed the recent runs will be on top"). So Upcoming runs SOONEST
+// FIRST — ascending — and the settled lanes run most-recent-run first, which is
+// the same instinct pointed at the past.
+//
+// This is a presentation of the same data, not a second opinion about it: no
+// status is re-derived, no lane membership is re-decided (taskColumn still asks
+// the server), and every key is a time the server itself sent.
+import type { Task, TaskMessage } from "@platform/lib/api";
+import { BOARD_COLUMNS, explorerUrl, isProjected, turnPhase } from "./schedule-lib";
+import type { BoardColumn } from "./schedule-lib";
+
+// How many messages a collapsed-then-expanded task shows before Show more.
+// The server sends exactly this many in `task.messages`; the constant is here
+// so the cap and the "is there more?" test cannot drift apart.
+export const PREVIEW_MESSAGES = 3;
+
+// ---- small string helpers ----------------------------------------------------
+
+/** The first non-empty line of a body. A prompt is routinely a paragraph — a
+ * pasted URL, a blank line, then the instruction — and a row prints its opening
+ * line while the whole thing stays the tooltip. */
+export function firstLine(text: string): string {
+  return text.split("\n").map((s) => s.trim()).find(Boolean) ?? text.trim();
+}
+
+/** A path as a person reads it: $HOME collapsed to "~". */
+export function tildePath(path: string, home: string): string {
+  if (!home) return path;
+  const h = home.replace(/[\\/]+$/, "");
+  if (path === h) return "~";
+  if (path.startsWith(h + "/")) return "~/" + path.slice(h.length + 1);
+  return path;
+}
+
+/** The last segment of a path — what the folder chip prints. "/" stays "/". */
+export function basename(path: string): string {
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+// ---- when a message happened -------------------------------------------------
+// The spec's own wording: "09:00 today", "09:00 yesterday", "09:00 Monday".
+// Deliberately NOT toLocaleString: the thread is read as a column of times, and
+// a column only reads as one when every row is the same width — a locale that
+// swaps between "9:00 AM" and "09:00" costs that alignment, and the day word is
+// what carries the meaning anyway. 24h, zero-padded, then the day.
+
+const DAY_NAMES = [
+  "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+];
+const MONTH_NAMES = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Whole days between two instants, by LOCAL calendar day — not by elapsed
+ * hours. 23:59 and 00:01 are a day apart to a reader and two minutes apart to a
+ * clock, and the reader is right. */
+function dayDelta(then: Date, now: Date): number {
+  const a = new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime();
+  const b = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return Math.round((a - b) / 86400000);
+}
+
+/** The day half of a message stamp: today / yesterday / tomorrow, a weekday
+ * name inside the surrounding week, an absolute date beyond it. */
+export function dayLabel(at: Date, now: Date): string {
+  const delta = dayDelta(at, now);
+  if (delta === 0) return "today";
+  if (delta === -1) return "yesterday";
+  if (delta === 1) return "tomorrow";
+  // Inside the week either side, the weekday alone is unambiguous and shorter.
+  if (delta > -7 && delta < 7) return DAY_NAMES[at.getDay()];
+  const date = `${at.getDate()} ${MONTH_NAMES[at.getMonth()]}`;
+  return at.getFullYear() === now.getFullYear() ? date : `${date} ${at.getFullYear()}`;
+}
+
+/** "09:00 today". `at` is epoch SECONDS (the API's unit), not ms. */
+export function messageTime(at: number, now: number = Date.now()): string {
+  if (!at) return "";
+  const d = new Date(at * 1000);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())} ${dayLabel(d, new Date(now))}`;
+}
+
+/** The absolute stamp, for the row's tooltip — the relative label above is for
+ * scanning, and "Monday" is not an answer to "which Monday?". */
+export function messageStamp(at: number): string {
+  if (!at) return "";
+  const d = new Date(at * 1000);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString();
+}
+
+/** Under this, the two times are the same fact told twice — a send is never
+ * instantaneous and a second of drift is not news. */
+export const RAN_SKEW_SECONDS = 60;
+
+/**
+ * The second half of a scheduled message's time, printed only when there IS a
+ * second half: `at` is what was asked for and never moves, `ran_at` is when the
+ * turn actually started, and they part company two ways —
+ *
+ *   * late, when the app was shut at the due minute and the run was caught up,
+ *   * early, when someone dragged the task into In Progress and ran it now.
+ *
+ * The early case is the whole reason run-now leaves `due` alone (§2 of this
+ * round's fixes): the schedule keeps saying 09:00 and the row says it ran at
+ * 07:12, which is the truth. Rewriting `due` to the moment of the drag would
+ * have made the row read as if 07:12 had always been the plan.
+ */
+export function ranNote(m: TaskMessage, now: number = Date.now()): string {
+  if (!m.at || !m.ran_at) return "";
+  if (Math.abs(m.ran_at - m.at) < RAN_SKEW_SECONDS) return "";
+  return `ran ${messageTime(m.ran_at, now)}`;
+}
+
+/** The time cell's tooltip: the absolute stamp, and the run beside it when the
+ * two differ. */
+export function messageWhenTitle(m: TaskMessage, now: number = Date.now()): string {
+  const due = messageStamp(m.at);
+  if (!ranNote(m, now)) return due;
+  return `Scheduled for ${due} · ran ${messageStamp(m.ran_at)}`;
+}
+
+// ---- a message's own state ---------------------------------------------------
+// The task carries a status decided server-side; a MESSAGE does not, and the
+// ring beside each sub-row is the only place the thread says how a given run
+// went. Two facts collapse into it — `state` (did it go out) and `turn` (how
+// the session then answered) — exactly as schedule-lib.stateTone collapses the
+// scheduler's pair, because reporting a dead turn as a clean send is the one
+// mistake this row must not make.
+
+export interface MessageTone {
+  column: BoardColumn;
+  /** Paint the ring red rather than the column's hue: settled, but not well. */
+  failed: boolean;
+  /** What the ring's tooltip says. */
+  label: string;
+}
+
+/**
+ * WHY THERE ARE TWO `messageTone`s (this one, and schedule-lib's).
+ *
+ * They answer different questions about the same message and neither is a
+ * superset of the other:
+ *
+ *   - This one returns a BOARD COLUMN plus a failed flag and an English label —
+ *     four buckets, because that is how many lanes the Board has.
+ *   - schedule-lib's returns one of six CALENDAR TONES, which are CSS classes
+ *     (`--missed` is amber, `--error` is red, `--skipped` is grey), and it
+ *     draws distinctions this one has already collapsed: a missed one-off is
+ *     `missed` there and `done`+failed here, a cancelled message is `skipped`
+ *     there and `archived`/"Cancelled" here.
+ *
+ * Deriving either from the other would therefore lose a distinction the losing
+ * view actually paints. A merge is also blocked mechanically: schedule-lib is
+ * the LOWER module (this file imports explorerUrl and BoardColumn from it), so
+ * schedule-lib importing back would be a cycle.
+ *
+ * What is genuinely shared is the reading of `turn` — the half that caused the
+ * bug — and that now lives in exactly one place, schedule-lib.turnPhase, which
+ * both call. Change the meaning of `turn` there and both views move together.
+ */
+export function messageTone(m: TaskMessage): MessageTone {
+  switch (m.state) {
+    case "pending":
+      return { column: "upcoming", failed: false, label: "Scheduled" };
+    case "sending":
+      return { column: "in_progress", failed: false, label: "Sending…" };
+    case "cancelled":
+      return { column: "archived", failed: false, label: "Cancelled" };
+    // A SKIPPED occurrence is routine (the next run is already coming), so it
+    // is filed away rather than flagged. A missed ONE-OFF is a fault: the run
+    // the user asked for never happened, and it must not paint the green ring.
+    case "skipped":
+      return { column: "archived", failed: false, label: "Skipped" };
+    case "missed":
+      return m.template_id
+        ? { column: "archived", failed: false, label: "Skipped" }
+        : { column: "done", failed: true, label: "Missed" };
+    case "error":
+      return { column: "done", failed: true, label: "Failed" };
+    case "sent":
+    default:
+      // `sent` only means the turn STARTED. How it ended is the second fact,
+      // and turnPhase is the one place that fact is read (schedule-lib).
+      switch (turnPhase(m.turn)) {
+        case "unreported":
+          // Not "Running…": nothing is watching it any more, and saying
+          // otherwise is the frozen-progress-bar lie.
+          return { column: "done", failed: true, label: "Stopped reporting" };
+        case "running":
+          return { column: "in_progress", failed: false, label: "Running…" };
+        // "done", "idle", or whatever a newer server writes — the turn ended.
+        default:
+          return { column: "done", failed: false, label: "Ran" };
+      }
+  }
+}
+
+/**
+ * The task's own column, narrowed. The server decides it (Task.status); this
+ * only keeps a value a newer server invented off the board's floor. An
+ * unreadable status lands in Done, not Archive: a task the client cannot read
+ * still HAPPENED, and filing it away hides it behind a collapsed lane.
+ *
+ * Checked against BOARD_COLUMNS rather than a hand-written list of four words,
+ * so the board and this function cannot disagree about how many statuses there
+ * are — the fifth, `failed`, arrived a round after the first four and a
+ * hardcoded list is how that lane would have silently swallowed itself into
+ * Done. Read as a plain string on purpose: the union this file was compiled
+ * against is a snapshot of what the server said LAST time.
+ */
+export function taskColumn(task: Task): BoardColumn {
+  const s: string = task.status;
+  const known = BOARD_COLUMNS.find((c) => c.key === s);
+  return known ? known.key : "done";
+}
+
+// ---- unread ------------------------------------------------------------------
+// Unread is per MESSAGE (§7) and clicking through is what clears it. The click
+// also posts to the server, but the dot has to go NOW — the list polls on a
+// 20s interval, and a dot that survives its own click reads as a failed click.
+// So reads are held locally as well, and merged over whatever the poll returns
+// until the server's own answer catches up.
+//
+// EVERY ENTRY HERE IS AN OVERRIDE OF A KNOWN-STALE VALUE, never a fact. That is
+// one sentence and it decides the whole shape of this section:
+//
+//   * an entry is GATED on the server still disagreeing. A per-message mark only
+//     discounts a message the poll still calls unread (isUnread, taskUnread), so
+//     it retires itself the moment the server agrees, and the set never has to be
+//     pruned against a list that moves under us.
+//   * an entry can be TAKEN BACK. A write that is refused has to give the dot
+//     back, or the optimism has quietly become an assertion about a write that
+//     never happened (unmarkRead, unmarkAllRead).
+//   * the whole-task sentinel, which cannot name a message and therefore cannot
+//     be gated per message, is stamped with the observation it overrides instead
+//     (markObservation) and expires when that observation is replaced.
+
+/** The local read-set's key. Message ids are per TASK ("MSG-001" exists in
+ * every thread), so the task key has to be part of it.
+ *
+ * NUL is the joiner because it is the one character neither half can
+ * contain, so two different pairs cannot flatten onto one key the way they
+ * can under a space. Written as the ESCAPE `\u0000`, never as a literal
+ * control byte: one raw NUL makes the whole source file `data` rather than
+ * text, which silently breaks grep, diff and every line-oriented tool over
+ * it -- including the greps this repo's own tests are built out of. */
+export function readKey(taskKey: string, messageId: string): string {
+  return `${taskKey}\u0000${messageId}`;
+}
+
+export function markRead(read: Set<string>, taskKey: string, messageId: string): Set<string> {
+  const next = new Set(read);
+  next.add(readKey(taskKey, messageId));
+  return next;
+}
+
+/** Take one message's local mark back — the write it stood in for was refused,
+ * so the dot it hid has to come back. The mirror of markRead, and the half the
+ * optimism was missing on both paths: an override with no way back is not
+ * optimism, it is an assertion. */
+export function unmarkRead(
+  read: Set<string>,
+  taskKey: string,
+  messageId: string,
+): Set<string> {
+  const next = new Set(read);
+  next.delete(readKey(taskKey, messageId));
+  return next;
+}
+
+/**
+ * The message-id slot's stand-in for "all of them", for the ONE thing a
+ * per-message mark cannot cover: the messages OUTSIDE the loaded window, whose
+ * ids this client has never seen and cannot enumerate.
+ *
+ * `*` cannot collide with a real entry: a message id is always `MSG-nnn`
+ * (tasks_store.format_message_id), so no thread can produce this one.
+ *
+ * IT IS NOT A CLAIM THAT THE TASK IS READ FOR EVER, and that is the correction
+ * here. It used to be exactly that — a bare `taskKey \0 *` that isUnread and
+ * taskUnread both read as absolute, with nothing that ever removed it — so a
+ * REFUSED write left the row looking read with its own Mark read button gone
+ * (no retry), a server still reporting unread was ignored, and a message
+ * arriving afterwards was invisible until the List remounted. The comment above
+ * claimed the next poll restored truth; nothing in the poll could, because a
+ * poll only replaces `task.unread`, and the sentinel outranked it.
+ *
+ * What the local set is actually for is hiding the 20-second gap between a
+ * press and the server's own answer — a SHORT-LIVED OVERRIDE OF A KNOWN-STALE
+ * VALUE, not a fact of its own. So the sentinel now carries the observation it
+ * overrides (markObservation) and applies only while the server is still
+ * quoting that same value; the first poll that disagrees is a poll about a
+ * value nobody is overriding, and the server wins.
+ */
+export const ALL_MESSAGES = "*";
+
+/**
+ * The server observation a whole-task mark overrides: the count it printed, and
+ * the ids it still calls unread.
+ *
+ * Both halves earn their place. The COUNT is what the row draws and what the
+ * mark zeroes. The IDS are what make an ARRIVAL visible without a remount: a
+ * message that lands after the press changes the set even in the case where it
+ * happens to leave the count where it was (one marked read, one arrived).
+ *
+ * Deliberately not a timestamp and not a nonce. A stamp would expire on its own
+ * schedule, whether or not anything had changed; this expires exactly when the
+ * value it corrects is replaced, which is the only event that means anything.
+ *
+ * Read off the LISTING row only, never the thread Show more fetched. The poll is
+ * what replaces these numbers, and expanding a row is not a new answer from the
+ * server about them — stamping the fuller list would retire a mark that is still
+ * perfectly true the moment the reader opens the thread they just cleared.
+ */
+export function markObservation(task: Task): string {
+  const ids = (task.messages ?? [])
+    .filter((m) => m.unread)
+    .map((m) => m.message_id)
+    .sort();
+  return `${task.unread}\u0000${ids.join(",")}`;
+}
+
+/** The one key a whole-task mark occupies — the sentinel, stamped with the
+ * observation it is only true of. NUL-joined for readKey's own reason. */
+export function allReadKey(taskKey: string, observation: string): string {
+  return readKey(taskKey, `${ALL_MESSAGES}\u0000${observation}`);
+}
+
+/**
+ * Everything in this task is read, locally, as of THIS observation.
+ *
+ * Two things are written, and the split is the fix:
+ *
+ *   * a concrete id for every unread message we actually HOLD — the very
+ *     entries a click on each of those rows would have written, so the dots go
+ *     out through the mechanism that was already sound: each entry is gated on
+ *     the server still calling that message unread, and a message we have never
+ *     held has no entry, so it still draws its own dot when it arrives;
+ *   * ONE observation-stamped sentinel, for the only part arithmetic cannot
+ *     reach — the messages outside the window, which are why the row must not go
+ *     on saying "86" after the press that cleared all 89.
+ *
+ * THE TWO HALVES ANSWER DIFFERENT QUESTIONS, and reading them off the same list
+ * was the bug after this one:
+ *
+ *   * the observation is about WHAT THE SERVER LAST TOLD US, so it comes off the
+ *     listing row alone (markObservation reads `task.messages` and nothing
+ *     else) — stamping the fuller thread Show more fetched would retire a mark
+ *     that is still perfectly true;
+ *   * the concrete ids are about WHAT IS ON SCREEN AND MUST STOP SHOWING A DOT,
+ *     so they must cover everything currently HELD — which after Show more is
+ *     the whole thread (heldMessages), not the three the listing carried. Ids
+ *     off the window only, with a sentinel that zeroes the count, is a row
+ *     saying 0 above 86 lit dots.
+ */
+export function markAllRead(
+  read: Set<string>,
+  task: Task,
+  held?: TaskMessage[],
+): Set<string> {
+  const next = new Set(read);
+  for (const m of held ?? task.messages ?? []) {
+    if (m.unread) next.add(readKey(task.key, m.message_id));
+  }
+  next.add(allReadKey(task.key, markObservation(task)));
+  return next;
+}
+
+/**
+ * The same mark, carried onto messages that have only just come into our hands.
+ *
+ * Show more fetches the whole thread AFTER the press that cleared it, and that
+ * reply is a read of a value the mark overrode: the server had not applied the
+ * write yet (or the fetch crossed it), so 86 messages arrive flagged `unread`
+ * and nothing in the poll ever refreshes them — `more` is false by then, so
+ * there is no second fetch until the List remounts. Left alone, they light 86
+ * dots under a row that says 0, on messages the reader marked read a second ago.
+ *
+ * The GATE is the sentinel's own observation, which is exactly the question
+ * being asked: while it holds, the server is still quoting the value the press
+ * overrode, so a thread it hands us is a thread the press covered, and the ids
+ * are written the same way the press wrote its own. The moment a poll (or the
+ * mark's own answer, or a rollback) retires that sentinel, this adopts nothing
+ * and a message that is genuinely unread keeps its dot.
+ *
+ * That is NOT the sentinel leaking back into isUnread. It is consulted once, at
+ * the moment a fetch lands, to decide whether the mark covers what the fetch
+ * brought; the dots themselves still go out through concrete ids, each one gated
+ * on the server still calling that message unread. A message arriving later is
+ * named by nothing here and dots on its own.
+ *
+ * Idempotent: the sentinel markAllRead re-adds is the one the gate just matched,
+ * so the observation is never widened — only the id half grows.
+ */
+export function carryMarkToHeld(
+  read: Set<string>,
+  task: Task,
+  held: TaskMessage[],
+): Set<string> {
+  if (!isAllRead(read, task)) return read;
+  return markAllRead(read, task, held);
+}
+
+/**
+ * Take the whole-task mark back: the write was refused, or the server's own
+ * answer said something is still unread.
+ *
+ * EVERY sentinel for the task goes, whatever observation it was stamped with. A
+ * poll may have landed while the request was in flight, which leaves the mark
+ * inert but still sitting there, and "inert" is not the same as "gone" the next
+ * time that observation comes round.
+ *
+ * The concrete ids the press wrote go too — `held` is the list it wrote them
+ * from — because restoring the count without restoring the dots would leave a
+ * row saying "3 unread" above three rows that all look read.
+ *
+ * `held` is therefore EVERYTHING THE MARK WROTE, not just what was held when the
+ * press went out: a Show more that lands while the write is in flight adopts the
+ * mark onto the rest of the thread (carryMarkToHeld), and a rollback that cannot
+ * see those ids is the same half-restored row wearing the other hat. Callers
+ * pass both lists; a duplicate id deletes once and costs nothing.
+ */
+export function unmarkAllRead(
+  read: Set<string>,
+  taskKey: string,
+  held: TaskMessage[] = [],
+): Set<string> {
+  const next = new Set(read);
+  // Built by the one function that builds these keys, so a change to their
+  // shape cannot leave this scan looking for the old one.
+  const prefix = allReadKey(taskKey, "");
+  for (const key of next) if (key.startsWith(prefix)) next.delete(key);
+  for (const m of held) next.delete(readKey(taskKey, m.message_id));
+  return next;
+}
+
+/**
+ * What the server's OWN answer to the mark means for the local optimism.
+ *
+ * `POST /api/tasks/read {all: true}` replies with what is still unread after
+ * the mark — 0 unless something arrived while the request was in flight. That
+ * number used to be dropped on the floor. A non-zero one is the server saying
+ * the press did not clear the row, so the optimism is void: the row goes back
+ * to reporting what is there, and the button comes back with it.
+ *
+ * Over-reporting for one poll interval is the safe direction, and the reason
+ * this rolls the whole mark back rather than trying to guess which messages the
+ * answer is about: it can only show news that exists, never hide news that does.
+ */
+export function settleMarkAllRead(
+  read: Set<string>,
+  taskKey: string,
+  held: TaskMessage[],
+  answer: { unread: number },
+): Set<string> {
+  return answer.unread > 0 ? unmarkAllRead(read, taskKey, held) : read;
+}
+
+/** Whether the whole-task mark still speaks about the value the server is
+ * quoting. False the moment a poll disagrees — which is the poll winning. */
+export function isAllRead(read: Set<string>, task: Task): boolean {
+  return read.has(allReadKey(task.key, markObservation(task)));
+}
+
+/**
+ * Whether this message still reads as unread.
+ *
+ * Per message and nothing else: the whole-task sentinel is deliberately NOT
+ * consulted here. It cannot name a message, so consulting it is precisely how a
+ * message that arrived after the press stayed invisible. The whole-task mark
+ * writes concrete ids for everything it can see (markAllRead) and those are what
+ * this reads — and `m.unread` gating them is what retires each one on its own:
+ * once the server agrees the message is read, the local entry stops mattering
+ * rather than having to be pruned against a list that moves under us.
+ *
+ * Which puts the whole burden on "everything it can see" being the truth: every
+ * gesture that marks a whole task has to write ids for everything HELD at the
+ * time (heldMessages), and a fetch that hands us more of the thread while the
+ * mark still stands has to be adopted into it (carryMarkToHeld). A narrower
+ * write is a lit dot this function will never take back, because the only key
+ * that could is one nobody wrote.
+ */
+export function isUnread(taskKey: string, m: TaskMessage, read: Set<string>): boolean {
+  return m.unread && !read.has(readKey(taskKey, m.message_id));
+}
+
+/**
+ * What the LEADING slot of a message row draws.
+ *
+ * The dot used to ride at the far right of the row, beside the time, with the
+ * word "unread" after it — and it was missed entirely (Akshil, 2026-08-16: "on
+ * the right hand I missed it, I did not even see it"). A thread is read as a
+ * COLUMN, and a column is scanned down its left edge; a marker at the right end
+ * has to be tracked across every row to be found at all.
+ *
+ * So the slot is at the START of the row and it is ALWAYS THERE — filled on an
+ * unread message, blank on a read one. Always-there is the half that makes it
+ * scannable: a slot that only exists on unread rows shifts every other cell of
+ * that row right, and a ragged left edge is exactly the thing a scan cannot
+ * follow.
+ *
+ * The word is gone. A dot that LEADS is already the whole signal, and "unread"
+ * printed beside it was a caption for a symbol that no longer needs one. It
+ * survives where it always mattered — `label` is rendered as the marker's
+ * accessible name (role="img" + aria-label), so a screen reader still hears
+ * "Unread" on exactly the rows that are.
+ */
+export interface UnreadMarker {
+  /** Filled (a dot) or a blank spacer holding the column open. */
+  unread: boolean;
+  /** The accessible name, "" when there is nothing to announce. */
+  label: string;
+}
+
+/** The word a screen reader hears in place of the dot. */
+export const UNREAD_LABEL = "Unread";
+
+export function unreadMarker(
+  taskKey: string,
+  m: TaskMessage,
+  read: Set<string>,
+): UnreadMarker {
+  return isUnread(taskKey, m, read)
+    ? { unread: true, label: UNREAD_LABEL }
+    : { unread: false, label: "" };
+}
+
+/**
+ * The count on the task row: what the server said, less the ones cleared here
+ * since. Only messages we actually HOLD can be discounted — the badge counts
+ * the whole thread, and a message outside the loaded window is one we know
+ * nothing about beyond the server's total.
+ *
+ * `held` is heldMessages: the window before Show more, the whole thread after it,
+ * and the same list the mark writes its ids from, so the count and the dots are
+ * arithmetic over one set rather than two.
+ */
+export function taskUnread(
+  task: Task,
+  read: Set<string>,
+  held?: TaskMessage[],
+): number {
+  // The one case that is NOT arithmetic over the messages we hold: a whole-task
+  // mark cleared the ones outside the window too, and the server was told so in
+  // the same breath. Discounting only the loaded three would leave a row saying
+  // "86" after the press that cleared all 89.
+  //
+  // It is asked of the mark AND of this poll's own numbers (isAllRead), so it
+  // answers 0 only while the server is still quoting the count the press
+  // overrode. A poll that brings back anything else — a refused write the server
+  // never applied, a message that arrived since — falls through to the
+  // arithmetic below and the server's number is what the row draws.
+  if (isAllRead(read, task)) return 0;
+  const known = held ?? task.messages ?? [];
+  // Once Show more has run we hold the WHOLE thread, and then the count is not
+  // arithmetic at all — it is the dots, counted. Same predicate (isUnread), same
+  // list the rows are drawn from, so the badge and the rail cannot say two
+  // different things about one thread; the row saying 0 over 86 lit dots is
+  // precisely the bug this arm closes.
+  //
+  // It is also the more accurate of the two. `task.unread` is deliberately
+  // arithmetic on the server ("every message is unread unless marked read or not
+  // yet happened", clamped at zero because a marked-then-cancelled message counts
+  // twice) and its own docstring says the Show-more endpoint is the exact one. So
+  // where we have the exact thread, we use it.
+  if (known.length >= task.message_count) {
+    return known.filter((m) => isUnread(task.key, m, read)).length;
+  }
+  const cleared = known.filter(
+    (m) => m.unread && read.has(readKey(task.key, m.message_id)),
+  ).length;
+  return Math.max(0, task.unread - cleared);
+}
+
+/**
+ * What the LEADING slot of a TASK row draws — the counterpart of unreadMarker,
+ * in the same column.
+ *
+ * The dot moved to the head of every MESSAGE row last round and the task's own
+ * unread did not move with it: it stayed a pill at the far right of the row,
+ * beside the folder chip, while the dots of its own thread led theirs. One
+ * marker in two places, and a rail that started halfway down the task (Akshil,
+ * 2026-08-17: "for the tasks you didn't bring this on the left side, only for
+ * the messages you brought. This looks odd").
+ *
+ * So it leads too. A count cannot be a bare dot, so the DOT CARRIES THE NUMBER
+ * — same hue, filled, grown from a circle into a short pill as the digits need
+ * it, and centred on the very column the message dots sit in, so the rail is
+ * straight whatever it says. Past the cap it prints "99+": the pill is a
+ * marker, not a readout, and a three-digit number in a 16px slot is neither.
+ *
+ * `label` is the accessible name and the tooltip, and it always carries the
+ * TRUE count — the cap is a drawing decision, not a rounding of the fact.
+ */
+export const UNREAD_COUNT_CAP = 99;
+
+export interface UnreadCount {
+  /** What the pill prints. */
+  text: string;
+  /** The accessible name / tooltip: the real number, uncapped. */
+  label: string;
+}
+
+/** The task row's leading count, or null when there is nothing unread — in
+ * which case the slot is still drawn, empty, exactly as a read message's is. */
+export function unreadCount(count: number): UnreadCount | null {
+  if (count <= 0) return null;
+  return {
+    text: count > UNREAD_COUNT_CAP ? `${UNREAD_COUNT_CAP}+` : String(count),
+    label: `${count} unread`,
+  };
+}
+
+// ---- the accordion -----------------------------------------------------------
+
+export interface ThreadView {
+  /** What the expanded task actually lists, newest first. */
+  messages: TaskMessage[];
+  /** Whether Show more is on offer — i.e. the thread has more than we hold. */
+  more: boolean;
+  /** How many are still unlisted, for the button's own wording. */
+  hidden: number;
+}
+
+/**
+ * EVERY MESSAGE OF THIS THREAD THIS CLIENT HOLDS, freshest copy of each — the
+ * one answer to "what is in our hands", which is what a whole-task mark has to
+ * cover (markAllRead) and what its count is arithmetic over (taskUnread).
+ *
+ * Two lists arrive on two schedules and neither is simply better than the other:
+ *
+ *   * the LISTING row (`task.messages`) is the three newest, replaced by every
+ *     poll — so it is the freshest thing we have, and the only place a message
+ *     that arrived a moment ago can appear at all;
+ *   * the thread Show more FETCHED (`loaded`) is all of it, read once and never
+ *     read again — `more` goes false, so nothing refetches it before a remount.
+ *
+ * So: the fetched thread for depth, the listing's copy of any message that is in
+ * both for its state, and anything the listing has that the fetch does not is a
+ * message that ARRIVED AFTER the fetch — it leads, because the order is newest
+ * first. Without that last part an expanded thread is frozen at the instant it
+ * was fetched: an arrival is invisible until the List remounts, which is the very
+ * defect the whole-task sentinel was rebuilt to stop having.
+ *
+ * Deduped by message id, so nothing is ever drawn twice.
+ */
+export function heldMessages(task: Task, loaded?: TaskMessage[]): TaskMessage[] {
+  const window = task.messages ?? [];
+  if (!loaded) return window;
+  const fresh = new Map(window.map((m) => [m.message_id, m]));
+  const fetched = new Set(loaded.map((m) => m.message_id));
+  return [
+    ...window.filter((m) => !fetched.has(m.message_id)),
+    ...loaded.map((m) => fresh.get(m.message_id) ?? m),
+  ];
+}
+
+/**
+ * What an expanded task shows.
+ *
+ * Before Show more that is `task.messages` — the three newest, already ordered
+ * by the server. After it, the full thread REPLACES those three rather than
+ * appending to them, so a message can never appear twice: heldMessages merges
+ * them by id, taking the listing's fresher copy of anything in both and leading
+ * with whatever arrived after the fetch.
+ *
+ * `message_count` is the server's total, and the honest source for "is there
+ * more?": the preview list alone cannot tell a thread of exactly three from a
+ * thread of three hundred.
+ */
+export function threadView(task: Task, loaded?: TaskMessage[]): ThreadView {
+  if (loaded) return { messages: heldMessages(task, loaded), more: false, hidden: 0 };
+  const messages = (task.messages ?? []).slice(0, PREVIEW_MESSAGES);
+  const hidden = Math.max(task.message_count - messages.length, 0);
+  return { messages, more: hidden > 0, hidden };
+}
+
+/** Collapsed by default, so the expanded set is what is OPEN (an empty set is
+ * the resting state and needs no seeding from a task list that changes on
+ * every poll). */
+export function toggleExpanded(expanded: Set<string>, key: string): Set<string> {
+  const next = new Set(expanded);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return next;
+}
+
+export function isExpanded(expanded: Set<string>, key: string): boolean {
+  return expanded.has(key);
+}
+
+// ---- where a click goes ------------------------------------------------------
+// schedule-lib.explorerUrl is the app's one answer to "open this session in the
+// explorer, with the Claude pane on it". A message adds one thing: WHICH turn
+// to land on, carried as its transcript record uuid so the chat can scroll to
+// it. Extending that url rather than minting a second scheme is deliberate —
+// two ways to open a chat is two ways for one of them to rot.
+
+/** The query key the Claude pane reads to scroll a resumed chat to one turn. */
+export const MESSAGE_ANCHOR_PARAM = "msg";
+
+/** The task's thread, top of the chat. Null when the task has never run —
+ * there is no session to open yet. */
+export function taskHref(task: Task): string | null {
+  if (!task.session_id) return null;
+  return explorerUrl(task.target || task.project, task.session_id);
+}
+
+/** One message inside that thread. Falls back to the thread itself when the
+ * transcript gave us no anchor — landing at the top of the right conversation
+ * beats not opening at all. */
+export function messageHref(task: Task, m: TaskMessage): string | null {
+  const base = taskHref(task);
+  if (!base) return null;
+  if (!m.anchor) return base;
+  return `${base}&${MESSAGE_ANCHOR_PARAM}=${encodeURIComponent(m.anchor)}`;
+}
+
+/**
+ * Where a click on a message ROW goes, or null when it has nowhere to go — the
+ * form every view that lists messages should ask in, because the calendar's
+ * popover lists one kind the List never does.
+ *
+ * A PROJECTED occurrence (schedule-lib.isProjected) is cron arithmetic, not a
+ * message: the server computed that it WILL happen and wrote nothing down. It
+ * has no transcript record and therefore no anchor, so linking it would open a
+ * conversation that has not happened — and a `msg=` built from its empty anchor
+ * would be a pointer at nothing. It is inert.
+ *
+ * The other two cases are messageHref's own and are not re-decided here: a task
+ * with no session yet is null, and a real message with an empty anchor falls
+ * back to the top of the right thread.
+ */
+export function openMessageHref(task: Task, m: TaskMessage): string | null {
+  if (isProjected(m)) return null;
+  return messageHref(task, m);
+}
+
+// ---- cancelling a message that has not gone out ------------------------------
+// A scheduled message the user no longer wants is a real capability, and the
+// thread is the only place it is now offered: the calendar's Queued strip covers
+// work that is already PAST DUE and waiting, which says nothing about a task
+// scheduled for next Tuesday.
+//
+// Two rules decide it, and both are about honesty rather than convenience.
+//
+// 1. Only a `pending` message. `sending` is deliberately not cancellable
+//    server-side (schedule.cancel) — the helper is away and the turn may have
+//    started, so "cancelled" would be a claim nothing can make good on — and a
+//    sent/missed/errored message has already had its whole life.
+//
+// 2. On an OCCURRENCE of a recurring rule, the id sent is the occurrence's own,
+//    never its template's. This is the one place the thread's two affordances
+//    deliberately disagree: Edit resolves an occurrence UP to its template
+//    (changing "next Tuesday's run" means changing the rule, because there is
+//    nowhere else for the change to live), while Cancel stays DOWN on the
+//    occurrence. The server reads it exactly that way — cancelling a template
+//    stops every further run, cancelling an occurrence skips that one and the
+//    next materialisation pass carries on — so a Cancel that resolved upward
+//    like Edit does would silently delete a schedule the user meant to skip one
+//    run of. Since the two mean different things, the button says which one it
+//    is doing: "Cancel" on a one-off, "Skip this run" on an occurrence.
+
+export type CancelScope = "message" | "occurrence";
+
+export interface CancelIntent {
+  /** The schedule entry id to pass to cancelScheduledMessage — the message's
+   * OWN entry, never a template it was materialized from. */
+  id: string;
+  scope: CancelScope;
+  /** The button's accessible name, and what it says it will do. */
+  label: string;
+  /** The tooltip, which is where the consequence is spelled out in full. */
+  title: string;
+}
+
+/** What Cancel would do to this message, or null when there is nothing to
+ * cancel. Null is the answer for every message that has already gone out, and
+ * for a chat message, which was delivered the moment it was typed. */
+export function cancelIntent(m: TaskMessage): CancelIntent | null {
+  if (m.state !== "pending" || !m.entry_id) return null;
+  if (m.template_id)
+    return {
+      id: m.entry_id,
+      scope: "occurrence",
+      label: "Skip this run",
+      title: "Skip this run — the repeat itself keeps going",
+    };
+  return {
+    id: m.entry_id,
+    scope: "message",
+    label: "Cancel",
+    title: "Cancel this scheduled message",
+  };
+}
+
+/** Whether the row draws the affordance at all. */
+export function canCancel(m: TaskMessage): boolean {
+  return cancelIntent(m) !== null;
+}
+
+// ---- drag --------------------------------------------------------------------
+// A drop on the Board means one of TWO things, and which one is decided by
+// where the card came from.
+//
+// 1. TRIAGE. Every other move writes triage.json through setSessionTriage,
+//    which is keyed by SESSION. A task that has not run has no session id (§5)
+//    — there is nothing to triage — so it must be non-draggable rather than
+//    draggable into a call that can only fail.
+//
+// 2. RUN IT NOW. Upcoming → In Progress is not a filing decision, it is an
+//    instruction (Akshil, 2026-08-16: "if I move a task from upcoming to in
+//    progress, don't change the time of it, but run it and run it at that
+//    point"). The server sends the pending message immediately and leaves its
+//    `due` alone, so the row goes on reading as the time it was MEANT to run
+//    and the thread honestly shows a run that happened early.
+//
+// The consequence for legality: a run-now drop needs a MESSAGE to fire, not a
+// session to file under, so a scheduled task that has never run — no session
+// id at all — may still be dragged into In Progress. And a pure-chat task,
+// which has nothing pending anywhere in it, may not: that drop is refused by
+// dropLanes before the card ever lifts, rather than by the server after it
+// lands.
+//
+// FAILED, the fifth lane, is asymmetric on purpose:
+//
+//   * nothing may be dropped INTO it. Failure is something that HAPPENED, not
+//     a verdict a person hands down, and a lane you can drag a healthy task
+//     into is a lane whose count means nothing.
+//   * out of it there are exactly two moves — In Progress re-runs the task
+//     (the same run-now path, with the same precondition: something pending to
+//     fire), and Archive files it away. Done is deliberately not offered: a run
+//     that broke did not finish, and letting it be filed as Done would put the
+//     lie back in the one place this lane exists to take it out of.
+
+/** The lanes a person may drop a card ON. `failed` is not among them — see
+ * above — and `upcoming` never was: a task cannot be un-run. */
+export const TRIAGE_LANES: BoardColumn[] = ["in_progress", "done", "archived"];
+
+/** Where a card may go once it is IN the failed lane. */
+const OUT_OF_FAILED: BoardColumn[] = ["in_progress", "archived"];
+
+/**
+ * The next run the ROW ITSELF names, when it names one: the server's `next_run`
+ * (`min(at)` over every pending entry, epoch seconds) together with the entry
+ * that run belongs to.
+ *
+ * Read as ONE fact because that is how the server writes them (tasks.py
+ * `_next_run`) and either half alone is useless: a time nothing can fire, or an
+ * id with no place in the order. The server refuses to name a run it cannot
+ * name completely, so this is either both or neither.
+ *
+ * Null covers the two cases every caller treats identically — the fields are
+ * absent (an older server) or zero (nothing pending) — and the answer for both
+ * is "read the window instead", which is what they did before these existed.
+ */
+function namedNextRun(task: Task): { at: number; entryId: string } | null {
+  const at = task.next_run ?? 0;
+  const entryId = task.next_run_entry ?? "";
+  if (!at || !entryId) return null;
+  return { at, entryId };
+}
+
+/**
+ * What a run-now press or drop actually sends. Not a TaskMessage, because the
+ * message this fires is not always one the row is CARRYING: see runNowTarget.
+ */
+export interface RunTarget {
+  /** What runScheduledNow is called with. The whole point of this object. */
+  entryId: string;
+  /**
+   * Which message that is — "" when the run is one the row named without
+   * holding (`next_run_entry`). The listing cannot number a message it did not
+   * parse: MSG-n is a position in the whole thread, and the row's ids are
+   * counted back from its total across the three it holds.
+   *
+   * Nothing in the run path needs it — the call sends `entryId` — so an empty
+   * one costs a caller a sentence it could have said, never a wrong action.
+   */
+  messageId: string;
+  /** When it is due, epoch seconds: the same instant nextRunAt sorts the lane
+   * by, which is what makes the button and the order agree. */
+  at: number;
+}
+
+/**
+ * Which pending message a run-now press or drop fires: the EARLIEST due.
+ *
+ * A task can hold several pending messages — a recurring rule's next
+ * occurrence sitting beside a one-off someone scheduled for Friday. The
+ * earliest is the one the scheduler itself would have sent next, so running it
+ * early is the only choice that does not reorder the thread: any other pick
+ * would fire a later message first and leave an older one still pending behind
+ * it. On an exact tie the OLDER message wins (the server's list is newest
+ * first, so the later element of a tie is the one that has waited longer).
+ *
+ * TWO PLACES ARE READ, and the second is the point.
+ *
+ * The window — the three newest by `at` — used to be all of it, on the belief
+ * that pending messages are due in the future and so sit at its head. On this
+ * branch that is false: scheduling into the past is allowed and catch-up is
+ * unbounded, so an OVERDUE pending is ordinary, and two sent runs plus next
+ * month's occurrence push it out of the window entirely. The row's own
+ * `next_run` / `next_run_entry` name that run, and this fires it — because
+ * nextRunAt reads the same field to ORDER Upcoming by, and a card promoted to
+ * the top of the lane whose button then sent some other message would make the
+ * order a lie. The sort and the button widen together or neither does.
+ *
+ * `entry_id` (or `next_run_entry`) is required either way: it is what the call
+ * sends, and a message without one cannot be fired at all.
+ */
+export function runNowTarget(task: Task): RunTarget | null {
+  let held: RunTarget | null = null;
+  for (const m of task.messages ?? []) {
+    if (m.state !== "pending" || !m.entry_id) continue;
+    if (!held || m.at <= held.at)
+      held = { entryId: m.entry_id, messageId: m.message_id, at: m.at };
+  }
+  const named = namedNextRun(task);
+  // Strictly earlier, so a run the row BOTH names and holds is fired as the
+  // message it is — same entry either way, and that way it keeps its id.
+  if (named && (!held || named.at < held.at))
+    return { entryId: named.entryId, messageId: "", at: named.at };
+  return held;
+}
+
+/** Whether this task has anything to run early at all. */
+export function canRunNow(task: Task): boolean {
+  return runNowTarget(task) !== null;
+}
+
+/**
+ * Whether the task READS as failed. Two things say so and the row shows the
+ * same word for both — the `failed` lane, and the flag that repaints a Done
+ * task's ring red (StatusIcon) — so both take the same verb on the button.
+ */
+export function isFailedTask(task: Task): boolean {
+  return taskColumn(task) === "failed" || task.failed;
+}
+
+/**
+ * The same move the drag makes, reachable without dragging (Akshil,
+ * 2026-08-17: "for failed tasks do we want a rerun button... same for the
+ * upcoming tasks. Do you think we should add a trigger now button... And if
+ * that is the case we'll just update the run at instead of updating the at the
+ * actual time it was scheduled").
+ *
+ * That last clause is confirmation, not a change: run-now moves `ran_at` and
+ * never touches `due`, which is exactly what the drag path already does and
+ * what ranNote above prints. NOTHING about the times moves here.
+ *
+ * WHICH message fires is not re-decided: runNowTarget is asked, the same
+ * function dropAction asks, so the button and the drag can never pick
+ * differently. Only the WORD differs — starting something early and restarting
+ * something that broke are not the same sentence to a person, even though they
+ * are one call to the server.
+ *
+ * Availability is simply "is there a pending message to claim", not the drag's
+ * lane legality: dropLanes answers a question about DROP TARGETS (which lane
+ * may receive this card), and a button has no lane. A task with nothing
+ * pending — which is most failed tasks, since the run that broke has already
+ * been spent — gets null here. That gap is what taskRunIntent below closes,
+ * now that the server has a re-send verb; this function still answers only the
+ * run-now question, so the drag and the drop can keep asking it.
+ */
+export interface RunNowIntent {
+  /** What runScheduledNow is called with. */
+  entryId: string;
+  /** Which message that is — the same one the drag would have fired. */
+  messageId: string;
+  /** Whether this reads as a restart rather than an early start. */
+  rerun: boolean;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: the consequence, including the half a person would fear. */
+  title: string;
+}
+
+export function runNowIntent(task: Task): RunNowIntent | null {
+  const m = runNowTarget(task);
+  if (!m) return null;
+  const rerun = isFailedTask(task);
+  return {
+    entryId: m.entryId,
+    messageId: m.messageId,
+    rerun,
+    label: rerun ? "Re-run" : "Run now",
+    title: rerun
+      ? "Re-run now — the scheduled time stays put"
+      : "Run now — the scheduled time stays put",
+  };
+}
+
+// ---- one button, two calls ---------------------------------------------------
+// Re-run on a failed task used to be absent exactly when it was wanted. The
+// common failure spends its message — the run went out and broke — so there was
+// no PENDING entry left for run-now to claim, and the button that would have
+// said "Re-run" was simply not drawn. The server now has the other verb
+// (`POST /api/schedule/resend`, which sends the message AGAIN as a new one in
+// the same thread), and this is where the choice between the two is made.
+//
+// It is a pure function and it lives beside runNowIntent deliberately: the
+// component holds no rule about which call to make, and the run-now half is
+// still runNowIntent — the same function dropAction asks — so the button and
+// the drag cannot pick different messages.
+//
+// THE DRAG IS UNCHANGED. Dragging Upcoming → In Progress is still run-now and
+// nothing else: a drop on a lane is a statement about where the card belongs,
+// and turning "put this back in progress" into "send the whole message again"
+// is not something a gesture can consent to. Re-sending is a button press with
+// a word on it.
+
+export type TaskRunKind = "run-now" | "resend";
+
+export interface TaskRunIntent {
+  /** Which call: runScheduledNow or resendScheduledMessage. */
+  kind: TaskRunKind;
+  /** The schedule entry id that call is given. For "resend" it is the entry
+   * that ALREADY RAN — the server reads it, copies it, and leaves it alone. */
+  entryId: string;
+  /** Which message that is, for the caller that wants to say so. */
+  messageId: string;
+  /** Whether this reads as a restart rather than an early start. */
+  rerun: boolean;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: the consequence, including the half a person would fear. */
+  title: string;
+}
+
+/**
+ * Which message a re-send would copy: the newest one that WENT AND ENDED.
+ *
+ * `sent` and `error` are the two the server accepts (schedule.RESENDABLE), and
+ * for the reason it gives — a message that never went has nothing to send
+ * again. `pending` and `sending` are excluded here as well, but they never
+ * reach this function: a task holding one takes the run-now branch above.
+ *
+ * A chat message carries no `entry_id` and is skipped, which is correct rather
+ * than incidental: it was delivered the moment it was typed and the schedule
+ * has no record of it to copy.
+ *
+ * Newest first, because the server's list is: re-asking means asking for the
+ * LAST thing that was asked for, not the first.
+ */
+export function resendTarget(task: Task): TaskMessage | null {
+  for (const m of task.messages ?? []) {
+    if (!m.entry_id) continue;
+    if (m.state === "sent" || m.state === "error") return m;
+  }
+  return null;
+}
+
+/**
+ * What the task row's run button does — the whole decision, in one place.
+ *
+ * Order matters and says what the two verbs mean. A pending message is a
+ * message the user already asked for and has not had yet, so bringing it
+ * forward is the smaller, truer action and wins whenever it is available. Only
+ * with nothing pending does a FAILED task fall through to re-sending, which
+ * creates work that was not previously scheduled.
+ *
+ * Re-send is offered on a failed task and nowhere else. A Done task's run
+ * finished; offering to silently re-run it would make a thread grow every time
+ * someone leaned on a button, and "run this again" on work that succeeded is an
+ * ask better made in the chat, where the user can say what they want differently
+ * this time.
+ */
+export function taskRunIntent(task: Task): TaskRunIntent | null {
+  const now = runNowIntent(task);
+  if (now)
+    return {
+      kind: "run-now",
+      entryId: now.entryId,
+      messageId: now.messageId,
+      rerun: now.rerun,
+      label: now.label,
+      title: now.title,
+    };
+  if (!isFailedTask(task)) return null;
+  const m = resendTarget(task);
+  if (!m) return null;
+  return {
+    kind: "resend",
+    entryId: m.entry_id,
+    messageId: m.message_id,
+    rerun: true,
+    label: "Re-run",
+    // The tooltip carries the one thing a person needs to know before pressing
+    // it: this does not rewrite the run that failed, it asks again in the same
+    // conversation.
+    title: "Re-run — sends this message again, as a new one in the same thread",
+  };
+}
+
+/** Which lanes this card may be dropped on. Empty ⇒ do not let it lift. */
+export function dropLanes(task: Task): BoardColumn[] {
+  const here = taskColumn(task);
+  const lanes: BoardColumn[] = [];
+  for (const lane of TRIAGE_LANES) {
+    if (lane === here) continue;
+    if (here === "failed" && !OUT_OF_FAILED.includes(lane)) continue;
+    // The run-now lane. Its precondition is a pending message, NOT a session:
+    // see the note above. It is the same move from either side — Upcoming runs
+    // the message early, Failed runs it again — and the same call makes both.
+    if (lane === "in_progress" && (here === "upcoming" || here === "failed")) {
+      if (canRunNow(task)) lanes.push(lane);
+      continue;
+    }
+    if (task.session_id) lanes.push(lane);
+  }
+  return lanes;
+}
+
+export function isDraggable(task: Task): boolean {
+  return dropLanes(task).length > 0;
+}
+
+/** setSessionTriage's own union — a lane that is not one of the three cannot
+ * be sent, and this is what proves it to the type checker at the call site. */
+export function triageStatus(
+  lane: BoardColumn,
+): "in_progress" | "done" | "archived" | null {
+  return lane === "in_progress" || lane === "done" || lane === "archived" ? lane : null;
+}
+
+/**
+ * What a drop on `lane` actually DOES — the one place the two meanings are told
+ * apart, so the Board's handler holds no rule of its own beyond which call to
+ * make. Null when the drop is illegal, which is the same answer dropLanes gave
+ * before the card lifted: the two agree because this asks it.
+ */
+export type DropAction =
+  | { kind: "run"; entryId: string; messageId: string }
+  | { kind: "triage"; status: "in_progress" | "done" | "archived" };
+
+export function dropAction(task: Task, lane: BoardColumn): DropAction | null {
+  if (!dropLanes(task).includes(lane)) return null;
+  const here = taskColumn(task);
+  if (lane === "in_progress" && (here === "upcoming" || here === "failed")) {
+    const m = runNowTarget(task);
+    return m ? { kind: "run", entryId: m.entryId, messageId: m.messageId } : null;
+  }
+  const status = triageStatus(lane);
+  if (!status || !task.session_id) return null;
+  return { kind: "triage", status };
+}
+
+// ---- filing it away, without the drag ----------------------------------------
+// "Can a task be deleted?" — no, and it never will be: a task IS a Claude
+// session and this app does not destroy transcripts (D306). What it can be is
+// ARCHIVED, which is the honest answer to that question — but only while
+// archiving is something a person can actually reach. Until now it was one
+// gesture on one view: drag the card onto the Archive lane, which starts
+// COLLAPSED. "Switch to Board, expand a lane, drag" is not an affordance.
+//
+// So the same move gets a button, and the rule behind it lives here rather than
+// in either component. It is deliberately not a second predicate: the whole
+// decision is asked of dropAction, on the lane the Board's drag would have used,
+// so the button and the drop cannot disagree about who may archive what. That
+// is why this sits after dropAction instead of up beside runNowIntent — it is
+// the same shape of function, and it is defined below the one function it is
+// only a re-reading of.
+//
+// It is a TWO-WAY door on purpose. The Board's drag can already pull a card back
+// out of Archive, and an action whose only direction is away is a trap: the row
+// that offers Archive must be the row that offers the way back once it is taken.
+// Returning to In Progress rather than Done is the same choice dropLanes makes
+// for a drag out of Archive — "back in play" is a claim about attention, and
+// Done would assert something about the work that archiving never recorded.
+
+/** The two statuses this action ever sends — setSessionTriage's union, less
+ * `done`, which filing away and un-filing never means. */
+export type ArchiveStatus = "archived" | "in_progress";
+
+export interface ArchiveIntent {
+  /** The lane this move puts the card in: the same lane the Board's drop would
+   * have targeted, which is what makes the two agree by construction. */
+  lane: BoardColumn;
+  /** What setSessionTriage is given. */
+  status: ArchiveStatus;
+  /** Whether this is the way BACK — i.e. the task is archived right now. */
+  restore: boolean;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: what happens, and the thing a person deleting would fear. */
+  title: string;
+}
+
+/**
+ * Whether this task can be filed away (or brought back), and what that says.
+ * Null when there is nothing to triage — which is exactly the `pending:<entry>`
+ * case: triage is an overlay on triage.json keyed by SESSION id, and a task
+ * that has never run has no session to key. Offering a button there would be
+ * offering a call that can only fail, so it is offered nowhere instead.
+ */
+export function archiveIntent(task: Task): ArchiveIntent | null {
+  const restore = taskColumn(task) === "archived";
+  const lane: BoardColumn = restore ? "in_progress" : "archived";
+  // The one question, asked of the one function that already answers it.
+  const action = dropAction(task, lane);
+  if (!action || action.kind !== "triage") return null;
+  // Narrowing, not a re-decision: dropAction's status IS the lane it was asked
+  // about, and neither of the two lanes above is `done`.
+  if (action.status === "done") return null;
+  return {
+    lane,
+    status: action.status,
+    restore,
+    label: restore ? "Unarchive" : "Archive",
+    title: restore
+      ? "Unarchive — puts this back in In Progress"
+      : "Archive — files this away; the conversation is kept",
+  };
+}
+
+// ---- clearing a task, without opening it -------------------------------------
+// Read state is per MESSAGE and that is the right model (§7) — but per message
+// was also the only way to CLEAR it, so "I have seen all of this" was one click
+// per row, each one navigating away into a transcript (Akshil, 2026-08-17: "in
+// list you add mark as read button on the task right next to archive or
+// something so you don't have to open everything individually").
+//
+// So the task row gets the whole-task verb, and the server gets ONE call for it
+// (api.markWholeTaskRead). Nothing about the per-message path changes: clicking
+// a message still opens the transcript at that turn and still marks only that
+// one.
+//
+// Offered only on a task that HAS something unread. Unlike Archive — which is
+// about a task's place and is always a sensible thing to ask — this one is a
+// no-op the moment the count is zero, and a button that does nothing on most
+// rows is what makes the ones that do matter hard to find. The count it asks is
+// the DISPLAYED one (taskUnread, so local marks count), which is what lets the
+// button remove itself on its own press instead of a poll later.
+
+export interface MarkReadIntent {
+  /** How many messages this clears — the number the tooltip says. */
+  unread: number;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: how much this clears, since the row shows only three of it. */
+  title: string;
+}
+
+export function markReadIntent(
+  task: Task,
+  read: Set<string>,
+  held?: TaskMessage[],
+): MarkReadIntent | null {
+  const unread = taskUnread(task, read, held);
+  if (unread <= 0) return null;
+  return {
+    unread,
+    label: "Mark read",
+    // The number matters here in a way it does not on the other actions: the row
+    // lists three messages and the count can be 89, so "all of them" has to say
+    // how many it is about to be.
+    title: unread === 1
+      ? "Mark read — clears the 1 unread message in this task"
+      : `Mark read — clears all ${unread} unread messages in this task`,
+  };
+}
+
+// ---- opening a thread --------------------------------------------------------
+// A gesture that opens the conversation used to open it and mark nothing: the
+// card (or the row) carried an unread pill, the press took the reader into the
+// very thread that pill was pointing at, and the pill was still there when they
+// came back (Akshil, 2026-08-17: "when i click from kanban on unread task it
+// should register it read correct?"). Yes.
+//
+// This is deliberately NOT the Board's rule. It is the rule for OPENING A
+// THREAD, and both gestures that do that ask it: the Board card's click and the
+// List row's "Open chat" button. They go to the same place (taskHref) by the
+// same gesture, so they must come back with the same badge — a mark that
+// depended on which view you happened to be in would be a coin toss, not a
+// rule. Hence the view-neutral name: one function, one behaviour, two callers.
+//
+// WHOLE-TASK, not one message, and that follows from the href: both link
+// taskHref — the thread, with no per-turn anchor — so what the reader is shown is
+// the conversation, not one turn of it. That is precisely the case
+// api.markWholeTaskRead exists for, and it is the same call the List row's Mark
+// read button makes. There is no second way to mark read here.
+//
+// The two things are ORDERED but not coupled: the mark is a side effect of
+// opening, so a thread with nothing unread still opens, and a failed write must
+// not cost the navigation (callers fire and forget — the press is leaving the
+// page, exactly as the per-message path already argued).
+//
+// What this does NOT cover, and must not: the List task ROW's own click, which
+// toggles the accordion and opens nothing (there is no "you have seen it" to
+// infer from expanding a row), and a MESSAGE click, which lands on its own turn
+// and therefore marks that one message.
+
+export interface OpenThreadIntent {
+  /** Where the press goes. Never empty: a gesture with nowhere to go has no
+   * intent at all, so the caller cannot navigate to null. */
+  href: string;
+  /** Whether opening this also clears the task's unread. */
+  markRead: boolean;
+}
+
+/**
+ * What opening this task's thread does, or null when it does NOTHING — which is
+ * the `pending:<entry>` case: a task that has never run has no session id (§5)
+ * and therefore no conversation to open. That press was inert before this change
+ * and stays inert, including the mark: marking a thread read on a press that
+ * showed the reader nothing would clear a badge for messages they never saw.
+ *
+ * `unread` defaults to the server's count and may be passed as the DISPLAYED one
+ * (taskUnread, so local marks count), which is what stops a second press on an
+ * already-cleared task from posting again.
+ */
+export function openThreadIntent(
+  task: Task,
+  unread: number = task.unread,
+): OpenThreadIntent | null {
+  const href = taskHref(task);
+  if (!href) return null;
+  return { href, markRead: unread > 0 };
+}
+
+// ---- filtering ---------------------------------------------------------------
+
+export interface TaskFilters {
+  search: string;
+  statuses: BoardColumn[];
+  /** Project FOLDERS, full paths — the value `Task.project` carries. */
+  projects: string[];
+}
+
+export const EMPTY_FILTERS: TaskFilters = { search: "", statuses: [], projects: [] };
+
+export function hasActiveFilters(f: TaskFilters): boolean {
+  return f.statuses.length > 0 || f.projects.length > 0 || f.search.trim() !== "";
+}
+
+/** The project filter's own choices — "auto-detected from the set of folders
+ * that have tasks" (§10), sorted so the menu does not reshuffle when the task
+ * order does. */
+export function projectOptions(tasks: Task[]): string[] {
+  const seen = new Set<string>();
+  for (const t of tasks) if (t.project) seen.add(t.project);
+  return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
+export function taskMatches(task: Task, filters: TaskFilters): boolean {
+  if (filters.statuses.length && !filters.statuses.includes(taskColumn(task)))
+    return false;
+  if (filters.projects.length && !filters.projects.includes(task.project)) return false;
+  const q = filters.search.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    task.title.toLowerCase().includes(q) ||
+    // TASK-002 is a designed, printed identifier — searching it is how a
+    // person uses it.
+    task.task_id.toLowerCase().includes(q) ||
+    task.project.toLowerCase().includes(q) ||
+    task.target.toLowerCase().includes(q) ||
+    // The bodies we hold. A thread the user has not expanded is only searched
+    // as far as its three newest, which is the same window the row shows.
+    (task.messages ?? []).some((m) => m.body.toLowerCase().includes(q)) ||
+    // A session uuid is never PRINTED (it reads as a second, competing ID
+    // scheme beside TASK-n) but stays findable: someone holding one from a log
+    // or a URL can paste it in and land on the row.
+    task.session_id.toLowerCase().includes(q)
+  );
+}
+
+/** Filter without reordering. The server sorted this list, newest task first,
+ * and re-sorting it here is how two views start disagreeing about "newest". */
+export function filterTasks(tasks: Task[], filters: TaskFilters): Task[] {
+  return tasks.filter((t) => taskMatches(t, filters));
+}
+
+// ---- per-lane order (the Board's one exception) -------------------------------
+// See the exception named at the top of this file. Two keys and three
+// directions, all built out of times the server sent.
+
+/** The earliest pending `at` among the messages the row is CARRYING. Null when
+ * the window holds nothing pending.
+ *
+ * Every pending message counts, not just the ones with an `entry_id`:
+ * runNowTarget needs that field because it is what the call SENDS, and this only
+ * needs to know when the thing happens.
+ *
+ * On its own this is a BOUND rather than an answer — see nextRunAt, which is why
+ * it is not exported. */
+function windowNextRun(task: Task): number | null {
+  let best: number | null = null;
+  for (const m of task.messages ?? []) {
+    if (m.state !== "pending" || !m.at) continue;
+    if (best === null || m.at < best) best = m.at;
+  }
+  return best;
+}
+
+/**
+ * When this task NEXT runs — the row's own `next_run` where it has one, and the
+ * window's earliest pending where it does not. Null when neither names a run.
+ *
+ * `at`, not `ran_at`, and that is not a slip — a pending message has never run,
+ * so its `ran_at` is 0 and `at` is the only time it has. It is also the same
+ * instant runNowTarget fires (both prefer the same field, and both fall back to
+ * the same window), so the card at the top of Upcoming is the card whose Run now
+ * button sends the message the lane's order is promising.
+ *
+ * WHY THE FIELD, since the window looks like it should be enough. It is not, and
+ * the old note here was wrong about why: it said pending messages "are due in the
+ * future, which puts them at the head of that window". On this branch scheduling
+ * into the PAST is allowed and catch-up is unbounded, so a pending message whose
+ * `at` has gone by is an ordinary state — and it is exactly the work that should
+ * be read first. `task.messages` is the three newest by `at` (server: tasks.py
+ * `_row`, which merges every entry with the transcript's prompts, sorts ASCENDING
+ * by `at` and keeps the tail), so an overdue pending is pushed out of it by three
+ * messages with later `at` — two sent runs and next month's occurrence will do it
+ * — and reading the window alone then answers the LATER pending: an upper bound
+ * that sorted the buried work behind everything it should have led.
+ *
+ * `next_run` closes that: `min(at)` over every pending ENTRY, taken on the server
+ * before the tail is cut, where the whole set is already in hand. The window stays
+ * as the fallback for an older server, and for a task the field says nothing about.
+ *
+ * Widening `task.messages` was the other way and is still the wrong one — another
+ * row of tail held per session, on every poll, for every row, to fix a minority.
+ *
+ * Guessing remains deliberately unattempted where neither source knows. The client
+ * can tell that a window is truncated (`message_count`) but not whether anything
+ * pending hides in the part it cannot see, and promoting every long thread on that
+ * suspicion would put a task due in October above one firing in ten minutes.
+ */
+export function nextRunAt(task: Task): number | null {
+  const named = namedNextRun(task);
+  const held = windowNextRun(task);
+  if (named === null) return held;
+  // The window can only beat the field in one case, and it is a real one: the
+  // server names the earliest pending entry it can also FIRE, so a pending entry
+  // with no readable id is skipped there and still seen here. It is unfireable
+  // either way, so ordering by it changes nothing about which message the button
+  // sends — and the earlier of two times is the honest one to sort by.
+  return held !== null && held < named.at ? held : named.at;
+}
+
+/**
+ * Whether a lane time has already gone by — work that should have happened.
+ *
+ * `at` is epoch SECONDS (the API's unit) and `now` is milliseconds, which is the
+ * one thing worth being careful about here. Null is not overdue: a task with no
+ * time at all has nothing to be late for.
+ */
+export function isPastDue(when: number | null, now: number = Date.now()): boolean {
+  return when !== null && when * 1000 <= now;
+}
+
+/** The states that mean the message never went out, so it dates no run. A
+ * `missed` one is deliberately NOT here: it was due and the run did not happen,
+ * which is the event the Failed lane exists to show, and its `at` is the closest
+ * thing to a time it has. */
+const NEVER_RAN = new Set<TaskMessage["state"]>(["pending", "cancelled", "skipped"]);
+
+/**
+ * When this task LAST ran — the newest run in the window, by when it actually
+ * happened. Null when nothing in the window has run.
+ *
+ * `ran_at` first, `at` only as the fallback, because the two part company: a
+ * caught-up run has an `at` from Thursday and a `ran_at` from Saturday (see
+ * api.TaskMessage), and Done ordered by `at` would file Saturday's run two days
+ * back among work that finished before it.
+ *
+ * A MAX over the window rather than the first non-pending element, for the same
+ * reason: the server's list is newest-first by `at`, and the caught-up case is
+ * exactly the case where that is not newest-first by `ran_at`. Taking element
+ * zero would inherit the bug the fallback exists to fix.
+ */
+export function lastRunAt(task: Task): number | null {
+  let best: number | null = null;
+  for (const m of task.messages ?? []) {
+    if (NEVER_RAN.has(m.state)) continue;
+    const when = m.ran_at || m.at;
+    if (!when) continue;
+    if (best === null || when > best) best = when;
+  }
+  return best;
+}
+
+/**
+ * How one lane is ordered. `server` means exactly that: leave the list as the
+ * server sent it (`last_active` descending) and sort nothing.
+ */
+export interface LaneSort {
+  key: "next-run" | "last-run" | "server";
+  dir: "asc" | "desc";
+  /**
+   * Work that is ALREADY PAST DUE sorts ahead of work that is not, before the
+   * direction below is consulted at all.
+   *
+   * Ascending order happens to put a past time first anyway, and that is the
+   * reason to write this down rather than the reason not to: the promise "the
+   * overdue run is at the top" was resting on a coincidence between two
+   * independent decisions, and the first person to reconsider `dir` would have
+   * broken it without touching a line that mentions overdue work. On this branch
+   * an overdue pending is a normal state — past scheduling is allowed and
+   * catch-up is unbounded — so it is the lane's headline case and it says so.
+   *
+   * Within the bucket the direction still applies, which is what puts the MOST
+   * overdue first: that is the one the scheduler will send next.
+   */
+  overdueFirst?: boolean;
+}
+
+/**
+ * Every lane's order, in one map, keyed off BoardColumn so a lane cannot be
+ * added to the board and forgotten here.
+ *
+ *   upcoming     next run, ASCENDING — soonest first, and OVERDUE first of all.
+ *                The user's ask, and the only ascending lane on the board.
+ *   in_progress  last run, descending. The freshest work sits at the top like
+ *                every other settled lane, and for a task that is RUNNING the
+ *                last run is the one that started it, so this reads as "most
+ *                recently started first".
+ *   done         last run, descending — "the recent runs will be on top".
+ *   failed       last run, descending, same question.
+ *   archived     the server's. Nothing scans Archive by time-to-run, and it is
+ *                the one lane whose contents are not about when anything runs —
+ *                it holds cancelled and skipped messages, which have no run to
+ *                date. `last_active` (which the server has and a truncated
+ *                message window may not) is the better key there, so the honest
+ *                move is to leave the server's own order alone.
+ */
+export const LANE_SORTS: Record<BoardColumn, LaneSort> = {
+  upcoming: { key: "next-run", dir: "asc", overdueFirst: true },
+  in_progress: { key: "last-run", dir: "desc" },
+  done: { key: "last-run", dir: "desc" },
+  failed: { key: "last-run", dir: "desc" },
+  archived: { key: "server", dir: "asc" },
+};
+
+/** The instant a lane orders this task by, or null when the task has none of
+ * it. Null is a real answer, not a zero: zero is 1970 and would sort at one end
+ * of the lane by accident rather than by decision. */
+export function laneTime(task: Task, lane: BoardColumn): number | null {
+  switch (LANE_SORTS[lane].key) {
+    case "next-run":
+      return nextRunAt(task);
+    case "last-run":
+      return lastRunAt(task);
+    default:
+      return null;
+  }
+}
+
+/**
+ * One lane, in its own order. A new array; the input is never mutated (it is a
+ * slice of the polled list, which React is still holding).
+ *
+ * TWO rules make this safe to run every 20 seconds:
+ *
+ * 1. TIES KEEP THE SERVER'S ORDER, by comparing the incoming index explicitly
+ *    rather than trusting the sort to be stable. Two tasks that ran in the same
+ *    minute must not trade places between polls — a card that moves on its own
+ *    is worse than any ordering, and the lane re-renders on every poll. (The
+ *    index passed is the position within the lane, which orders the same way as
+ *    the position in the server's full list, since bucketing preserves it.)
+ *
+ * 2. A TASK WITH NO USABLE TIME GOES LAST, in both directions, and lands there
+ *    by decision rather than by whatever `null` would coerce to. It is the
+ *    honest place: the lane is sorted by a fact this card does not have, so it
+ *    cannot claim a place among the cards that do — and the top of a lane is the
+ *    slot that means something. Among themselves those cards keep the server's
+ *    order, by rule 1.
+ *
+ * And one rule that is about WHAT the lane is for rather than about the poll:
+ *
+ * 3. PAST DUE COMES FIRST, on the lane that asks for it (LaneSort.overdueFirst).
+ *    Read `now` once for the whole lane rather than per comparison, so the
+ *    comparator cannot change its mind halfway through a sort that straddles a
+ *    second — a comparator that is not consistent is a comparator with no defined
+ *    output.
+ *
+ * Rule 3 used to carry a limit, and it is gone: an overdue pending pushed out of
+ * the three-message window left the lane sorting by the later run it could see, so
+ * the most urgent card could sit mid-lane. The row now names its next run
+ * (`next_run`, server-side `min(at)` over every pending entry — see nextRunAt) and
+ * runNowTarget fires that same run, so a card promoted here is a card whose Run
+ * now sends what the order promised. Against an older server the window is the
+ * fallback and the old bound is what remains: late, never early.
+ */
+export function sortLane(
+  tasks: Task[],
+  lane: BoardColumn,
+  now: number = Date.now(),
+): Task[] {
+  if (LANE_SORTS[lane].key === "server") return tasks;
+  const { dir, overdueFirst } = LANE_SORTS[lane];
+  const rows = tasks.map((task, index) => {
+    const when = laneTime(task, lane);
+    return { task, index, when, late: overdueFirst === true && isPastDue(when, now) };
+  });
+  rows.sort((a, b) => {
+    // Ahead of the direction, not a special case of it.
+    if (a.late !== b.late) return a.late ? -1 : 1;
+    if (a.when === null || b.when === null) {
+      // Exactly one of them has a time: the one that does comes first.
+      if (a.when !== b.when) return a.when === null ? 1 : -1;
+    } else if (a.when !== b.when) {
+      return dir === "asc" ? a.when - b.when : b.when - a.when;
+    }
+    return a.index - b.index;
+  });
+  return rows.map((r) => r.task);
+}
+
+/**
+ * The board's lanes, each in ITS OWN order (LANE_SORTS above). Seeded from
+ * BOARD_COLUMNS so a lane cannot exist on the board and be missing from this
+ * map — an empty lane must still be an empty lane, not an undefined one.
+ *
+ * The sort lives here rather than in the Board so that a lane's contents and a
+ * lane's order are decided in the same breath, by one function, and the
+ * component holds no rule about either. It is also why the List is unaffected:
+ * the List never calls this.
+ *
+ * `now` is read once here and handed to every lane, so the whole board is sorted
+ * against ONE instant: two lanes that disagreed about what "past due" means would
+ * be two answers to the same question in one render.
+ */
+export function groupByColumn(
+  tasks: Task[],
+  now: number = Date.now(),
+): Map<BoardColumn, Task[]> {
+  const map = new Map<BoardColumn, Task[]>(
+    BOARD_COLUMNS.map((c) => [c.key, [] as Task[]]),
+  );
+  for (const task of tasks) map.get(taskColumn(task))?.push(task);
+  for (const col of BOARD_COLUMNS) {
+    map.set(col.key, sortLane(map.get(col.key)!, col.key, now));
+  }
+  return map;
+}

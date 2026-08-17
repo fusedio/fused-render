@@ -64,6 +64,7 @@ from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.selffix import router as selffix_router
 from fused_render.server.session import router as session_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
 # (tests repoint it at a staged copy before calling create_app, and
@@ -378,6 +379,11 @@ def create_app(start_dir: str) -> FastAPI:
     # POSTs that add to and cancel from it. The loop that SENDS them is started
     # as a startup event below, not here — see there.
     app.include_router(schedule_router)
+    # Tasks (routers/tasks.py): the sessions above and the schedule above,
+    # joined into one noun — a task IS a Claude session, and its thread is every
+    # message that entered it, typed or scheduled. Reads are unguarded; the one
+    # POST marks a message read, the same weight of change as the triage POST.
+    app.include_router(tasks_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)

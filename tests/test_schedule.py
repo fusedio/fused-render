@@ -120,11 +120,20 @@ def test_create_rejects_what_a_caller_can_get_wrong(target):
                         permission_mode="bypassPermissions")
 
 
-def test_create_refuses_a_due_time_already_past_the_catch_up_bound(target):
-    """Storing it would be a lie: the next tick would sweep it straight to
-    `missed`, so the caller is told now instead of never."""
-    with pytest.raises(ValueError, match="catch-up bound"):
-        schedule.create(str(target), "hi", _in(-schedule.max_late_seconds() - 60))
+def test_a_due_time_days_in_the_past_is_accepted_and_recorded_as_given(target):
+    """This used to be REFUSED, and the refusal was right while catch-up was
+    bounded: an entry the next tick would sweep to `missed` is better refused
+    than accepted and silently dropped.
+
+    Unbounded, there is nothing to refuse it for. Picking a date days back on
+    the calendar means "run this, and file it under then", so the due time is
+    stored as given rather than rewritten to now — the history has to read
+    truthfully — and the run happens on the next tick."""
+    past = _in(-3 * 86400).replace(microsecond=0)
+    entry = schedule.create(str(target), "backdated", past)
+
+    assert entry["state"] == schedule.PENDING
+    assert schedule.parse_due(entry["due"]) == past
 
 
 @pytest.mark.parametrize("due", [
@@ -153,6 +162,73 @@ def test_naive_due_time_is_read_as_local_not_utc(target, monkeypatch):
 
     stored = datetime.fromisoformat(entry["due"])
     assert stored == naive.astimezone(timezone.utc)
+
+
+# ------------------------------------------- the form's own three fields
+#
+# `title`, `description` and `new_task_each_run` come off the create form, and
+# `/api/schedule` takes a raw dict — so a field the model does not name is
+# silently DROPPED, which is what happened to all three. These pin them: they
+# are stored, they round-trip under the exact names the form reads back, and a
+# store a human has edited cannot raise on the way through.
+
+
+def test_the_forms_three_fields_are_stored_and_read_back_by_name(target):
+    entry = schedule.create(str(target), "pull the news", _in(600),
+                            title="Morning digest",
+                            description="Reads the feeds and summarises them",
+                            new_task_each_run=True)
+
+    assert entry["title"] == "Morning digest"
+    assert entry["description"] == "Reads the feeds and summarises them"
+    assert entry["new_task_each_run"] is True
+    # ...and out of the store under the same names, which is what the form
+    # reads when it opens on an existing task.
+    stored = schedule.list_entries()[0]
+    assert (stored["title"], stored["description"],
+            stored["new_task_each_run"]) == (
+        "Morning digest", "Reads the feeds and summarises them", True)
+
+
+def test_omitted_and_blank_fields_default_the_same_way(target):
+    """The form omits a field rather than sending a blank one, so "absent",
+    "null" and "" must all mean the same thing.
+
+    An empty title is NOT a hole for this module to fill: it is the first branch
+    of a precedence the tasks endpoint owns (the user's title, else Claude
+    Code's `ai-title`, else the message's first line), and inventing one here
+    would pin the row to whatever the message happened to open with."""
+    omitted = schedule.create(str(target), "hi", _in(600))
+    blank = schedule.create(str(target), "hi", _in(600), title="   ",
+                            description="", new_task_each_run=None)
+
+    for entry in (omitted, blank):
+        assert entry["title"] == ""
+        assert entry["description"] == ""
+        assert entry["new_task_each_run"] is False
+
+
+@pytest.mark.parametrize("value", [42, ["a", "list"], {"an": "object"}, None])
+def test_a_garbage_title_degrades_instead_of_raising(target, value):
+    """The store is a JSON file a human may edit and the router passes the
+    request body through unvalidated, so a title that is not a string must cost
+    the entry nothing — never a 500 on the way in or an unreadable listing."""
+    entry = schedule.create(str(target), "hi", _in(600), title=value,
+                            description=value)
+    assert entry["title"] == "" and entry["description"] == ""
+
+
+@pytest.mark.parametrize("value,expected", [
+    (True, True), (False, False), (None, False),
+    # The truthy strings are the point: a hand-edited store carrying "false"
+    # read through bool() would flip a schedule's threading model with nobody
+    # asking, so only a real `true` counts.
+    ("true", False), ("false", False), ("no", False), (1, False), (0, False),
+])
+def test_only_a_real_true_ticks_new_task_each_run(target, value, expected):
+    entry = schedule.create(str(target), "hi", _in(600),
+                            new_task_each_run=value)
+    assert entry["new_task_each_run"] is expected
 
 
 def test_creating_syncs_the_wake_stub_with_pending_due_times(target, no_real_wake):
@@ -539,11 +615,17 @@ def test_the_wake_stub_is_never_synced_while_the_store_lock_is_held(target, spaw
     assert entry["state"] == schedule.PENDING
 
 
-def test_max_late_seconds_falls_back_on_nonsense(monkeypatch):
+def test_max_late_seconds_is_unbounded_unless_an_operator_says_otherwise(monkeypatch):
+    """The default is None — no bound — which is what makes missed work queue
+    rather than expire. It was 24h; the env var is the escape hatch for an
+    install that wants the old shape, and a value that is not a usable bound
+    falls back to the default exactly as it always did."""
+    monkeypatch.delenv("FUSED_RENDER_SCHEDULE_MAX_LATE", raising=False)
+    assert schedule.max_late_seconds() is None
     monkeypatch.setenv("FUSED_RENDER_SCHEDULE_MAX_LATE", "not-a-number")
-    assert schedule.max_late_seconds() == 24 * 3600
+    assert schedule.max_late_seconds() is None
     monkeypatch.setenv("FUSED_RENDER_SCHEDULE_MAX_LATE", "0")
-    assert schedule.max_late_seconds() == 24 * 3600
+    assert schedule.max_late_seconds() is None
     monkeypatch.setenv("FUSED_RENDER_SCHEDULE_MAX_LATE", "90")
     assert schedule.max_late_seconds() == 90
 
