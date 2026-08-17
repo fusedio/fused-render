@@ -1013,7 +1013,13 @@ export default function AiModels() {
         <div className="cc-page-head">
           <div>
             <h2 className="cc-heading">AI Models</h2>
-            <div className="cc-caption cc-mono">
+            {/* Monospace only for the cache PATH below — the Discover and
+                Engines captions are plain sentences, and the Engines tab's own
+                note (`.am-engines-note`) sits right under this one in the same
+                proportional font. Applying `.cc-mono` to every branch made
+                that one sentence look like a filesystem fact next to the other
+                that does not. */}
+            <div className={"cc-caption" + (tab === "local" && data ? " cc-mono" : "")}>
               {tab === "discover" ? (
                 // What the tab is FOR, and the constraint in the same breath.
                 // It said "Models on the Hugging Face Hub", which was true of a
@@ -1176,8 +1182,8 @@ export default function AiModels() {
                       on every card already answer — what only prose can carry
                       is that deleting one is safe, and that is what is left. */}
                   <p className="am-group-note">
-                    Nobody chose these — a runner fetched them to do its job, and deleting one
-                    only means the next run that needs it fetches it again.
+                    Automatically downloaded by a runner. If deleted, it will be downloaded
+                    again on next run.
                   </p>
                   <div className="cc-mdgrid am-grid">{grouped.components.repos.map(card)}</div>
                 </section>

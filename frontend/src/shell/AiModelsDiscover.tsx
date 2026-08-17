@@ -799,24 +799,6 @@ export default function AiModelsDiscover({
           </>
         ) : (
           <>
-            {/* Why these particular eleven, under the heading that named them.
-                The heading says WHICH grid this is; this says what "suggested"
-                was decided by, because "a handful somebody picked for this
-                machine" and "everything you can install" are very different
-                answers to the question the reader arrived with. It also names
-                the way out, since the control that answers "and if I want
-                something else?" is the box at the top of the tab.
-
-                It renders with the sections and never over the results grid
-                (`showsPreamble`, pinned in discoverView.test.ts): a line reading
-                "picked to run on this machine" standing over a page of Hub
-                search results describes cards that are not there. */}
-            {chrome.showsPreamble && catalog !== null && catalog.length > 0 && (
-              <p className="am-group-note am-suggested-lede">
-                Picked to run on this machine with the engines you have. Search above for
-                anything else on Hugging Face.
-              </p>
-            )}
             {catalog === null && <p className="cc-empty">Reading the model catalog…</p>}
             {catalog !== null && <Suggested catalog={suggested} downloads={downloads} />}
           </>
