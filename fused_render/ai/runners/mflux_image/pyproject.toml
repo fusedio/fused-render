@@ -1,0 +1,41 @@
+# The MLX image runner's environment (SPEC §40, PY-16).
+#
+# The Apple Silicon half of image generation, beside `diffusers_image/` which
+# serves every platform on torch. Same reasoning as the two whisper runners:
+# neither dependency set belongs in the other's interpreter, and `mflux` is
+# Metal-only — it would not install on the Windows wheel at all.
+#
+# `envinstall` (PY-18) builds this on first use with the same detached
+# `uv sync`, progress record and verbatim errors any declaring folder gets.
+#
+# **This folder is much SMALLER than the diffusers one, and that is most of the
+# point.** The torch runner needs a ~2.4GB Q4_K_M GGUF transformer *plus* the
+# ~7.7GB bf16 base repo, because the GGUF replaces one component and the text
+# encoder, VAE and tokenizer still come from the full-precision repo. mflux
+# reads a single repo whose components are all already 4-bit, so the download is
+# one 4.6GB snapshot with no recipe and nothing skipped.
+#
+# What each earns:
+#   mflux           the FLUX implementation, on Metal. Pulls mlx and Pillow in
+#                   itself; both are load-bearing here and neither is named
+#                   again, for the reason the whisper runner names `av` —
+#                   a dependency this file relies on should be visible in it.
+#   huggingface_hub downloads
+#   psutil          the RSS half of "how much memory is this costing"; the MLX
+#                   half comes from mlx's own allocator (see `memory()`)
+#
+# No `av`, unlike the transcription runner: nothing here decodes media. The
+# no-subprocess rule still holds — `worker.py` never shells out.
+[project]
+name = "fused-render-runner-mflux-image"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mflux",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

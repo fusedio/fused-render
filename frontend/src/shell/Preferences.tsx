@@ -1,5 +1,6 @@
 // Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Two tabs (D125):
+// from the sidebar's bottom-left gear. Its tabs (D125), the count deliberately
+// not stated here since it has been wrong three times:
 //   Render preferences — Appearance, Default model (which Claude model the
 //     chat and fused.ai reach for when nothing else has said), Call log
 //     (capture/redaction/retention for
@@ -15,6 +16,14 @@
 //     its own `/view/_account` page, folded in once it stopped being a
 //     separate sidebar entry). Shown only once Deploy is enabled — that's
 //     the only reason this app cares about a Fused account.
+// **Inference engines used to be a tab here and is not any more** — it is the
+// Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
+// on this page about MODELS rather than about rendering, and every consequence
+// of changing it — which cached models can be loaded, what their engine tags
+// say, what Discover suggests — is on that page, where the question it answers
+// is actually asked. `/preferences?tab=engines` is rewritten to the new url in
+// `platform/lib/router.rewriteLegacyUrl`, so an old bookmark still lands on the
+// control rather than on this page's default tab.
 // Deliberately NOT a third tab: the Claude Config panel (apps/claude_config)
 // briefly sat here, and a settings page hosting a second settings app — with
 // its own section nav and scroll containers — inside one of its tabs never read
@@ -420,14 +429,18 @@ export default function Preferences() {
   // account tab wouldn't be offered (Deploy not enabled) rather than showing
   // a tab with no button pointing at it.
   const requested = new URLSearchParams(location.search).get("tab");
+  // `?tab=engines` never reaches here: `rewriteLegacyUrl` sends it to
+  // /ai-models?tab=engines before this page renders, which is why an unknown
+  // tab falling back to "render" is not the answer for that one — a bookmark
+  // pointing at the engine picker should land ON the engine picker.
+  //
+  // A membership test rather than a ternary chain: at four tabs the nesting was
+  // the line every new branch conflicted on, and adding a fifth should not mean
+  // re-indenting the other four.
   const requestedTab: PrefsTab =
-    requested === "account"
-      ? "account"
-      : requested === "indexing"
-        ? "indexing"
-        : requested === "selffix"
-          ? "selffix"
-          : "render";
+    requested === "account" || requested === "indexing" || requested === "selffix"
+      ? requested
+      : "render";
   const tab: PrefsTab =
     requestedTab === "account" && !prefs?.deploy.enabled ? "render" : requestedTab;
   const setTab = (next: PrefsTab) => {

@@ -19,7 +19,7 @@ unguarded like every other read endpoint and none of them can write.
 | `GET /api/index/runs` | — | the 20 most recent runs with their folded state |
 | `GET /api/index/stats?root=` | — | totals + per-extension breakdown (`query.md §2`) |
 | `GET /api/index/lookup?q=&limit=&offset=&sort=` | — | path lookup (`query.md §3`) |
-| `GET /api/index/search?root=&q=&limit=` | — | the explorer's in-folder corpus (`query.md §6`) |
+| `GET /api/index/search?root=&q=&limit=&fmt=` | — | the explorer's in-folder corpus (`query.md §6`); `fmt=columns` for the compact encoding (§6) |
 | `POST /api/index/query` `{sql, limit?}` | X-Fused | run ONE read-only statement over `files`/`dirs`; `{columns, rows, truncated}` (`query.md §5`) |
 | `POST /api/index/ask` `{prompt, limit?}` | X-Fused | compile a question to SQL through the AI relay, run it under the same guard, echo the `sql` (`query.md §5`) |
 | `GET /api/index/config` · `POST /api/index/config` | X-Fused on write | scan roots + ignore list (§3) |
@@ -133,6 +133,90 @@ failure to read the config aborts the scheduling rather than the server.
 **In tests** the hook is patched out wholesale (`tests/conftest.py`
 `_no_startup_index_scan`) — a suite that ran it would spawn a worker over the
 developer's real home. The scheduler's own tests call `run_startup_scan()` directly.
+
+### 4.1 The startup warm
+
+The same hook then calls `startup_warm()`, which spawns one detached daemon thread
+running `run_startup_warm()`: `search_under` + `filter_corpus` over `expanduser("~")`
+— exactly the request the explorer's home page makes on the first keystroke, under
+exactly the same pool key.
+
+Everything that path caches is **per process** and starts empty: the gitignore verdict
+pool has no verdicts until some request sweeps `git check-ignore` over the whole corpus,
+and `duckdb` is not imported until the first query. Measured on a 164k-entry home,
+that made the first search of a fresh process ~2.2 s against ~0.8 s for the next one,
+all of it billed to a keystroke. The warm moves it to idle.
+
+- A **thread**, not `asyncio.to_thread`: a startup hook must complete before the app
+  serves, and this is seconds of work.
+- A **mount-backed** home is skipped by `MountGuard.blocks_root`, the same check
+  `runner.start` makes, before anything touches the path: the index refuses to scan
+  mounts, so the warm could only answer `covered: false` after aiming kernel I/O at a
+  mount. The guarantee is about the mount, not about cost — a path under the mounts dir
+  matches on `abspath` alone, while a local home falls through to `is_mount_backed` and
+  pays two `realpath`s, neither of them on the mount.
+- **One bounded wait on a first boot.** Usually the index is already there, the search
+  answers `covered: true`, and the warm is those two calls and nothing else. When it
+  answers `covered: false` — first-ever boot, nothing to sweep — the warm waits for the
+  one scan `run_startup_scan` just spawned for that root (recorded in `_startup_runs`)
+  and then searches again. It is not a scheduler: one named run, polled every
+  `WARM_WAIT_POLL_S` (0.5 s, the worker's heartbeat cadence) with a hard
+  `WARM_WAIT_DEADLINE_S` ceiling (6 min — just past `runner.ABANDONED_RUN_S`, so a dead
+  worker is reported not-running before the ceiling is reached), on a daemon thread that
+  cannot hold the process open. The search and the sweep then run **whatever ended the
+  wait** — a finished scan, a dead worker, a pruned run dir, the ceiling — because how a
+  scan ended does not tell you whether the index covers the root, and an uncovered one
+  costs one cheap `covered: false`. Giving up is logged once.
+  A root whose scan was **debounce-skipped** has no entry and is not waited on: no new
+  run is coming and its index is already on disk. The persisted verdict pool
+  (`server/index_gitignore.py`) is what covers restarts.
+- The warm and the **first keystroke overlap by design** — the warm runs for ~2.2 s and
+  the user is typing inside it — so `server/index_gitignore.py` coordinates them: the
+  second caller to want verdicts for the same base waits on the sweep already in flight
+  (`_inflight`, `SWEEP_WAIT_MAX_S`) and reads the pool it produced, instead of shelling
+  out to `git check-ignore` over the same 200k entries a second time.
+- It **never raises**: nobody joins the thread.
+
+Patched out in tests by the same fixture, and its own tests call `run_startup_warm()`
+directly.
+
+## 6. The compact corpus — `fmt=columns`
+
+`GET /api/index/search` answers with one object per entry
+(`{rel, is_dir, size, mtime}`), which is the shape `/api/fs/walk` streams and the
+shape every existing caller — including the JS bridge `fused.fileIndex.search`
+(`static/runtime.js`) — reads. That shape stays the default, and an unrecognized
+`fmt` falls back to it rather than 400ing: a format nobody asked for must not be able
+to break a page someone wrote.
+
+`fmt=columns` re-cuts the same corpus as index-aligned parallel arrays —
+`rels`, `dirs` (0/1), `sizes`, `mtimes`, plus `fmt: "columns"` — and leaves every other
+field (`covered`, `fresh`, `truncated`, `total`, `updated`, `age_s`, …) exactly as it is.
+`size`/`mtime` stay nullable: a directory legitimately has neither. The explorer asks
+for it and decodes back to the walk's entry shape at the API-client boundary
+(`platform/lib/api.ts`), so the corpus consumers never learn the wire format.
+
+Why, measured on the 164k-entry home corpus this route exists for (25.7 MB, fetched in
+one shot on the user's **first keystroke**):
+
+| Body | Bytes |
+|---|---|
+| `entries` objects | 27.7 MB |
+| `fmt=columns` | 21.1 MB |
+| `fmt=columns`, gzip level 1 | 5.0 MB |
+
+The compact response is therefore also **gzipped** — level 1, and only when
+`Accept-Encoding` says the caller can take it. Level 1 costs 0.06 s, less than the JSON
+encoding itself (0.07 s); the higher levels spend seconds to shave a few percent off a
+body that is read once. It is done per-route rather than with a GZip middleware because
+this app also streams the live walk and serves file bytes raw, and compressing those on
+a **local** server is CPU spent against loopback for nothing — this one response is the
+outlier.
+
+Rejected: front-coding the rels (they arrive depth-then-path ordered, so neighbours
+share long prefixes). It takes the body to 12.4 MB, but costs 0.45 s of Python per
+corpus — more of the first search's budget than it saves, and gzip finds most of the
+same redundancy for an eighth of the time.
 
 ## Non-goals
 

@@ -1,0 +1,90 @@
+# The MLX transcription runner's environment (SPEC §40, PY-16).
+#
+# The Apple Silicon half of speech to text. `faster_whisper/` beside this one
+# serves every platform on CTranslate2, which has no Metal backend — so a Mac
+# transcribes on its CPU cores there and on its GPU here. Both folders exist
+# because neither dependency set belongs in the other's interpreter, let alone
+# in fused-render's: `mlx-whisper` is Metal-only and would not even install on
+# the Windows wheel.
+#
+# `envinstall` (PY-18) builds this on first use with the same detached
+# `uv sync`, progress record and verbatim errors any declaring folder gets.
+#
+# **No system ffmpeg**, and here that costs a dependency rather than coming
+# free. The rule is the one `faster_whisper/pyproject.toml` states: this app
+# bundles rclone, not ffmpeg, so a runner that shells out works on the machine
+# it was written on and fails on a user's with a subprocess error nobody can
+# act on. faster-whisper decodes through PyAV and so gets this for nothing;
+# `mlx_whisper.transcribe(path)` instead calls openai-whisper's `load_audio()`,
+# which SPAWNS `ffmpeg`. So this runner never hands it a path — `worker.py`
+# decodes with `av` itself and passes the waveform — and `av` is named here
+# rather than left to arrive as somebody else's transitive dependency.
+#
+# What each earns:
+#   mlx-whisper     the model and the decoder, on Metal. Pulls mlx and
+#                   huggingface_hub in itself; both are named where they are
+#                   load-bearing rather than assumed.
+#   huggingface_hub downloads
+#   psutil          the RSS half of "how much memory is this costing" — the
+#                   MLX half comes from mlx's own allocator (see `memory()`)
+#   av              the ffmpeg LIBRARIES, in-process, with no binary to find.
+#                   The reason `worker.py` never calls `subprocess`.
+#   onnxruntime     runs Silero VAD (`../vad.py`, shared since D319), so
+#                   `vad: true` means the same
+#                   thing here as it does on the CTranslate2 runner. Chosen
+#                   over the two alternatives that already contain this exact
+#                   model: importing faster-whisper's copy would drag
+#                   ctranslate2 into a Metal-only venv, and the PyTorch one
+#                   would cost gigabytes for a 2MB detector.
+#   sherpa-onnx     speaker diarization (`../diarize.py`), so `diarize: true`
+#                   means the same thing here as it does on the CTranslate2
+#                   runner. pyannote.audio is the obvious library and it needs
+#                   PyTorch, which is the dependency this file refuses on
+#                   principle for a helper model — and its pipeline repo is
+#                   gated, so an unattended download fails without a Hub token.
+#                   It brings its OWN ONNX Runtime rather than sharing the one
+#                   above: `onnxruntime`'s copy is `onnxruntime/capi/
+#                   libonnxruntime.1.28.0.dylib`, which is not on sherpa's
+#                   rpath, so the two are separate builds that happen to be the
+#                   same engine.
+#   sherpa-onnx-core  **NOT redundant, and do not delete it.** This is where
+#                   sherpa's `libonnxruntime.dylib` actually lives, and the
+#                   `sherpa-onnx` wheel for this platform is a 2MB shim that
+#                   ships only `_sherpa_onnx…so` and declares
+#                   `Requires-Dist: sherpa-onnx-core==1.13.5` to get it. That
+#                   declaration never reaches the lock: sherpa-onnx 1.13.5
+#                   publishes TWO shapes of wheel under one version — the
+#                   linux_armv7l ones are self-contained (12MB, bundled
+#                   `libonnxruntime.so`, no Requires-Dist) while every other
+#                   wheel is split — and its sdist PKG-INFO declares no
+#                   dependencies at all. `uv lock` is a UNIVERSAL resolution, so
+#                   it takes one dependency set per package and took the empty
+#                   one; `uv pip install` resolves for the current platform, so
+#                   it reads the real wheel and looks like it works. The result
+#                   was a venv where `import sherpa_onnx` raised `Library not
+#                   loaded: @rpath/libonnxruntime.dylib` on every diarized
+#                   transcription. Naming it here is the fix — it is a
+#                   first-class dependency, so it enters the lock on its own
+#                   account. Unpinned to match every other line, which is safe
+#                   because the two are published together and have never had
+#                   different version numbers; `tests/test_ai_runner_deps.py`
+#                   pins the pairing so a tidy-up cannot quietly undo it.
+[project]
+name = "fused-render-runner-mlx-whisper"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-whisper",
+    "huggingface_hub",
+    "psutil",
+    "av",
+    "onnxruntime",
+    "sherpa-onnx",
+    # The other half of sherpa-onnx, which its own metadata cannot get into the
+    # lock. See the comment above before removing this as a duplicate.
+    "sherpa-onnx-core",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

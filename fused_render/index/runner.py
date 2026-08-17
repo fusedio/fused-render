@@ -215,6 +215,45 @@ def read_events(run_dir: str, since: int = 0):
     return events, new, cursor
 
 
+def has_ended(run_dir: str, since: int = 0):
+    """`(ended, cursor)` for a run, parsing only the lines after `since`.
+
+    For a caller that wants one bit — "is this run over yet" — and polls for
+    it. `read_events` cannot serve that: its callers need the whole folded
+    state, so it `json.loads` every line from 0 on every call, and a poller
+    would re-parse a log that grows by ~2 events a second (scan.py emits
+    progress twice a second) once per poll — quadratic in the length of the
+    very scan it is waiting on. Here the lines before the cursor are only
+    counted, never decoded, so a poll costs a read of the file and a parse of
+    what is genuinely new.
+
+    A run whose log does not exist yet has not ended; `False` is also the
+    honest answer for an unreadable one (the caller's own liveness check is
+    what covers a worker that died without writing `run_end`).
+    """
+    path = os.path.join(run_dir, "events.jsonl")
+    ended, seen = False, 0
+    try:
+        with open(path) as f:
+            for i, line in enumerate(f):
+                if i < since:
+                    seen = i + 1
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    # A half-written last line: do NOT move the cursor past
+                    # it, or the completed version — which may be the
+                    # `run_end` this call exists to find — is never read.
+                    break
+                seen = i + 1
+                if ev.get("type") == "run_end":
+                    ended = True
+    except OSError:
+        return False, since
+    return ended, max(seen, since)
+
+
 def derive_state(events) -> dict:
     """Fold the whole log into the flat state a client renders. Folding is
     idempotent, which is what makes resume-after-reload work."""

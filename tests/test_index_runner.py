@@ -466,3 +466,54 @@ def test_start_checks_the_mount_guard_before_touching_the_kernel(tmp_path, spawn
     with pytest.raises(ValueError, match="mount"):
         runner.start(_cfg(tmp_path), str(mounts / "m1"))
     assert spawned == []
+
+
+# -- has_ended (the startup warm's poll) ---------------------------------------
+
+def _log(tmp_path, *lines):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(exist_ok=True)
+    (run_dir / "events.jsonl").write_text("".join(lines), encoding="utf-8")
+    return str(run_dir)
+
+
+def test_has_ended_reports_the_end_and_carries_a_cursor(tmp_path):
+    run_dir = _log(tmp_path, '{"type": "progress", "files": 1}\n')
+    ended, cursor = runner.has_ended(run_dir)
+    assert (ended, cursor) == (False, 1)
+    ended, cursor = runner.has_ended(run_dir, cursor)
+    assert (ended, cursor) == (False, 1)  # nothing new, nothing re-decoded
+    _log(tmp_path, '{"type": "progress", "files": 1}\n',
+         '{"type": "run_end", "msg": "complete"}\n')
+    assert runner.has_ended(run_dir, cursor) == (True, 2)
+
+
+def test_has_ended_decodes_only_the_lines_after_the_cursor(tmp_path):
+    """The whole point of it: `read_events` json.loads from line 0 every call,
+    so a poller re-parsed the growing log once per poll — quadratic in the
+    length of the very scan it waits on."""
+    run_dir = _log(tmp_path, *['{"type": "progress"}\n'] * 5)
+    decoded = []
+    real = json.loads
+    monkeypatched = lambda s, *a, **k: decoded.append(s) or real(s, *a, **k)
+    runner.json.loads = monkeypatched
+    try:
+        runner.has_ended(run_dir, 4)
+    finally:
+        runner.json.loads = real
+    assert len(decoded) == 1
+
+
+def test_has_ended_does_not_step_over_a_half_written_line(tmp_path):
+    """The worker appends line by line; a cursor moved past a truncated line
+    would skip its completed version — which may be the `run_end` itself."""
+    run_dir = _log(tmp_path, '{"type": "progress"}\n', '{"type": "run_')
+    assert runner.has_ended(run_dir) == (False, 1)
+    _log(tmp_path, '{"type": "progress"}\n', '{"type": "run_end"}\n')
+    assert runner.has_ended(run_dir, 1) == (True, 2)
+
+
+def test_has_ended_on_a_run_that_has_not_written_a_log_yet(tmp_path):
+    run_dir = tmp_path / "fresh"
+    run_dir.mkdir()
+    assert runner.has_ended(str(run_dir)) == (False, 0)

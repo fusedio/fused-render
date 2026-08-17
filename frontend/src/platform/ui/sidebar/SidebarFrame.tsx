@@ -32,8 +32,13 @@ export interface SidebarRailItem {
   label: string;
   icon: React.ReactNode;
   /** Navigate here on click. Highlights as active on exact pathname match,
-      like NavItem. */
+      like NavItem. Still set even when `onClick` overrides the click, so
+      middle-click/copy-link keeps working. */
   href: string;
+  /** Overrides the click instead of navigating to `href` — for a rail icon
+      that opens a menu (e.g. Settings) rather than going straight to a page.
+      Receives the anchor so the caller can anchor a popover off its rect. */
+  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   /** Hairline above this item — a group boundary, mirroring the expanded
       sidebar's headings. */
   dividerBefore?: boolean;
@@ -200,7 +205,8 @@ export function SidebarFrame({ title, version, modifiedInstall, homeHref = "/app
                   title={item.label}
                   onClick={(e) => {
                     e.preventDefault();
-                    navigateUrl(item.href);
+                    if (item.onClick) item.onClick(e);
+                    else navigateUrl(item.href);
                   }}
                 >
                   {item.icon}
