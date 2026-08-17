@@ -73,10 +73,12 @@ function useNearViewport<T extends Element>(): [React.RefObject<T>, boolean] {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const io = new IntersectionObserver(([entry]) => setNear(entry.isIntersecting), {
-      root: el.closest(".apps-page"),
-      rootMargin: NEAR_VIEWPORT_MARGIN,
-    });
+    // Last record, not first: multiple intersection changes can batch into
+    // one callback, and only the newest reflects where the card is now.
+    const io = new IntersectionObserver(
+      (entries) => setNear(entries[entries.length - 1].isIntersecting),
+      { root: el.closest(".apps-page"), rootMargin: NEAR_VIEWPORT_MARGIN },
+    );
     io.observe(el);
     return () => io.disconnect();
   }, []);
