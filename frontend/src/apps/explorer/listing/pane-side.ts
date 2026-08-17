@@ -95,17 +95,22 @@ function isPaneSideChoice(v: string): v is PaneSideChoice {
   return (PANE_SIDE_COMPANIONS as readonly string[]).includes(v);
 }
 
-// `_side` ON A FOLDER URL, and what an ABSENT one means. This is the one place
-// the folder's reading of the param differs from the file preview's, so it is
-// worth being explicit about both:
+// `_side` ON A FOLDER URL, and what an ABSENT one means: **OPEN, at whichever
+// companion is offered first** (D285). The pane is not an extra — it IS the folder
+// view's other half, on since long before this param existed, and it appears purely
+// from the width of the split (pane.ts). Reading absence as "closed" would turn
+// every existing folder URL, bookmark and recent into a one-column listing.
 //
-//   file    absent = CLOSED. The sidebar is an extra beside a content view that
-//           is already complete on its own, so nothing is the same as nothing.
-//   folder  absent = OPEN, **at whichever companion is offered first** (D285). The
-//           pane is not an extra — it IS the folder view's other half, on since
-//           long before this param existed, and it appears purely from the width of
-//           the split (pane.ts). Reading absence as "closed" would turn every
-//           existing folder URL, bookmark and recent into a one-column listing.
+// **THE FILE PREVIEW'S SIDEBAR NOW READS IT THE SAME WAY** (D323, `lib/
+// preview-side.ts`), and this block used to be the statement of the asymmetry
+// instead: file absent = CLOSED ("the sidebar is an extra beside a content view
+// that is already complete on its own, so nothing is the same as nothing"), folder
+// absent = OPEN. The asymmetry is gone, and by the file half moving — its rule made
+// the sidebar's presence a stored PREFERENCE, which the per-file session sidecar
+// then replayed forever. `_side=off` and everything below is one vocabulary across
+// both surfaces now, so a param carried between them means the same thing in both
+// directions; the one thing that still differs is what "the first companion on
+// offer" resolves to, because a folder and a file offer different things.
 //
 // **Absence is `mode: null`, not a named mode**, and that is the change D285 forced.
 // It used to mean `preview`, which was safe only while `preview` was universally

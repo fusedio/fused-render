@@ -51,9 +51,12 @@ import {
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import {
   sideSplit,
-  initialSide,
+  parseSide,
+  resolveSide,
+  sideParam,
   sideToggleTarget,
   reconcileSideSearch,
+  type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import {
   activeRev,
@@ -730,26 +733,24 @@ function TemplatePreview({
     if (mode !== activeMode) setModeState(activeMode);
   }, [mode, activeMode]);
 
-  // --- `_side`: which companion the sidebar shows, absent = closed -----------
-  // Read from the URL at mount, exactly like `_mode`, so a bookmark or a shared
-  // link restores the split. Then owned as state and written back through
-  // replaceSearch — the sidebar is a view of this same file, not a navigation.
-  // Resolved against the split's FULL list (pending placeholder included) and
-  // against `offered` rather than `on`, so a `?_side=git` deep link is captured at
-  // mount even for a file with no companion of its own — the verdict is what
-  // decides it, and waiting for the real entry would have let the reconciling
-  // effect below strip the param before the answer arrived (lib/preview-side).
-  const [side, setSideState] = useState<string | null>(() =>
-    initialSide(location.search, split)
-  );
-  // Same request/paint distinction as `mode` above: a verdict that DENIES the
-  // open companion drops it from `sidebarModes`, and this paint must not frame a
-  // mode that is no longer on offer. Everything downstream reads `activeSide`.
-  const sideEntry = sidebarModes.find((e) => e.mode === side) ?? null;
-  const activeSide = sideEntry?.mode ?? null;
-  useEffect(() => {
-    if (side !== activeSide) setSideState(activeSide);
-  }, [side, activeSide]);
+  // --- `_side`: which companion the sidebar shows, ABSENT = OPEN (D323) ------
+  // Read from the URL at mount as a REQUEST — open/shut plus the companion named,
+  // if any — then owned as state and written back through replaceSearch, since the
+  // sidebar is a view of this same file and not a navigation. An absent `_side`
+  // asks for "open at whatever this file offers first", exactly as it does on a
+  // folder (lib/preview-side's header has the whole argument, and why the old
+  // absent-means-closed rule had to go); `_side=off` is how a shut sidebar says so.
+  //
+  // Nothing about it is persisted anywhere. It rides the URL, so it survives the
+  // shell's pushState navigation within this file, and a refresh — or an open of a
+  // different file, which starts from a bare URL — lands on the default again.
+  const [sideReq, setSideReq] = useState<SideRequest>(() => parseSide(location.search));
+  // Same request/paint distinction as `mode` above, and here it is RESOLVED rather
+  // than reconciled: a verdict that denies the open companion cannot leave this
+  // paint framing it, because `activeSide` is recomputed from the lists every
+  // render and an unhonourable request falls to the default (lib/preview-side).
+  const activeSide = resolveSide(sideReq, split);
+  const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
   // because the toggle button RENDERS from it — it wears the icon of the mode it
@@ -809,13 +810,18 @@ function TemplatePreview({
   // column stands beside the crumb bar rather than under it.
   const sideSlot = usePreviewSideSlot();
 
+  // The one writer. `null` CLOSES, and closing is a value (`_side=off`) rather
+  // than a deleted param now that absence means open — while choosing the
+  // companion a bare URL would have opened deletes the param instead, so the
+  // ordinary state keeps the clean URL (`sideParam`, lib/preview-side).
   const setSide = (next: string | null) => {
     const params = new URLSearchParams(location.search);
-    if (next) params.set("_side", next);
-    else params.delete("_side");
+    const want = sideParam(next, split.defaultSide);
+    if (want === null) params.delete("_side");
+    else params.set("_side", want);
     const search = params.toString();
     replaceSearch(location.pathname + (search ? "?" + search : ""));
-    setSideState(next);
+    setSideReq({ open: next !== null, mode: next });
   };
   const toggleSide = () => {
     if (activeSide) setSide(null);
@@ -831,20 +837,24 @@ function TemplatePreview({
   //
   // Guarded on `splitCapable` and not on the split being ON, which is the whole
   // point: a borrowed `git` that resolves to DENIED takes the split off with it,
-  // and a `_side=git` left in the URL there is not inert — the session sidecar
-  // records the query (lib/session) and replays it on the next bare open.
+  // and a `_side=git` left in the URL there is a param naming a state nothing on
+  // this file can honour. (It used to be worse than that — the session sidecar
+  // recorded the query and replayed it on the next bare open — which `_side` is now
+  // stripped at both ends to prevent, lib/session and server/session.py.)
   const sideKeys = sidebarModes.map((e) => e.mode).join(",");
   useEffect(() => {
     const search = reconcileSideSearch(location.search, {
       splitCapable,
       offered: split.offered,
+      open: sideReq.open,
       activeSide,
+      defaultSide: split.defaultSide,
     });
     if (search === null) return; // already agrees
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     // `sideKeys` is in the deps because a landing verdict is what makes a
     // previously-fine `_side` stale.
-  }, [splitCapable, split.offered, activeSide, sideKeys]);
+  }, [splitCapable, split.offered, split.defaultSide, sideReq.open, activeSide, sideKeys]);
   const deployEnabled = useDeployEnabled();
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
