@@ -145,11 +145,19 @@ def is_source_checkout(root: str | None = None) -> bool:
 
     The repo ABOVE the package: an editable install and a plain
     `python -m fused_render` from a clone look identical from in here. One
-    `isdir`, no subprocess — unlike `install_method`, which shells out to brew
+    `stat`, no subprocess — unlike `install_method`, which shells out to brew
     and therefore may not be called from the digest path.
+
+    `exists`, NOT `isdir`: in a linked git worktree `.git` is a FILE holding a
+    `gitdir:` pointer, so an `isdir` test calls a worktree a shipped install —
+    and this repo's own dev setup uses worktrees, which is precisely where the
+    build output churns under `vite build --watch` (SF-15a). Same spelling as
+    the repo's other repo-detection sites (server/search.py, server/gitignore.py);
+    the `isdir` ones elsewhere are about repos the app itself `git init`s, which
+    are always real directories.
     """
     root = install_root() if root is None else root
-    return os.path.isdir(os.path.join(os.path.dirname(root), ".git"))
+    return os.path.exists(os.path.join(os.path.dirname(root), ".git"))
 
 
 def writable() -> bool:
