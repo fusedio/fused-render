@@ -3968,7 +3968,16 @@ def _catalog(client):
 
 
 def _entry(client, capability, repo_id):
+    """The one entry for `repo_id` under `capability`, or None if it is not offered."""
     return next((m for m in _catalog(client)[capability]["models"] if m["id"] == repo_id), None)
+
+
+def _offered(client, capability, repo_id):
+    """…and the same, for a test whose point is what the entry SAYS rather than
+    whether it exists — so a missing entry fails on the row that looked for it."""
+    entry = _entry(client, capability, repo_id)
+    assert entry is not None, f"{repo_id} is not offered under {capability}"
+    return entry
 
 
 def _text_repo(hub, repo_id, *, size=0):
@@ -3988,8 +3997,7 @@ def test_a_downloaded_repo_the_curation_never_heard_of_joins_its_capability(clie
     # here rather than turn the test into a tautology about a curated entry.
     assert repo_id not in catalog.all_suggested_ids()
     _text_repo(hub, repo_id, size=2048)
-    entry = _entry(client, registry.TEXT_GENERATION, repo_id)
-    assert entry is not None
+    entry = _offered(client, registry.TEXT_GENERATION, repo_id)
     assert entry["downloaded"] is True
     assert entry["source"] == "cached"
     # Every key the three apps read, present and the right type on a cached entry
@@ -4004,7 +4012,7 @@ def test_a_cached_entrys_size_is_its_real_measured_footprint(client, hub):
     """Measured, not guessed: the field means "every byte on the disk", the same
     thing it means for a curated entry (see catalog.py's docstring)."""
     _text_repo(hub, "some-org/three-gb", size=3_000_000_000)
-    entry = _entry(client, registry.TEXT_GENERATION, "some-org/three-gb")
+    entry = _offered(client, registry.TEXT_GENERATION, "some-org/three-gb")
     assert entry["size_gb"] == 3.0
 
 
@@ -4135,9 +4143,9 @@ def test_a_resident_model_is_marked_loaded(client, hub, monkeypatch):
     """
     repo_id = "some-org/resident"
     _text_repo(hub, repo_id, size=2048)
-    assert _entry(client, registry.TEXT_GENERATION, repo_id)["loaded"] is False
+    assert _offered(client, registry.TEXT_GENERATION, repo_id)["loaded"] is False
     monkeypatch.setattr(supervisor, "resident_models", lambda: {repo_id})
-    assert _entry(client, registry.TEXT_GENERATION, repo_id)["loaded"] is True
+    assert _offered(client, registry.TEXT_GENERATION, repo_id)["loaded"] is True
 
 
 def test_resident_models_reports_a_held_worker_without_probing_it(client, fake_runner):
