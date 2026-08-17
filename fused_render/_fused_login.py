@@ -13,7 +13,6 @@ package is importable in the server's interpreter (the internal-CLI case);
 an external FUSED_RENDER_FUSED_BIN override keeps the CLI's own login.
 """
 import secrets
-import socket
 import sys
 import time
 import webbrowser
@@ -24,33 +23,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 # Matches canvases.LOGIN_CHILD_TIMEOUT: the server kills this child at the
 # same deadline, so a longer wait here would never be observed.
 CALLBACK_TIMEOUT_S = 600
-
-
-def _pick_callback_port() -> int:
-    """First Auth0-whitelisted port (3000-3003) free on BOTH localhost families.
-
-    The CLI's own _find_available_port only bind-probes IPv4, so a server
-    listening on IPv6 (e.g. a Node dev server on ``*:3000``) looks free —
-    then the browser resolves ``localhost`` to ``::1`` and delivers the
-    authorization code to that server instead of the callback. A port is
-    usable only if nothing accepts a connection on 127.0.0.1 or ::1.
-    """
-    for port in range(3000, 3004):
-        taken = False
-        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-            try:
-                probe = socket.socket(family, socket.SOCK_STREAM)
-                probe.settimeout(0.25)
-                taken = probe.connect_ex((host, port)) == 0
-            except OSError:
-                pass  # family unavailable on this host — cannot be taken
-            finally:
-                probe.close()
-            if taken:
-                break
-        if not taken:
-            return port
-    raise OSError("no free callback port between 3000 and 3003")
 
 
 def main() -> int:
@@ -66,7 +38,7 @@ def main() -> int:
     code_verifier = secrets.token_urlsafe(48)
     code_challenge = _auth.get_code_challenge(code_verifier)
 
-    port = _pick_callback_port()
+    port = _auth._find_available_port(3000)
     redirect_uri = f"http://localhost:{port}"
 
     params = {
