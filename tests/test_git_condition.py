@@ -291,7 +291,14 @@ def test_git_is_invoked_non_interactively(gate, repo, monkeypatch):
     monkeypatch.setattr(subprocess, "run", spy)
     assert gate(repo) is True
     env = seen["kwargs"].get("env") or {}
-    assert seen["argv"][0] == "git"
+    # argv[0] is the ABSOLUTE path to git, not the bare name, and the
+    # absoluteness is required rather than cosmetic: CPython only reaches
+    # posix_spawn when os.path.dirname(executable) is truthy, and a fork in a
+    # process with libproj resident dies with SIGSEGV before exec (see
+    # tests/test_git_posix_spawn.py). Still exactly one basename, still a list,
+    # still no shell — which is what this assertion is really about.
+    assert os.path.isabs(seen["argv"][0])
+    assert os.path.basename(seen["argv"][0]) in ("git", "git.exe")
     assert "--no-pager" in seen["argv"]
     assert env.get("GIT_TERMINAL_PROMPT") == "0"
     assert env.get("GIT_OPTIONAL_LOCKS") == "0"

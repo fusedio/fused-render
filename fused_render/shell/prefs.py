@@ -10,7 +10,15 @@ desktop tray's "Open app logs" already covers that. Since the call store moved t
 ~/.fused-render/logs, a second "Logs" heading here read as the call log's
 settings rather than as a separate thing.
 
-Four preferences are persisted: **deploy_enabled** (whether the preview-header
+**engines** is persisted too — the per-capability INFERENCE engine choice
+(D302), which is a different thing from the execution engine below however
+similar the word is: it says which local-model backend serves a capability when
+more than one can, and `"auto"` (the default, and the absence of a key) means
+the registry's own ordering decides. See ``inference_engines``; the resolution,
+including what happens to a preference this machine cannot honour, belongs to
+``ai/registry.py``.
+
+Four more preferences are persisted: **deploy_enabled** (whether the preview-header
 Deploy affordance is shown — opt-in, default off; see ``deploy_enabled``),
 **reader_enabled** (whether the Reader listen-to-files accessibility mode is
 offered — opt-in, default off; see ``reader_enabled``), **default_model** (the
@@ -55,6 +63,14 @@ from fused_render.shell import storage
 router = APIRouter()
 
 VALID_ENGINES = ("builtin", "fused")
+#: What a capability's INFERENCE engine preference says when nobody has chosen:
+#: let the registry's table order decide. Spelled here as well as in
+#: `ai.registry.AUTO` rather than imported, because this module is imported by
+#: `calls.py` on a hot path and must not drag the AI registry in behind it —
+#: the registry reaches for prefs, not the other way round. The two are pinned
+#: equal by `test_shell_prefs.py`, since a drift would read as a preference for
+#: a runner named "auto" and be dropped as unknown.
+AUTO_ENGINE = "auto"
 VALID_CALLS_PARAMS = ("full", "keys", "off")
 # The default-model preference's value set. SHORT NAMES, not API model ids, and
 # `""` — unset — is a first-class member rather than an absence: it is what the
@@ -142,6 +158,68 @@ def default_model() -> str:
     """
     value = read_prefs().get("default_model")
     return value if value in VALID_DEFAULT_MODELS else ""
+
+
+def inference_engines() -> dict:
+    """The per-capability INFERENCE engine preferences, as stored (D302).
+
+    A different thing entirely from ``selected_engine()`` above, which is about
+    /api/run — this one says which local-model backend serves a capability when
+    two can. `{capability: "auto" | runner code}`, and an absent capability
+    means "auto", so the empty dict is the default and every machine starts
+    there.
+
+    **Returned raw, and validated at the point of USE rather than here.** A
+    value naming a runner that cannot run on this machine is a legitimate thing
+    to have stored — prefs.json travels between machines in a synced home
+    directory — and `registry.resolve()` is what decides it cannot be honoured
+    today. Correcting it here would silently rewrite a choice the user made on
+    another machine and would make it un-restorable; the AI Models and
+    Preferences pages instead show it as stored, with the reason it is not in
+    force. Non-string values are dropped, because those cannot have come from
+    this app and the one thing that must not happen is an arbitrary object
+    reaching a resolution.
+    """
+    stored = read_prefs().get("engines")
+    if not isinstance(stored, dict):
+        return {}
+    return {str(k): v for k, v in stored.items() if isinstance(v, str)}
+
+
+def engine_for_capability(capability: str) -> str:
+    """One capability's engine preference — `AUTO_ENGINE` when unset.
+
+    `registry.preferred_code()` is the only caller, and calls it on every
+    resolution: a preference is a file, and changing one must apply to the next
+    load with no restart (the same no-restart discipline as the template
+    registries, CT-5).
+    """
+    value = inference_engines().get(capability)
+    return value if isinstance(value, str) and value else AUTO_ENGINE
+
+
+def _valid_engine_choice(capability: str, code: str) -> str | None:
+    """None if `code` is a legal choice for `capability`, else why not.
+
+    Legal is a much weaker claim than USABLE, deliberately: a runner that this
+    machine cannot run is still a legal choice to store (see
+    `inference_engines`). What is refused is a value that could never mean
+    anything — an unknown capability, or a runner that does not serve the
+    capability it is being set on — because those cannot be honoured on any
+    machine and there is nothing for a page to explain about them.
+    """
+    from fused_render.ai import registry
+
+    if capability not in registry.capabilities():
+        return f"{capability!r} is not a capability this build knows"
+    if code == AUTO_ENGINE:
+        return None
+    runner = registry.by_code(code)
+    if runner is None:
+        return f"{code!r} is not a runner this build knows"
+    if runner.capability != capability:
+        return f"{code!r} does not serve {capability!r}"
+    return None
 
 
 def calls_enabled() -> bool:
@@ -240,6 +318,13 @@ def _prefs_response() -> dict:
         # so the Preferences page renders the options the server will accept
         # rather than a second copy of this list that can drift from it.
         "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
+        # Which local-model backend serves each capability (D302). The STORED
+        # choice, what is actually resolving, and — when those differ — why, in
+        # the registry's own words. Same discipline as `engine` above and
+        # `calls` below: the control shows the choice, a line beside it reports
+        # reality, and the two are allowed to differ because a preference set on
+        # one machine can arrive on another that cannot honour it.
+        "engines": _inference_engines_state(),
         # The app call log (calls.py): capture state, param redaction, retention.
         # `dir` lets the page reveal the store through the existing
         # /api/fs/reveal, exactly as `log.path` does.
@@ -254,6 +339,24 @@ def _prefs_response() -> dict:
             **_calls_effective(),
         },
     }
+
+
+def _inference_engines_state() -> dict:
+    """The engines block of GET /api/prefs — the registry's own answer, relayed.
+
+    Nothing is re-derived here. `registry.describe_engines()` is the same
+    resolution a LOAD goes through, so the Preferences page cannot show an
+    engine as serving a capability while a different one actually does — the
+    failure `engine_state()` exists to prevent, one feature over. The
+    per-capability rows carry their own `choices`, each with the availability
+    reason the disabled control shows.
+
+    Imported lazily: the AI registry is not something a preferences read should
+    pull in until a page asks about it, and `calls.py` imports this module.
+    """
+    from fused_render.ai import registry
+
+    return {"capabilities": registry.describe_engines(), "auto": AUTO_ENGINE}
 
 
 def _calls_store() -> dict:
@@ -366,6 +469,30 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             )
         prefs["default_model"] = value
         changed = True
+    if "engines" in body:
+        # A MAP, applied key by key onto whatever is stored — the page changes
+        # one capability's engine and must not have to echo the others, which is
+        # the same partial-update rule this whole handler follows one level up.
+        value = body.get("engines")
+        if not isinstance(value, dict):
+            return JSONResponse(
+                {"error": "'engines' must be an object of capability -> runner code"},
+                status_code=400,
+            )
+        engines = inference_engines()
+        for capability, code in value.items():
+            if not isinstance(code, str):
+                return JSONResponse(
+                    {"error": f"'engines[{capability}]' must be a runner code or "
+                              f"{AUTO_ENGINE!r}"},
+                    status_code=400,
+                )
+            problem = _valid_engine_choice(str(capability), code)
+            if problem:
+                return JSONResponse({"error": problem}, status_code=400)
+            engines[str(capability)] = code
+        prefs["engines"] = engines
+        changed = True
     if "calls_enabled" in body:
         value = body.get("calls_enabled")
         if not isinstance(value, bool):
@@ -393,12 +520,28 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     if not changed:
         return JSONResponse(
             {"error": "no known preference in request (expected 'engine', "
-                      "'deploy_enabled', 'reader_enabled', 'default_model', "
-                      "'calls_enabled', 'calls_params' and/or "
+                      "'engines', 'deploy_enabled', 'reader_enabled', "
+                      "'default_model', 'calls_enabled', 'calls_params' and/or "
                       "'calls_retention_days')"},
             status_code=400,
         )
     storage.write_json(_path(), prefs)
+    unloaded: list[str] | None = None
+    if "engines" in body:
+        # AFTER the write, because the reconciliation reads the new preference
+        # rather than being told what changed — see `evict_stale_engines`. One
+        # capability holds one resident model, and it belongs to the backend
+        # that loaded it: leaving it there would spend gigabytes on a runner
+        # nothing will route to again.
+        from fused_render.ai import supervisor
+
+        # KEPT, not discarded. The page tells the user "Loaded model unloaded."
+        # and nothing in the prefs payload could say whether one was: residency
+        # is not part of `describe_engines`, and the usual case — a fresh app
+        # with nothing loaded yet — evicts nothing at all, so the page was
+        # confidently reporting an eviction that never happened. Only the
+        # server knows, so only the server can answer.
+        unloaded = supervisor.evict_stale_engines()
     # The call log caches this snapshot for a second to keep prefs.json off its
     # hot path; drop it so a toggle here is visible on the very next call.
     from fused_render import calls as _calls
@@ -407,4 +550,10 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     # The new state, so the page re-renders from the response (the engine pref
     # is persisted even while FUSED_RENDER_ENGINE forces — it applies once the
     # override is removed; the response's forced_by says so).
-    return _prefs_response()
+    response = _prefs_response()
+    if unloaded is not None:
+        # Added here rather than inside `_prefs_response` because it is not
+        # STATE: it is what this one request did, and a GET reporting `[]`
+        # would invite the page to say "nothing was unloaded" about a read.
+        response["engines"]["unloaded"] = unloaded
+    return response

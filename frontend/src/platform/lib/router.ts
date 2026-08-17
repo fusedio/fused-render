@@ -31,6 +31,15 @@ export function rewriteLegacyUrl(url: string): string {
   const q = qIdx === -1 ? "" : url.slice(qIdx);
   if (p === "/view/_account") return "/preferences?tab=account";
   const mapped = LEGACY_SENTINELS[p];
+  // A tab that MOVED PAGES, which the sentinel table cannot express: Inference
+  // engines is the Engines tab of /ai-models now (shell/AiModelsEngines.tsx).
+  // Without this, `?tab=engines` reaches a Preferences that no longer knows the
+  // name and silently falls back to its default tab — a bookmark that looks
+  // like the setting was deleted rather than moved. Applied to the MAPPED path
+  // so the pre-rename `/view/_prefs?tab=engines` is caught by the same line.
+  if ((mapped ?? p) === "/preferences" && new URLSearchParams(q).get("tab") === "engines") {
+    return "/ai-models?tab=engines";
+  }
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
   return url;

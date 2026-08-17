@@ -106,95 +106,113 @@ interface PrefsMenuEntry {
   extra?: React.ReactNode;
 }
 
-// The bottom Settings trigger + its pop-up menu. A NavItem-shaped row that
-// opens a fixed-position menu growing UP from the row (the row sits on the
-// sidebar's bottom edge). Closes on outside pointerdown / Escape / navigation.
-function PreferencesMenu({
-  entries,
+// The bottom Settings trigger (a NavItem-shaped row in the expanded sidebar,
+// an icon on the collapsed rail) and its pop-up menu. Split in two because the
+// two triggers live in different, mutually-exclusive subtrees — SidebarFrame
+// renders either its rail or its `children`, never both — while the popover
+// itself must stay mounted regardless of collapse state, so its open/closed
+// position lives in GlobalSidebar and the popover renders as a sibling of
+// SidebarFrame rather than nested inside one trigger's markup.
+
+// The expanded-sidebar trigger row.
+function PreferencesTrigger({
+  open,
   dot,
   active,
+  onToggle,
 }: {
-  entries: (PrefsMenuEntry | "separator")[];
+  open: boolean;
   dot?: React.ReactNode;
   /** The current route is one of the menu's destinations — the trigger is
       the only sidebar chrome that can show it. */
   active: boolean;
+  onToggle: (el: HTMLElement) => void;
 }) {
-  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+  return (
+    <button
+      type="button"
+      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      onClick={(e) => onToggle(e.currentTarget)}
+    >
+      <span className="icon">
+        {PREFERENCES_ICON}
+        {dot}
+      </span>{" "}
+      Settings
+    </button>
+  );
+}
+
+// The floating menu itself — a fixed-position panel growing UP from whichever
+// trigger opened it (that row/icon sits on the sidebar's bottom edge). Closes
+// on outside pointerdown / Escape / blur, or on picking an entry.
+function PreferencesPopover({
+  pos,
+  entries,
+  onClose,
+  triggerRef,
+}: {
+  pos: { left: number; bottom: number };
+  entries: (PrefsMenuEntry | "separator")[];
+  onClose: () => void;
+  /** The element that opened this popover. A click there is NOT an outside
+      click — it's the trigger's own toggle-closed, and must be left to that
+      handler. Otherwise pointerdown closes it here first, and by the time
+      the paired click re-checks "is it open" (React 18 batches the setState
+      before that click fires), it sees closed and reopens it right back. */
+  triggerRef: React.RefObject<HTMLElement | null>;
+}) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!pos) return;
     const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setPos(null);
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      onClose();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPos(null);
+      if (e.key === "Escape") onClose();
     };
-    const onBlur = () => setPos(null);
     document.addEventListener("pointerdown", onDown);
     document.addEventListener("keydown", onKey);
-    window.addEventListener("blur", onBlur);
+    window.addEventListener("blur", onClose);
     return () => {
       document.removeEventListener("pointerdown", onDown);
       document.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("blur", onClose);
     };
-  }, [pos]);
+  }, [onClose]);
 
   return (
-    <div ref={rootRef}>
-      <button
-        type="button"
-        className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
-        aria-haspopup="menu"
-        aria-expanded={pos !== null}
-        onClick={(e) => {
-          if (pos) {
-            setPos(null);
-            return;
-          }
-          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          // Grows upward: pinned by its bottom edge just above the trigger.
-          setPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
-        }}
-      >
-        <span className="icon">
-          {PREFERENCES_ICON}
-          {dot}
-        </span>{" "}
-        Settings
-      </button>
-      {pos && (
-        <div
-          className="context-menu placed sidebar-prefs-menu"
-          role="menu"
-          style={{ left: pos.left, bottom: pos.bottom }}
-        >
-          {entries.map((entry, i) =>
-            entry === "separator" ? (
-              <div key={"sep" + i} className="context-menu-sep" role="separator" />
-            ) : (
-              <div
-                key={entry.href}
-                role="menuitem"
-                className={
-                  "context-menu-item" + (location.pathname === entry.href ? " active" : "")
-                }
-                onClick={() => {
-                  setPos(null);
-                  navigateUrl(entry.href);
-                }}
-              >
-                <span className="context-menu-icon" aria-hidden="true">
-                  {entry.icon}
-                </span>
-                <span className="context-menu-label">{entry.label}</span>
-                {entry.extra}
-              </div>
-            )
-          )}
-        </div>
+    <div
+      ref={rootRef}
+      className="context-menu placed sidebar-prefs-menu"
+      role="menu"
+      style={{ left: pos.left, bottom: pos.bottom }}
+    >
+      {entries.map((entry, i) =>
+        entry === "separator" ? (
+          <div key={"sep" + i} className="context-menu-sep" role="separator" />
+        ) : (
+          <div
+            key={entry.href}
+            role="menuitem"
+            className={"context-menu-item" + (location.pathname === entry.href ? " active" : "")}
+            onClick={() => {
+              onClose();
+              navigateUrl(entry.href);
+            }}
+          >
+            <span className="context-menu-icon" aria-hidden="true">
+              {entry.icon}
+            </span>
+            <span className="context-menu-label">{entry.label}</span>
+            {entry.extra}
+          </div>
+        )
       )}
     </div>
   );
@@ -264,12 +282,40 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // "you are on one of the menu's pages" — highlight it on any of them.
   const prefsActive = menuEntries.some((e) => e !== "separator" && e.href === pathname);
 
+  // Owned here, not inside either trigger, because the popover must stay
+  // mounted whichever trigger (expanded row vs. collapsed rail icon) opened
+  // it — the two live in subtrees SidebarFrame never renders together.
+  const [prefsPos, setPrefsPos] = useState<{ left: number; bottom: number } | null>(null);
+  // Which trigger opened it — the popover's outside-click check must not
+  // treat a re-click on this element as "outside" (see PreferencesPopover).
+  const prefsTriggerRef = useRef<HTMLElement | null>(null);
+  const togglePrefsMenu = (el: HTMLElement) => {
+    if (prefsPos) {
+      setPrefsPos(null);
+      return;
+    }
+    prefsTriggerRef.current = el;
+    const r = el.getBoundingClientRect();
+    // Grows upward: pinned by its bottom edge just above the trigger.
+    setPrefsPos({ left: r.left, bottom: window.innerHeight - r.top + 4 });
+  };
+
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     ...(sessionsMountReady
       ? [{ key: "sessions", label: "Inbox", icon: SESSIONS_ICON, href: "/sessions" }]
       : []),
-    { key: "preferences", label: "Preferences", icon: PREFERENCES_ICON, href: "/preferences", pinBottom: true, active: prefsActive },
+    {
+      key: "preferences",
+      label: "Preferences",
+      icon: PREFERENCES_ICON,
+      href: "/preferences",
+      pinBottom: true,
+      active: prefsActive,
+      // Same Settings popover as the expanded row, not a straight nav — the
+      // collapsed rail otherwise has no way to reach Templates/Mounts/etc.
+      onClick: (e) => togglePrefsMenu(e.currentTarget),
+    },
   ];
 
   // The trigger's own dot mirrors the strongest signal inside the menu, so
@@ -279,30 +325,45 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     (deployEnabled && accountLoggedIn ? <span className="account-signedin-dot" /> : undefined);
 
   return (
-    <SidebarFrame
-      title="Render"
-      version={config.version}
-      modifiedInstall={config.modified_install ?? null}
-      homeHref="/home"
-      rail={rail}
-    >
-      <div className="sidebar-section sidebar-group">
-        <NavItem
-          href="/home"
-          id="home-link"
-          label="Home"
-          icon={HOME_ICON}
-          active={homeActive}
+    <>
+      <SidebarFrame
+        title="Render"
+        version={config.version}
+        modifiedInstall={config.modified_install ?? null}
+        homeHref="/home"
+        rail={rail}
+      >
+        <div className="sidebar-section sidebar-group">
+          <NavItem
+            href="/home"
+            id="home-link"
+            label="Home"
+            icon={HOME_ICON}
+            active={homeActive}
+          />
+          {sessionsMountReady && (
+            <NavItem href="/sessions" id="sessions-link" label="Inbox" icon={SESSIONS_ICON} />
+          )}
+        </div>
+        <BookmarksSection />
+        <div className="sidebar-section sidebar-settings">
+          <UpdateBadge />
+          <PreferencesTrigger
+            open={prefsPos !== null}
+            dot={triggerDot}
+            active={prefsActive}
+            onToggle={togglePrefsMenu}
+          />
+        </div>
+      </SidebarFrame>
+      {prefsPos && (
+        <PreferencesPopover
+          pos={prefsPos}
+          entries={menuEntries}
+          onClose={() => setPrefsPos(null)}
+          triggerRef={prefsTriggerRef}
         />
-        {sessionsMountReady && (
-          <NavItem href="/sessions" id="sessions-link" label="Inbox" icon={SESSIONS_ICON} />
-        )}
-      </div>
-      <BookmarksSection />
-      <div className="sidebar-section sidebar-settings">
-        <UpdateBadge />
-        <PreferencesMenu entries={menuEntries} dot={triggerDot} active={prefsActive} />
-      </div>
-    </SidebarFrame>
+      )}
+    </>
   );
 }

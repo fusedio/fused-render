@@ -439,6 +439,9 @@
      and never as the runtime's red traceback overlay: a git refusal is an
      ordinary answer, not a bug in this view. */
   .flash {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
     margin: 0 0 10px;
     padding: 8px 11px;
     border: 1px solid var(--good-line);
@@ -449,6 +452,8 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+  /* The message takes the width and the (failure-only) sparkle sits beside it. */
+  .flash > span { flex: 1; min-width: 0; }
   .flash.bad { border-color: var(--bad-line); background: var(--bad-bg); color: var(--bad-fg); }
 
   /* ================= confirmation ================= */
@@ -468,6 +473,56 @@
     font-size: 12px;
   }
   .confirm .q { flex: 1; min-width: 12ch; }
+
+  /* ================= AI resolution (GT-19) =================
+     The proposed resolution, before anything is written. Built out of the
+     surfaces already here — `.panel` for the frame, `.panel-head` for its bar,
+     the `.diff` scroll container for the text — because it is a REVIEW surface
+     like the diff pane and reading as a new kind of thing would be the wrong
+     signal for something whose whole job is "look at this before it lands". */
+  .proposal { margin: 0 0 10px; }
+  .proposal .panel-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  /* A path is not a label: `.panel-head`'s uppercase + letter-spacing is right
+     for "BRANCHES" and wrong for `pkg/mod.py`, which has to be readable as the
+     literal name it is. */
+  .proposal .what {
+    flex: 1;
+    min-width: 12ch;
+    color: var(--ink-2);
+    font-size: 11px;
+    letter-spacing: 0;
+    text-transform: none;
+    overflow-wrap: anywhere;
+  }
+  .proposal .text {
+    margin: 0;
+    padding: 10px 12px;
+    max-height: 46vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    line-height: 1.5;
+    tab-size: 4;
+    color: var(--ink);
+  }
+  .proposal .foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    border-top: 1px solid var(--line);
+    background: var(--surface-2);
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+  .proposal .foot .note { flex: 1; min-width: 12ch; }
 
   /* ================= dropdown panels ================= */
   .panel {
@@ -866,7 +921,7 @@ const OPS = "./ops.py";
 /* The ops that can lose uncommitted work. Mirrors ops.py's DESTRUCTIVE_OPS, and
  * the mirroring is the safety property: an op named here gets the inline
  * confirmation step, and one that is not gets called on the first click. */
-const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop"]);
+const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve"]);
 
 const file = fused.params.get("_file") || "";
 const skeleton = document.getElementById("skeleton");
@@ -1712,6 +1767,344 @@ async function generateMessage() {
   }
 }
 
+/* ------------------------------------------- AI conflict resolution (GT-19)
+ *
+ * Two situations, one button, one panel, and NOTHING is written by any of it.
+ *
+ *   a merge/rebase CONFLICT — the primary case. The model is given the
+ *     conflicted file with its markers and asked for the resolved file. What
+ *     comes back is shown, and `ops.py resolve` writes it only after the
+ *     confirmation every destructive op in this view gets.
+ *   a failed git OPERATION — the secondary case. There is no file to write, so
+ *     the model is asked for the next command instead, and the panel has no
+ *     Apply at all. Advice is not an action; offering to run a command a model
+ *     picked is a different feature, and a much larger one.
+ *
+ * The model is Sonnet, not the default: a resolution has to be READ out of two
+ * versions of a file and reconciled, which is the kind of work the cheap default
+ * is wrong for. `effort` stays low — the thinking budget is not what decides
+ * whether a merge is understood, and it is the latency the user waits through.
+ */
+
+const RESOLVE_MODEL = "claude-sonnet-5";
+
+/* Reply-shape rules as a SYSTEM prompt, for the same reason AI_SYSTEM is one:
+   they are not something the model should have to notice inside a conflicted
+   file. The hard rule is the last one — the reply IS the file, so a preamble or
+   a fence would be written into the user's source. `cleanMessage` strips a fence
+   as a backstop, and a preamble it cannot strip at all. */
+const RESOLVE_SYSTEM = [
+  "You resolve git merge conflicts. You are given a file exactly as git left",
+  "it, with conflict markers. Reply with the COMPLETE resolved contents of that",
+  "file and nothing else — no preamble, no explanation, no code fences, no",
+  "line numbers. Your reply is written to the file verbatim.",
+  "Keep BOTH sides' intent whenever they are compatible; that is what a merge",
+  "is. Remove every conflict marker. Change nothing outside the conflicted",
+  "regions — not formatting, not imports, not unrelated lines.",
+  "If the file was truncated before you saw all of it, or the two sides",
+  "genuinely cannot be reconciled without a decision only the author can make,",
+  "reply with exactly UNRESOLVABLE and one short sentence saying why.",
+].join(" ");
+
+const ADVISE_SYSTEM = [
+  "You are a git expert helping someone whose git command just failed inside a",
+  "GUI. Explain in one or two sentences what the error means, then give the",
+  "exact command(s) to run in a terminal, one per line, to get out of it.",
+  "Be concrete and brief. Never suggest a force push, a hard reset, or",
+  "anything that rewrites published history unless the error leaves no",
+  "alternative — and say so explicitly if it does.",
+].join(" ");
+
+/* The model's answer for exactly one situation, awaiting review. One at a time,
+   like `busy`: two proposals on screen would make "Apply" ambiguous.
+     { path: <repo-relative> | null, text, note, unresolvable }
+   `path` null = advice for a failed operation (no Apply). Module-level, and read
+   at BUILD time like `aiBusy`, so a repaint cannot hand out a second click. */
+let proposal = null;
+/* What has arrived from the stream so far. Kept out of `proposal` because a
+   partial answer is not a proposal — it has no Apply and must not get one. */
+let streamed = "";
+/* The subject of the call in flight — a path, or "" for the error case — or null
+   when nothing is in flight. A string (not a boolean) so the busy row can be the
+   one being resolved rather than every row at once. */
+let resolving = null;
+
+function resolveButton(path, label) {
+  const busyHere = resolving === path;
+  return action("resolve-ai:" + path, icon(SPARK_GLYPH, 14), {
+    className: "icon ai" + (busyHere ? " working" : ""),
+    disabled: resolving !== null || aiBusy || proposal !== null,
+    label: label,
+    title: busyHere ? "Asking the AI…"
+                    : proposal !== null
+                      ? "Review the proposal above first."
+                      : label,
+    onClick: () => resolveWithAI(path),
+  });
+}
+
+function proposalPanel() {
+  if (resolving === null && proposal === null) return null;
+  const wrap = el("div", { className: "panel proposal" });
+  const head = el("div", { className: "panel-head" },
+    el("span", { className: "what",
+                 textContent: proposal
+                   ? (proposal.path ? "Proposed resolution — " + proposal.path
+                                    : "What to do about that error")
+                   : (resolving ? "Resolving " + resolving + "…"
+                                : "Asking the AI…") }));
+  /* Cancel is offered while a call is in flight, and it is a real cancel: it
+     stops the generation as well as dropping the panel. */
+  if (resolving !== null) {
+    head.append(action("resolve-cancel", "Cancel", {
+      className: "icon", label: "Stop asking the AI", onClick: cancelResolve,
+    }));
+  }
+  wrap.append(head);
+  wrap.append(el("pre", { className: "text",
+                          textContent: (proposal ? proposal.text : streamed) || "" }));
+  if (proposal) {
+    const pending = resolveConfirmBar();
+    if (pending) {
+      wrap.append(pending);
+    } else {
+      const foot = el("div", { className: "foot" });
+      foot.append(el("span", { className: "note", textContent: proposal.note }));
+      /* An Apply exists ONLY for a file, and only when the model produced
+         something it called a resolution. Advice has nothing to apply, and an
+         UNRESOLVABLE answer is the model declining — offering to write that
+         sentence into the user's source would be the worst button in the view. */
+      if (proposal.path && !proposal.unresolvable) {
+        foot.append(confirmable("resolve:" + proposal.path, "Apply to file",
+          "Overwrite " + proposal.path + " with the proposed resolution.",
+          { label: "Apply the proposed resolution to " + proposal.path }));
+      }
+      foot.append(action("resolve-dismiss", "Dismiss", {
+        onClick: () => { proposal = null; streamed = ""; draw(true); },
+      }));
+      wrap.append(foot);
+    }
+  }
+  return wrap;
+}
+
+/* The confirmation for an Apply, when one is pending. Answered here rather than
+   through `pendingConfirm` (which returns null for `resolve`) because the panel
+   is where the text being written is.
+
+   Only ever built when the ON-SCREEN proposal is the one the question names: the
+   resolved text lives in memory, not in the URL, so an `ask=resolve:…` that
+   survived a refresh has nothing to apply, and rendering the question anyway
+   would offer a Yes that could only fail. */
+function resolveConfirmBar() {
+  const ask = param("ask");
+  if (!proposal || !proposal.path || proposal.unresolvable) return null;
+  if (ask !== "resolve:" + proposal.path) return null;
+  const path = proposal.path;
+  return confirmBar(
+    "Overwrite " + path + " with the proposed resolution? The conflicted version "
+    + "git left there is replaced, and getting it back means `git checkout "
+    + "--merge " + path + "`. Nothing is staged and nothing is committed.",
+    () => {
+      const content = proposal.text;
+      run("resolve:" + path, { op: "resolve", paths: [path], content },
+          () => { proposal = null; streamed = ""; });
+    });
+}
+
+function resolveFailed(message) {
+  resolving = null;
+  streamed = "";
+  proposal = null;
+  flash = { ok: false, message };
+  announce(message);
+  draw(true);
+}
+
+/* Every rejection `fused.ai` can produce, in this view's own words. A server
+   with no AI configured is an ordinary answer here, not a bug in the view, so
+   none of these reaches the runtime's red traceback overlay. */
+function aiErrorText(err) {
+  const type = err && err.type;
+  const detail = (err && err.message) || "the request failed.";
+  if (type === "ai_unavailable") return "AI is not available on this server.";
+  if (type === "model_loading") return "A model is still loading. Try again in a moment.";
+  if (type === "unavailable") return "AI cannot run here: " + detail;
+  if (type === "cancelled") return "Cancelled.";
+  if (type === "timeout") return "The AI did not answer in time. Try again.";
+  if (type === "bad_request") return "The AI rejected that request: " + detail;
+  return "The AI could not help with that: " + detail;
+}
+
+function cancelResolve() {
+  /* Best-effort and deliberately not awaited: `cancel` only reaches a LOCAL
+     generation, and this view asks for a Claude model, so the honest thing is to
+     stop showing the panel immediately rather than to imply the tokens stopped.
+     The in-flight promise's continuations see `resolving === null` and bail. */
+  try { if (fused.ai && fused.ai.cancel) fused.ai.cancel(); } catch (err) { /* nothing to stop */ }
+  resolving = null;
+  streamed = "";
+  proposal = null;
+  announce("Stopped.");
+  draw(true);
+}
+
+/* One conflicted file -> a proposed resolution. `path` is repo-relative. */
+async function resolveWithAI(path) {
+  if (resolving !== null || aiBusy || busy !== null) return;
+  resolving = path;
+  streamed = "";
+  proposal = null;
+  flash = null;
+  draw(true);
+
+  let payload;
+  try {
+    payload = await fused.runPython(READER, { file, op: "conflicts" },
+                                    chan("conflicts"));
+  } catch (err) {
+    payload = { ok: false, message: err && err.message ? err.message : String(err) };
+  }
+  if (resolving !== path) return;              // cancelled while reading
+  if (!payload.ok) {
+    resolveFailed("Could not read the conflict: "
+                  + (payload.message || "git refused that."));
+    return;
+  }
+  const entry = (payload.files || []).find((f) => f.path === path);
+  if (!entry) {
+    /* The conflict went away between the click and the read — someone resolved
+       it in a terminal, or the operation was aborted. Not an error. */
+    resolveFailed(path + " is no longer conflicted.");
+    return;
+  }
+  if (entry.binary) {
+    resolveFailed(path + " is a binary file — pick a side with `git checkout "
+                  + "--ours`/`--theirs` instead.");
+    return;
+  }
+  if (!entry.content) {
+    resolveFailed("Could not read " + path + " to resolve it.");
+    return;
+  }
+
+  try {
+    const result = await fused.ai(conflictPrompt(payload, entry), {
+      systemPrompt: RESOLVE_SYSTEM,
+      model: RESOLVE_MODEL,
+      effort: "low",
+      onChunk: (text) => {
+        if (resolving !== path) return;
+        streamed += text;
+        const body = document.querySelector(".proposal .text");
+        if (body) body.textContent = streamed;
+      },
+    });
+    if (resolving !== path) return;
+    const text = cleanMessage(result.text);
+    if (!text) throw new Error("The AI returned nothing.");
+    const unresolvable = /^UNRESOLVABLE\b/.test(text);
+    resolving = null;
+    streamed = "";
+    proposal = {
+      path: path,
+      text: text,
+      unresolvable: unresolvable,
+      note: unresolvable
+        ? "The AI declined to resolve this one, so there is nothing to apply."
+        : "Nothing has been written yet. Applying replaces " + path
+          + " in your working tree; it is not staged and not committed."
+          + (entry.truncated
+             ? " NOTE: the file was longer than this view sends, so the AI saw"
+               + " only part of it — read the whole file before applying."
+             : ""),
+    };
+    announce(unresolvable ? "The AI could not resolve " + path
+                          : "A resolution for " + path + " is ready to review.");
+    draw(true);
+  } catch (err) {
+    if (resolving !== path) return;            // already cancelled
+    resolveFailed(aiErrorText(err));
+  }
+}
+
+function conflictPrompt(payload, entry) {
+  const parts = [];
+  const op = payload.operation
+    ? "git is part-way through a " + payload.operation + "."
+    : "The working tree has an unmerged file with no operation in flight "
+      + "(a conflicted `checkout --merge` or `stash pop`).";
+  parts.push(op);
+  if (payload.branch) parts.push("Current branch: " + payload.branch);
+  if (payload.theirs) parts.push("Merging in: " + payload.theirs);
+  if (payload.summary) parts.push("Operation summary: " + payload.summary);
+  const others = (payload.files || []).filter((f) => f.path !== entry.path);
+  if (others.length) {
+    parts.push("Other conflicted files in this repository (do NOT resolve them, "
+      + "they are context):\n" + others.map((f) => "- " + f.path).join("\n"));
+  }
+  parts.push("Resolve THIS file only: " + entry.path);
+  parts.push("Contents of " + entry.path + " as git left it:\n"
+    + entry.content
+    + (entry.truncated
+       ? "\n(The file was cut off at this view's size cap. If you cannot see the "
+         + "whole of every conflicted region, reply UNRESOLVABLE.)"
+       : ""));
+  parts.push("Reply with the complete resolved contents of " + entry.path + ".");
+  return parts.join("\n\n");
+}
+
+/* The secondary case: a git operation failed and the message is all the user
+   has. No file is involved, so this can only ever produce advice. */
+async function adviseOnError(message) {
+  if (resolving !== null || aiBusy || busy !== null) return;
+  resolving = "";
+  streamed = "";
+  proposal = null;
+  draw(true);
+
+  const repo = snapshot && snapshot.repo;
+  const parts = ["A git operation failed in a GUI. The error was:\n" + message];
+  if (repo) {
+    parts.push("Repository state: branch " + (repo.branch || "(detached)")
+      + (repo.upstream ? ", tracking " + repo.upstream : ", no upstream")
+      + ", " + (repo.ahead || 0) + " ahead / " + (repo.behind || 0) + " behind"
+      + ", working tree " + (repo.dirty ? "dirty" : "clean") + ".");
+  }
+  parts.push("What does this mean, and what should I run next?");
+
+  try {
+    const result = await fused.ai(parts.join("\n\n"), {
+      systemPrompt: ADVISE_SYSTEM,
+      model: RESOLVE_MODEL,
+      effort: "low",
+      onChunk: (text) => {
+        if (resolving !== "") return;
+        streamed += text;
+        const body = document.querySelector(".proposal .text");
+        if (body) body.textContent = streamed;
+      },
+    });
+    if (resolving !== "") return;
+    const text = cleanMessage(result.text);
+    if (!text) throw new Error("The AI returned nothing.");
+    resolving = null;
+    streamed = "";
+    proposal = {
+      path: null,
+      text: text,
+      unresolvable: false,
+      note: "Advice only — nothing here has been run, and this view will not "
+            + "run it. Copy what you need into a terminal.",
+    };
+    announce("The AI answered. Read it before running anything.");
+    draw(true);
+  } catch (err) {
+    if (resolving !== "") return;
+    resolveFailed(aiErrorText(err));
+  }
+}
+
 function commit(message) {
   if (!message.trim()) {
     flash = { ok: false, message: "Write a commit message before committing." };
@@ -1769,6 +2162,14 @@ function changeLine(repo, change, selected, kind) {
   const acts = el("div", { className: "acts" });
   const path = change.path;
   if (writable(repo, path)) {
+    /* A conflicted row gets the sparkle FIRST, because on a conflicted file it
+       is the action the user came for and Stage is the one that ends the
+       conflict — offering them the other way round invites a `git add` of a file
+       that still has markers in it. `change.conflicted` is the reader's answer
+       (git's porcelain rule), never re-derived from the status letters here. */
+    if (change.conflicted) {
+      acts.append(resolveButton(path, "Resolve " + path + " with AI"));
+    }
     if (kind === "staged") {
       acts.append(action("unstage:" + path, "−", {
         className: "icon", label: "Unstage " + path,
@@ -2157,6 +2558,16 @@ function pendingConfirm(data) {
         () => run("discard_all", { op: "discard_all" })),
     };
   }
+  if (op === "resolve") {
+    /* Answered inside the PROPOSAL PANEL, not in a list section, so this returns
+       nothing here — see `resolveConfirmBar`. Every other question in this view
+       belongs to a row, and the principle behind that ("the question sits next to
+       the thing it is about") points at the panel for this one: the thing it is
+       about is the proposed text, which is in the panel and nowhere else. A
+       conflicted file is also listed in BOTH the staged and the changes section,
+       so there is no single row to attach it to. */
+    return null;
+  }
   if (op === "stash_drop") {
     const split = rest.indexOf(":");
     if (split === -1) return null;
@@ -2400,9 +2811,29 @@ function render(data, stashes, diff) {
 
   const page = el("div", null);
   if (flash) {
-    page.append(el("div", { className: "flash" + (flash.ok ? "" : " bad"),
-                            textContent: flash.message }));
+    const note = el("div", { className: "flash" + (flash.ok ? "" : " bad") },
+                    el("span", { textContent: flash.message }));
+    /* The secondary case (GT-19): a git operation just failed and the message is
+       all the user has. The sparkle turns it into an explanation and a next
+       command — advice only, never a run. Offered on FAILURES alone, and not
+       while a proposal is already on screen or another call is in flight, so the
+       one panel below always has one subject. */
+    if (!flash.ok && resolving === null && proposal === null && !aiBusy) {
+      note.append(action("advise", icon(SPARK_GLYPH, 14), {
+        className: "icon ai",
+        label: "Ask AI what to do about this error",
+        title: "Ask AI what this error means and what to run next",
+        onClick: () => adviseOnError(flash.message),
+      }));
+    }
+    page.append(note);
   }
+  /* The proposal (or the call that will become one) sits above the toolbar: it is
+     the thing the user is being asked to read, and it must not be below the lists
+     it is about. One panel for both cases, so there is never a question about
+     which Apply belongs to which answer. */
+  const panel = proposalPanel();
+  if (panel) page.append(panel);
   page.append(toolbar(data));
   /* Guarded, not appended blind: `commitBox` returns null when nothing is
      staged, and `Node.append(null)` inserts the literal text "null". */

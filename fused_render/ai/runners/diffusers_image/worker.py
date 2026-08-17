@@ -39,6 +39,7 @@ import time
 # The base sits one directory up, in `runners/` — see mlx_text/worker.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import formats  # noqa: E402 - the shared format checks; see formats.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded pipeline and the device its generator wants. One per process.
@@ -52,23 +53,45 @@ _loaded = {}
 #: makes about what to suggest), not something to infer from a file listing. A
 #: model absent from here is not unsupported — it loads the ordinary way.
 #:
-#: `skip` names the WEIGHT files the quantized checkpoint replaces — never the
-#: whole subfolder. `from_single_file(config=<repo>, subfolder="transformer")`
-#: reads that subfolder's `config.json` to know what it is building, so a recipe
-#: that ignored `transformer/*` would leave a cache that still needs the network
-#: to load: "Download" would report success and then fail offline, which is the
-#: one promise that button makes.
+#: **`keep` is an ALLOW-list, and that is the whole design.** It was a deny-list
+#: naming `transformer/*.safetensors`, and it saved nothing: the FLUX.2 repo
+#: also ships `flux-2-klein-4b.safetensors` at its ROOT — the same 7.75GB of
+#: transformer weights again, bundled the way ComfyUI wants them — which no skip
+#: pattern matched, `from_pretrained` never opens, and the download therefore
+#: fetched. The recipe cost 18.6GB where the model needs 10.8. A deny-list has
+#: to predict every extra bundle a repo may carry (and repos gain them without
+#: warning); what `from_pretrained` READS is knowable and finite —
+#: `model_index.json` plus the component subfolders it names — so that is what
+#: is written down.
+#:
+#: The transformer's CONFIG is kept while its weights are not, and it is the one
+#: entry whose absence would be invisible until a machine went offline:
+#: `from_single_file(config=<repo>, subfolder="transformer")` reads it to know
+#: what it is building, so a recipe that dropped the whole subfolder would leave
+#: a cache that still needs the network to load — "Download" reporting success
+#: and then failing offline, which is the one promise that button makes.
+#:
+#: `repo` names the component repo the GGUF comes out of, and the FILENAME is
+#: read from `formats.COMPONENT_REPOS` rather than repeated here: that repo also
+#: lands in the Hub cache, where the AI Models page has to be able to say what
+#: it is, and the page runs in a process that cannot import this venv.
 _GGUF_RECIPES = {
     "black-forest-labs/FLUX.2-klein-4B": {
         "repo": "unsloth/FLUX.2-klein-4B-GGUF",
-        "file": "flux-2-klein-4b-Q4_K_M.gguf",
         "pipeline": "Flux2KleinPipeline",
         "transformer": "Flux2Transformer2DModel",
         "subfolder": "transformer",
-        "skip": ["transformer/*.safetensors", "transformer/*.bin",
-                 "transformer/*.safetensors.index.json"],
+        # `*` crosses `/` in fnmatch, so `tokenizer*/*` covers a `tokenizer_2`
+        # a future FLUX may add, and nothing at the root ever matches.
+        "keep": ["model_index.json", "scheduler/*", "tokenizer*/*",
+                 "text_encoder*/*", "vae/*", "transformer/config.json"],
     },
 }
+
+
+def _component_file(recipe):
+    """The single file to pull out of the recipe's component repo."""
+    return formats.COMPONENT_REPOS[recipe["repo"]]["file"]
 
 
 def _recipe(model_id):
@@ -82,24 +105,27 @@ def download(model_id):
     """Fetch what this model needs, and NOT what it doesn't.
 
     For a GGUF recipe that distinction is the whole point: the base repo's own
-    `transformer/` weights are the ~8GB bf16 component the quantized file
-    replaces, so downloading them would cost the user several gigabytes for
-    weights that are then ignored — and on a 16GB machine, the difference
-    between a model that runs and one that does not.
+    transformer weights are the ~8GB bf16 component the quantized file replaces,
+    so downloading them would cost the user several gigabytes for weights that
+    are then ignored — and on a 16GB machine, the difference between a model
+    that runs and one that does not.
 
-    Its CONFIG still comes down, though (`skip` names weight files, not the
-    subfolder), because a "download" that leaves a cache which cannot load
-    offline has not done the thing the button said it would.
+    The scope is `recipe["keep"]`, an ALLOW-list of what `from_pretrained`
+    opens; see `_GGUF_RECIPES` for why it is not the deny-list it started as.
+    The transformer's CONFIG is inside it, because a "download" that leaves a
+    cache which cannot load offline has not done the thing the button said it
+    would.
     """
     recipe = _recipe(model_id)
     if not recipe:
         return {"snapshot": worker_base.download_snapshot(model_id), "gguf": None}
 
     snapshot = worker_base.download_snapshot(
-        model_id, ignore_patterns=list(recipe["skip"]))
+        model_id, allow_patterns=list(recipe["keep"]))
+    filename = _component_file(recipe)
     gguf = worker_base.download_file(
-        recipe["repo"], recipe["file"],
-        detail=f"Fetching {recipe['file']} (quantized transformer)…")
+        recipe["repo"], filename,
+        detail=f"Fetching {filename} (quantized transformer)…")
     return {"snapshot": snapshot, "gguf": gguf}
 
 

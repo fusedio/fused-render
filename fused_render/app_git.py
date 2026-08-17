@@ -44,6 +44,23 @@ import time
 
 from fused_render.shell.seed import fused_dir
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 30
@@ -80,7 +97,7 @@ def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:
     _GIT_TIMEOUT; every caller in this file is already wrapped in a broad
     except Exception, so a hung git never escapes as an unhandled error."""
     return subprocess.run(
-        ["git", "-C", app_dir, *_IDENTITY, *args],
+        [_git_bin(), "-C", app_dir, *_IDENTITY, *args],
         capture_output=True, text=True, timeout=_GIT_TIMEOUT,
         close_fds=False,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,

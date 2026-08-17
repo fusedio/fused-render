@@ -80,11 +80,13 @@ import re
 import shutil
 import stat
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from fastapi import APIRouter, Body, Header
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import registry as _ai_registry
+from fused_render.ai.runners import formats
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -259,6 +261,12 @@ _FRIENDLIER_TAGS = {
     # text". It means a vision-language model: an image AND a prompt in, text
     # out, so the "+" is doing the work the hyphens could not.
     "image-text-to-text": "image + text to text",
+    # The audio half of the same shape, and the same reason: hyphens-to-spaces
+    # gives the unreadable "audio text to text". An audio-language model takes
+    # a RECORDING and a prompt and answers in text — which is not speech
+    # recognition (it is asked questions, not asked to transcribe) and is not
+    # something anything here can load.
+    "audio-text-to-text": "audio + text to text",
     "any-to-any": "any input to any output",
     # These two exist to make the CARD path and the ARCHITECTURE path agree on
     # one spelling. Left alone, a whisper model read from its card said
@@ -298,6 +306,27 @@ _ARCH_TASKS = (
 # …ForConditionalGeneration is the same head for "translate this" and "transcribe
 # this", so the model type is what separates them.
 _AUDIO_MODEL_TYPES = {"whisper", "speech_to_text", "speecht5", "seamless_m4t"}
+
+# …and the same head again for a vision-language model. This sub-config is how
+# a multimodal wrapper says so — a nested block per extra tower — and it is
+# keyed on rather than a list of model types because the list would need a new
+# entry for every family that ships (gemma3, gemma4, qwen3_5, whatever is
+# next), which is the maintenance that let the last two arrive mislabelled.
+#
+# **A `vision_config` and ONLY a `vision_config`.** An audio tower is not
+# evidence of a vision one, and treating any extra tower as multimodal-therefore
+# -VLM made `Qwen2AudioForConditionalGeneration` — audio, no vision — an "image
+# + text to text" model, which in this app means text generation and therefore a
+# Load button aimed at a runner that cannot use it. The gemma-4 checkpoints have
+# BOTH towers and are still vision-language models, which is why this is a test
+# for vision rather than a test for exactly-one-tower.
+_VISION_CONFIG = "vision_config"
+
+# The audio-only case, which is a real thing with no runner here: mlx-lm
+# resolves a checkpoint by importing `mlx_lm.models.<model_type>` and ships no
+# `qwen2_audio`, so this label lives in `NO_RUNNER_YET` and the card correctly
+# offers nothing to press.
+_AUDIO_CONFIG = "audio_config"
 
 
 # Storage width of each safetensors dtype, for the quantized case below. Only
@@ -348,6 +377,7 @@ def _quantization(config: dict) -> int | None:
 # and a tag we have no sentence for still shows its label and its source, which
 # is what an open vocabulary degrades to gracefully.
 _TASK_HELP = {
+    "audio + text to text": "Answers questions about a recording — an audio clip and a prompt in, text out.",
     "text generation": "Continues or answers a prompt in text — chat models, code models, completion.",
     "text-to-text generation": "Rewrites text into other text — translation, summarising, reformatting.",
     "fill mask": "Fills in blanked-out words in a sentence. Mostly a building block for other models.",
@@ -395,6 +425,11 @@ class _RepoMeta:
     # "4-bit", "8-bit" — what the checkpoint declares about its weights.
     quantization: str | None = None
     library: str | None = None
+    # Runner codes whose `load()` would accept this snapshot's FORMAT, from
+    # `ai/runners/formats.py` — the same evidence each worker checks before it
+    # imports anything. Empty is a real answer and the most useful one: no
+    # backend that ships reads this repo.
+    loaders: tuple[str, ...] = ()
 
 
 def _front_matter(snapshot_dir: str) -> dict[str, str]:
@@ -450,8 +485,24 @@ def _architecture_task(config: dict) -> str | None:
         return None
     for suffix, task in _ARCH_TASKS:
         if name.endswith(suffix):
-            if suffix == "ForConditionalGeneration" and config.get("model_type") in _AUDIO_MODEL_TYPES:
-                return "speech recognition"
+            if suffix == "ForConditionalGeneration":
+                # One head, three jobs, and the config is what tells them apart.
+                if config.get("model_type") in _AUDIO_MODEL_TYPES:
+                    return "speech recognition"
+                # A MULTIMODAL WRAPPER — a language model with a vision (and
+                # sometimes audio) tower bolted on, which is what every current
+                # Qwen3.5 and gemma-4 checkpoint is, including the ones this
+                # app's own MLX catalog recommends. mlx-lm loads the language
+                # tower and ignores the rest, so it is a chat model here; read
+                # as a bare `…ForConditionalGeneration` it came out
+                # "text-to-text generation", a label in NO_RUNNER_YET, and the
+                # newest models the app suggests arrived on this page as T5s
+                # with no Load button. The label is the one the CARD path
+                # already produces for these repos, so the two agree.
+                if _VISION_CONFIG in config:
+                    return "image + text to text"
+                if _AUDIO_CONFIG in config:
+                    return "audio + text to text"
             return task
     return None
 
@@ -503,6 +554,46 @@ def _weight_files(snapshot_dir: str) -> list[str]:
             counted.add(key)
             found.append(path)
     return found
+
+
+def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str] | None:
+    """What the WEIGHT LAYOUT says this is, when it says anything at all.
+
+    Only the formats that are decisive about the modality — a `weights.npz` is
+    a Whisper conversion and can be nothing else; a folder of mflux components
+    is a diffusion pipeline. A directory of safetensors says nothing about what
+    the model does, and is deliberately not here.
+
+    Each predicate is `formats`', not a second reading of the same filenames,
+    so the label a card shows and the engine that would load it are decided
+    from one description of each backend.
+
+    **Stricter than `formats.loaders` for CTranslate2 on purpose.** The runner
+    loads anything with a `model.bin`, which is the right test for a loader and
+    too loose for a label: "speech recognition" printed on a card because a
+    stray pickle happened to be called model.bin would be a confident lie.
+    """
+    if formats.is_ct2_whisper(names, config):
+        return "speech recognition", "its CTranslate2 Whisper layout"
+    if formats.has_mlx_whisper_weights(names):
+        return "speech recognition", "its MLX Whisper weights"
+    if repo_id in formats.MFLUX_VARIANTS and formats.has_mflux_components(dirnames):
+        return "image generation", "its MLX diffusion components"
+    return None
+
+
+def _has_torch_weights(snapshot_dir: str) -> bool:
+    """Is there anything in this revision torch could open?
+
+    A WALK, like `_weight_files`, and for the same reason: a diffusers pipeline
+    keeps its weights per component. The suffixes are `formats.TORCH_WEIGHTS`
+    rather than a list spelled here — this is the page's copy of the question
+    `transformers_text/worker.py` asks before it refuses a repo.
+    """
+    for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
+        if any(name.endswith(formats.TORCH_WEIGHTS) for name in filenames):
+            return True
+    return False
 
 
 def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[int, bool]:
@@ -604,6 +695,15 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         names = set(os.listdir(snapshot))
     except OSError:
         names = set()
+    # The snapshot's top-level FOLDERS, and the repo this is. Both are read here
+    # rather than beside the `loaders` call below, because the evidence chain
+    # now uses them too: an mflux conversion is recognised by its component
+    # folders and by its id being one this build can name a variant class for.
+    try:
+        dirnames = {e.name for e in os.scandir(snapshot) if _entry_is_dir(e)}
+    except OSError:
+        dirnames = set()
+    repo_id = _repo_id_of(os.path.basename(os.path.normpath(repo_dir)))
 
     front = _front_matter(snapshot)
     library = front.get("library_name")
@@ -611,8 +711,15 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     if tag:
         meta.task, meta.task_source = _pipeline_task(tag), "the model card's pipeline_tag"
 
-    if meta.task is None and "model_index.json" in names:
-        index = _read_json(os.path.join(snapshot, "model_index.json")) or {}
+    # …and `model_index.json` OUTRANKS it, which is the one place the card is
+    # not the best answer. A card's `pipeline_tag` is one headline for a model
+    # FAMILY — `black-forest-labs/FLUX.2-klein-4B` leads with `image-to-image`,
+    # a label no runner here serves — while this file names the pipeline that
+    # is actually in this snapshot, written by the library that will load it.
+    # Ranking the card first took the Load button off the app's own recommended
+    # image model, on the tab beside the one recommending it.
+    if formats.DIFFUSERS_INDEX in names:
+        index = _read_json(os.path.join(snapshot, formats.DIFFUSERS_INDEX)) or {}
         class_name = index.get("_class_name")
         if isinstance(class_name, str) and class_name:
             meta.task = _diffusers_task(class_name)
@@ -632,9 +739,41 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         if task:
             meta.task, meta.task_source = task, "the architecture in config.json"
 
-    if meta.task is None and any(n.lower().endswith(".gguf") for n in names):
-        meta.task, meta.task_source = "text generation", "a GGUF weights file"
+    # A GGUF file names the LIBRARY and nothing else. It used to name the task
+    # too — "text generation", unconditionally — which put a Load button on
+    # `unsloth/FLUX.2-klein-4B-GGUF`, an image model, and is the precise failure
+    # `capability_for_task` warns about. A GGUF is a container, not a modality,
+    # and no runner that ships loads a GGUF-only repo anyway (transformers
+    # refuses one by name), so the guess could never have been right in a way
+    # that mattered: it only ever produced a button that fails.
+    if any(n.lower().endswith(".gguf") for n in names):
         library = library or "gguf"
+
+    # Last: the WEIGHT LAYOUT, which answers where nothing above did AND
+    # overrules an answer this app cannot act on.
+    #
+    # The first half is the CTranslate2 case — a conversion carries no
+    # pipeline_tag and no `architectures`, so this app's own recommended speech
+    # model showed a card with no task line and no Load button, while
+    # `faster_whisper/worker.py` recognises it from one filename.
+    #
+    # The second half is `mlx-community/FLUX.2-Klein-4B-4bit`, and it is why
+    # this runs when a task is already known: it has no config.json at all, so
+    # its card's `image-to-image` tag stood — a label in NO_RUNNER_YET — while
+    # the very same snapshot is an mflux image model this machine serves. That
+    # put ONE model on the page under two labels (the diffusers repo beside it
+    # reads "image generation"), and it put a Load button under a task the app
+    # says nothing can run, because the button keys on the FORMAT and the label
+    # did not. Decisive format evidence settles both, so they cannot disagree.
+    #
+    # Only where the current answer maps to no capability, which is what keeps
+    # this from overruling a card that was right: a genuine img2img repo with no
+    # such evidence keeps its label, and so does a VLM whose label already
+    # resolves to text generation.
+    if meta.task is None or _ai_registry.capability_for_task(meta.task) is None:
+        found = _format_task(repo_id, names, dirnames, config)
+        if found:
+            meta.task, meta.task_source = found
 
     if meta.task:
         meta.task_help = _TASK_HELP.get(meta.task)
@@ -656,6 +795,19 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     meta.params = total or None
     meta.params_estimated = estimated
     meta.library = library
+
+    # Which backend's `load()` would accept this, by format alone. Cached with
+    # everything else because it reads the same listing and the same config —
+    # and asked of `formats`, never re-derived here: a second copy of "what a
+    # CTranslate2 repo looks like" is how a card comes to promise a load the
+    # runner refuses.
+    meta.loaders = formats.loaders(
+        repo_id=repo_id,
+        names=names,
+        dirnames=dirnames,
+        config=config,
+        torch_weights=_has_torch_weights(snapshot),
+    )
 
     _META_CACHE[snapshot] = (stamp, meta)
     return meta
@@ -754,12 +906,186 @@ def _refs_by_commit(repo_dir: str) -> dict[str, str]:
     return out
 
 
+def _engine(meta: _RepoMeta, capability: str | None) -> tuple[dict | None, str | None]:
+    """Which backend would load this repo, and the capability it would load it
+    AS — `(None, capability)` when nothing here reads the format.
+
+    Two questions, deliberately answered together, because either alone lies.
+    The FORMAT says which runners could open it (`meta.loaders`); the REGISTRY
+    says which of those runs on this machine and which is serving right now.
+    A card that showed only the first would offer MLX Whisper on a PC; a card
+    that showed only the second would offer the CTranslate2 runner an MLX repo.
+
+    **"Nothing reads this" and "what reads it does not run here" are different
+    sentences**, so an unavailable runner is still reported — with the
+    registry's own reason. A Windows user looking at `mlx-community/whisper-…`
+    has not made a mistake they can fix by deleting it; they have a Mac's model.
+
+    The capability comes back because for some repos the FORMAT is the only
+    thing that knows it: a CT2 conversion has no pipeline_tag and an MLX
+    conversion has no config, and both are speech models beyond doubt. Only the
+    decisive formats may answer — a directory of safetensors says nothing about
+    the modality (`formats.DECISIVE`).
+    """
+    if not meta.loaders:
+        return None, capability
+    runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
+    if capability is None:
+        decisive = [r for r in runners if r.code in formats.DECISIVE]
+        capability = decisive[0].capability if decisive else None
+    if capability is None:
+        return None, None
+    candidates = [r for r in runners if r.capability == capability]
+    if not candidates:
+        # The trap this whole field exists for: the task is one this app serves
+        # and the FORMAT is one no runner of that capability reads. That is
+        # `openai/whisper-large-v3` — a speech model, and unloadable by both
+        # speech runners that ship.
+        return None, capability
+    # **The engine that would SERVE, not merely one that could read it.** A
+    # capability holds one resident model and the registry picks which backend
+    # loads it, so a repo readable by the OTHER backend is not loadable today
+    # however available that backend is: `black-forest-labs/FLUX.2-klein-4B` is
+    # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
+    # reaches a runner that refuses it by name. That is the exact promise this
+    # field exists to stop the page making.
+    serving = _ai_registry.for_capability(capability)
+    if serving is not None and any(r.code == serving.code for r in candidates):
+        status = serving.available()
+        return {
+            "code": serving.code,
+            # Both, named so a reader cannot pick the wrong one by accident: the
+            # card's tag wears the short name, and the full one stays here for
+            # anything that has to match the Preferences picker word for word.
+            "label": serving.label,
+            "shortLabel": serving.short,
+            "available": status.ok,
+            "reason": status.reason or None,
+        }, capability
+    # Otherwise: name the backend that DOES read it, and say what stands in the
+    # way. Both reasons are actionable and they are different actions — one is
+    # "this needs another machine", the other "this needs the other engine,
+    # which is one tab away on the page this sentence is printed on".
+    runner = next((r for r in candidates if r.available().ok), candidates[0])
+    status = runner.available()
+    reason = status.reason or None
+    if status.ok and serving is not None:
+        # Names the TAB, not a settings page: the engine picker moved onto
+        # /ai-models, so the remedy for a card the user is looking at is beside
+        # the card. Directions are worth less the further away they point.
+        reason = (f"{capability} is set to {serving.short}, which does not read "
+                  f"this format — switch it on the Engines tab")
+    elif status.ok:
+        reason = f"nothing serves {capability} on this machine"
+    return {
+        "code": runner.code,
+        "label": runner.label,
+        "shortLabel": runner.short,
+        "available": False,
+        "reason": reason,
+    }, capability
+
+
+class CacheReading(NamedTuple):
+    """What the local cache says a repo is, for a caller that is not this page.
+
+    `cached` is whether there is a revision to read at all; `capability` is what
+    a load of it would be (None when nothing here can tell); `looks_like` is the
+    same evidence in words, for an error message.
+    """
+
+    cached: bool
+    capability: str | None
+    looks_like: str | None
+
+
+def cached_capability(repo_id: str) -> CacheReading:
+    """Which capability `repo_id` would load as, read off the local snapshot.
+
+    **Exported, and read by the load route** (`ai_runtime.py`, D321). A load
+    that omitted `capability` used to mean text generation unconditionally, so
+    an MLX diffusion repo went to mlx-lm and came back as a FileNotFoundError
+    about a `config.json` that repo has never had. The evidence that settles it
+    is the evidence this page already draws its Load button from — so it is
+    asked HERE rather than re-derived there, because a card that offers Load and
+    a load that then refuses must not be able to disagree.
+
+    Local only: `_repo_meta` reads the snapshot directory and nothing else, so
+    this adds no network call to a path that had none. A repo with no revision
+    on disk is `cached=False` — an interrupted download leaves a folder behind,
+    and a folder is not evidence.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    # Built from a request body, so it is checked to be one path segment, the
+    # same way `_segment` checks a delete target. Anything else reads as "not
+    # cached" rather than as a path to go looking at.
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return CacheReading(False, None, None)
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
+        return CacheReading(False, None, None)
+
+    meta = _repo_meta(repo_dir)
+    # The page's own join, in the page's own order: the task label first, then
+    # the decisive formats, which is what `_engine` exists to combine.
+    _row, capability = _engine(meta, _ai_registry.capability_for_task(meta.task))
+    if capability is None and meta.loaders:
+        # Nothing DECISIVE, but the runners that read this format may still
+        # agree about what it is: a bare directory of safetensors is read only
+        # by the two TEXT runners, and their shared capability is a fact about
+        # the format rather than a guess about the model. This is what keeps
+        # every existing `load(id)` on an unlabelled chat repo working.
+        found = {r.capability for r in _ai_registry.all_runners()
+                 if r.code in meta.loaders}
+        if len(found) == 1:
+            capability = found.pop()
+
+    component = formats.component(repo_id)
+    if component:
+        # A component is nobody's `load()` target, and the refusal reads much
+        # better naming what it actually is: "a speech detector that belongs to
+        # MLX Whisper" rather than "a model repo".
+        return CacheReading(
+            True, None,
+            f"{_article(component['part'])} {component['part']} that belongs to "
+            f"{component['owner']}")
+    if meta.task:
+        looks_like = f"{_article(meta.task)} {meta.task} model"
+    elif meta.library:
+        looks_like = f"{_article(meta.library)} {meta.library} repo"
+    else:
+        looks_like = None
+    return CacheReading(True, capability, looks_like)
+
+
+def _article(word: str) -> str:
+    """"a" or "an". A label this reads wrong ("a image to image model") is a
+    sentence a page author is meant to act on, so it is worth the four lines."""
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
 def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
     repo_dir = os.path.join(cache_dir, dirname)
     scan = _scan_repo(repo_dir)
     meta = _repo_meta(repo_dir)
+    repo_id = _repo_id_of(dirname)
+    # A repo the USER never chose: the GGUF transformer the diffusers recipe
+    # swaps in, the Silero detector the MLX whisper runner filters silence with.
+    # Both land in this cache like any model and neither is one, so the engine
+    # join is not asked at all — its two answers here would be "no engine" (true,
+    # and no explanation of a 2.4GB row) or, if a component ever came in a
+    # loadable shape, a Load button for something nothing serves.
+    component = formats.component(repo_id)
+    capability = (
+        _ai_registry.capability_for_task(meta.task)
+        if kind == "model" and component is None else None
+    )
+    engine, capability = (
+        _engine(meta, capability) if kind == "model" and component is None
+        else (None, None)
+    )
     return {
-        "id": _repo_id_of(dirname),
+        "id": repo_id,
         # The cache folder name, which is what a delete request names (never a
         # path — see the module docstring).
         "dir": dirname,
@@ -799,9 +1125,21 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         # mapping, and would cheerfully try to load a diffusion model as a chat
         # model. None for a dataset, a Space, an embedding model, or anything no
         # runner serves yet.
-        "capability": (
-            _ai_registry.capability_for_task(meta.task) if kind == "model" else None
-        ),
+        "capability": capability,
+        # WHICH BACKEND would load it, or null when nothing here reads the
+        # format — the fact a card most needs and the one it did not have. See
+        # `_engine`: null and an unavailable runner are different answers.
+        "engine": engine,
+        # …or what this is a PART of, when it is not a model at all. Null for
+        # everything a user downloaded on purpose. The bytes stay on the page
+        # and stay deletable — this page's job includes showing what is eating
+        # the disk, and hiding a 2.4GB row would be the opposite of that — but
+        # the page files these under their own "Fetched by engines" heading, the
+        # card says whose it is, and its Load is disabled with that as the
+        # reason (never absent: a control that vanishes teaches nothing). See
+        # `runners/formats.COMPONENT_REPOS`, which is where the ids live because
+        # they are named inside runner venvs this process cannot import.
+        "component": dict(component, id=repo_id) if component else None,
         "revisions": _revisions(repo_dir),
         "refs": _ref_names(repo_dir),
     }

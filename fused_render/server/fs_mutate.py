@@ -24,6 +24,23 @@ from fused_render.server.mount import _invalidate_stat_cache, _is_under_snapshot
 from fused_render.server.walk import _mount_list_error_response
 from fused_render.shell import storage as shell_storage
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 router = APIRouter()
 
 
@@ -375,11 +392,19 @@ _GIT_ENV = {
 
 def _run_git(args: list[str], cwd: str):
     """Run git with an argv list (never a shell), no stdin, and a timeout.
-    Returns the CompletedProcess, or None when git is missing/hung."""
+    Returns the CompletedProcess, or None when git is missing/hung.
+
+    `cwd` becomes `-C <cwd>` in the argv rather than a `cwd=` kwarg, and that is
+    load-bearing: `cwd=` forces CPython onto the fork path, where a process with
+    libproj resident dies in PROJ's atfork handler before exec (rc -11, silently).
+    `-C` is also stricter — git chdirs there itself, so this process's working
+    directory cannot change the answer. Callers therefore pass their own args
+    WITHOUT a leading `-C`.
+    """
     try:
         return subprocess.run(
-            ["git", "--no-pager", *args],
-            cwd=cwd,
+            [_git_bin(), "--no-pager", "-C", cwd, *args],
+            close_fds=False,
             env={**os.environ, **_GIT_ENV},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -397,7 +422,7 @@ def _has_any_ref(src: str) -> bool:
     actually needs. `for-each-ref --count=1` exits 0 whether or not anything
     matches and prints a refname only when one exists, so emptiness is read off
     stdout rather than the exit code."""
-    refs = _run_git(["-C", src, "for-each-ref", "--count=1",
+    refs = _run_git(["for-each-ref", "--count=1",
                      "--format=%(refname)"], src)
     return refs is not None and refs.returncode == 0 and bool(refs.stdout.strip())
 
@@ -536,7 +561,7 @@ def _fs_compress(body: dict, x_fused: str | None):
             if not _has_any_ref(src):
                 return _error(f"{src} has no commits yet")
         else:
-            head = _run_git(["-C", src, "rev-parse", "--verify", "HEAD"], src)
+            head = _run_git(["rev-parse", "--verify", "HEAD"], src)
             if head is None or head.returncode != 0:
                 # A repo with no refs at all really has no commits; one whose
                 # HEAD alone is unborn is full of history that just isn't
@@ -554,8 +579,8 @@ def _fs_compress(body: dict, x_fused: str | None):
             except OSError as e:
                 return _error(f"cannot compress {src}: {e}")
         else:
-            args = (["-C", src, "bundle", "create", tmp, "--all"] if fmt == "git-bundle"
-                    else ["-C", src, "archive", "--format=tar.gz", "-o", tmp, "HEAD"])
+            args = (["bundle", "create", tmp, "--all"] if fmt == "git-bundle"
+                    else ["archive", "--format=tar.gz", "-o", tmp, "HEAD"])
             proc = _run_git(args, src)
             if proc is None:
                 return _error(f"cannot compress {src}: git is unavailable or timed out")
