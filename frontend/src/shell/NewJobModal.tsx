@@ -1148,11 +1148,12 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 }
 
 // ---- Naming the task -----------------------------------------------------
-// Title is REQUIRED (Akshil, 2026-08-17), which is a change of kind and not
-// just of copy: a required field the form opens BLANK is a form that refuses to
-// save until the user does clerical work, so every path that can name the task
-// arrives with a name in the box. The field is then a name to accept or edit,
-// never a name to invent.
+// Title is REQUIRED (Akshil, 2026-08-17), and it opens prefilled wherever the
+// app honestly knows a name — which is any path with a SESSION behind it (see
+// the precedence below). Where it does not, the field opens blank and the
+// requirement is what asks for a name. That is the trade, stated plainly: a
+// blank required field costs the user one line of typing, while a field
+// prefilled with a guess costs them a task named after its own description.
 //
 // The placeholder is left with only the job a placeholder can honestly do —
 // saying which field this is. It used to say "optional, filled in
@@ -1161,48 +1162,106 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 // accept is the worst of the three states.
 export const TITLE_PLACEHOLDER = "Title";
 
-// The precedence the server uses (tasks.py `_title`): the user's own title,
-// then Claude Code's `ai-title` for the session, then the first line of the
-// message. The form now mirrors it, because it has to show what the task would
-// have been called — this function is the last of the three steps, shared by
-// the two paths that need it (a chat handoff's draft, an Edit's stored prose).
-//
-// One line, and never the whole thing: an <input> would strip the newlines
-// anyway, and the first line is what `_title` itself takes.
+// One line of a block of prose, trimmed. Used to reduce a multi-line value to
+// something an <input> can hold (it would strip the newlines anyway) and to ask
+// "is this string the message I am about to send?" below.
 export function firstLine(text: string): string {
   return text.trim().split("\n")[0]?.trim() ?? "";
 }
 
-// What Title OPENS on, synchronously — so the field is never blank on arrival
-// even on the first paint, before the tasks lookup below has answered.
+// -- The title names the SESSION, never the message ---------------------------
+// The bug this replaced (Akshil, 2026-08-17): scheduling from a Claude chat
+// prefilled Title with `firstLine(ask)` — the very message being scheduled — so
+// a long message came out duplicated, once as the title and once as the
+// description. "The description is what we type in the chat box"; the title is
+// what the CONVERSATION is called.
 //
-// A stored title wins outright (it is the top of the precedence, and an edit
-// that quietly replaced it would be a data loss). Otherwise the first line of
-// the ask, which is `_title`'s own last resort: it is what the server would
-// have named this task, so it is the honest thing to show — and it means an
-// UNTITLED task can still be edited and saved, which a blank required field
-// would make impossible.
-export function initialTitleOf(
-  entry?: ScheduledMessage | null,
-  chatDraft?: string | null,
-): string {
-  return (entry?.title ?? "").trim() || firstLine(initialAskOf(entry, chatDraft));
+// So the precedence is now, in order:
+//   1. the task's own stored title, if a user ever set one;
+//   2. the SESSION's resolved title — Claude Code's `ai-title` record, which is
+//      the "cloud summarised it" case, served on /api/tasks as `title` with
+//      `title_source: "ai"`;
+//   3. the session's FIRST user message, shortened — "the first message that we
+//      had". Also /api/tasks, as `title_source: "message"`: the server's own
+//      last resort is the first line of the transcript's first user prompt
+//      (tasks.py `_title` reading `tasks_store.head`);
+//   4. nothing. The field opens blank and the user types a name.
+// Never the composed message, at any step. Steps 2 and 3 need a fetch, so they
+// live in the /api/tasks effect; 1 and 4 are what `initialTitleOf` decides
+// synchronously.
+
+// How long a title derived from a first message is allowed to be. A name, not a
+// summary: this is the whole point of step 3 — a 200-char first line (the
+// server's own cap) is the duplication bug again in a longer field.
+export const TITLE_MAX = 60;
+
+// A first message reduced to a name: one line, clamped, cut on a word boundary.
+// No ellipsis — the field is a NAME the user can edit, and "…" is punctuation
+// they would have to delete. A single word longer than the clamp has no boundary
+// to cut on, so it is cut hard; that is the only mid-word cut here.
+export function shortTitle(text: string, max = TITLE_MAX): string {
+  const line = firstLine(text);
+  if (line.length <= max) return line;
+  // max + 1 so a value whose max'th character is the space gets the whole word
+  // before it rather than losing it.
+  const boundary = line.slice(0, max + 1).lastIndexOf(" ");
+  return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
 }
 
-// …and the middle step, which only /api/tasks can answer: the name the session
-// this form was opened from already carries. Only a real NAME counts — the
-// session's own `ai-title`, or a title the user has already given the thread. A
-// `message`-sourced title is the first line of the first prompt echoed back,
-// which is the same answer `initialTitleOf` already derived locally, so
-// replacing one with the other would be motion without meaning.
+// What Title OPENS on, synchronously. Only step 1 and step 4: a stored title
+// wins outright (an edit that quietly replaced it would be data loss), and
+// otherwise the field is BLANK until the /api/tasks lookup answers.
+//
+// It used to derive `firstLine(initialAskOf(...))` here, which is what put the
+// scheduled message in the title. Blank is the honest synchronous answer instead
+// — the form has nothing to say about the session yet — and blank is safe even
+// though Title is required: the requirement bites at Save, by which time either
+// the lookup has filled the field or the user has.
+export function initialTitleOf(entry?: ScheduledMessage | null): string {
+  return (entry?.title ?? "").trim();
+}
+
+// Steps 2 and 3, which only /api/tasks can answer: the name the session this
+// form was opened from already carries. A session IS a task there, so the row
+// keyed on it has both the resolved `title` and the `title_source` saying which
+// branch produced it — and that provenance is the whole reason this reads the
+// API instead of a string in the deep link.
+//
+// `ask` is the message being composed or edited, and it is here to be REFUSED.
+// A `message`-sourced title used to be dropped outright, on the grounds that it
+// was the first line of the first prompt echoed back and therefore byte-identical
+// to what the form had already derived locally. That reasoning inverted with the
+// bug above: the local derivation is now the thing we are removing, so a
+// `message`-sourced title is the ONLY way to reach step 3 — "the first message
+// that we had" — and dropping it would leave a session with no `ai-title` yet
+// falling straight through to blank.
+//
+// It cannot be accepted blind, though, because `_title`'s message branch has a
+// second source: when the session has no readable transcript, it falls back to
+// the first line of the earliest schedule ENTRY's message. On a task scheduled
+// from this very form that is the message being scheduled — the duplication,
+// arriving by way of the server. So the branch is accepted only when it is not
+// the head of `ask`. Checked in one direction on purpose: a stored title that
+// begins the message being sent is that message, while a longer title that
+// merely starts with it is a real first prompt the composer's draft happens to
+// echo.
+//
+// Steps 1 and 2 are taken verbatim — a name a human typed and a name Claude
+// wrote are both already names, and shortening either would edit someone's
+// words. Only step 3 is a message being reduced to one.
 export function sessionTitleOf(
   tasks: readonly { session_id: string; title: string; title_source: string }[],
   sessionId: string,
+  ask = "",
 ): string {
   if (!sessionId) return "";
   const task = tasks.find((t) => t.session_id === sessionId);
-  if (!task || task.title_source === "message") return "";
-  return task.title.trim();
+  const title = (task?.title ?? "").trim();
+  if (!title) return "";
+  if (task?.title_source !== "message") return title;
+  const composed = firstLine(ask);
+  if (composed !== "" && composed.startsWith(title)) return "";
+  return shortTitle(title);
 }
 
 // What the Repeat checkbox does to the repeat state. Unticking CLEARS: the key
@@ -1320,11 +1379,10 @@ export function buildSchedulePayload(form: {
   // refuses Save on an empty one.
   message: string;
   // The FIRST field on the card, and REQUIRED as of 2026-08-17: `saveEnabled`
-  // refuses Save on a blank one, and every path that opens the form arrives with
-  // a name already in it (initialTitleOf). The wire contract is unchanged — the
-  // server still names an untitled task from the transcript's `ai-title` (design
-  // §4) — so the empty branch below stays as the honest fallback for a caller
-  // this form's gate never saw.
+  // refuses Save on a blank one, so what reaches here is a name a human accepted
+  // or typed. The wire contract is unchanged — the server still names an untitled
+  // task from the transcript's `ai-title` (design §4) — so the empty branch below
+  // stays as the honest fallback for a caller this form's gate never saw.
   title: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
@@ -1409,10 +1467,12 @@ export function buildSchedulePayload(form: {
 // nothing to do is not a task, and Title because a task nobody can name in a
 // list is not much better (Akshil, 2026-08-17).
 //
-// Title being required costs the user nothing, and that is the condition on
-// which it was made required: the form opens with a name in the field on every
-// path that has one to offer (initialTitleOf, and the /api/tasks lookup behind
-// it), so the gate only ever fires on a title the user deliberately cleared.
+// Title being required is not softened by the field sometimes opening blank —
+// that is the point of the requirement rather than a hole in it. The form fills
+// the field from the session wherever a session has a name (initialTitleOf plus
+// the /api/tasks lookup behind it); where nothing honest is available it asks,
+// which is strictly better than the alternative it replaced — naming the task
+// after the message it is scheduling.
 //
 // Both use `.trim()`, because a textarea full of newlines is not an instruction
 // and a title of spaces is not a name. Save is `disabled` on a false — nothing
@@ -1496,17 +1556,17 @@ export default function NewJobModal({
   // modal (QA 2026-08-14).
   const initialAsk = initialAskOf(editing, initialMessage);
   const [message, setMessage] = useState(initialAsk);
-  // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17) — which is
-  // only reasonable because it opens PREFILLED. `initialTitleOf` is the
-  // synchronous part of the server's own precedence: a stored title, else the
-  // first line of the ask. The `ai-title` step needs a fetch and lands later
-  // (the /api/tasks effect below), which is exactly why the local derivation
-  // exists — a required field must not be blank on the first paint, and an entry
-  // written before this field existed still has to be editable.
+  // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17).
+  // `initialTitleOf` is only the synchronous half of the precedence: a stored
+  // title, else blank. The two SESSION steps — the thread's `ai-title`, then its
+  // first user message — need a fetch and land in the /api/tasks effect below.
+  // Blank on the first paint is deliberate now: the alternative was deriving a
+  // name from the ask, which is exactly how a long scheduled message ended up
+  // duplicated into the title.
   //
   // Held in a const for the same reason `initialAsk` is: the BASELINE (`initial`)
   // has to be the identical value or an untouched Edit reads as dirty.
-  const derivedTitle = initialTitleOf(editing, initialMessage);
+  const derivedTitle = initialTitleOf(editing);
   const [title, setTitle] = useState(derivedTitle);
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -1876,13 +1936,19 @@ export default function NewJobModal({
   const [replaced, setReplaced] = useState(false);
 
   // ---- The session's own name, prefilled into Title ----------------------
+  // Steps 2 and 3 of the precedence (see sessionTitleOf): what the CONVERSATION
+  // is called — its `ai-title`, else its first user message — never the message
+  // being scheduled.
+  //
   // Sourced from /api/tasks rather than from the deep link or a new endpoint:
   // a session IS a task there (tasks.py `_collect`), so the row keyed on it
   // already carries the resolved title AND `title_source`, which is what says
-  // whether the name is a real one. The alternative — having the chat template
-  // put its title in the URL beside `message`, `target`, `session_id` and
-  // `back` — would hand us a string with no provenance, and one that is stale
-  // from the moment the link is built.
+  // WHICH of the two steps produced it — and the first user message is only
+  // reachable that way, since the server resolves it (`tasks_store.head`) but
+  // does not put it on the wire under a name of its own. The alternative —
+  // having the chat template put its title in the URL beside `message`,
+  // `target`, `session_id` and `back` — would hand us a string with no
+  // provenance, and one that is stale from the moment the link is built.
   //
   // BOTH paths that have a session use it, and for the same reason: the chat
   // this form was deep-linked from (?new=1&session_id=…), and whatever session
@@ -1893,10 +1959,13 @@ export default function NewJobModal({
   // only name that exists. Refusing to look it up would leave the user retyping
   // a name the app already knows.
   //
-  // It only ever replaces the DERIVED title, never a typed one and never a
-  // stored one — same discipline as the getConfig effect above, and for the same
-  // bug: `initial` moves with it, because a value the user did not type must not
-  // read as dirty and arm the close-twice guard.
+  // It only ever replaces the SYNCHRONOUS title (usually the empty string),
+  // never a typed one and never a stored one — same discipline as the getConfig
+  // effect above, and for the same bug: `initial` moves with it, because a value
+  // the user did not type must not read as dirty and arm the close-twice guard.
+  // That pairing matters more now that the field starts blank: without it, every
+  // form opened from a chat would arrive already dirty and its ✕ would need two
+  // presses before the user had touched anything.
   const nameSession = (editing?.session_id || chatSessionId) ?? "";
   useEffect(() => {
     // A stored title is the top of the precedence — nothing may outrank it.
@@ -1904,20 +1973,25 @@ export default function NewJobModal({
     let alive = true;
     getTasks()
       .then(({ tasks }) => {
-        const resolved = sessionTitleOf(tasks, nameSession);
+        // `initialAsk`, not the live `message`: the question is whether the
+        // resolved name is the message being SCHEDULED, which is what the form
+        // opened on. Reading the live value would also refetch the whole task
+        // list on every keystroke in the description.
+        const resolved = sessionTitleOf(tasks, nameSession, initialAsk);
         if (!alive || !resolved) return;
         setTitle((prev) => (prev === derivedTitle ? resolved : prev));
         setInitial((prev) =>
           prev.title === derivedTitle ? { ...prev, title: resolved } : prev,
         );
       })
-      // A failed lookup is not worth reporting: the derived title is already a
-      // complete, saveable answer, so the form simply keeps it.
+      // A failed lookup is not worth reporting: the field is either already
+      // showing a stored title or blank with Save asking for one, and neither
+      // state is improved by an error banner about a name.
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [editing, nameSession, derivedTitle]);
+  }, [editing, nameSession, derivedTitle, initialAsk]);
 
   // ---- Delete ------------------------------------------------------------
   // Only when EDITING, and only for something the server will actually
@@ -2132,16 +2206,16 @@ export default function NewJobModal({
             leading icon, because a 14px glyph beside a 20px face read as
             debris and the gutter is what says "this is a detail".
 
-            REQUIRED, and PREFILLED — the two together, because either alone
-            would be worse than what was here before (Akshil, 2026-08-17). Every
-            task the user can see in a list has a name, so the field is filled
-            from the same precedence the server uses: a stored title, this
-            session's own `ai-title`, else the first line of the ask
-            (initialTitleOf, plus the /api/tasks lookup above). What the user
-            does here is accept or edit a name, never invent one — so `ready`
-            can refuse a blank one without ever making the form feel like
-            paperwork, and `aria-required` says so rather than leaving a
-            disabled Save as the only hint.
+            REQUIRED, and prefilled from the SESSION where there is one to read
+            (Akshil, 2026-08-17): its `ai-title`, else its first user message —
+            see sessionTitleOf for the whole precedence and for what it refuses.
+            What it will never be again is the first line of the ask: that named
+            every chat-scheduled task after the message it was scheduling, so a
+            long message arrived duplicated into both fields. Opened from the New
+            task button, or from a session with nothing to say for itself, the
+            field is blank and the requirement is what asks for a name —
+            `aria-required` says so rather than leaving a disabled Save as the
+            only hint.
 
             An <input>, not a textarea, and that is the whole overflow answer:
             one line that never wraps and never grows. Long text scrolls

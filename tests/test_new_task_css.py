@@ -8,18 +8,29 @@ pinned by reading the stylesheet's own numbers rather than restating them:
 retuning a value keeps these tests honest, and only breaking the *invariant*
 fails one.
 
-Three invariants, all from the same review (Akshil, 2026-08-17):
+Four invariants, all from the same run of reviews (Akshil, 2026-08-17):
 
 1. **The surface starts FLUSH.** There is no left gutter and no accent rule
    standing in one. The pair used to sit 10px in behind a 2px accent bar drawn
    in a strip a negative margin opened up; that read as a gutter nothing else on
    the card has.
 
-2. **The caret is the ordinary one.** No `caret-color` override anywhere on this
+2. **Neither field has a fill.** Not at rest, not on hover, and — the last one
+   to go — not on focus: "don't do this background highlight thing for the input
+   fields of title and description". A tinted rectangle is a box drawn in one
+   colour, so a `--ctl-quiet-bg` wash undid the borderlessness the rest of this
+   file buys. Focus is the caret now, which is what WCAG 2.4.7 accepts for a text
+   field; the one ring left is the forced-colours one, where the caret is drawn in
+   a palette this stylesheet cannot check. Pinned as "no background", not as
+   "no rules" — the whole point is that removing the wash did not quietly bring
+   back a border, a shadow or a second fill under another name.
+
+3. **The caret is the ordinary one.** No `caret-color` override anywhere on this
    surface — a text cursor takes `color`, the way `.field-control` leaves it, and
    the accent override drew a yellow-green cursor found nowhere else in the app.
+   Load-bearing twice over now that the caret is the entire focus signal.
 
-3. **The description reads as body text under a heading.** Two faces, not two
+4. **The description reads as body text under a heading.** Two faces, not two
    sizes of the same face: the numbers are read out of the file and compared, so
    the test says "clearly smaller" rather than "13px".
 
@@ -64,6 +75,28 @@ def _decl(css: str, selector: str, prop: str) -> str | None:
     return found.group(1).strip() if found else None
 
 
+def _fills(css: str) -> list[tuple[str, str]]:
+    """Every background declaration in the file, paired with the selector of the
+    rule it sits in.
+
+    Broader than `_decl` on purpose: invariant 2 is about the whole surface, so a
+    fill smuggled in under `:hover`, under a grouped selector or inside an
+    at-rule has to be caught as readily as one on the plain rule. The selector is
+    the text between the rule's own `{` and whatever ended the thing before it —
+    the previous rule's `}` or an enclosing at-rule's `{`, whichever is nearer,
+    which is what makes a rule nested in `@media` report its own selector rather
+    than the media query's."""
+    out = []
+    for found in re.finditer(r"(?<![\w-])background(?:-color|-image)?\s*:\s*([^;}]+)", css):
+        brace = css.rfind("{", 0, found.start())
+        start = max(css.rfind("}", 0, brace), css.rfind("{", 0, brace)) + 1
+        out.append((" ".join(css[start:brace].split()), found.group(1).strip()))
+    return out
+
+
+_SURFACE = ("new-task-field", "new-task-title", "new-task-ask")
+
+
 def _px(value: str) -> int:
     """A length in px. A bare `0` is a length too — CSS drops the unit on zero,
     and `padding: 6px 0` is exactly how "no horizontal padding" is written."""
@@ -99,22 +132,66 @@ def test_nothing_pulls_the_fields_back_out_into_a_gutter():
             f"{prop} on the writing surface reintroduces the left gutter")
 
 
-def test_focus_is_a_wash_and_not_an_accent_rule():
+# -- 2. no fill, in any state -------------------------------------------------
+
+def test_the_fields_declare_themselves_unfilled():
+    # `transparent` is DECLARED rather than left off: deploy.css paints
+    # `background: var(--bg)` onto every unarmored field in a modal, so silence
+    # here is a recessed box, not a bare surface.
+    css = _source()
+    assert _decl(css, _FIELD, "background") == "transparent", (
+        "the writing surface must declare `background: transparent` — omitting it "
+        "lets deploy.css's modal-field fill through")
+    assert _decl(css, _FIELD, "background-color") is None, (
+        "one background declaration, not two arguing")
+
+
+def test_focus_is_not_a_background():
     css = _source()
     focus = _block(css, _FIELD + ":focus")
-    assert focus, "the focused field must still say it is focused somehow"
-    # The wash IS the signal now, so it has to be there…
-    assert re.search(r"(?<![\w-])background\s*:", focus), (
-        "focus is a --ctl-quiet-bg wash across the field; without it a borderless "
-        "field gives a keyboard user nothing")
-    # …and the bar it replaced must not come back, in any of its spellings.
+    # The rule still exists — it declares `outline: none`, which is the statement
+    # that this surface does not ring. What it must not declare is a fill.
+    assert focus, (
+        "the :focus rule states outline:none deliberately; deleting it hands the "
+        "decision to whatever deploy.css says")
+    for prop in ("background", "background-color", "background-image"):
+        assert _decl(css, _FIELD + ":focus", prop) is None, (
+            f"{prop} on focus is the --ctl-quiet-bg wash coming back: a tinted "
+            "rectangle is a box, which is the one thing these fields must not "
+            "grow when you type in them")
+    # And the chrome the wash itself replaced stays gone — a removed fill must not
+    # be swapped for the bar, a shadow or an underline.
     assert _decl(css, _FIELD + ":focus", "box-shadow") is None, (
         "the 2px accent bar down the left edge was removed with the gutter it "
-        "was drawn in")
-    for prop in ("border-left", "border-inline-start", "border"):
+        "was drawn in; a box-shadow is how it would come back")
+    for prop in ("border-left", "border-inline-start", "border", "border-bottom"):
         assert _decl(css, _FIELD + ":focus", prop) is None, (
             f"{prop} puts the box back on a surface whose whole point is not "
             "having one")
+
+
+def test_no_rule_anywhere_fills_the_writing_surface():
+    # The broad form of the two above, so a fill cannot slip in under `:hover`, a
+    # grouped selector, or a state nobody thought to write a test for.
+    for selector, value in _fills(_source()):
+        if not any(name in selector for name in _SURFACE):
+            continue
+        assert value in ("transparent", "none"), (
+            f"{selector} fills a writing-surface field ({value}); title and "
+            "description sit directly on the card in every state")
+
+
+def test_forced_colours_still_rings_the_focused_field():
+    # The one ring that survives, and the only state where a ring is right: the
+    # caret carries focus everywhere else, but in forced-colours mode it is drawn
+    # by the OS in a palette this stylesheet cannot see, let alone verify.
+    css = _source()
+    cut = css.find("@media (forced-colors: active)")
+    assert cut != -1, "the forced-colours handling for this surface went missing"
+    outline = _decl(css[cut:], _FIELD + ":focus", "outline")
+    assert outline and "Highlight" in outline, (
+        "forced-colours focus must ring the field in the system Highlight colour, "
+        f"not in a token the mode discards (outline: {outline})")
 
 
 def test_no_accent_is_painted_on_the_writing_surface_at_all():

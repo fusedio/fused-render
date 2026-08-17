@@ -129,10 +129,13 @@
 
    What survives from the boxed treatment is the INTERACTION, deliberately
    ("the input box style copy that"): the same generous vertical padding and hit
-   area a `.field-control` has, the ordinary caret every other field in the app
-   draws, and a focus state you can see. What is dropped is only the chrome —
-   including, since 2026-08-17, the accent rule that used to mark the focused
-   field: a stripe in a gutter of its own is chrome too.
+   area a `.field-control` has, and the ordinary caret every other field in the
+   app draws. What is dropped is all of the chrome — the accent rule that used
+   to mark the focused field (a stripe in a gutter of its own is chrome too),
+   and then the focus WASH that replaced it, because a fill is a box drawn in
+   one colour (Akshil, 2026-08-17: "don't do this background highlight thing for
+   the input fields of title and description"). See the focus block below for
+   what is left doing that job.
 
    Every property below is DECLARED rather than inherited, and every selector
    carries the wrapper class as well as the field's own. deploy.css's
@@ -159,7 +162,11 @@
 .new-task-write .new-task-field {
   font: inherit;
   color: var(--fg);
-  /* No box, in either theme: the card's own --bg-alt shows through. */
+  /* No box and no fill, in either theme and in EVERY state — at rest, on hover
+     and on focus. The card's own --bg-alt shows through, which is what makes the
+     two fields read as one surface rather than as two tinted rectangles sitting
+     on it. Declared here rather than merely omitted, because deploy.css paints
+     `background: var(--bg)` onto any unarmored field in a modal. */
   background: transparent;
   border: none;
   border-radius: 0;
@@ -187,27 +194,35 @@
   color: var(--fg-muted);
 }
 
-/* FOCUS, decided — and it had to be decided, because there is no border left to
-   recolour and a caret alone is not a focus indicator (it is 1px, it blinks, and
-   it is invisible on an empty field with a placeholder).
-   So: a whisper of --ctl-quiet-bg across the whole field, and nothing else. It
-   says WHICH of the two fields has the caret, it covers the full line-box so it
-   is unmissable on either face, and a background means nothing reflows when it
-   appears — an `outline` would ring the field and put the box straight back.
-   There was a 2px accent bar down the left edge here too, drawn in the strip the
-   old negative margin opened; it went with that strip (Akshil, 2026-08-17), so
-   the wash is now the whole signal.
-   `:focus`, not `:focus-visible`: a text field matches :focus-visible on a mouse
-   click anyway (the UA heuristic for anything that takes keyboard input), so the
-   two select the same thing here and the plain one does not read as if the mouse
-   case were an accident. */
+/* FOCUS: the CARET, and deliberately nothing else.
+   The third answer this surface has had, and the quietest one that is still
+   honest. It was a 2px accent bar in a gutter; then a --ctl-quiet-bg wash across
+   the field, on the argument that a borderless field leaves a keyboard user
+   nothing. Both are gone: the bar went with the gutter it hung in, and the wash
+   is a filled box wearing a quieter colour — which is precisely the thing the
+   surface exists not to have (Akshil, 2026-08-17).
+   Nothing replaces it, and that is the decision rather than an omission. A text
+   caret IS the focus indicator for a text field — it is what WCAG 2.4.7 accepts
+   for one, and what every borderless writing surface (Notes, Notion, the
+   reference image this card copies) relies on. Here it is unusually legible: the
+   two fields are the only text inputs on this part of the card, Title is a 20px
+   face, and the form opens with the caret already in it. An `outline` or a ring
+   would put the box straight back, and a second wash-by-another-name would only
+   rename the thing that was removed.
+   `outline: none` is still DECLARED, not left to chance: deploy.css's
+   `.modal-body :where(input…, textarea):focus` already suppresses the UA ring at
+   (0,2,0), so this states the same intent at the specificity the rest of the
+   block is written at instead of depending on another file for it. */
 .new-task-write .new-task-field:focus {
   outline: none;
-  background: var(--ctl-quiet-bg);
 }
 
-/* Forced-colours mode drops the background this focus state is made of, so the
-   one place a ring is the right answer is the one place the wash cannot land. */
+/* …with ONE exception, and the reason it survives the wash's removal: in
+   forced-colours mode the caret is the single cue, drawn by the OS in a palette
+   this stylesheet cannot see or check. A ring is the right answer exactly where
+   the quiet answer cannot be verified, and the system Highlight keyword is the
+   one colour guaranteed to read against a forced background. Inset, so it
+   cannot reopen the gutter. */
 @media (forced-colors: active) {
   .new-task-write .new-task-field:focus {
     outline: 2px solid Highlight;
