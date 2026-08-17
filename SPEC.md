@@ -7665,6 +7665,20 @@ the installation, and the mark that says so.
   be a second place for the two to fall out of step. The tab needs no in-flight
   guard of its own (unlike SF-12b) because its whole response is one re-read, and
   the effect's own teardown drops the previous fetch.
+- **SF-12a2** **A message about a request is only true until the next one, and
+  hiding a surface is not the same as closing it.** Two states outlived what
+  made them, both because the nudge above turned a one-shot read into a
+  repeating one. The Preferences tab set `error` on a failed load and never
+  cleared it, so the banner sat over a server that had been answering again for
+  ten minutes; it is cleared on every success now, and an error takes the WHOLE
+  tab only when no snapshot has ever landed — after that it is a note above
+  content that is still broadly true, since one blip (the server restarting
+  mid-fix, which is a thing fix sessions cause) should not take away the
+  reinstall instructions. And the chip's open-panel coordinate survived the
+  badge disappearing: the stock-install early return stops RENDERING the panel
+  without clearing `at`, so when the badge came back — a real sequence, since a
+  dismissal is scoped to one tree state (SF-15) and a session still editing
+  re-stamps past it — the panel reopened over a sidebar nobody had clicked.
 - **SF-12b** **A nudge ABANDONS the read already in flight**, it does not merely
   cancel the next one. The two cadences above mean a `/api/config` read is
   usually outstanding, and the request that resolves after a dismiss still
