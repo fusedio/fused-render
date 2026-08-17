@@ -1,14 +1,19 @@
 // Per-file session restore (LSN-*, SPEC §21). A viewed file remembers its last
 // URL query in its <file>.json sidecar; opening it with a bare URL replays that
 // query, while opening it with params already present lets those params win.
+//
+// NOT EVERY PARAM, since D323: `_side` is stripped at both ends of this — see
+// lib/session-params, which is where that rule and its reasons live.
 import { useEffect, useRef, useState } from "react";
 
 import { getSession, putSession } from "@platform/lib/api";
 import { IS_EMBED, replaceSearch } from "@platform/lib/router";
+import { stripSessionParams } from "@platform/lib/session-params";
 
 function stripQ(): string {
   return location.search.replace(/^\?/, "");
 }
+
 
 // Restore-on-open (LSN-4/5/9). Returns "ready" once the restore decision is
 // made so the caller can hold the preview until the URL is settled (no param
@@ -49,7 +54,12 @@ export function useSessionRestore(
     getSession(fsPath).then(
       (r) => {
         if (!alive) return;
-        const s = r.lastSession?.search;
+        // `_side` never comes back out of a sidecar, however it got in
+        // (stripSessionParams). An OLD sidecar whose only param WAS `_side`
+        // therefore restores nothing at all rather than replacing the URL with an
+        // empty query — which would be a no-op write, but also the one shape that
+        // could look like "the session was applied" while applying nothing.
+        const s = stripSessionParams(r.lastSession?.search ?? "");
         if (s) replaceSearch(location.pathname + "?" + s);
         setRestored(true);
       },
@@ -87,7 +97,12 @@ export function useSessionTracking(
     // useSessionRestore's writable gate.
     if (IS_EMBED || isDir !== false || writable !== true) return;
     const maybeSave = () => {
-      const search = stripQ();
+      // `_side` is dropped BEFORE the PUT, not left for the server to drop: a URL
+      // whose only param is `_side` must read as a bare URL here, so opening the
+      // sidebar on a file cannot be the thing that starts that file's session
+      // (LSN-12). The server enforces the same rule for anything that reaches it
+      // by another route (server/session.py).
+      const search = stripSessionParams(stripQ());
       if (search === "") return; // nothing to record for a bare url
       window.clearTimeout(timer.current);
       timer.current = window.setTimeout(() => {
