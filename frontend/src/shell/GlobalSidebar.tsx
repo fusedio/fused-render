@@ -220,7 +220,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const learnMountReady = useLearnMountReady(config.learn_mount_ready);
   // No sessions-mount gate any more: the one entry it guarded (Inbox) is gone
   // from the sidebar. The route and its mount are untouched.
-  const tasksActive = pathname === "/scheduled";
   const claudeConfigAvailable = useClaudeConfigAvailable();
 
   // A model resident in memory is the one piece of app state that costs
@@ -243,6 +242,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
+  const tasksActive = pathname === "/scheduled";
 
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
