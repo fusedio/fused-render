@@ -56,24 +56,28 @@ import {
   markAllRead,
   markRead,
   markReadIntent,
+  messageEditEntry,
   messageHref,
-  messageTime,
   messageTone,
   messageWhenTitle,
   openThreadIntent,
   projectOptions,
-  ranNote,
+  relativeWhen,
   settleMarkAllRead,
+  soleMessage,
+  spansProjects,
   taskColumn,
   taskRunIntent,
   taskUnread,
+  taskUnreadLabel,
+  taskWhen,
   threadView,
   tildePath,
   toggleExpanded,
   unmarkAllRead,
   unmarkRead,
-  unreadCount,
   unreadMarker,
+  upcomingEditEntry,
 } from "./tasks-lib";
 import type {
   ArchiveStatus,
@@ -87,6 +91,46 @@ import type {
 // module it takes the views from.
 export { EMPTY_FILTERS, filterTasks, projectOptions, tildePath, basename };
 export type { TaskFilters };
+
+/**
+ * Whether ANY hover-revealed action is drawn on this page.
+ *
+ * OFF at Akshil's request, 2026-08-17: "hide them, keep the functionality but hide
+ * them", and then again over the message rows — "hide the hover actions for now,
+ * that's what I said", said of the pencil on a message row. So the flag covers all
+ * three groups rather than the task row's alone:
+ *
+ *   * the List task row: Mark read, Run now / Re-run, Archive, Open chat
+ *   * the List message row: Edit, Cancel / Skip this run
+ *   * the Board card: Run now / Re-run, Archive
+ *
+ * ONE flag for all of them, deliberately: a flip must restore the whole page's
+ * chrome at once, and two switches is how half of it comes back. Everything behind
+ * it is still built and still decided by tasks-lib (markReadIntent, taskRunIntent,
+ * archiveIntent, openThreadIntent, cancelIntent), still spent through the shared
+ * performers, and still tested. Only the RENDER is gated, and only here.
+ *
+ * WHAT IS UNREACHABLE WHILE THIS IS OFF, because it is worth writing down rather
+ * than discovering: Mark read (the whole-task clear), Run now / Re-run from this
+ * page, Archive / Unarchive from the List, Open chat as a button — and CANCEL, which
+ * is the one that costs a capability rather than a shortcut, since stopping a
+ * message that has not gone out has no other control on this page. It survives
+ * elsewhere (the queue dock's card, the Claude pane's own banner, and deleting the
+ * schedule from the task form), and the Board keeps Archive as a drag onto the
+ * Archive lane. Row clicks are untouched throughout: a leaf row still opens its
+ * message, a multi-message row still toggles, a message row still opens its turn.
+ *
+ * NOT RENDERED rather than hidden with CSS, which is the one thing worth being
+ * careful about: an `opacity: 0` button is still in the tab order, so a keyboard
+ * would land on an invisible control and press it blind. The geometry that keeps
+ * the strip off the title (`.tasks-card-acts` and `--tasks-card-head-h` in
+ * tasks.css) stays exactly as it is — it is what the strip comes back to.
+ *
+ * Annotated `boolean` on purpose: as a bare `false` literal TypeScript narrows
+ * every guarded branch to dead code, and flipping the flag would then be a type
+ * change rather than a value change.
+ */
+const SHOW_ROW_ACTIONS: boolean = false;
 
 // ---- icons -------------------------------------------------------------------
 // The page's own recipe (ScheduleCalendar's `icon`): a 24-viewBox lucide
@@ -216,21 +260,32 @@ function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
 }
 
-/** A task's unread count, drawn immediately AFTER its title (§7,
- * tasks-lib.unreadCount) and in a quiet neutral rather than the thread's blue.
- * It is the task's total, which is metadata about the row — the per-message dots
- * are the alert — so it trails the words instead of leading them and it does not
- * compete with them. Nothing is drawn at all when there is nothing unread; a
- * trailing chip has no column to hold open, unlike the message rail. The true
- * count is always the accessible name, even when the pill prints "99+". */
-function UnreadPill({ count }: { count: number }) {
-  const c = unreadCount(count);
-  if (!c) return null;
-  return (
-    <span className="tasks-count" role="img" aria-label={c.label} title={c.label}>
-      {c.text}
-    </span>
-  );
+/**
+ * A task has something unread — drawn immediately AFTER its title (§7), on the
+ * List row and on the Board card alike.
+ *
+ * ONE DOT, NO NUMBER (Akshil, 2026-08-17: "only show a single dot like the
+ * notification that we show"). It was a numeric pill for a day — `8`, `13`, `211`
+ * — and the number was never acted on: the only question it answered is "is there
+ * anything new in here?", which is one bit, and 211 spent three characters saying
+ * it. So this is now the SAME `.tasks-dot` an unread message row wears
+ * (tasks-lib.unreadMarker), which also means the task and its messages stop being
+ * two vocabularies for one fact. Grey rather than blue, since later the same day:
+ * the reasoning is with the rule, in tasks.css.
+ *
+ * The COUNT survives where it costs nothing and helps: `role="img"` +
+ * `aria-label`, so a screen reader still hears "3 unread messages" and the
+ * tooltip still says it on hover (tasks-lib.taskUnreadLabel). Dropping it
+ * visually must not drop it from the accessible name — that would be losing
+ * information rather than not printing it.
+ *
+ * Nothing is drawn at all when there is nothing unread: trailing a title there is
+ * no column to hold open, unlike the message rail this mark's twin came off.
+ */
+function UnreadDot({ count }: { count: number }) {
+  const label = taskUnreadLabel(count);
+  if (!label) return null;
+  return <span className="tasks-dot" role="img" aria-label={label} title={label} />;
 }
 
 // ---- toolbar: search + status + project --------------------------------------
@@ -661,6 +716,12 @@ export function TaskList({
     latest.current = tasks;
   }, [tasks]);
 
+  // Whether a row draws its folder chip at all — asked ONCE for the whole list,
+  // because the question is about the list and not about any one row
+  // (tasks-lib.spansProjects). Cheap, and memoised only so it is not a new answer
+  // on every keystroke of the search box.
+  const showProject = useMemo(() => spansProjects(tasks), [tasks]);
+
   const toggle = (key: string) => setExpanded((cur) => toggleExpanded(cur, key));
 
   const showMore = async (task: Task) => {
@@ -704,6 +765,7 @@ export function TaskList({
           key={task.key}
           task={task}
           home={home}
+          showProject={showProject}
           open={expanded.has(task.key)}
           onToggle={() => toggle(task.key)}
           loaded={loaded[task.key]}
@@ -726,6 +788,7 @@ export function TaskList({
 function TaskNode({
   task,
   home,
+  showProject,
   open: requested,
   onToggle,
   loaded,
@@ -742,6 +805,9 @@ function TaskNode({
 }: {
   task: Task;
   home: string;
+  /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
+   * a chip that every visible row repeats distinguishes nothing (spansProjects). */
+  showProject: boolean;
   /** What the List's expanded set says about this row. Whether it is honoured is
    * this component's decision — see `expandable` below. */
   open: boolean;
@@ -806,6 +872,23 @@ function TaskNode({
   // a second press on an already-cleared task posts nothing.
   const chat = openThreadIntent(task, unread);
   const label = firstLine(task.title) || "(untitled)";
+  // The one message a LEAF row is about, and therefore what its click opens —
+  // see `activate` below. Null on a task that has never run, which is the case
+  // that must stay inert. tasks-lib.soleMessage holds both halves of that.
+  const sole = soleMessage(task, held);
+  // The scheduled run a ONE-MESSAGE UPCOMING row's press edits, ahead of opening
+  // that message, because the instruction that has not run yet is the only content
+  // such a row has. tasks-lib.upcomingEditEntry owns all three conditions — the
+  // lane, the one message, and which entry — and it is asked of `held`, the same
+  // list `sole` is. Gated on `onEditEntry` here because without it there is no form
+  // to open (a thread with no edit affordance is read-only), and then the press
+  // falls through to the arms below.
+  const edit = onEditEntry ? upcomingEditEntry(task, held) : null;
+  // When this task runs next, or when it last ran — one time at the end of every
+  // row, beside the folder. Which of the two is tasks-lib.taskWhen's decision (it
+  // reads LANE_SORTS, the same map the Board's lanes are ordered by), and null when
+  // the task has neither, in which case nothing is drawn.
+  const when = taskWhen(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -941,6 +1024,32 @@ function TaskNode({
     if (to) navigateUrl(to);
   };
 
+  /**
+   * A MESSAGE ROW's own gesture — one function, so its click and its Enter/Space
+   * cannot drift apart, exactly as `activate` is one function for the task row.
+   *
+   * Two meanings, and the split is the message's own state (tasks-lib.
+   * messageEditEntry, the same predicate Cancel asks):
+   *
+   *   * a message that HAS NOT GONE OUT opens the EDIT FORM on its own entry — it
+   *     is an instruction, not a transcript turn, and the form is the only place
+   *     that instruction can be read or changed. Its own entry id, never the
+   *     task's next run: a repeating task has several pending occurrences and the
+   *     row pressed is the one the reader means.
+   *   * anything that HAS run opens its turn in the transcript, through
+   *     openMessage above — unchanged, including the read mark it clears.
+   *
+   * NOTHING IS MARKED ON THE EDIT ARM, and there is nothing to mark: a message
+   * that has not happened is not unread in the first place (tasks-lib.isUnread),
+   * so the dot the reader would be owed does not exist. `openMessage` keeps the
+   * per-message mark it always had, on the only rows that can carry one.
+   */
+  const pressMessage = (m: TaskMessage) => {
+    const entry = onEditEntry ? messageEditEntry(m) : null;
+    if (entry) onEditEntry?.(entry);
+    else openMessage(m);
+  };
+
   // Open chat: the thread, and the unread cleared on the way out — the same
   // performer the Board card's click spends (performOpen), so the two gestures
   // cannot disagree. Deliberately NOT markSeen above: that one is a press that
@@ -949,6 +1058,9 @@ function TaskNode({
   // hop. `onReadAll` is the local half, the same one markSeen uses — and it is
   // handed the same `held` list, so the two gestures on this row cannot clear
   // different amounts of the same thread.
+  //
+  // Declared ABOVE `activate` because `activate` now calls it — a hoisted
+  // reference into a `const` below would work at runtime and read as a bug.
   const openChat = (intent: OpenThreadIntent) => {
     performOpen(
       task,
@@ -961,6 +1073,90 @@ function TaskNode({
       held,
     );
   };
+
+  /**
+   * The task ROW's own gesture — one function, so the mouse and the keyboard
+   * cannot drift apart (Enter and Space run exactly this).
+   *
+   * Four rows, four meanings, and the split is the row's own shape:
+   *
+   *   * an ACCORDION (more than one message) toggles, and opens nothing. That is
+   *     unchanged and deliberately so: expanding a row shows the reader nothing,
+   *     so a press that also cleared its unread would clear news nobody has seen.
+   *     Opening the conversation stays the explicit Open chat action's job. It is
+   *     FIRST, so a repeating task with past runs keeps its accordion whatever its
+   *     lane — the chevron never has to become a control of its own, and one click
+   *     can never both expand a row and open a form.
+   *   * an UPCOMING LEAF (exactly one message, and it has not run) opens THE EDIT
+   *     FORM on that scheduled run, ahead of opening the message, because the
+   *     instruction is the only content such a row has (Akshil, 2026-08-17: "when i
+   *     click on upcoming tasks i think they should open up the edit modal... only
+   *     for 1 message tasks"). tasks-lib.upcomingEditEntry holds every condition;
+   *     the form is reached through `onEditEntry`, the same callback the thread's
+   *     own Edit button and the calendar popover spend, so there is no second way
+   *     in. Null when the entry cannot be resolved, and then the press falls
+   *     through to the arm below rather than opening a blank form.
+   *   * any other LEAF (exactly one message) opens THAT MESSAGE, through
+   *     openMessage above — the identical call a click on the message row makes.
+   *     The row with nothing to expand IS that message, so "open it" is the only
+   *     thing its press can mean, and it was doing nothing at all until now
+   *     (Akshil, 2026-08-17). The url is not recomputed here; messageHref stays the
+   *     one place a message's address is built.
+   *   * a row with NO message but a SESSION opens the thread, through openChat
+   *     above — the same intent (openThreadIntent) and the same performer the now
+   *     hidden Open chat button spends, so there is still exactly one way to
+   *     address a thread. It is the minority of these rows and it is real: a
+   *     hand-written fixture transcript, or a session whose only user records were
+   *     slash-command envelopes (`/clear`, `/making-a-release`), which still has
+   *     assistant turns worth reading. It fell through both arms above and did
+   *     nothing at all, on a row that looked pressable — the complaint (Akshil,
+   *     2026-08-17: "the (untitled) aren't clickable").
+   *
+   * WHICH MEANS THE LEAF PRESS CLEARS THAT MESSAGE'S UNREAD, and that is the
+   * point rather than an exception to the rule above: the reader is being shown
+   * the message, and it is the same one press on the same message through the same
+   * function, so a dot surviving it would be a dot the click did not honour. What
+   * it does NOT do is mark the whole task — openMessage marks one message, which
+   * on a one-message task happens to be all of it and on nothing else ever will
+   * be.
+   *
+   * THE ZERO-MESSAGE PRESS MARKS NOTHING, and not as a special case either: there
+   * is no message to mark, so `unread` is 0 (taskUnread: with the whole thread in
+   * hand — all none of it — the count IS the dots, counted), and the intel it was
+   * asked with therefore carries markRead: false. performOpen's mark is behind
+   * that flag, so this arm navigates and writes nothing.
+   *
+   * A task with no session at all (a `pending:<entry>` that has never run) has no
+   * `sole` AND no `chat`, so the press still does nothing — openThreadIntent's
+   * documented null case, there being no conversation to open. Such a row does not
+   * ADVERTISE a press either: see `pressable` below.
+   *
+   * NOTHING IS MARKED READ ON THE EDIT ARM: the message it opens the form for has
+   * not gone out, so there is nothing there to have seen.
+   */
+  const activate = () => {
+    if (expandable) onToggle();
+    else if (edit) onEditEntry?.(edit);
+    else if (sole) openMessage(sole);
+    else if (chat) openChat(chat);
+  };
+
+  /**
+   * Does this row's press DO anything — and therefore, may the row claim to be a
+   * button at all?
+   *
+   * The arms of `activate`, so the affordance cannot drift from the behaviour: the
+   * row is a button when it has a disclosure, a message to open, or a thread to
+   * open. The edit arm is deliberately absent, and that is not a gap — it is a
+   * NARROWING of the leaf arm (upcomingEditEntry requires soleMessage), so it can
+   * never make a row pressable that `sole` did not already.
+   *
+   * What is left is the never-run `pending:<entry>` row with nothing in hand, which
+   * carried `role="button"`, a tab stop, a hover tint and a pointer cursor while
+   * doing nothing on press — the same broken promise the zero-message arm above
+   * just fixed, one layer down. So an inert row is inert in what it says too.
+   */
+  const pressable = expandable || sole !== null || chat !== null;
 
   const cancel = async (m: TaskMessage, entryId: string) => {
     setCancelling(m.message_id);
@@ -986,29 +1182,33 @@ function TaskNode({
   return (
     <div className="tasks-node">
       <div
-        className={"tasks-row" + (open ? " is-open" : "")}
-        role="button"
-        tabIndex={0}
+        className={"tasks-row" + (open ? " is-open" : "") + (pressable ? "" : " is-inert")}
+        // Only a row whose press DOES something says it is a button, takes a tab
+        // stop, or lights up under the pointer (`is-inert` above turns the cursor
+        // and the hover tint off). `undefined` rather than "presentation"/-1: the
+        // row is still a real, readable line of the list — it just is not a
+        // control. See `pressable`.
+        role={pressable ? "button" : undefined}
+        tabIndex={pressable ? 0 : undefined}
         // Only a row that HAS a disclosure claims one. `undefined` rather than
         // `false`: false says "collapsed, press to expand", which is a promise a
-        // one-message row cannot keep.
+        // one-message row cannot keep. It is still the ROW's own, and stays that
+        // way because the accordion is `activate`'s first arm — no lane takes the
+        // toggle off a multi-message row, so the chevron never has to become a
+        // control of its own.
         aria-expanded={expandable ? open : undefined}
         title={task.title}
-        // Still the row's own click, still onToggle, and still nothing else: this
-        // gesture expands the accordion and deliberately does NOT open the chat
-        // (see the Open chat button below — that one is the gesture that opens, so
-        // that one is the gesture that clears the thread). On a row with nothing to
-        // reveal the press simply has no work to do. The row stays a focusable
-        // control either way, because focus on it is what reveals the hover group
-        // of actions (`.tasks-row:focus-within .tasks-act`) — the keyboard's only
-        // way to reach Run now, Archive and Open chat on this task.
-        onClick={() => {
-          if (expandable) onToggle();
-        }}
+        // One handler for both ways in, so the keyboard and the pointer cannot
+        // mean different things: `activate` above toggles an accordion, opens an
+        // upcoming leaf's edit form, opens any other leaf's single message, and
+        // opens a message-less row's thread. It still never opens a MULTI-message
+        // task's conversation — that is the Open chat action's job, and the reason
+        // is written where the meanings are decided.
+        onClick={activate}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            if (expandable) onToggle();
+            activate();
           }
         }}
       >
@@ -1018,7 +1218,13 @@ function TaskNode({
             element on a one-message row would slide that row's status ring — and
             the whole rail it stands in — a mark and a gap to the left of its
             neighbours' and turn a column of rings into a zigzag. So the box stays
-            and only the glyph goes. */}
+            and only the glyph goes.
+
+            IT IS DECORATION AND STAYS DECORATION — no role, no tab stop, no handler
+            of its own — because the accordion is `activate`'s FIRST arm: every
+            expandable row toggles on its own press whatever its lane, so a click on
+            the chevron bubbles to the row and toggles exactly once. There is no
+            second press here to double-fire, and nothing to stopPropagation. */}
         <span className={"tasks-caret" + (open ? " is-open" : "")} aria-hidden>
           {expandable ? ICON_CHEVRON : null}
         </span>
@@ -1030,15 +1236,17 @@ function TaskNode({
             outside the column, in the gutter to its left, because it is the
             accordion's control and not part of it.
 
-            The unread COUNT deliberately does NOT lead here. It did for a day and
+            The unread MARK deliberately does NOT lead here. It did for a day and
             it inverted the row's priority: the title is what a list is scanned
             for, and a number in front of it announced the messages before the work
-            they are about (Akshil, 2026-08-17). So the title leads and the count
-            trails it — one gap of separation, then the total, then the live ping. */}
+            they are about (Akshil, 2026-08-17). So the title leads and the mark
+            trails it — one gap of separation, then the dot, then the live ping.
+            (It was a numeric pill in that same slot until the number itself went:
+            see UnreadDot.) */}
         <StatusIcon status={taskColumn(task)} failed={task.failed} />
         <IdChip id={task.task_id} kind="task" />
         <span className="tasks-title">{label}</span>
-        <UnreadPill count={unread} />
+        <UnreadDot count={unread} />
         {task.live && <LivePulse />}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
@@ -1046,99 +1254,134 @@ function TaskNode({
             right-hand group in the middle of the row instead of at its end. */}
         <span className="tasks-grow" />
 
-        {/* The drag from Upcoming into In Progress, without the drag — and on
-            a task that broke, the word for doing it again over whichever call
-            can actually do it: run-now while a message is still pending,
-            re-send once the run that failed has spent it. ONE button and one
-            label either way; tasks-lib.taskRunIntent is the only thing that
-            knows which. In the SAME hover-revealed group as Edit and Cancel on
-            a message row, so a list at rest grows no chrome: this applies to a
-            minority of tasks and every other row would carry a button that
-            does nothing. */}
-        {/* "so you don't have to open everything individually" — the whole
-            task's unread, cleared from the row that carries the count, in the
-            SAME hover-revealed group as Run now and Archive. Only on a task that
-            has unread (tasks-lib.markReadIntent): every other row would carry a
-            button whose press does nothing, which is what makes the rows where
-            it matters hard to pick out. */}
-        {seen && (
-          <button
-            type="button"
-            className="tasks-act tasks-act--seen"
-            title={seen.title}
-            aria-label={seen.label}
-            disabled={acting}
-            onClick={(e) => {
-              e.stopPropagation();
-              void markSeen();
-            }}
-          >
-            {ICON_MARK_READ}
-          </button>
+        {/* THE WHOLE STRIP IS BEHIND SHOW_ROW_ACTIONS, which is off — see the
+            constant at the top of this file for who asked and when. Everything
+            inside is intact: the intents, the handlers and the CSS all stay, and
+            the flag is the one word that brings the strip back. */}
+        {SHOW_ROW_ACTIONS && (
+          <>
+            {/* The drag from Upcoming into In Progress, without the drag — and on
+                a task that broke, the word for doing it again over whichever call
+                can actually do it: run-now while a message is still pending,
+                re-send once the run that failed has spent it. ONE button and one
+                label either way; tasks-lib.taskRunIntent is the only thing that
+                knows which. In the SAME hover-revealed group as Edit and Cancel on
+                a message row, so a list at rest grows no chrome: this applies to a
+                minority of tasks and every other row would carry a button that
+                does nothing. */}
+            {/* "so you don't have to open everything individually" — the whole
+                task's unread, cleared from the row that carries the mark, in the
+                SAME hover-revealed group as Run now and Archive. Only on a task that
+                has unread (tasks-lib.markReadIntent): every other row would carry a
+                button whose press does nothing, which is what makes the rows where
+                it matters hard to pick out. */}
+            {seen && (
+              <button
+                type="button"
+                className="tasks-act tasks-act--seen"
+                title={seen.title}
+                aria-label={seen.label}
+                disabled={acting}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void markSeen();
+                }}
+              >
+                {ICON_MARK_READ}
+              </button>
+            )}
+            {run && (
+              <button
+                type="button"
+                className="tasks-act tasks-act--run"
+                title={run.title}
+                aria-label={run.label}
+                disabled={acting}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void runNow(run);
+                }}
+              >
+                {run.rerun ? ICON_RERUN : ICON_PLAY}
+              </button>
+            )}
+            {/* The Board's drag onto Archive, as a press — and on an already
+                archived row, the way back, because an action with only one
+                direction is a trap. Same hover-revealed group, same size and same
+                silence at rest as Run now and Open chat: a task that has never run
+                has no session to triage and is offered nothing at all here, so this
+                must not be a permanent column of buttons half of which do nothing.
+                tasks-lib.archiveIntent decides both halves. */}
+            {file && (
+              <button
+                type="button"
+                className={
+                  "tasks-act " + (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
+                }
+                title={file.title}
+                aria-label={file.label}
+                disabled={acting}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void triage(file.status);
+                }}
+              >
+                {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
+              </button>
+            )}
+            {/* The one gesture in this row that OPENS a MULTI-message conversation
+                — so it is the one that also clears the thread, exactly as the Board
+                card's click does: it lands the reader in the very thread this row's
+                dot is pointing at, and a mark still sitting there afterwards would
+                be pointing at what the press just showed them. Both sides ask
+                tasks-lib.openThreadIntent and both spend it through performOpen. The
+                row's OWN click is still not this (see `activate`): on an accordion it
+                toggles and opens nothing, and on a leaf it opens that leaf's single
+                message through the message path, marking that one message. */}
+            {chat && (
+              <button
+                type="button"
+                className="tasks-act"
+                title="Open chat"
+                aria-label="Open chat"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openChat(chat);
+                }}
+              >
+                {ICON_OPEN}
+              </button>
+            )}
+          </>
         )}
-        {run && (
-          <button
-            type="button"
-            className="tasks-act tasks-act--run"
-            title={run.title}
-            aria-label={run.label}
-            disabled={acting}
-            onClick={(e) => {
-              e.stopPropagation();
-              void runNow(run);
-            }}
-          >
-            {run.rerun ? ICON_RERUN : ICON_PLAY}
-          </button>
+        {/* When this task runs next, or when it last ran — on EVERY row, because
+            until now a time only appeared inside an expanded thread and a
+            one-message task has no thread to expand (Akshil, 2026-08-17).
+
+            ONE RELATIVE UNIT ("30m ago", "in 2h"), the same vocabulary the message
+            rows below now speak (tasks-lib.relativeWhen). It printed a clock AND a
+            date for an hour and that was the crowding this row was trimmed for:
+            "both the folder and the time with the date, they are like too much for
+            me to handle". The absolute instant, and WHICH run it is, are in the
+            tooltip — the ink cannot say that in one unit and does not try.
+
+            After the spacer and before the folder, both `flex: 0 0 auto`: the row
+            has exactly ONE auto margin (`.tasks-grow` above) and the title is the
+            element that shrinks, so a long title ellipsises rather than squeezing
+            the time. Nothing is drawn when the task has neither run. */}
+        {when && (
+          <span className="tasks-row-time" title={when.title}>
+            {when.text}
+          </span>
         )}
-        {/* The Board's drag onto Archive, as a press — and on an already
-            archived row, the way back, because an action with only one
-            direction is a trap. Same hover-revealed group, same size and same
-            silence at rest as Run now and Open chat: a task that has never run
-            has no session to triage and is offered nothing at all here, so this
-            must not be a permanent column of buttons half of which do nothing.
-            tasks-lib.archiveIntent decides both halves. */}
-        {file && (
-          <button
-            type="button"
-            className={
-              "tasks-act " + (file.restore ? "tasks-act--unarchive" : "tasks-act--archive")
-            }
-            title={file.title}
-            aria-label={file.label}
-            disabled={acting}
-            onClick={(e) => {
-              e.stopPropagation();
-              void triage(file.status);
-            }}
-          >
-            {file.restore ? ICON_UNARCHIVE : ICON_ARCHIVE}
-          </button>
+        {/* The folder, only when the list SPANS folders (tasks-lib.spansProjects,
+            asked of the rows on screen rather than of the filter). Filtered to one
+            project, every row was repeating the same word at the busiest end of the
+            row — a chip that distinguishes nothing. The full path is still the
+            row's own tooltip either way. */}
+        {showProject && (
+          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
         )}
-        {/* The one gesture in this row that OPENS the conversation — so it is
-            the one that also clears the thread, exactly as the Board card's
-            click does: it lands the reader in the very thread this row's count
-            is pointing at, and a pill still sitting there afterwards would be
-            pointing at what the press just showed them. Both sides ask
-            tasks-lib.openThreadIntent and both spend it through performOpen; the
-            row's OWN click is untouched above (onToggle — it expands the
-            accordion and opens nothing, so there is nothing to infer), and a
-            message click still marks only its own turn. */}
-        {chat && (
-          <button
-            type="button"
-            className="tasks-act"
-            title="Open chat"
-            aria-label="Open chat"
-            onClick={(e) => {
-              e.stopPropagation();
-              openChat(chat);
-            }}
-          >
-            {ICON_OPEN}
-          </button>
-        )}
-        <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
       </div>
 
       {/* Why the refusal is quiet: see runNow. The class is the board's own
@@ -1152,6 +1395,11 @@ function TaskNode({
             const mark = unreadMarker(task.key, m, read);
             const isNew = mark.unread;
             const stop = cancelIntent(m);
+            // The one entry this message can be edited as, or null when its press
+            // means the transcript instead — ONE reading, spent by both the row's
+            // press (pressMessage) and the pencil below, so the quiet action and
+            // the whole-row gesture cannot disagree about which rows are editable.
+            const fix = onEditEntry ? messageEditEntry(m) : null;
             const busy = cancelling === m.message_id;
             const why = cancelErrors[m.message_id];
             return (
@@ -1161,11 +1409,14 @@ function TaskNode({
                   role="button"
                   tabIndex={0}
                   title={m.body}
-                  onClick={() => openMessage(m)}
+                  // One handler for both ways in, the same rule the task row obeys:
+                  // `pressMessage` opens the form on a message that has not gone out
+                  // and the transcript turn on one that has.
+                  onClick={() => pressMessage(m)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
-                      openMessage(m);
+                      pressMessage(m);
                     }
                   }}
                 >
@@ -1188,12 +1439,12 @@ function TaskNode({
                       the thread under it read as a different dialect of the same
                       page (Akshil, 2026-08-17).
 
-                      Only the POSITION moved. It still means unread and it is
-                      still `--activity`, the loud per-message half of the pair —
-                      the task's neutral total is the quiet half. Drawn only when
-                      the message IS unread: trailing the title there is no column
-                      to hold open, so the empty slot the old head needed is gone
-                      with it.
+                      Only the POSITION moved here. What it MEANS is unchanged; the
+                      hue is no longer part of it either way, since the task row's
+                      mark became this very dot and then both went grey (tasks.css).
+                      Drawn only when the message IS unread: trailing the title
+                      there is no column to hold open, so the empty slot the old
+                      head needed is gone with it.
 
                       A sibling of the title, never inside it: `.tasks-msg-body`
                       ellipsises its overflow, so a dot inside a long line would be
@@ -1212,49 +1463,61 @@ function TaskNode({
                     />
                   )}
                   <span className="tasks-grow" />
-                  {/* The one thing about a message a person can still CHANGE:
-                      its time or its wording, before it goes out. Quiet and on
-                      hover, because it applies to a minority of rows. */}
-                  {onEditEntry && m.state === "pending" && m.entry_id && (
-                    <button
-                      type="button"
-                      className="tasks-act"
-                      title="Edit"
-                      aria-label="Edit"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditEntry(m.entry_id);
-                      }}
-                    >
-                      {ICON_PENCIL}
-                    </button>
+                  {/* A MESSAGE row's actions are behind the same flag as the task
+                      row's strip (SHOW_ROW_ACTIONS, off). Akshil, 2026-08-17:
+                      "hide the hover actions for now, that's what I said" — said
+                      of this pencil, so the flag covers every hover-revealed
+                      action in the List rather than the task row's only. ONE flag
+                      for both, so a flip cannot bring half of them back. */}
+                  {SHOW_ROW_ACTIONS && (
+                    <>
+                      {/* The one thing about a message a person can still CHANGE:
+                          its time or its wording, before it goes out. Quiet and on
+                          hover, because it applies to a minority of rows. */}
+                      {fix && (
+                        <button
+                          type="button"
+                          className="tasks-act"
+                          title="Edit"
+                          aria-label="Edit"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditEntry?.(fix);
+                          }}
+                        >
+                          {ICON_PENCIL}
+                        </button>
+                      )}
+                      {/* Beside Edit and inside the same hover-revealed group, so a
+                          thread of already-sent messages — which is most threads —
+                          grows no chrome at rest. The label is the honest one for
+                          what the call does to a repeat: see cancelIntent. */}
+                      {stop && (
+                        <button
+                          type="button"
+                          className="tasks-act tasks-act--cancel"
+                          title={stop.title}
+                          aria-label={stop.label}
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void cancel(m, stop.id);
+                          }}
+                        >
+                          {stop.scope === "occurrence" ? ICON_SKIP : ICON_BAN}
+                        </button>
+                      )}
+                    </>
                   )}
-                  {/* Beside Edit and inside the same hover-revealed group, so a
-                      thread of already-sent messages — which is most threads —
-                      grows no chrome at rest. The label is the honest one for
-                      what the call does to a repeat: see cancelIntent. */}
-                  {stop && (
-                    <button
-                      type="button"
-                      className="tasks-act tasks-act--cancel"
-                      title={stop.title}
-                      aria-label={stop.label}
-                      disabled={busy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void cancel(m, stop.id);
-                      }}
-                    >
-                      {stop.scope === "occurrence" ? ICON_SKIP : ICON_BAN}
-                    </button>
-                  )}
-                  {/* When it RAN, said only when that is not when it was due:
-                      caught up late after a shut app, or run early by a drag
-                      into In Progress. The due time itself never moves, which
-                      is what makes this line worth printing. */}
-                  {ranNote(m) && <span className="tasks-msg-ran">{ranNote(m)}</span>}
+                  {/* ONE time per row, relative and one unit wide (relativeWhen),
+                      with the absolute instant in the tooltip. It reads `at` — what
+                      the message was DUE at, the instant that never moves — and the
+                      tooltip is where a run that fired late or early is spelled out
+                      (messageWhenTitle). The "ran 07:12 today" label that used to
+                      sit beside this is gone: 2026-08-17, "I don't think I need this
+                      as well, the RAND Today stuff". */}
                   <span className="tasks-msg-time" title={messageWhenTitle(m)}>
-                    {messageTime(m.at)}
+                    {relativeWhen(m.at)}
                   </span>
                 </div>
                 {why && <p className="tasks-msg-error">{why}</p>}
@@ -1333,6 +1596,13 @@ export function TaskBoard({
   // conversation, never one turn of it, so there is no per-message click to
   // make on this view.
   const { read, clearAll, restoreAll, settleAll } = useReadSet();
+
+  // The same question the List asks of its rows, asked of the same set here: a
+  // folder chip on every card of a board filtered to one project distinguishes
+  // nothing (tasks-lib.spansProjects). Asked of the BOARD's whole shown set rather
+  // than per lane, because a lane that happens to hold one project is not a page
+  // that holds one — the reader is looking at all five columns at once.
+  const showProject = useMemo(() => spansProjects(tasks), [tasks]);
 
   const allowed = useMemo(
     () => new Set(dragging ? dropLanes(dragging) : []),
@@ -1530,6 +1800,7 @@ export function TaskBoard({
                     key={task.key}
                     task={task}
                     home={home}
+                    showProject={showProject}
                     // The DISPLAYED count, so a card cleared by its own click
                     // stays cleared until the poll agrees — the same merge the
                     // List's rows make over the same set.
@@ -1576,6 +1847,7 @@ export function TaskBoard({
 function TaskCard({
   task,
   home,
+  showProject,
   unread,
   isDragging,
   onDragStart,
@@ -1586,7 +1858,10 @@ function TaskCard({
 }: {
   task: Task;
   home: string;
-  /** What the pill says: the server's count less anything cleared here since,
+  /** Whether the folder chip is worth drawing — the BOARD's answer, for the same
+   * reason the List row takes it as a prop (spansProjects). */
+  showProject: boolean;
+  /** What the mark stands for: the server's count less anything cleared here since,
    * which the board merges (taskUnread) rather than the card re-deriving. */
   unread: number;
   isDragging: boolean;
@@ -1714,7 +1989,7 @@ function TaskCard({
             and a chip in a day cell have no lane above them, so there the ring is
             the only thing that files them at all.
 
-            The unread count is NOT one of the head's marks either: it belongs to
+            The unread mark is NOT one of the head's marks either: it belongs to
             the title, exactly as it does on a List row, and the same objection
             applies to a card's head as to a row's start (Akshil, 2026-08-17 — the
             count in front broke the reading priority). See the title below for
@@ -1724,31 +1999,43 @@ function TaskCard({
           <IdChip id={task.task_id} kind="task" />
           {task.live && <LivePulse />}
         </span>
-        {/* The count sits INSIDE the title, in its text flow, so it follows the
-            last word wherever the last word ends up.
+        {/* The unread mark sits INSIDE the title, in its text flow, so it follows
+            the last word wherever the last word ends up — including onto the second
+            line of a two-line title, where it stays on that last line rather than
+            dropping under it.
 
             Two arrangements before this one were wrong, and both were wrong
             because the title was a two-line `-webkit-box` clamp that hid its
             overflow. Inside that clamp, a title long enough to fill both lines
-            clipped the count away — gone on exactly the busiest cards. Lifted out
+            clipped the mark away — gone on exactly the busiest cards. Lifted out
             of it into a `flex-wrap` wrapper (`.schedule-tv-card-name`, now
-            deleted), the count survived but any two-line title pushed it onto a
+            deleted), it survived but any two-line title pushed it onto a
             line of its own beneath the words, orphaned — which is the screenshot
             Akshil sent on 2026-08-17, and it looks broken.
 
             The clamp was the cause of both: nothing can flow after the last word
             of a clipped box and also stay outside the clip. So schedule.css
-            dropped it, the title wraps freely, and the pill needs no wrapper and
-            no alignment — it is an inline atom in the same flow. Long titles make
-            taller cards, which is accepted; a card's title is the session's own
-            short name rather than the message it sends, so most are one line. */}
+            dropped it, the title wraps freely, and the mark needs no wrapper and
+            no alignment beyond one `vertical-align` — it is an inline atom in the
+            same flow. Long titles make taller cards, which is accepted; a card's
+            title is the session's own short name rather than the message it sends,
+            so most are one line.
+
+            All of that is why the DOT inherits the slot rather than being re-placed
+            when the count became a dot (UnreadDot): the arrangement was the
+            expensive part and it is unchanged — only the atom in it is smaller. */}
         <span className="schedule-tv-card-title">
           {firstLine(task.title) || "(untitled)"}
-          <UnreadPill count={unread} />
+          <UnreadDot count={unread} />
         </span>
-        <span className="schedule-tv-card-foot">
-          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
-        </span>
+        {/* The foot is the folder and nothing else, so when the folder says nothing
+            (spansProjects — every card in a board filtered to one project repeats
+            it) the whole line goes rather than an empty row of padding. */}
+        {showProject && (
+          <span className="schedule-tv-card-foot">
+            <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+          </span>
+        )}
       </button>
       {/* Quiet until the card is pointed at or focused, exactly like the List's
           row actions: a lane is a column of cards, and a permanent glyph on
@@ -1766,8 +2053,14 @@ function TaskCard({
           keeps them out of the card's own click: pressing Archive or Run now
           cannot bubble into a button it is not inside, so neither one navigates
           to the conversation or marks the thread read. That was already true of
-          the markup and it is now load-bearing, so a test reads it. */}
-      {(run || file) && (
+          the markup and it is now load-bearing, so a test reads it.
+
+          AND IT IS BEHIND SHOW_ROW_ACTIONS, off since 2026-08-17 — the same flag
+          the List row's strip is behind, because it is the same strip on the other
+          view and the two must not diverge on a flip. The intents, the calls and
+          the geometry (`.tasks-card-acts` in tasks.css, centred on the head off
+          `--tasks-card-head-h`) are all untouched and waiting. */}
+      {SHOW_ROW_ACTIONS && (run || file) && (
         <span className="tasks-card-acts">
           {run && (
             <button
