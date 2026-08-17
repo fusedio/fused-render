@@ -40,6 +40,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import formats  # noqa: E402 - the shared format checks; see formats.py
+import preview  # noqa: E402 - the ONE live-thumbnail writer; see preview.py
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 #: The loaded pipeline and the device its generator wants. One per process.
@@ -188,6 +189,13 @@ def load(model_id, fetched):
     device, seed_device = _place(pipe)
     _loaded["seed_device"] = seed_device
     _loaded["pipe"] = pipe
+    # The key the live preview's projection table is keyed by, captured HERE
+    # because the VAE is what defines the latent space a fitted matrix belongs
+    # to — not the pipeline and not the repo id, either of which would need a
+    # new table row for every checkpoint that shares one autoencoder. A class
+    # `preview.PROJECTIONS` has no entry for simply gets no preview.
+    vae = getattr(pipe, "vae", None)
+    _loaded["vae"] = None if vae is None else type(vae).__name__
     # See `worker_base.STATE["device"]`: on Windows the PyPI torch wheel is
     # CPU-only, so "this machine has a GPU" and "this pipeline is using one" are
     # different facts and only this process knows the second.
@@ -236,6 +244,26 @@ def memory():
     return total or None
 
 
+def _sigma_after(pipeline, step):
+    """The noise level the scheduler has ARRIVED at, after step index `step`.
+
+    `scheduler.sigmas` is the whole schedule with a trailing zero, and by the
+    time `callback_on_step_end` runs for step `i` the scheduler has already
+    advanced from `sigmas[i]` to `sigmas[i + 1]` — so the latents in the
+    callback are at `i + 1`. That off-by-one is the difference between a
+    preview that converges and one that is permanently one step stale, which is
+    invisible on a 32x32 thumbnail, hence writing it down.
+
+    None when the schedule is not there or is shorter than the loop, which no
+    scheduler in this pipeline does — but a preview must not be able to raise
+    out of a denoising callback and lose a render that was going to succeed.
+    """
+    sigmas = getattr(getattr(pipeline, "scheduler", None), "sigmas", None)
+    if sigmas is None or len(sigmas) <= step + 1:
+        return None
+    return float(sigmas[step + 1])
+
+
 def generate(body):
     """Render one image. Returns `{path, seconds, seed, width, height, steps}`."""
     import torch
@@ -259,6 +287,11 @@ def generate(body):
     started = time.time()
     step_times = []
     last = [started]
+    # The live thumbnail. A no-op when the request named no preview file or when
+    # nothing has been fitted for this VAE, which is what lets the callback below
+    # call it unconditionally — see `preview.sink`.
+    frames = preview.sink(body.get("outPreview"), _loaded.get("vae"))
+    grid = preview.token_grid(width, height)
 
     def on_step_end(pipeline, step, timestep, callback_kwargs):
         now = time.time()
@@ -275,22 +308,41 @@ def generate(body):
             detail="Denoising — step %d/%d%s" % (done, steps, _eta(remaining)))
         if worker_base.CANCEL.is_set():
             raise worker_base.Cancelled()
+        # `callback_on_step_end_tensor_inputs` defaults to `["latents"]` and
+        # `Flux2KleinPipeline._callback_tensor_inputs` is `["latents",
+        # "prompt_embeds"]`, so the latents arrive here without asking for them.
+        #
+        # A CLOSURE, not the array: pulling `(1, H*W, 128)` off the GPU is a
+        # synchronisation, and most of the 68ms this feature was measured at. A
+        # sink that is not writing must not be charged for it, and passing a
+        # thunk is what keeps the `if preview:` branch out of this loop. `.to`
+        # in one call rather than `.float().cpu()` — one transfer, not two.
+        sigma = _sigma_after(pipeline, step)
+        if sigma is not None:
+            frames.add(
+                lambda: callback_kwargs["latents"].detach().to(
+                    "cpu", torch.float32).numpy(),
+                sigma=sigma, grid=grid)
         return callback_kwargs
 
     worker_base.report(job=job, state="running", kind="task", unit="",
                        done=0, total=steps, detail="Denoising — step 0/%d" % steps)
-    image = pipe(
-        prompt=prompt,
-        height=height,
-        width=width,
-        guidance_scale=guidance,
-        num_inference_steps=steps,
-        generator=generator,
-        callback_on_step_end=on_step_end,
-    ).images[0]
+    # The sink wraps the SAVE as well as the render: its exit is the lifecycle,
+    # and a clean one means the real PNG has landed and the preview is now
+    # duplicate bytes. A cancel or a failure discards it too (`preview.Sink`).
+    with frames:
+        image = pipe(
+            prompt=prompt,
+            height=height,
+            width=width,
+            guidance_scale=guidance,
+            num_inference_steps=steps,
+            generator=generator,
+            callback_on_step_end=on_step_end,
+        ).images[0]
 
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    image.save(out)
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        image.save(out)
     return {
         "path": out,
         "seconds": round(time.time() - started, 2),

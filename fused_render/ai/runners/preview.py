@@ -103,6 +103,26 @@ SUFFIX = ".preview.png"
 #: blurring a picture of a picture either way.
 MAX_SIDE = 32
 
+#: Pixels per latent token, per axis: FLUX.2's VAE downsamples 8x and its 2x2
+#: patchify folds another 2. So a 1024² render denoises a 64x64 token grid.
+#:
+#: Here rather than beside the projection because both runners need it to say
+#: what shape the packed tokens they hold are, and one of them (`(B, N, C)`)
+#: cannot tell from the array. Strictly it is a fact about klein's autoencoder
+#: like the matrix is, so a second entry in `PROJECTIONS` with a different
+#: packing would have to move it into the table — worth doing then, not now.
+TOKEN_STRIDE = 16
+
+
+def token_grid(width, height) -> tuple:
+    """The `(h, w)` token grid a render of `width` x `height` denoises in.
+
+    Both workers know their pixel size and neither can read the grid off the
+    packed `(B, N, C)` tokens, so the division lives here — a runner doing its
+    own `// 16` is a second copy of a fact about the VAE.
+    """
+    return (int(height) // TOKEN_STRIDE, int(width) // TOKEN_STRIDE)
+
 
 def preview_path(out: str | None) -> str | None:
     """Where the live preview for `out` goes, or None if there is no out.
