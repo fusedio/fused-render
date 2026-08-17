@@ -310,18 +310,16 @@ function Suggested({
               </span>
             )}
           </div>
-          {/* What running on this backend is LIKE — the memory ceiling on the
-              MLX image runner, the GPU speed of MLX Whisper. It sits ABOVE the
-              cards deliberately: it is the thing to know BEFORE starting a
-              multi-gigabyte download, and the same sentence discovered
-              afterwards is an apology rather than information.
-              MUTED, not warning-coloured. It is a standing fact about the
-              runner, and three orange paragraphs down a page teach the reader
-              that orange here means nothing — what a backend is like is
-              context for a choice, not an alarm about one. */}
-          {group.available && group.runnerNote && (
-            <p className="am-group-note">{group.runnerNote}</p>
-          )}
+          {/* No runner note here. What running on a backend is LIKE — the
+              memory ceiling on MLX FLUX, MLX Whisper's GPU speed — is now a
+              line under that engine's row on the Engines tab (`engineNote`).
+              Three of the six runners have one, so on this tab it appeared
+              under some capability headings and not others, which made the
+              sections look blotchy and the sentences read as noise rather than
+              as the one thing worth knowing; and the FLUX line is a CAUTION
+              about a choice, so it belongs beside the control that changes it.
+              `runnerNote` is still on the catalog payload — it is the same
+              string, rendered somewhere better. */}
           <div className="cc-mdgrid am-grid">
             {group.models.map((m) => {
               const { busy, have } = cardState(m.id, downloads);

@@ -20,9 +20,14 @@
 .am-engines {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--am-gap-card);
   max-width: 760px;
   font-size: 13px;
+  /* The row grid's two fixed tracks, named once so the lines UNDER a row can
+     start where its control does. A note about the engine that belongs to the
+     card's left edge instead reads as a sentence about the capability. */
+  --am-engine-cap-col: 132px;
+  --am-engine-col-gap: 12px;
 }
 
 /* The one sentence above the cards: what "Automatic" means. */
@@ -32,24 +37,34 @@
   color: var(--fg-muted);
 }
 
-/* Capability, control, reality — one line, wrapping to two on a narrow window
-   rather than squeezing the select. `align-items: center` and not `baseline`:
-   the select is a 32px box and the two text runs beside it should sit on its
-   middle, not hang off the text baseline inside it. */
+/* Capability, control, reality — one line, and a real GRID rather than three
+   rows that each size themselves.
+
+   Flex with `min-width` on the label was three independent layouts: the label
+   column ended wherever that row's word ended, so each select started at its
+   own x and — since a select sizes to its widest option — the three controls
+   were three different widths, which left "Using MLX LM." / "Using MLX FLUX."
+   at three different x too. Three identical controls holding the same kind of
+   choice have to be one column, and a column is what a grid is.
+
+   `align-items: center` and not `baseline`: the select is a 32px box and the
+   two text runs beside it should sit on its middle, not hang off the text
+   baseline inside it. Below 620px the columns collapse to one, which stacks
+   the row rather than squeezing a select to nothing. */
 .am-engine-row {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: var(--am-engine-cap-col) minmax(0, 260px) minmax(0, 1fr);
   align-items: center;
-  gap: 8px 12px;
+  gap: 8px var(--am-engine-col-gap);
 }
 
-/* A fixed-ish column so the three selects line up down the page — a ragged
-   left edge on a stack of identical controls reads as a layout accident. It is
-   a min rather than a width, so a longer capability name pushes rather than
-   truncates. */
+@media (max-width: 620px) {
+  .am-engine-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .am-engine-cap {
-  flex: 0 0 auto;
-  min-width: 128px;
   font-weight: 600;
 }
 
@@ -57,16 +72,19 @@
    its own chevron, its own metrics — which is what makes this control look
    like every other select in the app instead of like the platform's. What is
    left here is only how it behaves in this row. */
+   `width: 100%` fills the grid's control column, which is what makes all three
+   selects the same width no matter which option is showing — a select left to
+   size itself grows to "MLX Whisper (Apple Silicon) — needs Apple Silicon…"
+   the moment somebody picks it, and the column would move under the user's
+   cursor. */
 .am-engine-select {
-  flex: 0 1 auto;
+  width: 100%;
   min-width: 0;
-  max-width: 100%;
 }
 
 /* What is actually serving the capability. Muted, because the control beside
    it is the thing being read and this is the confirmation. */
 .am-engine-serving {
-  flex: 1 1 auto;
   min-width: 0;
   color: var(--fg-muted);
 }
@@ -75,8 +93,17 @@
    force, and what a switch just did. Under the row rather than in it — both
    are sentences about an event, not part of the control. */
 .am-engine-note {
+  /* Starts where the select does, so it reads as a line about the control
+     rather than about the capability naming the row. */
+  margin-left: calc(var(--am-engine-cap-col) + var(--am-engine-col-gap));
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+@media (max-width: 620px) {
+  .am-engine-note {
+    margin-left: 0;
+  }
 }
 
 /* -- section headings -------------------------------------------------------

@@ -134,9 +134,17 @@ class Runner:
     #: (`worker_base.STATE["device"]`) and is not knowable until one has run.
     #:
     #: It exists because the honest answer for `transformers-text` is "this may
-    #: be a great deal slower than you expect, and here is why", and a user who
-    #: reads that before starting an 8GB download has been told something
-    #: useful. Empty for a runner with nothing surprising to say.
+    #: be a great deal slower than you expect, and here is why". Empty for a
+    #: runner with nothing surprising to say.
+    #:
+    #: **It renders under that engine's row on the AI Models page's Engines
+    #: tab** (D315), beneath the select, and only for the runner actually
+    #: serving the capability. It spent a while over the Discover tab's
+    #: capability sections instead, which was wrong twice: three of six runners
+    #: have a note, so those sections were blotchy and the sentences read as
+    #: noise; and the `mflux-image` one is a CAUTION about a choice — the thing
+    #: that tells a 16GB Mac to go back to Diffusers — which belongs beside the
+    #: control that makes that switch, not over a grid of downloads.
     note: str = ""
     _available: Callable[[], Availability] = field(repr=False, default=lambda: Availability(True))
 
@@ -246,12 +254,13 @@ _RUNNERS: tuple[Runner, ...] = (
         folder=os.path.join(RUNNERS_DIR, "transformers_text"),
         label="Transformers (PyTorch)",
         short_label="Transformers",
-        # ONE LINE, and that is a hard constraint rather than a summary: this
-        # sits above the cards where it is read on the way past, and anything
-        # that wraps is something nobody finishes. Everything that used to
-        # follow a dash here — that the Windows build is CPU-only, that a CPU
-        # answers at a few words a second — lives in the loaded card's tooltip
-        # instead, where somebody has stopped to ask.
+        # ONE LINE, and that is a hard constraint rather than a summary: it sits
+        # under this engine's row on the Engines tab, in the space between one
+        # picker and the next, and anything that wraps twice is something nobody
+        # finishes. Everything that used to follow a dash here — that the
+        # Windows build is CPU-only, that a CPU answers at a few words a second
+        # — lives in the loaded card's tooltip instead, where somebody has
+        # stopped to ask.
         note="Uses an NVIDIA GPU when PyTorch can see one, and the CPU otherwise.",
         # Deliberately BELOW the MLX row rather than instead of it. Apple Silicon
         # therefore gets MLX when it is present and this runner's working MPS
@@ -271,18 +280,22 @@ _RUNNERS: tuple[Runner, ...] = (
     # been run on the 16GB Macs this app's own catalog says full-precision FLUX
     # already OOMs. The evidence is one machine's benchmark; the decision was to
     # take the speed and let a user who hits the ceiling move back to Diffusers
-    # from Preferences, which is the case the engine preference (D302) exists to
-    # serve in both directions. The `note` says so before a download starts.
+    # from the Engines tab, which is the case the engine preference (D302)
+    # exists to serve in both directions. The `note` says so **under that very
+    # picker** (D315) — it is the sentence a 16GB Mac needs at the moment it is
+    # deciding whether to switch away, and it was over a grid of downloads on
+    # another tab until then.
     Runner(
         code="mflux-image",
         capability=IMAGE_GENERATION,
         folder=os.path.join(RUNNERS_DIR, "mflux_image"),
         label="MLX FLUX (Apple Silicon)",
         short_label="MLX FLUX",
-        # ONE LINE, per the rule the transformers row states. It now describes
-        # the DEFAULT rather than an opt-in, so the memory caveat leads: the
-        # reader it exists for is someone on a small Mac deciding whether to
-        # switch AWAY, not someone deciding whether to try it.
+        # ONE LINE, per the rule the transformers row states. It describes the
+        # DEFAULT rather than an opt-in, so the memory caveat leads: the reader
+        # it exists for is someone on a small Mac deciding whether to switch
+        # AWAY, not someone deciding whether to try it — and since D315 the line
+        # is rendered directly under the control that does the switching.
         note="Reserves much more memory than Diffusers and is untested below "
              "32GB, but loads far quicker from a smaller download.",
         _available=_apple_silicon,

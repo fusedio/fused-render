@@ -82,14 +82,37 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
  *  label, because a disabled `<option>` has nowhere else to say anything.
  *
  *  Deliberately says nothing about an AVAILABLE engine. It used to return the
- *  runner's `note` — what using that backend is like — and the page rendered it
- *  after every label; that is editorial copy on a settings page, and the note
- *  still has a home on the AI Models page, where somebody is choosing what to
- *  download and the sentence can change a decision.
+ *  runner's `note` — what using that backend is like — appended to every
+ *  option's label, which is a paragraph inside a dropdown. The note is now a
+ *  line under the row (`engineNote`), where it can be read without opening the
+ *  menu and only for the backend actually in force.
  */
 export function choiceReason(choice: EngineChoice): string | null {
   if (choice.available) return null;
   return choice.reason ?? "not available on this machine";
+}
+
+/** What running on the backend that is SERVING this capability is like, or null.
+ *
+ *  Three of the six runners have something to say — MLX FLUX reserves much more
+ *  memory than Diffusers and is untested below 32GB, MLX Whisper transcribes on
+ *  the GPU, PyTorch wants an NVIDIA card — and the FLUX one is a caution, not a
+ *  fact: it is the sentence that tells somebody on a 16GB Mac to move back to
+ *  Diffusers, which is precisely the switch the control above it makes.
+ *
+ *  **It lived over the Discover tab's capability sections and came back here.**
+ *  There it was a fact about a backend printed above a grid of models, present
+ *  under three headings and absent under the others, so the page read as
+ *  blotchy and the notes as noise — and the warning about memory was two tabs
+ *  from the only control that answers it.
+ *
+ *  EFFECTIVE, never selected, for `servingLine`'s reason: the row reports what
+ *  is running, and a note about a backend this machine refused to use would be
+ *  a sentence about somewhere else.
+ */
+export function engineNote(row: CapabilityEngine): string | null {
+  if (!row.effective) return null;
+  return row.choices.find((c) => c.code === row.effective)?.note ?? null;
 }
 
 /** Whether picking `code` for `row` would change which backend actually runs.

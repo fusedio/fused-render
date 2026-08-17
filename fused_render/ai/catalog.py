@@ -482,8 +482,14 @@ def describe() -> list[dict]:
                 # backend these suggestions belong to, not which backend to
                 # pick, so the platform half is noise there.
                 "runnerShortLabel": runner.short if runner else None,
-                # …and what using it is LIKE, which is the sentence someone
-                # wants BEFORE they start an 8GB download rather than after.
+                # …and what using it is LIKE. The Discover tab no longer prints
+                # this over its capability sections (D315): three of six runners
+                # have one, so the sections came out blotchy, and the one that
+                # matters is a caution about an engine CHOICE, which now reads
+                # under the picker on the Engines tab. The field stays on this
+                # payload because it is the answer to "what is the runner
+                # serving this capability like", which is a question about the
+                # catalog and not about where a page chose to print it.
                 "runnerNote": runner.note or None if runner else None,
                 "available": status.ok,
                 "reason": status.reason or None,

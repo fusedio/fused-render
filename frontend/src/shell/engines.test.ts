@@ -3,6 +3,7 @@ import type { CapabilityEngine, Prefs } from "@platform/lib/api";
 import {
   capabilityLabel,
   choiceReason,
+  engineNote,
   ignoredWarning,
   servingLine,
   switchOutcome,
@@ -68,6 +69,37 @@ function windows(): CapabilityEngine {
     ],
   });
 }
+
+// What running on the backend that is actually serving this capability is
+// LIKE. It used to sit over the Discover tab's capability sections, where only
+// three of six runners had one to show and the page came out blotchy — and
+// where the memory ceiling on MLX FLUX was nowhere near the control that
+// answers it. Here it is beside the decision it is about.
+describe("engineNote", () => {
+  it("describes the engine that is actually serving", () => {
+    expect(engineNote(mac())).toBe("Transcribes on the GPU.");
+  });
+
+  it("describes the EFFECTIVE engine, never the one that was asked for", () => {
+    // The Windows box stored a preference for MLX Whisper and got CTranslate2.
+    // "Transcribes on the GPU." under that row would be a sentence about a
+    // backend this machine is not running — the same discipline `servingLine`
+    // follows one line above it.
+    expect(engineNote(windows())).toBe(null);
+  });
+
+  it("is null for a runner with nothing worth saying", () => {
+    // Most runners have no note, and the row simply has no second line. An
+    // empty string would still be a rendered element.
+    expect(engineNote(mac({ effective: "faster-whisper" }))).toBe(null);
+  });
+
+  it("is null when nothing serves the capability", () => {
+    // There is no engine, so there is nothing it is like. The row's own
+    // "Not available on this machine." is the whole story.
+    expect(engineNote(mac({ effective: null }))).toBe(null);
+  });
+});
 
 describe("servingLine", () => {
   it("reports the EFFECTIVE runner, not the selected one", () => {

@@ -6357,7 +6357,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   swap, and nothing has been run on the 16GB Macs that AI-9b's own note says
   full-precision FLUX already OOMs. The way back is the engine preference
   (AI-10e), which serves this case in both directions, and the runner's `note`
-  names the ceiling before a download starts. Everything a page can see is
+  names the ceiling **on the Engines tab, under the picker that is the way
+  back** (D315) — it used to sit over Discover's image-generation section,
+  which is a page about downloads and two clicks from the only control that
+  answers it. Everything a page can see is
   unchanged: same `/generate` body, same reply, same denoising-step row, same ✕,
   and the SAME DEFAULTS (28 steps, guidance 4.0 — diffusers' numbers, not
   mflux's own 4 and 1.0), because switching engines is a performance decision and
@@ -6627,6 +6630,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   AI-11a/D293), and the runner rows in `fused.ai.models.list()` now carry
   `active` beside `available` — the same answer until a preference could sit
   between them, and different the moment one can.
+- **AI-10f** **What a backend is LIKE reads under the picker that chooses it**
+  (D315). A runner's `note` — MLX FLUX's memory ceiling, MLX Whisper's GPU
+  speed, PyTorch's NVIDIA-or-CPU — renders as a muted line beneath its
+  capability's row on the Engines tab, for the **effective** runner only, the
+  same discipline the "Using MLX LM." line above it follows. It used to head
+  the matching capability section on Discover, which was wrong twice: three of
+  six runners have a note, so those sections were blotchy and the sentences
+  read as noise; and the FLUX one is not a fact but the **instruction AI-9c's
+  accepted risk depends on** — the sentence that tells a 16GB Mac to switch
+  back to Diffusers — which has to be beside the control that switches. The
+  rows are uneven, and here that is information: this engine has a caveat, that
+  one does not. The field stays on `catalog.describe()` regardless; it answers
+  a question about the catalog, not about where a page prints it.
 - **AI-11** **Text generation runs on every supported desktop platform, on the
   backend that suits the machine — and TWO runners share one capability for the
   first time** (D293).

@@ -968,13 +968,18 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch):
     assert all(m["id"].startswith(("mlx-community/", "prism-ml/")) for m in text["models"])
 
 
-def test_the_cpu_warning_reaches_the_page_before_the_download(monkeypatch):
+def test_the_cpu_warning_reaches_the_page(monkeypatch):
     """The PyTorch runner says what using it is LIKE, and the catalog carries it.
 
     torch from PyPI is CPU-only on Windows, so the ordinary outcome there is a
-    model that works and answers at walking pace. That is worth knowing BEFORE
-    an 8GB pull, and nothing else on the page can say it: the device a model
-    really got is a measurement that does not exist until one has loaded.
+    model that works and answers at walking pace. Nothing else on the page can
+    say it: the device a model really got is a measurement that does not exist
+    until one has loaded.
+
+    The sentence is rendered under that engine's row on the Engines tab (D315),
+    not over the Discover sections it used to head; this asserts the CATALOG
+    still carries it, which is the contract that does not depend on where a
+    page prints it.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")

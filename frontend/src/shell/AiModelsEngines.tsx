@@ -39,6 +39,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import {
   capabilityLabel,
   choiceReason,
+  engineNote,
   ignoredWarning,
   servingLine,
   switchOutcome,
@@ -82,6 +83,7 @@ function CapabilityEngineRow({
   const [error, setError] = useState<string | null>(null);
   const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
   const warning = ignoredWarning(row);
+  const note = engineNote(row);
   const label = capabilityLabel(row.capability);
 
   const choose = async (code: string) => {
@@ -134,10 +136,10 @@ function CapabilityEngineRow({
           {row.choices.map((choice) => {
             // Null for an engine that CAN be picked, which is the whole of what
             // this adds to a label: what a backend is LIKE ("transcribes on the
-            // GPU") is editorial and lives on the Discover tab, where somebody
-            // is choosing what to download. What is left is the registry's
-            // sentence about why a greyed-out option is greyed out, and in a
-            // menu the only place it can be read is here.
+            // GPU") is the line under the row, where it can be read without
+            // opening the menu. What is left is the registry's sentence about
+            // why a greyed-out option is greyed out, and in a menu the only
+            // place it can be read is here.
             const reason = choiceReason(choice);
             return (
               <option key={choice.code} value={choice.code} disabled={busy || !choice.available}>
@@ -153,6 +155,20 @@ function CapabilityEngineRow({
             they are on one line. */}
         <span className="am-engine-serving">{servingLine(row)}</span>
       </div>
+      {/* What running on the engine in force is LIKE — the memory ceiling on
+          MLX FLUX, MLX Whisper's GPU speed. It sat over the Discover tab's
+          capability sections, which was the wrong page twice: three of six
+          runners have a note, so those sections came out blotchy and the
+          sentences read as noise; and the FLUX one is not a fact but a
+          CAUTION — it is what tells somebody on a 16GB Mac to move back to
+          Diffusers, and it was two tabs away from the control that does it.
+          Here it sits under the select it is about.
+
+          MUTED, in the same line as the warning below it rather than in
+          `--warning` orange: none of these reports a problem, they describe
+          what a backend is like, and an orange paragraph under a control the
+          user has not touched reads as an error they caused. */}
+      {note && <div className="am-engine-note">{note}</div>}
       {warning && <div className="am-engine-note">{warning}</div>}
       {/* The consequence, in four words at most. It stays because an unload is
           a real thing that just happened to the user's machine and nothing else
