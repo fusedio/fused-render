@@ -61,6 +61,14 @@
 // unsettled would move it between the content menu and the sidebar as the verdict
 // landed, which is a worse flash than the one this module removes.
 //
+// **THAT ASYMMETRY DOES NOT REACH `defaultSide`** — the one thing an absent `_side`
+// consults (D323). "Settled enough to be listed and toggled to" is not "settled
+// enough to OPEN BY ITSELF": `claude` ships a condition.py, so on every file it is
+// pending for as long as /api/fs/conditions takes, and auto-opening it would put an
+// empty column on screen that vanishes when a mount-backed file's verdict comes
+// back false. Both kinds of pending are excluded there and only there; see the
+// field.
+//
 // THE THIRD LIST, `menu`, and why it is not either of the two above: what the
 // SWITCHER shows is now EVERY COMPANION, ALWAYS — the ones this file has not
 // got listed as disabled rows carrying the reason why (mode-visibility's
@@ -99,6 +107,18 @@ export interface SideSplitInput {
   // because the file has a `git` of its own).
   borrowed: TemplateEntry | null;
   borrowedPending: boolean;
+  // THIS FILE's condition.py verdicts are still in flight (`conditions === null`,
+  // lib/mode-visibility's `isModePending`). Read for ONE thing — `defaultSide`
+  // below — because an OWN gated companion is `settled` for every other purpose
+  // and deliberately so (see the header's asymmetry note), but must not be what
+  // an absent `_side` opens: there is nothing to put in the column until the
+  // gate answers, and the gate may say no.
+  //
+  // Separate from `borrowedPending` rather than folded into it because the two
+  // are different probes with different timings — this file's `/api/fs/conditions`
+  // and the PARENT's stat + gate — which is the same split Preview's
+  // `isSidePending` makes for exactly this reason.
+  conditionsPending?: boolean;
   // Every companion that EXISTS AS A BINDING, whether or not it may be shown: the
   // file's own sidebar templates BEFORE the visibility filter, plus the parent's
   // `git` however its gate voted (lib/dir-mode's `bound`). Order and duplicates
@@ -140,12 +160,33 @@ export interface SideSplit {
   on: boolean;
   // Something may yet land in the sidebar, so a `_side` naming it is tolerated.
   offered: boolean;
-  // WHAT AN ABSENT `_side` OPENS (D323), and null when nothing does. Over
-  // `settled`, never `all`, which is the pending placeholder's whole story
-  // applied to the new default: a file whose only candidate is a borrowed `git`
-  // that may yet turn out not to exist must not flash a sidebar open for the
-  // length of that probe. Null there means "not yet", and the verdict is what
-  // opens it — the same posture `on` and `sideToggleTarget` already take.
+  // WHAT AN ABSENT `_side` OPENS (D323), and null when nothing does. Over the
+  // companions KNOWN TO BE SHOWABLE — which is a shorter list than `settled`, and
+  // shorter for two different reasons:
+  //
+  //   the borrowed placeholder   `settled` already excludes it. A file whose only
+  //                              candidate is a `git` that may turn out not to
+  //                              exist must not flash a column open for the length
+  //                              of the parent probe.
+  //   an OWN gate still out      `settled` includes it, and that asymmetry is
+  //                              deliberate for the split's EXISTENCE (see the
+  //                              header) — but not for this. `claude` ships a
+  //                              condition.py, so on every file it is pending until
+  //                              /api/fs/conditions answers; auto-opening it means
+  //                              an empty column (`src` null) that vanishes when a
+  //                              mount-backed file's verdict comes back false,
+  //                              seconds later on a cold mount, jumping the content
+  //                              pane's width twice for a sidebar the file never
+  //                              gets. And a gated entry being "never the default"
+  //                              is the rule the content pane already follows
+  //                              (`defaultMode`, CT-12, and the server's own
+  //                              `_mark_conditions` docstring).
+  //
+  // Null means "not yet, ask again when the verdict lands" — the same posture `on`
+  // and `sideToggleTarget` take, and what makes the reconcile leave `_side` alone
+  // meanwhile instead of writing `off`. A DEEP LINK to either kind of pending
+  // companion is still honoured: `resolveSide` resolves a NAMED mode against
+  // `all`, and only the default is withheld here.
   //
   // It is also the value that decides the URL's SPELLING (`sideParam`): the
   // default gets the clean URL, so only a deliberate second choice is written
@@ -193,13 +234,18 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // companion is `claude` has no content pane to sit a sidebar next to, so it
   // renders as it did before the split existed: chat, full width, content mode.
   const splittable = i.splitCapable && i.content.length > 0;
+  // Every reason a companion is not yet SHOWABLE, in one predicate — the borrowed
+  // entry answers to its own probe, everything else to this file's gates. Only
+  // `defaultSide` reads it; see the field's comment for why nothing else does.
+  const unresolved = (e: TemplateEntry) =>
+    e === i.borrowed ? i.borrowedPending : !!e.conditional && !!i.conditionsPending;
   return {
     menu: sidebarMenu(all, i.bound ?? []),
     all,
     settled,
     on: splittable && settled.length > 0,
     offered: splittable && all.length > 0,
-    defaultSide: splittable ? defaultSidebarMode(settled) : null,
+    defaultSide: splittable ? defaultSidebarMode(all.filter((e) => !unresolved(e))) : null,
   };
 }
 

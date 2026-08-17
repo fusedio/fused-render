@@ -40,6 +40,12 @@ const GIT: TemplateEntry = t("git");
 
 const image = t("image");
 const claude = t("claude");
+// The chat AS THE REGISTRY ACTUALLY SHIPS IT: `templates/claude/condition.py`
+// exists (it refuses mount-backed paths), so every file's `claude` entry is
+// flagged conditional and is PENDING until /api/fs/conditions answers. That makes
+// this the common case, not an exotic one — which is why the default-companion
+// rule has to be right about it.
+const gatedClaude: TemplateEntry = { ...t("claude"), conditional: true };
 // A companion a USER REGISTRY bound into this half: it is in the file's own
 // list, but nothing here ranks or explains it. It stands in wherever a test
 // needs a second own-companion beside the chat.
@@ -289,6 +295,75 @@ describe("parseSide", () => {
 
   it("lets an explicit shut beat the legacy param", () => {
     expect(parseSide("?_side=off&_mode=claude")).toEqual({ open: false, mode: null });
+  });
+});
+
+// THE FILE'S OWN GATE, and the second flash `defaultSide` has to dodge. An own
+// conditional companion counts as SETTLED for the split's existence — that
+// asymmetry with the borrowed entry is deliberate and argued in the module header —
+// but it must not be what an absent `_side` OPENS, because until
+// /api/fs/conditions answers there is nothing to put in the column.
+describe("defaultSide and a pending own gate", () => {
+  const gated = (own: TemplateEntry[], git: "pending" | "yes" | "no") => ({
+    ...file(own, git),
+    conditionsPending: true,
+  });
+
+  it("does not open a gated companion whose verdict is still out", () => {
+    const s = sideSplit(gated([gatedClaude], "no"));
+    // Still settled — the split is on and the toggle has a target...
+    expect(s.on).toBe(true);
+    expect(names(s.settled)).toEqual(["claude"]);
+    expect(sideToggleTarget(s.settled, null, null)).toBe("claude");
+    // ...but a bare URL opens NOTHING until the gate answers. Opening here is an
+    // empty 30% column (`src` is null, so the caller draws its spinner) that
+    // vanishes if the verdict is false — on a mount, seconds later, and the
+    // content pane's width jumps twice for a sidebar the file never gets.
+    expect(s.defaultSide).toBe(null);
+    expect(openedAt("", s)).toBe(null);
+  });
+
+  it("opens the gated companion the moment its verdict lands", () => {
+    const s = sideSplit({ ...gated([gatedClaude], "no"), conditionsPending: false });
+    expect(s.defaultSide).toBe("claude");
+    expect(openedAt("", s)).toBe("claude");
+  });
+
+  it("prefers an UNGATED companion over a pending gated one", () => {
+    // The content pane's rule, applied to this half: a gated template is never
+    // the default while a normal one exists (CT-12, PT-9 — and the server's own
+    // `_mark_conditions` docstring says the same).
+    const s = sideSplit(gated([gatedClaude, notes], "no"));
+    expect(s.defaultSide).toBe("notes");
+    expect(openedAt("", s)).toBe("notes");
+  });
+
+  it("still HONOURS a deep link to a pending gated companion", () => {
+    // Same posture as the pending borrowed entry: listed, deep-linkable, and the
+    // verdict is what settles it. Only the DEFAULT is withheld.
+    const s = sideSplit(gated([gatedClaude], "no"));
+    expect(openedAt("?_side=claude", s)).toBe("claude");
+  });
+
+  it("leaves the URL alone while the only candidate is a pending gate", () => {
+    const s = sideSplit(gated([gatedClaude], "no"));
+    expect(
+      reconcileSideSearch("", {
+        splitCapable: true,
+        offered: s.offered,
+        open: true,
+        activeSide: null,
+        defaultSide: s.defaultSide,
+      })
+    ).toBe(null);
+  });
+
+  it("treats a settled borrowed git as the default while the own gate is out", () => {
+    // `conditionsPending` is THIS FILE's verdicts; the borrowed entry has its own
+    // flag and is not affected by it (Preview's `isSidePending` splits them the
+    // same way).
+    const s = sideSplit(gated([gatedClaude], "yes"));
+    expect(s.defaultSide).toBe("git");
   });
 });
 

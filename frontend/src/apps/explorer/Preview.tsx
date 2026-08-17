@@ -685,6 +685,11 @@ function TemplatePreview({
     own: parts.sidebar,
     borrowed: borrowedGit,
     borrowedPending,
+    // This file's own gates, for `defaultSide` alone: an absent `_side` must not
+    // open a companion whose condition.py has not answered — `claude` HAS one, so
+    // that is every file for as long as /api/fs/conditions takes, and on a
+    // mount-backed file the answer is no (lib/preview-side's `defaultSide`).
+    conditionsPending: conditions === null,
     bound: [
       ...partitionModes(stat.templates).sidebar,
       ...(parentGit.bound ? [parentGit.bound] : []),
