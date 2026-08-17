@@ -303,7 +303,8 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     What goes is exactly the chrome that acts on the pane: `#left` (the frame,
     the pins, the highlight, the popover), `#divider` (no ratio to drag), both
     copies of the composer's screenshot button (a whole-pane picture of no pane),
-    and — out of the `#anntools` strip — the annotate switch, the `leftmode`
+    and — out of the `#anntools` strip — the annotate switch, its Record button
+    (spoken walkthroughs need the same target the switch does), the `leftmode`
     picker and the view toggle. The strip itself STAYS, because the kebab stays:
     its "New session in terminal" acts on the TARGET, not on the pane, and a
     folder with no preview is still a thing to hand to a terminal. The `nopane`
@@ -313,7 +314,7 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert ('for (const id of ["annbtn", "viewshot", "hviewshot", "leftmode", '
+    assert ('for (const id of ["annbtn", "annrec", "viewshot", "hviewshot", "leftmode", '
             '"viewbtn",\n                    "left", "divider"]) {') in body
     assert "if (el) el.remove();" in body
     assert '"anntools"' not in body, "the strip survives — the kebab lives there"
@@ -379,7 +380,7 @@ def test_nothing_drives_the_pane_machinery_once_the_pane_is_gone():
     # rewritten.
     ann = code[code.index("function annSetMode(on) {"):]
     ann = ann[:ann.index("\nannBtn.addEventListener")]
-    assert "if (!annCapable()) { annOn = false; return; }" in ann
+    assert "if (!annCapable()) {\n    annOn = false;" in ann
     assert ann.index("if (!annCapable())") < ann.index('fused.params.set("annmode"')
     # …and the predicate is the flag itself wherever there is no host pane.
     assert "const annCapable = () => (CHAT_ONLY ? !!annFrame : !noPane);" in code
