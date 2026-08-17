@@ -71,13 +71,25 @@ def main(limit: int = 500) -> dict:
     tag_counts = {}
     for s in base["sessions"]:
         t = triage.get(s["sessionId"], {})
-        # untriaged: running sessions are in progress, stopped ones are done —
-        # a session that finished while the page wasn't watching shouldn't sit
-        # in "In Progress" forever
-        default = "in_progress" if _is_running(s.get("mtime")) else "done"
-        status = t.get("status") or default
-        if status not in STATUSES:
-            status = default
+        # THE IN-PROGRESS LANE IS DERIVED, NOT RECORDED. "Something is running in
+        # this conversation" is a fact about the present, so it outranks every
+        # pin — a session filed as done or archived that has been resumed belongs
+        # in In Progress, and a run that finished while nothing was watching
+        # belongs back wherever the user filed it (or in Done, untriaged). Both
+        # answers come out of the same activity read, so neither needs a record.
+        #
+        # That is why inbox.html's autoFlow no longer writes the in-progress
+        # claim: it could only retract one while its own tab stayed open, so
+        # every unwitnessed finish left a pin on disk that nothing would clear
+        # and the Tasks board honoured it as a card the user had dragged. The
+        # pin the user DOES make survives here untouched, because deriving reads
+        # the record instead of overwriting it.
+        if _is_running(s.get("mtime")):
+            status = "in_progress"
+        else:
+            status = t.get("status") or "done"
+            if status not in STATUSES:
+                status = "done"  # a hand-edited record costs the pin, not the row
         s["status"] = status
         s["read"] = bool(t.get("read"))
         # the Inbox holds unread work that still matters — archived is filed away

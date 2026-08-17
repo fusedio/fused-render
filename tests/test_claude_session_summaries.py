@@ -192,6 +192,52 @@ def test_fresh_activity_is_running_and_defaults_to_in_progress(
     assert session["status"] == "in_progress"
 
 
+@pytest.mark.parametrize("pinned", ["done", "archived"])
+def test_a_running_session_outranks_a_stale_filing_decision(
+        client, projects_dir, state_dir, tmp_path, pinned):
+    """The in-progress lane is DERIVED, not recorded — and this module mirrors
+    the Inbox (see the module docstring), so it derives it the same way.
+
+    "Something is running in this conversation" is a fact about the present, and
+    a record filed during an earlier run does not outvote it: a session the user
+    marked done or archived and then resumed belongs in In Progress. The Inbox
+    used to buy that by having `autoFlow` OVERWRITE the record whenever it saw a
+    run — a write it could only retract while that same tab stayed open, so every
+    finish nothing witnessed left an `in_progress` on disk that nothing would ever
+    clear. It stopped writing, so both readers of triage.json compute the lane,
+    and the pin the user made is still in the file when the run stops.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _write(projects_dir, "proj", "s1", [
+        {"cwd": str(proj), **_user("hi", "2026-08-16T08:00:00Z")},
+        _assistant("working", now_iso),
+    ])
+    (state_dir / "triage.json").write_text(json.dumps(
+        {"s1": {"status": pinned, "note": "keep me"}}))
+
+    assert _get(client)[0]["status"] == "in_progress"
+    # derived, not cached: nothing rewrote the user's record to get here
+    rec = json.loads((state_dir / "triage.json").read_text())["s1"]
+    assert rec == {"status": pinned, "note": "keep me"}
+
+
+def test_a_filing_decision_still_wins_once_the_run_is_over(
+        client, projects_dir, state_dir, tmp_path):
+    """The other side of it. Only `in_progress` is a claim about the present;
+    `done` and `archived` are decisions, and a quiet session is where they hold.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write(projects_dir, "proj", "s1", [
+        {"cwd": str(proj), **_user("hi", "2026-08-16T08:00:00Z")},
+    ], mtime=STALE)
+    (state_dir / "triage.json").write_text(json.dumps(
+        {"s1": {"status": "archived"}}))
+    assert _get(client)[0]["status"] == "archived"
+
+
 def test_housekeeping_tail_is_not_activity_even_with_a_fresh_file(
         client, projects_dir, state_dir, tmp_path):
     """A turn_duration entry appended after the turn ends bumps the file mtime
@@ -318,6 +364,8 @@ def test_triage_write_sets_status_and_reads_back(projects_dir, state_dir, client
 
 
 def test_triage_write_preserves_the_records_other_keys(state_dir, client):
+    """`status` and its stamp are the only fields this endpoint touches — a note
+    the user typed in the Inbox must survive a drag on the Board."""
     path = os.path.join(str(state_dir), "triage.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"s1": {"status": "done", "note": "keep me", "read": "1"}}, f)
@@ -326,7 +374,14 @@ def test_triage_write_preserves_the_records_other_keys(state_dir, client):
     assert r.status_code == 200
     with open(path, encoding="utf-8") as f:
         rec = json.load(f)["s1"]
-    assert rec == {"status": "in_progress", "note": "keep me", "read": "1"}
+    assert rec["note"] == "keep me"
+    assert rec["read"] == "1"
+    assert rec["status"] == "in_progress"
+    # Stamped, so `_pin_holds` can tell this deliberate pin from an automatic
+    # one. The set of keys is asserted whole so a future field has to be a
+    # decision rather than a leak.
+    assert set(rec) == {"status", "note", "read", "at"}
+    assert float(rec["at"]) > 0
 
 
 def test_triage_write_refuses_a_status_it_does_not_speak(state_dir, client):

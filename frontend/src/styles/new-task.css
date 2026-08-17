@@ -1,8 +1,10 @@
 /* -- New task modal: the parts added by the tasks/threads pass ----------------
  * Everything else the form wears comes from schedule.css (.schedule-form-*,
- * .schedule-when-*). This file holds only what that pass introduced: the two
- * quiet checkboxes (Repeat / New task each run), the optional title row, and
- * the past-time note that used to be a refusal.
+ * .schedule-when-*). This file holds what that pass introduced — the two quiet
+ * checkboxes (Repeat / New task each run) and the past-time note that used to
+ * be a refusal — plus the card's WRITING SURFACE: the borderless title and
+ * description, which moved here from schedule.css when they stopped being
+ * boxed controls (2026-08-17).
  *
  * Imported from NewJobModal.tsx rather than the shell.css barrel, so it lands
  * after schedule.css in the cascade — which is what lets these rules armor
@@ -118,14 +120,189 @@
   color: var(--fg-muted);
 }
 
-/* -- Title -------------------------------------------------------------------
-   One optional row under the ask, a plain field-control in the icon gutter
-   every other row hangs from.
+/* -- The writing surface -----------------------------------------------------
+   Title and description are ONE borderless area, not two controls (Akshil,
+   2026-08-17, reference image): a single continuous surface between the card's
+   header rule and the rows beneath it, the title set large and the description
+   quieter under it. NEITHER field has a border, an underline or a filled box —
+   the point is that the top of the card reads as a document you type into.
 
-   There used to be a second row here, a "Description (optional)" textarea
-   (.new-task-desc / .new-task-desc-line), and its rules went with it: the big
-   field IS the description now (Akshil, 2026-08-17), so there is no second
-   piece of prose to style. */
+   What survives from the boxed treatment is the INTERACTION, deliberately
+   ("the input box style copy that"): the same generous vertical padding and hit
+   area a `.field-control` has, and the ordinary caret every other field in the
+   app draws. What is dropped is all of the chrome — the accent rule that used
+   to mark the focused field (a stripe in a gutter of its own is chrome too),
+   and then the focus WASH that replaced it, because a fill is a box drawn in
+   one colour (Akshil, 2026-08-17: "don't do this background highlight thing for
+   the input fields of title and description"). See the focus block below for
+   what is left doing that job.
+
+   Every property below is DECLARED rather than inherited, and every selector
+   carries the wrapper class as well as the field's own. deploy.css's
+   `.modal-body :where(input…, textarea)` block paints a background, a border, a
+   radius and a padding onto any unarmored field in a modal, and it has the same
+   one-class specificity as a bare `.new-task-field` would — so these rules win
+   on specificity (0,2,0) rather than on import order.
+
+   Both themes come from tokens.css, so there is one set of rules here. */
+
+.new-task-write {
+  display: flex;
+  flex-direction: column;
+  /* Tight, and tighter than the form's own 12px rhythm: the description hangs
+     off the title as its second line, not as the next row of a form. */
+  gap: 2px;
+  /* The block's vertical space belongs to the two fields, and the description
+     is the one that stretches into whatever is spare (see .new-task-ask). */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The shared half: the surface and the hit area. */
+.new-task-write .new-task-field {
+  font: inherit;
+  color: var(--fg);
+  /* No box and no fill, in either theme and in EVERY state — at rest, on hover
+     and on focus. The card's own --bg-alt shows through, which is what makes the
+     two fields read as one surface rather than as two tinted rectangles sitting
+     on it. Declared here rather than merely omitted, because deploy.css paints
+     `background: var(--bg)` onto any unarmored field in a modal. */
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  /* VERTICAL padding only, and no negative margin cancelling a horizontal one:
+     the surface starts FLUSH with the card's 16px gutter, on the line the header
+     title and the rows below already hang off. It used to be `6px 10px` pulled
+     back by `margin-inline: -10px`, which bought a hit area reaching past the
+     gutter and a strip to draw a focus bar in — and read as a left gutter
+     nothing else on the card has (Akshil, 2026-08-17). The click target is
+     unharmed: both fields are stretched flex children, so the box still spans
+     the whole content column.
+
+     No `caret-color` either. The caret takes `color` — var(--fg) above — which
+     is what every other field in the app gets, `.field-control` included; the
+     --accent override drew a yellow-green cursor found nowhere else. */
+  padding: 6px 0;
+  /* Both fields are stretched flex children, but an <input> carries an
+     intrinsic `size` width that would otherwise fight a 460px card. */
+  min-width: 0;
+  width: auto;
+}
+
+.new-task-write .new-task-field::placeholder {
+  color: var(--fg-muted);
+}
+
+/* FOCUS: the CARET, and deliberately nothing else.
+   The third answer this surface has had, and the quietest one that is still
+   honest. It was a 2px accent bar in a gutter; then a --ctl-quiet-bg wash across
+   the field, on the argument that a borderless field leaves a keyboard user
+   nothing. Both are gone: the bar went with the gutter it hung in, and the wash
+   is a filled box wearing a quieter colour — which is precisely the thing the
+   surface exists not to have (Akshil, 2026-08-17).
+   Nothing replaces it, and that is the decision rather than an omission. A text
+   caret IS the focus indicator for a text field — it is what WCAG 2.4.7 accepts
+   for one, and what every borderless writing surface (Notes, Notion, the
+   reference image this card copies) relies on. Here it is unusually legible: the
+   two fields are the only text inputs on this part of the card, Title is a 20px
+   face, and the form opens with the caret already in it. An `outline` or a ring
+   would put the box straight back, and a second wash-by-another-name would only
+   rename the thing that was removed.
+   `outline: none` is still DECLARED, not left to chance: deploy.css's
+   `.modal-body :where(input…, textarea):focus` already suppresses the UA ring at
+   (0,2,0), so this states the same intent at the specificity the rest of the
+   block is written at instead of depending on another file for it. */
+.new-task-write .new-task-field:focus {
+  outline: none;
+}
+
+/* …with ONE exception, and the reason it survives the wash's removal: in
+   forced-colours mode the caret is the single cue, drawn by the OS in a palette
+   this stylesheet cannot see or check. A ring is the right answer exactly where
+   the quiet answer cannot be verified, and the system Highlight keyword is the
+   one colour guaranteed to read against a forced background. Inset, so it
+   cannot reopen the gutter. */
+@media (forced-colors: active) {
+  .new-task-write .new-task-field:focus {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+/* -- Title -------------------------------------------------------------------
+   FIRST field on the card and the large one (Akshil, 2026-08-17). It is not a
+   row in the icon gutter and not a `.field-control`.
+
+   The ONE thing Title does differently from the ask: it is a single line, for
+   ever. Never wraps, never grows, and a 200-character title does not push the
+   folder and time rows off the card.
+
+   OVERFLOW, decided: the value SCROLLS horizontally under the caret while the
+   field has focus — that is the native <input> behaviour and the only one that
+   lets you edit the far end of a long title — and ELLIPSES when focus leaves,
+   so a title too long to show says so instead of appearing to end mid-word.
+   `text-overflow` is what buys the second half, and it only takes effect on an
+   unfocused input, which is exactly the split we want. (Chrome's UA sheet
+   already forces `overflow: clip` on a text input — measured: the computed
+   value is `clip`, not the `hidden` declared here — so this declaration is
+   belt-and-braces for engines that do not, not the thing doing the work.)
+
+   (There used to be a second row in this section too, a
+   "Description (optional)" textarea — .new-task-desc / .new-task-desc-line —
+   and its rules went with it: the big field IS the description, so there is no
+   third piece of prose to style.) */
+.new-task-write .new-task-title {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.35;
+  /* One line. `pre` rather than `nowrap` so a pasted value's own spacing is not
+     collapsed on the way in — an <input> strips the newlines either way. */
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* No autogrow and no drag-grow: the height is one line of the 20px face plus
+     the shared padding, and it never changes. */
+  resize: none;
+  flex: none;
+}
+
+/* -- The ask -----------------------------------------------------------------
+   SECOND, and deliberately quieter than the title: smaller face, book weight,
+   ordinary line height. It is the longer piece of writing of the two, so it
+   reads as body text under a heading — which is also what stops two 20px fields
+   from shouting at each other in a 460px card.
+
+   13px, which is not a size picked for this card: it is the repo's BODY size —
+   what `.field-control` sets for every field in the app, and what the two
+   checkboxes and the rows further down this same form already use. So the pair
+   reads as 20px heading over body copy, and the description is the same face as
+   the facts beneath it rather than a third size of its own. It was 14px, one
+   step off the title and close enough that the two looked like one field set
+   twice (Akshil, 2026-08-17).
+
+   It GROWS like a note: JS sets height from scrollHeight on every change
+   (NewJobModal), and the two clamps here bound it at both ends. The FLOOR is
+   what keeps the card from being top-heavy — the description owns the slack in
+   the block, so a two-word entry still shows a surface to write on rather than a
+   single line under a big title. The CEILING is what keeps a long brief from
+   shoving the when/where rows off the card (Akshil, 2026-08-15); past it, it
+   scrolls. Both clamp the inline height JS writes, so the measured value only
+   ever picks a size between them. */
+.new-task-write .new-task-ask {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.55;
+  resize: none;
+  overflow-wrap: anywhere;
+  /* Six lines of the 13px face plus the shared padding: the block the reference
+     image gives the description, and the slack it takes. */
+  min-height: calc(13px * 1.55 * 6 + 12px);
+  /* Ten, then it scrolls. */
+  max-height: calc(13px * 1.55 * 10 + 12px);
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
 
 /* -- The past-time note ------------------------------------------------------
    Was a refusal in the error voice; scheduling into the past is now a

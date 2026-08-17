@@ -739,7 +739,7 @@ function TemplatePreview({
     if (mode !== activeMode) setModeState(activeMode);
   }, [mode, activeMode]);
 
-  // --- `_side`: which companion the sidebar shows, ABSENT = OPEN (D323) ------
+  // --- `_side`: which companion the sidebar shows, ABSENT = OPEN (D326) ------
   // Read from the URL at mount as a REQUEST — open/shut plus the companion named,
   // if any — then owned as state and written back through replaceSearch, since the
   // sidebar is a view of this same file and not a navigation. An absent `_side`

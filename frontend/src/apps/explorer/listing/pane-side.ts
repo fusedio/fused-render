@@ -101,7 +101,7 @@ function isPaneSideChoice(v: string): v is PaneSideChoice {
 // from the width of the split (pane.ts). Reading absence as "closed" would turn
 // every existing folder URL, bookmark and recent into a one-column listing.
 //
-// **THE FILE PREVIEW'S SIDEBAR NOW READS IT THE SAME WAY** (D323, `lib/
+// **THE FILE PREVIEW'S SIDEBAR NOW READS IT THE SAME WAY** (D326, `lib/
 // preview-side.ts`), and this block used to be the statement of the asymmetry
 // instead: file absent = CLOSED ("the sidebar is an extra beside a content view
 // that is already complete on its own, so nothing is the same as nothing"), folder

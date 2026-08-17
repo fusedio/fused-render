@@ -1,4 +1,4 @@
-// WHICH URL PARAMS A SESSION SIDECAR MAY NOT CARRY (LSN-12, D323). One name so
+// WHICH URL PARAMS A SESSION SIDECAR MAY NOT CARRY (LSN-12, D326). One name so
 // far: `_side`.
 //
 // Split out of session.ts and DOM-free for the reason the other decision modules

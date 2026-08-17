@@ -176,12 +176,12 @@ export function hydrateRecents(): Promise<void> {
   );
 }
 
-// SESSION-ONLY PARAMS ARE STRIPPED FIRST (LSN-12, D323). Recents is an AUTOMATIC
+// SESSION-ONLY PARAMS ARE STRIPPED FIRST (LSN-12, D326). Recents is an AUTOMATIC
 // capture that lands on disk: this hook fires on every `fused:urlchange`, so
 // without this a click that CLOSES the file preview's companion sidebar
 // (`?_side=off`) is recorded, and every later open from the Recents list comes up
 // shut — the sidebar's state persisted for good, by a write the user never asked
-// for, which is the exact thing D323 exists to stop. The URL a recent replays must
+// for, which is the exact thing D326 exists to stop. The URL a recent replays must
 // hold what the file WAS, not what the chrome around it was doing.
 //
 // Deliberately NOT applied to BOOKMARKS: a bookmark is an explicit "save this

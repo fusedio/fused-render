@@ -9,7 +9,7 @@
 // REMOUNTS on every file→file navigation, and a mount-local width means the
 // divider springs back to the default share the moment you arrow onto the next
 // file. The listing pane never had that problem because its width had already been
-// lifted out of the component; this is the file half catching up (D323), and the
+// lifted out of the component; this is the file half catching up (D326), and the
 // two surfaces now behave identically under navigation.
 //
 // MEMORY ONLY, DELIBERATELY — not a missing feature:

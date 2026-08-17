@@ -148,7 +148,7 @@ def test_empty_query_does_not_clobber_existing_session(tmp_path):
     assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
 
 
-# --- LSN-12: `_side` never round-trips through a sidecar (D323) --------------
+# --- LSN-12: `_side` never round-trips through a sidecar (D326) --------------
 # The file preview's companion sidebar is session-only by policy: it opens at its
 # default on every page load, and a refresh is the way back from any change. A
 # sidecar that recorded `_side` broke exactly that — the refresh is when the

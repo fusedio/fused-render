@@ -1391,6 +1391,20 @@ def _busy_sessions(entries: list[dict]) -> set[str]:
     return busy
 
 
+def busy_sessions(entries: list[dict]) -> set[str]:
+    """`_busy_sessions` for readers outside the loop.
+
+    The Tasks router asks the scheduler's own question — "is there a send in
+    this conversation I have not heard back from?" — when it decides whether an
+    `in_progress` pin is still describing something. It has to be the SAME
+    answer, for the reason `session_liveness`'s docstring gives about the
+    liveness rule: a second, nearly-identical notion of "still running" that
+    disagreed by one state would put a card in a lane the scheduler does not
+    believe in. So this is a re-export and deliberately not a reimplementation.
+    """
+    return _busy_sessions(entries)
+
+
 def _session_live(session_id: str, now: datetime, seen: dict | None = None) -> bool:
     """Is a HUMAN (or anything else) mid-turn in this session right now?
 

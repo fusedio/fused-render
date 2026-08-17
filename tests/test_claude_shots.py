@@ -1754,8 +1754,13 @@ def test_hover_never_eats_an_active_state_in_either_control(html):
     button with no pressed state at all (it captures on click, and the chip above
     the composer is the receipt, so there is nothing to keep painted). The RULE
     stays, stated in the selectors rather than left to source order, so the next
-    pressable pill in that row inherits the fix rather than rediscovering it."""
-    pairs = [('.pill:hover:not([aria-pressed="true"])',
+    pressable pill in that row inherits the fix rather than rediscovering it.
+
+    `:not(:disabled)` joined it for the same argument on a second state: the row
+    now has a pill that goes dead while a scheduled message is pending (.schedbtn,
+    see tests/test_claude_composer_block.py), and a dimmed control that still
+    lights up under the cursor is this bug with the roles swapped."""
+    pairs = [('.pill:hover:not([aria-pressed="true"]):not(:disabled)',
               '.pill[aria-pressed="true"]:hover')]
     for neutral, active in pairs:
         assert neutral + " {" in html, neutral

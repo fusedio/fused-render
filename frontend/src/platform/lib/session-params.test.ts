@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { restoredSearch, stripSessionParams } from "@platform/lib/session-params";
 
-// WHAT A SESSION SIDECAR MAY NOT HOLD (LSN-12, D323). The hooks around this
+// WHAT A SESSION SIDECAR MAY NOT HOLD (LSN-12, D326). The hooks around this
 // function are React and network, so this is the part a DOM-free test can pin —
 // and it is the part that matters: the sidecar's whole job is to replay a query on
 // a bare open, so a param that must not survive a refresh must not reach it.

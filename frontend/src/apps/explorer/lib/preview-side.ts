@@ -4,7 +4,7 @@
 // two sources with different timings, which is exactly the thing a test should
 // pin and a React component should not be the only statement of.
 //
-// **AN ABSENT `_side` MEANS OPEN, AT THIS FILE'S DEFAULT COMPANION** (D323), and
+// **AN ABSENT `_side` MEANS OPEN, AT THIS FILE'S DEFAULT COMPANION** (D326), and
 // shut is the word `off` — the same reading the folder pane has always had, and
 // the reversal of the asymmetry both modules used to state at length ("file:
 // absent = CLOSED; folder: absent = OPEN"). The old rule was defensible on its
@@ -62,7 +62,7 @@
 // landed, which is a worse flash than the one this module removes.
 //
 // **THAT ASYMMETRY DOES NOT REACH `defaultSide`** — the one thing an absent `_side`
-// consults (D323). "Settled enough to be listed and toggled to" is not "settled
+// consults (D326). "Settled enough to be listed and toggled to" is not "settled
 // enough to OPEN BY ITSELF": `claude` ships a condition.py, so on every file it is
 // pending for as long as /api/fs/conditions takes, and auto-opening it would put an
 // empty column on screen that vanishes when a mount-backed file's verdict comes
@@ -160,7 +160,7 @@ export interface SideSplit {
   on: boolean;
   // Something may yet land in the sidebar, so a `_side` naming it is tolerated.
   offered: boolean;
-  // WHAT AN ABSENT `_side` OPENS (D323), and null when nothing does. Over the
+  // WHAT AN ABSENT `_side` OPENS (D326), and null when nothing does. Over the
   // companions KNOWN TO BE SHOWABLE — which is a shorter list than `settled`, and
   // shorter for two different reasons:
   //

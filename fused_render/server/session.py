@@ -28,7 +28,7 @@ def _read_sidecar(file: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-# PARAMS A SIDECAR MAY NOT HOLD (LSN-12, D323). One name so far: `_side`, the
+# PARAMS A SIDECAR MAY NOT HOLD (LSN-12, D326). One name so far: `_side`, the
 # file preview's companion sidebar — which of the companions is showing, or that
 # the user shut it (frontend apps/explorer/lib/preview-side.ts).
 #

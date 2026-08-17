@@ -16,7 +16,7 @@ description: Use when a fused-render page needs an AI model — calling fused.ai
 
 That one rule (`"/" in model`) is the whole seam. A page swapping `model: "opus"` for `model: "mlx-community/Qwen3-8B-4bit"` changes nothing else — same call, same resolved shape.
 
-**The slashed ids in this file illustrate the rule; they are not ids to copy.** `mlx-community/Qwen3-8B-4bit` is MLX-packed, so it is an unusable download on Windows or Linux — and on a Mac switched to Transformers from Preferences, where the suggestions are unquantized safetensors (`Qwen/Qwen3-8B` and friends). A repo belongs to a backend, not to a capability, for every capability here. Take the id from `fused.ai.models.catalog()`.
+**The slashed ids in this file illustrate the rule; they are not ids to copy.** `mlx-community/Qwen3-8B-4bit` is MLX-packed, so it is an unusable download on Windows or Linux — and on a Mac switched to Transformers from Preferences, where the suggestions are unquantized safetensors (`Qwen/Qwen3-8B` and friends). A repo belongs to a backend, not to a capability, for every capability here. Take the id from `fused.ai.models.catalog()`, which offers both the curated shortlist for the engine serving this machine and whatever the user has already downloaded.
 
 Both destinations are **local-only**: there is no hosted path. An exported page has neither a CLI nor a worker, so the exporter **rejects any page containing the string `fused.ai(`** (SPEC RH-11) — matched textually, so gating at runtime is not enough (see "Surviving export").
 
@@ -125,13 +125,31 @@ Generation itself needs **nothing new** — a repo id in `fused.ai({model})` alr
 | Call | Returns |
 |---|---|
 | `fused.ai.models.list()` | What is loaded right now, its memory, and which runners exist on this machine. |
-| `fused.ai.models.catalog()` | Suggested models per capability, with what this machine can run. |
+| `fused.ai.models.catalog()` | Every model a capability can offer here — the curated shortlist **plus whatever is already on this disk** — with what this machine can run. |
 | `fused.ai.models.load(id, {capability}?)` | `{jobId}` — **not a loaded model.** |
 | `fused.ai.models.download(id, {capability}?)` | `{jobId}` — weights only, no load. |
 | `fused.ai.models.unload(idOrCapability)` | `{stopped, ...}` |
 | `fused.ai.cancel(capability?)` | `boolean` — stops generation, **keeps the weights**. |
 
 **Every list `catalog()` returns is ordered smallest download first, and each capability's `default` is simply that list's first entry** — so omitting `model` on an image or transcription call gets the *smallest* model, not the best one. Read the list and pick deliberately whenever quality matters.
+
+**`catalog()` is BOTH the shortlist and the disk.** Each entry in a capability's `models[]` carries three extra booleans/flags beside `{id, label, size_gb, note}`:
+
+| Field | Means |
+|---|---|
+| `source` | `"curated"` — the hand-maintained shortlist for the engine serving this capability. `"cached"` — a repo **found on this disk** that the shortlist has never heard of, because the user downloaded it from the AI Models page's Hub search. |
+| `downloaded` | It is on this disk. Always `true` for a `"cached"` entry; on a curated one this is what a "✓ downloaded" mark means. |
+| `loaded` | A worker is holding the weights **right now**. |
+
+**A picker should render the whole of `models[]`.** That is the point of the fields: a page that filters to `source === "curated"` is a page where a model the user deliberately downloaded is invisible, which is the bug these fields exist to end. Mark the states instead — `loaded` → ready now, `downloaded` → instant load, neither → an `size_gb` download first.
+
+*The one legitimate exception is a surface that already answers "what is on my disk" some other way, right beside itself.* The app's own AI Models page filters to `source === "curated"` for its "Suggested models" grid, because its Local tab is drawn from the full cache listing — every repo, including the datasets and unloadable formats `catalog()` leaves out — and one repo drawn in both grids would read as two models. **A page you are writing has no such tab and no cache endpoint, so this exception is not yours.** Render every entry.
+
+`note` is `null` on a cached entry (nobody wrote one) and `size_gb` is its real measured footprint on disk rather than a published figure. Render `label || id` as always.
+
+**Every entry is one the ENGINE SERVING that capability can actually load.** A cached repo whose format that backend does not read is left out — `openai/whisper-large-v3` on any machine, an MLX conversion on a Mac switched to Transformers — so the list moves when the user changes engines, for the downloaded half as much as the curated one. The repo is still on the AI Models page's Local tab, with the engine reason a dropdown option could not carry.
+
+**The `default` and the ordering are over the CURATED entries only.** Cached entries are appended after them, so a 20GB experiment sitting in the cache can never become what a bare `fused.ai.image()` loads. **Read `default`, never `models[0]`** — the two agree wherever anything is curated, but a capability whose engine has no shortlist yet reports `default: null` with cached entries in the list, and "no recommended model" is an answer to respect rather than to route around.
 
 `load`/`download` hand back a **job, not a result**: a cold load is multi-GB and nothing waits on it. Watch with `fused.watchJob(jobId)`.
 
@@ -336,6 +354,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Assuming a capability's runner from the platform** → every capability has more than one runner (transcription has three), and a user preference can pick any of them. Ask `fused.ai.models.list()` and read `active`.
 - **Expecting `transcribe` to hand back the words from the job** → the row only says when; the text is read off `output` from disk. For words *during* the run, pass `onSegment` — not a bigger `detail` on the row.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads, however willingly the page offers the button. Take the id from `catalog()`.
+- **Rendering only `catalog()`'s curated entries** → the model the user just downloaded from the Hub search is missing from your picker, which is the exact bug the `source`/`downloaded` fields exist to end. Render every entry; mark them.
 - **Carrying a speech repo id between machines or between engines** → CT2, MLX Whisper and Parakeet load different files; a repo that works on one engine is an unusable download on the other, and switching engines on the Engines tab changes which is which.
 - **Reading transcription progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.

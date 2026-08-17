@@ -13,7 +13,7 @@
 // default share, 30%.
 //
 // That sidebar's width now lives in a store of its own, `lib/side-store.ts`, on
-// this same policy (D323 — it was mount-local `useState` until then, which sprang
+// this same policy (D326 — it was mount-local `useState` until then, which sprang
 // back on every file→file hop). Two stores rather than one because the two hold
 // different quantities: a fraction here, pixels there. The reasoning is written
 // down in that file, and the default share is what the two genuinely share.

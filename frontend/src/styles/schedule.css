@@ -471,9 +471,9 @@
 
 /* -- The chip: one task, one day ------------------------------------------------
    A coloured bar plus a tint of the same colour, not a solid fill: the colour
-   here identifies the TASK (eight hues, --task-c0…7, indexed off the task key),
-   and eight solid fills would each need their own readable text colour in two
-   themes. A bar and a wash keep the text at --fg throughout, so a hue only has
+   here identifies the PROJECT the task belongs to (eight hues, --task-c0…7,
+   indexed off the task's folder by schedule-lib.taskColour), and eight solid
+   fills would each need their own readable text colour in two themes. A bar and a wash keep the text at --fg throughout, so a hue only has
    to be distinguishable — which is what it is for.
 
    FIXED one line tall, always. A message has a start time and no duration, so
@@ -1107,10 +1107,12 @@
    must not read as the default press — which rules out .btn-primary and is why
    nothing here touches the resting box at all.
 
-   The hue arrives only under the pointer, and it is the same "upcoming" blue
+   The hue arrives only under the pointer, and it is the same `--activity` blue
    tasks.css gives `.tasks-act--run`, at the same 12%/32% mixes: one action, one
    colour, across List, Board and Calendar. Blue rather than Cancel's red because
-   this one starts work instead of withdrawing it.
+   this one starts work instead of withdrawing it — and `--activity` rather than
+   `--status-upcoming` since 2026-08-17, when Upcoming went grey and the blue was
+   renamed for the job it was actually doing.
 
    Properties are named individually — never `transition: all`, which would also
    animate the border-colour a hover skin sets and leave the edge lagging behind
@@ -1127,9 +1129,9 @@
 
 .schedule-cal-pop-run:hover:not(:disabled),
 .prefs-section .schedule-cal-pop-run:hover:not(:disabled) {
-  color: var(--status-upcoming);
-  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
-  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
+  color: var(--activity);
+  background: color-mix(in srgb, var(--activity) 12%, transparent);
+  border-color: color-mix(in srgb, var(--activity) 32%, transparent);
 }
 
 /* The recurring rule's own pill (list view) and a projected run's (popover). */
@@ -1180,42 +1182,19 @@
 }
 
 /* -- New task modal: Google Calendar's event card ------------------------------
-   A big borderless title, icon-led rows, everything else behind More options.
-   The title underlines on focus the way Google's does — the field reads as a
-   place to type, not a boxed form control. */
+   One borderless writing surface (title + description), then icon-led rows,
+   then everything else behind More options.
 
-.schedule-form-title {
-  font: inherit;
-  font-size: 20px;
-  font-weight: 500;
-  line-height: 1.35;
-  color: var(--fg);
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-  padding: 4px 2px 8px;
-  resize: none;
-  overflow-wrap: anywhere;
-  /* Grows with the text (JS sets height from scrollHeight) to five lines of
-     the 20px face, then scrolls — the cap is what keeps a long brief from
-     shoving the when/where rows off the card (Akshil, 2026-08-15). The face
-     came DOWN from 24px: at 24 the description shouted over every other row
-     in a 460px card (audit 2026-08-16), and the calc has to follow it. */
-  max-height: calc(20px * 1.35 * 5 + 14px);
-  overflow-y: auto;
-}
+   The writing surface itself lives in new-task.css (`.new-task-write` and the
+   two `.new-task-field`s inside it) rather than here: it is no longer a
+   "form title" that the schedule page shares, it is the New task card's own
+   top block, and every property it needs has to be declared in a file that
+   lands after deploy.css's `.modal-body :where(input…, textarea)` block. What
+   used to be `.schedule-form-title` in this file went with it (Akshil,
+   2026-08-17: neither field looks like an input any more, so there is no
+   underline and no shared box left to define).
 
-.schedule-form-title:focus {
-  outline: none;
-  border-bottom-color: var(--accent);
-}
-
-.schedule-form-title::placeholder {
-  color: var(--fg-muted);
-}
-
-/* One icon-led row: the icon column is fixed so rows align, like the popover's
+   One icon-led row: the icon column is fixed so rows align, like the popover's
    fact rows — the modal and the popover describe the same object. */
 .schedule-form-line {
   display: flex;
@@ -1279,12 +1258,9 @@
 }
 
 /* Reference-card refinements (Akshil, 2026-08-14, Google new-event screenshot):
-   thick accent bar under the title, quiet text-like controls that surface on
-   hover, a pill Save. */
-
-.schedule-form-title {
-  border-bottom-width: 2px;
-}
+   quiet text-like controls that surface on hover, a pill Save. (The thick accent
+   bar this section used to put under the title is gone with the box — see the
+   note above.) */
 
 /* Controls stay VISIBLY controls. The first pass borrowed Google's
    text-until-hovered treatment and it read as "not an input" (Akshil,
@@ -2325,7 +2301,10 @@ input.schedule-when-field {
 
 /* -- The status ring — the vocabulary both views are read by ------------------
    Bordered circle, hue by column, and an inner dot on the terminal state so
-   "done" is legible without colour (flow StatusIcon). */
+   "done" is legible without colour (flow StatusIcon). The five hues are
+   styles/tokens.css's `--status-*`; two of them moved on 2026-08-17 (Upcoming to
+   grey, Archive to a dusty rose) and the reasoning lives with the tokens,
+   because the ring is only one of the places they are worn. */
 .schedule-ring {
   position: relative;
   display: inline-block;
@@ -2363,18 +2342,23 @@ input.schedule-when-field {
   background: currentColor;
 }
 
-/* Work happening NOW is the one state that moves. Motion-safe: the pulse is
-   decoration, and reduced-motion users get the hue alone. */
+/* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
+   that was one blink too many (Akshil, 2026-08-17): the lane is a column of
+   them, so a full board flickered, and the ring already says "in progress" by
+   being the only yellow one on the page. The one thing still allowed to move is
+   the live ping below — that is a single mark on the handful of tasks with a turn
+   actually in flight, which is a fact about right now rather than a lane.
+   Nothing to undo in styles/reduced-motion.css: that file never named this
+   animation (its blanket `animation-duration: 0.01ms` covered it), so removing
+   the rule leaves nothing dangling. */
 @keyframes schedule-tv-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
 
+/* Motion-safe: the ping's halo is decoration, and reduced-motion users get the
+   solid dot alone. */
 @media (prefers-reduced-motion: no-preference) {
-  .schedule-ring--in_progress {
-    animation: schedule-tv-pulse 2s ease-in-out infinite;
-  }
-
   .schedule-tv-pulse::before {
     animation: schedule-tv-pulse 1.6s ease-in-out infinite;
   }
@@ -2394,7 +2378,7 @@ input.schedule-when-field {
   content: "";
   position: absolute;
   border-radius: 999px;
-  background: var(--status-upcoming);
+  background: var(--activity);
 }
 
 .schedule-tv-pulse::before {
@@ -2808,41 +2792,103 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
+/* The lane is not a PANEL. It used to paint `rgba(var(--tint), 0.05)` at rest,
+   which made every lane a filled slab: an empty Upcoming read as a large grey
+   plate with nothing in it, and every card competed with the box it was sitting
+   in rather than being the thing you looked at (Akshil, 2026-08-17, comparing
+   this board against flow's side by side — there the lanes are transparent and
+   the cards are the only surface).
+
+   So the FILL is gone and nothing filled in for it — but the lane is still
+   BOUNDED ("at least they should have an outline when they're expanded", Akshil,
+   2026-08-17). Unfilled and unbounded, an open lane's only edge was the ragged
+   right-hand end of whatever card happened to be widest, so the column had no
+   bottom at all and a short lane beside a full one read as loose cards on the
+   page. A hairline answers that without putting the plate back: an outline says
+   where the column is, a fill says the column is a surface, and only the second
+   one was ever competing with the cards.
+
+   Deliberately the SAME hairline the collapsed rail wears — 1px, `--border`, and
+   the 8px radius this element already had for the drop wash — so the two forms of
+   a lane read as one family and not as two ideas about what a lane's edge is. The
+   rail's is doing extra work (it is a button you press), but it is the same line.
+
+   What the padding is for, on top of insetting the cards off that new edge, is
+   the DROP states below: it holds the dashed legal-drop outline off the top card
+   so it reads as the lane's own edge rather than as a second border on the card.
+
+   An EMPTY lane therefore shows its header and an empty bounded column — the
+   label, the ring, a `0` and the box the cards would go in. That is still
+   "nothing scheduled looks like nothing": an empty outline is not a filled slab.
+   The `min-height` is what keeps it a droppable target, so a card can still be
+   dragged into a column that has never held one. */
 .schedule-tv-lane-body {
   flex: 1 1 auto;
   min-height: 120px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 5px;
+  /* Loosened from 4px on 2026-08-17: at 4px the cards read as one ribbed strip
+     rather than as separate objects, which is half of what made the lane look
+     like a panel full of rows. */
+  gap: 8px;
+  /* Stated with the border, as everywhere else on this page: the width is safe
+     either way (a stretched flex item fits its margin box to the 260px lane, so
+     the edge lands inside), but `min-height` below is not — content-box would
+     make the floor 122px and the number here would stop being the number the
+     board actually has. */
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(var(--tint), 0.05);
 }
 
+/* The card is the board's ONLY surface now that the lane is an outline rather than
+   a plate, so it has to carry the whole separation from the page ground — and the
+   ground is `--bg` in both themes (base.css `body`), which is exactly what the
+   card used to be painted in. Against a lane fill that was enough; against the
+   page it was the card disappearing, most obviously in light mode where both are
+   plain white.
+
+   `--bg-panel` is the app's existing answer to "a surface floating above the
+   page", and it is tuned per theme for precisely this: in dark it steps LIGHTER
+   than the ground (#202329 over #131417), and in light it stays white and lets
+   the hairline plus a shadow do the lifting (tokens.css says so in as many
+   words). The shadow is the same `0 1px 2px var(--shadow-sm)` the settings
+   page's own cards use — one step of lift, not a drop shadow — and its token is
+   theme-tuned too, so it reads as depth in dark instead of as dirt in light.
+
+   Loosened on 2026-08-17 along with the lane: 8px/10px padding and a 5px gap
+   were tighter than flow's cards, which is what made three short lines feel
+   crowded. The three lines keep their hierarchy — the id small and muted, the
+   title the loudest thing on the card, the folder chip quiet — so nothing about
+   the type had to move, only the air around it. `.tasks-card-acts` (tasks.css)
+   is centred on the head using this `padding-top`, so the two are stated
+   together or the hover strip drifts off the head's line. */
 .schedule-tv-board .schedule-tv-card,
 .prefs-section .schedule-tv-board .schedule-tv-card {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   align-self: stretch;
-  gap: 5px;
+  gap: 6px;
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font: inherit;
   text-align: left;
   color: var(--fg);
-  background: var(--bg);
+  background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
   cursor: pointer;
   transition: border-color 0.08s ease;
 }
 
 .schedule-tv-board .schedule-tv-card:hover:not(:disabled),
 .prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-panel);
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 
@@ -2850,7 +2896,29 @@ input.schedule-when-field {
    Native HTML5 drag. A draggable card says so with the grab cursor; while one
    is in flight, every lane that would accept it lifts slightly, and the lane
    under the pointer says "here" with the accent — the same 14% wash the
-   dropdowns speak. The card left behind ghosts. */
+   dropdowns speak. The card left behind ghosts.
+
+   None of this depended on the lane's resting fill, which is why removing that
+   fill cost the drop nothing. A drop target announces itself by ADDING paint to
+   an unfilled box: legal lanes take a dashed accent outline the moment a drag
+   starts, the lane under the pointer fills with the accent wash, and the one drop
+   that is not filing (Upcoming → In Progress, which sends) swaps the outline for
+   `--activity` and writes the sentence out (tasks.css `.is-drop-run` /
+   `.tasks-run-hint`). The wash and the sentence still go from nothing to
+   something, so they are more legible on an unfilled lane than on a tinted one.
+
+   The dashed OUTLINE is the one thing the lane's new hairline changed. It is drawn
+   at `outline-offset: -1px`, i.e. exactly where that hairline now is, so left
+   alone the two stack into a single muddy 2px edge that is half grey and half
+   accent — legible as "thicker", not as "here". So a lane being dropped into
+   takes its own hairline to `transparent` for as long as the drag lasts and the
+   dashed accent line stands in its place: one line either way, in the same
+   position and at the same weight, and the STATE is read off its colour and its
+   dashes rather than off a second concentric line. Nothing moves — the border is
+   still 1px, so the box is the size it was — and the added paint is still what
+   carries the signal; the resting line only steps out of its way.
+
+   Both forms of the lane do this, because both wear the hairline now. */
 .schedule-tv-board .schedule-tv-card.is-draggable,
 .prefs-section .schedule-tv-board .schedule-tv-card.is-draggable {
   cursor: grab;
@@ -2883,6 +2951,17 @@ input.schedule-when-field {
   outline-offset: -1px;
 }
 
+/* The card's id line. Its status ring became CONDITIONAL on 2026-08-17: the lane
+   header directly above already carries that lane's ring, so on a card whose status
+   IS its lane the ring only repeated a mark the column had just made. It is still
+   drawn where the two disagree — a `failed` task filed under Done, whose header
+   says nothing about the failure — and which cards those are is decided in
+   ScheduleTaskViews.TaskCard, not here.
+
+   The `gap` therefore has up to three things to space, and the height this line has
+   to keep — the same with a ring in it as without, or a lane of cards jitters by
+   the width of a glyph — is tasks.css's `--tasks-card-head-h`, stated there because
+   the action strip that depends on it is defined there. */
 .schedule-tv-card-head {
   display: flex;
   align-items: center;
@@ -2890,14 +2969,53 @@ input.schedule-when-field {
   min-width: 0;
 }
 
+/* The title, and the unread count INSIDE it, in the text flow, immediately after
+   the last word.
+
+   Two earlier arrangements failed, and both failed because of the clamp this rule
+   no longer has. The title was a two-line `-webkit-box` with `overflow: hidden`;
+   with the pill inside, a title long enough to fill both lines clipped the count
+   away entirely — lost on exactly the cards with the most to say. Moving the pill
+   OUT, into a `flex-wrap` wrapper beside the title, stopped the clipping and
+   bought a worse look: on any two-line title the pill dropped to a line of its
+   own under the words, orphaned, which is what the screenshot showed (Akshil,
+   2026-08-17).
+
+   There is no arrangement that fixes both while the clamp exists: nothing can
+   flow after the last word of a clipped box AND stay outside the clip. So the
+   clamp goes. The title wraps to as many lines as it needs, the pill is an inline
+   atom in the same flow, and it lands after the final word on the final line by
+   ordinary text layout rather than by anything being aligned to anything.
+
+   The cost is accepted: a long title makes a taller card, and lanes of cards will
+   not all be the same height. That is rarer than it sounds — a card's title is
+   the session's own short name now, not the scheduled message it sends — so
+   multi-line is the exception.
+
+   `overflow-wrap: anywhere` is the one guard kept from the old rule and it is the
+   only one still needed: it is what stops a single unbroken 200-character token
+   from widening the 260px column, now that no `overflow: hidden` is standing
+   behind it to catch that. Nothing in the chain from here up to the card hides
+   overflow, deliberately; the lane body's `overflow-y` is a scroller for the
+   column, which is a different thing and further out. */
 .schedule-tv-card-title {
   font-size: 12.5px;
   line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* The pill as an inline atom. `inline-flex` (it is already that in tasks.css) so
+   it centres its own digits while sitting in the line like a word;
+   `vertical-align: middle` so it rides the ink rather than the baseline, which on
+   a 16px pill against a 12.5px line is the difference between "after the word"
+   and "hanging below it". The gap is a `margin` and not the parent's `gap`
+   because there is no flex parent any more — that wrapper was the bug. Scoped to
+   the board card: the List row keeps the pill as a flex sibling and takes its
+   spacing from the row's own `gap`. */
+.schedule-tv-card-title .tasks-count {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 .schedule-tv-card-next {
@@ -2946,7 +3064,17 @@ input.schedule-when-field {
 
 /* The collapsed lane: flow's 52px rail, with the label set vertically and the
    count pinned to the foot. Archive is closed by default — it is the one lane
-   nobody opens this page to read — and clicking the rail opens it again. */
+   nobody opens this page to read — and clicking the rail opens it again.
+
+   Its resting fill went with the open lane's on 2026-08-17: a rail is a lane, and
+   leaving one lane painted as a slab beside four unfilled ones would have made the
+   collapsed column the loudest thing on the board. The hairline stayed — and later
+   the same day the open lane grew the identical one, so the pair now read as one
+   family: 1px, `--border`, 8px radius, unfilled, in both forms. It is still doing
+   more work here, because the rail is a BUTTON you press to expand and has to look
+   like an object rather than a strip of page; it is the same line either way.
+   Hover fills (`--row-bg-hover` below) and so does the drop wash, which is the
+   same "add paint to an unfilled box" the lane body relies on. */
 .schedule-tv-rail,
 .prefs-section .schedule-tv-rail {
   display: flex;
@@ -2960,17 +3088,39 @@ input.schedule-when-field {
   align-self: stretch;
   font: inherit;
   color: var(--fg);
-  background: rgba(var(--tint), 0.05);
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
   transition: background-color 0.08s ease;
 }
 
+/* `border-color` is restated here and it is NOT redundant: `.prefs-section
+   button:hover:not(:disabled)` (preferences.css) paints an accent border on any
+   unarmored button on this page, so a hover rule that only set the background
+   would let the rail's edge go accent on hover. It states its own colour, per the
+   page's house rule. */
 .schedule-tv-rail:hover:not(:disabled),
 .prefs-section .schedule-tv-rail:hover:not(:disabled) {
   background: var(--row-bg-hover);
   border-color: var(--border);
+}
+
+/* The hairline gets out of the dashed drop outline's way — see the drag note
+   above, where the reasoning lives. Both forms of the lane, one rule.
+
+   It sits AFTER the hover rule above, and the rail's selectors carry that rule's
+   `:not(:disabled)`, on purpose: hover restates `border-color` (it has to, see
+   above) at the same specificity, so a drop state written any shorter or any
+   earlier would be undone on precisely the rail the pointer is over — the one
+   being dropped into. The lane body has no hover rule and needs neither. */
+.schedule-tv-lane-body.is-drop-legal,
+.schedule-tv-lane-body.is-drop-run,
+.schedule-tv-rail.is-drop-legal:not(:disabled),
+.schedule-tv-rail.is-drop-run:not(:disabled),
+.prefs-section .schedule-tv-rail.is-drop-legal:not(:disabled),
+.prefs-section .schedule-tv-rail.is-drop-run:not(:disabled) {
+  border-color: transparent;
 }
 
 .schedule-tv-rail-label {
@@ -2984,11 +3134,17 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
+/* The count at the rail's foot. Its fill was `--bg` — a plate cut out of the
+   rail's own tint — which the rail no longer has, so on the page ground that was
+   a pill painted the colour of what is behind it, i.e. no pill at all. It takes
+   the app's chip wash instead (the same 18% muted `.tasks-count` wears), which is
+   translucent and therefore still reads over the rail's hover fill and over the
+   accent wash a drop puts under it. */
 .schedule-tv-rail-count {
   margin-top: auto;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

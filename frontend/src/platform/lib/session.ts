@@ -2,7 +2,7 @@
 // URL query in its <file>.json sidecar; opening it with a bare URL replays that
 // query, while opening it with params already present lets those params win.
 //
-// NOT EVERY PARAM, since D323: `_side` is stripped at both ends of this — see
+// NOT EVERY PARAM, since D326: `_side` is stripped at both ends of this — see
 // lib/session-params, which is where that rule and its reasons live.
 import { useEffect, useRef, useState } from "react";
 
