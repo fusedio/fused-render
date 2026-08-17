@@ -1,6 +1,7 @@
 // Bootstrap: history wrapping, the runtime's fs-change hook, embed class, config
 // load, React mount.
 import { createRoot } from "react-dom/client";
+import { TroubleCard } from "@platform/ui/TroubleCard";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
@@ -100,7 +101,21 @@ getConfig().then(
     window.addEventListener("focus", pollBookmarks);
   },
   (err: Error) =>
+    // THE BOOT FAILURE, and the one error surface that cannot describe itself:
+    // /api/config is what failed, so there is no version, no install path and
+    // no platform to put in the report — the card degrades to the error and the
+    // help link, which is exactly what SF-43's `troubleReport` is built to do.
+    // It still beats what was here (one red line naming an endpoint), because
+    // the user reading it has an unusable app and no idea whether to reinstall,
+    // restart, or ask someone.
     root.render(
-      <div className="status-message error">Failed to load config: {String(err.message || err)}</div>
+      <div className="trouble-page">
+        <TroubleCard
+          what="loading the app's configuration at startup (GET /api/config)"
+          error={String(err.message || err)}
+          facts={{ page: location.pathname + location.search }}
+          onRetry={() => location.reload()}
+        />
+      </div>
     )
 );

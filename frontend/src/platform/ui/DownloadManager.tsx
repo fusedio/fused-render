@@ -93,6 +93,7 @@ import {
   type QueueCount,
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
+import { TroubleCard } from "@platform/ui/TroubleCard";
 import { failureContextFromJob, fixSessionUrl, startSelfFix } from "@platform/lib/selffix";
 
 const COLLAPSED_KEY = "fused-render:jobs-collapsed";
@@ -384,7 +385,19 @@ function JobRow({
       </div>
       <Bar job={job} />
       {status && <div className="dl-status">{status}</div>}
-      {fixError && <div className="dl-status dl-fix-error">{fixError}</div>}
+      {/* The compact trouble card rather than a bare red line: the most likely
+          failure here is Claude Code missing or signed out, and "Claude didn't
+          start" with nowhere to go is the shape of message this whole surface
+          exists to replace. Facts are not fetched for this one — the card sits
+          in a notification and the Preferences tab is where the full report
+          lives. */}
+      {fixError && (
+        <TroubleCard
+          compact
+          what={`starting a fix session for "${job.title || job.id}"`}
+          error={fixError}
+        />
+      )}
     </div>
   );
 }

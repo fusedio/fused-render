@@ -1,0 +1,149 @@
+// When the app cannot do the thing at all — Claude Code missing, a session
+// that would not start, the config that would not load, a template registry
+// that will not parse (SPEC §43).
+//
+// **Why this is a module and not four `catch` blocks.** These failures share a
+// shape: the app is fine, something *around* it is not, and the person looking
+// at the screen can usually fix it in a minute IF they are told which minute to
+// spend. A bare red string is the opposite of that — it names a symptom in our
+// vocabulary and leaves the user to guess whether they broke it, we broke it,
+// or it is broken for everyone.
+//
+// So every one of them resolves to the same three answers: what happened in
+// plain words, what to do about it, and one block of text they can paste
+// somewhere — into their own AI, or into an issue — that carries enough for
+// somebody else to act on. The download page (render.fused.io) already sorts
+// these into four cases with working deep links, so this file speaks its
+// vocabulary rather than inventing a second one.
+
+/** The download page's four troubleshooting tabs, verbatim (`data-err`). */
+export type TroubleKind = "notfound" | "login" | "limit" | "raw";
+
+export const HELP_BASE = "https://render.fused.io";
+
+/** The install line the download page tells people to run (guide step 1). */
+export const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
+
+// Matched against the SERVER's message, which is the CLI's own text most of the
+// way down. Ordered most-specific first: "not signed in" and "usage limit" are
+// both things a *found* claude says, so they must be tested before the
+// could-not-find patterns, which are the broadest.
+const PATTERNS: [TroubleKind, RegExp][] = [
+  ["login", /invalid api key|please run \/login|not (?:signed|logged) in|oauth|authenticat/i],
+  ["limit", /usage limit|session limit|rate.?limit|quota/i],
+  [
+    "notfound",
+    /claude code isn'?t installed|claude cli not found|claude not found|couldn'?t be found|command not found|enoent|no such file/i,
+  ],
+];
+
+/** Which of the download page's cases this message is, for the deep link and
+    the wording. Anything unrecognised is `raw`, which is a real answer there
+    ("Some other error message") and not a fallback we invented. */
+export function troubleKind(message: string): TroubleKind {
+  const text = String(message || "");
+  for (const [kind, re] of PATTERNS) if (re.test(text)) return kind;
+  return "raw";
+}
+
+/** The troubleshooting section, opened on the matching case. The page reads
+    `#troubleshooting-<kind>` and selects that tab (its `honorHash`), so this is
+    a deep link and not just a pointer at a long page. */
+export function troubleHelpUrl(kind: TroubleKind): string {
+  return `${HELP_BASE}/#troubleshooting-${kind}`;
+}
+
+/** Whether this failure is about Claude Code itself rather than about us —
+    the cases where installing or signing in is the fix. */
+export function isClaudeTrouble(kind: TroubleKind): boolean {
+  return kind !== "raw";
+}
+
+export interface TroubleFacts {
+  /** Where fused-render is installed — the first thing anyone asks. */
+  install_root?: string;
+  version?: string;
+  platform?: string;
+  python?: string;
+  /** The route this happened on, when it narrows anything down. */
+  page?: string;
+}
+
+export interface TroubleContext extends TroubleFacts {
+  /** What the app was trying to do, in the user's terms. */
+  what: string;
+  /** The failure, verbatim. Never reworded — a paraphrase is not searchable. */
+  error: string;
+}
+
+/** The block behind "Copy the details".
+ *
+ * Written to be PASTED — into the user's own AI, or into an issue — so it is
+ * self-describing rather than a dump: it says what was happening before it says
+ * what went wrong, and it carries the installation it happened in, because
+ * "which copy of the app is this?" is the question every answer depends on and
+ * the one a user cannot look up.
+ *
+ * Deliberately plain text with no secrets: paths, a version, an OS string and
+ * the error. Nothing here is read from the user's files.
+ */
+export function troubleReport(ctx: TroubleContext): string {
+  const kind = troubleKind(ctx.error);
+  const lines = [
+    "Fused Render — problem report",
+    "",
+    `What the app was doing: ${ctx.what}`,
+    "",
+    "Error:",
+    String(ctx.error || "(no message)").trim(),
+    "",
+  ];
+  const facts: string[] = [];
+  if (ctx.version) facts.push(`Fused Render v${ctx.version}`);
+  if (ctx.install_root) facts.push(`Installation: ${ctx.install_root}`);
+  if (ctx.platform) facts.push(`Platform: ${ctx.platform}`);
+  if (ctx.python) facts.push(`Python: ${ctx.python}`);
+  if (ctx.page) facts.push(`Page: ${ctx.page}`);
+  if (facts.length) lines.push(...facts, "");
+  lines.push(`Help: ${troubleHelpUrl(kind)}`);
+  return lines.join("\n");
+}
+
+
+// -- The template registry, which fails PARTIALLY -----------------------------
+//
+// A `~/.fused-render` registry that will not parse does NOT leave a file with no
+// views: the built-in registry still matches, so `.csv` still previews and only
+// the USER's own bindings quietly stop applying. That is the reported symptom —
+// "apps aren't rendering properly" — and it is invisible by construction,
+// because what the user sees is the app working slightly wrong rather than
+// failing.
+//
+// So the fallback card (a file with NO view at all) is not enough on its own: it
+// only fires in the total case. The partial case needs to be announced, and
+// announced ONCE — the error rides every stat, so a card per file would be a
+// card on every click for as long as the registry stays broken.
+const announced = new Set<string>();
+
+/** Whether this registry error still needs saying, marking it said.
+ *
+ * Keyed on the MESSAGE rather than on the path: one broken registry produces
+ * one error text across every file in the app, and the user needs to hear about
+ * the registry once, not about each file that noticed it. Editing the registry
+ * to a NEW kind of broken is a new message and is therefore said again, which
+ * is right — that is a different mistake.
+ *
+ * Module state, so it resets on reload. A fault the user has fixed should not
+ * stay quiet because a previous session already mentioned it.
+ */
+export function shouldAnnounceTemplateError(message: string): boolean {
+  const key = String(message || "").trim();
+  if (!key || announced.has(key)) return false;
+  announced.add(key);
+  return true;
+}
+
+/** Test seam — the set is module state and suites share a module. */
+export function resetAnnouncedTemplateErrors(): void {
+  announced.clear();
+}

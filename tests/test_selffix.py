@@ -939,3 +939,55 @@ def test_a_recorded_run_that_has_finished_does_not_block_anything(
     assert post(client, "/api/selffix/start", {"title": "a"}).status_code == 200
     # ...and the new run took its place in the record.
     assert selffix.active_run() == "r2"
+
+
+def test_the_snapshot_reports_a_registry_that_will_not_parse(client, monkeypatch, tmp_path):
+    """A broken template registry is a fault with no symptom except the app
+    being subtly wrong: the BUILT-IN registry still matches, so files still
+    preview and only the user's own bindings stop applying. The server has
+    reported it on every stat since PT-8 and nothing read it, so the Preferences
+    tab — where "something is wrong with the app" lives — now carries it, with
+    the whole error and a way to copy it (a toast clamps at four lines)."""
+    from fused_render.server import templates as server_templates
+
+    bad = tmp_path / "registry.json"
+    bad.write_text("{ this is not json", encoding="utf-8")
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(bad))
+
+    snapshot = client.get("/api/selffix").json()
+    assert "cannot read registry.json" in snapshot["template_error"]
+
+
+def test_a_healthy_registry_says_nothing_at_all(client, monkeypatch, tmp_path):
+    """Absent rather than empty, like `modified_install`: a `template_error: ""`
+    is a value every caller then has to truthiness-check, and one of them
+    eventually will not."""
+    from fused_render.server import templates as server_templates
+
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(tmp_path / "absent.json"))
+    assert "template_error" not in client.get("/api/selffix").json()
+
+
+def test_a_missing_user_registry_is_not_an_error(tmp_path, monkeypatch):
+    """Most installs have never had one. Reporting its absence would put a
+    warning in front of every user who never wrote a custom template."""
+    from fused_render.server import templates as server_templates
+
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(tmp_path / "nope.json"))
+    assert server_templates.registry_error() == ""
+
+
+def test_the_user_registry_is_reported_before_the_builtin_one(tmp_path, monkeypatch):
+    """It is the one a person edits, so it is the one they can fix."""
+    from fused_render.server import templates as server_templates
+
+    user = tmp_path / "user.json"
+    user.write_text("nope", encoding="utf-8")
+    builtin = tmp_path / "builtin.json"
+    builtin.write_text("also nope", encoding="utf-8")
+    monkeypatch.setattr(server_templates, "USER_REGISTRY", str(user))
+    monkeypatch.setattr(server_templates, "BUILTIN_REGISTRY", str(builtin))
+
+    error = server_templates.registry_error()
+    assert "cannot read registry.json:" in error
+    assert "built-in" not in error

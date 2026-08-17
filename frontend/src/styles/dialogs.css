@@ -33,3 +33,128 @@
   align-self: auto;
 }
 
+
+/* ---- Trouble card (SPEC §43) ---------------------------------------------
+ * The "something around the app is broken" surface: Claude Code missing, a
+ * session that would not start, config that would not load, a template
+ * registry that will not parse. Rendered in four places that look nothing
+ * alike — a full page at boot, inside the Preferences tab, under a failed
+ * download row, and in the preview's fallback card — so it carries its own
+ * plate and sizing rather than inheriting whatever it landed in.
+ *
+ * WARNING-toned, not error-toned, and that is the same argument the modified
+ * badge makes: nothing here is a crash. The app is working; a thing beside it
+ * is not, and it is usually a minute's work to fix. A red card would say
+ * "this is broken" about the wrong subject. */
+.trouble-card {
+  max-width: 640px;
+  margin: 12px 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(var(--warning-rgb), 0.5);
+  border-radius: 10px;
+  background: rgba(var(--warning-rgb), 0.06);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* The full-page case (boot failure): centred with room around it, since it is
+   the only thing on screen and has no chrome to sit under. */
+.trouble-page {
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+.trouble-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.trouble-explain {
+  margin: 0 0 10px;
+  color: var(--fg-muted);
+}
+
+/* The error VERBATIM. Wraps rather than ellipsising — a clipped traceback is
+   the half that does not say what happened — and caps its height so a long one
+   cannot push the actions below the fold. */
+.trouble-error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trouble-install {
+  margin: 0 0 12px;
+}
+
+.trouble-label {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.trouble-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ONE look for the whole row, links and buttons alike. They are three peers —
+   copy this, read about this, retry this — and the middle one being an
+   underlined text link made it read as a footnote wedged between two controls.
+   Reusing .version-panel-link here is what caused that: it is a text link by
+   design, correct in a 300px popover and wrong in a row. */
+.trouble-actions > a,
+.trouble-actions > button {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--ctl-quiet-bg);
+  border: 1px solid var(--ctl-quiet-border);
+  border-radius: 6px;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.trouble-actions > a:hover,
+.trouble-actions > button:hover:not(:disabled) {
+  background: var(--ctl-quiet-bg-hover);
+  border-color: var(--ctl-quiet-border-hover);
+}
+
+/* The notification-stack variant: no plate of its own (the activity card is
+   already one), just the title, a clamped error and the two links. */
+.trouble-compact {
+  padding: 6px 10px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.trouble-compact .trouble-title {
+  font-size: 12px;
+  color: var(--warning-soft);
+}
+/* Clamped rather than scrolled: this sits in a 340px column where a long
+   traceback would own the whole card, and the copy button carries the full
+   text anyway. */
+.trouble-compact-error {
+  margin-bottom: 6px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  word-break: break-word;
+}
