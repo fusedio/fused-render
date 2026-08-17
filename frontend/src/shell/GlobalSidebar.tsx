@@ -85,6 +85,16 @@ const SCHEDULED_ICON = (
   </svg>
 );
 
+// Connected nodes: a canvas is a graph of UDFs.
+const CANVASES_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="6" cy="6" r="3" />
+    <circle cx="18" cy="10" r="3" />
+    <circle cx="9" cy="18" r="3" />
+    <path d="M8.8 7.1 15.2 9M7.9 15.4 6.8 8.9M11.6 16.6l4.2-4.4" />
+  </svg>
+);
+
 const PREFERENCES_ICON = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="3" />
@@ -262,6 +272,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // row and the Preferences trigger at once, since `prefsActive` treats every
     // menu href as "you are on one of my pages" — the same double-selection the
     // Home comment above rejects.
+    // Ungated like Tasks: the page explains CLI-missing / signed-out states
+    // itself, and there is no machine state that hides the concept.
+    { href: "/canvases", label: "Canvases", icon: CANVASES_ICON },
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     {
       href: "/preferences",
