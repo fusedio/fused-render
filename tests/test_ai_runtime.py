@@ -4203,24 +4203,45 @@ def test_the_memo_is_dropped_when_a_repo_lands_rather_than_when_a_timer_says_so(
 # examples below are repos a real user really has on a real disk.
 
 
-def test_a_speech_model_NEITHER_speech_engine_reads_is_not_offered(client, hub):
+#: The two speech resolutions that ship, forced for the same reason as
+#: `_TEXT_PLATFORMS`: `mlx-whisper` serves an M-series Mac and `faster-whisper`
+#: serves everywhere else, and they read completely different files.
+_SPEECH_PLATFORMS = [
+    pytest.param("Darwin", "arm64", "mlx-whisper", id="apple-silicon"),
+    pytest.param("Linux", "x86_64", "faster-whisper", id="linux"),
+]
+
+
+@pytest.mark.parametrize("system, machine, expected_runner", _SPEECH_PLATFORMS)
+def test_a_speech_model_NEITHER_speech_engine_reads_is_not_offered(
+        client, hub, monkeypatch, system, machine, expected_runner):
     """`openai/whisper-large-v3` — the repo everyone reaches for, in transformers
     format, which no shipping speech runner opens. Its capability is beyond doubt
     (`pipeline_tag: automatic-speech-recognition`), so a capability-only union puts
     it straight into every page's speech picker and the load is then refused by
     name. This is the exact trap the SKILL.md pitfall warns page authors about; the
-    payload must not be the thing that sets it."""
+    payload must not be the thing that sets it.
+
+    Run under BOTH speech resolutions, because "neither engine reads it" is a claim
+    about two different engines and inheriting the dev machine's answer would only
+    ever test one of them.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: system)
+    monkeypatch.setattr(registry.platform, "machine", lambda: machine)
     repo_id = "openai/whisper-large-v3"
     assert repo_id not in catalog.all_suggested_ids()
     repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
                         config={"architectures": ["WhisperForConditionalGeneration"]})
     (repo / "snapshots" / "c0ffee" / "README.md").write_text(
         "---\npipeline_tag: automatic-speech-recognition\n---\n")
-    # The fixture defends itself: if the capability stopped being inferred, the
-    # assertion below would pass for the wrong reason entirely.
+    # The fixture defends itself twice over: if the capability stopped being
+    # inferred, or if the serving engine ever learned to read this format, the
+    # conclusion below would pass for a reason that is not the one under test.
     cached = next(m for m in ai_models.cached_models() if m.repo_id == repo_id)
     assert cached.capability == registry.SPEECH_TO_TEXT
-    assert registry.for_capability(registry.SPEECH_TO_TEXT).code not in cached.loaders
+    serving = catalog._runner_for(registry.SPEECH_TO_TEXT)
+    assert serving is not None and serving.code == expected_runner
+    assert serving.code not in cached.loaders
     assert _entry(client, registry.SPEECH_TO_TEXT, repo_id) is None
 
 
@@ -4309,20 +4330,50 @@ def test_a_worker_that_DIED_after_reaching_ready_is_not_reported_as_loaded():
 # -- what holds when a runner has no curated list at all --------------------------
 
 
+#: The two text-generation resolutions that ship, forced rather than inherited.
+#: `_apple_silicon()` reads `platform` at CALL time precisely so a test can decide
+#: this, and every assertion about a per-runner list has to: `mlx-text` serves text
+#: generation on an M-series Mac and `transformers-text` serves it everywhere else,
+#: their `SUGGESTIONS` lists are completely different, and a test that took whichever
+#: one the dev machine happened to answer is a test that passes at home and fails in
+#: CI on the other three platforms.
+_TEXT_PLATFORMS = [
+    pytest.param("Darwin", "arm64", "mlx-text", id="apple-silicon"),
+    pytest.param("Linux", "x86_64", "transformers-text", id="linux"),
+]
+
+
+@pytest.mark.parametrize("system, machine, expected_runner", _TEXT_PLATFORMS)
 def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
-        client, hub, monkeypatch):
+        client, hub, monkeypatch, system, machine, expected_runner):
     """The one case a cached entry reaches index 0, pinned rather than left to be
-    discovered. A newly registered runner has no `SUGGESTIONS` key, so there is
-    nothing curated to put in front of the disk — and `default` is then None, which
-    is the honest answer rather than a promotion.
+    discovered. A runner with no `SUGGESTIONS` key has nothing curated to put in
+    front of the disk — and `default` is then None, which is the honest answer
+    rather than a promotion.
 
     This is why `source` is on every entry and why the documented contract is "read
     `default`, never `models[0]`": a consumer that invents a `models[0]` fallback can
     see that what it found is uncurated and refuse it.
+
+    **The no-suggestions condition is CONSTRUCTED, and the construction is asserted.**
+    The first version of this test emptied `SUGGESTIONS["mlx-text"]` by name, which
+    is the runner a Mac resolves — so on Linux it emptied a list nobody was reading,
+    `transformers-text` answered with `Qwen/Qwen3-1.7B` at position 0, and the test
+    failed on its conclusion for a premise that was never true. Both resolutions now
+    run, the list emptied is the one the row actually resolved, and the premise is
+    checked before the conclusion so a future change to resolution fails loudly on
+    the setup instead of mysteriously on the assertion.
     """
-    monkeypatch.setitem(catalog.SUGGESTIONS, "mlx-text", [])
+    monkeypatch.setattr(registry.platform, "system", lambda: system)
+    monkeypatch.setattr(registry.platform, "machine", lambda: machine)
+    runner = catalog._runner_for(registry.TEXT_GENERATION)
+    assert runner is not None and runner.code == expected_runner
+    monkeypatch.setitem(catalog.SUGGESTIONS, runner.code, [])
+    # The premise, before anything is concluded from it.
+    assert catalog.for_capability(registry.TEXT_GENERATION) == []
     _text_repo(hub, "some-org/only-thing-here", size=2048)
     row = _catalog(client)[registry.TEXT_GENERATION]
+    assert row["runner"] == expected_runner
     assert row["default"] is None
     assert [m["id"] for m in row["models"]] == ["some-org/only-thing-here"]
     assert row["models"][0]["source"] == "cached"
