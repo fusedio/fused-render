@@ -18,13 +18,24 @@ the message pending so the block survives that too. The only thing that reopens
 the box for a repeat is stopping the repeat — `schedule.cancel(template_id)` —
 and because that spends every future run, it takes two presses.
 
+WHAT IT SHOWS is the Tasks list view's own row, and that was the third shape.
+Prose plus a bare dump of the message underneath was rejected outright (Akshil,
+2026-08-17 — "this UI is not good... this UI does not make sense to me, it does
+not give me what I want"), so the banner reuses the vocabulary of the page this
+object already lives on: a status ring, TASK-nnn, the name, and the state and time
+at the right end. It does NOT show the folder or the session id — "you will not
+show the folder because you are already in that folder, you are not showing the
+session ID because you are already there" — and the row is the LINK to the task,
+which is what let "Edit schedule" go: two doors to one room, and the banner's own
+door could not unblock.
+
 Structural assertions over the template source, the same approach
 test_claude_message_anchor.py and test_claude_schedule_pill.py take: inline
 vanilla JS in a 12000-line document, so what can be pinned is that the wiring
 exists and that the properties it would be easy to get wrong stay true. Here
 those are: it blocks on a pending entry naming THIS session, it does NOT block
-when the schedule cannot be read, it shows the scheduled message, it sits against
-the composer it is shutting, and its one action actually unblocks.
+when the schedule cannot be read, the row carries four facts and no fifth, it
+sits against the composer it is shutting, and its one action actually unblocks.
 """
 import os
 import re
@@ -181,20 +192,143 @@ def test_the_arriving_banner_does_not_move_the_composer(code, source):
     assert "animation" not in css and "height" not in css
 
 
-def test_the_body_is_the_scheduled_message_itself(code):
-    """"Instead of this big text, show the schedule message" (Akshil, 2026-08-17).
-    Reading the words that are about to run is what makes the shut box make sense;
-    a paragraph about context pollution only described it. One ellipsed line, with
-    the whole text on the title."""
+def test_the_body_is_the_tasks_list_views_own_row(code, source):
+    """"This UI is not good... it does not give me what I want" (Akshil,
+    2026-08-17) — of a banner that explained the block in prose and then dumped the
+    message under it as bare left-aligned text. So the body is the shape the Tasks
+    LIST view already uses for exactly this object: a status ring, TASK-nnn, the
+    name, one spacer, and the state and time at the right end. A reader who knows
+    that page knows how to read this row."""
+    banner = source[source.index('<div id="schedblock"'):]
+    banner = banner[:banner.index('<form id="inputbox"')]
+    for cell in ('class="sb-ring"', 'class="sb-id"', 'class="sb-name"',
+                 'class="sb-grow"', 'class="sb-meta"'):
+        assert cell in banner, f"the row is missing {cell}"
+    # ONE spacer, the list view's own house rule: a second `margin-left: auto`
+    # centres the right-hand group instead of pinning it
+    css = source[source.index("  #schedblock .sb-row {"):source.index("  #schedblock .sb-note")]
+    assert "margin-left: auto;" not in css
+    assert "#schedblock .sb-grow { flex: 1 1 auto;" in source
     render = _fn(code, "function renderSchedBlock(")
-    assert "schedBlockMsg.textContent = schedMsgLine(next);" in render
-    assert 'schedBlockMsg.title = String(next.message || "");' in render
+    assert "schedBlockId.textContent = (rec && rec.task_id)" in render
+    assert "schedBlockName.textContent = (rec && rec.title) || schedMsgLine(next);" in render
+    assert 'schedBlockMeta.textContent = label + " · " + schedWhenText(next.due);' in render
+    assert 'schedBlockRing.className = "sb-ring sb-ring--"' in render
+    # the geometry is COPIED, never linked — a template cannot import the shell's
+    # stylesheet, so the ring is drawn here the way schedule.css draws it
+    ring = source[source.index("  #schedblock .sb-ring {"):]
+    ring = ring[:ring.index("\n  }")]
+    assert "border: 2px solid currentColor;" in ring
+    assert "border-radius: 999px;" in ring
     line = _fn(code, "function schedMsgLine(")
     # whitespace COLLAPSES rather than the first line winning: a prompt opening
     # "Read the following and:" would otherwise preview as its own preamble
     assert 'replace(/\\s+/g, " ")' in line
     # and nothing is cut at a fixed character count — the CSS ellipses it
     assert "slice(" not in line and "length > " not in line
+
+
+def test_the_row_shows_four_facts_and_the_folder_is_not_one_of_them(code, source):
+    """"You will not show the folder because you are already in that folder, you
+    are not showing the session ID because you are already there" (Akshil,
+    2026-08-17). The list view carries both because it spans projects; inside the
+    conversation they are the context and not news."""
+    banner = source[source.index('<div id="schedblock"'):]
+    banner = banner[:banner.index('<form id="inputbox"')]
+    render = _fn(code, "function renderSchedBlock(")
+    for leak in ("target", "project", "session_id", "claude_session_id", "folder"):
+        assert leak not in render, f"the row is showing {leak!r}"
+    assert "basename" not in render and "tilde" not in render
+    # the four it DOES show
+    assert "rec.task_id" in render      # which task
+    assert "rec.title" in render        # what it is called
+    assert "SB_STATES[state]" in render  # what state it is in
+    assert "schedWhenText(next.due)" in render  # when it runs
+
+
+def test_the_state_and_the_time_are_the_shells_own_vocabulary(code):
+    """Five states and the words the board puts on them (schedule-lib.ts
+    BOARD_COLUMNS), and the clock-then-relative-day shape tasks-lib.ts writes into
+    the list's time cell. Unknown reads as Upcoming here rather than the shell's
+    Done: every entry this banner can be looking at is PENDING, so a state that did
+    not parse is a listing that has not answered yet, not a finished job."""
+    states = code[code.index("const SB_STATES = {"):]
+    states = states[:states.index("\n};")]
+    for key, label in (("upcoming", "Upcoming"), ("in_progress", "In Progress"),
+                       ("done", "Done"), ("failed", "Failed"),
+                       ("archived", "Archive")):
+        assert f'{key}: "{label}"' in states
+    render = _fn(code, "function renderSchedBlock(")
+    assert 'SB_STATES[rec.status] ? rec.status : "upcoming"' in render
+    assert '(rec && rec.failed) ? "Failed"' in render
+    when = _fn(code, "function schedWhenText(")
+    assert 'return at + " today";' in when
+    assert 'return at + " tomorrow";' in when
+    # 24-hour, like the cell it is copying: a 12-hour locale renders "02:00 PM",
+    # three characters wider in a pane that is often 340px, and it would not match
+    # the time on the page this row is quoting
+    assert 'schedPad2(d.getHours()) + ":" + schedPad2(d.getMinutes())' in when
+    assert "toLocaleTimeString" not in when
+    # past due is not a time in the past: a queued message waits for the sweep
+    assert 'return "any moment now";' in when
+
+
+def test_the_number_and_the_name_come_from_the_tasks_listing_and_fail_open(code):
+    """TASK-nnn is allocated per project by tasks_store and only /api/tasks hands it
+    out, so the row is filled from two reads. The BLOCK still depends on exactly one
+    of them: an unreadable listing costs the number and the state, never the row and
+    never the block."""
+    load = _fn(code, "async function schedLoadTaskRow(")
+    assert 'fetch("/api/tasks")' in load
+    # no `schedTaskRowFor` recorded on a failure, so the next poll tries again
+    fail = load[load.index("} catch (err) {"):]
+    assert "schedTaskRow = null;" in fail
+    assert "schedTaskRowFor" not in fail
+    # cached against the blocking entry: the listing carries every task on the
+    # machine and this poll runs every 15s, while a number and a name do not change
+    assert "schedTaskRowFor === id" in load
+    rec = _fn(code, "function schedTaskRec(")
+    assert 'schedTaskRowFor === String(entry.id)' in rec
+    # and it is fetched only once the box is already shut
+    state = _fn(code, "function applyComposerBlockState(")
+    assert "if (blocked) schedLoadTaskRow(schedBlockers[0]);" in state
+    assert state.index("box.disabled") < state.index("schedLoadTaskRow")
+
+
+def test_the_listing_row_is_found_by_the_session_before_the_message(code):
+    """A scheduled entry naming a session is folded into that session's task
+    (routers/tasks.py `_collect`), so the session id is the cheapest and most
+    reliable key. The message scan is LAST because the listing carries only each
+    task's three newest messages — it is the lookup that can legitimately miss."""
+    find = _fn(code, "function schedFindTask(")
+    assert 'const pending = "pending:" + id;' in find
+    assert "task.key === mine" in find
+    assert "task.key === pending" in find
+    assert find.index("task.key === mine") < find.index("m.entry_id === id")
+
+
+def test_the_message_renders_once_and_the_stray_copy_is_gone(code):
+    """The duplicate the user saw next to the buttons was the native tooltip: the
+    old card wrote the body onto `title` unconditionally, so a message short enough
+    to fit rendered once in the row and again under the pointer. Now the title is
+    the CLIPPED text only, and whether it clipped is measured rather than guessed at
+    a character count."""
+    title = _fn(code, "function schedNameTitle(")
+    assert "schedBlockName.scrollWidth > schedBlockName.clientWidth + 1" in title
+    assert "schedBlockName.title = schedBlockName.textContent;" in title
+    assert 'schedBlockName.removeAttribute("title");' in title
+    # measured WHEN THE POINTER ARRIVES, not when the row is drawn: at render time
+    # the pane may still be laying out and reports every cell as clipped, and a
+    # title written then outlives the layout that justified it — the same bug with
+    # an extra step
+    assert 'schedBlockRow.addEventListener("pointerenter", schedNameTitle);' in code
+    assert 'schedBlockRow.addEventListener("focus", schedNameTitle);' in code
+    render = _fn(code, "function renderSchedBlock(")
+    assert "scrollWidth" not in render
+    # a render replaces the text, so it drops the title that belonged to the old one
+    assert 'schedBlockName.removeAttribute("title");' in render
+    # and the message is never written to a title unconditionally again
+    assert 'title = String(next.message' not in render
 
 
 def test_it_names_the_soonest_and_counts_the_rest(code):
@@ -209,18 +343,21 @@ def test_it_names_the_soonest_and_counts_the_rest(code):
     assert 'why += " " + others + " more after it.";' in render
 
 
-def test_the_reason_is_one_line_and_states_the_consequence(code):
-    """The user's own reason, in a clause. Four lines of explanation for one fact
-    was the complaint (Akshil, 2026-08-17 — "use less words"), and a banner that
-    said "please wait" would be asking for manners rather than naming a cost."""
+def test_the_reason_is_one_short_line_and_nothing_else_in_words(code):
+    """ONE reason, and the row underneath carries the facts. "Too much prose" was
+    the complaint twice over (Akshil, 2026-08-17 — "use less words", then "this UI
+    is not good"): the first banner spent four lines on context pollution and the
+    second still spent a sentence on it. The state and the time live on the row now,
+    so the line only has to say the box is shut and why."""
     render = _fn(code, "function renderSchedBlock(")
-    assert render.count("anything you type joins it.") == 2
-    assert "Repeats here, next " in render
-    assert "Runs here " in render
-    # the four lines it replaced are gone
+    assert '"Blocked — a scheduled message runs in this chat."' in render
+    assert '"Blocked — a repeating message runs in this chat."' in render
+    # the sentences it replaced are gone, in both generations
     for gone in ("read-only for as long as", "moves the block to the next one",
-                 "would join this task's context", "Reschedule to change"):
-        assert gone not in code, f"the old paragraph survives: {gone!r}"
+                 "would join this task's context", "Reschedule to change",
+                 "anything you type joins it", "Repeats here, next ",
+                 "Runs here "):
+        assert gone not in code, f"the old copy survives: {gone!r}"
 
 
 def test_a_recurring_occurrence_is_recognised(code):
@@ -268,12 +405,25 @@ def test_stopping_a_repeat_takes_two_presses_and_the_second_names_the_cost(code)
     render = _fn(code, "function renderSchedBlock(")
     # the armed label is the CONSEQUENCE, not "Confirm" or "Really?"
     assert '"Cancel every future run"' in render
-    # and there is a way back out of the armed state
-    assert 'armed ? "Keep it" : "Edit schedule"' in render
-    back = code[code.index('schedBlockEdit.addEventListener("click"'):]
-    back = back[:back.index("\n});")]
-    assert "if (schedStopArmed === next.id) {" in back
-    assert back.index("schedStopArmed") < back.index("openScheduler(")
+
+
+def test_backing_out_of_an_armed_stop_is_the_pages_own_dismissal_contract(code):
+    """There is no second button to be the "Keep it" any more — "Edit schedule" was
+    the way back out and it is gone — so the escape is the GESTURE instead: a press
+    outside the card, or Escape. That is .selpop's contract, which is what the rest
+    of this template teaches a reader to expect. Escape is taken in the capture
+    phase and CONSUMED, because the document-level binding kills a live run and
+    backing out of a half-pressed confirm must not also do that."""
+    disarm = _fn(code, "function schedDisarmStop(")
+    assert "if (!schedStopArmed) return;" in disarm
+    assert 'schedStopArmed = "";' in disarm
+    assert "applyComposerBlockState();" in disarm
+    assert "if (schedStopArmed && !schedBlockEl.contains(ev.target)) schedDisarmStop();" in code
+    esc = code[code.index('if (ev.key !== "Escape" || !schedStopArmed) return;'):]
+    esc = esc[:esc.index("}, true);")]
+    assert "ev.stopPropagation();" in esc
+    assert "ev.preventDefault();" in esc
+    assert "schedDisarmStop();" in esc
 
 
 def test_the_armed_press_survives_the_poll_and_belongs_to_its_entry(code):
@@ -332,39 +482,69 @@ def test_a_refused_stop_survives_the_poll_that_follows_it(code):
     assert "The repeat is still on" in render
 
 
-def test_editing_the_schedule_is_offered_but_never_as_the_way_out(code, source):
-    """It is a legitimate thing to want while looking at the task holding the chat,
-    and it is NOT an escape: an edited schedule leaves the message pending, so the
-    block survives the trip. Offering it as the way out was the old banner's lie.
-    So it is shaped as a quiet link against one bordered primary, and its own
-    tooltip says the chat stays blocked."""
-    handler = code[code.index('schedBlockEdit.addEventListener("click"'):]
-    handler = handler[:handler.index("\n});")]
-    assert "openScheduler(" in handler
-    assert "next.id" in handler
-    render = _fn(code, "function renderSchedBlock(")
-    assert "editing it leaves this chat blocked" in render
-    # one bordered control in the row, and it is the one that unblocks
+def test_edit_schedule_is_gone_and_the_row_is_the_door(code, source):
+    """It was put there so a schedule could be changed without losing the message.
+    The row now lands on the task where Edit lives with its full popover, so the
+    banner was two doors to one room — and its own door could not unblock (Akshil,
+    2026-08-17). TWO controls in the card: the row, and the one that unblocks."""
+    assert "sb-edit" not in source
+    assert "sb-quiet" not in source
+    assert "schedBlockEdit" not in source
     banner = source[source.index('<div id="schedblock"'):]
     banner = banner[:banner.index('<form id="inputbox"')]
     assert banner.count("<button") == 2
+    assert 'id="sb-row" class="sb-row" type="button"' in banner
     assert 'id="sb-stop" type="button"' in banner
-    assert 'id="sb-edit" class="sb-quiet"' in banner
-    assert "#schedblock .sb-acts .sb-quiet {" in source
-    quiet = source[source.index("#schedblock .sb-acts .sb-quiet {"):]
-    assert "border-color: transparent;" in quiet[:quiet.index("}")]
+    # the ROW comes first, so it is reachable before the destructive button
+    assert banner.index('id="sb-row"') < banner.index('id="sb-stop"')
+    # nothing in this template deep-links into the edit form any more
+    assert "openScheduler(String(next.message" not in code
 
 
-def test_the_edit_link_reuses_the_composer_s_own_deep_link(code):
-    """One form, one route: `/scheduled?new=1&…` is what the composer's calendar
-    button already hands the Tasks page, and `edit` only says which stored entry
-    the form is opening on. The OCCURRENCE's id travels even for a repeat, because
-    the Tasks page resolves an occurrence to its template before opening the
-    form."""
-    opener = _fn(code, "function openScheduler(")
-    assert 'SCHEDULE_URL + "?new=1"' in opener
-    assert '"&edit=" + encodeURIComponent(editId)' in opener
-    assert "/scheduled" in code[code.index("const SCHEDULE_URL"):code.index("const SCHEDULE_URL") + 60]
+def test_the_row_is_keyboard_reachable_before_the_destructive_button(source):
+    """A real <button>, so Enter and Space work without a keydown handler of its
+    own, with the page's visible focus ring — and FIRST in the DOM, so a keyboard
+    reader arrives at "look at the task" before "cancel every future run of it"."""
+    banner = source[source.index('<div id="schedblock"'):]
+    banner = banner[:banner.index('<form id="inputbox"')]
+    assert banner.index('id="sb-row"') < banner.index('id="sb-stop"')
+    assert 'type="button"' in banner[banner.index('id="sb-row"'):
+                                     banner.index('id="sb-row"') + 60]
+    focus = source[source.index("  #schedblock .sb-row:focus-visible {"):]
+    focus = focus[:focus.index("\n  }")]
+    assert "outline: 2px solid var(--accent);" in focus
+    assert "outline-offset: 2px;" in focus
+    # motion is opt-IN: the only animated thing here is the in-progress ring, and
+    # it is inside a `no-preference` query rather than switched off in a `reduce` one
+    assert "@media (prefers-reduced-motion: no-preference) {" in source
+    css = source[source.index("  #schedblock {"):source.index("  #box:disabled")]
+    assert "transition: all" not in css
+    assert css.count("animation") == 1, "only the in-progress ring"
+
+
+def test_the_row_lands_on_the_task_and_prefers_the_calendar(code):
+    """Clicking the row goes to the task, and the calendar is the view that answers
+    what a blocked chat is asking — "when does this let go?". Scheduled.tsx has no
+    URL param for its view, only the remembered-view row it reads on mount, so the
+    hop writes that row: the same gesture as pressing the page's Calendar button.
+    A denied store leaves the page on whichever view the reader last used — one
+    press from the right one, never a dead end. It cannot scroll to the chip;
+    nothing in that page's URL addresses one."""
+    opener = _fn(code, "function openTaskOnCalendar(")
+    assert 'window.top.localStorage.setItem(SCHEDULE_VIEW_KEY, "calendar")' in opener
+    assert "catch (err)" in opener, "a denied or cross-origin store costs the view only"
+    # the same top-window hop openScheduler makes: a shell ROUTE, so pushState plus
+    # the shell's own navigate event, and a real navigation as the fallback
+    assert 'host.history.pushState(null, "", SCHEDULE_URL);' in opener
+    assert 'host.dispatchEvent(new Event("fused:navigate"));' in opener
+    assert "window.top.location.href = SCHEDULE_URL;" in opener
+    assert 'const SCHEDULE_VIEW_KEY = "fused-render:scheduled-view";' in code
+    # and NOT the new-task deep link: the row opens the task, it does not open a form
+    assert "?new=1" not in opener
+    handler = code[code.index('schedBlockRow.addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    assert "if (!schedBlockers[0]) return;" in handler
+    assert "openTaskOnCalendar();" in handler
 
 
 def test_the_block_goes_with_the_conversation_it_belongs_to(code):

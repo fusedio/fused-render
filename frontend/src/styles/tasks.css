@@ -266,6 +266,21 @@
   border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
 }
 
+/* Mark read. Same group, same size, same silence at rest — and NEUTRAL under the
+   pointer, not the unread dot's own `--status-upcoming`. That hue is already
+   spoken for twice over: it is what the dot and the count pill are painted in, so
+   wearing it here would read as "this IS unread" rather than "clear it"; and it is
+   also the hue Run now takes on hover, which sits directly beside this button on
+   every row that offers both. Two adjacent buttons in one colour, one of which
+   starts a Claude turn, is the confusion worth spending a hue to avoid. The glyph
+   carries the meaning; the skin only has to say "this is a control". */
+.tasks-act--seen:hover:not(:disabled),
+.prefs-section .tasks-act--seen:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
 /* Archive / Unarchive. Same group, same size, same silence at rest as Edit,
    Cancel and Run now — and deliberately NEUTRAL under the pointer, not red.
    Filing a task away destroys nothing (a task IS a Claude session and the
@@ -282,13 +297,13 @@
   border-color: var(--border);
 }
 
-/* -- The same action on a board card -------------------------------------------
-   The card is a `<button>`, so the action cannot live inside it — nested buttons
-   do not parse. It is a sibling, and this wrapper is what it is positioned
+/* -- The same actions on a board card ------------------------------------------
+   The card is a `<button>`, so the actions cannot live inside it — nested buttons
+   do not parse. They are siblings, and this wrapper is what they are positioned
    against; the wrapper takes the card's place as the lane's flex child and the
    card still stretches to fill it.
 
-   It sits over the card HEAD's right end, which is empty on every card: the head
+   They sit over the card HEAD's right end, which is empty on every card: the head
    holds the unread pill, the ring, the id and the live ping, all left-aligned
    and none of them growing. The title below is clamped to two lines and starts
    on the next line down, so nothing is covered. */
@@ -298,13 +313,30 @@
   align-self: stretch;
 }
 
-.tasks-card-act,
-.prefs-section .tasks-card-act {
+/* One STRIP, pinned once, holding however many actions this card offers — Run
+   now, Archive, or both, which a failed task with a spent message offers
+   together. Two separately-pinned buttons would each anchor to the same `right`
+   and stack on top of one another; laying them out with flex is what keeps the
+   pair legible and keeps either one alone in exactly the same place.
+
+   The strip itself takes no clicks: it is an invisible box over the top-right of
+   a card that IS a button, and the 2px between its children must not swallow the
+   press that opens the chat. Only the buttons take them back. */
+.tasks-card-acts {
   position: absolute;
   top: 5px;
   right: 6px;
   /* Above the card it overlays; the card sets no z-index of its own. */
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.tasks-card-act,
+.prefs-section .tasks-card-act {
+  pointer-events: auto;
   /* The card paints `--bg`, and a transparent glyph sitting on it would read as
      part of the head's own row of marks. */
   background: var(--bg);

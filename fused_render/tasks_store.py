@@ -55,6 +55,15 @@ is the wall clock of the most recent mark; it is not consulted when deciding
 whether a message is read — reading it as a floor would reintroduce the bug the
 set exists to avoid.
 
+**Marking a WHOLE task read** (the List row's own button) is not a second
+mechanism and did not need one. It is `mark_read_many` with every message the
+thread holds — one lock and one write for a thread of 89, where clicking through
+was 89 of each — and the compaction above is what turns it into the watermark it
+should be: a contiguous run from MSG-001 folds into `read_floor` and the id list
+comes out empty, which is precisely "everything in this task is read", stored as
+one integer. The caller passes the ids; the mark still reaches nowhere on its
+own, so the invariant one message carries is the invariant the batch carries.
+
 **Day one.** A store that has never existed would otherwise say every message
 ever written is unread — on a real machine that was 1,946 unread across 174 of
 192 tasks, a badge on everything and therefore a badge that means nothing.
@@ -415,13 +424,43 @@ def mark_read(key: str, message_id: str, now: float | None = None) -> dict:
     Only that message. The whole reason the record carries a set rather than a
     high-water mark is that reading MSG-003 says nothing about MSG-002 — see the
     module docstring."""
+    return mark_read_many(key, [message_id], now=now)
+
+
+def mark_read_many(key: str, ids_to_mark, now: float | None = None) -> dict:
+    """Mark SEVERAL messages read in ONE write; return the task's stored record.
+
+    This is what "mark the whole task read" is made of. The row's own button
+    would otherwise be N of these calls — 89 locks, 89 read-modify-writes and 89
+    recounts on the one real thread that has 89 messages — so the batch is the
+    call and the single-message mark above is the batch of one. There is no
+    second mechanism: `mark_read` IS this function, so the two can never drift
+    apart in how they compact or what they promise.
+
+    **The invariant is unchanged: only the ids GIVEN are marked.** Nothing newer
+    is swept in, which is the one thing this store exists to guarantee (see the
+    module docstring) — a whole-task mark is broad because its CALLER passed
+    every message, not because the mark itself reaches forward.
+
+    The compaction is where the watermark comes from, and it is the same
+    compaction one message has always gone through: a contiguous run up from the
+    bottom folds into `read_floor`. So the ordinary whole-task mark — every
+    message in the thread has happened — lands as one integer and an empty id
+    list, which is exactly "everything in this task is read"; and a thread with
+    something still PENDING in the middle of it (the message is not read, so its
+    id is not passed) keeps the exact set on the far side of the gap. One code
+    path, both truths.
+    """
     key = str(key)
-    message_id = format_message_id(message_number(message_id))
+    # A number of 0 is "not a message id at all" (message_number's contract), and
+    # a store is not the place to record a client's typo as a read message.
+    marks = {format_message_id(n) for n in
+             (message_number(mid) for mid in ids_to_mark) if n > 0}
     stamp = time.time() if now is None else float(now)
 
     def mutate(state: dict):
         floor, ids = _read_record(state, key)
-        ids.add(message_id)
+        ids |= marks
         # Compaction: a contiguous run from the bottom collapses into the floor,
         # so a thread read end to end costs one integer instead of every id.
         while format_message_id(floor + 1) in ids:

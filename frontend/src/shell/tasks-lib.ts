@@ -255,7 +255,27 @@ export function markRead(read: Set<string>, taskKey: string, messageId: string):
   return next;
 }
 
+/** The message-id slot's stand-in for "all of them", so a whole-task mark needs
+ * no second set and no second merge rule.
+ *
+ * `*` cannot collide with a real entry: a message id is always `MSG-nnn`
+ * (tasks_store.format_message_id), so no thread can produce this one. It is a
+ * LOCAL optimism only — the server is told `all: true` and keeps the real marks
+ * per message; this exists so the dots go on the click rather than 20 seconds
+ * later, which is the same job markRead does for one message. */
+export const ALL_MESSAGES = "*";
+
+/** Everything in this task is read, locally, as of now. */
+export function markAllRead(read: Set<string>, taskKey: string): Set<string> {
+  return markRead(read, taskKey, ALL_MESSAGES);
+}
+
+export function isAllRead(read: Set<string>, taskKey: string): boolean {
+  return read.has(readKey(taskKey, ALL_MESSAGES));
+}
+
 export function isUnread(taskKey: string, m: TaskMessage, read: Set<string>): boolean {
+  if (isAllRead(read, taskKey)) return false;
   return m.unread && !read.has(readKey(taskKey, m.message_id));
 }
 
@@ -311,6 +331,11 @@ export function taskUnread(
   read: Set<string>,
   loaded?: TaskMessage[],
 ): number {
+  // The one case that is NOT arithmetic over the messages we hold: a whole-task
+  // mark cleared the ones outside the window too, and the server was told so in
+  // the same breath. Discounting only the loaded three would leave a row saying
+  // "86" after the press that cleared all 89.
+  if (isAllRead(read, task.key)) return 0;
   const known = loaded ?? task.messages ?? [];
   const cleared = known.filter(
     (m) => m.unread && read.has(readKey(task.key, m.message_id)),
@@ -863,6 +888,53 @@ export function archiveIntent(task: Task): ArchiveIntent | null {
     title: restore
       ? "Unarchive — puts this back in In Progress"
       : "Archive — files this away; the conversation is kept",
+  };
+}
+
+// ---- clearing a task, without opening it -------------------------------------
+// Read state is per MESSAGE and that is the right model (§7) — but per message
+// was also the only way to CLEAR it, so "I have seen all of this" was one click
+// per row, each one navigating away into a transcript (Akshil, 2026-08-17: "in
+// list you add mark as read button on the task right next to archive or
+// something so you don't have to open everything individually").
+//
+// So the task row gets the whole-task verb, and the server gets ONE call for it
+// (api.markWholeTaskRead). Nothing about the per-message path changes: clicking
+// a message still opens the transcript at that turn and still marks only that
+// one.
+//
+// Offered only on a task that HAS something unread. Unlike Archive — which is
+// about a task's place and is always a sensible thing to ask — this one is a
+// no-op the moment the count is zero, and a button that does nothing on most
+// rows is what makes the ones that do matter hard to find. The count it asks is
+// the DISPLAYED one (taskUnread, so local marks count), which is what lets the
+// button remove itself on its own press instead of a poll later.
+
+export interface MarkReadIntent {
+  /** How many messages this clears — the number the tooltip says. */
+  unread: number;
+  /** The button's accessible name, and the word it says. */
+  label: string;
+  /** The tooltip: how much this clears, since the row shows only three of it. */
+  title: string;
+}
+
+export function markReadIntent(
+  task: Task,
+  read: Set<string>,
+  loaded?: TaskMessage[],
+): MarkReadIntent | null {
+  const unread = taskUnread(task, read, loaded);
+  if (unread <= 0) return null;
+  return {
+    unread,
+    label: "Mark read",
+    // The number matters here in a way it does not on the other actions: the row
+    // lists three messages and the count can be 89, so "all of them" has to say
+    // how many it is about to be.
+    title: unread === 1
+      ? "Mark read — clears the 1 unread message in this task"
+      : `Mark read — clears all ${unread} unread messages in this task`,
   };
 }
 

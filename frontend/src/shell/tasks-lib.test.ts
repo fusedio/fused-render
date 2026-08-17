@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { BOARD_COLUMNS } from "./schedule-lib";
 import {
+  ALL_MESSAGES,
   EMPTY_FILTERS,
   MESSAGE_ANCHOR_PARAM,
   PREVIEW_MESSAGES,
@@ -23,10 +24,13 @@ import {
   filterTasks,
   firstLine,
   groupByColumn,
+  isAllRead,
   isDraggable,
   isFailedTask,
   isUnread,
+  markAllRead,
   markRead,
+  markReadIntent,
   messageHref,
   messageStamp,
   messageTime,
@@ -269,6 +273,92 @@ describe("unread", () => {
       msg({ message_id: "MSG-011", unread: true }),
     ];
     expect(taskUnread(t, markRead(new Set<string>(), t.key, "MSG-011"), full)).toBe(11);
+  });
+
+  // Clearing the WHOLE task, from the row's own button. The local half has to
+  // cover messages this component has never held — the row lists three of 89 —
+  // which is why it is one sentinel rather than an id per message.
+  it("clears a whole task at once, including the messages it never held", () => {
+    const t = { ...three(), unread: 89, message_count: 89 };
+    const read = markAllRead(new Set<string>(), t.key);
+    expect(isAllRead(read, t.key)).toBe(true);
+    // Not 86: discounting only the loaded three would leave the row still
+    // claiming most of a count the press just cleared.
+    expect(taskUnread(t, read)).toBe(0);
+    for (const m of t.messages) {
+      expect(isUnread(t.key, m, read)).toBe(false);
+      expect(unreadMarker(t.key, m, read).unread).toBe(false);
+    }
+  });
+
+  it("clears only the task it was asked about", () => {
+    const t = three();
+    const elsewhere = markAllRead(new Set<string>(), "some-other-task");
+    expect(taskUnread(t, elsewhere)).toBe(3);
+    expect(isUnread(t.key, t.messages[0], elsewhere)).toBe(true);
+  });
+
+  it("keeps the whole-task mark and a per-message one apart", () => {
+    // The sentinel occupies the message-id slot, so it must be a shape no thread
+    // can produce — and marking one message must never read as marking all.
+    expect(ALL_MESSAGES).not.toMatch(/^MSG-/);
+    const t = three();
+    expect(isAllRead(markRead(new Set<string>(), t.key, "MSG-003"), t.key)).toBe(false);
+    expect(taskUnread(t, markRead(new Set<string>(), t.key, "MSG-003"))).toBe(2);
+  });
+});
+
+// ---- clearing a task without opening it ----------------------------------------
+// Read state is per message and clearing it was per message too, so "I have seen
+// all of this" cost one click per row (Akshil, 2026-08-17: "so you don't have to
+// open everything individually").
+
+describe("markReadIntent", () => {
+  const withUnread = (n: number): Task => ({
+    ...task({ unread: n, message_count: Math.max(n, 3) }, 3),
+    messages: [
+      msg({ message_id: "MSG-003", unread: true }),
+      msg({ message_id: "MSG-002", unread: true }),
+      msg({ message_id: "MSG-001", unread: true }),
+    ],
+  });
+
+  it("is offered only on a task that actually has unread", () => {
+    // No unread, no button: unlike Archive, this one's press would do nothing,
+    // and a glyph on every row is what makes the rows that matter hard to find.
+    expect(markReadIntent(task({ unread: 0 }), new Set())).toBe(null);
+    expect(markReadIntent(withUnread(3), new Set())).not.toBe(null);
+  });
+
+  it("says how much it clears, because the row only ever lists three", () => {
+    const many = markReadIntent(withUnread(89), new Set())!;
+    expect(many.label).toBe("Mark read");
+    expect(many.unread).toBe(89);
+    expect(many.title).toContain("89");
+    // One reads as one rather than as "all 1".
+    expect(markReadIntent(withUnread(1), new Set())!.title)
+      .toContain("1 unread message");
+  });
+
+  it("leaves on its own press rather than on the next poll", () => {
+    // It asks the count the row is DRAWING (taskUnread), so the local mark the
+    // click writes is enough to take the button away.
+    const t = withUnread(3);
+    expect(markReadIntent(t, markAllRead(new Set<string>(), t.key))).toBe(null);
+    // ...and clicking through every message it holds does the same.
+    let read = new Set<string>();
+    for (const m of t.messages) read = markRead(read, t.key, m.message_id);
+    expect(markReadIntent(t, read)).toBe(null);
+  });
+
+  it("counts against the loaded thread once Show more has run", () => {
+    const t = { ...withUnread(12), message_count: 12 };
+    const full = [
+      msg({ message_id: "MSG-012", unread: true }),
+      msg({ message_id: "MSG-011", unread: true }),
+    ];
+    expect(markReadIntent(t, markRead(new Set<string>(), t.key, "MSG-011"), full)!.unread)
+      .toBe(11);
   });
 });
 
@@ -881,12 +971,124 @@ describe("the archive action", () => {
     expect(TASKS_CSS).toMatch(/\.tasks-card-wrap\s*\{[^}]*position: relative/);
   });
 
+  it("shares one strip with Run now instead of stacking on it", () => {
+    // A failed task whose message is spent offers Run now AND Archive, and two
+    // siblings each pinned to the same `right` would sit on top of each other.
+    const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
+    expect(card).toContain("{(run || file) && (");
+    expect(card).toContain('className="tasks-card-acts"');
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*display: flex/);
+    // The strip is invisible chrome over a card that IS a button, so the gap
+    // between its children must not swallow the press that opens the chat.
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*pointer-events: none/);
+    expect(TASKS_CSS).toMatch(
+      /\.tasks-card-act,\n\.prefs-section \.tasks-card-act \{[^}]*pointer-events: auto/,
+    );
+  });
+
   it("never paints it red — archiving destroys nothing", () => {
     // Cancel's hue is the destructive one and the two are one flick apart; using
     // it here would assert the very thing archiving exists to deny.
     const at = TASKS_CSS.indexOf(".tasks-act--archive:hover");
     expect(at).toBeGreaterThan(-1);
     expect(TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at))).not.toContain("--error");
+  });
+});
+
+// ---- where Run now and Mark read are drawn -------------------------------------
+// The Board had no run action at all: it was on the List row and in the calendar
+// popover and simply missing from the kanban card (Akshil, 2026-08-17: "I have a
+// rerun option in list, I have a rerun option in calendar, but I don't have a
+// rerun option in Kanban"). And clearing a task's unread was one click per
+// message. Both claims are about WHERE a control is, so both are read out of the
+// source rather than left to a screenshot.
+
+const NODE = VIEWS.slice(
+  VIEWS.indexOf("function TaskNode("),
+  VIEWS.indexOf("export function TaskBoard("),
+);
+const BOARD = VIEWS.slice(
+  VIEWS.indexOf("export function TaskBoard("),
+  VIEWS.indexOf("function TaskCard("),
+);
+const CARD = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
+/** The List's task row, which ends where the thread it can open begins. */
+const ROW = (() => {
+  const from = VIEWS.indexOf('className={"tasks-row"');
+  return VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
+})();
+
+describe("the run action on a board card", () => {
+  it("offers the intent the List row offers, from the same function", () => {
+    // Not a second predicate and not a second entry id: both sides ask
+    // taskRunIntent, which asks runNowIntent — the function dropAction asks — so
+    // the card's button, the row's button and the drag cannot pick different
+    // messages.
+    expect(NODE).toContain("taskRunIntent(task)");
+    expect(CARD).toContain("taskRunIntent(task)");
+    expect(CARD).toContain("onRun(intent)");
+    // The word comes from the intent as well, both halves of it.
+    expect(CARD).toContain("{run.rerun ? ICON_RERUN : ICON_PLAY}");
+    expect(CARD).toContain("run.title");
+    expect(CARD).toContain("run.label");
+  });
+
+  it("spends the intent through the ONE function both views share", () => {
+    // Two copies of the run-now/resend switch is how two views start disagreeing
+    // about what "Re-run" does.
+    expect(NODE).toContain("performRun(intent)");
+    expect(BOARD).toContain("performRun(intent)");
+    expect((VIEWS.match(/resendScheduledMessage\(/g) ?? []).length).toBe(1);
+  });
+
+  it("lands a refusal in the board's own note line, not inside a lane", () => {
+    // A 409 (that conversation has a turn open) is "wait", not "broken", and it
+    // is unreadable tucked under one card in a 260px column — so the call lives
+    // on the board and the card only asks for it.
+    expect(BOARD).toContain("const runNow = async (intent: TaskRunIntent)");
+    expect(BOARD).toContain("setNote((e as Error).message)");
+    expect(CARD).not.toContain("runScheduledNow");
+  });
+
+  it("is hidden while the card is in the air, like Archive", () => {
+    expect(CARD).toContain("tasks-card-act");
+    expect(TASKS_CSS).toContain(".tasks-card-wrap.is-dragging .tasks-card-act");
+  });
+});
+
+describe("the mark-read action", () => {
+  it("sits in the List row's hover-revealed group, conditional on the intent", () => {
+    // Same group as Run now and Archive, so a list at rest grows no chrome.
+    expect(ROW).toContain("{seen && (");
+    expect(ROW).toContain("tasks-act--seen");
+    expect(ROW).toContain("ICON_MARK_READ");
+    expect(ROW).toContain("aria-label={seen.label}");
+    // Whether it exists at all is the intent's decision, asked with the count the
+    // row is drawing rather than the raw server number.
+    expect(NODE).toContain("markReadIntent(task, read, loaded)");
+  });
+
+  it("is ONE request for the whole thread, not one per message", () => {
+    expect(NODE).toContain("markWholeTaskRead(task.key)");
+    // The per-message call is still exactly what a message CLICK makes, and
+    // nothing here loops over messages.
+    expect(VIEWS).toContain("markTaskMessageRead(taskKey, m.message_id)");
+  });
+
+  it("clears the local set too, so the dots go on the click", () => {
+    expect(NODE).toContain("onReadAll(task.key)");
+    expect(VIEWS).toContain("markAllRead(cur, taskKey)");
+  });
+
+  it("never wears the unread dot's own hue", () => {
+    // --status-upcoming is what the dot and the count pill are painted in, and
+    // what Run now takes on hover — the button directly beside this one.
+    const at = TASKS_CSS.indexOf(".tasks-act--seen:hover");
+    expect(at).toBeGreaterThan(-1);
+    const rule = TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at));
+    expect(rule).not.toContain("--status-upcoming");
+    expect(rule).not.toContain("--error");
   });
 });
 
