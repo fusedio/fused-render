@@ -7,6 +7,7 @@ import {
   sideParam,
   sideToggleTarget,
   reconcileSideSearch,
+  writeQueryParam,
   SIDE_OFF,
   type SideEntry,
   type SideSplitInput,
@@ -588,6 +589,57 @@ describe("reconcileSideSearch", () => {
     expect(
       reconcileSideSearch("?_mode=claude&zoom=2", o({ activeSide: "git", defaultSide: "claude" }))
     ).toBe("zoom=2&_side=git");
+  });
+
+  // VERBATIM, byte for byte — the same rule the session strip goes textual for
+  // (lib/session-params, server/session.py's `_strip_side`), and the same reason:
+  // whatever this returns is what `replaceSearch` puts in the address bar and what
+  // the session sidecar then records (LSN-2). A URLSearchParams round trip rewrote
+  // `stretch=2,1471` to `stretch=2%2C1471`, and the default-normalisation above
+  // made that fire on ordinary links it never used to touch — every `?_side=claude`
+  // handoff from the inbox (shell/schedule-lib) and every old bookmark.
+  it("does not re-encode the params it keeps", () => {
+    expect(
+      reconcileSideSearch("?_side=claude&stretch=2,1471&q=a+b%2Cc", o({
+        activeSide: "claude",
+        defaultSide: "claude",
+      }))
+    ).toBe("stretch=2,1471&q=a+b%2Cc");
+    expect(
+      reconcileSideSearch("?stretch=2,1471", o({ activeSide: "git", defaultSide: "claude" }))
+    ).toBe("stretch=2,1471&_side=git");
+    expect(
+      reconcileSideSearch("?_mode=claude&sel=a,b", o({
+        activeSide: "claude",
+        defaultSide: "claude",
+      }))
+    ).toBe("sel=a,b");
+  });
+});
+
+// The one query-string writer both `reconcileSideSearch` and Preview's `setSide`
+// go through, so neither can reintroduce the round trip.
+describe("writeQueryParam", () => {
+  it("appends a new param and leaves the others byte-identical", () => {
+    expect(writeQueryParam("stretch=2,1471", "_side", "git")).toBe("stretch=2,1471&_side=git");
+    expect(writeQueryParam("", "_side", "off")).toBe("_side=off");
+  });
+
+  it("replaces every occurrence of the key", () => {
+    expect(writeQueryParam("_side=off&a=1&_side=git", "_side", "claude")).toBe(
+      "a=1&_side=claude"
+    );
+  });
+
+  it("deletes on a null value", () => {
+    expect(writeQueryParam("a=1&_side=git&b=2", "_side", null)).toBe("a=1&b=2");
+    expect(writeQueryParam("_side=git", "_side", null)).toBe("");
+    // A valueless param counts as the key.
+    expect(writeQueryParam("a=1&_side", "_side", null)).toBe("a=1");
+  });
+
+  it("is not fooled by a key that merely starts the same", () => {
+    expect(writeQueryParam("_sidebar=1", "_side", null)).toBe("_sidebar=1");
   });
 });
 

@@ -54,6 +54,7 @@ import {
   parseSide,
   resolveSide,
   sideParam,
+  writeQueryParam,
   sideToggleTarget,
   reconcileSideSearch,
   type SideRequest,
@@ -820,11 +821,14 @@ function TemplatePreview({
   // companion a bare URL would have opened deletes the param instead, so the
   // ordinary state keeps the clean URL (`sideParam`, lib/preview-side).
   const setSide = (next: string | null) => {
-    const params = new URLSearchParams(location.search);
-    const want = sideParam(next, split.defaultSide);
-    if (want === null) params.delete("_side");
-    else params.set("_side", want);
-    const search = params.toString();
+    // Written textually (`writeQueryParam`) so a click on the sidebar cannot
+    // re-encode a template's own params on its way past them — LSN-2's verbatim
+    // rule, and this runs on the first close of every auto-opened sidebar.
+    const search = writeQueryParam(
+      location.search.replace(/^\?/, ""),
+      "_side",
+      sideParam(next, split.defaultSide)
+    );
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     setSideReq({ open: next !== null, mode: next });
   };

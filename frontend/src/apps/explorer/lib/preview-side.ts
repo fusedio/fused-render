@@ -321,6 +321,36 @@ export function resolveSide(req: SideRequest, split: SideSplit): string | null {
   return split.defaultSide;
 }
 
+// SET OR DELETE ONE PARAM, TEXTUALLY, LEAVING EVERY OTHER BYTE ALONE. `null`
+// deletes; a value is appended (a replaced key therefore moves to the end, which
+// is the only difference from URLSearchParams.set and is not something any reader
+// can see).
+//
+// It exists because URLSearchParams was the writer and a round trip through it
+// RE-ENCODES what it merely passes through: `stretch=2,1471` came back as
+// `stretch=2%2C1471`, `sel=a b` as `sel=a+b`. Whatever this module returns is what
+// goes in the address bar AND what the session sidecar records, and LSN-2 says
+// that string is the shell's query verbatim — the same reason the session strip
+// itself is textual (platform/lib/session-params, server/session.py's
+// `_strip_side`). It used to be nearly unreachable, since the reconcile only fired
+// when `_side` disagreed; normalising the default away (`sideParam`) makes it fire
+// on ordinary links that were previously left alone — every `?_side=claude` inbox
+// handoff (shell/schedule-lib), every old bookmark — and on the first close of
+// every auto-opened sidebar, so the exposure is now most of the traffic.
+//
+// Both writers go through it: this module's reconcile and Preview's `setSide`.
+export function writeQueryParam(
+  search: string,
+  key: string,
+  value: string | null
+): string {
+  const kept = search
+    .split("&")
+    .filter((p) => p !== "" && p.split("=", 1)[0] !== key);
+  if (value !== null) kept.push(key + "=" + value);
+  return kept.join("&");
+}
+
 // The URL's SPELLING for a state, and the one writer's rule (used by Preview's
 // `setSide` and by the reconcile below, so the two cannot drift): the default
 // companion gets the CLEAN URL, a shut sidebar says `off`, and only a deliberate
@@ -403,6 +433,8 @@ export function reconcileSideSearch(
   }
 ): string | null {
   if (!o.splitCapable) return null;
+  // READ through URLSearchParams (decoding is what a reader wants), WRITE through
+  // writeQueryParam (byte-preserving — see there).
   const params = new URLSearchParams(search);
   const legacy = params.get("_mode");
   const stale = o.offered && legacy !== null && isSidebarMode(legacy);
@@ -417,8 +449,8 @@ export function reconcileSideSearch(
         : sideParam(o.activeSide, o.defaultSide);
   const agrees = want === undefined || (params.get("_side") ?? null) === want;
   if (agrees && !stale) return null;
-  if (want === null) params.delete("_side");
-  else if (want !== undefined) params.set("_side", want);
-  if (stale) params.delete("_mode");
-  return params.toString();
+  let out = search.replace(/^\?/, "");
+  if (want !== undefined) out = writeQueryParam(out, "_side", want);
+  if (stale) out = writeQueryParam(out, "_mode", null);
+  return out;
 }
