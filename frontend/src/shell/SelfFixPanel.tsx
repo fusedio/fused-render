@@ -268,7 +268,16 @@ export function SelfFixPanel() {
   useEffect(() => {
     let alive = true;
     getSelfFix()
-      .then((s) => alive && setSnapshot(s))
+      .then((s) => {
+        if (!alive) return;
+        setSnapshot(s);
+        // CLEARED ON SUCCESS, or the banner outlives the failure that raised
+        // it: the read retries on every nudge, and an `error` that only ever
+        // gets set left the tab showing "could not load" over a server that had
+        // been answering for the last ten minutes. A message about a request is
+        // only true until the next one.
+        setError(null);
+      })
       .catch((e) => alive && setError(String((e as Error)?.message || e)));
     return () => {
       alive = false;
@@ -299,14 +308,26 @@ export function SelfFixPanel() {
     };
   }, []);
 
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!snapshot) return <SkeletonLines rows={4} label="Loading installation state" />;
+  // An error takes the WHOLE tab only when there is nothing else to show. Once
+  // a snapshot has landed, a later failed re-read is a note above content that
+  // is still broadly true, not a reason to replace the entire tab with a
+  // sentence — the nudge fires this read on every state change, so one blip
+  // (the server restarting mid-fix, which is a thing fix sessions cause) would
+  // otherwise take away the reinstall instructions and the report list.
+  if (!snapshot) {
+    return error ? (
+      <ErrorBanner>{error}</ErrorBanner>
+    ) : (
+      <SkeletonLines rows={4} label="Loading installation state" />
+    );
+  }
 
   // Rendered in this order deliberately: the reason a user opened this tab is
   // almost always the first section, and the installation's state is context
   // for it — not the other way round.
   return (
     <>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
       <DescribeSection writable={snapshot.writable} />
       <InstallationSection snapshot={snapshot} />
     </>

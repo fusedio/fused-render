@@ -404,6 +404,17 @@ export default function VersionChip({
     };
   }, [at]);
 
+  // THE BADGE GOING AWAY SHUTS THE PANEL, and it has to be said here rather
+  // than left to the early return below. That return hides the panel by not
+  // rendering it, which is not the same as closing it: `at` stays set, so when
+  // the badge came BACK — which is a real sequence, not a hypothetical, since a
+  // dismissal is scoped to the tree state it was made for (SF-15) and a session
+  // still editing re-stamps past it — the panel reappeared on its own, over a
+  // sidebar nobody had clicked.
+  useEffect(() => {
+    if (!modified) setAt(null);
+  }, [modified]);
+
   if (!version) return null;
   // Stock install: a plain label, exactly as before. Not a button — there is
   // nothing behind it, and a control that opens nothing is worse than text.
