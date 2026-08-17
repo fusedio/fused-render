@@ -102,10 +102,25 @@ class FakeImage:
         self.written = target
 
 
+class FakeLatents:
+    """An mlx array, with the one call the preview's `_as_numpy` makes on it."""
+
+    def __init__(self, array, on_read=None):
+        self._array = array
+        self._on_read = on_read
+
+    def astype(self, dtype):
+        assert dtype == "float32", dtype
+        if self._on_read is not None:
+            self._on_read()
+        return self._array
+
+
 class FakeModel:
     """An mflux variant: a callback registry, and a loop that drives it."""
 
-    def __init__(self, steps_to_run=None):
+    def __init__(self, steps_to_run=None, latents=None, sigmas=None,
+                 latents_per_step=None):
         self.callbacks = FakeRegistry()
         self.calls = []
         self.image = FakeImage()
@@ -113,6 +128,18 @@ class FakeModel:
         #: from what was asked (nothing does this today; it exists so a cancel
         #: mid-loop is expressible).
         self.steps_to_run = steps_to_run
+        #: What the loop hands the callback. None for the tests that are not
+        #: about the preview — which is also the honest shape of a run with no
+        #: schedule to read, so those tests pin that nothing breaks without one.
+        self.latents = latents
+        self.sigmas = sigmas
+        #: One array per step, when a test needs the latents to actually MOVE.
+        #: Identical latents mean zero velocity, and a zero velocity makes the
+        #: denoised estimate equal the latent at every sigma — which is how a
+        #: test can look like it pins the sigma indexing without pinning it.
+        self.latents_per_step = latents_per_step
+        #: Called after each step, for a test that watches the preview appear.
+        self.watch = None
 
     def generate_image(self, seed, prompt, num_inference_steps=4, height=1024,
                        width=1024, guidance=1.0, **kwargs):
@@ -120,12 +147,21 @@ class FakeModel:
                            "num_inference_steps": num_inference_steps,
                            "height": height, "width": width, **kwargs})
         total = self.steps_to_run if self.steps_to_run is not None else num_inference_steps
+        config = None
+        if self.sigmas is not None:
+            config = types.SimpleNamespace(
+                scheduler=types.SimpleNamespace(sigmas=self.sigmas))
         for t in range(total):
+            held = (self.latents if self.latents_per_step is None
+                    else self.latents_per_step[t])
             for callback in self.callbacks.callbacks:
                 # mflux calls it with keywords; the reporter's signature has to
                 # match, and a positional call here would hide a rename.
-                callback.call_in_loop(t=t, seed=seed, prompt=prompt, latents=None,
-                                      config=None, time_steps=None)
+                callback.call_in_loop(t=t, seed=seed, prompt=prompt,
+                                      latents=held, config=config,
+                                      time_steps=None)
+            if self.watch is not None:
+                self.watch(t)
         return self.image
 
 
@@ -443,3 +479,264 @@ def test_the_worker_never_shells_out(monkeypatch, base):
     assert "import subprocess" not in source
     assert "subprocess." not in source
     assert "os.system" not in source and "Popen" not in source
+
+
+# -- the live preview (SPEC §40) -------------------------------------------------
+#
+# The same thumbnail the diffusers runner writes, from the same shared module,
+# out of a callback with a different signature and latents in a different
+# library's arrays. The arithmetic and the lifecycle are tested in
+# `test_ai_image_preview.py`; what is pinned HERE is that this engine's wiring
+# reaches it — and reaches it identically, since a page must not be able to tell
+# which one rendered.
+
+
+def _mlx_core():
+    """`mlx.core`, for the one attribute `_as_numpy` reads off it."""
+    return types.SimpleNamespace(float32="float32")
+
+
+def _previewing_worker(monkeypatch, base, tmp_path, *, model=None, vae=True):
+    """A loaded worker whose recipe does (or does not) name an autoencoder.
+
+    The table is reached through `worker.formats`, not through
+    `fused_render.ai.runners.formats`: a runner imports it by path off
+    `sys.path`, so the packaged module is a second object and patching it would
+    patch nothing this worker reads.
+    """
+    worker, made = load_worker(monkeypatch, base, model=model,
+                               mlx_core=_mlx_core())
+    recipe = dict(worker.formats.MFLUX_VARIANTS[MODEL])
+    if not vae:
+        recipe.pop("vae", None)
+    monkeypatch.setitem(worker.formats.MFLUX_VARIANTS, MODEL, recipe)
+    worker.load(MODEL, snapshot(tmp_path))
+    return worker, made
+
+
+def _packed(rng, tokens=32 * 32):
+    return rng.standard_normal((1, tokens, 128)).astype("float32")
+
+
+def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
+        monkeypatch, base, tmp_path):
+    """Step 1 has no predecessor, so it has no velocity and no estimate — and
+    the last frame is duplicate bytes once the real PNG lands. The same two
+    sentences the diffusers runner's copy of this test carries, deliberately."""
+    import numpy
+
+    rng = numpy.random.default_rng(3)
+    model = FakeModel(latents=FakeLatents(_packed(rng)),
+                      sigmas=[1.0, 0.9, 0.7, 0.4, 0.0])
+    worker, made = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    request = _request(tmp_path, width=512, height=512, steps=4,
+                       outPreview=str(tmp_path / "fox.preview.png"))
+    seen = []
+    made.watch = lambda t: seen.append(os.path.exists(request["outPreview"]))
+    worker.generate(request)
+
+    assert seen == [False, True, True, True]
+    assert sorted(os.listdir(tmp_path)) == ["fox.png", "snap"]
+
+
+def test_PACKED_and_UNPATCHIFIED_latents_are_both_understood(
+        monkeypatch, base, tmp_path):
+    """mflux hands the callback `(B, N, 128)` on some paths and
+    `(B, 128, h, w)` on others. Both are the same picture, and neither runner
+    reshapes before handing it over — that would be a second copy of the unpack
+    rule `preview._tokens` owns.
+
+    The two steps hold DIFFERENT latents, so the estimate is a real
+    extrapolation rather than the degenerate zero-velocity case: an unpack that
+    agreed on a constant field and disagreed on a moving one would otherwise
+    pass this.
+    """
+    import numpy
+
+    rng = numpy.random.default_rng(4)
+    first = _packed(rng, tokens=16)
+    packed = _packed(rng, tokens=16)
+    shapes = [
+        (first, packed),
+        (first[0].reshape(4, 4, 128).transpose(2, 0, 1)[None],
+         packed[0].reshape(4, 4, 128).transpose(2, 0, 1)[None]),
+    ]
+    written = []
+    for index, pair in enumerate(shapes):
+        # One directory each: `snapshot` makes a fresh repo layout per load.
+        room = tmp_path / str(index)
+        room.mkdir()
+        model = FakeModel(sigmas=[1.0, 0.5, 0.0],
+                          latents_per_step=[FakeLatents(a) for a in pair])
+        worker, _ = _previewing_worker(monkeypatch, base, room, model=model)
+        request = _request(room, width=64, height=64, steps=2,
+                           out=str(room / "fox.png"),
+                           outPreview=str(room / "fox.preview.png"))
+        monkeypatch.setattr(worker.preview.Sink, "discard", lambda self: None)
+        worker.generate(request)
+        with open(request["outPreview"], "rb") as handle:
+            written.append(handle.read())
+    assert written[0] == written[1]
+
+
+def test_the_thumbnail_is_the_estimate_at_the_sigma_just_REACHED(
+        monkeypatch, base, tmp_path):
+    """`_sigma_after` is a SECOND copy of the off-by-one, against a second
+    library's schedule, and it had no test at all — the diffusers runner's
+    covered only its own.
+
+    The same two properties make this pin it rather than merely pass: the
+    latents MOVE (a zero velocity makes the estimate equal the latent at any
+    sigma, so any indexing would satisfy it) and the frame examined is
+    MID-RENDER (the schedule ends at sigma 0, where the estimate degenerates the
+    same way). Read one entry earlier, these pixels are different ones.
+    """
+    import numpy
+    from PIL import Image
+
+    rng = numpy.random.default_rng(21)
+    sigmas = [1.0, 0.9, 0.7, 0.318, 0.0]
+    steps = [_packed(rng, tokens=32 * 32) * 2.0 for _ in range(4)]
+    model = FakeModel(sigmas=sigmas,
+                      latents_per_step=[FakeLatents(a) for a in steps])
+    worker, made = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    preview = worker.preview
+    out = str(tmp_path / "fox.preview.png")
+    shots = []
+
+    def snapshot(t):
+        if not os.path.exists(out):
+            shots.append(None)
+            return
+        with Image.open(out) as image:
+            shots.append((image.size, numpy.frombuffer(
+                image.convert("RGB").tobytes(), dtype=numpy.uint8).tolist()))
+
+    made.watch = snapshot
+    worker.generate(_request(tmp_path, width=512, height=512, steps=4,
+                             outPreview=out))
+
+    def frame(sigma_previous, sigma_current):
+        estimate = preview.denoised(steps[1], steps[2], sigma_previous, sigma_current)
+        rgb = preview.project(estimate, "AutoencoderKLFlux2")
+        return numpy.asarray(rgb * 255.0 + 0.5, dtype=numpy.uint8).reshape(-1).tolist()
+
+    # After step index 2: latents[1] at sigmas[2], latents[2] at sigmas[3] — the
+    # level the schedule has ARRIVED at, not the one it left.
+    right = frame(sigmas[2], sigmas[3])
+    stale = frame(sigmas[1], sigmas[2])
+    assert right != stale, "the schedule chosen cannot tell the two apart"
+
+    size, pixels = shots[2]
+    assert size == (preview.MAX_SIDE, preview.MAX_SIDE)
+    assert pixels == right
+    assert pixels != stale
+
+
+def test_the_FRAME_is_written_BEFORE_the_tick_that_announces_it(monkeypatch, base,
+                                                                tmp_path):
+    """The same ordering rule as the diffusers runner's, pinned the same way and
+    for the same reason: `done` on the tick is what `runtime.js` turns into the
+    cache-busted `&step=N` preview URL, so reporting first can hand a page the
+    URL for a frame that is not on disk — and because that URL is keyed by the
+    step and never requested twice, a fetch in the window caches the PREVIOUS
+    frame's bytes under it for that step's whole duration.
+
+    Two engines, one order. It reads as arbitrary from either side."""
+    import numpy
+
+    rng = numpy.random.default_rng(11)
+    model = FakeModel(latents=FakeLatents(_packed(rng)),
+                      sigmas=[1.0, 0.9, 0.7, 0.4, 0.0])
+    worker, _ = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    events = []
+    real_write = worker.preview.Sink._write
+
+    def spy_write(self, rgb, grid):
+        events.append("frame")
+        return real_write(self, rgb, grid)
+
+    real_report = base.report_or_cancel
+
+    def spy_report(job=None, **fields):
+        events.append("tick %d" % fields["done"])
+        return real_report(job=job, **fields)
+
+    monkeypatch.setattr(worker.preview.Sink, "_write", spy_write)
+    monkeypatch.setattr(base, "report_or_cancel", spy_report)
+    worker.generate(_request(tmp_path, width=512, height=512, steps=4,
+                             outPreview=str(tmp_path / "fox.preview.png")))
+    assert events == ["tick 1", "frame", "tick 2", "frame", "tick 3",
+                      "frame", "tick 4"]
+
+
+def test_a_variant_that_names_NO_autoencoder_renders_exactly_as_BEFORE(
+        monkeypatch, base, tmp_path):
+    """No file, no branch — and no conversion either: the latents go over as a
+    closure precisely so a no-op sink never touches them."""
+    def touched():
+        raise AssertionError("a no-op preview converted the latents")
+
+    import numpy
+
+    rng = numpy.random.default_rng(5)
+    model = FakeModel(latents=FakeLatents(_packed(rng), on_read=touched),
+                      sigmas=[1.0, 0.9, 0.7, 0.4, 0.0])
+    worker, _ = _previewing_worker(monkeypatch, base, tmp_path, model=model,
+                                   vae=False)
+    worker.generate(_request(tmp_path, width=512, height=512, steps=4,
+                             outPreview=str(tmp_path / "fox.preview.png")))
+    assert sorted(os.listdir(tmp_path)) == ["fox.png", "snap"]
+
+
+def test_a_request_that_named_no_preview_file_renders_exactly_as_BEFORE(
+        monkeypatch, base, tmp_path):
+    """A worker request from before this feature carries no `outPreview`."""
+    def touched():
+        raise AssertionError("a no-op preview converted the latents")
+
+    import numpy
+
+    rng = numpy.random.default_rng(6)
+    model = FakeModel(latents=FakeLatents(_packed(rng), on_read=touched),
+                      sigmas=[1.0, 0.9, 0.7, 0.4, 0.0])
+    worker, _ = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    worker.generate(_request(tmp_path, width=512, height=512, steps=4))
+    assert sorted(os.listdir(tmp_path)) == ["fox.png", "snap"]
+
+
+def test_the_thumbnail_is_removed_when_the_render_is_CANCELLED(
+        monkeypatch, base, tmp_path):
+    """A ✕ means the user does not want this picture, at any resolution."""
+    import numpy
+
+    rng = numpy.random.default_rng(7)
+    model = FakeModel(latents=FakeLatents(_packed(rng)),
+                      sigmas=[1.0, 0.9, 0.7, 0.4, 0.0])
+    worker, _ = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    base.cancel_on_tick = 4          # the opening report, then three steps
+    with pytest.raises(base.Cancelled):
+        worker.generate(_request(tmp_path, width=512, height=512, steps=4,
+                                 outPreview=str(tmp_path / "fox.preview.png")))
+    assert os.listdir(tmp_path) == ["snap"]
+
+
+def test_both_image_workers_import_the_ONE_previewer_rather_than_a_copy():
+    """The structural half: a second `preview.py` under either runner folder is
+    the drift AI-10c forbids, and no behavioural test would catch it — both
+    copies would pass their own. Asserted from the SECOND runner's tests, the
+    way `test_ai_partial_transcript.py` does for the two whisper engines."""
+    runners = os.path.dirname(os.path.dirname(WORKER_PATH))
+    for folder in ("diffusers_image", "mflux_image"):
+        assert not os.path.exists(os.path.join(runners, folder, "preview.py")), folder
+        with open(os.path.join(runners, folder, "worker.py"), encoding="utf-8") as fh:
+            assert "import preview" in fh.read(), folder
+
+
+def test_the_key_BOTH_runners_use_is_the_same_string():
+    """The torch runner reads `type(pipe.vae).__name__` and this one reads its
+    variant recipe, and the two have to land on one row of one table — the whole
+    reason the projection lives at the runners root and not in either worker."""
+    from fused_render.ai.runners import formats, preview
+
+    assert formats.MFLUX_VARIANTS[MODEL]["vae"] in preview.PROJECTIONS

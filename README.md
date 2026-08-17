@@ -144,8 +144,10 @@ Any `.html` file can call it and bind the result to the URL:
 - `fused.ai.image({prompt, ...})` — text to image, locally; resolves with the
   PNG's path, a ready-made URL to point an `<img>` at, and the seed used (one is
   chosen for you if you don't pass one, so a render is always repeatable). It
-  runs for minutes, so `onProgress` fires per denoising step and the download
-  manager's ✕ really stops it.
+  runs for minutes, so `onProgress` fires per denoising step — each tick with a
+  `previewUrl` for a thumbnail of the image so far, so there is a picture
+  emerging rather than a number going up — and the download manager's ✕ really
+  stops it.
 - `fused.ai.transcribe({path, ...})` — speech to text, locally: point it at an
   audio or video file on this machine and it resolves with the words plus the
   `{start, end, text}` segments that carry their timestamps. `task` picks
