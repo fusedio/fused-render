@@ -16,7 +16,7 @@
 // the next local push; the banner says so). The hosted workbench has no
 // push-driven reload, so when push_seq moves this page reloads the iframe.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { navigateUrl } from "@platform/lib/router";
+import { EMBED_PREFIX, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   getAccessToken,
@@ -37,7 +37,12 @@ export function canvasNameFromPath(pathname: string): string | null {
 export default function CanvasWorkspace({ name }: { name: string }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
+  const [dir, setDir] = useState<string | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
+  // Splitter position: workbench pane width as a fraction of the row.
+  const [leftFrac, setLeftFrac] = useState(0.55);
+  const [dragging, setDragging] = useState(false);
+  const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Bumped when push_seq moves → remounts the iframe so the editor shows the
   // pushed code (the hosted workbench never reloads itself on push).
@@ -62,7 +67,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           return;
         }
         setHandle(who.handle);
-        await startSync(name);
+        const started = await startSync(name);
+        if (!cancelled) setDir(started.dir);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -106,6 +112,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       void getSyncStatus(name)
         .then((s) => {
           setSync(s);
+          setDir((d) => d ?? s.dir);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
           if (lastPushSeq.current !== null && s.push_seq !== lastPushSeq.current) {
@@ -117,6 +124,40 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     }, SYNC_POLL_MS);
     return () => window.clearInterval(id);
   }, [name]);
+
+  // Splitter drag: track the pointer over the whole window so the drag
+  // survives entering the iframes (which would otherwise swallow mousemove —
+  // pointer-events are disabled on both panes while dragging).
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e: MouseEvent) => {
+      const row = rowRef.current;
+      if (!row) return;
+      const rect = row.getBoundingClientRect();
+      const frac = (e.clientX - rect.left) / rect.width;
+      setLeftFrac(Math.min(0.85, Math.max(0.15, frac)));
+    };
+    const onUp = () => setDragging(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragging]);
+
+  // Right pane: the local clone opened in the chrome-free explorer embed with
+  // the Claude template — the editing surface over the files the watcher
+  // pushes. Stable across pushes (only the workbench iframe reloads).
+  const editorSrc = dir
+    ? EMBED_PREFIX +
+      dir
+        .split("/")
+        .filter(Boolean)
+        .map(encodeURIComponent)
+        .join("/") +
+      "?_mode=claude"
+    : null;
 
   const frameSrc =
     baseUrl && handle
@@ -180,18 +221,60 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {sync?.push_state === "error" && sync.error && <ErrorBanner>{sync.error}</ErrorBanner>}
-      <div style={{ flex: 1, minHeight: 0 }}>
-        {frameSrc ? (
-          <iframe
-            key={frameEpoch}
-            ref={frameRef}
-            src={frameSrc}
-            title={`Workbench: ${name}`}
-            style={{ width: "100%", height: "100%", border: 0 }}
-          />
-        ) : (
-          !error && <p style={{ padding: 16 }}>Loading workbench…</p>
-        )}
+      <div
+        ref={rowRef}
+        style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
+      >
+        <div
+          style={{
+            flex: `0 0 ${leftFrac * 100}%`,
+            minWidth: 0,
+            pointerEvents: dragging ? "none" : "auto",
+          }}
+        >
+          {frameSrc ? (
+            <iframe
+              key={frameEpoch}
+              ref={frameRef}
+              src={frameSrc}
+              title={`Workbench: ${name}`}
+              style={{ width: "100%", height: "100%", border: 0 }}
+            />
+          ) : (
+            !error && <p style={{ padding: 16 }}>Loading workbench…</p>
+          )}
+        </div>
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          style={{
+            flex: "0 0 6px",
+            cursor: "col-resize",
+            background: dragging
+              ? "rgba(100,140,255,0.5)"
+              : "rgba(128,128,128,0.25)",
+          }}
+          title="Drag to resize"
+        />
+        <div
+          style={{
+            flex: 1,
+            minWidth: 0,
+            pointerEvents: dragging ? "none" : "auto",
+          }}
+        >
+          {editorSrc ? (
+            <iframe
+              src={editorSrc}
+              title={`Edit: ${name}`}
+              style={{ width: "100%", height: "100%", border: 0 }}
+            />
+          ) : (
+            !error && <p style={{ padding: 16 }}>Loading editor…</p>
+          )}
+        </div>
       </div>
     </div>
   );
