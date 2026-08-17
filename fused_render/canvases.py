@@ -65,6 +65,9 @@ LOGIN_CHILD_TIMEOUT = 600.0
 DEBOUNCE_S = 1.5
 # Folder fingerprint poll cadence.
 SCAN_INTERVAL_S = 1.0
+# Remote-change poll cadence (a `pull --dry-run` CLI call, so much slower
+# than the local fingerprint walk). Only runs while the local clone is clean.
+PULL_POLL_S = 10.0
 
 # Canvas names are `[a-zA-Z0-9_]` per the CLI's own push rule; enforcing it
 # here also keeps the name safe as a path segment and an argv element.
@@ -517,8 +520,11 @@ class _SyncManager:
         self.push_state = "idle"  # idle | pending | pushing | error
         self.last_push_at: float | None = None
         self.last_error: str | None = None
+        self.pull_seq = 0
+        self.last_pull_at: float | None = None
         self._fingerprint = self._take_fingerprint()
         self._dirty_since: float | None = None
+        self._last_pull_poll = time.time()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -588,6 +594,53 @@ class _SyncManager:
         self.last_error = None
         self.push_state = "idle"
 
+    def _pull_if_remote_changed(self) -> None:
+        """Downstream leg of the two-way sync.
+
+        Only ever called with a CLEAN local clone (no unpushed edits), where
+        local == remote is the steady state — so any diff a `pull --dry-run`
+        reports means the REMOTE moved (edits made in the hosted workbench),
+        and a `pull --force` brings them down. A local edit landing between
+        the dry-run and the force pull is re-checked right before applying;
+        when in doubt the local side wins (it will push, which replaces the
+        remote set wholesale — last writer wins, local preferred).
+        """
+        cli = fused_cli()
+        if cli is None:
+            return
+        base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
+        try:
+            probe = subprocess.run(
+                [*cli.command, *base, "--dry-run"],
+                capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                env=child_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+        if probe.returncode != 0:
+            return  # transient (network, auth) — the next poll retries
+        # canvas_pull.py's up-to-date sentinel; anything else is a diff.
+        if "already up to date" in (probe.stdout or ""):
+            return
+        # Re-check: did a local edit land while the dry-run ran? Local wins.
+        if self._take_fingerprint() != self._fingerprint:
+            return
+        try:
+            applied = subprocess.run(
+                [*cli.command, *base, "--force"],
+                capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                env=child_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+        if applied.returncode != 0:
+            return
+        # The pull's writes are the new baseline, not local changes to push.
+        self._fingerprint = self._take_fingerprint()
+        self._dirty_since = None
+        self.pull_seq += 1
+        self.last_pull_at = time.time()
+
     def _run(self) -> None:
         while not self.stop_event.wait(SCAN_INTERVAL_S):
             with self.pause_lock:
@@ -603,6 +656,14 @@ class _SyncManager:
                 continue
             if self._dirty_since is not None and time.time() - self._dirty_since >= DEBOUNCE_S:
                 self._push()
+                continue
+            if (
+                self._dirty_since is None
+                and self.push_state == "idle"
+                and time.time() - self._last_pull_poll >= PULL_POLL_S
+            ):
+                self._last_pull_poll = time.time()
+                self._pull_if_remote_changed()
 
     def status(self) -> dict:
         return {
@@ -612,6 +673,8 @@ class _SyncManager:
             "push_state": self.push_state,
             "push_seq": self.push_seq,
             "last_push_at": self.last_push_at,
+            "pull_seq": self.pull_seq,
+            "last_pull_at": self.last_pull_at,
             "error": self.last_error,
         }
 
@@ -667,6 +730,6 @@ def api_canvases_sync_status(name: str = ""):
     manager = _sync_manager(name, create=False)
     if manager is None:
         return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
-                "last_push_at": None, "error": None,
-                "dir": _canvas_dir(name)}
+                "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
+                "error": None, "dir": _canvas_dir(name)}
     return manager.status()

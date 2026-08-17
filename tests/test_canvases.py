@@ -47,10 +47,22 @@ def main():
         json.dump(scenario.get("canvases", ["alpha", "beta"]), sys.stdout)
         return
     if plain[:2] == ["canvas", "pull"]:
+        if "--dry-run" in plain:
+            # canvas_pull.py prints this sentinel when local == remote;
+            # anything else means the pull would change files.
+            sys.stdout.write(
+                scenario.get(
+                    "pull_dry",
+                    "Nothing to do: already up to date (local files match the canvas).",
+                )
+            )
+            return
         out = plain[plain.index("-o") + 1]
         os.makedirs(out, exist_ok=True)
-        with open(os.path.join(out, "canvas.toml"), "w") as f:
-            f.write('type = "canvas"\n')
+        files = scenario.get("pull_files", {"canvas.toml": 'type = "canvas"\n'})
+        for rel, content in files.items():
+            with open(os.path.join(out, rel), "w") as f:
+                f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
         return
@@ -274,6 +286,57 @@ def test_sync_watches_debounces_and_pushes(harness, monkeypatch):
 
     stop = harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
     assert stop.json()["stopped"] is True
+
+
+def test_sync_pulls_remote_changes_when_clean(harness, monkeypatch):
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    # Remote moves: the dry-run stops reporting up-to-date and the next force
+    # pull delivers a new file.
+    harness.set_scenario(
+        {
+            "pull_dry": "would update: remote_udf.py",
+            "pull_files": {
+                "canvas.toml": 'type = "canvas"\n',
+                "remote_udf.py": "print('from workbench')\n",
+            },
+        }
+    )
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["pull_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status and status["pull_seq"] >= 1, status
+    assert (harness.root / "alpha" / "remote_udf.py").exists()
+    # The pull's own writes are baseline, not local changes — no echo push.
+    time.sleep(0.4)
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_sync_pull_poll_skips_when_up_to_date(harness, monkeypatch):
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    time.sleep(0.6)
+    pulls = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]]
+    # Dry-run probes happened, but nothing was applied (no --force beyond the
+    # initial clone) and pull_seq stayed 0.
+    assert any("--dry-run" in c for c in pulls)
+    assert len([c for c in pulls if "--force" in c]) == 1  # the clone only
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["pull_seq"] == 0
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
 def test_sync_push_failure_reports_error(harness, monkeypatch):

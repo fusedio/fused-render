@@ -163,7 +163,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         ? "Local changes — push queued"
         : sync?.push_state === "error"
           ? "Push failed"
-          : sync?.last_push_at
+          : sync?.last_push_at || sync?.last_pull_at
             ? "Synced"
             : "Watching";
 

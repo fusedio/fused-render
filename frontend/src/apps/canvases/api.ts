@@ -33,6 +33,9 @@ export interface SyncStatus {
   push_state: "idle" | "pending" | "pushing" | "error";
   push_seq: number;
   last_push_at: number | null;
+  /** Increments when the watcher pulls remote (workbench-side) changes down. */
+  pull_seq: number;
+  last_pull_at: number | null;
   error: string | null;
 }
 
