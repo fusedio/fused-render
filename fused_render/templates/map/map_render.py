@@ -7,9 +7,11 @@ service crash cannot produce recurring terminal windows.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -23,10 +25,13 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "map_render.py")
 
 HERE = Path(__file__).resolve().parent
-if str(HERE) not in sys.path:
-    sys.path.insert(0, str(HERE))
+SHARED = HERE.parent / "shared"
+for _path in (str(HERE), str(SHARED)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from geo_paths import is_managed_mount, is_remote_path, normalize_remote_path
+from procutil import clean_env, file_lock, pid_alive, spawn_python
 
 CACHE_DIR = Path(
     os.environ.get(
@@ -38,10 +43,8 @@ ARTIFACT_DIR = CACHE_DIR / "artifacts"
 DAEMON = HERE / "daemon.py"
 WORKER = HERE / "worker.py"
 LOG = CACHE_DIR / "daemon.log"
-START_LOCK = CACHE_DIR / "daemon-start.lock"
+START_LOCK = CACHE_DIR / "daemon.spawn.lock"
 SERVICE_START_TIMEOUT = 120
-START_LOCK_STALE_AFTER = SERVICE_START_TIMEOUT + 30
-FOLLOWER_WAIT_TIMEOUT = SERVICE_START_TIMEOUT + 10
 BACKEND_FILES = (
     DAEMON,
     WORKER,
@@ -139,7 +142,7 @@ def _service_url(state: dict, path: str) -> str:
     return f"http://127.0.0.1:{int(state['port'])}{path}{separator}t={token}"
 
 
-def _ping(state: dict, timeout: float = 1.0) -> bool:
+def _ping(state: dict, timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(
             _service_url(state, "/ping"), timeout=timeout
@@ -160,59 +163,113 @@ def _wait_for_service(timeout: float) -> dict | None:
     return None
 
 
-def _claim_start_lock() -> bool:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def _retire(state: dict) -> None:
+    """Ask a superseded service to exit, then make sure it did."""
     try:
-        descriptor = os.open(
-            START_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+        request = urllib.request.Request(
+            _service_url(state, "/shutdown"), data=b"", method="POST"
         )
-    except FileExistsError:
-        try:
-            if time.time() - START_LOCK.stat().st_mtime > START_LOCK_STALE_AFTER:
-                START_LOCK.unlink()
-                return _claim_start_lock()
-        except OSError:
+        with urllib.request.urlopen(request, timeout=5):
             pass
-        return False
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(f"{os.getpid()}\n")
-    return True
+        return
+    except Exception:
+        pass
+    pid = int(state.get("pid") or 0)
+    if pid and pid_alive(pid):
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                capture_output=True,
+                **_process_options(),
+            )
+        else:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGTERM)
+
+
+def _retire_superseded() -> None:
+    """Shut down services left behind by an earlier backend version.
+
+    The service has no idle exit — every tile URL a page holds names its port,
+    so exiting on its own would break a live map. The cost of that is a process
+    that outlives its own code: on upgrade the version-scoped state file changes
+    name and the old daemon, still holding a warm geospatial runtime, would sit
+    there until the machine restarts. Nobody else will ever reuse it, so whoever
+    starts the replacement retires it.
+
+    Only services started from this same copy of the template are ours to
+    retire. A second checkout can share this cache directory and its daemon is a
+    peer, not a leftover — killing it would break whatever map it is serving.
+    """
+    for path in CACHE_DIR.glob("daemon-*.json"):
+        if path == STATE:
+            continue
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            path.unlink(missing_ok=True)
+            continue
+        if state.get("home") and state["home"] != str(HERE):
+            continue
+        if pid_alive(int(state.get("pid") or 0)):
+            _retire(state)
+        path.unlink(missing_ok=True)
+
+
+def _spawn_daemon() -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    command = [
+        spawn_python(),
+        str(DAEMON),
+        "--state",
+        str(STATE),
+        "--cache",
+        str(CACHE_DIR),
+        "--version",
+        VERSION,
+    ]
+    # DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP (NOT CREATE_NO_WINDOW — the two
+    # combined fail to spawn on Windows) fully severs the daemon from this
+    # short-lived runPython sandbox. Left coupled, the just-exited sandbox process
+    # keeps a handle on the backend's per-call temp dir long enough for its
+    # cleanup rmtree to fail, which the engine reports as an internal error and a
+    # good render is discarded. start_new_session is the POSIX equivalent.
+    detach = (
+        {
+            "creationflags": subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+        }
+        if sys.platform == "win32"
+        else {"start_new_session": True}
+    )
+    with LOG.open("ab") as log:
+        subprocess.Popen(
+            command,
+            cwd=HERE,
+            stdout=log,
+            stderr=log,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+            env=clean_env(),
+            **detach,
+        )
 
 
 def _ensure_service() -> dict:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     state = _read_state()
     if state and _ping(state):
         return state
-
-    owner = _claim_start_lock()
-    if not owner:
-        state = _wait_for_service(FOLLOWER_WAIT_TIMEOUT)
-        if state:
+    # A single kernel-owned lock serializes spawns across every concurrent
+    # render, so a slow cold start (heavy geo imports) can never orphan a second
+    # daemon: a waiter blocks here, then reuses the daemon the winner started.
+    # The lock is released the instant its holder exits — no stale lock to steal.
+    with file_lock(str(START_LOCK), timeout=SERVICE_START_TIMEOUT + 10):
+        state = _read_state()
+        if state and _ping(state):
             return state
-        owner = _claim_start_lock()
-    if not owner:
-        raise RuntimeError("map service startup is already in progress")
-
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        command = [
-            sys.executable,
-            str(DAEMON),
-            "--state",
-            str(STATE),
-            "--cache",
-            str(CACHE_DIR),
-            "--version",
-            VERSION,
-        ]
-        with LOG.open("ab") as log:
-            subprocess.Popen(
-                command,
-                cwd=HERE,
-                stdout=log,
-                stderr=log,
-                **_process_options(),
-            )
+        _retire_superseded()
+        _spawn_daemon()
         state = _wait_for_service(SERVICE_START_TIMEOUT)
         if state:
             return state
@@ -222,11 +279,6 @@ def _ensure_service() -> dict:
         except OSError:
             pass
         raise RuntimeError(f"map service did not start\n{tail}")
-    finally:
-        try:
-            START_LOCK.unlink()
-        except OSError:
-            pass
 
 
 def _post(state: dict, path: str, payload: dict, timeout: float = 300) -> dict:
@@ -309,6 +361,7 @@ def main(
     source_origin: str = "",
     render_mode: str = "",
     category_colors: str = "",
+    stretch: str = "",
 ):
     if warmup:
         try:
@@ -364,6 +417,8 @@ def main(
             pass
     if render_mode:
         options["render_mode"] = render_mode
+    if stretch:
+        options["stretch"] = stretch
     if category_colors:
         try:
             options["category_colors"] = json.loads(category_colors)

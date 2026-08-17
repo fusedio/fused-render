@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
+from blob_tokens import TOKENS, is_signed, refused_access
 from geo_paths import (
     is_http_url,
     is_managed_mount,
@@ -120,7 +121,11 @@ def _gdal_env(locator: str):
         "GDAL_HTTP_MULTIRANGE": "YES",
         "GDAL_HTTP_MAX_RETRY": "2",
         "GDAL_HTTP_RETRY_DELAY": "0.2",
-        "CPL_VSIL_CURL_CHUNK_SIZE": str(64 << 10),
+        # No CPL_VSIL_CURL_CHUNK_SIZE. GDAL rounds every read down to a chunk
+        # boundary, so a larger chunk is a larger minimum transfer for the one
+        # block a tile actually wants — it is a knob for sequential scans, not
+        # for random tile reads. Raising it to 64KB measured 26% slower than
+        # leaving GDAL's 16KB default alone.
         "CPL_VSIL_CURL_CACHE_SIZE": str(16 << 20),
         "GDAL_NUM_THREADS": "ALL_CPUS",
     }
@@ -135,7 +140,9 @@ def _gdal_env(locator: str):
 def _source_size(source: str) -> int | None:
     if is_http_url(source):
         try:
-            request = urllib.request.Request(source, method="HEAD")
+            request = urllib.request.Request(
+                TOKENS.signed_if_needed(source), method="HEAD"
+            )
             with urllib.request.urlopen(request, timeout=15) as response:
                 value = response.headers.get("Content-Length")
             return int(value) if value else None
@@ -145,6 +152,19 @@ def _source_size(source: str) -> int | None:
         return os.path.getsize(source)
     except OSError:
         return None
+
+
+def _read_failure_message(source: str, error: Exception) -> str:
+    detail = f"{type(error).__name__}: {error}"
+    if refused_access(detail):
+        # "range transport" reads as our bug. A 409 from an Azure account with
+        # public access disabled is the origin turning us away, and the user's
+        # next move is credentials, not a bug report.
+        return (
+            f"The source refused this request ({detail}). It needs credentials: "
+            "either a URL signed with a read token, or a public copy of the file."
+        )
+    return f"Raster metadata could not be read through the range transport: {detail}"
 
 
 def _source_fingerprint(
@@ -183,39 +203,80 @@ def _ranges(data: Any) -> list[list[float]]:
 
 
 def _infer_background(dataset: Any, indexes: list[int]) -> float | None:
-    """Infer a zero-filled collar without treating valid zero data as nodata."""
+    """Infer a zero-filled collar without treating valid zero data as nodata.
+
+    Reads ONE decimated view of the whole raster — GDAL serves it from the
+    overview pyramid — instead of sampling individual points. Point sampling
+    reads at full resolution, so answering this yes/no question about the
+    collar cost 64 serial full-res block fetches; over HTTP that alone was ~20s
+    of a remote COG's describe, dwarfing every other step combined.
+    """
     import numpy as np
 
-    edge_points: list[tuple[int, int]] = []
-    samples_per_edge = 12
-    for index in range(samples_per_edge):
-        column = round(index * (dataset.width - 1) / (samples_per_edge - 1))
-        row = round(index * (dataset.height - 1) / (samples_per_edge - 1))
-        edge_points.extend(
-            [
-                (0, column),
-                (dataset.height - 1, column),
-                (row, 0),
-                (row, dataset.width - 1),
-            ]
-        )
-    interior_points = [
-        (round(row * dataset.height / 5), round(column * dataset.width / 5))
-        for row in range(1, 5)
-        for column in range(1, 5)
-    ]
+    size = 256
+    scale = max(1.0, max(dataset.width, dataset.height) / size)
+    width = max(3, round(dataset.width / scale))
+    height = max(3, round(dataset.height / scale))
+    data = dataset.read(indexes, out_shape=(len(indexes), height, width))
 
-    def read(points: list[tuple[int, int]]) -> Any:
-        coordinates = [dataset.xy(row, column) for row, column in points]
-        return np.asarray(list(dataset.sample(coordinates, indexes=indexes)))
-
-    edges = read(edge_points)
-    interior = read(interior_points)
-    edge_zero = np.all(edges == 0, axis=1)
-    interior_nonzero = np.any(interior != 0, axis=1)
+    border = np.concatenate(
+        [data[:, 0, :], data[:, -1, :], data[:, :, 0], data[:, :, -1]], axis=1
+    )
+    interior = data[:, 1:-1, 1:-1]
+    edge_zero = np.all(border == 0, axis=0)
+    interior_nonzero = np.any(interior != 0, axis=0)
     if float(np.mean(edge_zero)) >= 0.9 and float(np.mean(interior_nonzero)) >= 0.25:
         return 0.0
     return None
+
+
+def _render_indexes(dataset: Any) -> list[int]:
+    """Band indexes to draw, as red/green/blue when the file says which is which.
+
+    Taking bands 1, 2, 3 positionally renders a BGRA or alpha-first file with
+    red and blue swapped. GDAL records the role of each band, so use it and keep
+    the positional order only as the fallback for files that declare nothing.
+    """
+    from rasterio.enums import ColorInterp
+
+    if dataset.count < 3:
+        return [1]
+    wanted = (ColorInterp.red, ColorInterp.green, ColorInterp.blue)
+    interpretations = list(dataset.colorinterp)
+    if all(role in interpretations for role in wanted):
+        return [interpretations.index(role) + 1 for role in wanted]
+    return [1, 2, 3]
+
+
+def _is_true_color(dataset: Any, indexes: list[int]) -> bool:
+    """Whether these bands already hold final display values.
+
+    Three 8-bit bands are a finished picture — an aerial "visual" product, a
+    drone orthophoto, a scanned map — so they are shown as they are. Anything
+    wider (16-bit multispectral, float reflectance) is unreadable without a
+    stretch. This is GDAL's and QGIS's rule for Byte rasters.
+    """
+    return len(indexes) == 3 and all(
+        dataset.dtypes[index - 1] == "uint8" for index in indexes
+    )
+
+
+def _native_ranges(bands: int) -> list[list[float]]:
+    return [[0.0, 255.0]] * bands
+
+
+def _is_native_ranges(ranges: list[list[float]]) -> bool:
+    return all(lo == 0.0 and hi == 255.0 for lo, hi in ranges)
+
+
+def _has_own_mask(dataset: Any) -> bool:
+    """Whether the file already carries its own validity mask or alpha band."""
+    from rasterio.enums import MaskFlags
+
+    return any(
+        MaskFlags.per_dataset in flags or MaskFlags.alpha in flags
+        for flags in dataset.mask_flag_enums
+    )
 
 
 def _dtype_ranges(dtypes: tuple[str, ...], bands: int) -> list[list[float]]:
@@ -255,6 +316,8 @@ class RasterSource:
     inferred_nodata: float | None
     colormap: str
     rescale: list[list[float]]
+    indexes: list[int] = field(default_factory=lambda: [1])
+    true_color: bool = False
     auto_rescale: bool = True
     render_mode: str = "single"
     auto_render_mode: bool = True
@@ -370,17 +433,42 @@ class RasterEngine:
         self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
         self._transparent: bytes | None = None
 
+    @staticmethod
+    def _needs_relay(url: str) -> bool:
+        """Whether GDAL has to be kept away from *url* by the loopback relay.
+
+        GDAL looks for sidecars and reduced-resolution overviews by appending
+        suffixes — `.aux.xml`, `.ovr`, NITF's `.rv1`…`.rv7` — to the WHOLE
+        locator, query string included. An endpoint that keys off a query
+        parameter and ignores the rest answers those probes with the same
+        raster, so GDAL opens it again, probes `.rv2.rv1`, and recurses until it
+        runs out of memory: a 2MB NITF measured 868 requests deep and 15GB
+        resident. Two shapes are safe and go straight to GDAL — a clean object
+        URL, where the suffix is part of the key and 404s, and a signed URL,
+        where it invalidates the signature (Azure answers 403). Anything else
+        carrying a query string is unknowable, so it takes the relay, which
+        gives GDAL a filename path whose probes the relay itself 404s.
+        """
+        if not urlsplit(url).query:
+            return False
+        return not is_signed(url)
+
     def locator(self, source: str, target: str) -> str:
         source = normalize_remote_path(source)
         if is_vsi_path(source):
             return source
         if not is_http_url(source):
             return source
+        if not self._needs_relay(source):
+            # Clean object URL, signed or not: hand it to GDAL directly so curl
+            # streams range reads over one keep-alive connection with its chunk
+            # cache. Routing these through the relay below instead cost a fresh
+            # urlopen — a new TCP+TLS handshake to the origin — on every range
+            # read, turning a remote COG open into tens of seconds.
+            return f"/vsicurl/{TOKENS.signed_if_needed(source)}"
 
-        # GDAL appends auxiliary-file suffixes to the URL it is given.  With
-        # `/api/fs/raw?path=scene.ntf`, `.rv1` lands after the query string and
-        # the endpoint serves scene.ntf again, recursively.  Give GDAL a real
-        # filename path and relay its Range requests to the opaque source URL.
+        # Give GDAL a real filename path and relay its Range requests to the
+        # opaque source URL (see `_needs_relay`).
         source_key = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
         filename = Path(target.replace("\\", "/")).name
         if not filename:
@@ -481,7 +569,7 @@ class RasterEngine:
             source = _raw_url(origin, target) if origin else os.path.abspath(target)
 
         try:
-            return self._describe(
+            return self._describe_signed(
                 target=target,
                 source=source,
                 artifact_id=str(req.get("artifact_id") or ""),
@@ -498,13 +586,43 @@ class RasterEngine:
                     "stats": {},
                     "style": {},
                     "warnings": [],
-                    "message": (
-                        "Raster metadata could not be read through the range "
-                        f"transport: {type(error).__name__}: {error}"
-                    ),
+                    "message": _read_failure_message(source, error),
                     "detected_type": "raster",
                 }
             return None
+
+    def _open_path(self, record: RasterSource, locator: str) -> str:
+        """The locator to open now, carrying a current read token if one is due.
+
+        A signed URL recorded while describing the raster expires within the
+        hour, so tiles would start failing while the layer is still on screen.
+        Derivatives are local files and are handed back untouched.
+        """
+        if locator != record.locator:
+            return locator
+        return self.locator(record.source, record.target)
+
+    def _describe_signed(
+        self, target: str, source: str, artifact_id: str, opts: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Describe *source*, retrying once with a read token if it refuses us.
+
+        Planetary Computer's storage accounts answer anonymous requests with
+        409, so the first open of an HLS or Sentinel scene is expected to fail;
+        `locator` signs every later read, tiles included.
+        """
+        arguments = {
+            "target": target,
+            "source": source,
+            "artifact_id": artifact_id,
+            "opts": opts,
+        }
+        try:
+            return self._describe(**arguments)
+        except Exception as error:
+            if not TOKENS.learn(source, f"{type(error).__name__}: {error}"):
+                raise
+        return self._describe(**arguments)
 
     def _describe(
         self, target: str, source: str, artifact_id: str, opts: dict[str, Any]
@@ -558,15 +676,19 @@ class RasterEngine:
             image_structure = dataset.tags(ns="IMAGE_STRUCTURE")
             block_shapes = [list(shape) for shape in dataset.block_shapes]
             count = dataset.count
-            indexes = (1, 2, 3) if count >= 3 else 1
-            index_list = [1, 2, 3] if count >= 3 else [1]
-            render_bands = 3 if count >= 3 else 1
+            index_list = _render_indexes(dataset)
+            indexes = tuple(index_list) if len(index_list) > 1 else index_list[0]
+            render_bands = len(index_list)
+            true_color = _is_true_color(dataset, index_list)
+            # A declared mask or alpha band already answers "which pixels are
+            # real", so there is nothing to infer from the collar.
             inferred_nodata = (
                 _infer_background(dataset, index_list)
-                if dataset.nodata is None
+                if dataset.nodata is None and not _has_own_mask(dataset)
                 else None
             )
             requested = opts.get("rescale")
+            stretch = str(opts.get("stretch") or "")
             auto_rescale = True
             sample_data = None
             if (
@@ -576,6 +698,8 @@ class RasterEngine:
             ):
                 rescale = [[float(requested[0]), float(requested[1])]] * render_bands
                 auto_rescale = False
+            elif true_color and stretch != "auto":
+                rescale = _native_ranges(render_bands)
             elif overviews:
                 with Reader(locator) as reader:
                     preview = reader.preview(indexes=indexes, max_size=256)
@@ -636,7 +760,10 @@ class RasterEngine:
                 with Reader(locator) as reader:
                     minzoom, maxzoom = int(reader.minzoom), int(reader.maxzoom)
 
-            source_size = _source_size(source)
+            # The size only decides whether to build a local pyramid, which a
+            # source that already has overviews never needs. Asking for it costs
+            # a separate HTTP HEAD, so skip it when the answer cannot matter.
+            source_size = None if overviews and is_remote_path(source) else _source_size(source)
             fingerprint = _source_fingerprint(
                 target, source, source_size, locator
             )
@@ -662,6 +789,8 @@ class RasterEngine:
                 inferred_nodata=inferred_nodata,
                 colormap=str(opts.get("colormap") or "viridis"),
                 rescale=rescale,
+                indexes=index_list,
+                true_color=true_color,
                 auto_rescale=auto_rescale,
                 render_mode=render_mode,
                 auto_render_mode=(requested_mode == ""),
@@ -722,9 +851,9 @@ class RasterEngine:
                     existing.categories = record.categories
                     existing.category_colors = record.category_colors
                     existing.auto_render_mode = record.auto_render_mode
-                if not record.auto_rescale:
+                if not record.auto_rescale or stretch:
                     existing.rescale = record.rescale
-                    existing.auto_rescale = False
+                    existing.auto_rescale = record.auto_rescale
                 if (
                     not existing.has_overviews
                     and not existing.preview_path
@@ -763,6 +892,13 @@ class RasterEngine:
 
     @staticmethod
     def _warnings(record: RasterSource) -> list[str]:
+        # Signing fetched a token from a third party on the user's behalf, so
+        # say so rather than doing it quietly.
+        if TOKENS.needs_signing(record.source):
+            return [
+                "This source does not allow anonymous access. It was opened "
+                "with a temporary read token from Microsoft Planetary Computer."
+            ]
         if not record.has_overviews:
             return [
                 "This raster has no overview pyramid. Detailed tiles are read "
@@ -775,7 +911,7 @@ class RasterEngine:
     def descriptor(
         self, record: RasterSource, artifact_id: str, warnings: list[str] | None = None
     ) -> dict[str, Any]:
-        bands = 3 if record.count >= 3 else 1
+        bands = len(record.indexes)
         categorical = record.render_mode == "categorical"
         stats = [
             {
@@ -821,11 +957,14 @@ class RasterEngine:
                 "band_stats": stats,
                 "render_mode": record.render_mode,
                 "categories": record.categories,
+                "indexes": list(record.indexes),
+                "true_color": record.true_color,
             },
             "style": {
                 "opacity": 0.9,
                 "colormap": record.colormap,
-                "rescale": record.rescale[0] if record.count < 3 and not categorical else None,
+                "stretch": "native" if _is_native_ranges(record.rescale) else "auto",
+                "rescale": record.rescale[0] if bands == 1 and not categorical else None,
                 "render_mode": record.render_mode,
                 "category_colors": {
                     str(value): list(color) for value, color in record.category_colors.items()
@@ -919,16 +1058,15 @@ class RasterEngine:
             if record.preview_path is None:
                 preview_temporary.unlink(missing_ok=True)
                 preview_stage.unlink(missing_ok=True)
-                with _gdal_env(record.locator), rasterio.open(record.locator) as source:
+                source_path = self._open_path(record, record.locator)
+                with _gdal_env(source_path), rasterio.open(source_path) as source:
                     scale = max(
                         1.0,
                         max(source.width, source.height) / PREVIEW_MAX_SIZE,
                     )
                     width = max(1, round(source.width / scale))
                     height = max(1, round(source.height / scale))
-                    indexes = (
-                        [1, 2, 3] if source.count >= 3 else [1]
-                    )
+                    indexes = list(record.indexes)
                     transform = source.transform * Affine.scale(
                         source.width / width, source.height / height
                     )
@@ -1029,9 +1167,10 @@ class RasterEngine:
                 )
 
             temporary.unlink(missing_ok=True)
-            with _gdal_env(record.locator):
+            optimize_path = self._open_path(record, record.locator)
+            with _gdal_env(optimize_path):
                 rio_copy(
-                    record.locator,
+                    optimize_path,
                     temporary,
                     driver="COG",
                     BLOCKSIZE=512,
@@ -1108,6 +1247,7 @@ class RasterEngine:
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)
             revision = locator
+            open_path = self._open_path(record, locator)
             categorical = record.render_mode == "categorical"
             key = (
                 source_id, revision, z, x, y, record.colormap,
@@ -1118,8 +1258,11 @@ class RasterEngine:
             if cached is not None:
                 self.tile_cache.move_to_end(key)
                 return cached
-            indexes = (1, 2, 3) if record.count >= 3 else 1
+            indexes = (
+                tuple(record.indexes) if len(record.indexes) > 1 else record.indexes[0]
+            )
             ranges = record.rescale
+            native = record.true_color and _is_native_ranges(ranges)
             colormap_name = record.colormap
             inferred_nodata = record.inferred_nodata
             category_colors = record.category_colors
@@ -1127,7 +1270,7 @@ class RasterEngine:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
-                with _gdal_env(locator), self.readers.borrow(locator) as reader:
+                with _gdal_env(open_path), self.readers.borrow(open_path) as reader:
                     image = reader.tile(
                         x,
                         y,
@@ -1155,8 +1298,9 @@ class RasterEngine:
             if categorical and category_colors:
                 png = image.render(img_format="PNG", colormap=category_colors)
             else:
-                image.rescale(ranges)
-                color = cmap.get(colormap_name) if record.count < 3 else None
+                if not native:
+                    image.rescale(ranges)
+                color = cmap.get(colormap_name) if len(record.indexes) == 1 else None
                 png = image.render(img_format="PNG", colormap=color)
         except TileOutsideBounds:
             png = self.transparent_tile()

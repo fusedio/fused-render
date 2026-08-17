@@ -17,6 +17,7 @@ dist/
 *.egg-info/
 .DS_Store
 scripts/vendor-codemirror/node_modules/
+scripts/vendor-cog/node_modules/
 scripts/vendor-sci/node_modules/
 scripts/vendor-three/node_modules/
 .claude/worktrees/
