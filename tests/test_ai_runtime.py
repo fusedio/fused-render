@@ -18,6 +18,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 
 import pytest
 from fastapi.testclient import TestClient
@@ -4181,9 +4182,158 @@ def test_the_memo_is_dropped_when_a_repo_lands_rather_than_when_a_timer_says_so(
     """The TTL is a BACKSTOP, not the mechanism. A read is invalidated by the cache
     directory's own signature, so a finished download is visible immediately even
     with the clock frozen — a memo that could only expire on time would hide the
-    model the user just fetched, which is the bug this whole change fixes."""
+    model the user just fetched, which is the bug this whole change fixes.
+
+    `ai_models._now`, never `ai_models.time.time`: `ai_models.time` IS the stdlib
+    module, so patching an attribute on it freezes the clock for the whole PROCESS —
+    and `jobs.py` stamps five fields off `time.time()`, the supervisor two more, from
+    daemon threads that keep running right through this test.
+    """
     frozen = time.time()
-    monkeypatch.setattr(ai_models.time, "time", lambda: frozen)
+    monkeypatch.setattr(ai_models, "_now", lambda: frozen)
     assert _entry(client, registry.TEXT_GENERATION, "some-org/just-landed") is None
     _text_repo(hub, "some-org/just-landed", size=2048)
     assert _entry(client, registry.TEXT_GENERATION, "some-org/just-landed") is not None
+
+
+# -- and only models the SERVING engine can load ---------------------------------
+# The catalog's lists are per RUNNER, not per capability (AI-11a), because one
+# capability's backends read mutually unloadable formats. A cached repo injected on
+# its capability alone breaks that invariant inside the same array — and both
+# examples below are repos a real user really has on a real disk.
+
+
+def test_a_speech_model_NEITHER_speech_engine_reads_is_not_offered(client, hub):
+    """`openai/whisper-large-v3` — the repo everyone reaches for, in transformers
+    format, which no shipping speech runner opens. Its capability is beyond doubt
+    (`pipeline_tag: automatic-speech-recognition`), so a capability-only union puts
+    it straight into every page's speech picker and the load is then refused by
+    name. This is the exact trap the SKILL.md pitfall warns page authors about; the
+    payload must not be the thing that sets it."""
+    repo_id = "openai/whisper-large-v3"
+    assert repo_id not in catalog.all_suggested_ids()
+    repo = _cached_repo(hub, repo_id, files=("model.safetensors",),
+                        config={"architectures": ["WhisperForConditionalGeneration"]})
+    (repo / "snapshots" / "c0ffee" / "README.md").write_text(
+        "---\npipeline_tag: automatic-speech-recognition\n---\n")
+    # The fixture defends itself: if the capability stopped being inferred, the
+    # assertion below would pass for the wrong reason entirely.
+    cached = next(m for m in ai_models.cached_models() if m.repo_id == repo_id)
+    assert cached.capability == registry.SPEECH_TO_TEXT
+    assert registry.for_capability(registry.SPEECH_TO_TEXT).code not in cached.loaders
+    assert _entry(client, registry.SPEECH_TO_TEXT, repo_id) is None
+
+
+def test_a_text_model_the_CHOSEN_engine_cannot_open_is_not_offered(
+        client, hub, monkeypatch):
+    """The second half, and the one a preference can create out of nothing. An MLX
+    conversion is a perfectly good text model that the Transformers runner cannot
+    read — so on a Mac switched to Transformers on the Engines tab it is an unusable
+    download, and D293's whole point is that the list moves when the preference
+    does. It must move for the cached half too."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    repo_id = "mlx-community/Qwen3-8B-MLX-4bit"
+    assert repo_id not in catalog.all_suggested_ids()
+    # A REAL MLX conversion: the `quantization` block with a `group_size` is what
+    # `formats.py` reads as "mlx-lm packed this", and it is what makes the repo
+    # unreadable to Transformers rather than merely differently named.
+    _cached_repo(hub, repo_id, files=("model.safetensors",),
+                 config={"architectures": ["Qwen3ForCausalLM"],
+                         "quantization": {"bits": 4, "group_size": 64}})
+    assert next(m for m in ai_models.cached_models()
+                if m.repo_id == repo_id).loaders == ("mlx-text",)
+    # With MLX serving text generation this repo IS loadable, and is offered…
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "mlx-text"
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is not None
+    # …and the moment the user picks the engine that cannot read it, it is not.
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "transformers-text")
+    ai_models._CACHED_MODELS.clear()
+    assert registry.for_capability(registry.TEXT_GENERATION).code == "transformers-text"
+    assert _entry(client, registry.TEXT_GENERATION, repo_id) is None
+
+
+def test_a_repo_no_runner_reads_at_all_is_not_offered_either(client, hub):
+    """The empty-`loaders` case, distinct from the wrong-engine one: a GGUF folder
+    with a pipeline_tag has a capability and nothing that opens it."""
+    repo = _cached_repo(hub, "some-org/gguf-with-a-tag", files=("model.gguf",))
+    (repo / "snapshots" / "c0ffee" / "README.md").write_text(
+        "---\npipeline_tag: text-generation\n---\n")
+    cached = next(m for m in ai_models.cached_models()
+                  if m.repo_id == "some-org/gguf-with-a-tag")
+    assert cached.loaders == ()
+    assert _entry(client, registry.TEXT_GENERATION, "some-org/gguf-with-a-tag") is None
+
+
+# -- `loaded` means loaded ---------------------------------------------------------
+
+
+def _park(model, state, alive=True):
+    """A worker in `_workers` at `state`, with a process that is or is not running.
+
+    The table is reached directly because the question is about a state the
+    supervisor passes THROUGH: a real bring-up spends its `venv` phase in a
+    multi-minute `uv sync`, which is not something a test can hold open.
+    """
+    worker = supervisor.Worker(model=model, capability=registry.TEXT_GENERATION,
+                              runner_code="fake-text", state=state)
+    worker.proc = types.SimpleNamespace(poll=lambda: None if alive else 1)
+    with supervisor._lock:
+        supervisor._workers[registry.TEXT_GENERATION] = worker
+    return worker
+
+
+@pytest.mark.parametrize("state", ["starting", "venv", "downloading", "loading", "error"])
+def test_a_worker_that_is_not_READY_is_not_reported_as_loaded(state):
+    """A Worker enters the table at `starting` and passes through a multi-minute
+    `uv sync` and a multi-GB fetch before any weights exist. Reporting every row
+    would light a picker's "loaded" mark the instant Load was pressed and hold it
+    lit through the whole download — the opposite of what the mark promises."""
+    _park("org/slow", state)
+    assert supervisor.resident_models() == set()
+    _park("org/slow", "ready")
+    assert supervisor.resident_models() == {"org/slow"}
+    supervisor.reset()
+
+
+def test_a_worker_that_DIED_after_reaching_ready_is_not_reported_as_loaded():
+    """`state` alone is a claim the worker made before it crashed. `refresh_memory`
+    reaps on exactly this check, and skipping its health PROBE is not a licence to
+    skip the liveness too — otherwise this one path reports a dead model as held
+    forever."""
+    _park("org/crashed", "ready", alive=False)
+    assert supervisor.resident_models() == set()
+    supervisor.reset()
+
+
+# -- what holds when a runner has no curated list at all --------------------------
+
+
+def test_a_runner_with_no_suggestions_offers_the_disk_and_recommends_nothing(
+        client, hub, monkeypatch):
+    """The one case a cached entry reaches index 0, pinned rather than left to be
+    discovered. A newly registered runner has no `SUGGESTIONS` key, so there is
+    nothing curated to put in front of the disk — and `default` is then None, which
+    is the honest answer rather than a promotion.
+
+    This is why `source` is on every entry and why the documented contract is "read
+    `default`, never `models[0]`": a consumer that invents a `models[0]` fallback can
+    see that what it found is uncurated and refuse it.
+    """
+    monkeypatch.setitem(catalog.SUGGESTIONS, "mlx-text", [])
+    _text_repo(hub, "some-org/only-thing-here", size=2048)
+    row = _catalog(client)[registry.TEXT_GENERATION]
+    assert row["default"] is None
+    assert [m["id"] for m in row["models"]] == ["some-org/only-thing-here"]
+    assert row["models"][0]["source"] == "cached"
+
+
+def test_a_cached_entry_never_leads_a_list_that_has_a_curated_one(client, hub):
+    """The invariant that does hold unconditionally, stated as itself: wherever a
+    curated entry exists, index 0 is curated — so `models[0]` and `default` agree
+    and a bare call cannot reach an unvetted repo."""
+    _text_repo(hub, "some-org/aaa-alphabetically-first", size=1)
+    for row in _catalog(client).values():
+        if any(m["source"] == "curated" for m in row["models"]):
+            assert row["models"][0]["source"] == "curated"
+            assert row["models"][0]["id"] == row["default"]

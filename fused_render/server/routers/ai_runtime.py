@@ -240,12 +240,36 @@ def _catalog_with_downloads() -> list[dict]:
     imports the cache reading for `_inferred_capability`, so the join costs it one
     more import and costs `catalog.py` nothing.
 
-    **Cached entries are APPENDED, and cannot reach position 0.** `entry.default`,
-    `catalog.default_for()` and `catalog.for_capability()` keep answering over the
-    curated list alone — read catalog.py's docstring on why smallest-first with the
-    default at position 0 is deliberate. A bare `fused.ai.transcribe()` therefore
-    still loads a vetted model rather than whatever 20GB experiment is on the disk,
-    and the tail is sorted by the same rule so the two halves read as one list.
+    **Every list here is per RUNNER, and the cached half obeys that too.** A
+    capability is NOT enough to put a repo in a list: `catalog.SUGGESTIONS` is keyed
+    by runner precisely because one capability's backends read mutually unloadable
+    formats (AI-11a), and a cached repo injected on its capability alone would break
+    that invariant inside the very same array. `openai/whisper-large-v3` is a speech
+    model that neither shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit`
+    is a text model that Transformers cannot open, so on a Mac switched to
+    Transformers it is an unusable download. So the test is the FORMAT's own answer —
+    is the runner this row resolved among the ones that would accept this snapshot
+    (`CachedModel.loaders`)? — and anything else is left out of `models[]` entirely.
+
+    **Left out, not flagged.** `models[]` has no `available`/`reason` field and every
+    consumer reads it as "things I may offer"; adding one would mean every existing
+    picker keeps offering the unloadable repo until it learns a new key, which is the
+    failure being fixed rather than a fix. The repo is not hidden — the AI Models
+    page's Local tab is the surface for "what is on my disk", it lists the repo, and
+    it already prints WHICH engine reads it and what stands in the way ("text
+    generation is set to Transformers, which does not read this format — switch it on
+    the Engines tab"). A picker cannot say that; a card can.
+
+    **Cached entries are APPENDED.** `entry.default`, `catalog.default_for()` and
+    `catalog.for_capability()` keep answering over the curated list alone — read
+    catalog.py's docstring on why smallest-first with the default at position 0 is
+    deliberate. A bare `fused.ai.transcribe()` therefore still loads a vetted model
+    rather than whatever 20GB experiment is on the disk, and the tail is sorted by the
+    same rule so the two halves read as one list. **The one case where a cached entry
+    reaches index 0 is a runner with no `SUGGESTIONS` key at all**, where there is
+    nothing curated to put in front of it; `default` is then None, which is the
+    honest answer, and `source` is on every entry so that a consumer inventing a
+    `models[0]` fallback can refuse an uncurated one. Read `default`, never `models[0]`.
 
     Two additive fields make the states tellable apart without a second request:
     `source` ("curated" | "cached") says which half an entry came from, and
@@ -289,6 +313,11 @@ def _catalog_with_downloads() -> list[dict]:
             }
             for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)
             if model.repo_id not in curated_ids
+            # The per-runner invariant, enforced: this row's list belongs to the
+            # runner `describe()` resolved, and a repo whose format that runner does
+            # not read has no business in it. See the docstring for both real repos
+            # this drops and why they are dropped rather than flagged.
+            and row["runner"] in model.loaders
         ]
         row["models"] = curated + extra
     return rows

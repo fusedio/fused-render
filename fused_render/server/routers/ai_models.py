@@ -1071,22 +1071,79 @@ class CachedModel(NamedTuple):
     `capability` is what a load of it would be, or None when nothing here can
     tell. `size` is every byte the repo occupies, measured — the same number this
     page's own row reports.
+
+    **`loaders` is not decoration, and a caller that ignores it will offer models
+    that cannot be loaded.** A capability is not enough: in this app a repo belongs
+    to a BACKEND, and the capability's two or three backends read mutually
+    unloadable formats. `openai/whisper-large-v3` is a speech model that NEITHER
+    shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit` is a text model
+    that the Transformers runner cannot open, so on a Mac switched to Transformers
+    it is an unusable download. Both have a perfectly good `capability`. The
+    format's own answer — which runner codes would accept this snapshot, straight
+    from `ai/runners/formats.py`, the same evidence each worker checks before it
+    imports anything — is the half that settles it, so it travels with the row.
     """
 
     repo_id: str
     capability: str | None
     size: int
+    loaders: tuple[str, ...] = ()
 
 
 #: `cached_models()`'s memo: cache dir -> (read time, signature, answer). See the
 #: function for why there are two invalidation conditions rather than one.
 _CACHED_MODELS: dict[str, tuple[float, tuple, list[CachedModel]]] = {}
 
-#: How long a `cached_models()` answer may stand when the cache dir's own
-#: signature has not moved. Short because the cost of being wrong is a model the
-#: user just downloaded missing from a picker, and long enough that a page polling
-#: the catalog does not re-walk a 200GB cache on every render.
-_CACHED_MODELS_TTL = 5.0
+#: How long a `cached_models()` answer may stand when neither the cache dir's own
+#: signature nor any repo's has moved. A BACKSTOP, not the mechanism — the
+#: signatures are what make a finished download visible immediately, so this only
+#: has to bound the one case they cannot see (bytes growing inside a blob that is
+#: already listed), and it is minutes rather than seconds because every second
+#: shaved off it buys another full recursive stat-walk of the whole cache.
+_CACHED_MODELS_TTL = 300.0
+
+#: `_repo_size()`'s memo: repo dir -> (signature, bytes). Unbounded like
+#: `_META_CACHE`, and for the same reason: one small tuple per repo the user has
+#: ever had cached, on a machine where each of those repos is gigabytes.
+_SIZE_CACHE: dict[str, tuple[tuple, int]] = {}
+
+#: The clock, through a module-local name so a test can freeze it WITHOUT freezing
+#: `time.time` for every other thread in the process. `ai_models.time` IS the stdlib
+#: module, so patching an attribute on it is process-wide: `jobs.py` stamps five
+#: fields off `time.time()` and the supervisor stamps `started_at`/`loaded_at`, all
+#: from daemon threads that keep running during a test.
+_now = time.time
+
+
+def _repo_size(repo_dir: str) -> int:
+    """A repo's measured footprint, cached on the directory mtimes that can move it.
+
+    `_scan_repo` recursively scandirs and lstats every blob, snapshot entry and ref
+    — tens of thousands of syscalls on a 60GB cache — and `cached_models()` needs
+    the number only to round it to one decimal GB. So the walk is keyed the way
+    `_META_CACHE` keys its own: on the mtimes of the three directories whose
+    contents decide the answer. A blob arriving renames into `blobs/`; a new
+    revision creates a directory under `snapshots/`; a whole revision going away
+    moves `refs/`. Each of those bumps the mtime of the parent this stats.
+
+    What it deliberately does NOT catch is a file already listed there GROWING —
+    writes do not touch a directory's mtime — which is a download in flight, whose
+    bytes the job row reports live and far better than this ever could. The TTL
+    above is what bounds that one case.
+    """
+    signature = []
+    for name in ("", "blobs", "snapshots", "refs"):
+        try:
+            signature.append(os.stat(os.path.join(repo_dir, name)).st_mtime_ns)
+        except OSError:
+            signature.append(None)
+    key = tuple(signature)
+    hit = _SIZE_CACHE.get(repo_dir)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    size = _scan_repo(repo_dir).size
+    _SIZE_CACHE[repo_dir] = (key, size)
+    return size
 
 
 def cached_models() -> list[CachedModel]:
@@ -1105,17 +1162,17 @@ def cached_models() -> list[CachedModel]:
     picker offering one is a Load that fails. A repo whose capability cannot be
     inferred is KEPT with `capability=None` — "is this on the disk" is still a
     question worth answering about it, and the caller decides whether an
-    uncategorised repo belongs in a categorised list.
+    uncategorised repo belongs in a categorised list. So is one whose format no
+    runner reads: `loaders` is empty and the caller must check it (see `CachedModel`).
 
-    **Memoised, because a page polls the catalog and this is a full tree walk.**
+    **Memoised, because a page polls the catalog and this is a tree walk per repo.**
     Invalidated on EITHER of two conditions, which cover different failures. The
-    cache directory's SIGNATURE — every entry's name and mtime — moves the instant a
-    new repo folder lands, so a completed download is visible on the very next read
-    and never waits out a timer; that is the bug this whole change exists to fix and
-    a TTL alone would have reintroduced it. A short TTL then backstops the case the
-    signature cannot see: bytes arriving INSIDE an already-listed repo bump
-    `blobs/`, not the repo folder, so a second revision's size would otherwise stand
-    stale indefinitely.
+    SIGNATURES — the cache directory's entry names and mtimes here, and each repo's
+    own three directory mtimes in `_repo_size` — move the instant a repo folder lands
+    or a blob arrives, so a completed download is visible on the very next read and
+    never waits out a timer; that is the bug this whole change exists to fix and a
+    TTL alone would have reintroduced it. The TTL then bounds the one thing no
+    directory mtime can see, a file already listed still GROWING.
     """
     cache_dir = hub_cache_dir()
     try:
@@ -1128,7 +1185,7 @@ def cached_models() -> list[CachedModel]:
     hit = _CACHED_MODELS.get(cache_dir)
     if hit is not None:
         read_at, seen, answer = hit
-        if seen == signature and time.time() - read_at < _CACHED_MODELS_TTL:
+        if seen == signature and _now() - read_at < _CACHED_MODELS_TTL:
             return answer
 
     models: list[CachedModel] = []
@@ -1147,9 +1204,15 @@ def cached_models() -> list[CachedModel]:
         reading = cached_capability(repo_id)
         if not reading.cached:
             continue
-        size = _scan_repo(os.path.join(cache_dir, entry.name)).size
-        models.append(CachedModel(repo_id, reading.capability, size))
-    _CACHED_MODELS[cache_dir] = (time.time(), signature, models)
+        repo_dir = os.path.join(cache_dir, entry.name)
+        # The FORMAT's own reading, carried so the caller can ask the question a
+        # capability cannot answer: would the backend serving that capability here
+        # actually open this repo? `_repo_meta` is memoised on the snapshot mtime,
+        # and `cached_capability` above has already paid for it.
+        loaders = _repo_meta(repo_dir).loaders
+        models.append(
+            CachedModel(repo_id, reading.capability, _repo_size(repo_dir), loaders))
+    _CACHED_MODELS[cache_dir] = (_now(), signature, models)
     return models
 
 
