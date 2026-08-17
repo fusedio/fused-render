@@ -263,10 +263,16 @@ export function assignLanes<T extends { time: Date }>(
 // its pill already claims. No drag: unlike the Inbox's triage status, these
 // states are the scheduler's own facts, not labels a person may move.
 
+// FIVE, not four (Akshil, 2026-08-17): "if we can't show failed tasks, then
+// let's have a failed status, and show it everywhere. It should just be
+// consistent." Failure used to be a red ring inside Done — a visual with no
+// word — which meant the calendar had to keep its own vocabulary to say what
+// had happened. It says it here instead, once, for every view.
 export const BOARD_COLUMNS = [
   { key: "upcoming", label: "Upcoming" },
   { key: "in_progress", label: "In Progress" },
   { key: "done", label: "Done" },
+  { key: "failed", label: "Failed" },
   { key: "archived", label: "Archive" },
 ] as const;
 
@@ -280,9 +286,9 @@ export function boardColumn(entry: ScheduledMessage): BoardColumn {
   // `sending` is a sent message whose turn is still working — work happening
   // NOW, which is exactly what In Progress means for a session too.
   if (tone === "sending") return "in_progress";
-  // Every settled outcome lands in Done; the pill still says HOW it settled
-  // (Ran / Turn failed / Missed), so folding them loses no fact.
-  if (entry.state === "sent" || tone === "error" || tone === "missed") return "done";
+  // Settled BADLY has its own word since 2026-08-17, and every view says it.
+  if (tone === "error" || tone === "missed") return "failed";
+  if (entry.state === "sent") return "done";
   return "upcoming";
 }
 
@@ -578,14 +584,18 @@ export const GHOST_PREFIX = "GHOST-";
 
 export const isProjected = (m: TaskMessage) => m.message_id.startsWith(GHOST_PREFIX);
 
-// How a single message paints ON THE CALENDAR. `state` says whether the message
-// went out; `turn` says how the session it started then went — two facts that
-// fail independently, so a sent message with a dead turn must not read as clean.
+// How a single message PAINTS on the calendar — a CSS class, and since
+// 2026-08-17 nothing but a CSS class. Every word the calendar puts on screen now
+// comes from the four-column vocabulary below (runStatus), so this one is free
+// to keep the finer distinctions the words fold away: `missed` is amber where
+// the word says Done, `skipped` is struck through where the word says Archive.
 //
-// NOT the same function as tasks-lib.messageTone, and deliberately so — see the
-// note there. What the two DO share is the reading of `turn`, and that half is
-// turnPhase above, imported by both, so the calendar and the list can no longer
-// disagree about whether a run is still going.
+// `state` says whether the message went out; `turn` says how the session it
+// started then went — two facts that fail independently, so a sent message with
+// a dead turn must not read as clean. What this shares with
+// tasks-lib.messageTone is the reading of `turn`: that half is turnPhase above,
+// imported by both, so the two can no longer disagree about whether a run is
+// still going.
 export function messageTone(m: TaskMessage): string {
   switch (m.state) {
     case "pending":
@@ -758,11 +768,21 @@ export function chipAccessibleName(
 // materialized occurrence the listing's three-message tail never mentioned is
 // still a run the grid must not draw twice, and only the windowed thread knows
 // about it.
+//
+// NOTHING IS PROJECTED INTO THE PAST. A rule anchored behind us (scheduling into
+// the past is allowed now) has occurrences whose time has already gone, and
+// those runs will never happen: catch-up materializes only the MOST RECENT
+// missed slot, at that slot's own time, and the ones before it are dropped for
+// good (§9, confirmed by Akshil 2026-08-17). Drawing them as ghosts would be the
+// grid promising work that has already been decided against — the past shows
+// what happened, not what would have.
 export function projectedMessages(
   tasks: Task[],
   entries: ScheduledMessage[],
   base: Record<string, TaskMessage[]> = {},
+  now: Date = new Date(),
 ): Record<string, TaskMessage[]> {
+  const nowSec = Math.floor(now.getTime() / 1000);
   const out: Record<string, TaskMessage[]> = {};
   for (const entry of entries) {
     if (entry.state !== "recurring" || !entry.upcoming?.length) continue;
@@ -796,6 +816,8 @@ export function projectedMessages(
       const t = new Date(iso);
       if (Number.isNaN(t.getTime())) continue;
       const at = Math.floor(t.getTime() / 1000);
+      // Already gone: not a forecast, and never going to be a run. See above.
+      if (at <= nowSec) continue;
       const minute = Math.floor(at / 60);
       if (taken.has(minute)) continue;
       taken.add(minute);
@@ -804,6 +826,9 @@ export function projectedMessages(
         kind: "scheduled",
         body: entry.message,
         at,
+        // A projection has not run and by definition never will as itself — the
+        // materialization pass mints a real message when its minute arrives.
+        ran_at: 0,
         state: "pending",
         unread: false,
         entry_id: entry.id,
@@ -833,9 +858,10 @@ export function calendarThreads(
   tasks: Task[],
   entries: ScheduledMessage[],
   windowed: Record<string, TaskMessage[]> | null,
+  now: Date = new Date(),
 ): Record<string, TaskMessage[]> {
   const base = windowed ?? {};
-  return { ...base, ...projectedMessages(tasks, entries, base) };
+  return { ...base, ...projectedMessages(tasks, entries, base, now) };
 }
 
 // The windowed endpoint answers flat — one row per (task, message) — because
@@ -885,11 +911,15 @@ export function threadForDay(
   return { today, rest };
 }
 
-// ---- The queued strip -----------------------------------------------------------
+// ---- The queue, inside the thread -------------------------------------------------
 // Nothing fires while the app is closed and one-off catch-up is now unbounded,
 // so opening after a week away can find real work waiting. `queued` is past due
-// and unclaimed, `running` is mid-flight; the strip draws both and is the cancel
-// surface for them.
+// and unclaimed, `running` is mid-flight.
+//
+// Both used to be drawn as an all-day strip across the top of the grid. They are
+// not: a queued message is a MESSAGE, its siblings are already listed in the
+// task's thread, and a band across the week said otherwise (Akshil, 2026-08-17).
+// The two facts now ride the thread row they belong to, and so does the cancel.
 
 // One line for a prompt: the calendar reads a message by its first line, and a
 // pasted three-paragraph prompt must not become a three-line chip.
@@ -898,20 +928,44 @@ export function firstLine(text: string): string {
   return (line ?? "").trim();
 }
 
-export function queueSummary(
+/** "" for a message the queue has nothing to say about. */
+export type QueueRole = "" | "queued" | "running";
+
+/** The server's own answer, by schedule-entry id. `running` is applied second
+ * so an entry claimed between the two lists reads as running, which is the
+ * half that changes what Cancel can promise. */
+export function queueRoles(
   queued: ScheduledMessage[],
   running: ScheduledMessage[],
-): string {
-  const lead = running[0] ?? queued[0];
-  if (!lead) return "";
-  const head = firstLine(lead.message) || "Scheduled message";
-  // What is running is named; what is behind it is counted. Two numbers in one
-  // line ("1 running, 3 waiting") reads as a dashboard; this reads as a fact.
-  if (running.length && queued.length)
-    return `${head} · ${queued.length} waiting`;
-  if (running.length > 1) return `${head} · ${running.length - 1} more running`;
-  if (queued.length > 1) return `${head} · ${queued.length - 1} more waiting`;
-  return head;
+): Map<string, QueueRole> {
+  const map = new Map<string, QueueRole>();
+  for (const e of queued) if (e.id) map.set(e.id, "queued");
+  for (const e of running) if (e.id) map.set(e.id, "running");
+  return map;
+}
+
+/**
+ * Whether a thread row is queued or running.
+ *
+ * The queue endpoint is authoritative when it knows the entry, and the message
+ * itself is the fallback — the queue is a SECOND feed and a page whose second
+ * feed failed still has to say something true. Past due and still `pending` IS
+ * the definition of queued, so the fallback is not a guess.
+ *
+ * A projected occurrence is excluded on purpose: it is cron arithmetic, nothing
+ * has been written down, and there is nothing for the queue to be holding.
+ */
+export function queueRole(
+  m: TaskMessage,
+  roles: Map<string, QueueRole>,
+  nowSec: number,
+): QueueRole {
+  if (m.kind !== "scheduled" || isProjected(m)) return "";
+  const known = m.entry_id ? roles.get(m.entry_id) : undefined;
+  if (known) return known;
+  if (m.state === "sending") return "running";
+  if (m.state === "pending" && m.at > 0 && m.at <= nowSec) return "queued";
+  return "";
 }
 
 // Cancelling races the claim, and the server resolves it honestly: an entry it
@@ -927,4 +981,177 @@ export function cancelOutcome(cancelled: string[], refused: string[]): string {
   return n === 1
     ? `Cancelled ${cancelled.length}; 1 was already running.`
     : `Cancelled ${cancelled.length}; ${n} were already running.`;
+}
+
+// ---- Late runs ---------------------------------------------------------------------
+// `at` is ALWAYS the time a message was scheduled for, and `ran_at` is when it
+// actually went (0 if it never did). They used to be one field, so a task
+// scheduled on Monday and caught up on Wednesday jumped to Wednesday's column;
+// the chip is placed by `at` and the gap between the two is said in words
+// instead. Nothing here invents a notion of "late" — it is exactly `ran_at`
+// minus `at`.
+
+// Below this the gap is the scheduler's own granularity (it sweeps on a tick,
+// and a run that starts 40 seconds after its minute is not a fact about the
+// task). Five minutes is the floor at which "late" is worth a reader's
+// attention.
+export const LATE_MIN_S = 300;
+
+/** `ran_at` read defensively: the field is the server's and older builds — or a
+ * projected occurrence — simply do not carry it. 0 means "never ran". */
+export function ranAt(m: TaskMessage): number {
+  const v = (m as TaskMessage & { ran_at?: number }).ran_at;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/** Seconds between when a message was due and when it ran; 0 when it has not
+ * run, or ran close enough to its time that saying so would be noise. */
+export function lateBy(m: TaskMessage): number {
+  const ran = ranAt(m);
+  if (!ran || !m.at) return 0;
+  const late = ran - m.at;
+  return late >= LATE_MIN_S ? late : 0;
+}
+
+/** "ran 2 days late" — the row's own words for a catch-up. "" when the run was
+ * on time, or has not happened. Each unit hands over before it can print a
+ * value its next unit owns, so 59m59s is never "60 minutes". */
+export function lateText(m: TaskMessage): string {
+  const s = lateBy(m);
+  if (!s) return "";
+  const say = (n: number, unit: string) =>
+    `ran ${n} ${unit}${n === 1 ? "" : "s"} late`;
+  const mins = Math.round(s / 60);
+  if (mins < 60) return say(mins, "minute");
+  const hours = Math.round(s / 3600);
+  if (hours < 24) return say(hours, "hour");
+  return say(Math.round(s / 86400), "day");
+}
+
+// ---- One status vocabulary ---------------------------------------------------------
+// The Board and the List say Upcoming / In Progress / Done / Failed / Archive
+// about a task. The calendar used to say Scheduled / Ran / Failed / Projected
+// about a run, and the split read as two products (Akshil, 2026-08-17). There is
+// now ONE set of words and the calendar speaks it.
+//
+// FAILURE IS A WORD, not a red ring inside Done — that was the first cut of this
+// change and the user rejected it: "if we can't show failed tasks, then let's
+// have a failed status, and show it everywhere". The red stays as
+// reinforcement; the word is the signal.
+//
+// Two edge cases are settled, and neither gets a sixth word:
+//
+//   skipped    → "Archive". Filed away, never attempted — a run that tried and
+//                broke is a different thing.
+//   projected  → "Upcoming", because a projection genuinely IS upcoming.
+//                Nothing is lost by the word, and the dashed ring is what says
+//                nothing has been written down yet.
+//
+// WHY THE COLUMN IS AN ARGUMENT. tasks-lib.messageTone is the app's one answer
+// to "which column is this message in", and it is not re-derived here: this file
+// is the LOWER module (tasks-lib imports from it), so importing it back would be
+// a cycle. `RunTone` is that answer's shape, structurally — the caller hands
+// messageTone's result straight in, and a second mapping never gets written.
+//
+// schedule-lib.messageTone / dayTone survive alongside this, and are now
+// PIXELS ONLY: they name a CSS class per chip (missed amber, skipped struck
+// through) and no longer put any word on the screen.
+
+export interface RunTone {
+  column: BoardColumn;
+  failed: boolean;
+  label: string;
+}
+
+export interface RunStatus {
+  column: BoardColumn;
+  /** Settled, but not well. The word already says "Failed"; this is what paints
+   * it red as well, and what a caller filters on. */
+  failed: boolean;
+  /** Cron arithmetic, not a message yet: dashed ring, dashed pill. */
+  projected: boolean;
+  /** The one word that goes on screen — the Board's own. */
+  label: string;
+  /** The finer reading, for a tooltip only ("Missed", "Stopped reporting",
+   * "Ran"): never the row's word, and never a status of its own. */
+  detail: string;
+}
+
+/** The Board's word for one of the four columns. BOARD_COLUMNS is the single
+ * source; a hand-written second map is how the two views drift apart. */
+export function columnLabel(column: BoardColumn): string {
+  return BOARD_COLUMNS.find((c) => c.key === column)?.label ?? column;
+}
+
+/**
+ * One message, in the one vocabulary. `tone` is tasks-lib.messageTone(m).
+ *
+ * The one thing done here rather than read: a tone that is settled-but-failed
+ * lands in the `failed` COLUMN. tasks-lib filed those under `done` back when
+ * failure was only a red ring, and this promotes the flag it already sets into
+ * the word the user asked for. It is a bridge, not a second opinion — the day
+ * tasks-lib returns `failed` itself, this line becomes a no-op and can go.
+ */
+export function runStatus(m: TaskMessage, tone: RunTone): RunStatus {
+  const column = tone.failed ? "failed" : tone.column;
+  return {
+    column,
+    failed: tone.failed,
+    projected: isProjected(m),
+    label: columnLabel(column),
+    detail: tone.label,
+  };
+}
+
+// A whole day of a task reads as one pill, so the pill has to answer for every
+// run in it. Failures first, then work in flight, then work still coming: a day
+// whose 9am ran fine and whose 2pm died must not read as a clean Done. Same
+// ordering as TONE_RANK above, in the five-column vocabulary.
+const COLUMN_RANK: BoardColumn[] = [
+  "failed", "in_progress", "upcoming", "archived", "done",
+];
+
+// A column this build has never heard of ranks LAST, not first: an unreadable
+// status must not silently promote itself to the day's headline.
+const statusRank = (s: RunStatus) => {
+  const i = COLUMN_RANK.indexOf(s.column);
+  return i < 0 ? COLUMN_RANK.length : i;
+};
+
+/** The pill over a chip's popover: the day's worst run, and projected only when
+ * NOTHING that day is real — one materialized run makes the day a commitment. */
+export function dayStatus(runs: RunStatus[]): RunStatus {
+  let best: RunStatus | null = null;
+  for (const r of runs) if (!best || statusRank(r) < statusRank(best)) best = r;
+  const projected = runs.length > 0 && runs.every((r) => r.projected);
+  if (!best)
+    return { column: "done", failed: false, projected: false, label: columnLabel("done"), detail: "" };
+  return { ...best, projected, label: columnLabel(best.column) };
+}
+
+// ---- Keeping a popover on screen ---------------------------------------------------
+// The panel is `position: fixed` (an absolutely-positioned one is clipped by the
+// first scrolling ancestor, and this grid scrolls). Fixed means the viewport is
+// the only frame it has to fit, so: sit below-right of the click, FLIP to the
+// other side when that overflows, and clamp as the last resort — a panel taller
+// than the viewport pins to the top margin and scrolls internally.
+
+export const POPOVER_MARGIN = 8;
+
+export function popoverPos(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  vw: number,
+  vh: number,
+): { left: number; top: number } {
+  const m = POPOVER_MARGIN;
+  let left = x + m;
+  if (left + w > vw - m) left = x - w - m;
+  left = Math.max(m, Math.min(left, Math.max(m, vw - w - m)));
+  let top = y + m;
+  if (top + h > vh - m) top = y - h - m;
+  top = Math.max(m, Math.min(top, Math.max(m, vh - h - m)));
+  return { left, top };
 }

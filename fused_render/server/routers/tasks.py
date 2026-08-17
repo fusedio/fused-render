@@ -63,10 +63,17 @@ from fused_render.server.routers import claude_sessions as sessions
 
 router = APIRouter()
 
-# The board's four columns (frontend/src/shell/schedule-lib.ts:boardColumn).
-# `upcoming` is the one triage does not have a word for — a session cannot be
-# "not yet" — which is why the union below is not symmetric.
-STATUSES = ("upcoming", "in_progress", "done", "archived")
+# A task's status, decided HERE and read by every view. `upcoming` and `failed`
+# are the two triage does not have a word for — a session cannot be "not yet",
+# and the Inbox's three columns have no place to put a broken run — which is why
+# the union below is not symmetric.
+#
+# `failed` is a STATUS and not only the `failed` boolean beside it, because a
+# run that broke is not a kind of done. It used to be exactly that: `done` with
+# a flag, so every view had to remember to read the flag and paint it, and any
+# view that did not simply lost the news. One decision, made once, on the
+# server.
+STATUSES = ("upcoming", "in_progress", "done", "failed", "archived")
 _TRIAGE_STATUSES = ("in_progress", "done", "archived")
 
 # How many messages a listing row carries. The accordion shows three and offers
@@ -264,10 +271,33 @@ def _body_key(text) -> str:
 
 
 def _entry_at(entry: dict) -> float:
-    """When a scheduled message belongs in the thread: when it acted, falling
-    back to when it was due for one that never did."""
-    return (tasks_store.epoch(entry.get("fired"))
-            or tasks_store.epoch(entry.get("due")) or 0.0)
+    """**When the message was SCHEDULED FOR** — its due time, and nothing else.
+
+    This used to read `fired` first, and that was the bug behind the one thing
+    the calendar must not get wrong. A message scheduled for Thursday and caught
+    up on Saturday (which is the ordinary outcome of an unbounded queue, SCH-3b)
+    was stamped Saturday, so its chip left the column the user picked and
+    appeared on the day they happened to reopen the app — a row that silently
+    rewrote what had been asked for.
+
+    `due` is a fact about the ASK and never moves; when it actually ran is a
+    second, separate fact, and `_entry_ran_at` is where that lives. The
+    fallback to `fired` covers only an entry with no readable due time at all
+    (a hand-edited store), where the alternative is placing it at the epoch.
+    """
+    return (tasks_store.epoch(entry.get("due"))
+            or tasks_store.epoch(entry.get("fired")) or 0.0)
+
+
+def _entry_ran_at(entry: dict) -> float:
+    """When a scheduled message ACTUALLY ran — 0.0 for one that has not.
+
+    `fired` is the claim stamp, written the instant before the helper is
+    spawned, so it is this side's best answer for every entry that got away.
+    The join in `_merge` improves on it where it can: a message that reached a
+    transcript has the session's own timestamp for the prompt, which is what
+    the thread is ordered against everywhere else."""
+    return tasks_store.epoch(entry.get("fired")) or 0.0
 
 
 def _entry_state(entry: dict) -> str:
@@ -307,12 +337,17 @@ def _entry_turn(entry: dict, live: bool) -> str:
     return ""
 
 
-def _scheduled_message(entry: dict, live: bool, at: float, anchor: str) -> dict:
+def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
+                       anchor: str) -> dict:
     return {
         "message_id": "",
         "kind": "scheduled",
         "body": str(entry.get("message") or ""),
+        # TWO times, because a scheduled message genuinely has two and they
+        # disagree whenever the app was closed at the wrong moment. `at` is what
+        # was asked for; `ran_at` is what happened. See `_entry_at`.
         "at": at,
+        "ran_at": ran_at,
         "state": _entry_state(entry),
         "unread": False,
         "entry_id": str(entry.get("id") or ""),
@@ -328,6 +363,11 @@ def _chat_message(prompt: dict) -> dict:
         "kind": "chat",
         "body": prompt["body"],
         "at": prompt["at"] or 0.0,
+        # A typed message was scheduled for the moment it was typed: there is
+        # no gap for the two stamps to disagree across, so they are the same
+        # number rather than `ran_at` being an absence the client has to
+        # special-case per kind.
+        "ran_at": prompt["at"] or 0.0,
         # A typed message was delivered the moment it was typed. The state
         # vocabulary is the schedule's, and `sent` is the word in it for that.
         "state": schedule.SENT,
@@ -348,11 +388,21 @@ def _merge(prompts: list[dict], entries: list[dict], live: bool) -> list[dict]:
     into a chained session, which is the normal case, not the exotic one) the
     nearest in time wins and is consumed, so N occurrences match their own N
     prompts in order rather than all piling onto the first.
+
+    **What the match may and may not move.** It fills in `ran_at` (the
+    transcript's own timestamp for the prompt, which is the most accurate answer
+    anything here has to "when did this actually happen") and the `anchor` that
+    scrolls to it. It does NOT touch `at`. Writing the prompt's timestamp over
+    `at` was the original shape and it lost the schedule: a message due two days
+    ago and caught up today became a message due today, so the calendar drew its
+    chip in a column the user had never picked. The distance heuristic still runs
+    on `at`, which is right — the due time is what an occurrence is nearest to.
     """
     taken: set[int] = set()
     messages: list[dict] = []
     for entry in entries:
         at = _entry_at(entry)
+        ran_at = _entry_ran_at(entry)
         anchor = ""
         if str(entry.get("state") or "") in _IN_TRANSCRIPT:
             body = _body_key(entry.get("message"))
@@ -366,9 +416,9 @@ def _merge(prompts: list[dict], entries: list[dict], live: bool) -> list[dict]:
             if best is not None:
                 taken.add(best[1])
                 matched = prompts[best[1]]
-                at = matched["at"] or at
+                ran_at = matched["at"] or ran_at
                 anchor = matched["anchor"]
-        messages.append(_scheduled_message(entry, live, at, anchor))
+        messages.append(_scheduled_message(entry, live, at, ran_at, anchor))
     for j, prompt in enumerate(prompts):
         if j not in taken:
             messages.append(_chat_message(prompt))
@@ -394,9 +444,24 @@ def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
 
 
 def _board_column(message: dict | None) -> str:
-    """A task's status from its newest message — the server-side twin of
-    `boardColumn()` (frontend/src/shell/schedule-lib.ts), mapped state for
-    state so the two views cannot disagree about one row."""
+    """A task's status from its newest message, mapped state for state.
+
+    Two mappings are worth naming because they look alike and are not:
+
+    * **`error` is `failed`**, its own column. A run that started and broke is
+      news, and filing it under `done` meant every view had to remember to read
+      the `failed` flag separately to say so.
+    * **`cancelled` and `skipped` are `archived`**, NOT failed. A skipped
+      occurrence was filed away and never attempted — the coalescer dropped it,
+      or the user did — which is a different thing from a run that tried and
+      broke.
+
+    `missed` stays `done`, unchanged and deliberately not touched here. It is
+    only reachable at all on an install that set FUSED_RENDER_SCHEDULE_MAX_LATE
+    (a missed OCCURRENCE reads as `skipped` and archives above), and by the
+    reasoning that archives a skip it arguably belongs there too — but that is a
+    separate decision from this one and nobody has made it.
+    """
     if message is None:
         return "done"  # a task with nothing in it happened and is over
     state = message["state"]
@@ -404,20 +469,35 @@ def _board_column(message: dict | None) -> str:
         return "archived"
     if state == "sending":
         return "in_progress"
-    if state in ("sent", "error", "missed"):
+    if state == "error":
+        return "failed"
+    if state in ("sent", "missed"):
         return "done"
     return "upcoming"
 
 
 def _status(newest: dict | None, session_id: str, triage: dict, live: bool) -> str:
-    """The board column a task sits in.
+    """The status a task sits in — ONE decision, made here, for every view.
 
     Derived from the newest message, then overridden by an explicit triage
     record. Triage wins on disagreement because it is the user's own act: they
     dragged the card, and a derivation that undid that on the next poll would
     make the board unusable. Only a RECORDED status overrides — the default
     claude_sessions applies to an untriaged session (running -> in_progress) is
-    a derivation too, and a weaker one than the message's own state."""
+    a derivation too, and a weaker one than the message's own state. Triage has
+    only three words, so a user cannot file a task as `failed`; that is a fact
+    about the run, not a place to put it.
+
+    `failed` is decided here rather than left to the `failed` boolean beside it
+    because a broken run is not a kind of `done`, and a status every view reads
+    is the only way to be sure every view says so. It covers both halves of
+    `_failed`: a message whose state is `error`, and one whose watcher stopped
+    being able to say how the turn went (`turn: unknown`) — the second is
+    invisible to `_board_column`, which only sees the state.
+
+    A LIVE session still reads `in_progress` even over a failed newest message:
+    something is running in that conversation right now, which is the more
+    urgent fact and the one that stops being true on its own."""
     record = triage.get(session_id) if session_id else None
     if isinstance(record, dict):
         status = record.get("status")
@@ -425,10 +505,19 @@ def _status(newest: dict | None, session_id: str, triage: dict, live: bool) -> s
             return status
     if live and newest is not None:
         return "in_progress"
+    if _failed(newest):
+        return "failed"
     return _board_column(newest)
 
 
 def _failed(newest: dict | None) -> bool:
+    """Did the newest message's run break?
+
+    Kept as its own field on the row as well as feeding `status` above, because
+    the two can disagree in exactly one direction and the difference is worth
+    keeping: a user who has triaged a task to `done`, or a session that is live
+    again, reads `status` as something other than `failed` while this stays
+    true. Anything that only wants "which column" should read `status`."""
     return newest is not None and (
         newest["state"] == "error" or newest["turn"] == "unknown")
 
@@ -613,7 +702,12 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float) -> dict:
 
     newest = tail[-1] if tail else None
     if newest is not None:
-        active = max(active, newest["at"] or 0.0)
+        # BOTH stamps, because the list sorts on this and the two answer
+        # different halves of "recent": `ran_at` is when the task last did
+        # something (a caught-up run is news today, whatever day it was due),
+        # and `at` is what keeps a message scheduled for tomorrow near the top
+        # where it can be seen before it fires.
+        active = max(active, newest["at"] or 0.0, newest["ran_at"] or 0.0)
     if not active and task["entries"]:
         active = (tasks_store.epoch(task["entries"][-1].get("created"))
                   or _entry_at(task["entries"][-1]))
@@ -757,10 +851,10 @@ def api_task_messages(key: str):
 
 # How far outside the asked-for window a scheduled entry is still considered a
 # candidate. The window is filtered EXACTLY, on each built message's final `at`
-# — but the cheap pre-filter that decides which threads to parse runs on the
-# entry's own due/fired stamp, and the join can move a message onto its
-# transcript prompt's timestamp. A day of slack is many orders of magnitude more
-# than that gap can be, and costs at most a few extra threads parsed.
+# — and since `at` is now the entry's own due time and the join can no longer
+# move it (see `_entry_at`), the two agree and this slack is belt-and-braces:
+# it costs at most a few extra threads parsed, and it is what keeps a store
+# whose `due` a human has hand-edited mid-parse from silently under-drawing.
 _WINDOW_SLACK_S = 86400.0
 
 

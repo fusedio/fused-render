@@ -122,7 +122,8 @@
 
 /* -- Unread ------------------------------------------------------------------
    A dot, in the one hue the page reserves for "not finished with yet". The
-   count rides beside it on the task row; the thread rows say the word. */
+   count rides beside it on the task row; a thread row shows the dot alone, at
+   the START of the row (see .tasks-msg-flag). */
 .tasks-dot {
   display: inline-block;
   width: 7px;
@@ -284,14 +285,34 @@
   white-space: nowrap;
 }
 
-.tasks-msg-unread {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+/* "ran 07:12 today" — drawn only when the run and the due time are different
+   facts (tasks-lib.ranNote), which is a minority of rows, so it is quieter than
+   the due time it qualifies rather than a second column beside it. */
+.tasks-msg-ran {
   flex: 0 0 auto;
   font-size: 10.5px;
-  font-weight: 600;
-  color: var(--status-upcoming);
+  color: var(--fg-muted);
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The unread slot, at the head of every message row — filled on an unread
+   message, empty on a read one, and the SAME WIDTH either way. The dot used to
+   sit at the far right beside the time, with the word "unread" after it, and it
+   was missed outright (Akshil, 2026-08-16: "on the right hand I missed it, I
+   did not even see it"). A thread is scanned down its left edge, so the marker
+   belongs there; drawing the empty slot too is what keeps that edge straight,
+   because a slot that appeared only on unread rows would shift every cell of
+   those rows right and there would be no column left to scan. The word is gone
+   — a leading dot is the whole signal — and lives on as the marker's
+   aria-label, so a screen reader still hears it. */
+.tasks-msg-flag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 7px;
+  flex: 0 0 7px;
 }
 
 .tasks-thread-error {
@@ -343,6 +364,37 @@
   align-items: center;
 }
 
+/* -- The filter popovers -------------------------------------------------------
+   schedule.css draws these `position: absolute` with a note claiming nothing
+   above them clips. Two things do: `.prefs-page { overflow-y: auto }` and
+   `.schedule-page { overflow: hidden }`, and the Project menu shipped sliced
+   off at the bottom with a handful of its 28 folders showing (Akshil,
+   screenshot). The panel is now FIXED and measured off its trigger in
+   ScheduleTaskViews.popStyle — the same answer NewJobModal's date, time and
+   repeat menus already use — so `top`/`bottom`/`left`/`max-height` all arrive
+   as inline style and this rule only has to undo the absolute placement and
+   let the panel scroll.
+
+   No height and no min-height: a two-item Status menu is two items tall. The
+   cap is the inline `max-height`, and it is what makes 28 projects a scroller
+   rather than a column taller than the window. */
+.schedule-tv-pop.tasks-pop {
+  position: fixed;
+  top: auto;
+  left: auto;
+  overflow-y: auto;
+  /* The panel is the scroller; a flex column only shrinks below its content
+     when it is allowed to. */
+  min-height: 0;
+}
+
+/* Items keep their own height inside that scroller — a constrained flex column
+   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers. */
+.schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
+.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item {
+  flex: 0 0 auto;
+}
+
 /* The project menu's own label — the folder's name, ellipsised rather than
    widening a popover that is sized for status words. */
 .tasks-pop-label {
@@ -350,6 +402,53 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* -- Failed, the fifth lane ----------------------------------------------------
+   schedule.css already paints `.schedule-ring--failed` red — it was the
+   modifier that repainted a Done ring — so the new column needs no hue of its
+   own. What it needs is the FILLED centre every settled state carries: Failed
+   is terminal, and a hollow ring beside Done's solid one would read as "still
+   going" in the one column where nothing is. `.schedule-ring--done::after`
+   already defines that dot; this only widens who gets it. */
+.schedule-ring--failed::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* -- The one drop that is not filing ------------------------------------------
+   Upcoming → In Progress sends the task's next scheduled message immediately
+   (tasks-lib.dropAction). Every other drop just moves a card between lanes and
+   is undone by dragging it back; this one is a turn that starts, and there is
+   no dragging that back. So the lane says which it is while the card is still
+   in the air — the dashed legal-drop outline schedule.css draws is identical
+   for both and cannot carry the difference — and says the half a person would
+   otherwise fear: the schedule itself is not touched. */
+.schedule-tv-lane-body.is-drop-run,
+.schedule-tv-rail.is-drop-run,
+.prefs-section .schedule-tv-rail.is-drop-run {
+  outline: 1px dashed color-mix(in srgb, var(--status-upcoming) 60%, transparent);
+  outline-offset: -1px;
+}
+
+.tasks-run-hint {
+  margin: 0 0 2px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--status-upcoming) 14%, transparent);
+  color: var(--status-upcoming);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  /* It appears mid-drag, and a pointer event on it would count as leaving the
+     lane it is drawn inside. */
+  pointer-events: none;
 }
 
 /* -- Focus: the page's own ring, on every bespoke control added above --------- */

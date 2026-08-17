@@ -1,8 +1,8 @@
 /* -- New task modal: the parts added by the tasks/threads pass ----------------
  * Everything else the form wears comes from schedule.css (.schedule-form-*,
  * .schedule-when-*). This file holds only what that pass introduced: the two
- * quiet checkboxes (Repeat / New task each run), the optional title and
- * description rows, and the past-time note that used to be a refusal.
+ * quiet checkboxes (Repeat / New task each run), the optional title row, and
+ * the past-time note that used to be a refusal.
  *
  * Imported from NewJobModal.tsx rather than the shell.css barrel, so it lands
  * after schedule.css in the cascade — which is what lets these rules armor
@@ -118,32 +118,14 @@
   color: var(--fg-muted);
 }
 
-/* -- Title and description ---------------------------------------------------
-   Two optional rows under the ask. Both are plain field-controls in the icon
-   gutter every other row hangs from; the description grows a little taller
-   because it is prose. */
+/* -- Title -------------------------------------------------------------------
+   One optional row under the ask, a plain field-control in the icon gutter
+   every other row hangs from.
 
-.new-task-desc-line {
-  align-items: flex-start;
-}
-
-/* The row's icon is centred on a one-line control by default; against a
-   two-line textarea it has to sit on the FIRST line instead. */
-.new-task-desc-line > svg {
-  margin-top: 9px;
-}
-
-/* Armored against `.modal-body :where(…, textarea)` in deploy.css, which owns
-   the padding and border of every field in a modal and would otherwise decide
-   this one's height too. */
-.new-task-desc,
-.modal-body textarea.new-task-desc,
-.deploy-body textarea.new-task-desc {
-  min-height: 56px;
-  max-height: 140px;
-  resize: vertical;
-  line-height: 1.45;
-}
+   There used to be a second row here, a "Description (optional)" textarea
+   (.new-task-desc / .new-task-desc-line), and its rules went with it: the big
+   field IS the description now (Akshil, 2026-08-17), so there is no second
+   piece of prose to style. */
 
 /* -- The past-time note ------------------------------------------------------
    Was a refusal in the error voice; scheduling into the past is now a

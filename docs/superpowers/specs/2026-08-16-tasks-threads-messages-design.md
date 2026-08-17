@@ -119,9 +119,27 @@ Title precedence:
 
 No summarisation call is needed anywhere.
 
-`description` is a new optional free-text field on the create form, **empty by
-default**. Note that `aiTitle` is a title, not a summary — Claude Code stores no
-summary — so description is not auto-filled in this pass. Deferred; see §11.
+**The form has two text fields, not three** (Akshil, 2026-08-17, after seeing
+the first cut). An earlier version had the big "What should Claude do?" field,
+plus a Title input, plus a separate Description textarea — and three boxes for
+what is really two ideas did not survive contact:
+
+* **the big field is the ask, and it IS the description.** What the user types
+  is what Claude receives *and* what the task is described by. It keeps its
+  position and prominence.
+* **Title is one optional input below it.** Left blank, the server names the
+  task by the precedence above, so the placeholder says so rather than implying
+  the user must supply one.
+
+`aiTitle` is a title, not a summary, and Claude Code stores no summary — so
+nothing here is auto-summarised. The title falls back to the message's first
+line, which is the honest version of the same idea.
+
+The cost, stated because it is a one-way door: a description that differs from
+the message can no longer be expressed from this form, and an entry whose stored
+`description` diverged from its `message` would lose the divergence on edit. No
+such entry exists — the two independent fields only lived in this branch and
+never shipped.
 
 ---
 

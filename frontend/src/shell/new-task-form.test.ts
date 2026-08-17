@@ -22,6 +22,7 @@ let initialRepeatKey: typeof import("./NewJobModal").initialRepeatKey;
 let applyRepeatToggle: typeof import("./NewJobModal").applyRepeatToggle;
 let buildSchedulePayload: typeof import("./NewJobModal").buildSchedulePayload;
 let learnedSessionOf: typeof import("./NewJobModal").learnedSessionOf;
+let initialAskOf: typeof import("./NewJobModal").initialAskOf;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -29,6 +30,7 @@ beforeAll(async () => {
   applyRepeatToggle = mod.applyRepeatToggle;
   buildSchedulePayload = mod.buildSchedulePayload;
   learnedSessionOf = mod.learnedSessionOf;
+  initialAskOf = mod.initialAskOf;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -53,9 +55,10 @@ const DAILY: RecurrenceRule = { freq: "day" };
 
 const form = (over: Partial<Form> = {}): Form => ({
   target: " /tmp/work ",
+  // The big field: the message AND the description. There is no third text
+  // field on the form any more (Akshil, 2026-08-17).
   message: "pull today's news",
   title: "",
-  description: "",
   when: "2026-08-17T09:00",
   rule: null,
   repeat: "none",
@@ -130,27 +133,35 @@ describe("the Repeat checkbox", () => {
 });
 
 describe("the payload", () => {
-  test("a one-off is target, message, due and permission", () => {
+  test("a one-off is target, the ask (twice), due and permission", () => {
     expect(buildSchedulePayload(form())).toEqual({
       target: "/tmp/work",
       message: "pull today's news",
+      // Same text, second key: the one big field is the description too.
+      description: "pull today's news",
       due: "2026-08-17T09:00",
       permission_mode: "auto",
     });
   });
 
-  test("title and description ride along, trimmed", () => {
-    const body = buildSchedulePayload(
-      form({ title: "  Morning news  ", description: "  a note  " }),
-    );
-    expect(body.title).toBe("Morning news");
-    expect(body.description).toBe("a note");
+  test("the big field IS the description — one field, both keys", () => {
+    const body = buildSchedulePayload(form({ message: "  summarise the inbox  " }));
+    // The message goes verbatim, because that is literally what Claude
+    // receives; the description is the same text tidied up.
+    expect(body.message).toBe("  summarise the inbox  ");
+    expect(body.description).toBe("summarise the inbox");
+  });
+
+  test("a title the user typed rides along, trimmed", () => {
+    expect(buildSchedulePayload(form({ title: "  Morning news  " })).title).toBe("Morning news");
   });
 
   test("an empty title is left OFF the wire — that is what asks the server to fill it in", () => {
-    const body = buildSchedulePayload(form({ title: "   ", description: "" }));
+    const body = buildSchedulePayload(form({ title: "   " }));
     expect("title" in body).toBe(false);
-    expect("description" in body).toBe(false);
+    // …and the description is still there, because it is not the title's
+    // business: the ask always fills it.
+    expect(body.description).toBe("pull today's news");
   });
 
   test("new_task_each_run is sent only when the task actually repeats", () => {
@@ -179,6 +190,61 @@ describe("the payload", () => {
     expect(
       buildSchedulePayload(form({ sessionId: "abc", rule: DAILY, repeat: "daily" })).session_id,
     ).toBeUndefined();
+  });
+});
+
+// The form asks for prose ONCE. Everything the server stores as two values —
+// `message` and `description` — has to fold back into that one field when an
+// Edit opens, and come out the other side unchanged when it is saved again.
+describe("what an Edit opens the big field on", () => {
+  test("a task written by the two-field form: message and description agree", () => {
+    expect(initialAskOf(entry({ description: "pull today's news" }))).toBe("pull today's news");
+  });
+
+  test("prose that lives only in description still fills the field", () => {
+    // Not blank, and not re-created empty: the field is the description now, so
+    // a description with no message behind it is the answer.
+    expect(initialAskOf(entry({ message: "", description: "a note" }))).toBe("a note");
+  });
+
+  test("a chat draft fills a NEW task, and never outranks the entry", () => {
+    expect(initialAskOf(null, "draft from the composer")).toBe("draft from the composer");
+    expect(initialAskOf(entry({}), "draft from the composer")).toBe("pull today's news");
+    expect(initialAskOf(undefined)).toBe("");
+  });
+
+  test("the ask and the title both survive the save → edit → save round trip", () => {
+    const saved = buildSchedulePayload(
+      form({ message: "pull today's news", title: "Morning news" }),
+    );
+    // What the server would have stored, read back into the form's two fields.
+    const stored = entry({
+      message: saved.message,
+      description: saved.description,
+      title: saved.title,
+    });
+    expect(initialAskOf(stored)).toBe("pull today's news");
+    expect(stored.title).toBe("Morning news");
+
+    // And re-saving that edit sends the same three values back — an edit is
+    // cancel + re-create, so anything the form fails to re-state is LOST.
+    const again = buildSchedulePayload(
+      form({ message: initialAskOf(stored), title: stored.title ?? "" }),
+    );
+    expect(again.message).toBe("pull today's news");
+    expect(again.description).toBe("pull today's news");
+    expect(again.title).toBe("Morning news");
+  });
+
+  test("an untitled task edits back untitled — the server keeps naming it", () => {
+    const saved = buildSchedulePayload(form({ title: "" }));
+    expect("title" in saved).toBe(false);
+    const stored = entry({ message: saved.message, description: saved.description });
+    const again = buildSchedulePayload(
+      form({ message: initialAskOf(stored), title: stored.title ?? "" }),
+    );
+    expect("title" in again).toBe(false);
+    expect(again.description).toBe("pull today's news");
   });
 });
 

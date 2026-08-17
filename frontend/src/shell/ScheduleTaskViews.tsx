@@ -29,6 +29,7 @@ import {
   cancelScheduledMessage,
   getTaskMessages,
   markTaskMessageRead,
+  runScheduledNow,
   setSessionTriage,
 } from "@platform/lib/api";
 import type { Task, TaskMessage } from "@platform/lib/api";
@@ -39,25 +40,26 @@ import {
   EMPTY_FILTERS,
   basename,
   cancelIntent,
+  dropAction,
   dropLanes,
   filterTasks,
   firstLine,
   groupByColumn,
   isDraggable,
-  isUnread,
   markRead,
   messageHref,
-  messageStamp,
   messageTime,
   messageTone,
+  messageWhenTitle,
   projectOptions,
+  ranNote,
   taskColumn,
   taskHref,
   taskUnread,
   threadView,
   tildePath,
   toggleExpanded,
-  triageStatus,
+  unreadMarker,
 } from "./tasks-lib";
 import type { TaskFilters } from "./tasks-lib";
 
@@ -177,9 +179,65 @@ function UnreadBadge({ count }: { count: number }) {
 
 // ---- toolbar: search + status + project --------------------------------------
 
+// ---- the filter popover's geometry -------------------------------------------
+// The menus are `position: fixed`, measured off their trigger, exactly as every
+// dropdown in NewJobModal is and for the same reason: an absolutely-positioned
+// panel is clipped by the nearest scrolling/hidden ancestor, and this one has
+// two of them — `.prefs-page { overflow-y: auto }` and `.schedule-page {
+// overflow: hidden }`. The Project menu shipped cut off at the bottom with a
+// handful of its 28 folders showing (Akshil, screenshot). Fixed escapes the
+// clip; when the viewport below the trigger is shorter than the panel, it opens
+// upward instead.
+//
+// This is safe here because nothing in the chain is TRANSFORMED — a transformed
+// ancestor becomes the containing block for its fixed descendants and would
+// re-anchor the panel to it, clip and all (which is why schedule.css slides its
+// cards with `left` rather than `transform`). Checked: `.prefs-page`,
+// `.schedule-page`, `.schedule-main` and `.schedule-toolbar` set none.
+
+/** The panel's width, and schedule.css's own `.schedule-tv-pop { width }` — kept
+ * in step here only so a menu near the right edge can be pushed back inside the
+ * window. */
+const POP_WIDTH = 190;
+/** The tallest a menu grows before it scrolls inside itself. 28 projects is a
+ * real number on this machine and a 28-item column is not a menu, it is a page. */
+const POP_MAX_HEIGHT = 320;
+/** Below the trigger, and off the window's own edges. */
+const POP_GAP = 6;
+const POP_EDGE = 8;
+
+/**
+ * Where the panel goes and how tall it may get. Height is never SET — the menu
+ * sizes to its content, so two statuses draw a two-row menu — only capped, and
+ * the cap is the smaller of POP_MAX_HEIGHT and the room actually there.
+ */
+function popStyle(el: HTMLElement | null): React.CSSProperties {
+  const r = el?.getBoundingClientRect();
+  if (!r) return { position: "fixed" };
+  const below = window.innerHeight - r.bottom - POP_GAP - POP_EDGE;
+  const above = r.top - POP_GAP - POP_EDGE;
+  // Flip only when up is genuinely roomier: a menu that jumps above its trigger
+  // to gain twenty pixels is a menu that moved for nothing.
+  const up = above > below && below < POP_MAX_HEIGHT;
+  const room = Math.max(120, Math.min(POP_MAX_HEIGHT, up ? above : below));
+  const left = Math.max(
+    POP_EDGE,
+    Math.min(r.left, window.innerWidth - POP_WIDTH - POP_EDGE),
+  );
+  const s: React.CSSProperties = {
+    position: "fixed",
+    left,
+    right: "auto",
+    maxHeight: room,
+  };
+  if (up) s.bottom = window.innerHeight - r.top + POP_GAP;
+  else s.top = r.bottom + POP_GAP;
+  return s;
+}
+
 /** A dismissable popover trigger, shared by the two filter menus: click away or
- * Escape closes it. Dismissal is the whole contract — the popover is absolutely
- * positioned in a page that does not clip it, so one left open hangs over the
+ * Escape closes it. Dismissal is the whole contract — the panel is fixed and
+ * therefore outside every clip on the page, so one left open hangs over the
  * board. */
 function FilterMenu({
   label,
@@ -192,9 +250,13 @@ function FilterMenu({
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement | null>(null);
+  const btn = useRef<HTMLButtonElement | null>(null);
+  const [style, setStyle] = useState<React.CSSProperties>({ position: "fixed" });
 
   useEffect(() => {
     if (!open) return;
+    const place = () => setStyle(popStyle(btn.current));
+    place();
     const away = (e: MouseEvent) => {
       if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
     };
@@ -203,9 +265,17 @@ function FilterMenu({
     };
     document.addEventListener("mousedown", away);
     document.addEventListener("keydown", esc);
+    // A fixed panel does not travel with its trigger, so anything that MOVES the
+    // trigger has to re-measure it. `capture` because the movement that happens
+    // on this page is a scroll inside the list or the board, and a scroll does
+    // not bubble.
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
     return () => {
       document.removeEventListener("mousedown", away);
       document.removeEventListener("keydown", esc);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
     };
   }, [open]);
 
@@ -213,6 +283,7 @@ function FilterMenu({
     <div className="schedule-tv-pop-wrap" ref={wrap}>
       <button
         type="button"
+        ref={btn}
         className="schedule-tv-filter-btn"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
@@ -221,7 +292,12 @@ function FilterMenu({
         {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
       </button>
       {open && (
-        <div className="schedule-tv-pop" role="group" aria-label={`Filter by ${label}`}>
+        <div
+          className="schedule-tv-pop tasks-pop"
+          role="group"
+          aria-label={`Filter by ${label}`}
+          style={style}
+        >
           {children(() => setOpen(false))}
         </div>
       )}
@@ -611,7 +687,8 @@ function TaskNode({
         <div className="tasks-thread">
           {view.messages.map((m) => {
             const tone = messageTone(m);
-            const isNew = isUnread(task.key, m, read);
+            const mark = unreadMarker(task.key, m, read);
+            const isNew = mark.unread;
             const stop = cancelIntent(m);
             const busy = cancelling === m.message_id;
             const why = cancelErrors[m.message_id];
@@ -630,6 +707,23 @@ function TaskNode({
                     }
                   }}
                 >
+                  {/* Unread LEADS the row (tasks-lib.unreadMarker). The slot is
+                      drawn on every row, filled or not, so the dots line up in
+                      one column down the left edge instead of shunting the
+                      rest of each unread row sideways. The word that used to
+                      follow it is gone; the dot carries the name itself. */}
+                  {mark.unread ? (
+                    <span
+                      className="tasks-msg-flag"
+                      role="img"
+                      aria-label={mark.label}
+                      title={mark.label}
+                    >
+                      <span className="tasks-dot" aria-hidden />
+                    </span>
+                  ) : (
+                    <span className="tasks-msg-flag" aria-hidden />
+                  )}
                   <StatusIcon status={tone.column} failed={tone.failed} label={tone.label} />
                   <span
                     className="tasks-msg-kind"
@@ -677,15 +771,14 @@ function TaskNode({
                       {stop.scope === "occurrence" ? ICON_SKIP : ICON_BAN}
                     </button>
                   )}
-                  <span className="tasks-msg-time" title={messageStamp(m.at)}>
+                  {/* When it RAN, said only when that is not when it was due:
+                      caught up late after a shut app, or run early by a drag
+                      into In Progress. The due time itself never moves, which
+                      is what makes this line worth printing. */}
+                  {ranNote(m) && <span className="tasks-msg-ran">{ranNote(m)}</span>}
+                  <span className="tasks-msg-time" title={messageWhenTitle(m)}>
                     {messageTime(m.at)}
                   </span>
-                  {isNew && (
-                    <span className="tasks-msg-unread">
-                      <span className="tasks-dot" aria-hidden />
-                      unread
-                    </span>
-                  )}
                 </div>
                 {why && <p className="tasks-msg-error">{why}</p>}
               </Fragment>
@@ -758,19 +851,41 @@ export function TaskBoard({
     [dragging],
   );
 
+  // The one lane whose drop is not a filing decision. It is named while the
+  // card is still in the air because "run this now" is not undoable and the
+  // dashed legal-drop outline says nothing about which of the two it is.
+  const runLane = useMemo(() => {
+    if (!dragging) return null;
+    for (const col of BOARD_COLUMNS) {
+      if (dropAction(dragging, col.key)?.kind === "run") return col.key;
+    }
+    return null;
+  }, [dragging]);
+
   const drop = async (lane: BoardColumn) => {
     const task = dragging;
     setDragging(null);
     setOverLane(null);
     if (!task || !allowed.has(lane)) return;
-    const status = triageStatus(lane);
-    if (!status || !task.session_id) return;
+    // Which of the two things this drop means — file the task, or run its next
+    // message early — is tasks-lib's decision, not this handler's.
+    const action = dropAction(task, lane);
+    if (!action) return;
     setDragError(null);
     try {
-      await setSessionTriage(task.session_id, status);
+      if (action.kind === "run") {
+        // Upcoming → In Progress. The message goes out NOW and its `due` is
+        // left alone, so the thread reads as a run that happened early rather
+        // than a schedule that was quietly rewritten.
+        await runScheduledNow(action.entryId);
+      } else {
+        await setSessionTriage(task.session_id, action.status);
+      }
     } catch (e) {
-      // The 404 case is a real answer, not a bug (the loop may have acted
-      // first): say what the server said, and re-read either way.
+      // A refusal here is a real answer, not a bug — the scheduler's loop may
+      // have sent the message, or claimed it, while the card was in the air —
+      // so the server's own sentence is what gets shown, and the board re-reads
+      // either way.
       setDragError((e as Error).message);
     }
     onReload();
@@ -824,9 +939,14 @@ export function TaskBoard({
                 className={
                   "schedule-tv-rail" +
                   (dragging && allowed.has(col.key) ? " is-drop-legal" : "") +
+                  (runLane === col.key ? " is-drop-run" : "") +
                   (overLane === col.key ? " is-drop-over" : "")
                 }
-                title={`${col.label}: ${lane.length}`}
+                title={
+                  runLane === col.key
+                    ? "Run the next scheduled message now"
+                    : `${col.label}: ${lane.length}`
+                }
                 onClick={() => toggleLane(col.key)}
                 {...dropProps(col.key)}
               >
@@ -855,10 +975,14 @@ export function TaskBoard({
                 className={
                   "schedule-tv-lane-body" +
                   (dragging && allowed.has(col.key) ? " is-drop-legal" : "") +
+                  (runLane === col.key ? " is-drop-run" : "") +
                   (overLane === col.key ? " is-drop-over" : "")
                 }
                 {...dropProps(col.key)}
               >
+                {runLane === col.key && (
+                  <p className="tasks-run-hint">Run now — the time stays put</p>
+                )}
                 {cards.map((task) => (
                   <TaskCard
                     key={task.key}
@@ -913,9 +1037,11 @@ function TaskCard({
   onDragStart: () => void;
   onDragEnd: () => void;
 }) {
-  // A task with no session (§5 — Claude Code mints the id on the first run) has
-  // nothing to triage, so it must not lift at all rather than lift into a call
-  // that can only fail.
+  // Whether this card lifts at all, and it is not one question: a task with no
+  // session (§5 — Claude Code mints the id on the first run) has nothing to
+  // TRIAGE, while a task with no pending message has nothing to RUN. A card
+  // that can do neither must not lift, rather than lift into a call that can
+  // only fail. tasks-lib.dropLanes holds both halves.
   const draggable = isDraggable(task);
   const href = taskHref(task);
   return (
