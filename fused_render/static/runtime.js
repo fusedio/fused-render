@@ -33,9 +33,13 @@
  *     ready-made /api/fs/raw url to point an <img> at, plus the seed that was
  *     used — invented server-side when you don't pass one, so a render is
  *     always repeatable. Minutes long: onProgress fires per denoising step with
- *     the download-manager record, and that row's ✕ really stops it. Rejects
- *     with .type "cancelled" | "ai_error" | "unavailable" (no image runner on
- *     this machine — the reason is in the message).
+ *     the download-manager record, and that row's ✕ really stops it. Each tick
+ *     also carries previewUrl — a ~32x32 thumbnail of the image so far, ready
+ *     for an <img> src — so there is a picture to watch rather than a counter.
+ *     It can 404 early (the first step writes no frame), so hide it on error;
+ *     it is null on the last tick and on resolve, because the preview file is
+ *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
+ *     "unavailable" (no image runner on this machine — reason in the message).
  *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
  *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
@@ -2574,7 +2578,7 @@
     return data;
   }
 
-  // fused.ai.image({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  // fused.ai.image({prompt, ...}) -> Promise<{path, url, previewUrl, seed, ...}>
   //
   // The one call in this bridge that RESOLVES WITH A FILE. Text streams, so
   // fused.ai hands back words; an image is an artefact, so this hands back
@@ -2588,6 +2592,31 @@
   //
   // The seed comes back whether or not one was passed, so "make that one again"
   // is always a call away.
+  //
+  // And there is something to LOOK at while it runs: `previewUrl` on every
+  // onProgress tick points at a ~32x32 thumbnail of the image-in-progress that
+  // the worker rewrites each denoising step. A page sets it as an <img> src and
+  // gets a picture emerging out of noise instead of a number going up; blur it
+  // and scale it up with CSS, that part is the page's taste, not this API's.
+  //
+  // The URL is built HERE, cache-busted by step, for the same reason `url` is:
+  // otherwise every page that wants this writes the same two lines, and the one
+  // that forgets the cache-buster gets a browser showing frame 2 for a minute.
+  // It is null when this render has no preview file at all, and null again on
+  // the LAST tick and on the resolved object — the preview is deleted as the
+  // render finishes, so a URL there would be a guaranteed 404 and a blank flash
+  // exactly where the finished picture belongs. The resolved `url` is what the
+  // <img> should end on.
+  //
+  // In between, when it is a URL, the file behind it may still be MISSING: the
+  // first step writes no frame (two latents are needed to estimate a picture),
+  // and a model whose latent space has no fitted projection never writes one.
+  // So an <img> pointed here can 404 early, which is ordinary rather than an
+  // error: give it an onerror that hides it, or start it hidden and show it on
+  // load. Predicting THAT here would mean this bridge carrying its own copy of
+  // a rule that lives in `runners/preview.py`, and being wrong about it on some
+  // future model — whereas "the file is gone once the row is terminal" is this
+  // bridge's own fact, and it is the one that would be seen every render.
   function aiImage(opts) {
     opts = opts || {};
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -2602,8 +2631,32 @@
     }
     return aiPost("/api/ai/image", body).then((started) => {
       const watcher = watchJob(started.jobId);
-      const done = () => ({ ...started, url: rawUrl(started.path) });
-      return watcher.watch(onProgress).then((record) => {
+      // `step` is the cache-buster and nothing more: the preview file is ONE
+      // path overwritten in place, so a browser handed the same URL twice shows
+      // the first frame forever. Keyed on the step rather than on Date.now() so
+      // two ticks of the same step are one image and not two requests.
+      //
+      // NULL once the row is terminal, and that is not tidiness. `watch` calls
+      // back with the terminal record too, and by then the preview file is
+      // ALREADY GONE — the worker's sink discards it as the render unwinds,
+      // which happens before the row can be marked done. A page that keeps its
+      // <img> on the latest previewUrl would therefore end every render on a
+      // guaranteed 404: a blank flash exactly where the finished picture
+      // belongs. `state !== "running"` is `watch`'s own terminal test.
+      const previewUrl = (job) =>
+        started.previewPath && job && job.state === "running"
+          ? rawUrl(started.previewPath) + "&step=" + (job.done || 0)
+          : null;
+      // Same fact on the resolved object: it names the real PNG through `url`,
+      // and `previewUrl` is null because the file it would name is deleted.
+      const done = () => ({ ...started, url: rawUrl(started.path), previewUrl: null });
+      // The record is COPIED rather than annotated: it is the same object the
+      // job manager is drawing from, and a field written onto it here would
+      // travel to every other watcher of that row.
+      const tick = onProgress
+        ? (job) => onProgress({ ...job, previewUrl: previewUrl(job) })
+        : null;
+      return watcher.watch(tick).then((record) => {
         if (!record) {
           // The row aged out from under us — a backgrounded tab can sleep past
           // its retention on a render this long. The FILE is the other witness,

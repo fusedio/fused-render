@@ -6532,6 +6532,62 @@ an AI Models page that could say what was on disk but not what was *running*.
   `overwrite=True`, because mflux's default resolves a collision by writing
   somewhere else, and the server has already told the caller where the image
   will be.
+- **AI-9e** **A render shows the picture while it is being made, and it is one
+  file rewritten in place.** A FLUX render is minutes long and everything a page
+  could show was a step counter — a progress bar for a process whose whole
+  output is visual. So the worker writes `<out>.preview.png` beside the image
+  the request already named: a ~32x32, ~3KB thumbnail, **overwritten every
+  step**, advertised by the route as `previewPath` and handed to the page by
+  `fused.ai.image` as a `previewUrl` on every `onProgress` tick — cache-busted
+  by the step, because one path rewritten in place is one image as far as a
+  browser is concerned. **The frame is written before the tick that announces
+  it**, in both runners: `done` is what becomes `&step=N`, and a tick published
+  first can hand a page a URL whose file is still being written — which does not
+  merely 404, it caches the PREVIOUS frame's bytes under a URL that is never
+  requested again, so that step shows a stale picture for its whole duration.
+  The cost is that the ✕ is learned one frame-write later, still on the same
+  callback. `previewUrl` is **null on the terminal tick and on the resolved
+  object**, because the file is discarded as the render unwinds and a page that
+  followed the last `previewUrl` would end every render on a 404 exactly where
+  the finished picture belongs. Blurring and upscaling it is the page's taste, not this
+  API's. **Always on, no flag**: measured at 68ms/step (1.25% of a 512²/16-step
+  render) and dominated by the device sync and the PNG encode rather than the
+  matmul, so it stays roughly flat as resolution grows — a one-percent feature
+  behind an opt-in is a feature most pages never get. **A filmstrip was the
+  other option and is refused**: 100 steps would leave 100 files in a directory
+  the user browses, and the page's `<img>` would have to know which is current.
+  The frame is not the raw latent. FLUX.2 klein is step-wise distilled and its
+  sigma is still ≥ 0.5 at step 14 of 16, so what the callback holds projects to
+  static for almost the whole render; what IS legible from step 2 of 16 is the
+  model's own DENOISED ESTIMATE, recovered from two consecutive latents and
+  their two sigmas. The first step has no predecessor and therefore no preview,
+  which is correct rather than a gap. The latent→RGB map is a 128→3 affine
+  constant fitted once against the VAE's own encodes (R² 0.911/0.912/0.891) —
+  written down rather than derived, because deriving it needs the weights and a
+  preview must not wait for those. **One implementation for both engines**, at
+  the runners root (AI-10c): `runners/preview.py` owns the path rule, the
+  arithmetic, the atomic write and the lifecycle, keyed by the VAE's class name,
+  which the torch runner reads off `pipe.vae` and the MLX one off its variant
+  recipe. A model with no fitted projection renders exactly as it did before —
+  no file, no branch in either denoising loop, and no device sync (the latents
+  reach the sink as a closure, so a no-op never pulls them off the GPU). Frames
+  land by `os.replace` from a temp beside the target, because the page is
+  reading the file through `/api/fs/raw` while the worker rewrites it — and
+  **nothing escapes the sink**, because it is called from the one interruption
+  point in a render that runs for minutes: a full disk, or a Windows lock held
+  by the page's own `<img>` over the destination, must cost the thumbnail and
+  never the picture. A sink that fails three times in a row switches itself off
+  rather than paying a device sync and a doomed syscall per remaining step. And
+  it is removed on success, on cancel AND **on error** — the one place this diverges
+  from the progressive transcript (AI-10a), whose file is kept on a failure
+  because 80 minutes of words is salvage; a half-denoised 32x32 blur of a
+  picture that will never exist is not. **A kill has no unwind**, so a worker
+  ended by `_terminate` / `_kill_tree` (unload, shutdown, a wedge) leaves its
+  last frame behind — and the next render sweeps `<home>/ai/images` of any
+  preview nothing has touched for an hour. Wired to the request rather than to a
+  timer: the directory grows only when renders happen, the caller is about to
+  wait minutes anyway, and a live preview is rewritten every step so its age is
+  what tells the two apart. The image itself is never swept at any age.
 - **AI-8** **The worker measures its own memory.** Only the process holding the
   weights can; on Apple Silicon the GPU pool IS system memory, so RSS is one
   honest number rather than two that need reconciling. What the supervisor knows

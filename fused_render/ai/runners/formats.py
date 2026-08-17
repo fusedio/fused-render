@@ -68,11 +68,24 @@ MFLUX_COMPONENTS = ("transformer", "text_encoder", "vae")
 #: load this": the components can be perfect and the repo still unbuildable,
 #: and a card that showed the engine off the layout alone would offer a Load
 #: for every MLX diffusion repo on the Hub.
+#:
+#: `vae` names the AUTOENCODER the conversion was made from, which is the key
+#: `preview.PROJECTIONS` is indexed by. It is a class name out of diffusers and
+#: mflux has no such class, so it can look like a stray fact in an MLX table —
+#: it is not. The two image runners have to reach ONE row of ONE projection
+#: table (a page must not be able to tell which engine rendered for it), the
+#: torch one reads it off `type(pipe.vae).__name__`, and this side has no
+#: equivalent to read: an mflux conversion carries the same latent space as the
+#: repo it was converted from, and only this table knows which repo that was.
+#: Verified rather than assumed — `bn.running_mean`/`running_var` are
+#: bit-identical between the two repos (max|diff| = 0.0). A variant with no
+#: `vae` simply gets no preview.
 MFLUX_VARIANTS = {
     "mlx-community/FLUX.2-Klein-4B-4bit": {
         "variant": "Flux2Klein",
         "module": "mflux.models.flux2.variants",
         "config": "flux2_klein_4b",
+        "vae": "AutoencoderKLFlux2",
     },
 }
 
