@@ -7,7 +7,7 @@
 // model, and it is why this page no longer merges two feeds client-side the way
 // it used to: `GET /api/tasks` returns the merge, already titled, already
 // counted, already ordered. See
-// docs/superpowers/specs/2026-08-16-tasks-threads-messages-design.md.
+// SPEC.md's SCH section and DECISIONS.md D308.
 //
 // List and Board show tasks. So does the Calendar — the chip IS a task, not a
 // message. What the time axis adds is placement, not a different unit: one chip

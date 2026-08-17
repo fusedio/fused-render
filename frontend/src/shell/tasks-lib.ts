@@ -2,7 +2,7 @@
 // decide, with no DOM and no React in it, so the rules are testable on their
 // own (shell/tasks-lib.test.ts) and the components are left holding markup.
 //
-// The model is docs/superpowers/specs/2026-08-16-tasks-threads-messages-design.md:
+// The model:
 //
 //   PROJECT (a folder)
 //   └─ TASK-002        one Claude session, one thread

@@ -2076,7 +2076,7 @@ export function setSessionTriage(
 // task owns a THREAD, and the thread's MESSAGES are every prompt sent into it —
 // typed in a chat, typed in the template's chat, or fired by the scheduler. The
 // three sources differ only in how the message arrived; the thread does not
-// care. See docs/superpowers/specs/2026-08-16-tasks-threads-messages-design.md.
+// care.
 //
 // `key` is the join everything else uses. A task that has run has a session id
 // and uses it; a task that is only a future schedule entry has no session yet

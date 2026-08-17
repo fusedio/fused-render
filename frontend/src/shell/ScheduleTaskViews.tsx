@@ -14,7 +14,7 @@
 //   ├─ MSG-002
 //   └─ MSG-001
 //
-// See docs/superpowers/specs/2026-08-16-tasks-threads-messages-design.md, §1
+// The model, in one line: a task IS a Claude session, and §1
 // (the model), §3 (ids), §7 (unread), §8 (these two views).
 //
 // The visual vocabulary is the one the previous views established and the
