@@ -1560,6 +1560,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
+            # posix-spawn-exempt: `cmd` is the CLAUDE CLI argv (built by
+            # _claude_argv), never git — checked by hand. The git spawn in this
+            # file is the `git()` helper above, which resolves an absolute
+            # argv[0] and passes close_fds=False like every other one.
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,

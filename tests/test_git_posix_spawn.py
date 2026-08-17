@@ -320,6 +320,78 @@ def _spawn_keywords(tree, node):
     return kwargs, unresolved
 
 
+# An escape hatch for a spawn whose argv this sweep cannot read but a human HAS
+# read and confirmed is not git. Deliberately a comment on the call rather than a
+# list in this file: the justification belongs next to the code, and adding one is
+# a reviewable diff. Silence is what this whole file exists to prevent — an
+# exemption is not silence, it is a recorded decision.
+_EXEMPT = "posix-spawn-exempt"
+
+
+def _exempted(src_lines, node):
+    """Whether the spawn carries an `# posix-spawn-exempt: <why>` marker.
+
+    Searched across the call itself AND the whole comment block immediately above
+    it, walking up while the lines are comments or blank. A one-line window would
+    force the justification onto the same line as the code, where it cannot say
+    anything useful — and the justification is the point of the mechanism.
+    """
+    end = min(len(src_lines), (node.end_lineno or node.lineno))
+    start = node.lineno - 1
+    while start > 0:
+        above = src_lines[start - 1].strip()
+        if above.startswith("#") or not above:
+            start -= 1
+        else:
+            break
+    return any(_EXEMPT in line for line in src_lines[start:end])
+
+
+def _resolves_git(tree):
+    """Whether this file mentions git resolution at all (`_git_bin`/`git_bin`/
+    `which("git")`/a literal git path). Used only to decide whether an
+    UNRECOGNISABLE argv in this file deserves a complaint — a file with no git
+    anywhere is none of this sweep's business."""
+    import ast
+
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and n.id in ("_git_bin", "git_bin", "_GIT_BIN"):
+            return True
+        if isinstance(n, ast.Attribute) and n.attr in ("_git_bin", "git_bin"):
+            return True
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            if os.path.basename(n.value) in _GIT_NAMES:
+                return True
+    return False
+
+
+def test_no_module_imports_a_spawner_by_bare_name():
+    """`from subprocess import run` would make every call above invisible.
+
+    The sweep matches `subprocess.run(...)` as an ATTRIBUTE call, so a bare
+    imported `run(...)` slips past the whole check. Measured today: zero
+    occurrences in the package. Pinned so it stays that way, because the failure
+    is silent — the sweep simply stops seeing the call site.
+    """
+    import ast
+
+    root, files = _sources()
+    offenders = []
+    for py in files:
+        try:
+            tree = ast.parse(py.read_text(errors="replace"))
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom) and n.module == "subprocess":
+                names = [a.name for a in n.names if a.name in _SPAWNERS]
+                if names:
+                    offenders.append(
+                        f"{py.relative_to(root)}:{n.lineno}: from subprocess "
+                        f"import {', '.join(names)} — invisible to the sweep")
+    assert not offenders, "\n  ".join(offenders)
+
+
 def _sources():
     import pathlib
 
@@ -339,15 +411,36 @@ def test_every_git_spawn_in_the_repo_can_posix_spawn():
     root, files = _sources()
     problems = []
     for py in files:
+        text = py.read_text(errors="replace")
         try:
-            tree = ast.parse(py.read_text(errors="replace"))
+            tree = ast.parse(text)
         except SyntaxError:
             continue
+        src_lines = text.splitlines()
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                     and node.func.attr in _SPAWNERS):
                 continue
             if not _is_git_argv(node):
+                # RECOGNITION blind spot, closed here rather than left implicit.
+                # `_is_git_argv` can only see a literal argv; three spellings
+                # defeat it — argv assembled into a local VARIABLE, argv[0] from
+                # an f-string, and a tuple/name spread. In those cases the call
+                # is not recognised as a git spawn at all, so NONE of the three
+                # clauses gets checked: the "could not check reads as fine"
+                # failure, displaced from the kwargs up to the argv. Today no git
+                # spawn is written that way (measured: 17 variable-argv spawns in
+                # the package, none of them git), so flagging it in a file that
+                # resolves git AT ALL costs nothing and fails loudly the day
+                # someone writes one.
+                if (_resolves_git(tree) and node.args
+                        and isinstance(node.args[0], (ast.Name, ast.JoinedStr))
+                        and not _exempted(src_lines, node)):
+                    problems.append(
+                        f"{py.relative_to(root)}:{node.lineno}: argv is a "
+                        f"{type(node.args[0]).__name__}, so this sweep cannot see "
+                        "whether it is git — inline the argv list, or mark the "
+                        f"call `# {_EXEMPT}: <why>` once you have checked it")
                 continue
             where = f"{py.relative_to(root)}:{node.lineno}"
             kwargs, unresolved = _spawn_keywords(tree, node)
@@ -398,6 +491,16 @@ def test_the_sweep_actually_catches_each_violation(tmp_path):
     could not. So the detector is pointed at deliberately broken sources —
     including the multi-line and tuple spellings the old regex missed — and must
     object to every one.
+
+    DRIFT RISK, stated because it is real: the clause checks below are
+    re-implemented inline rather than shared with
+    test_every_git_spawn_in_the_repo_can_posix_spawn, so a bug in THAT test's
+    close_fds/cwd logic would not be caught here. They are kept separate on
+    purpose — sharing the code under test with the test that checks it is how a
+    detector comes to agree with itself and nothing else — and the pair was
+    mutation-tested to confirm it jointly covers the detector (a
+    `_dict_literal_of` mutation survives one of the two and is caught by its
+    sibling). If you change a clause in one, change it in the other.
     """
     import ast
 
