@@ -106,6 +106,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       void getSyncStatus(name)
         .then((s) => {
           setSync(s);
+          // Self-heal: a server restart drops the watcher; re-arm it.
+          if (!s.watching) void startSync(name).catch(() => undefined);
           if (lastPushSeq.current !== null && s.push_seq !== lastPushSeq.current) {
             setFrameEpoch((n) => n + 1);
           }

@@ -81,7 +81,10 @@ export default function Canvases() {
     setBusy(canvas.name);
     setError(null);
     try {
-      await cloneCanvas(canvas.name);
+      // Clone only the first time: `pull --force` resets the folder to the
+      // remote state, and an already-cloned canvas may hold local edits the
+      // watcher hasn't pushed yet (e.g. after a server restart).
+      if (!canvas.cloned) await cloneCanvas(canvas.name);
       await startSync(canvas.name);
       navigateUrl(`/canvases/${encodeURIComponent(canvas.name)}`);
     } catch (e) {
