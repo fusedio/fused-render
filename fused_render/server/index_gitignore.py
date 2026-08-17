@@ -50,6 +50,16 @@ of the machinery here, so time is the only thing that can bound it, and the
 sweep therefore happens on age whatever the index is doing. Newly-appeared
 paths are never stale — they are exactly the ones that get queried.
 
+The pool is also PERSISTED, one file per index root under the index state
+dir. A sweep of a home-sized corpus is ~1.5s of check-ignore, and it used to
+be re-bought on the first keystroke after every server start — a cost with no
+cause, since a verdict is a fact about a path and an oracle, not about a
+process. What does NOT change is the bound: `swept_at` is stored and the
+loaded pool is discarded on age exactly as an in-memory one is, so
+persistence alone only helps a restart within VERDICT_MAX_AGE_S. The other
+half of the design is the startup warm (server/routers/index.py), which
+re-sweeps at idle; together they mean no keystroke pays for a sweep.
+
 Scope is an approximation of the walk's online discovery, biased to
 under-filter (pruning is an optimization, never a hard dependency — the
 walk takes the same posture when git is missing):
@@ -64,12 +74,17 @@ walk takes the same posture when git is missing):
 Mount-backed roots never get here: the index refuses to scan them, so they
 are never `covered` — no check-ignore (kernel I/O) can be aimed at a mount.
 """
+import hashlib
+import json
+import logging
 import os
 import time
 from collections import OrderedDict
 from threading import Lock
 
 from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
+
+logger = logging.getLogger(__name__)
 
 # Verdict pools kept per INDEX ROOT. Four is generous now that folders share
 # their root's pool: a machine with more than four configured scan roots is
@@ -99,6 +114,19 @@ VERDICT_MAX_AGE_S = 300.0
 # The name of "no oracle in this request's scope can decide this entry". Not a
 # verdict: such an entry is passed through unfiltered and left out of the pool.
 _UNDECIDED = ""
+
+# How often one root's pool may be written back. A sweep tops the pool up on
+# every request that sees new paths, and the file is the whole pool each time
+# (~200k rels on a home dir), so writing per top-up would put a multi-megabyte
+# serialize on the search path. The FIRST save of a root is not debounced —
+# that is the big one the warm buys, and it must reach disk before the process
+# can exit.
+_SAVE_MIN_INTERVAL_S = 60.0
+
+# root -> when THIS process last wrote its pool. Bounded by _CACHE_ROOTS in
+# practice; entries for evicted roots are harmless (a stale stamp only delays
+# one write).
+_saved_at: dict = {}
 
 
 class _Verdicts:
@@ -182,9 +210,19 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list) -> set:
     now = time.time()
     with _cache_lock:
         pool = _cache.get(base)
+        if pool is None:
+            # A process that has never held this root's pool asks disk before
+            # it asks git: the file is a sweep of this same root, by this
+            # process before a restart or by another one, and it is age-checked
+            # exactly as an in-memory pool is. An EXPIRED in-memory pool
+            # deliberately does NOT come back through here — its own saved copy
+            # is never newer than it, so reloading it would put the pool back
+            # to the age it just aged out of and VERDICT_MAX_AGE_S would never
+            # be reachable.
+            pool = _load_verdicts(base)
         if pool is None or (now - pool.swept_at) >= VERDICT_MAX_AGE_S:
             pool = _Verdicts(now)
-            _cache[base] = pool
+        _cache[base] = pool
         _cache.move_to_end(base)
         while len(_cache) > _CACHE_ROOTS:
             _cache.popitem(last=False)
@@ -203,6 +241,7 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list) -> set:
     if not want:
         return drop
     fresh = _ignored(root, entries, top, deciders, want)
+    snapshot = None
     with _cache_lock:
         # A concurrent request may have swept the pool out from under us; its
         # verdicts are no less true, but they belong to the pool that asked for
@@ -217,7 +256,120 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list) -> set:
                     # It may have been ignored under a DIFFERENT oracle before;
                     # this request's answer supersedes it, in both directions.
                     pool.ignored.discard(rel)
+            if _save_due(base, now):
+                snapshot = _snapshot(base, pool)
+    if snapshot is not None:
+        _save_verdicts(base, snapshot)
     return drop | fresh
+
+
+# ------------------------------------------------------------ the pool on disk
+
+def _verdicts_path(base: str) -> str:
+    """Where one index root's pool lives, under the index state dir.
+
+    A digest rather than the root path itself: a root is an absolute path with
+    separators, spaces and any unicode the filesystem allows, and none of that
+    belongs in a filename. The root is stored INSIDE the file and checked on
+    load, so a truncated digest costs a re-sweep at worst, never another
+    tree's verdicts."""
+    from fused_render.index.config import load_config
+
+    digest = hashlib.sha1(base.encode("utf-8", "surrogateescape")).hexdigest()
+    return os.path.join(load_config().dir, "gitignore", digest[:16] + ".json")
+
+
+def _snapshot(base: str, pool: "_Verdicts") -> dict:
+    """The pool as a JSON-able document, grouped by deciding oracle.
+
+    Grouping IS the compaction: `decider` maps every rel to an oracle name, and
+    there are a handful of distinct names against up to 200k rels, so writing
+    the name once per group instead of once per rel is most of the file. Both
+    halves of a verdict round trip exactly — which rels the oracle decided, and
+    which of them it called ignored — because reuse is conditional on the
+    decider and a lossy `ignored`-only file would silently widen it."""
+    groups: dict = {}
+    for rel, name in pool.decider.items():
+        g = groups.get(name)
+        if g is None:
+            g = groups[name] = ([], [])
+        g[0 if rel in pool.ignored else 1].append(rel)
+    return {"root": base, "swept_at": pool.swept_at,
+            "verdicts": [[name, ig, kept] for name, (ig, kept) in groups.items()]}
+
+
+def _load_verdicts(base: str):
+    """The persisted pool for `base`, or None — missing, too old, for another
+    root, or unreadable in any way. Never raises: this runs on the path that
+    answers a search box, and a pool is an optimization."""
+    try:
+        with open(_verdicts_path(base), encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("root") != base:
+            return None
+        swept_at = float(data["swept_at"])
+        # The same bound an in-memory pool lives under, anchored on the sweep
+        # that produced these verdicts rather than on the process that read
+        # them: an edited .gitignore is invisible to everything here, so age is
+        # the only thing that can bound the staleness, restart or no restart.
+        if (time.time() - swept_at) >= VERDICT_MAX_AGE_S:
+            return None
+        pool = _Verdicts(swept_at)
+        for name, ignored, kept in data["verdicts"]:
+            if not name:  # _UNDECIDED is not a verdict and is never written
+                return None
+            for rel in ignored:
+                pool.decider[rel] = name
+                pool.ignored.add(rel)
+            for rel in kept:
+                pool.decider[rel] = name
+        return pool
+    except FileNotFoundError:
+        return None
+    except Exception:  # noqa: BLE001 - corrupt, truncated, hand-edited: re-sweep
+        logger.debug("unreadable gitignore verdict pool for %s", base,
+                     exc_info=True)
+        return None
+
+
+def _save_due(base: str, now: float) -> bool:
+    """Whether `base`'s pool may be written back now, stamping it when it may.
+
+    Called under `_cache_lock`. The FIRST save of a root is never debounced —
+    it is the full sweep the startup warm buys, and the whole point is that the
+    next process finds it — while later top-ups are, because the file is the
+    whole pool every time and a search must not serialize megabytes per
+    keystroke."""
+    last = _saved_at.get(base)
+    if last is not None and (now - last) < _SAVE_MIN_INTERVAL_S:
+        return False
+    _saved_at[base] = now
+    return True
+
+
+def _save_verdicts(base: str, data: dict) -> None:
+    """Write the pool atomically (tmp + rename, as `index/store._write_manifest`
+    does) so a reader never sees half of one, and never raise.
+
+    Inline on the thread that swept, not a background one: the sweep this
+    follows is seconds of `git check-ignore` and the dump is a fraction of it,
+    and in the normal case both are paid by the startup warm rather than by a
+    request. The tmp name carries the pid so two processes writing the same
+    root cannot land in each other's file."""
+    path = _verdicts_path(base)
+    tmp = f"{path}.{os.getpid()}.new"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - a cache that cannot be saved is still a cache
+        logger.debug("could not save the gitignore verdict pool for %s", base,
+                     exc_info=True)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def _deciders(root: str, entries: list, prefix: str):

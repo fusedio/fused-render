@@ -3,6 +3,7 @@ and the index-first swap must not change what search shows.
 
 See fused_render/server/index_gitignore.py.
 """
+import json
 import os
 import subprocess
 
@@ -270,6 +271,149 @@ def test_a_narrowed_payload_cannot_masquerade_as_the_corpus(tmp_path, monkeypatc
         "proj/.gitignore", "proj/a.log", "proj/a.py"]))
     assert [e["rel"] for e in full["entries"]] == ["proj/.gitignore", "proj/a.py"]
     assert full["total"] == len(full["entries"])
+
+
+# -- the pool on disk ----------------------------------------------------------
+
+def _restart(monkeypatch):
+    """A NEW server process: same disk, no in-memory state at all."""
+    _fresh_cache(monkeypatch)
+    monkeypatch.setattr(index_gitignore, "_saved_at", {})
+
+
+def _no_git(monkeypatch):
+    """Make asking git impossible, so a filtered result can only have come out
+    of the persisted pool."""
+    def boom(*a, **k):
+        raise AssertionError("git was asked; the pool was not reused")
+
+    monkeypatch.setattr(index_gitignore, "_ignored", boom)
+
+
+def test_the_pool_survives_a_restart(tmp_path, monkeypatch):
+    """The verdicts a sweep bought are a per-INDEX-ROOT fact, not a per-process
+    one: a server restart used to throw ~1.5s of check-ignore away and re-buy
+    it on the user's next keystroke."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    rels = ["proj/.gitignore", "proj/a.log", "proj/a.py"]
+    filter_corpus(_out(root, rels), index_root=root)
+
+    _restart(monkeypatch)
+    _no_git(monkeypatch)
+    out = filter_corpus(_out(root, rels), index_root=root)
+    assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore", "proj/a.py"]
+
+
+def test_the_loaded_pool_round_trips_the_decider_map(tmp_path, monkeypatch):
+    """The decider map is the correctness half of the pool — a verdict is only
+    reusable under the ORACLE that produced it — so it has to come back exactly
+    as it went out, not merely "the ignored set survived"."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    (proj / "sub").mkdir(parents=True)
+    (proj / ".gitignore").write_text("*.outer\n", encoding="utf-8")
+    (proj / "sub" / ".gitignore").write_text("*.inner\n", encoding="utf-8")
+    root = str(tmp_path)
+    rels = ["proj/.gitignore", "proj/sub/.gitignore", "proj/x.outer",
+            "proj/sub/y.inner", "proj/sub/keep.py"]
+    filter_corpus(_out(root, rels), index_root=root)
+    before = index_gitignore._cache[root]
+
+    _restart(monkeypatch)
+    loaded = index_gitignore._load_verdicts(root)
+    assert loaded is not None
+    assert loaded.decider == before.decider
+    assert loaded.ignored == before.ignored
+    assert loaded.swept_at == before.swept_at
+
+
+def test_a_pool_too_old_on_disk_is_discarded(tmp_path, monkeypatch):
+    """VERDICT_MAX_AGE_S is the ONLY bound on the staleness verdict reuse
+    introduces (an edited .gitignore moves nothing observable), so it has to
+    hold across restarts too — `swept_at` from the file is the age anchor."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    rels = ["proj/.gitignore", "proj/a.log"]
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 1
+
+    path = index_gitignore._verdicts_path(root)
+    with open(path, encoding="utf-8") as f:
+        stored = json.load(f)
+    stored["swept_at"] -= index_gitignore.VERDICT_MAX_AGE_S + 1
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(stored, f)
+
+    _restart(monkeypatch)
+    assert index_gitignore._load_verdicts(root) is None
+    # ...and the rule that changed while the server was down is seen again.
+    (proj / ".gitignore").write_text("nothing-here\n", encoding="utf-8")
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 2
+
+
+def test_a_corrupt_pool_file_is_ignored(tmp_path, monkeypatch):
+    """A half-written or hand-edited file re-sweeps; it never raises. This runs
+    on the path that answers a search box."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    rels = ["proj/.gitignore", "proj/a.log", "proj/a.py"]
+    filter_corpus(_out(root, rels), index_root=root)
+    with open(index_gitignore._verdicts_path(root), "w", encoding="utf-8") as f:
+        f.write('{"root": "' + root + '", "swept_at": 1.0, "verdicts": [[')
+
+    _restart(monkeypatch)
+    assert index_gitignore._load_verdicts(root) is None
+    out = filter_corpus(_out(root, rels), index_root=root)
+    assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore", "proj/a.py"]
+
+
+def test_a_file_written_for_another_root_is_not_reused(tmp_path, monkeypatch):
+    """The filename is a digest of the root; the root itself is stored inside
+    and checked, so a digest collision (or a file left by a renamed root)
+    re-sweeps instead of answering with another tree's verdicts."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    filter_corpus(_out(root, ["proj/.gitignore", "proj/a.log"]), index_root=root)
+    path = index_gitignore._verdicts_path(root)
+    with open(path, encoding="utf-8") as f:
+        stored = json.load(f)
+    stored["root"] = root + "-elsewhere"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(stored, f)
+
+    _restart(monkeypatch)
+    assert index_gitignore._load_verdicts(root) is None
+
+
+def test_an_expired_in_memory_pool_does_not_reload_itself_from_disk(
+        tmp_path, monkeypatch):
+    """Disk is consulted only when this process has NO pool for the root. An
+    expired pool means the process has already decided to re-sweep, and its own
+    saved copy is never newer than it — reloading it would make
+    VERDICT_MAX_AGE_S unreachable."""
+    _fresh_cache(monkeypatch)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    root = str(tmp_path)
+    rels = ["proj/.gitignore", "proj/a.log"]
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 1
+    (proj / ".gitignore").write_text("nothing-here\n", encoding="utf-8")
+    for pool in index_gitignore._cache.values():
+        pool.swept_at -= index_gitignore.VERDICT_MAX_AGE_S + 1
+    assert len(filter_corpus(_out(root, rels), index_root=root)["entries"]) == 2
 
 
 def test_nested_markers_defer_to_the_outermost(tmp_path, monkeypatch):

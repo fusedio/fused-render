@@ -21,6 +21,7 @@ nesting come for free, and no test can write into a real home.
 | `<index>/ignore_applied.json` | ignore fingerprint the index was built with (`scan-ignore.md §4`) |
 | `<index>/config.json` | user config: ignore list + scan roots (`server-api.md §3`) |
 | `<index>/scans.json` | last scan start per root — the startup debounce (`server-api.md §2`) |
+| `<index>/gitignore/<digest>.json` | one index root's pooled `git check-ignore` verdicts, so a restart does not re-sweep — a SERVER-layer cache that only lodges here, age-bounded by `VERDICT_MAX_AGE_S` and untouched by `POST /api/index/delete` (`server/index_gitignore.py`) |
 | `<index>/runs/<run_id>/` | per-run scratch: spec, event log, shards (`scan.md §2`) |
 
 OpenIndex had a relocatable index folder (`OpenIndex.location` + a `move_index`
