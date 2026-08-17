@@ -473,13 +473,15 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
         managers = list(_syncs.values())
     for manager in managers:
         manager.pause()
-    try:
-        proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT)
-        if err is not None:
-            return err
-    finally:
+    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT)
+    if err is not None:
+        # Still signed in — resume so sync keeps working until the user
+        # retries. Resuming a manager we're about to stop (success path)
+        # would let a briefly-unpaused thread start a push/pull against
+        # already-cleared credentials, and block stop()'s join on it.
         for manager in managers:
             manager.resume(rebaseline=False)
+        return err
     with _SYNC_LOCK:
         managers = list(_syncs.values())
         _syncs.clear()

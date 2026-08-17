@@ -84,8 +84,13 @@ export default function Canvases() {
   // stays stuck on "Waiting for browser sign-in…" forever.
   useEffect(() => {
     if (!loggingIn) return;
+    // A poll tick already in flight when this effect is torn down (e.g. a
+    // deliberate sign-out) must not act on its result — clearInterval only
+    // stops future ticks, not a request that's already on the wire.
+    let cancelled = false;
     pollRef.current = window.setInterval(() => {
       void getCanvasesStatus().then((s) => {
+        if (cancelled) return;
         setStatus(s);
         const completed =
           s.logged_in && s.creds_stamp !== loginStampRef.current;
@@ -100,6 +105,7 @@ export default function Canvases() {
       });
     }, LOGIN_POLL_MS);
     return () => {
+      cancelled = true;
       if (pollRef.current !== null) window.clearInterval(pollRef.current);
     };
   }, [loggingIn, refresh]);
