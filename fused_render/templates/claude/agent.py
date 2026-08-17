@@ -1707,7 +1707,8 @@ def _commit_turn(file: str, message: str) -> None:
         return subprocess.run(
             [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
-            capture_output=True, text=True, timeout=30, close_fds=False)
+            capture_output=True, text=True, timeout=30, close_fds=False,
+            encoding="utf-8", errors="replace")
 
     try:
         # Legacy defense (D83-reversal, D205): sidecars now live under

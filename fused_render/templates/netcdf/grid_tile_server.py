@@ -413,7 +413,8 @@ print(json.dumps({"npz": tmp.name + ".npz" if not tmp.name.endswith(".npz") else
         # host override intact.
         env.setdefault("HDF5_USE_FILE_LOCKING", "FALSE")
         r = subprocess.run([py, "-c", code], input=json.dumps(params),
-                           capture_output=True, text=True, timeout=180, env=env)
+                           capture_output=True, text=True, timeout=180, env=env,
+                           encoding="utf-8", errors="replace")
         if r.returncode != 0:
             raise RuntimeError(f"system engine failed: {r.stderr[-400:]}")
         d = json.loads(r.stdout.strip().splitlines()[-1])

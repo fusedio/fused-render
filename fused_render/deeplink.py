@@ -256,6 +256,8 @@ def _git(args: list[str], timeout: int = 300) -> str:
             stderr=subprocess.PIPE,
             timeout=timeout,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=_git_env(),
         )
     except FileNotFoundError:

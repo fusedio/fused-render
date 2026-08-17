@@ -499,6 +499,7 @@ def _spawn_authorize(bin_: str, backend: str,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8", errors="replace",
         env={**os.environ, **(env_extra or {})},
     )
 
@@ -949,7 +950,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
     for k, v in sugg["params"].items():
         cmd += [k, v]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+                           encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         return JSONResponse({"error": "rclone config create timed out (30s)"}, status_code=502)
     if r.returncode != 0:
@@ -966,7 +968,8 @@ def create_detected_remote(body: dict = Body(...), x_fused: str | None = Header(
             # the next detect and re-invite the doomed mount.
             try:
                 d = subprocess.run([bin_, "config", "delete", name],
-                                   capture_output=True, text=True, timeout=30)
+                                   capture_output=True, text=True, timeout=30,
+                                   encoding="utf-8", errors="replace")
                 removed = d.returncode == 0
             except (OSError, subprocess.TimeoutExpired):
                 removed = False

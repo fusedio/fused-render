@@ -50,7 +50,8 @@ def warm(bin_path, cache_dir, warm_dir, main_path, build_dir):
              "--outdir", build_dir, main_path],
             env=env, cwd=os.path.dirname(main_path), capture_output=True, text=True,
             timeout=WARM_TIMEOUT_S,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            encoding="utf-8", errors="replace")
         # A .log means Tectonic fetched what it needed and started typesetting, so
         # the cache is warm even if the doc then failed — mark it and let the page's
         # recompile surface the real diagnostics. Only a run that wrote no log

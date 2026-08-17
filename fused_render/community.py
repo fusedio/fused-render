@@ -148,6 +148,7 @@ def _git(cwd, *args, timeout=GIT_TIMEOUT):
         return subprocess.run(
             [_git_bin(), "-C", cwd, *IDENTITY, *args],
             capture_output=True, text=True, timeout=timeout, env=env,
+            encoding="utf-8", errors="replace",
             close_fds=False,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )

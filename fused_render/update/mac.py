@@ -90,7 +90,8 @@ def detect_method(bundle: str | None, *, brew: str | None = None,
         return "dmg"
     try:
         listed = run([brew, "list", "--cask", CASK_NAME],
-                     capture_output=True, text=True, timeout=30)
+                     capture_output=True, text=True, encoding="utf-8", errors="replace",
+                     timeout=30)
     except (OSError, subprocess.TimeoutExpired):
         return "dmg"
     if listed.returncode != 0:
