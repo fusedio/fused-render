@@ -424,7 +424,9 @@ def test_git_is_run_as_an_argv_list_with_no_shell(tmp_path, monkeypatch):
     real_run = mod.subprocess.run
 
     def spy(cmd, **kw):
-        if isinstance(cmd, list) and cmd[:1] == ["git"]:
+        # argv[0] is now the ABSOLUTE git path — required to reach posix_spawn, since CPython forks unless os.path.dirname(executable) is truthy and a fork with libproj resident SIGSEGVs before exec (tests/test_git_posix_spawn.py). Still one basename, still a list, still no shell, which is what this test is about.
+        if isinstance(cmd, list) and cmd and os.path.basename(
+                str(cmd[0])) in ("git", "git.exe"):
             seen.setdefault("calls", []).append((cmd, kw))
         return real_run(cmd, **kw)
 

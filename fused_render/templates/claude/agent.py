@@ -1560,6 +1560,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
+            # posix-spawn-exempt: `cmd` is the CLAUDE CLI argv (built by
+            # _claude_argv), never git — checked by hand. The git spawn in this
+            # file is the `git()` helper above, which resolves an absolute
+            # argv[0] and passes close_fds=False like every other one.
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
                                     stdin=stdin_fh or subprocess.DEVNULL,
@@ -1612,8 +1616,12 @@ def _commit_turn(file: str, message: str) -> None:
         if subject else "Claude turn"
 
     def git(*args):
+        # ABSOLUTE argv[0]: close_fds=False alone does NOT reach posix_spawn —
+        # CPython forks unless os.path.dirname(executable) is truthy, and a fork
+        # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
+        import shutil
         return subprocess.run(
-            ["git", "-C", app_dir, "-c", "user.name=Fused",
+            [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False)
 

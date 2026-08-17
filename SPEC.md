@@ -4554,6 +4554,75 @@ caller that wants the log on purpose.
   never the traceback overlay — and `ai_unavailable` reads as *"AI is not
   available on this server."*
 
+- **GT-19** **A merge conflict, and a failed operation, can be taken to an AI —
+  and NOTHING it says reaches the working tree without a confirmation.** Two
+  situations, one button (the same sparkle as GT-18), one panel, and one model:
+  **`claude-sonnet-5`**, named explicitly rather than left on the cheap default,
+  because reconciling two versions of a file is not the shape of work the default
+  is for. `effort` stays low — the thinking budget is not what decides whether a
+  merge is understood, and it is the latency the user waits through.
+
+  **The conflict case is the primary one.** A conflicted row in the change lists
+  carries the sparkle, ahead of Stage — on a conflicted file the resolution is
+  what the user came for, and Stage is the act that ENDS the conflict, so
+  offering them the other way round invites a `git add` of a file that still has
+  markers in it. Which rows are conflicted is the READER's answer
+  (`_status`'s `conflicted`, git's own porcelain rule: a `U` on either side, plus
+  `AA`/`DD`) and never re-derived in the view — a seven-case mirror with no way
+  to notice it drifting is how the button appears on the wrong rows.
+
+  The context the model gets is `log.py op="conflicts"`: the unmerged paths with
+  their **working-tree marker text** (the index's three stages are not the text a
+  resolution replaces), the operation in flight — merge / rebase / cherry-pick /
+  revert, read from the git dir's marker files rather than parsed out of `git
+  status`'s localised prose — and the branch. The read is deliberately
+  **UNSCOPED**, unlike almost every other read in §33: a merge is not
+  half-finished for one folder, so hiding the conflicts outside the open scope
+  would describe a state that does not exist. Each entry carries `in_scope`
+  instead, so the view SHOWS every conflict and offers to write only the ones
+  `ops.py` would accept (GT-13). Capped in file count and total bytes with the
+  truncation reported, so a prompt built from it is bounded and the panel can say
+  the model saw only part of the file. A binary or unreadable unmerged file is
+  NAMED and never read — the answer there is `git checkout --ours/--theirs`, not
+  a model.
+
+  **Nothing is applied by the button that asked.** The answer streams into a
+  review panel above the toolbar; Apply asks (GT-16's `ask` mechanism, and
+  `resolve` is in `DESTRUCTIVE_OPS` for exactly that reason: it overwrites the
+  only copy of what git left behind), and the confirmation is rendered INSIDE the
+  panel rather than in a list section — the question belongs next to the text it
+  writes, and a conflicted file is listed in both the staged and the changes
+  section, so there is no single row to attach it to. A pending `ask=resolve:…`
+  that survived a refresh is dropped rather than answered: the resolved text
+  lives in memory, so its Yes could only fail.
+
+  `ops.py op="resolve"` writes ONE file's text and does **nothing else** — no
+  `git add`, no commit. Marking a conflict resolved is a separate act the user did
+  not press, so the file lands unmerged-in-the-index and the ordinary Stage
+  button is still what resolves it. It refuses: a path that is not currently
+  unmerged (`--diff-filter=U` is the authority, which is what stops this being a
+  general-purpose "overwrite any file" write), more than one path, empty content,
+  oversized content, and — the refusal that makes the feature safe to point at a
+  model — content that still carries conflict markers. Written through a temp
+  file and `os.replace`, because a half-overwritten conflicted file is worse than
+  no write. A model that declines answers `UNRESOLVABLE` and gets **no Apply at
+  all**.
+
+  **The operation-error case is secondary and produces advice only.** A failed
+  mutation's `flash` carries the sparkle; the model gets the error text plus the
+  repository's branch/upstream/ahead-behind/dirty state and returns what it means
+  and what to run. There is no Apply, and this view will not run a command a
+  model picked — that is a different feature and a much larger one.
+
+  Every `fused.ai` rejection is this view's own sentence, never the traceback
+  overlay: `ai_unavailable`, `model_loading`, `unavailable`, `cancelled`,
+  `timeout` and `bad_request` each read as an ordinary answer. The button is
+  disabled while a call is in flight and while a proposal is on screen (one panel,
+  one subject), and Cancel drops the panel — honestly, since `fused.ai.cancel`
+  only reaches a LOCAL generation and this asks for a Claude model. Mount-backed
+  targets never reach any of it: `_locate` refuses a mount in both modules and the
+  gate never offers the view (GT-4 / MD-11).
+
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
 index, i.e. everything git already knows about; that one reads Claude Code's

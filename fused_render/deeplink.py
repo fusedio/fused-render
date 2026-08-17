@@ -37,6 +37,23 @@ from fused_render._view_url_codec import view_url_path as _view_url_path
 
 from fused_render.shell.seed import fused_dir
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 logger = logging.getLogger("fused_render")
 
 router = APIRouter()
@@ -222,12 +239,19 @@ def _git_env() -> dict:
     return env
 
 
-def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
-    """Run git, raise DeeplinkError carrying git's stderr on failure."""
+def _git(args: list[str], timeout: int = 300) -> str:
+    """Run git, raise DeeplinkError carrying git's stderr on failure.
+
+    Takes no `cwd`: it had one, no caller ever passed it (every call already
+    carries its own `-C <dest>`), and a `cwd=` kwarg forces CPython onto the fork
+    path — where a process with libproj resident dies in PROJ's atfork handler
+    before exec, rc -11 and silent. Removed rather than defaulted so it cannot be
+    reintroduced by a caller that does not know that.
+    """
     try:
         proc = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
+            [_git_bin(), *args],
+            close_fds=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
