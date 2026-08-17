@@ -1257,6 +1257,31 @@ export function initialTitleOf(entry?: ScheduledMessage | null): string {
   return LEAKED_TITLE.test(title) ? "" : title;
 }
 
+// The pairing that keeps the two halves of step 1 from drifting apart. "Is there
+// a usable stored title?" is ONE question with two readers — the value the field
+// OPENS on, and whether the /api/tasks lookup may run at all — so it is asked
+// once, by `initialTitleOf` above, and both readers take that answer.
+//
+// It was asked twice (review, 2026-08-18), and the two answers disagreed on
+// exactly the rows LEAKED_TITLE exists to rescue: the field took
+// `initialTitleOf`, which blanks a leaked machinery title, while the lookup gated
+// on the RAW `entry.title` — and a leaked string is non-empty, so the guard sent
+// the lookup home. The field arrived blank AND stayed blank on a REQUIRED field,
+// so Save was refused on the one task the user cannot easily rename. Repeating
+// the LEAKED_TITLE test at the second site would only have set the same trap for
+// whatever the third reason to reject a stored title turns out to be.
+//
+// `lookupSession` is "" for "do not fetch", and it carries BOTH refusals: a
+// stored title has won step 1 outright (an async overwrite would be data loss),
+// or there is no session to ask about in the first place.
+export function initialTitleStateOf(
+  entry?: ScheduledMessage | null,
+  sessionId?: string | null,
+): { title: string; lookupSession: string } {
+  const title = initialTitleOf(entry);
+  return { title, lookupSession: title ? "" : (sessionId ?? "") };
+}
+
 // Steps 2 and 3, which only /api/tasks can answer: the name the session this
 // form was opened from already carries. A session IS a task there, so the row
 // keyed on it has both the resolved `title` and the `title_source` saying which
@@ -1597,16 +1622,23 @@ export default function NewJobModal({
   const initialAsk = initialAskOf(editing, initialMessage);
   const [message, setMessage] = useState(initialAsk);
   // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17).
-  // `initialTitleOf` is only the synchronous half of the precedence: a stored
-  // title, else blank. The two SESSION steps — the thread's `ai-title`, then its
-  // first user message — need a fetch and land in the /api/tasks effect below.
-  // Blank on the first paint is deliberate now: the alternative was deriving a
-  // name from the ask, which is exactly how a long scheduled message ended up
-  // duplicated into the title.
+  // This is only the synchronous half of the precedence: a usable stored title,
+  // else blank. The two SESSION steps — the thread's `ai-title`, then its first
+  // user message — need a fetch and land in the /api/tasks effect below. Blank on
+  // the first paint is deliberate now: the alternative was deriving a name from
+  // the ask, which is exactly how a long scheduled message ended up duplicated
+  // into the title.
   //
-  // Held in a const for the same reason `initialAsk` is: the BASELINE (`initial`)
+  // The session that could name this task — the chat this form was deep-linked
+  // from, or whatever session an edited entry carries — is resolved HERE rather
+  // than beside the effect, because which value the field opens on and whether
+  // the lookup may run are one decision, taken once; see initialTitleStateOf.
+  //
+  // Held in consts for the same reason `initialAsk` is: the BASELINE (`initial`)
   // has to be the identical value or an untouched Edit reads as dirty.
-  const derivedTitle = initialTitleOf(editing);
+  const nameSession = (editing?.session_id || chatSessionId) ?? "";
+  const { title: derivedTitle, lookupSession: titleLookup } =
+    initialTitleStateOf(editing, nameSession);
   const [title, setTitle] = useState(derivedTitle);
   const [target, setTarget] = useState(editing?.target ?? initialTarget ?? "");
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -2000,20 +2032,25 @@ export default function NewJobModal({
   // a name the app already knows.
   //
   // It only ever replaces the SYNCHRONOUS title (usually the empty string),
-  // never a typed one and never a stored one — same discipline as the getConfig
-  // effect above, and for the same bug: `initial` moves with it, because a value
-  // the user did not type must not read as dirty and arm the close-twice guard.
+  // never a typed one and never a USABLE stored one — a leaked stored title is not
+  // one of those, which is the whole reason this effect gets to run on such a row
+  // at all (initialTitleStateOf). Same discipline as the getConfig effect above,
+  // and for the same bug: `initial` moves with it, because a value the user did
+  // not type must not read as dirty and arm the close-twice guard.
   // That pairing matters more now that the field starts blank: without it, every
   // form opened from a chat would arrive already dirty and its ✕ would need two
   // presses before the user had touched anything.
-  const nameSession = (editing?.session_id || chatSessionId) ?? "";
   useEffect(() => {
-    // A stored title is the top of the precedence — nothing may outrank it.
-    if ((editing?.title ?? "").trim() || !nameSession) return;
+    // Whether to look this up at all was decided with the field's opening value,
+    // by the same call, so the two cannot disagree: "" means either a stored title
+    // won step 1 (nothing may outrank it) or there is no session to ask about. It
+    // deliberately does NOT re-derive that from `editing` — reading the raw stored
+    // title here is precisely the bug initialTitleStateOf exists to close.
+    if (!titleLookup) return;
     let alive = true;
     getTasks()
       .then(({ tasks }) => {
-        const resolved = sessionTitleOf(tasks, nameSession);
+        const resolved = sessionTitleOf(tasks, titleLookup);
         if (!alive || !resolved) return;
         setTitle((prev) => (prev === derivedTitle ? resolved : prev));
         setInitial((prev) =>
@@ -2027,7 +2064,7 @@ export default function NewJobModal({
     return () => {
       alive = false;
     };
-  }, [editing, nameSession, derivedTitle]);
+  }, [titleLookup, derivedTitle]);
 
   // ---- Delete ------------------------------------------------------------
   // Only when EDITING, and only for something the server will actually

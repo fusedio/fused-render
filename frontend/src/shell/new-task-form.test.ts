@@ -27,6 +27,7 @@ let deleteActionFor: typeof import("./NewJobModal").deleteActionFor;
 let deleteFailureText: typeof import("./NewJobModal").deleteFailureText;
 let sessionTitleOf: typeof import("./NewJobModal").sessionTitleOf;
 let initialTitleOf: typeof import("./NewJobModal").initialTitleOf;
+let initialTitleStateOf: typeof import("./NewJobModal").initialTitleStateOf;
 let firstLine: typeof import("./NewJobModal").firstLine;
 let shortTitle: typeof import("./NewJobModal").shortTitle;
 let TITLE_MAX: typeof import("./NewJobModal").TITLE_MAX;
@@ -48,6 +49,7 @@ beforeAll(async () => {
   deleteFailureText = mod.deleteFailureText;
   sessionTitleOf = mod.sessionTitleOf;
   initialTitleOf = mod.initialTitleOf;
+  initialTitleStateOf = mod.initialTitleStateOf;
   firstLine = mod.firstLine;
   shortTitle = mod.shortTitle;
   TITLE_MAX = mod.TITLE_MAX;
@@ -750,6 +752,51 @@ describe("naming the task", () => {
       }
       expect(initialTitleOf(entry({ title: leaked }))).toBe("");
     }
+  });
+
+  // THE REVIEW FINDING on the guard above (2026-08-18): refusing the prefill is
+  // only half a rescue. The field opened on `initialTitleOf`, which blanks a
+  // leaked title, while the /api/tasks lookup gated on the RAW stored field — so
+  // on exactly the rows the guard exists to rescue the two halves disagreed. A
+  // non-empty leaked string short-circuited the lookup, the field arrived blank
+  // and STAYED blank, and Title is required, so Save was refused on a task the
+  // user cannot easily rename. One answer now serves both halves.
+  test("a leaked stored title still lets the session's own name through", () => {
+    const stored = entry({ title: "<live-app-state>", session_id: "sess-1" });
+    const open = initialTitleStateOf(stored, stored.session_id);
+    // Nothing usable is stored, so the field opens blank…
+    expect(open.title).toBe("");
+    // …and the session lookup must RUN — this is the half that used to see the
+    // leaked string and return early.
+    expect(open.lookupSession).toBe("sess-1");
+    // …landing the session's own resolved name, exactly as if no title had ever
+    // been stored, because as far as this form is concerned none usable was.
+    const resolved = sessionTitleOf([task()], open.lookupSession);
+    expect(resolved).toBe("Porting the parquet reader");
+    // Which is a name, so the requirement is met without the user retyping one.
+    expect(saveEnabled({
+      message: "pull today's news",
+      title: resolved,
+      target: "/tmp/work",
+      pathError: null,
+      repeatOn: false,
+      repeat: "none",
+      customRule: null,
+      legacyCron: "",
+      pickedOk: true,
+      replaced: false,
+    })).toBe(true);
+  });
+
+  test("a real stored title asks for no lookup at all", () => {
+    const open = initialTitleStateOf(entry({ title: "Morning news", session_id: "sess-1" }), "sess-1");
+    expect(open.title).toBe("Morning news");
+    // "" means "do not fetch": step 1 is the top of the precedence and an async
+    // overwrite of a stored name would be data loss.
+    expect(open.lookupSession).toBe("");
+    // The other refusal the same "" carries: nothing to ask about.
+    expect(initialTitleStateOf(null, "").lookupSession).toBe("");
+    expect(initialTitleStateOf(entry({ title: "   " }), "").lookupSession).toBe("");
   });
 
   test("…and markup the user typed as a name is still their name to keep", () => {
