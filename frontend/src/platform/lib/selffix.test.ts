@@ -52,11 +52,16 @@ const {
   fixSessionUrl,
   issueUrl,
   lastFixStartedAt,
+  mayPaint,
+  maySchedule,
   modifiedSummary,
   isSelfFixStorageKey,
   noteFixStarted,
   notifySelfFixChanged,
+  overtakeReads,
+  restartChain,
   selffixPollInterval,
+  POLL_GEN_START,
   POLL_IDLE_MS,
   POLL_WATCH_MS,
   SELFFIX_CHANGED_EVENT,
@@ -276,4 +281,48 @@ test("a stamp from the future reads as not watching, not as watching forever", (
   // permanent 5s poll costs a request every 5s for the life of the app.
   const now = 1_700_000_000_000;
   expect(selffixPollInterval(now + 60_000, now)).toBe(POLL_IDLE_MS);
+});
+
+test("a nudge retires the loop that issued the read, not just the read", () => {
+  // The chip holds ONE timer handle. An abandoned read that still schedules
+  // overwrites the live loop's handle, so both keep polling and nothing points
+  // at the orphan any more — not even the unmount cleanup. Two counters is
+  // what lets the abandoned one know to stop.
+  const issued = POLL_GEN_START;
+  const now = restartChain(issued);
+  expect(mayPaint(issued, now)).toBe(false);
+  expect(maySchedule(issued, now)).toBe(false);
+});
+
+test("a fresher seed drops the answer and KEEPS the loop", () => {
+  // The other half of the same rule, and the one a single epoch gets wrong:
+  // nothing re-polls on this path, so retiring the loop here would leave the
+  // chip never updating again for the life of the page.
+  const issued = POLL_GEN_START;
+  const now = overtakeReads(issued);
+  expect(mayPaint(issued, now)).toBe(false);
+  expect(maySchedule(issued, now)).toBe(true);
+});
+
+test("two nudges during one read leave exactly one loop standing", () => {
+  // Not a corner case: `noteFixStarted` writes BOTH storage keys, so every
+  // other tab re-arms twice while the first read is still open.
+  const first = POLL_GEN_START;
+  const second = restartChain(first); // the loop nudge #1 started
+  const third = restartChain(second); // ...retired by nudge #2
+  expect(maySchedule(first, third)).toBe(false);
+  expect(maySchedule(second, third)).toBe(false);
+  expect(maySchedule(third, third)).toBe(true);
+  expect(mayPaint(third, third)).toBe(true);
+});
+
+test("a seed change under a live loop does not make the next nudge a no-op", () => {
+  // `reads` moving alone must not desynchronise `chain`, or a nudge after a
+  // seed change would fail to retire the loop it interrupted.
+  const issued = POLL_GEN_START;
+  const afterSeed = overtakeReads(issued);
+  expect(maySchedule(issued, afterSeed)).toBe(true);
+  const afterNudge = restartChain(afterSeed);
+  expect(maySchedule(issued, afterNudge)).toBe(false);
+  expect(maySchedule(afterSeed, afterNudge)).toBe(false);
 });

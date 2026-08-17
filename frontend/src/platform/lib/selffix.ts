@@ -220,6 +220,58 @@ export function selffixPollInterval(startedAt: number, now = Date.now()): number
     : POLL_IDLE_MS;
 }
 
+/* ---- The chip's poll generation ------------------------------------------
+ *
+ * TWO counters, and they cannot be one, which is the whole reason this is a
+ * type and not a number in the component. A poll asks two different questions
+ * when its request comes back:
+ *
+ *   may I PAINT this?      — did anything overtake the answer while it flew?
+ *   may I SCHEDULE next?   — am I still the loop, or has one replaced me?
+ *
+ * A fresher `seed` prop, or the panel's own optimistic dismiss, answers the
+ * first NO and the second YES: the answer in hand is stale, but nothing started
+ * a new loop, so this one must carry on or the chip stops polling for the life
+ * of the page. A NUDGE answers both NO: it re-polls immediately, so the read it
+ * interrupted is both stale and superseded.
+ *
+ * Collapsing them into one epoch gets one of those two cases wrong whichever
+ * way you fold it, and both failures are silent. Guarding only the paint (what
+ * this shipped as) leaves the abandoned read to schedule the next tick anyway,
+ * so every nudge that lands mid-request FORKS the loop and both halves poll
+ * forever — reliably, because `noteFixStarted` writes both storage keys and
+ * other tabs therefore re-arm twice. Guarding both on one counter kills the
+ * loop dead the first time the prop changes under an open request.
+ */
+export interface PollGen {
+  /** Bumped by anything that overtakes an answer. */
+  reads: number;
+  /** Bumped only when a new poll loop starts, i.e. by a nudge. */
+  chain: number;
+}
+
+export const POLL_GEN_START: PollGen = { reads: 0, chain: 0 };
+
+/** A fresher answer arrived from somewhere else — a new `seed`, a dismiss. */
+export function overtakeReads(gen: PollGen): PollGen {
+  return { reads: gen.reads + 1, chain: gen.chain };
+}
+
+/** A nudge: abandon the read in flight AND the loop that issued it. */
+export function restartChain(gen: PollGen): PollGen {
+  return { reads: gen.reads + 1, chain: gen.chain + 1 };
+}
+
+/** Painting is the stricter test, and deliberately so — every restart is also
+    an overtake, so this alone would be right if scheduling did not exist. */
+export function mayPaint(issued: PollGen, now: PollGen): boolean {
+  return issued.reads === now.reads;
+}
+
+export function maySchedule(issued: PollGen, now: PollGen): boolean {
+  return issued.chain === now.chain;
+}
+
 export async function startSelfFix(context: FailureContext): Promise<SelfFixStart> {
   const started = await postJson<SelfFixStart>("/api/selffix/start", context);
   // Only after the server said yes: a refused start (a read-only install) is
