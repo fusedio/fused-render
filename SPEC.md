@@ -5772,7 +5772,15 @@ three weeks ago, and would cost nothing to open.
   new one says what it is: "Suggested models" and "Search results", each with
   one muted right-hand fact — `11 picked for this machine` against
   `"whisper" · 24 on huggingface.co`, which is the count and the PROVENANCE in
-  one line. Under each heading sits its own note, in the same place: why these
+  one line. **The count states what came back, never what did not**: it is
+  absent while a request is in flight, and absent again when the search FAILED.
+  A soft failure answers 200 with an `error` and `models: []`, and a count taken
+  from that array's length reads `0 on huggingface.co` — the heading reporting
+  that the Hub has none of these, beside a banner saying we never heard back,
+  which is the opposite of D316's point that a gated hit is missing rather than
+  absent. What was ASKED survives a failure and still shows; what came BACK does
+  not exist, so `resultsSummary` takes the failure as a required argument rather
+  than inferring it from a length. Under each heading sits its own note, in the same place: why these
   eleven for the shortlist, which host is being asked for the results. The two
   faces are therefore heading, note, grid in that order either way, and the
   difference between them is a label rather than the presence or absence of a

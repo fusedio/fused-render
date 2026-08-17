@@ -180,7 +180,7 @@ describe("localCopy", () => {
 // ALL-CAPS titles read as siblings rather than as one replacing the other.
 describe("heading summaries", () => {
   it("says what was asked and how many came back", () => {
-    expect(resultsSummary("whisper", 24, "huggingface.co")).toBe(
+    expect(resultsSummary("whisper", 24, "huggingface.co", false)).toBe(
       '"whisper" · 24 on huggingface.co',
     );
   });
@@ -188,18 +188,32 @@ describe("heading summaries", () => {
   it("leaves out the query when the task filter is the whole question", () => {
     // Picking "Speech to text" with an empty box is a search, and quoting an
     // empty string ('""') would be the heading reporting a query nobody typed.
-    expect(resultsSummary("", 8, "huggingface.co")).toBe("8 on huggingface.co");
-    expect(resultsSummary("  ", 8, "hf-mirror.com")).toBe("8 on hf-mirror.com");
+    expect(resultsSummary("", 8, "huggingface.co", false)).toBe("8 on huggingface.co");
+    expect(resultsSummary("  ", 8, "hf-mirror.com", false)).toBe("8 on hf-mirror.com");
   });
 
   it("holds off on a count nobody has yet", () => {
     // While the request is in flight there is no number. A "0 on
     // huggingface.co" beside the heading would be a wrong answer rather than a
     // missing one.
-    expect(resultsSummary("whisper", null, "huggingface.co")).toBe('"whisper"');
-    expect(resultsSummary("", null, "huggingface.co")).toBe(null);
+    expect(resultsSummary("whisper", null, "huggingface.co", false)).toBe('"whisper"');
+    expect(resultsSummary("", null, "huggingface.co", false)).toBe(null);
   });
 
+  it("states no count when the search FAILED", () => {
+    // A soft failure answers 200 with an `error` and `models: []`, so a count
+    // taken from the array length reads "0 on huggingface.co" — the heading
+    // reporting that the Hub HAS none of these, beside a banner saying we never
+    // heard back. Those are different facts, and D316's whole point is that a
+    // missing hit is not an absent one.
+    expect(resultsSummary("whisper", 0, "huggingface.co", true)).toBe('"whisper"');
+    // Also for a hard rejection, where the previous rows are still in state and
+    // the count would be a number from an older search entirely.
+    expect(resultsSummary("whisper", 24, "huggingface.co", true)).toBe('"whisper"');
+    // Nothing at all rather than a bare host, when a task filter was the whole
+    // question: "on huggingface.co" alone states no fact.
+    expect(resultsSummary("", 0, "huggingface.co", true)).toBe(null);
+  });
 
   it("counts the shortlist the same way the results are counted", () => {
     expect(suggestedSummary(11)).toBe("11 picked for this machine");

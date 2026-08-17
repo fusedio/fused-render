@@ -611,7 +611,7 @@ export default function AiModelsDiscover({
   // it would be worse than no number.
   const suggestedCount = (catalog ?? []).reduce((n, g) => n + g.models.length, 0);
   const summary = searching
-    ? resultsSummary(settled.q, models?.length ?? null, host)
+    ? resultsSummary(settled.q, models?.length ?? null, host, !!error)
     : suggestedCount > 0
       ? suggestedSummary(suggestedCount)
       : null;

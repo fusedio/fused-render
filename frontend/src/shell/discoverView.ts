@@ -128,11 +128,26 @@ export function localCopy(id: string, onDisk: OnDisk | null): string | null {
  *  search nobody typed. The COUNT is absent while the request is in flight:
  *  a "0 on huggingface.co" standing over an empty grid is a wrong answer where
  *  silence is a missing one.
+ *
+ *  `failed` is the same rule for the same reason, and it is a REQUIRED argument
+ *  rather than an optional one because a summary that guessed would state the
+ *  wrong fact silently. A search that did not come back has no count to report:
+ *  a soft failure answers 200 with an `error` and `models: []`, which as a
+ *  length is "0 on huggingface.co" — the heading saying the Hub HAS none of
+ *  these, next to a banner saying we never heard back. A hard rejection is
+ *  worse still, leaving the previous search's rows in state so the count comes
+ *  from a different question entirely. What was ASKED survives a failure and is
+ *  still worth showing; what came BACK does not exist.
  */
-export function resultsSummary(q: string, shown: number | null, host: string): string | null {
+export function resultsSummary(
+  q: string,
+  shown: number | null,
+  host: string,
+  failed: boolean,
+): string | null {
   const parts: string[] = [];
   if (q.trim()) parts.push(`"${q.trim()}"`);
-  if (shown !== null) parts.push(`${shown} on ${host}`);
+  if (shown !== null && !failed) parts.push(`${shown} on ${host}`);
   return parts.length ? parts.join(" · ") : null;
 }
 
