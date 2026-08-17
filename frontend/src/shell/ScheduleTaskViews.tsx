@@ -1683,25 +1683,33 @@ function TaskCard({
             The unread count is NOT one of the head's marks either: it belongs to
             the title, exactly as it does on a List row, and the same objection
             applies to a card's head as to a row's start (Akshil, 2026-08-17 — the
-            count in front broke the reading priority).
-
-            So title and count are wrapped TOGETHER, as one shrink-wrapped line
-            the count trails. It cannot go INSIDE the title element: that is a
-            two-line `-webkit-box` clamp with `overflow: hidden`, so a title long
-            enough to fill both lines would clip the count away — losing it on
-            exactly the cards that have the most to say. Nor can it be a bare
-            sibling of the head, which parks it in a corner of the card, the
-            placement this is undoing. The wrapper shrink-wraps the title, so a
-            short one keeps the count right after its last word, and a title that
-            fills its clamp pushes the count onto a line of its own, where it is
-            still there to read. */}
+            count in front broke the reading priority). See the title below for
+            where it went and why it took three tries. */}
         <span className="schedule-tv-card-head">
           {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
           {task.live && <LivePulse />}
         </span>
-        <span className="schedule-tv-card-name">
-          <span className="schedule-tv-card-title">{firstLine(task.title) || "(untitled)"}</span>
+        {/* The count sits INSIDE the title, in its text flow, so it follows the
+            last word wherever the last word ends up.
+
+            Two arrangements before this one were wrong, and both were wrong
+            because the title was a two-line `-webkit-box` clamp that hid its
+            overflow. Inside that clamp, a title long enough to fill both lines
+            clipped the count away — gone on exactly the busiest cards. Lifted out
+            of it into a `flex-wrap` wrapper (`.schedule-tv-card-name`, now
+            deleted), the count survived but any two-line title pushed it onto a
+            line of its own beneath the words, orphaned — which is the screenshot
+            Akshil sent on 2026-08-17, and it looks broken.
+
+            The clamp was the cause of both: nothing can flow after the last word
+            of a clipped box and also stay outside the clip. So schedule.css
+            dropped it, the title wraps freely, and the pill needs no wrapper and
+            no alignment — it is an inline atom in the same flow. Long titles make
+            taller cards, which is accepted; a card's title is the session's own
+            short name rather than the message it sends, so most are one line. */}
+        <span className="schedule-tv-card-title">
+          {firstLine(task.title) || "(untitled)"}
           <UnreadPill count={unread} />
         </span>
         <span className="schedule-tv-card-foot">

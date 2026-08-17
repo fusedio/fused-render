@@ -246,11 +246,13 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* No Board-card special case any more: the pill is a flex sibling of the card's
-   title inside `.schedule-tv-card-name` (schedule.css), which provides the gap
-   the List row's own `gap` provides here. It USED to sit inside the title, to
-   flow after its last word — but that title is a clamp with `overflow: hidden`,
-   so a title long enough to fill it clipped the count away entirely. */
+/* `inline-flex` is what lets the Board card put this pill INSIDE its title, in
+   the text flow, where it lands after the last word however many lines that title
+   takes. The two lines it needs on top of this — the leading margin and
+   `vertical-align` — are stated next to that title in schedule.css, because they
+   are true of the card and not of the List row: the row keeps the pill as a flex
+   sibling on a single ellipsised line and takes its spacing from the row's own
+   `gap`. */
 
 /* -- Quiet row action (Open chat) ---------------------------------------------
    Hidden until the row is pointed at: it applies to every task that has run,
@@ -395,11 +397,13 @@
    press that opens the chat. Only the buttons take them back. */
 .tasks-card-acts {
   position: absolute;
-  /* Centred on the head's line: the card's own 8px top padding plus half of
+  /* Centred on the head's line: the card's own top padding plus half of
      `--tasks-card-head-h`, less half a 22px button. Which is why the head has to
-     keep that height even now that nothing 16px tall stands in it. */
-  top: 5px;
-  right: 6px;
+     keep that height even now that nothing 16px tall stands in it — and why this
+     moved from 5px to 7px on 2026-08-17, when the card's padding was loosened from
+     8px to 10px (schedule.css). Left at 5px the strip rides high on the head. */
+  top: 7px;
+  right: 8px;
   /* Above the card it overlays; the card sets no z-index of its own. */
   z-index: 1;
   display: flex;
@@ -411,9 +415,12 @@
 .tasks-card-act,
 .prefs-section .tasks-card-act {
   pointer-events: auto;
-  /* The card paints `--bg`, and a transparent glyph sitting on it would read as
-     part of the head's own row of marks. */
-  background: var(--bg);
+  /* An opaque skin in the card's OWN surface colour, so the strip reads as
+     floating over the head rather than as part of the head's row of marks. It
+     tracks the card: that surface became `--bg-panel` when the lane's fill was
+     removed and the card had to lift off the page by itself (schedule.css), and a
+     button still painted `--bg` would have been a visible patch on it in dark. */
+  background: var(--bg-panel);
 }
 
 .tasks-card-wrap:hover .tasks-card-act,

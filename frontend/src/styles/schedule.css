@@ -2792,41 +2792,89 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
+/* The lane is not a PANEL. It used to paint `rgba(var(--tint), 0.05)` at rest,
+   which made every lane a filled slab: an empty Upcoming read as a large grey
+   plate with nothing in it, and every card competed with the box it was sitting
+   in rather than being the thing you looked at (Akshil, 2026-08-17, comparing
+   this board against flow's side by side — there the lanes are transparent and
+   the cards are the only surface).
+
+   So the fill is gone and nothing replaced it: the board's 12px `gap` and the
+   cards' own edges are what make four columns read as four columns. No hairline
+   rule between them either — tried the gap alone first, as asked, and the column
+   of card edges is already a stronger vertical than a 1px line would be.
+
+   What the padding and the radius are still for is the DROP states below, which
+   are the only things this element ever paints. `padding` insets the dashed
+   legal-drop outline off the cards so it reads as the lane's edge rather than as
+   a second border on the top card; the radius is the shape the `is-drop-over`
+   wash takes. Both are dead geometry at rest, which is the point.
+
+   An EMPTY lane therefore shows its header and nothing else — the label, the
+   ring and a `0`. That is deliberate: "nothing scheduled" should look like
+   nothing, and the header is what says which column the nothing belongs to. The
+   `min-height` is what keeps the empty lane a droppable target anyway, so a card
+   can still be dragged into a column that has never held one. */
 .schedule-tv-lane-body {
   flex: 1 1 auto;
   min-height: 120px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 5px;
+  /* Loosened from 4px on 2026-08-17: at 4px the cards read as one ribbed strip
+     rather than as separate objects, which is half of what made the lane look
+     like a panel full of rows. */
+  gap: 8px;
+  padding: 4px;
   border-radius: 8px;
-  background: rgba(var(--tint), 0.05);
 }
 
+/* The card is the board's ONLY surface now that the lane paints nothing, so it
+   has to carry the whole separation from the page ground on its own — and the
+   ground is `--bg` in both themes (base.css `body`), which is exactly what the
+   card used to be painted in. Against a lane fill that was enough; against the
+   page it was the card disappearing, most obviously in light mode where both are
+   plain white.
+
+   `--bg-panel` is the app's existing answer to "a surface floating above the
+   page", and it is tuned per theme for precisely this: in dark it steps LIGHTER
+   than the ground (#202329 over #131417), and in light it stays white and lets
+   the hairline plus a shadow do the lifting (tokens.css says so in as many
+   words). The shadow is the same `0 1px 2px var(--shadow-sm)` the settings
+   page's own cards use — one step of lift, not a drop shadow — and its token is
+   theme-tuned too, so it reads as depth in dark instead of as dirt in light.
+
+   Loosened on 2026-08-17 along with the lane: 8px/10px padding and a 5px gap
+   were tighter than flow's cards, which is what made three short lines feel
+   crowded. The three lines keep their hierarchy — the id small and muted, the
+   title the loudest thing on the card, the folder chip quiet — so nothing about
+   the type had to move, only the air around it. `.tasks-card-acts` (tasks.css)
+   is centred on the head using this `padding-top`, so the two are stated
+   together or the hover strip drifts off the head's line. */
 .schedule-tv-board .schedule-tv-card,
 .prefs-section .schedule-tv-board .schedule-tv-card {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   align-self: stretch;
-  gap: 5px;
+  gap: 6px;
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: 10px 12px;
   font: inherit;
   text-align: left;
   color: var(--fg);
-  background: var(--bg);
+  background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
   cursor: pointer;
   transition: border-color 0.08s ease;
 }
 
 .schedule-tv-board .schedule-tv-card:hover:not(:disabled),
 .prefs-section .schedule-tv-board .schedule-tv-card:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-panel);
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 
@@ -2834,7 +2882,17 @@ input.schedule-when-field {
    Native HTML5 drag. A draggable card says so with the grab cursor; while one
    is in flight, every lane that would accept it lifts slightly, and the lane
    under the pointer says "here" with the accent — the same 14% wash the
-   dropdowns speak. The card left behind ghosts. */
+   dropdowns speak. The card left behind ghosts.
+
+   None of this depended on the lane's resting fill, which is why removing that
+   fill above cost the drop nothing. A drop target announces itself by ADDING
+   paint to an empty box, never by changing paint it was already wearing: legal
+   lanes take a dashed accent outline the moment a drag starts, the lane under
+   the pointer fills with the accent wash, and the one drop that is not filing
+   (Upcoming → In Progress, which sends) swaps the outline for `--activity` and
+   writes the sentence out (tasks.css `.is-drop-run` / `.tasks-run-hint`). All
+   three go from nothing to something, so they are more legible on a transparent
+   lane than they were on a tinted one. */
 .schedule-tv-board .schedule-tv-card.is-draggable,
 .prefs-section .schedule-tv-board .schedule-tv-card.is-draggable {
   cursor: grab;
@@ -2885,28 +2943,53 @@ input.schedule-when-field {
   min-width: 0;
 }
 
-/* Title and its unread count on one line, the count trailing. `flex-wrap` is
-   the whole point: the title below is a clamp that HIDES its overflow, so the
-   count can never live inside it — a two-line title would eat it. Out here it
-   drops to its own line instead of disappearing. `align-items: flex-end` keeps
-   it sitting with the title's last line rather than floating beside line one. */
-.schedule-tv-card-name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 6px;
-  min-width: 0;
-}
+/* The title, and the unread count INSIDE it, in the text flow, immediately after
+   the last word.
 
+   Two earlier arrangements failed, and both failed because of the clamp this rule
+   no longer has. The title was a two-line `-webkit-box` with `overflow: hidden`;
+   with the pill inside, a title long enough to fill both lines clipped the count
+   away entirely — lost on exactly the cards with the most to say. Moving the pill
+   OUT, into a `flex-wrap` wrapper beside the title, stopped the clipping and
+   bought a worse look: on any two-line title the pill dropped to a line of its
+   own under the words, orphaned, which is what the screenshot showed (Akshil,
+   2026-08-17).
+
+   There is no arrangement that fixes both while the clamp exists: nothing can
+   flow after the last word of a clipped box AND stay outside the clip. So the
+   clamp goes. The title wraps to as many lines as it needs, the pill is an inline
+   atom in the same flow, and it lands after the final word on the final line by
+   ordinary text layout rather than by anything being aligned to anything.
+
+   The cost is accepted: a long title makes a taller card, and lanes of cards will
+   not all be the same height. That is rarer than it sounds — a card's title is
+   the session's own short name now, not the scheduled message it sends — so
+   multi-line is the exception.
+
+   `overflow-wrap: anywhere` is the one guard kept from the old rule and it is the
+   only one still needed: it is what stops a single unbroken 200-character token
+   from widening the 260px column, now that no `overflow: hidden` is standing
+   behind it to catch that. Nothing in the chain from here up to the card hides
+   overflow, deliberately; the lane body's `overflow-y` is a scroller for the
+   column, which is a different thing and further out. */
 .schedule-tv-card-title {
   font-size: 12.5px;
   line-height: 1.35;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   overflow-wrap: anywhere;
   min-width: 0;
+}
+
+/* The pill as an inline atom. `inline-flex` (it is already that in tasks.css) so
+   it centres its own digits while sitting in the line like a word;
+   `vertical-align: middle` so it rides the ink rather than the baseline, which on
+   a 16px pill against a 12.5px line is the difference between "after the word"
+   and "hanging below it". The gap is a `margin` and not the parent's `gap`
+   because there is no flex parent any more — that wrapper was the bug. Scoped to
+   the board card: the List row keeps the pill as a flex sibling and takes its
+   spacing from the row's own `gap`. */
+.schedule-tv-card-title .tasks-count {
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 .schedule-tv-card-next {
@@ -2955,7 +3038,15 @@ input.schedule-when-field {
 
 /* The collapsed lane: flow's 52px rail, with the label set vertically and the
    count pinned to the foot. Archive is closed by default — it is the one lane
-   nobody opens this page to read — and clicking the rail opens it again. */
+   nobody opens this page to read — and clicking the rail opens it again.
+
+   Its resting fill went with the open lane's on 2026-08-17: a rail is a lane, and
+   leaving one lane painted as a slab beside four transparent ones would have made
+   the collapsed column the loudest thing on the board. The hairline stays, and it
+   is doing more work here than on the open lane — the rail is a BUTTON you press
+   to expand, so it has to look like an object rather than a strip of page. Hover
+   still fills (`--row-bg-hover` below), and so do the drop states, which is the
+   same "add paint to an empty box" the lane body relies on. */
 .schedule-tv-rail,
 .prefs-section .schedule-tv-rail {
   display: flex;
@@ -2969,7 +3060,7 @@ input.schedule-when-field {
   align-self: stretch;
   font: inherit;
   color: var(--fg);
-  background: rgba(var(--tint), 0.05);
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
@@ -2993,11 +3084,17 @@ input.schedule-when-field {
   color: var(--fg-muted);
 }
 
+/* The count at the rail's foot. Its fill was `--bg` — a plate cut out of the
+   rail's own tint — which the rail no longer has, so on the page ground that was
+   a pill painted the colour of what is behind it, i.e. no pill at all. It takes
+   the app's chip wash instead (the same 18% muted `.tasks-count` wears), which is
+   translucent and therefore still reads over the rail's hover fill and over the
+   accent wash a drop puts under it. */
 .schedule-tv-rail-count {
   margin-top: auto;
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--fg-muted) 18%, transparent);
   font-size: 10px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;

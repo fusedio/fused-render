@@ -1366,26 +1366,71 @@ describe("the unread count's position", () => {
     expect(VIEWS).not.toContain("function UnreadRail");
   });
 
-  it("trails the board card's title too, and cannot be clipped by its clamp", () => {
-    const head = VIEWS.slice(
+  it("sits INSIDE the board card's title, after the last word, on any number of lines", () => {
+    const card = VIEWS.slice(
       VIEWS.indexOf('<span className="schedule-tv-card-head">'),
       VIEWS.indexOf('<span className="schedule-tv-card-foot">'),
     );
-    // Not in the head any more — the head is the card's id and live ping only.
-    const headOnly = head.slice(0, head.indexOf('className="schedule-tv-card-name"'));
+    // Not in the head — the head is the card's id, its live ping and (only when it
+    // disagrees with the lane) a status ring.
+    const headOnly = card.slice(0, card.indexOf('className="schedule-tv-card-title"'));
     expect(headOnly).toContain("<IdChip");
     expect(headOnly).not.toContain("<UnreadPill");
-    // After the title, and OUTSIDE it. Inside was the first attempt, so that the
-    // count would flow after the title's last word — but that element clamps to
-    // two lines and hides its overflow, so a title long enough to fill it took
-    // the count with it. The count vanished on exactly the busiest cards.
-    expect(head.indexOf("<UnreadPill")).toBeGreaterThan(head.indexOf("firstLine(task.title)"));
-    expect(head).toMatch(
-      /className="schedule-tv-card-title">\{firstLine\(task\.title\)[^}]*\}<\/span>/,
+    // Inside the title element, and after the words: the pill is a sibling of the
+    // TEXT, in the same inline flow, which is the only arrangement that puts it
+    // after the last word of a title that wraps.
+    expect(card).toMatch(
+      /className="schedule-tv-card-title">\s*\{firstLine\(task\.title\)[^}]*\}\s*<UnreadPill count=\{unread\} \/>\s*<\/span>/,
     );
-    // The wrapper is what keeps it visible: it wraps, and the clamp does not.
-    expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*flex-wrap: wrap/);
-    expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*align-items: flex-end/);
+    // The wrapper that used to hold the two as flex siblings is GONE, along with
+    // both of its bugs. It existed because the title clipped its overflow, so a
+    // pill inside was eaten by a long title; out here it wrapped instead, which
+    // orphaned it on a line of its own under any two-line title (the screenshot,
+    // Akshil 2026-08-17). Neither the element nor its rule may come back — only
+    // the note explaining why, which is why the stylesheet is read stripped.
+    expect(VIEWS).not.toContain('className="schedule-tv-card-name"');
+    expect(SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
+      "schedule-tv-card-name",
+    );
+  });
+
+  it("cannot be clipped, because the card's title no longer clamps at all", () => {
+    // The clamp was the cause of both earlier failures: nothing can flow after the
+    // last word of a clipped box AND stay outside the clip, so it had to go rather
+    // than be worked around a third time. A title now takes as many lines as it
+    // needs and the card grows — accepted, and rare, because a card's title is the
+    // session's short name and not the message it sends.
+    const title = SCHEDULE_CSS.slice(
+      SCHEDULE_CSS.indexOf(".schedule-tv-card-title {"),
+      SCHEDULE_CSS.indexOf("}", SCHEDULE_CSS.indexOf(".schedule-tv-card-title {")),
+    );
+    expect(title).toBeTruthy();
+    expect(title).not.toContain("line-clamp");
+    expect(title).not.toContain("-webkit-box");
+    expect(title).not.toContain("overflow: hidden");
+    expect(title).not.toContain("text-overflow");
+    expect(title).not.toContain("white-space");
+    // Nothing between the pill and the card hides overflow either — a clip one
+    // level out would lose the pill exactly as the clamp did. The chain is the
+    // title, the card, and the wrapper the action strip is pinned against.
+    for (const rule of [
+      /\.schedule-tv-board \.schedule-tv-card,[\s\S]*?\n\}/,
+      /\.tasks-card-wrap \{[\s\S]*?\n\}/,
+    ] as const) {
+      const src = rule.source.includes("card-wrap") ? TASKS_CSS : SCHEDULE_CSS;
+      const block = src.match(rule)?.[0];
+      expect(block).toBeTruthy();
+      expect(block).not.toContain("overflow");
+    }
+    // The one guard kept from the clamped version, and now the only thing standing
+    // between a 200-character unbroken token and a blown-out 260px column.
+    expect(title).toContain("overflow-wrap: anywhere");
+    // What makes it read as part of the line rather than as a box hanging off the
+    // baseline. `inline-flex` comes from `.tasks-count` itself, shared with the row.
+    expect(SCHEDULE_CSS).toMatch(
+      /\.schedule-tv-card-title \.tasks-count\s*\{[^}]*vertical-align: middle/,
+    );
+    expect(TASKS_CSS).toMatch(/\.tasks-count\s*\{[^}]*display: inline-flex/);
   });
 
   it("keeps the row's ONE flex spacer and adds no auto margin", () => {
@@ -1399,10 +1444,15 @@ describe("the unread count's position", () => {
     expect(TASKS_CSS).toMatch(/\.tasks-msg\s*\{[^}]*gap: var\(--tasks-row-gap\)/);
     expect(TASKS_CSS).toMatch(/\.tasks-dot\s*\{[^}]*flex: 0 0 7px/);
     expect(TASKS_CSS).not.toMatch(/\.tasks-dot\s*\{[^}]*margin/);
-    // Not on the card either: its own wrapper carries a `gap`, so the pill needs
-    // no margin of its own anywhere.
-    expect(TASKS_CSS).not.toMatch(/\.schedule-tv-card-title \.tasks-count\s*\{/);
-    expect(SCHEDULE_CSS).toMatch(/\.schedule-tv-card-name\s*\{[^}]*gap: 6px/);
+    // The board card is the one place the pill carries a margin, and it is a FIXED
+    // one: inside the title's text flow there is no flex parent to provide a `gap`,
+    // and `auto` has no meaning in inline layout anyway. It must not leak onto the
+    // List row's pill, which takes its spacing from the row's own `gap` — hence the
+    // rule is scoped to the card's title.
+    expect(SCHEDULE_CSS).toMatch(
+      /\.schedule-tv-card-title \.tasks-count\s*\{[^}]*margin-left: 6px/,
+    );
+    expect(TASKS_CSS).not.toMatch(/\.tasks-count\s*\{[^}]*margin/);
   });
 
   it("trails every MESSAGE row's title too, in the same order as the task row", () => {
@@ -1597,6 +1647,126 @@ describe("the board card's status ring", () => {
       /\.tasks-card-wrap \.schedule-tv-card-head\s*\{[^}]*min-height: var\(--tasks-card-head-h\)/,
     );
     expect(SCHEDULE_CSS).toMatch(/\.schedule-ring\s*\{[^}]*height: 16px/);
+  });
+});
+
+// ---- which thing on the board is a surface -------------------------------------
+// The lane used to paint a fill at rest, so an empty lane was a grey slab and every
+// card competed with the box around it (Akshil, 2026-08-17, against flow side by
+// side). The fill is gone; the CARD is the only surface. Three things then have to
+// stay true, and all three were nearly broken by the same change, so all three are
+// read out of the stylesheets: the card still lifts off the PAGE (not off a lane
+// fill that no longer exists) in both themes, a drop target still announces itself
+// on a box that is painting nothing, and no rule quietly puts the lane's plate back.
+
+describe("the board's surfaces", () => {
+  /** A rule's declarations, found by WHOLE selector rather than by substring:
+   *  every rule here is written twice over (`.x` and `.prefs-section .x`, because
+   *  `.prefs-section button` repaints unarmored buttons on this page), and half of
+   *  them are named in the prose above themselves. Comments go first so a mention
+   *  cannot be mistaken for the rule. */
+  const block = (css: string, selector: string) => {
+    const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const [, list, body] of bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (list.split(",").some((s) => s.trim() === selector)) return body;
+    }
+    throw new Error(`no rule whose selector list holds exactly "${selector}"`);
+  };
+
+  it("gives the lane no resting fill, and nothing else in its place", () => {
+    const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
+    expect(lane).not.toContain("background");
+    // Not a border or a rule either: the board's `gap` plus the cards' own edges
+    // are what make the columns read as columns, which is what was asked for and
+    // what was tried first.
+    expect(lane).not.toContain("border:");
+    expect(lane).not.toContain("border-left");
+    expect(lane).not.toContain("border-right");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane")).not.toContain("background");
+    // The collapsed lane is a lane too. One painted slab beside four transparent
+    // columns would have made the closed one the loudest thing on the board — but
+    // it keeps its hairline, because unlike the open lane it is a button.
+    const rail = block(SCHEDULE_CSS, ".schedule-tv-rail");
+    expect(rail).toContain("background: transparent");
+    expect(rail).toContain("border: 1px solid var(--border)");
+  });
+
+  it("makes the card lift off the PAGE, in both themes, from tokens", () => {
+    const card = block(SCHEDULE_CSS, ".schedule-tv-board .schedule-tv-card");
+    // `--bg` was the old fill and is also what the page ground is painted in
+    // (base.css `body`), so keeping it would have made the card vanish against the
+    // page — most obviously in light mode, where both are plain white.
+    expect(card).not.toMatch(/background: var\(--bg\);/);
+    // `--bg-panel` is the app's "surface floating above the page" token: it steps
+    // lighter than the ground in dark and stays white in light, where the hairline
+    // and the shadow do the lifting instead.
+    expect(card).toContain("background: var(--bg-panel)");
+    expect(card).toContain("border: 1px solid var(--border)");
+    expect(card).toContain("box-shadow: 0 1px 2px var(--shadow-sm)");
+    // Both halves of the lift are theme-tuned tokens with a value in BOTH blocks,
+    // never a colour defined only under `[data-theme]` — a light-only definition is
+    // how one theme ends up with no card surface at all.
+    for (const token of ["--bg-panel", "--shadow-sm"]) {
+      expect(TOKENS_CSS.slice(0, TOKENS_CSS.indexOf(':root[data-theme="light"]'))).toContain(
+        `${token}:`,
+      );
+      expect(TOKENS_CSS.slice(TOKENS_CSS.indexOf(':root[data-theme="light"]'))).toContain(
+        `${token}:`,
+      );
+    }
+    // The hover-revealed action strip is painted in the card's surface so it reads
+    // as floating over the head; it has to track the card or it is a patch on it.
+    expect(block(TASKS_CSS, ".tasks-card-act")).toContain("background: var(--bg-panel)");
+  });
+
+  it("lets a drop target announce itself by ADDING paint, not by changing it", () => {
+    // This is why removing the resting fill cost the drag nothing: every drop state
+    // goes from nothing to something. A legal lane outlines dashed the moment a drag
+    // starts, the lane under the pointer takes the accent wash, and the one drop
+    // that SENDS rather than files swaps the hue for `--activity` and says so in
+    // words. On a transparent lane all four are more legible than they were on a
+    // tinted one, not less.
+    expect(SCHEDULE_CSS).toMatch(
+      /\.schedule-tv-lane-body\.is-drop-legal\s*\{[^}]*outline: 1px dashed color-mix\(in srgb, var\(--accent\)/,
+    );
+    expect(SCHEDULE_CSS).toMatch(
+      /\.schedule-tv-lane-body\.is-drop-over,[\s\S]*?background: color-mix\(in srgb, var\(--accent\) 14%/,
+    );
+    expect(SCHEDULE_CSS).toMatch(
+      /\.schedule-tv-rail\.is-drop-legal,[\s\S]*?outline: 1px dashed color-mix\(in srgb, var\(--accent\)/,
+    );
+    expect(TASKS_CSS).toMatch(
+      /\.schedule-tv-lane-body\.is-drop-run,[\s\S]*?outline: 1px dashed color-mix\(in srgb, var\(--activity\)/,
+    );
+    expect(TASKS_CSS).toMatch(/\.tasks-run-hint\s*\{[^}]*background: color-mix/);
+    // The lane keeps the geometry those states are drawn with — the padding that
+    // insets the outline off the top card, and the radius the wash takes. Dead at
+    // rest, which is the point.
+    const lane = block(SCHEDULE_CSS, ".schedule-tv-lane-body");
+    expect(lane).toContain("padding: 4px");
+    expect(lane).toContain("border-radius: 8px");
+    // And it keeps a floor, so an EMPTY lane — which now shows its header and
+    // nothing else, because "nothing scheduled" should look like nothing — is still
+    // something a card can be dragged into.
+    expect(lane).toContain("min-height: 120px");
+    // All three classes are still applied to both forms of the lane.
+    for (const state of ["is-drop-legal", "is-drop-over", "is-drop-run"]) {
+      expect((VIEWS.match(new RegExp(`" ${state}"`, "g")) ?? []).length).toBe(2);
+    }
+  });
+
+  it("gives the card the reference's breathing room, and the strip follows it", () => {
+    const card = block(SCHEDULE_CSS, ".schedule-tv-board .schedule-tv-card");
+    // Looser than the 8px/10px and 5px it shipped with, which is what made three
+    // short lines feel crowded. On the repo's even scale, and the three lines keep
+    // their relative hierarchy — no type size moved.
+    expect(card).toContain("padding: 10px 12px");
+    expect(card).toContain("gap: 6px");
+    expect(block(SCHEDULE_CSS, ".schedule-tv-lane-body")).toContain("gap: 8px");
+    // The action strip is centred on the head off the card's TOP PADDING (plus half
+    // the head's line, less half a 22px button), so loosening the card without
+    // moving this leaves the strip riding high over the head: 10 + 8 - 11 = 7.
+    expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*top: 7px/);
   });
 });
 
