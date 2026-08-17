@@ -42,9 +42,11 @@
 //
 // The honest cost of that choice is the one thing this page must never hide:
 // **nothing fires while the app is closed.** Work that came due meanwhile is
-// not lost — it QUEUES and runs when the app next opens, which is what the
-// calendar's Queued strip is for, and that strip is also where it can be
-// cancelled before it goes.
+// not lost — it QUEUES and runs when the app next opens. The queue lives in the
+// dock, bottom right, which shows what is running and what is past due and
+// waiting, and is where either can be cancelled before it goes. It deliberately
+// does NOT show work scheduled for later: "queued" means about to run, and a
+// list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
 import { useEffect, useMemo, useState } from "react";
@@ -67,7 +69,6 @@ import NewJobModal from "./NewJobModal";
 import {
   EMPTY_FILTERS,
   TaskBoard,
-  TaskFilterChips,
   TaskFilterControls,
   TaskList,
   filterTasks,
@@ -147,9 +148,16 @@ export default function Scheduled() {
   // Tasks page rather than a modal that reopens forever. replaceState, not
   // push, for the same reason — the deep-linked URL is not a place worth
   // keeping in the history.
+  // `?edit=<entry id>` — the chat's blocked-composer banner sends the user here
+  // to reschedule or stop the message that is blocking it. It cannot be handled
+  // in the effect below, because the entry it names lives in a fetch that has
+  // not answered yet on first render; it is held here and resolved once the
+  // schedule lands.
+  const [editId, setEditId] = useState<string | null>(null);
   useEffect(() => {
     const q = new URLSearchParams(location.search);
     if (q.get("new") !== "1") return;
+    setEditId(q.get("edit"));
     setNewTarget(q.get("target"));
     // The chat's whole handoff: the typed draft becomes the description, the
     // open conversation the session a ONE-OFF will continue, and the chat's URL
@@ -163,6 +171,7 @@ export default function Scheduled() {
     q.delete("message");
     q.delete("session_id");
     q.delete("back");
+    q.delete("edit");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
   }, []);
@@ -244,6 +253,31 @@ export default function Scheduled() {
     setCreating(null);
   };
 
+  // Resolve `?edit=<entry id>` once the schedule has actually arrived. The chat
+  // sends the user here from its blocked-composer banner, and it names the very
+  // message that is blocking them — so landing on a prefilled NEW task form
+  // instead of that message would quietly create a second one and leave the
+  // block in place.
+  //
+  // Resolved inline rather than through `editEntry` so the effect can depend on
+  // exactly what it reads. Cleared either way: an id that no longer resolves —
+  // the run fired, or was cancelled elsewhere while the page loaded — drops back
+  // to the plain page rather than retrying for ever.
+  useEffect(() => {
+    if (!editId) return;
+    const all = state?.entries;
+    if (!all) return;
+    const entry = all.find((e) => e.id === editId);
+    const template = entry?.template_id
+      ? all.find((e) => e.id === entry.template_id)
+      : null;
+    if (entry) {
+      setEditing(template ?? entry);
+      setCreating(null);
+    }
+    setEditId(null);
+  }, [editId, state]);
+
   return (
     // `schedule-page` is not decoration: it is what lets the card sections opt
     // out of the 760px content column `.prefs-page > *` imposes, while the prose
@@ -307,15 +341,16 @@ export default function Scheduled() {
             </button>
           </div>
 
-          {view !== "calendar" && (
-            <>
-              <TaskFilterChips filters={filters} home={home} onChange={setFilters} />
-              {/* One quiet line, not a banner: the form and the calendar still
-                  work, and only the rows are missing. */}
-              {tasksFailed && (
-                <p className="schedule-tv-note">Tasks could not be loaded.</p>
-              )}
-            </>
+          {/* No chip row under the toolbar: each filter menu already carries its
+              own count on its trigger (Status ①, Project ①), so a second row
+              restating the same thing was duplication, not reassurance — and it
+              only ever appeared for one of the two filters, which made the page
+              look like it had lost the other. Clearing is where setting is: in
+              the menu. */}
+          {view !== "calendar" && tasksFailed && (
+            // One quiet line, not a banner: the form and the calendar still
+            // work, and only the rows are missing.
+            <p className="schedule-tv-note">Tasks could not be loaded.</p>
           )}
 
           {view === "calendar" ? (

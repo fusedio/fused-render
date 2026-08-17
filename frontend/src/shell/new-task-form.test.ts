@@ -23,6 +23,12 @@ let applyRepeatToggle: typeof import("./NewJobModal").applyRepeatToggle;
 let buildSchedulePayload: typeof import("./NewJobModal").buildSchedulePayload;
 let learnedSessionOf: typeof import("./NewJobModal").learnedSessionOf;
 let initialAskOf: typeof import("./NewJobModal").initialAskOf;
+let deleteActionFor: typeof import("./NewJobModal").deleteActionFor;
+let deleteFailureText: typeof import("./NewJobModal").deleteFailureText;
+let sessionTitleOf: typeof import("./NewJobModal").sessionTitleOf;
+let titlePlaceholderFor: typeof import("./NewJobModal").titlePlaceholderFor;
+let deletePress: typeof import("./NewJobModal").deletePress;
+let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -31,6 +37,12 @@ beforeAll(async () => {
   buildSchedulePayload = mod.buildSchedulePayload;
   learnedSessionOf = mod.learnedSessionOf;
   initialAskOf = mod.initialAskOf;
+  deleteActionFor = mod.deleteActionFor;
+  deleteFailureText = mod.deleteFailureText;
+  sessionTitleOf = mod.sessionTitleOf;
+  titlePlaceholderFor = mod.titlePlaceholderFor;
+  deletePress = mod.deletePress;
+  TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -412,5 +424,159 @@ describe("which session an edit carries", () => {
     expect(
       buildSchedulePayload(form({ learnedSessionId: "own", newTaskEachRun: true })).session_id,
     ).toBe("own");
+  });
+});
+
+// The gap this closed (Akshil, 2026-08-17): every cancel the UI offered was
+// scoped to ONE occurrence, so a repeating rule could be skipped run by run for
+// ever and kept minting more. The modal is where a template is addressable — an
+// occurrence's Edit resolves to its template — so the stop lives there.
+describe("the modal's Delete action", () => {
+  test("is not offered when creating", () => {
+    expect(deleteActionFor(null)).toBeNull();
+    expect(deleteActionFor(undefined)).toBeNull();
+  });
+
+  test("names the SERIES when editing a recurring template", () => {
+    const action = deleteActionFor(entry({ id: "tpl", state: "recurring", rule: DAILY }));
+    expect(action).not.toBeNull();
+    expect(action!.series).toBe(true);
+    // Cancelling the TEMPLATE id is what stops the rule; an occurrence id would
+    // only skip one run.
+    expect(action!.id).toBe("tpl");
+    expect(action!.label).toBe("Delete task");
+    expect(action!.confirm).toBe("Delete and stop all future runs?");
+    // The consequence is spelled out, not implied.
+    expect(action!.confirm).toContain("future runs");
+  });
+
+  test("names the ONE RUN when editing a pending one-off", () => {
+    const action = deleteActionFor(entry({ id: "s1", state: "pending" }));
+    expect(action).not.toBeNull();
+    expect(action!.series).toBe(false);
+    expect(action!.id).toBe("s1");
+    // Same label — the user is deleting a task either way…
+    expect(action!.label).toBe("Delete task");
+    // …and the second press is where the two part company.
+    expect(action!.confirm).toBe("Delete and cancel this run?");
+    expect(action!.confirm).not.toContain("future runs");
+  });
+
+  test("is not offered for anything the server would refuse", () => {
+    // `sending` is deliberately not cancellable — the helper is already away
+    // (schedule.cancel) — and a terminal entry has nothing left to stop. A
+    // button that 404s on press is worse than no button, so there is none.
+    for (const state of ["sending", "sent", "missed", "error", "cancelled"] as const) {
+      expect(deleteActionFor(entry({ state }))).toBeNull();
+    }
+  });
+});
+
+describe("the Delete confirm step", () => {
+  test("the first press arms and carries no id — nothing can be cancelled by it", () => {
+    const press = deletePress(deleteActionFor(entry({ id: "tpl", state: "recurring" })), false);
+    expect(press).toEqual({ do: "arm" });
+    expect(press).not.toHaveProperty("id");
+  });
+
+  test("only the second press produces the id to cancel", () => {
+    expect(deletePress(deleteActionFor(entry({ id: "tpl", state: "recurring" })), true)).toEqual({
+      do: "delete",
+      id: "tpl",
+    });
+  });
+
+  test("a press decides nothing at all when there is nothing to delete", () => {
+    // The refusal reaches the press too, not just the render: a `sending`
+    // entry has no action, so neither press can produce an id.
+    const away = deleteActionFor(entry({ state: "sending" }));
+    expect(away).toBeNull();
+    expect(deletePress(away, false)).toBeNull();
+    expect(deletePress(away, true)).toBeNull();
+  });
+});
+
+describe("what a failed Delete says", () => {
+  const notFound = Object.assign(new Error("no cancellable scheduled message with id 'tpl'"), {
+    status: 404,
+  });
+
+  test("a 404 reads as already-gone, not as a failure", () => {
+    // The race worth being honest about: the run fired, or another tab
+    // cancelled it. The server's id-bearing sentence reads as a bug, so it is
+    // translated — and only here.
+    expect(deleteFailureText(notFound, false)).toBe(
+      "This task is already gone — it has run, or it was cancelled somewhere else.",
+    );
+    expect(deleteFailureText(notFound, true)).toBe(
+      "This task is already stopped — nothing is scheduled to run from it any more.",
+    );
+    for (const series of [true, false]) {
+      expect(deleteFailureText(notFound, series)).not.toContain("failed");
+      expect(deleteFailureText(notFound, series)).not.toContain("'tpl'");
+    }
+  });
+
+  test("anything else keeps the server's own words", () => {
+    const boom = Object.assign(new Error("the schedule file is read-only"), { status: 500 });
+    expect(deleteFailureText(boom, true)).toBe("the schedule file is read-only");
+  });
+
+  test("and a wordless failure still says something", () => {
+    expect(deleteFailureText(new Error(""), false)).toBe("The task could not be deleted.");
+    expect(deleteFailureText(null, false)).toBe("The task could not be deleted.");
+  });
+});
+
+// Scheduling from an open chat: the session already has a name, so the form
+// PREVIEWS it on Title instead of prefilling it. Prefilling would freeze the
+// name — an explicit title beats Claude Code's per-turn `ai-title` for ever —
+// and it would look like something the user typed (Akshil, 2026-08-17).
+describe("the Title placeholder", () => {
+  const task = (over: Record<string, unknown> = {}) => ({
+    session_id: "sess-1",
+    title: "Porting the parquet reader",
+    title_source: "ai",
+    ...over,
+  });
+
+  test("previews the session's own name", () => {
+    expect(sessionTitleOf([task()], "sess-1")).toBe("Porting the parquet reader");
+    expect(titlePlaceholderFor("Porting the parquet reader", false)).toBe(
+      "Porting the parquet reader",
+    );
+  });
+
+  test("a title the user already gave this thread is a name too", () => {
+    expect(sessionTitleOf([task({ title_source: "user" })], "sess-1")).toBe(
+      "Porting the parquet reader",
+    );
+  });
+
+  test("but the first line of a message is not a name", () => {
+    // `message`-sourced is the message echoed back; the generic placeholder
+    // already says the title fills itself in, so this adds nothing and reads
+    // like the wrong field.
+    expect(sessionTitleOf([task({ title_source: "message" })], "sess-1")).toBe("");
+  });
+
+  test("no session, no match and no title all fall back to the generic line", () => {
+    expect(sessionTitleOf([task()], "")).toBe("");
+    expect(sessionTitleOf([task()], "sess-2")).toBe("");
+    expect(sessionTitleOf([task({ title: "   " })], "sess-1")).toBe("");
+    expect(titlePlaceholderFor("", false)).toBe(TITLE_PLACEHOLDER);
+    expect(titlePlaceholderFor("   ", false)).toBe(TITLE_PLACEHOLDER);
+    expect(TITLE_PLACEHOLDER).toBe("Title — optional, filled in automatically");
+  });
+
+  test("ticking Repeat takes the preview away, because it takes the session away", () => {
+    // A repeat refuses the chat's session and opens its own thread, so there is
+    // no conversation whose name would carry over — the preview would be a lie
+    // from the moment the box is ticked.
+    expect(titlePlaceholderFor("Porting the parquet reader", true)).toBe(TITLE_PLACEHOLDER);
+    // …and this is the payload rule it mirrors, asserted above too.
+    expect(
+      buildSchedulePayload(form({ sessionId: "sess-1", rule: DAILY, repeat: "daily" })).session_id,
+    ).toBeUndefined();
   });
 });

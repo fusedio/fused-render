@@ -26,13 +26,21 @@
 // download manager (an embed would otherwise render one per pane, all saying
 // the same thing — and the job list is global, so every copy would be
 // identical).
+import type { ReactNode } from "react";
 import Toast from "@platform/ui/Toast";
 import DownloadManager from "@platform/ui/DownloadManager";
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
 
-export default function NotificationHost() {
+// `queue` is the QUEUE DOCK's slot, and a slot rather than an import because of
+// the layering: the dock has to offer "Open in Explorer", the one answer to
+// which lives in shell/schedule-lib (explorerUrl), and platform may not import
+// shell (frontend/scripts/check-boundaries.mjs). So the shell hands the node in
+// and this file keeps owning where it sits — directly ABOVE the download
+// manager, which is the same lifetime story one step earlier: a queued message
+// is work that has not started, a job is work already in progress.
+export default function NotificationHost({ queue }: { queue?: ReactNode }) {
   const toasts = useToasts();
   return (
     <div className="notif-host">
@@ -51,6 +59,7 @@ export default function NotificationHost() {
           />
         </div>
       ))}
+      {!IS_EMBED && queue}
       {!IS_EMBED && <DownloadManager />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>

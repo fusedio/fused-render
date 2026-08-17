@@ -117,10 +117,17 @@ def test_the_composer_no_longer_offers_to_send_later(code):
         assert gone not in code, f"{gone} outlived the pill"
     # no date field anywhere in the composer any more
     assert "datetime-local" not in code
-    # ONE writer for the schedule store, and it is not this template: the only
-    # request it makes is the watcher's read (see pollScheduledRuns)
-    assert code.count("/api/schedule") == 1
+    # The composer still CREATES nothing: no POST that schedules anything, so a
+    # send is a send and a schedule is the hop to the Schedule page.
+    #
+    # TWO requests now, not one (Akshil, 2026-08-17): the watcher's read, and the
+    # block banner's cancel. The cancel is a write, and it is allowed here for a
+    # reason the pill never had — it schedules nothing, it withdraws the message
+    # holding this composer shut, so the control that explains the block and the
+    # control that lifts it are the same one. See test_claude_composer_block.py.
+    assert code.count("/api/schedule") == 2
     assert 'fetch("/api/schedule")' in code
+    assert '"/api/schedule/cancel"' in code
 
 
 def test_the_kebab_no_longer_carries_a_schedule_item(code):

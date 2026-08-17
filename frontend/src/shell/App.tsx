@@ -28,6 +28,7 @@ import { useThemeSync } from "@platform/lib/theme";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import CloneAppHost from "@platform/cloud/CloneAppHost";
 import NotificationHost from "@platform/ui/NotificationHost";
+import QueueDock from "@shell/QueueDock";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -815,7 +816,10 @@ export default function App({ config }: { config: Config }) {
     <div id="app">
       {!IS_EMBED && sidebar}
       <div id="main">{main}</div>
-      <NotificationHost />
+      {/* The queue dock rides the notification column (NotificationHost owns
+          where it sits). Handed in from here rather than imported there because
+          it speaks explorerUrl, which lives in this layer. */}
+      <NotificationHost queue={<QueueDock />} />
       {/* Opening a deployed app is requested from the path bar (a pasted https:// link) and
           from the Apps page; the modal is mounted HERE so both reach one flow (SPEC §35 CL-1). */}
       {!IS_EMBED && <CloneAppHost />}

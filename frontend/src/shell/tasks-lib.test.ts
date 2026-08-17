@@ -2,12 +2,15 @@
 // per-message unread bookkeeping, the board's drag legality, filtering, and the
 // one ordering promise the client makes (it keeps the server's).
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Task, TaskMessage } from "@platform/lib/api";
 import { BOARD_COLUMNS } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
   MESSAGE_ANCHOR_PARAM,
   PREVIEW_MESSAGES,
+  UNREAD_COUNT_CAP,
   UNREAD_LABEL,
   basename,
   canCancel,
@@ -20,6 +23,7 @@ import {
   firstLine,
   groupByColumn,
   isDraggable,
+  isFailedTask,
   isUnread,
   markRead,
   messageHref,
@@ -31,14 +35,18 @@ import {
   projectOptions,
   ranNote,
   readKey,
+  resendTarget,
+  runNowIntent,
   runNowTarget,
   taskColumn,
   taskHref,
+  taskRunIntent,
   taskUnread,
   threadView,
   tildePath,
   toggleExpanded,
   triageStatus,
+  unreadCount,
   unreadMarker,
 } from "./tasks-lib";
 
@@ -222,6 +230,35 @@ describe("unread", () => {
     const t = three();
     const other = markRead(new Set<string>(), "some-other-task", "MSG-003");
     expect(taskUnread(t, other)).toBe(3);
+  });
+
+  // The task row's own marker. It stayed at the far right of the row after the
+  // message dots moved to the head of theirs, which left one marker in two
+  // places (Akshil, 2026-08-17: "for the tasks you didn't bring this on the
+  // left side, only for the messages you brought. This looks odd").
+  it("draws a task's count as a mark, never as nothing and never as a paragraph", () => {
+    expect(unreadCount(0)).toBe(null);
+    expect(unreadCount(-1)).toBe(null);
+    expect(unreadCount(1)).toEqual({ text: "1", label: "1 unread" });
+    expect(unreadCount(5)).toEqual({ text: "5", label: "5 unread" });
+    // Two digits still print in full: the pill grows, the rail's centre does not
+    // move.
+    expect(unreadCount(42)!.text).toBe("42");
+  });
+
+  it("caps what the pill PRINTS without capping what it says it means", () => {
+    const many = unreadCount(1234)!;
+    expect(many.text).toBe(`${UNREAD_COUNT_CAP}+`);
+    // The accessible name is the truth, uncapped — the cap is a drawing
+    // decision about a 16px slot, not a rounding of the count.
+    expect(many.label).toBe("1234 unread");
+    expect(unreadCount(UNREAD_COUNT_CAP)!.text).toBe(String(UNREAD_COUNT_CAP));
+  });
+
+  it("names the task's count the way it names a message's — for a reader", () => {
+    // The message marker announces "Unread"; the task's announces how many.
+    // Both are names, neither is a bare glyph.
+    expect(unreadCount(3)!.label).toContain(UNREAD_LABEL.toLowerCase());
   });
 
   it("discounts against the LOADED thread once Show more has run", () => {
@@ -478,6 +515,240 @@ describe("dropAction", () => {
     // A never-run task may run, but may not be filed.
     const fresh = upcoming([T9], { key: "pending:e1", session_id: "" });
     expect(dropAction(fresh, "archived")).toBe(null);
+  });
+});
+
+// ---- Run now / Re-run ---------------------------------------------------------
+// The drag from Upcoming into In Progress, reachable without a drag (Akshil,
+// 2026-08-17). One call, one target rule, two words.
+
+describe("runNowIntent", () => {
+  it("offers nothing on a task with no runnable message", () => {
+    // Nothing pending: the factory's messages have already been sent.
+    expect(runNowIntent(task({ status: "upcoming" }))).toBe(null);
+    expect(runNowIntent(task({ status: "done" }))).toBe(null);
+    // Pending, but with no entry to claim — the call has nothing to send.
+    const t = upcoming([T9]);
+    expect(runNowIntent({ ...t, messages: [{ ...t.messages[0], entry_id: "" }] })).toBe(null);
+    // And it agrees with the predicate the drag path uses.
+    expect(canRunNow(task({ status: "upcoming" }))).toBe(false);
+  });
+
+  it("says Run now on an upcoming task", () => {
+    const intent = runNowIntent(upcoming([T9]))!;
+    expect(intent.label).toBe("Run now");
+    expect(intent.rerun).toBe(false);
+    // The tooltip says the half a person would otherwise fear: the schedule is
+    // not being rewritten to this minute.
+    expect(intent.title).toContain("stays put");
+  });
+
+  it("says Re-run on a failed one — same call, different word", () => {
+    const failed = runNowIntent(upcoming([T9], { status: FAILED }))!;
+    expect(failed.label).toBe("Re-run");
+    expect(failed.rerun).toBe(true);
+    // ...and the same on a task that is filed in Done but wearing the red ring:
+    // the row says "Failed" in both cases, so the button uses the same verb.
+    const flagged = runNowIntent(upcoming([T9], { status: "done", failed: true }))!;
+    expect(flagged.label).toBe("Re-run");
+    expect(isFailedTask(upcoming([T9], { status: FAILED }))).toBe(true);
+    expect(isFailedTask(upcoming([T9]))).toBe(false);
+  });
+
+  it("the label is the ONLY thing that differs by status", () => {
+    const early = runNowIntent(upcoming([T18, T9]))!;
+    const again = runNowIntent(upcoming([T18, T9], { status: FAILED }))!;
+    expect(early.entryId).toBe(again.entryId);
+    expect(early.messageId).toBe(again.messageId);
+    expect(early.label).not.toBe(again.label);
+  });
+
+  it("fires the same message the DRAG would have fired", () => {
+    // The whole point of reusing runNowTarget: a button that picked a second
+    // way would send a different message than the drop on the same card.
+    for (const t of [
+      upcoming([T18, T9]),
+      upcoming([T9, T9]),
+      upcoming([T9], { key: "pending:e1", session_id: "" }),
+      upcoming([T18, T9], { status: FAILED }),
+    ]) {
+      const intent = runNowIntent(t)!;
+      expect(intent.messageId).toBe(runNowTarget(t)!.message_id);
+      expect(dropAction(t, "in_progress")).toEqual({
+        kind: "run",
+        entryId: intent.entryId,
+        messageId: intent.messageId,
+      });
+    }
+  });
+
+  it("has nothing to fire on a failed task whose run is already spent", () => {
+    // The common failure: the run went out and broke, so there is no PENDING
+    // message left to claim and run-now has nothing to fire. This function
+    // still says so — it answers only the run-now question, which is what lets
+    // the drag keep asking it. Offering the button anyway is taskRunIntent's
+    // job, and it does it with the OTHER call (resend).
+    const spent = task({ status: FAILED });
+    expect(canRunNow(spent)).toBe(false);
+    expect(runNowIntent(spent)).toBe(null);
+    // A repeat, though, has its next occurrence pending and IS re-runnable.
+    expect(runNowIntent(upcoming([T9], { status: FAILED }))).not.toBe(null);
+  });
+});
+
+// ---- which call the one button makes ------------------------------------------
+// Re-run has to work in the case it was asked for: a task that ran and broke,
+// which by then has no pending message left to claim. Two server verbs, one
+// button, and the choice between them is a pure function so it cannot drift
+// from what the drag does.
+
+describe("taskRunIntent", () => {
+  /** A failed task whose only message already ran and broke — the shape that
+   * had no button at all before resend existed. */
+  const broke = (over: Partial<Task> = {}) =>
+    task({
+      status: FAILED,
+      failed: true,
+      messages: [msg({ state: "error", entry_id: "e1" })],
+      ...over,
+    });
+
+  it("routes a failed task with a pending message to run-now", () => {
+    // Pending beats spent: the user already asked for that one and has not had
+    // it, so bringing it forward is the smaller and truer action.
+    const t = upcoming([T9], { status: FAILED });
+    const intent = taskRunIntent(t)!;
+    expect(intent.kind).toBe("run-now");
+    expect(intent.label).toBe("Re-run");
+    // ...and it is the very message the drag would have fired.
+    expect(intent.entryId).toBe(runNowIntent(t)!.entryId);
+    expect(dropAction(t, "in_progress")).toEqual({
+      kind: "run",
+      entryId: intent.entryId,
+      messageId: intent.messageId,
+    });
+  });
+
+  it("routes a failed task with nothing pending to resend", () => {
+    const intent = taskRunIntent(broke())!;
+    expect(intent.kind).toBe("resend");
+    expect(intent.label).toBe("Re-run");
+    expect(intent.rerun).toBe(true);
+    // The entry it names is the one that ALREADY RAN. The server copies it and
+    // leaves it alone; nothing here rewrites the run that broke.
+    expect(intent.entryId).toBe("e1");
+    expect(intent.messageId).toBe("MSG-001");
+    expect(intent.title).toContain("same thread");
+  });
+
+  it("offers neither on a task that is not failed", () => {
+    // Done, with its run finished. Re-asking for work that succeeded is a chat
+    // message, not a button — and run-now has nothing pending to claim.
+    expect(taskRunIntent(task({ status: "done" }))).toBe(null);
+    expect(taskRunIntent(task({ status: "in_progress" }))).toBe(null);
+    expect(taskRunIntent(task({ status: "archived" }))).toBe(null);
+  });
+
+  it("still says Run now, and nothing about re-sending, on an upcoming task", () => {
+    const intent = taskRunIntent(upcoming([T18, T9]))!;
+    expect(intent.kind).toBe("run-now");
+    expect(intent.label).toBe("Run now");
+    expect(intent.rerun).toBe(false);
+  });
+
+  it("re-sends the NEWEST run that ended, and never one that did not", () => {
+    // Newest first, as the server sends them: asking again means asking for the
+    // last thing that was asked for.
+    const t = broke({
+      messages: [
+        msg({ message_id: "MSG-003", state: "error", entry_id: "e3" }),
+        msg({ message_id: "MSG-002", state: "sent", entry_id: "e2" }),
+        msg({ message_id: "MSG-001", state: "sent", entry_id: "e1" }),
+      ],
+    });
+    expect(resendTarget(t)!.entry_id).toBe("e3");
+    expect(taskRunIntent(t)!.entryId).toBe("e3");
+
+    // A message that never went has nothing to send again — the same rule the
+    // server enforces, so the button is not drawn onto a call that would 409.
+    for (const state of ["cancelled", "missed", "skipped"] as const) {
+      expect(
+        resendTarget(broke({ messages: [msg({ state, entry_id: "e1" })] })),
+      ).toBe(null);
+    }
+    // A chat message carries no schedule entry: it was delivered when it was
+    // typed and there is nothing stored to copy.
+    expect(
+      taskRunIntent(broke({ messages: [msg({ kind: "chat", entry_id: "" })] })),
+    ).toBe(null);
+  });
+
+  it("leaves the DRAG on run-now only", () => {
+    // A drop on a lane says where the card belongs; it must not quietly create
+    // work that was never scheduled. So the failed task with nothing pending —
+    // the one case resend exists for — cannot be dragged into In Progress at
+    // all, exactly as before.
+    const spent = broke();
+    expect(dropLanes(spent)).toEqual(["archived"]);
+    expect(dropAction(spent, "in_progress")).toBe(null);
+    // And every legal drop is still a run or a triage write, never a resend.
+    for (const lane of ["in_progress", "done", "archived"] as const) {
+      const action = dropAction(upcoming([T9], { status: FAILED }), lane);
+      if (action) expect(["run", "triage"]).toContain(action.kind);
+    }
+  });
+});
+
+// ---- where the marks are drawn -------------------------------------------------
+// Two claims the pure half cannot hold on its own: WHICH END of a row the
+// unread mark is at, and whether the task row's rail and its thread's dots are
+// one column. Both were the bug, so both are read out of the source rather than
+// left to a screenshot.
+
+const SHELL = import.meta.dir;
+const VIEWS = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
+const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
+
+describe("the unread rail", () => {
+  it("draws the TASK row's unread leading, not out by the folder chip", () => {
+    const from = VIEWS.indexOf('className={"tasks-row"');
+    expect(from).toBeGreaterThan(-1);
+    // The row ends where the thread it can open begins.
+    const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
+    const rail = row.indexOf("<UnreadRail");
+    expect(rail).toBeGreaterThan(-1);
+    // Before the ring, the id, the title and the folder chip it used to trail.
+    expect(rail).toBeLessThan(row.indexOf("<StatusIcon"));
+    expect(rail).toBeLessThan(row.indexOf("<IdChip"));
+    expect(rail).toBeLessThan(row.indexOf("<IdentityChip"));
+  });
+
+  it("leads the board card too, where it also used to trail", () => {
+    const head = VIEWS.slice(
+      VIEWS.indexOf('<span className="schedule-tv-card-head">'),
+      VIEWS.indexOf('<span className="schedule-tv-card-title">'),
+    );
+    expect(head.indexOf("<UnreadPill")).toBeLessThan(head.indexOf("<StatusIcon"));
+  });
+
+  it("puts a task row and its messages in ONE class, so it is one column", () => {
+    // Both slots are `.tasks-rail`; the old per-view class is gone.
+    expect(VIEWS).not.toContain("tasks-msg-flag");
+    expect((VIEWS.match(/className="tasks-rail"/g) ?? []).length).toBeGreaterThan(1);
+  });
+
+  it("derives the thread's indent from the rail rather than typing it twice", () => {
+    // The rail is placed once (--tasks-rail-x) and the thread reaches it by
+    // subtracting a message row's own indent. Hand-tune either side separately
+    // and the column bends — which is the bug this round fixed.
+    expect(TASKS_CSS).toContain("--tasks-rail-x: calc(");
+    expect(TASKS_CSS).toContain(
+      "calc(var(--tasks-rail-x) - var(--tasks-msg-indent))",
+    );
+    // ...and the rail slot itself is one fixed, centred width, which is what
+    // puts a 7px dot and a count pill on the same centre line.
+    expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*justify-content:\s*center/);
+    expect(TASKS_CSS).toMatch(/\.tasks-rail\s*\{[^}]*flex:\s*0 0 var\(--tasks-rail-w\)/);
   });
 });
 

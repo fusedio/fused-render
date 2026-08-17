@@ -45,12 +45,38 @@
   border-top: 1px solid var(--border);
 }
 
+/* -- The unread rail's geometry ------------------------------------------------
+   ONE column, shared by a task row and every message row beneath it. The dot
+   moved to the head of the message rows last round and the task's own count did
+   not move with it — it stayed at the far right beside the folder chip, so the
+   rail started halfway down the task (Akshil, 2026-08-17: "for the tasks you
+   didn't bring this on the left side, only for the messages you brought. This
+   looks odd").
+
+   The two rows are indented differently on purpose — the thread hangs under its
+   task — so the column can only stay straight if ONE number decides where it
+   is and the other indents are derived from it. That number is
+   `--tasks-rail-x`: how far the rail sits from the node's left edge. The task
+   row reaches it by its own padding plus the caret gutter; the thread reaches it
+   by subtracting a message row's indent from it. Retune any part and both move
+   together; hand-tune one and they part company, which is the whole bug. */
+.tasks-node {
+  --tasks-row-pad: 12px; /* the task row's left padding */
+  --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
+  --tasks-row-gap: 8px; /* the flex gap every row here uses */
+  --tasks-rail-w: 16px; /* wide enough for a two-digit pill to centre in */
+  --tasks-msg-indent: 13px; /* a message row's 1px rule + its own padding */
+  --tasks-rail-x: calc(
+    var(--tasks-row-pad) + var(--tasks-caret-w) + var(--tasks-row-gap)
+  );
+}
+
 /* -- The task row (the accordion's own header) -------------------------------- */
 .tasks-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
+  gap: var(--tasks-row-gap);
+  padding: 7px var(--tasks-row-pad);
   font-size: 13px;
   cursor: pointer;
   transition: background-color 0.08s ease;
@@ -70,9 +96,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: var(--tasks-caret-w);
+  height: var(--tasks-caret-w);
+  flex: 0 0 var(--tasks-caret-w);
   color: var(--fg-muted);
   /* transform, not `all`: the row's background is transitioning too, and one
      rule owning both smears the caret on hover. */
@@ -121,9 +147,10 @@
 }
 
 /* -- Unread ------------------------------------------------------------------
-   A dot, in the one hue the page reserves for "not finished with yet". The
-   count rides beside it on the task row; a thread row shows the dot alone, at
-   the START of the row (see .tasks-msg-flag). */
+   A dot, in the one hue the page reserves for "not finished with yet". A
+   message row shows the dot; the task row above shows the SAME dot carrying its
+   count, which is the only way a number reads in a leading slot without either
+   shrinking to nothing or breaking the column it sits in. */
 .tasks-dot {
   display: inline-block;
   width: 7px;
@@ -133,19 +160,51 @@
   background: var(--status-upcoming);
 }
 
-.tasks-unread {
+/* The rail slot itself, at the head of a task row and of every message row.
+   Fixed width and centred contents: that is what puts a 7px dot and a 16px
+   count pill on one centre line, so the rail stays straight whatever each row
+   has to say. Drawn even when empty — a slot that appeared only on unread rows
+   would shift every cell of those rows sideways, and a ragged left edge is
+   exactly what a scan cannot follow. */
+.tasks-rail {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  width: var(--tasks-rail-w);
+  flex: 0 0 var(--tasks-rail-w);
+}
+
+/* The count. FILLED rather than the tinted pill it used to be at the far right
+   of the row: at the head of the rail it has to read as the same mark the dots
+   below it are, and a 16%-tint chip beside a run of solid dots reads as a
+   different thing entirely. --on-accent is the page's glyph-on-a-fill token and
+   holds in both themes (near-black on the lighter dark-theme blue, white on the
+   darker light-theme one).
+
+   min-width is the rail's own width, so one digit is a circle exactly filling
+   the slot; two grow it into a short pill that bleeds ~2px each side into the
+   8px gaps and never reaches its neighbours (measured: even "99+" keeps ~2px
+   clear). Past 99 the text is capped at "99+" (tasks-lib.unreadCount) and the
+   true number stays in the label.
+
+   The fallback in that min-width is not decoration: the Board's card wears this
+   same pill from OUTSIDE `.tasks-node`, where the rail's variables do not
+   resolve. Inside the List it tracks the rail; on a card it keeps the shape. */
+.tasks-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  padding: 1px 7px 1px 6px;
+  min-width: var(--tasks-rail-w, 16px);
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--status-upcoming) 16%, transparent);
-  color: var(--status-upcoming);
-  font-size: 10.5px;
-  font-weight: 600;
+  background: var(--status-upcoming);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
-  line-height: 15px;
 }
 
 /* -- Quiet row action (Open chat) ---------------------------------------------
@@ -197,6 +256,26 @@
   border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }
 
+/* Run now / Re-run. Same group, same size, same silence at rest as Edit and
+   Cancel — the hue only arrives under the pointer, and it is the page's
+   "upcoming" blue rather than Cancel's red: this one STARTS something. */
+.tasks-act--run:hover:not(:disabled),
+.prefs-section .tasks-act--run:hover:not(:disabled) {
+  color: var(--status-upcoming);
+  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
+}
+
+/* What the server said when it would not run it. Under the row it is about,
+   indented to the rail, and QUIET — `.schedule-tv-note` is the same muted line
+   the board's drag refusal already uses, and it is muted on purpose: the common
+   refusal is a 409 because that conversation has a turn open right now, which
+   is "wait", not "broken". A red line here would report a working safeguard as
+   a failure. */
+.tasks-row-note {
+  padding: 0 var(--tasks-row-pad) 6px var(--tasks-rail-x);
+}
+
 /* Mid-cancel. The row is by definition being pointed at, so the button is
    already at full opacity — dropping it is what says "asked, not answered yet"
    without swapping the glyph for a spinner the width of the row. */
@@ -223,18 +302,24 @@
 
 /* -- The thread ----------------------------------------------------------------
    Indented under its task, with a rule running down the left so a long thread
-   still reads as belonging to the row above it. */
+   still reads as belonging to the row above it.
+
+   The left padding is DERIVED, never typed: it is where the rail is, less a
+   message row's own indent, so the thread's dots land on the task row's rail
+   above them. See the geometry block at the top of this file. */
 .tasks-thread {
   display: flex;
   flex-direction: column;
-  padding: 2px 12px 8px 26px;
+  padding: 2px 12px 8px calc(var(--tasks-rail-x) - var(--tasks-msg-indent));
 }
 
 .tasks-msg {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 8px 5px 12px;
+  gap: var(--tasks-row-gap);
+  /* 1px rule + this padding = --tasks-msg-indent, the number the thread's own
+     padding subtracts. Written as the subtraction so the two cannot drift. */
+  padding: 5px 8px 5px calc(var(--tasks-msg-indent) - 1px);
   border-left: 1px solid var(--border);
   font-size: 12.5px;
   cursor: pointer;
@@ -297,23 +382,9 @@
   white-space: nowrap;
 }
 
-/* The unread slot, at the head of every message row — filled on an unread
-   message, empty on a read one, and the SAME WIDTH either way. The dot used to
-   sit at the far right beside the time, with the word "unread" after it, and it
-   was missed outright (Akshil, 2026-08-16: "on the right hand I missed it, I
-   did not even see it"). A thread is scanned down its left edge, so the marker
-   belongs there; drawing the empty slot too is what keeps that edge straight,
-   because a slot that appeared only on unread rows would shift every cell of
-   those rows right and there would be no column left to scan. The word is gone
-   — a leading dot is the whole signal — and lives on as the marker's
-   aria-label, so a screen reader still hears it. */
-.tasks-msg-flag {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 7px;
-  flex: 0 0 7px;
-}
+/* The message row's own unread slot is `.tasks-rail`, defined with the rest of
+   the rail's geometry near the top of this file — one class for the task row
+   and its messages, because they are one column. */
 
 .tasks-thread-error {
   margin: 4px 0 0;

@@ -75,6 +75,27 @@ export function isRunning(job: Job): boolean {
   return job.state === "running";
 }
 
+// A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
+export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
+
+/**
+ * What the download manager DRAWS, which is not everything it knows.
+ *
+ * One row per unit of work in the bottom-right corner: while a scheduled
+ * message's turn is live the queue dock above the manager draws it — with the
+ * link to the session it is running in, and a cancel that knows what it is
+ * cancelling — so drawing it here too would be one run in two rows, each saying
+ * half of the same thing.
+ *
+ * Only while it is RUNNING. Once the turn has ended the job row is the outcome
+ * report (finished, failed, cancelled) and the dock, being a picture of work
+ * still to come, carries nothing of the sort — so a terminal row keeps its place
+ * and its ✕.
+ */
+export function dockJobs(jobs: Job[]): Job[] {
+  return jobs.filter((j) => !(j.id.startsWith(SCHEDULE_JOB_PREFIX) && isRunning(j)));
+}
+
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 //
 // `total` of 0 is null, not 1: a reporter that has not learned the size yet

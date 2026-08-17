@@ -2155,6 +2155,169 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     return {"ok": True, "found": True, "entry": stored or claimed, "reason": ""}
 
 
+# ------------------------------------------------------------------ re-sending
+#
+# A message that RAN and broke has no pending entry — `run_now` claims a pending
+# one, and the run that failed spent itself. So the Re-run affordance the user
+# asked for could not be offered in the exact case they asked for it, and no
+# amount of button wiring fixes that: the store had no verb for it.
+#
+# **The verb is not "run that row again", it is "ask again".** A task is a
+# thread and asking for the work a second time is another MESSAGE in that
+# thread, not a rewriting of the message that failed. Everything below falls out
+# of that one sentence:
+#
+#   * the original entry is untouched — its `state`, `due`, `fired` and `error`
+#     stay, so history keeps saying that run happened and broke. Same principle
+#     as run-now not touching `due`: what was asked for, and what happened, are
+#     facts and not fields to tidy;
+#   * the new entry is an ordinary one-off `pending` at `due = now`, created by
+#     `create` like any other message and sent by `run_now` like any other
+#     early send. No second construction path and no second spawn path;
+#   * it resumes the session the original actually RAN in
+#     (`claude_session_id`), so the re-ask continues the conversation rather
+#     than opening a second one beside it.
+
+# The states a message may be re-sent FROM: a run that went and ended.
+#
+# `sent` covers every way a turn resolved — ok, failed, cancelled, unknown —
+# because all of them are "it went", and a turn that ended badly is the ordinary
+# reason to ask again. `error` is a send that never got off the ground, which is
+# the same news one step earlier.
+#
+# A `sent` entry whose turn is still OPEN is deliberately included rather than
+# refused: the new message simply queues behind it. `_busy_sessions` holds it
+# until the turn ends, which is the serialisation two messages into one thread
+# have always had, and is a better answer than a refusal the user would have to
+# re-issue by hand a minute later.
+RESENDABLE = (SENT, ERROR)
+
+
+def _resend_refusal(entry: dict) -> str:
+    """Why this entry cannot be re-sent, in the words the user needs — the
+    counterpart of `_run_now_refusal`, and deliberately as specific.
+
+    The two live states point AT run-now rather than away: "nothing happened"
+    is not a reason to do nothing, it is a reason to use the other button.
+
+    **`missed` and `cancelled` are refused, and for the same reason:** neither
+    ever went, so there is no message to send *again*. `missed` is the sharper
+    of the two — its commonest source is `_coalesce` dropping a repeat's stale
+    runs, and a re-send button that replayed them one at a time would undo,
+    click by click, the one rule that stops a week of "daily at 9am" landing in
+    a thread on Monday morning. `cancelled` is a decision the user made; undoing
+    it is `restore`'s job on the one cancel worth walking back (a skipped
+    occurrence), not this one's. Both are told to schedule it again, which is
+    the honest way to ask for work that never ran."""
+    state = str(entry.get("state") or "")
+    if state == PENDING:
+        return ("not sent yet — this message is still scheduled, so there is "
+                "nothing to send again; run it now, or let it go at its time")
+    if state == SENDING:
+        return ("already sending — it was claimed for sending a moment before "
+                "this arrived; wait for that run before asking again")
+    if state == CANCELLED:
+        return ("cancelled — it never went, so there is nothing to send again; "
+                "schedule it again instead")
+    if state == MISSED:
+        return ("never ran — a missed run was skipped rather than sent (only "
+                "the latest missed run of a repeat goes), so re-sending it "
+                "would replay work the schedule decided against; schedule it "
+                "again if you want it now")
+    if state == RECURRING:
+        return ("that is a repeating schedule, not a message that ran — "
+                "re-send one of its runs instead")
+    return f"cannot be re-sent (it is {state or 'in an unknown state'})"
+
+
+def resend(entry_id: str, now: datetime | None = None) -> dict:
+    """Ask again: store the original's message as a NEW one-off due now and send
+    it. `{"ok", "entry", "reason", "found"}`, where `entry` is the NEW entry.
+
+    **The original is not modified in any way.** It is read, and that is all.
+    A row that says "this ran at 09:00 and broke" goes on saying it.
+
+    **The new entry continues the same thread.** `session_id` is copied from the
+    original's `claude_session_id` — the session its turn actually ran in, which
+    is the only field that knows — so the re-ask resumes that conversation. It
+    is stamped `session_learned`, because that id was learned by the system from
+    a run rather than chosen by a user, which is exactly the provenance
+    `_chain_session` records when it teaches a template the same fact. An
+    original that never reached a session (a send that failed before Claude
+    Code minted one) copies "", and the new message opens a fresh thread — the
+    only honest answer when there is no thread to continue.
+
+    **`template_id` is NOT carried, and that is the load-bearing decision.** A
+    re-send is a manual re-ask, not a scheduled run of the rule, and counting it
+    as an occurrence would corrupt the series three ways at once: `_materialize`
+    refuses to make a template's next run while any occurrence of it is pending,
+    so a re-send would BLOCK the schedule for as long as it sat in the queue;
+    `_coalesce` would read it as backlog and could move its due time or mark it
+    missed; and cancelling the template would cascade onto it. The `count` /
+    `until` budgets are the fourth: `made` measures what the template put on the
+    calendar, and a button press never did. So the new entry is a plain one-off
+    — the template's `made`, its `due` and its future occurrences are as
+    untouched as the original entry is.
+
+    **The claim path is reused, not reimplemented.** The new entry is created by
+    `create` and sent by `run_now`, which claims through `_claim` like
+    everything else. Claim-before-spawn is unchanged, and there is no second way
+    to spawn to keep in step.
+
+    `ok` is true once the new message EXISTS, not only when it went out
+    immediately. If the conversation it resumes has a turn running, `run_now`
+    refuses the early send and says so; the entry stays pending at the head of
+    the queue and the ordinary tick sends it when the turn ends. Reporting that
+    as a failure would be a lie about a message that is really scheduled — so it
+    comes back in `reason` as a note beside `ok: true`.
+
+    `found` distinguishes "no such id" (a 404) from "cannot re-send this one"
+    (a 409), exactly as `run_now` does; the router maps them.
+
+    Raises ValueError for a target that has since been deleted (`create`'s own
+    validation), which the router turns into a 400."""
+    now = now or _now()
+    with _lock:
+        original = next((e for e in _read()
+                         if str(e.get("id") or "") == entry_id), None)
+    if original is None:
+        return {"ok": False, "found": False, "entry": None,
+                "reason": f"no scheduled message with id {entry_id!r}"}
+    if original.get("state") not in RESENDABLE:
+        return {"ok": False, "found": True, "entry": dict(original),
+                "reason": _resend_refusal(original)}
+
+    session = str(original.get("claude_session_id") or "")
+    fresh = create(
+        str(original.get("target") or ""), str(original.get("message") or ""),
+        now,
+        session_id=session,
+        # Copied rather than defaulted: the mode is a choice made per message
+        # (see `_SCHEDULED_PERMISSION_MODE`), and asking the same thing again
+        # under a different one would be a different ask.
+        permission_mode=str(original.get("permission_mode") or ""),
+        title=original.get("title"), description=original.get("description"),
+        # The system learned this id from a run; nobody chose it. Same marker
+        # `_chain_session` writes, for the same fact.
+        session_learned=bool(session))
+    # Provenance, and the ONLY link between the two rows — the original is not
+    # written to, so without this nothing records that the second message is a
+    # re-ask of the first. Written after creation rather than threaded through
+    # `create`: a re-send is the only caller that has anything to say here, and
+    # a merge on a pending entry is safe whatever a tick does in between.
+    _update(fresh["id"], resent_from=entry_id)
+    outcome = run_now(fresh["id"], now)
+    with _lock:
+        stored = next((e for e in _read()
+                       if str(e.get("id") or "") == fresh["id"]), None)
+    entry = stored or dict(fresh, resent_from=entry_id)
+    # A note only while it is still waiting. Once it has gone (or a tick got to
+    # it first) `run_now`'s refusal describes a race that is over, and repeating
+    # it to the user would report a problem they do not have.
+    note = str(outcome.get("reason") or "") if entry.get("state") == PENDING else ""
+    return {"ok": True, "found": True, "entry": entry, "reason": note}
+
+
 def _loop() -> None:
     """Daemon-thread body: tick() on a timer, forever. `tick` already keeps a
     per-entry failure on its entry, but wrap here too so nothing — not even an

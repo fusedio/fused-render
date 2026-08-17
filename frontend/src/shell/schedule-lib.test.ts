@@ -297,14 +297,18 @@ import {
   lateText,
   messageTone,
   minutesOfDay,
+  folderHref,
+  isProjected as isGhost,
   popoverPos,
   projectedMessages,
   queueRole,
+  ruleOccurrences,
   queueRoles,
   rangeDays,
   rangeLabel,
   rangeStart,
   runStatus,
+  scrollTarget,
   startOfWeek,
   stepRange,
   taskChips,
@@ -736,23 +740,22 @@ describe("projectedMessages", () => {
     )).toEqual({});
   });
 
-  // A repeat anchored BEHIND us: catch-up runs the most recent missed slot only,
-  // at that slot's own time, and the ones before it are dropped for good (§9,
-  // Akshil 2026-08-17). Drawing them would be the grid promising work that has
-  // already been decided against.
-  it("never projects into the past — the past shows what happened", () => {
+  // The server's own projection is now-forward, so a past instant in `upcoming`
+  // only ever arrives from a stale poll. The RULE walk below owns the past; a
+  // slot the projection thinks is still coming, and which has already gone, must
+  // not double up with the ghost that walk mints for it.
+  it("ignores a stale `upcoming` slot that has already gone", () => {
     const t = task({ key: "pending:t1", messages: [] });
     const out = projectedMessages([t], [
       entryOf({ id: "t1", upcoming: [
-        new Date(2026, 7, 15, 9).toISOString(), // two days behind NOW
         new Date(2026, 7, 17, 9).toISOString(), // this morning, already gone
-        new Date(2026, 7, 18, 9).toISOString(), // tomorrow — the only forecast
+        new Date(2026, 7, 18, 9).toISOString(), // tomorrow — the forecast
       ] }),
     ], {}, NOW);
     expect(out["pending:t1"].map((m) => m.at)).toEqual([at(2026, 7, 18, 9)]);
   });
 
-  it("leaves the run that DID happen alone — only ghosts are suppressed", () => {
+  it("leaves the run that DID happen alone — a ghost never lands on it", () => {
     // The most recent missed slot, materialized by catch-up: a real message at
     // its own past time. It is history, and history stays on the grid.
     const ran = msg({
@@ -779,6 +782,401 @@ describe("projectedMessages", () => {
     expect(byDay.get("2026-08-15")!.length).toBe(1);
     expect(byDay.get("2026-08-15")![0].projected).toBe(false);
     expect(lateText(ran)).toBe("ran 2 days late");
+  });
+});
+
+// ---- the walk behind now ------------------------------------------------------------
+// A rule anchored in the PAST draws the slots it went by (Akshil, 2026-08-17:
+// "it should show me all the chips but it should only run the last one, the most
+// last one, and then in the future as is"). The server never computes those — it
+// will never create them — so the walk is the client's, mirroring recur.py.
+
+describe("ruleOccurrences", () => {
+  const on = (d: Date[]) => d.map((x) => `${dayKey(x)} ${x.getHours()}:${String(x.getMinutes()).padStart(2, "0")}`);
+
+  it("walks a daily rule from its anchor, strictly after and up to through", () => {
+    const out = ruleOccurrences({ freq: "day" }, new Date(2026, 7, 15, 9),
+      new Date(2026, 7, 14), new Date(2026, 7, 18, 12));
+    expect(on(out)).toEqual([
+      "2026-08-15 9:00", "2026-08-16 9:00", "2026-08-17 9:00", "2026-08-18 9:00",
+    ]);
+  });
+
+  it("never runs before its own anchor, however far back the window reaches", () => {
+    const out = ruleOccurrences({ freq: "day" }, new Date(2026, 7, 16, 9),
+      new Date(2026, 6, 1), new Date(2026, 7, 17, 12));
+    expect(on(out)).toEqual(["2026-08-16 9:00", "2026-08-17 9:00"]);
+  });
+
+  it("counts a weekly rule in the anchor's own Sunday block, partial first week", () => {
+    // Wednesday anchor, byday Mon+Wed: the Monday already gone by does NOT run,
+    // every Monday after it does. recur.py `_walk_week`.
+    const out = ruleOccurrences(
+      { freq: "week", byday: [1, 3] }, new Date(2026, 7, 19, 7), // Wednesday
+      new Date(2026, 7, 1), new Date(2026, 8, 1),
+    );
+    expect(on(out)).toEqual([
+      "2026-08-19 7:00", // the anchor's own Wednesday, and no Monday before it
+      "2026-08-24 7:00", "2026-08-26 7:00",
+      "2026-08-31 7:00",
+    ]);
+  });
+
+  it("SKIPS a month with no 31st rather than clamping it to the 30th", () => {
+    const out = ruleOccurrences({ freq: "month" }, new Date(2026, 0, 31, 8),
+      new Date(2026, 0, 1), new Date(2026, 4, 1));
+    expect(on(out)).toEqual(["2026-01-31 8:00", "2026-03-31 8:00"]);
+  });
+
+  it("reads 'the second Wednesday' off the anchor, not off the rule", () => {
+    const anchor = new Date(2026, 7, 12, 10); // the 2nd Wednesday of August
+    const out = ruleOccurrences({ freq: "month", monthly: "nth-weekday" }, anchor,
+      new Date(2026, 7, 1), new Date(2026, 9, 31));
+    expect(on(out)).toEqual(["2026-08-12 10:00", "2026-09-09 10:00", "2026-10-14 10:00"]);
+  });
+
+  it("ends on `until` inclusively, keeping every one of the last day's runs", () => {
+    const anchor = new Date(2026, 7, 15, 21);
+    const out = ruleOccurrences({ freq: "hour", until: "2026-08-16" }, anchor,
+      new Date(2026, 7, 15), new Date(2026, 7, 20));
+    // 21:00, 22:00, 23:00 on the 15th, then all of the 16th, and nothing after.
+    expect(out.length).toBe(3 + 24);
+    const last = on(out);
+    expect(last[last.length - 1]).toBe("2026-08-16 23:00");
+  });
+
+  it("walks to NOTHING on a rule this build cannot read", () => {
+    const out = ruleOccurrences({ freq: "fortnight" } as never, new Date(2026, 7, 15, 9),
+      new Date(2026, 7, 1), new Date(2026, 7, 31));
+    expect(out).toEqual([]);
+  });
+
+  it("caps a dense rule rather than spinning the render thread", () => {
+    const out = ruleOccurrences({ freq: "hour" }, new Date(2020, 0, 1),
+      new Date(2026, 7, 1), new Date(2026, 8, 1), 40);
+    expect(out.length).toBe(40);
+  });
+});
+
+describe("past ghosts", () => {
+  const NOW = new Date(2026, 7, 17, 10, 0);
+  // The window the user's own example is read in: Saturday the 15th onward, so
+  // the anchor and the slots behind now are both on screen.
+  const SINCE = new Date(2026, 7, 15);
+  const DAYS = rangeDays(SINCE, "week");
+
+  // `anchor` is on the wire — schedule.py writes it on every rule template — but
+  // not in the ScheduledMessage type yet, api.ts being another lane's file. The
+  // fixture plants it exactly as defensively as the client reads it.
+  const ruleEntry = (
+    over: Partial<ScheduledMessage> = {},
+    anchorAt = new Date(2026, 7, 15, 9),
+  ) =>
+    ({
+      ...entry({
+        id: "t1", state: "recurring", rule: { freq: "day" },
+        due: anchorAt.toISOString(),
+        ...over,
+      }),
+      anchor: anchorAt.toISOString(),
+    }) as ScheduledMessage;
+
+  const times = (list: TaskMessage[]) => list.map((m) => m.at).sort((a, b) => a - b);
+
+  // The user's own worked example: anchor Aug 15 09:00, daily, now Aug 17 10:00.
+  // The 15th and 16th are drawn and never ran; the 17th is the ONE catch-up and
+  // is real; the 18th is the ordinary forecast.
+  it("draws the slots a past-anchored rule went by, and reads Archive", () => {
+    const ran = msg({
+      message_id: "MSG-1", at: at(2026, 7, 17, 9), ran_at: at(2026, 7, 17, 9, 30),
+      state: "sent", turn: "done", template_id: "t1",
+    });
+    const t = task({ key: "k", messages: [ran] });
+    const out = projectedMessages([t], [
+      ruleEntry({ upcoming: [new Date(2026, 7, 18, 9).toISOString()] }),
+    ], {}, NOW, SINCE);
+    expect(times(out.k)).toEqual([
+      at(2026, 7, 15, 9), at(2026, 7, 16, 9), at(2026, 7, 17, 9), at(2026, 7, 18, 9),
+    ]);
+    const byAt = new Map(out.k.map((m) => [m.at, m]));
+    // The two behind us are ghosts, and the app's word for them is Archive.
+    for (const when of [at(2026, 7, 15, 9), at(2026, 7, 16, 9)]) {
+      const m = byAt.get(when)!;
+      expect(isGhost(m)).toBe(true);
+      expect(runStatus(m, taskMessageTone(m)).label).toBe("Archive");
+      // Never a run: nothing that ran late, and nothing to point a reader at.
+      expect(m.ran_at).toBe(0);
+    }
+    // The one that DID run is the real message, untouched.
+    const real = byAt.get(at(2026, 7, 17, 9))!;
+    expect(isGhost(real)).toBe(false);
+    expect(runStatus(real, taskMessageTone(real)).label).toBe("Done");
+    // And the forecast still reads Upcoming.
+    const soon = byAt.get(at(2026, 7, 18, 9))!;
+    expect(runStatus(soon, taskMessageTone(soon)).label).toBe("Upcoming");
+  });
+
+  it("does not draw a ghost OVER the one catch-up run — dedupe works backwards", () => {
+    const ran = msg({
+      message_id: "MSG-1", at: at(2026, 7, 17, 9), state: "sent", turn: "done",
+      template_id: "t1",
+    });
+    const t = task({ key: "k", messages: [ran] });
+    const out = projectedMessages([t], [ruleEntry()], {}, NOW, SINCE);
+    const onThatSlot = out.k.filter((m) => m.at === at(2026, 7, 17, 9));
+    expect(onThatSlot.length).toBe(1);
+    expect(isGhost(onThatSlot[0])).toBe(false);
+    // The slots before it are drawn, and none of them is a second copy.
+    expect(times(out.k)).toEqual([
+      at(2026, 7, 15, 9), at(2026, 7, 16, 9), at(2026, 7, 17, 9),
+    ]);
+  });
+
+  it("a past ghost is drawn HOLLOW, never as a run that happened", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    const out = projectedMessages([t], [ruleEntry()], {}, NOW, SINCE);
+    const sat = taskChips([t], DAYS, out).get("2026-08-15")![0];
+    expect(sat.projected).toBe(true);
+    // The grey of a slot that went by, not the strike-through of a cancel: a
+    // strike says somebody called the run off, and nobody called these off.
+    expect(sat.tone).toBe("missed");
+  });
+
+  // The volume case, and the reason the one-chip-per-task-per-day rule is not
+  // negotiable: hourly, anchored three days back, is ~72 slots behind now.
+  it("an hourly rule anchored 3 days back is ONE chip a day, not 72 chips", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    const from = new Date(2026, 7, 14);
+    const out = projectedMessages(
+      [t], [ruleEntry({ rule: { freq: "hour" } }, from)], {}, NOW, from,
+    );
+    // Three whole days, plus this morning's eleven, every one of them a ghost.
+    expect(out["pending:t1"].length).toBe(24 * 3 + 11);
+    const byDay = taskChips([t], rangeDays(from, "week"), out);
+    for (const key of ["2026-08-14", "2026-08-15", "2026-08-16"]) {
+      expect(byDay.get(key)!.length).toBe(1);
+      expect(byDay.get(key)![0].extra).toBe(23);
+    }
+    expect(byDay.get("2026-08-17")!.length).toBe(1);
+    expect(byDay.get("2026-08-17")![0].extra).toBe(10);
+  });
+
+  it("walks back only as far as the window on screen", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    // The window starts on the 16th, so the 15th's slot is nobody's business.
+    const out = projectedMessages([t], [ruleEntry()], {}, NOW, new Date(2026, 7, 16));
+    expect(times(out["pending:t1"])).toEqual([at(2026, 7, 16, 9), at(2026, 7, 17, 9)]);
+  });
+
+  it("a rule that fires at local midnight still draws on the window's first day", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    const out = projectedMessages(
+      [t], [ruleEntry({}, new Date(2026, 7, 10, 0))], {}, NOW, new Date(2026, 7, 17),
+    );
+    expect(out["pending:t1"][0].at).toBe(at(2026, 7, 17, 0));
+  });
+
+  it("a CRON template has no past series — and no cron parser to walk one", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    const out = projectedMessages([t], [
+      entry({ id: "t1", state: "recurring", repeats: "0 9 * * *",
+              due: new Date(2026, 7, 15, 9).toISOString(), upcoming: [] }),
+    ], {}, NOW, SINCE);
+    expect(out["pending:t1"] ?? []).toEqual([]);
+  });
+
+  it("a rule that is no longer recurring stops drawing entirely", () => {
+    const t = task({ key: "pending:t1", messages: [] });
+    const out = projectedMessages(
+      [t], [ruleEntry({ state: "cancelled" })], {}, NOW, SINCE,
+    );
+    expect(out["pending:t1"] ?? []).toEqual([]);
+  });
+
+  it("refuses to guess a horizon: no window given, no past walked", () => {
+    // How far back to draw is the WINDOW's question. A default would make the
+    // answer depend on a clock nobody passed in.
+    const t = task({ key: "pending:t1", messages: [] });
+    expect(projectedMessages([t], [ruleEntry()], {}, NOW)["pending:t1"] ?? [])
+      .toEqual([]);
+    // And the grid's own entry point hands the window over, so it does walk.
+    const threads = calendarThreads([t], [ruleEntry()], {}, NOW, DAYS);
+    expect(times(threads["pending:t1"])).toEqual([
+      at(2026, 7, 15, 9), at(2026, 7, 16, 9), at(2026, 7, 17, 9),
+    ]);
+  });
+});
+
+// ---- archived tasks come off the grid -------------------------------------------------
+// Akshil, 2026-08-17: three chips at one time, two of them struck through, read
+// as noise. They were three genuinely different tasks, so one-chip-per-task-per-
+// day held — the filed-away ones were the problem.
+
+describe("archived tasks", () => {
+  const days = rangeDays(rangeStart(new Date(2026, 7, 17), "week"), "week");
+
+  it("draws no chip at all for a task whose STATUS is archived", () => {
+    const gone = task({
+      key: "gone", status: "archived",
+      messages: [msg({ message_id: "M1", at: at(2026, 7, 18, 9), state: "cancelled" })],
+    });
+    const live = task({
+      key: "live",
+      messages: [msg({ message_id: "M2", at: at(2026, 7, 18, 9) })],
+    });
+    const byDay = taskChips([gone, live], days);
+    expect(byDay.get("2026-08-18")!.map((c) => c.task.key)).toEqual(["live"]);
+  });
+
+  it("keeps a LIVE task that merely has a skipped occurrence", () => {
+    // The nuance: it is the task's status, never a run's. The skip shows as an
+    // Archive row inside the popover thread, where it belongs.
+    const t = task({
+      key: "k", status: "upcoming",
+      messages: [
+        msg({ message_id: "M1", at: at(2026, 7, 18, 9), state: "cancelled", template_id: "t1" }),
+        msg({ message_id: "M2", at: at(2026, 7, 18, 17), template_id: "t1" }),
+      ],
+    });
+    const chips = taskChips([t], days).get("2026-08-18")!;
+    expect(chips.length).toBe(1);
+    expect(chips[0].extra).toBe(1);
+    const skipped = chips[0].messages[0];
+    expect(runStatus(skipped, taskMessageTone(skipped)).label).toBe("Archive");
+  });
+
+  it("hangs a live rule's projections on a task that is still DRAWN", () => {
+    // Under "new task each run" a past occurrence is its own task and can be
+    // archived; hanging the whole forecast on that one would delete it.
+    const dead = task({
+      key: "dead", status: "archived", session_id: "",
+      messages: [msg({ message_id: "M1", at: at(2026, 7, 16, 9), template_id: "t1" })],
+    });
+    const alive = task({
+      key: "pending:t1", status: "upcoming", session_id: "",
+      messages: [msg({ message_id: "M2", at: at(2026, 7, 18, 9), template_id: "t1" })],
+    });
+    const out = projectedMessages([dead, alive], [
+      entry({ id: "t1", state: "recurring",
+              upcoming: [new Date(2026, 7, 19, 9).toISOString()] }),
+    ], {}, new Date(2026, 7, 17, 10), new Date(2026, 7, 17));
+    expect(Object.keys(out)).toEqual(["pending:t1"]);
+  });
+});
+
+// ---- where the grid opens -------------------------------------------------------------
+// One chip per task per day anchors at the day's EARLIEST slot, so an hourly
+// rule's whole day is a single chip at 00:00 — which the old fixed 7am opened
+// seven hours below, on a column that then read as empty. Past ghosts turned that
+// from a rare oddity into the common case, so the OPENING SCROLL moved. The
+// anchor rule itself is right and stays.
+
+describe("scrollTarget", () => {
+  const H = 44;                 // HOUR_H, mirrored from ScheduleCalendar
+  const SEEN = 600;             // a plausible scroller height
+  const FLOOR = 24 * H - SEEN;  // the furthest down a 24-hour column can go
+  const NOW = new Date(2026, 7, 17, 11, 0);
+  const WEEK = rangeDays(rangeStart(NOW, "week"), "week");
+  const chip = (day: string, h: number, mi = 0) => ({
+    day,
+    time: new Date(2026, 7, Number(day.slice(-2)), h, mi),
+  });
+  const aim = (chips: { day: string; time: Date }[], days = WEEK, now = NOW) =>
+    scrollTarget(chips, days, now, SEEN, H);
+
+  it("keeps the old 7am for a range with nothing in it", () => {
+    expect(aim([])).toBe(7 * H - 12);
+  });
+
+  it("today wins when today is in the range and has anything on it", () => {
+    // The now-line is what a person looks for first; an hour of context above it.
+    expect(aim([chip("2026-08-17", 9), chip("2026-08-19", 14)])).toBe(11 * H - H);
+  });
+
+  it("falls back to the earliest chip when today is in range but empty", () => {
+    expect(aim([chip("2026-08-19", 9)])).toBe(9 * H - H / 2);
+  });
+
+  it("falls back to the earliest chip when today is not in the range at all", () => {
+    const past = rangeDays(rangeStart(new Date(2026, 7, 10), "week"), "week");
+    expect(aim([chip("2026-08-14", 9), chip("2026-08-15", 13)], past))
+      .toBe(9 * H - H / 2);
+  });
+
+  // The bug this function exists for: an hourly rule's day is ONE chip, and it
+  // sits at midnight.
+  it("opens ON a midnight chip instead of seven hours below it", () => {
+    expect(aim([chip("2026-08-19", 0)])).toBe(0);
+    expect(7 * H - 12).toBeGreaterThan(0); // what the old constant would have done
+  });
+
+  it("opens on a late chip rather than above it — the grid's own floor", () => {
+    // 23:00 is past the bottom of the column, so the scroller pins to the floor
+    // and the chip is on screen at the very end of it.
+    const top = aim([chip("2026-08-19", 23)]);
+    expect(top).toBe(FLOOR);
+    expect(23 * H).toBeLessThan(top + SEEN);
+  });
+
+  it("surrenders the LEAD, and only the lead, to keep the last chip in view", () => {
+    // A span that outruns the viewport by more than the lead: the half-hour of
+    // courtesy above the earliest chip is the first thing given up…
+    const top = aim([chip("2026-08-19", 2), chip("2026-08-19", 15)]);
+    expect(top).toBeGreaterThan(2 * H - H / 2);
+    // …and the last. It never eats into the earliest chip's own position, so
+    // that chip is still on screen — flush to the top edge at worst.
+    expect(top).toBeLessThanOrEqual(2 * H);
+    // Which is what buys the 15:00 chip its place at the bottom.
+    expect(15 * H).toBeLessThan(top + SEEN);
+  });
+
+  it("the EARLIEST chip wins when the range cannot fit on one screen", () => {
+    // 00:00 and 22:00 cannot both be shown. A column that lies about being empty
+    // is the failure being fixed; unused viewport is the smaller cost.
+    expect(aim([chip("2026-08-19", 0), chip("2026-08-19", 22)])).toBe(0);
+  });
+
+  it("never scrolls above the top or below the column", () => {
+    for (const chips of [
+      [chip("2026-08-19", 0)],
+      [chip("2026-08-19", 23, 59)],
+      [chip("2026-08-19", 0), chip("2026-08-19", 22)],
+    ]) {
+      const top = aim(chips);
+      expect(top).toBeGreaterThanOrEqual(0);
+      expect(top).toBeLessThanOrEqual(FLOOR);
+    }
+  });
+
+  it("degrades to the chip itself when the scroller is not measured yet", () => {
+    // clientHeight is 0 on the first layout pass, so nothing "fits" and the lead
+    // is surrendered in full. The answer must still be a number inside the
+    // column, on the chip rather than a NaN or a negative.
+    const top = scrollTarget([chip("2026-08-19", 9)], WEEK, NOW, 0, H);
+    expect(top).toBe(9 * H);
+    expect(top).toBeLessThanOrEqual(24 * H);
+  });
+});
+
+// ---- a run in flight is always reachable ---------------------------------------------
+
+describe("folderHref", () => {
+  it("opens the run's folder with the Claude pane when it has no session yet", () => {
+    // The state a scheduled run spends in flight: claimed, sent, turn going, and
+    // the watcher has not yet reported which session it opened. taskHref is null
+    // for the whole of it, which is exactly when a run parked on a permission
+    // prompt needs a way in.
+    expect(folderHref(task({ key: "pending:t1", session_id: "", target: "/Users/me/proj" })))
+      .toBe("/explorer/view/Users/me/proj?_side=claude&session_id=");
+  });
+
+  it("falls back to the project when the task points at no target", () => {
+    expect(folderHref(task({ key: "k", target: "", project: "/Users/me" })))
+      .toBe("/explorer/view/Users/me?_side=claude&session_id=");
+  });
+
+  it("says nothing rather than minting a url to nowhere", () => {
+    expect(folderHref(task({ key: "k", target: "", project: "" }))).toBe(null);
   });
 });
 

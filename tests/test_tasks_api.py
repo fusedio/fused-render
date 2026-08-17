@@ -469,6 +469,117 @@ def test_a_pending_row_keeps_its_number_when_it_finally_runs(client,
     assert tasks[0]["task_id"] == number
 
 
+# ------------------------------------------------ which session an entry is in
+
+
+def test_a_pending_message_naming_a_session_is_that_session_s_task(
+        client, projects_dir, tmp_path):
+    """A message that has not run yet still KNOWS which conversation it is
+    going to continue — that is what `session_id` is — so it belongs to that
+    task now, not to a `pending:` row of its own beside it.
+
+    Grouping on `claude_session_id` alone put a re-send queued behind the very
+    turn it is re-asking, and a message scheduled out of an open chat, into a
+    phantom second row that merged into the real one the moment the watcher
+    reported."""
+    _write_transcript(projects_dir, "sess-a", str(tmp_path),
+                      [_user("pull the news", T9, uuid="a1")])
+    _seed_schedule([_entry("e1", "try that again", T12, session_id="sess-a",
+                           target=str(tmp_path))])
+
+    tasks = _tasks(client)
+    assert len(tasks) == 1, "one conversation, one row"
+    assert tasks[0]["key"] == "sess-a"
+    assert [m["entry_id"] for m in tasks[0]["messages"]] == ["e1", ""]
+    assert tasks[0]["messages"][0]["state"] == "pending"
+
+
+def test_a_named_pending_message_does_not_split_when_it_runs(
+        client, projects_dir, tmp_path):
+    """The queued half of the re-send story, end to end: the entry is one row
+    while it waits, and the SAME one row once the watcher fills in the answer.
+    No split on the way in, no duplicate on the way out, and no renumbering."""
+    _write_transcript(projects_dir, "sess-a", str(tmp_path),
+                      [_user("pull the news", T9, uuid="a1")])
+    _seed_schedule([_entry("e1", "try that again", T12, session_id="sess-a",
+                           target=str(tmp_path))])
+    waiting = _tasks(client)
+    assert [t["key"] for t in waiting] == ["sess-a"]
+    number = waiting[0]["task_id"]
+
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("pull the news", T9, uuid="a1"),
+        _user("try that again", T12, uuid="a2"),
+    ])
+    _seed_schedule([_entry("e1", "try that again", T12, session_id="sess-a",
+                           state=schedule.SENT, fired=T12, turn="ok",
+                           claude_session_id="sess-a", target=str(tmp_path))])
+    tasks_mod.reset_cache()
+
+    tasks = _tasks(client)
+    assert len(tasks) == 1, "the answer agrees with the input: still one task"
+    assert tasks[0]["key"] == "sess-a"
+    assert tasks[0]["task_id"] == number
+    assert tasks[0]["message_count"] == 2, "the join, not a second message"
+
+
+def test_messages_with_no_session_stay_separate_tasks(client, tmp_path):
+    """"" is not a session id — it is "start a fresh one" — so two messages
+    that name none are two tasks. Letting the empty string group would collapse
+    every unrelated fresh-session message on the machine into one row, which is
+    a far worse bug than the one the fallback fixes."""
+    _seed_schedule([
+        _entry("e1", "one thing", T9, target=str(tmp_path)),
+        _entry("e2", "another thing", T12, target=str(tmp_path)),
+    ])
+    assert sorted(t["key"] for t in _tasks(client)) == ["pending:e1",
+                                                        "pending:e2"]
+
+
+def test_the_session_a_run_landed_in_beats_the_one_it_asked_for(
+        client, projects_dir, tmp_path):
+    """Precedence is answer-first. A resume that forked into a new session RAN
+    in `claude_session_id`, and that is the thread the message is in whatever
+    it asked to resume."""
+    _write_transcript(projects_dir, "asked", str(tmp_path),
+                      [_user("earlier", T9, uuid="b1")])
+    _write_transcript(projects_dir, "landed", str(tmp_path),
+                      [_user("do the thing", T12, uuid="c1")])
+    _seed_schedule([_entry("e1", "do the thing", T12, session_id="asked",
+                           state=schedule.SENT, fired=T12, turn="ok",
+                           claude_session_id="landed", target=str(tmp_path))])
+
+    tasks = _by_key(client)
+    assert tasks["landed"]["messages"][0]["entry_id"] == "e1"
+    assert [m["entry_id"] for m in tasks["asked"]["messages"]] == [""]
+
+
+def test_a_named_pending_message_makes_the_task_its_run_will_join(
+        client, projects_dir, tmp_path):
+    """A session with no transcript yet is still a task (it may be seconds old,
+    or not started at all), and it must be the SAME task the run joins — one
+    row that fills in, not a row that is replaced by a second one."""
+    _seed_schedule([_entry("e1", "kick it off", T12, session_id="not-yet",
+                           target=str(tmp_path))])
+    waiting = _tasks(client)
+    assert [t["key"] for t in waiting] == ["not-yet"]
+    assert waiting[0]["session_id"] == "not-yet"
+    assert waiting[0]["status"] == "upcoming"
+    number = waiting[0]["task_id"]
+
+    _write_transcript(projects_dir, "not-yet", str(tmp_path),
+                      [_user("kick it off", T12, uuid="d1")])
+    _seed_schedule([_entry("e1", "kick it off", T12, session_id="not-yet",
+                           state=schedule.SENT, fired=T12, turn="ok",
+                           claude_session_id="not-yet", target=str(tmp_path))])
+    tasks_mod.reset_cache()
+
+    tasks = _tasks(client)
+    assert [t["key"] for t in tasks] == ["not-yet"]
+    assert tasks[0]["task_id"] == number
+    assert tasks[0]["message_count"] == 1
+
+
 # --------------------------------------------------------------- the calendar
 
 

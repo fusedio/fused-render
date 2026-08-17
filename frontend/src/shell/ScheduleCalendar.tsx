@@ -22,6 +22,21 @@
 // Colour is per TASK, derived from its key (schedule-lib.taskColour) so five
 // days of a daily task read as one thing across the grid.
 //
+// AN ARCHIVED TASK DRAWS NOTHING. The grid is for what is going to happen and
+// what did; a task that was cancelled or skipped outright is filed away, and
+// three chips at one time with two of them struck through read as noise (Akshil,
+// 2026-08-17). It is the TASK's status that decides, never a run's — a live task
+// with one skipped occurrence still draws its chip, and the skip is an Archive
+// row inside the popover. taskChips is where the rule lives.
+//
+// A RULE'S SHAPE IS DRAWN IN BOTH DIRECTIONS. Future occurrences come from the
+// server's projection; the slots a PAST-anchored rule went by come from a walk
+// the client does itself, because the server has no reason to compute runs it
+// will never create. Only the most recent of those past slots is real (catch-up
+// materializes exactly one, at that slot's own time) and the ghost over it is
+// deduped away; the rest are outlined, greyed and faded, and say Archive.
+// Nothing here asks for them to exist — they are drawn, never created.
+//
 // Two ranges: the week, and Google's "4 days" — today leftmost, arrows stepping
 // four days, Today snapping back. The 4-day range earns its place on width, so
 // its chips get a larger label.
@@ -76,6 +91,7 @@ import {
   cancelOutcome,
   chipAccessibleName,
   dayStatus,
+  folderHref,
   groupScheduled,
   dayKey,
   firstLine,
@@ -90,6 +106,7 @@ import {
   repeatTextFor,
   runStatus,
   sameDay,
+  scrollTarget,
   stepRange,
   taskChips,
   threadForDay,
@@ -291,8 +308,13 @@ function ChipPopover({
   };
 
   // The footer button opens the thread itself, top of the chat — taskHref, the
-  // same function the List's task row uses, and null when there is no session.
-  const threadHref = taskHref(task);
+  // same function the List's task row uses. It answers null until the task HAS a
+  // session, which is the whole window a scheduled run spends in flight before
+  // its watcher reports one, so the fallback is not optional: that is the state
+  // a run parked on a permission prompt is in, and it is exactly when somebody
+  // needs a way in (Akshil, 2026-08-17). folderHref opens the run's folder with
+  // the Claude pane on it, and says why there.
+  const threadHref = taskHref(task) ?? folderHref(task);
 
   // Two cancels, one button. A QUEUED or RUNNING entry goes through the queue
   // endpoint, which is the only one that can answer honestly when the race is
@@ -542,13 +564,6 @@ export default function ScheduleCalendar({
   // rows, which is the only place the queue is now shown.
   const roles = useMemo(() => queueRoles(queued, running), [queued, running]);
 
-  // First paint lands just above 7am, not midnight — the band where schedules
-  // live. The 12px of slack keeps the 7am gutter label (centred on its line)
-  // from being cut in half at the container's top edge.
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 7 * HOUR_H - 12 });
-  }, []);
-
   const pickRange = (next: CalendarRange) => {
     setRange(next);
     // Re-anchor rather than jump: the week snaps to its Monday, the 4-day range
@@ -598,16 +613,52 @@ export default function ScheduleCalendar({
   }, [from, to, tasks]);
 
   // Windowed messages with the recurring rules' projections layered on top, so
-  // a future run obeys exactly the same one-chip-per-day rule a real one does.
+  // a projected run obeys exactly the same one-chip-per-day rule a real one
+  // does. `days` goes in because projection now runs BOTH WAYS: the slots a
+  // past-anchored rule skipped are drawn too, and how far back to walk is the
+  // window on screen, not a fixed horizon off now.
   const threads = useMemo(
-    () => calendarThreads(tasks, entries, windowed),
-    [tasks, entries, windowed],
+    () => calendarThreads(tasks, entries, windowed, new Date(), days),
+    [tasks, entries, windowed, days],
   );
 
   const chipsByDay = useMemo(
     () => taskChips(tasks, days, threads),
     [tasks, days, threads],
   );
+
+  // WHERE THE GRID OPENS, and — just as load-bearing — WHEN it is allowed to
+  // decide that again.
+  //
+  // The target is schedule-lib.scrollTarget and is tested there: today's now-line
+  // when today is in view with anything on it, otherwise the earliest chip in the
+  // range, otherwise the old 7am. It exists because one chip per task per day
+  // anchors at the day's EARLIEST slot, so an hourly rule's whole day is a single
+  // chip at 00:00 — which the old fixed 7am opened seven hours below, on a column
+  // that then read as empty.
+  //
+  // THE PLACEMENT BELONGS TO THE RANGE, NOT TO THE DATA. Arrows, Today and the
+  // week/4-day toggle move the window and earn a re-place; the 20s poll does not.
+  // A grid that re-aims itself every poll drags a reader who has scrolled back to
+  // wherever it thinks they should be, which is worse than opening in the wrong
+  // place — so a range that has been placed against real chips is never placed
+  // again.
+  //
+  // The one exception, and the reason `aimed` remembers more than a key: a new
+  // range paints BEFORE its windowed fetch answers, so the first placement has no
+  // chips to aim at. Exactly one upgrade is allowed, when chips first arrive for
+  // that range. After that the scroll is the reader's.
+  const rangeKey = days.length ? `${dayKey(days[0])}:${days.length}` : "";
+  const aimed = useRef({ key: "", withChips: false });
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const chips = [...chipsByDay.values()].flat();
+    const moved = aimed.current.key !== rangeKey;
+    if (!moved && (aimed.current.withChips || !chips.length)) return;
+    el.scrollTo({ top: scrollTarget(chips, days, new Date(), el.clientHeight, HOUR_H) });
+    aimed.current = { key: rangeKey, withChips: chips.length > 0 };
+  }, [rangeKey, days, chipsByDay]);
 
   // "Daily", "Every 2 weeks on Monday" — the recurrence in words, per rule.
   // Built once rather than per chip: a daily task holds one chip a day across

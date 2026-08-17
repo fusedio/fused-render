@@ -356,6 +356,144 @@
   }
 }
 
+/* ---- Queue dock (shell/QueueDock.tsx) ------------------------------------ */
+/* Work that is about to run or running now: past-due scheduled messages waiting
+   to be claimed, and the turns already in flight. Sits directly above the
+   download manager and wears the SAME plate as it — one corner, one surface, not
+   a second widget competing with the first. It positions nothing; .notif-host
+   owns placement, like every other card in this column. */
+.q-host {
+  width: min(340px, calc(100vw - 32px));
+  max-width: 100%;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+  overflow: hidden;
+}
+
+.q-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.q-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* The same quiet outline the manager's Clear wears: this is the card's secondary
+   action, not its subject. */
+.q-all {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.q-all:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.q-all:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.q-rows {
+  max-height: min(40vh, 300px);
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.q-row {
+  padding: 8px 10px;
+}
+
+.q-row + .q-row {
+  border-top: 1px solid var(--border);
+}
+
+.q-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.q-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* The reason this card exists: a run parked on a permission prompt was
+   unreachable. The icon is the row's way THERE, so it sits beside the ✕ that is
+   the row's way out. */
+.q-open,
+.q-x {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fg-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+.q-open:hover:not(:disabled),
+.q-x:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.q-x:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.q-status {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  word-break: break-word;
+}
+
+/* What a cancel actually did — including the half that was refused because it
+   was already away. Not a toast: it answers a button in this card. */
+.q-note {
+  padding: 6px 10px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+}
+
 /* ---- Server-status card (foot of the notification stack) ----------------- */
 /* Shown by ServerStatusBanner after two failed /api/config probes; the green
    -reconnected variant auto-dismisses. Placement and stacking belong to
