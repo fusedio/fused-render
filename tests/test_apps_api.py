@@ -813,6 +813,29 @@ def test_a_preview_render_records_nothing(client, workspace, recents_home):
     assert _opened_at(client, "sine") is None
 
 
+def test_a_render_referred_by_a_preview_records_nothing(client, workspace, recents_home):
+    # A previewed page may itself iframe another app's /render URL directly —
+    # its author never wrote _preview=1, but the same-origin Referer carries
+    # the parent's stamp, so the nested render is a thumbnail too. Without
+    # this, previewing a page that embeds other apps re-records THOSE apps.
+    d = _app_dir(workspace, "sine")
+    r = client.get(
+        "/render",
+        params={"path": str(d / "index.html")},
+        headers={"Referer": "http://x/render?path=%2Fw%2Ftutorial.html&_preview=1"},
+    )
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+    # An ordinary referer (a real open navigated from anywhere) still records.
+    r = client.get(
+        "/render",
+        params={"path": str(d / "index.html")},
+        headers={"Referer": "http://x/explorer/view/w/sine"},
+    )
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is not None
+
+
 def test_rendering_an_unmarked_page_records_nothing(client, workspace, tmp_path, recents_home):
     # Templates and plain html render through /render too; no marker, no record.
     p = tmp_path / "plain.html"
