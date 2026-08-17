@@ -204,10 +204,10 @@ describe("why Load is refused", () => {
   // The refusal has to agree with the heading the card is sitting under. Both
   // repos have `engine: null`, and one sentence for both told the reader that
   // the Wespeaker orphan had a format problem somebody had diagnosed — under a
-  // heading saying nothing here recognises it at all.
+  // heading saying its model type is not supported at all.
   it("does not blame the format for a repo it cannot identify at all", () => {
     const why = loadRefusal(WESPEAKER) ?? "";
-    expect(why).toContain("Nothing here recognises");
+    expect(why).toContain("not supported");
     expect(why).not.toContain("format");
   });
 
@@ -258,7 +258,7 @@ describe("the three surfaces on a no-engine card agree", () => {
   it("blames the format only where a format is the obstacle", () => {
     expect(noEngineReason(QWEN_NO_ENGINE)).toContain("weight format");
     expect(noEngineReason(WESPEAKER)).not.toContain("format");
-    expect(noEngineReason(WESPEAKER)).toContain("Nothing here recognises");
+    expect(noEngineReason(WESPEAKER)).toContain("not supported");
   });
 
   // Not a paraphrase of the hover: the same string, so the two cannot drift.
@@ -270,16 +270,13 @@ describe("the three surfaces on a no-engine card agree", () => {
 
   it("says what the Unrecognised heading over the card says", () => {
     const note = groupRepos([WESPEAKER]).models.groups[0].note ?? "";
-    for (const phrase of ["not a model this app can load", "part of one"]) {
-      expect(note).toContain(phrase);
-      expect(noEngineReason(WESPEAKER)).toContain(phrase);
-    }
+    expect(note).toBe(noEngineReason(WESPEAKER));
   });
 
   // A repo with a capability keeps its format problem, which is a real
   // diagnosis with a real fix: another engine, or another copy of the weights.
   // Flattening both cards onto one sentence would lose it.
-  it("does not tell a Qwen checkpoint that nothing recognises it", () => {
-    expect(noEngineReason(QWEN_NO_ENGINE)).not.toContain("Nothing here recognises");
+  it("does not tell a Qwen checkpoint that its model type is not supported", () => {
+    expect(noEngineReason(QWEN_NO_ENGINE)).not.toContain("not supported");
   });
 });
