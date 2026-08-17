@@ -61,6 +61,7 @@ const {
   overtakeReads,
   restartChain,
   selffixPollInterval,
+  unlistedReports,
   POLL_GEN_START,
   POLL_IDLE_MS,
   POLL_WATCH_MS,
@@ -325,4 +326,48 @@ test("a seed change under a live loop does not make the next nudge a no-op", () 
   const afterNudge = restartChain(afterSeed);
   expect(maySchedule(issued, afterNudge)).toBe(false);
   expect(maySchedule(afterSeed, afterNudge)).toBe(false);
+});
+
+// -- every report stays reachable ---------------------------------------------
+
+type Fix = Marker["fixes"][number];
+const fix = (report: string | null): Fix => ({
+  at: 1,
+  updated_at: 1,
+  run_id: "r",
+  session_id: "s",
+  title: "t",
+  report,
+  incident: null,
+});
+
+const report = (name: string, at = 1_700_000_000) => ({
+  path: `/i/.fused-render-selffix/reports/${name}`,
+  name,
+  at,
+  size: 100,
+});
+
+test("a report the marker does not name is still listed while a badge is up", () => {
+  // The three ways a report falls out of `marker.fixes` and the reason the
+  // panel reads the DIRECTORY: the cap (MAX_FIXES), a dismiss that dropped the
+  // marker but kept the files, and a session that changed nothing.
+  const kept = report("old.md");
+  const named = report("new.md");
+  const m = marker({ fixes: [fix(named.path)] });
+  expect(unlistedReports([named, kept], m).map((r) => r.name)).toEqual(["old.md"]);
+});
+
+test("with no marker at all, every report is unlisted — which is the point", () => {
+  const rs = [report("a.md"), report("b.md")];
+  expect(unlistedReports(rs, null)).toHaveLength(2);
+  expect(unlistedReports(rs, undefined)).toHaveLength(2);
+});
+
+test("a fix that wrote no report cannot swallow one that did", () => {
+  // `report` is nullable on a fix entry; a null must not match a real path, or
+  // one no-op session would hide an unrelated file from the list.
+  const only = report("real.md");
+  const m = marker({ fixes: [fix(null)] });
+  expect(unlistedReports([only], m).map((r) => r.name)).toEqual(["real.md"]);
 });
