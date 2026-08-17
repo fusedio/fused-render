@@ -727,6 +727,46 @@ def test_a_failed_spawn_does_not_wedge_the_one_session_slot(client, monkeypatch)
     assert post(client, "/api/selffix/start", {"title": "b"}).status_code == 200
 
 
+def test_the_slot_ttl_outlives_the_longest_legitimate_watcher():
+    """The TTL is a backstop for a watcher that DIED, so it must never fire on
+    one that is merely slow. It was 3600s — exactly the watcher's own poll
+    lifetime — so it expired at the moment a healthy long session was finishing
+    its last stamp, handing the slot away mid-run."""
+    from fused_render import claude_spawn
+
+    watcher_lifetime = (claude_spawn._RECORD_POLL_TICKS
+                        * claude_spawn._RECORD_POLL_INTERVAL)
+    assert selffix_routes._ACTIVE_TTL_S > watcher_lifetime
+
+
+def test_a_finishing_watcher_does_not_drop_a_newer_claim():
+    """Once the TTL has handed the slot on, the previous holder's `finally` must
+    not clear it: that reopens the one-at-a-time guard with a session live, and
+    lets a third agent into the same tree."""
+    at = 1000.0
+    ttl = selffix_routes._ACTIVE_TTL_S
+    first, busy = selffix_routes._claim_active(at)
+    assert first and busy == ""
+
+    # The TTL expires and a second session legitimately takes the slot.
+    second, busy = selffix_routes._claim_active(at + ttl)
+    assert second and busy == ""
+    assert second != first
+
+    # ...and only NOW does the first watcher reach its `finally`. A no-op.
+    selffix_routes._release_active(first)
+    held = selffix_routes._active
+    assert held is not None and held["token"] == second
+
+    # So a third session is still refused, which is the whole point.
+    third, _ = selffix_routes._claim_active(at + ttl + 1)
+    assert third == ""
+
+    # The rightful owner can still hand it back.
+    selffix_routes._release_active(second)
+    assert selffix_routes._active is None
+
+
 def test_only_one_fix_session_runs_at_a_time(client, monkeypatch):
     """Two agents rewriting one installation is not concurrency, it is a
     conflict — and a user with two failed rows clicking Fix on both is the
@@ -755,7 +795,8 @@ def test_the_watcher_stamps_when_the_session_changed_something(install, monkeypa
 
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready", fake_record)
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "download failed", BEFORE[0])
+    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "download failed",
+                              BEFORE[0], "")
 
     state = selffix.status()
     assert state is not None
@@ -768,7 +809,7 @@ def test_the_watcher_leaves_an_untouched_installation_alone(install, monkeypatch
     monkeypatch.setattr(selffix_routes, "_load_agent", lambda: None)
     monkeypatch.setattr(selffix_routes, "_record_session_when_ready",
                         lambda agent, run_id, on_tick=None: on_tick({"done": True}))
-    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "", BEFORE[0])
+    selffix_routes._watch_fix("run-7", "/i.md", "/r.md", "", BEFORE[0], "")
     assert selffix.status() is None
 
 

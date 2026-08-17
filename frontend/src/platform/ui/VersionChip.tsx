@@ -273,10 +273,28 @@ function useModifiedInstall(
 ): [ModifiedInstall | null, (next: ModifiedInstall | null) => void] {
   const [modified, setModified] = useState<ModifiedInstall | null>(seed ?? null);
 
+  // Bumped by every answer that OVERTAKES a poll — a local override (the
+  // dismiss) or a re-arm. A response issued before that describes the world as
+  // it was, so painting it puts the amber badge back on an install the user has
+  // just dismissed: the very "dismiss failed" reading this path exists to
+  // prevent. Cancelling the pending TIMER is not enough, because the request
+  // already in flight has no timer to cancel.
+  //
+  // The download manager's `epochRef` (platform/ui/DownloadManager), which this
+  // hook cites for its optimistic patch and should have copied the guard from at
+  // the same time.
+  const epochRef = useRef(0);
+
+  const patch = (next: ModifiedInstall | null) => {
+    epochRef.current += 1; // any read already in flight predates this
+    setModified(next);
+  };
+
   // The prop is the shell's own answer (the config it booted with, or refetched
   // after a restart) and it wins whenever it changes — a poll that has not fired
   // yet must not hold a stale badge over a fresher prop.
   useEffect(() => {
+    epochRef.current += 1;
     setModified(seed ?? null);
   }, [seed]);
 
@@ -285,9 +303,13 @@ function useModifiedInstall(
     let timer: number | undefined;
 
     async function poll() {
+      const at = epochRef.current;
       try {
         const config = await getConfig();
-        if (!disposed) setModified(config.modified_install ?? null);
+        // Dropped rather than painted when the epoch moved under us.
+        if (!disposed && at === epochRef.current) {
+          setModified(config.modified_install ?? null);
+        }
       } catch {
         // Server unreachable — ServerStatusBanner owns that story; keep the
         // last answer rather than blanking a badge on one failed probe.
@@ -304,6 +326,7 @@ function useModifiedInstall(
     // lib/selffix). Both firing is harmless: `rearm` cancels the pending timer
     // before it polls.
     const rearm = () => {
+      epochRef.current += 1; // abandon whatever read is already in flight
       window.clearTimeout(timer);
       poll();
     };
@@ -321,7 +344,7 @@ function useModifiedInstall(
     };
   }, []);
 
-  return [modified, setModified];
+  return [modified, patch];
 }
 
 export default function VersionChip({
