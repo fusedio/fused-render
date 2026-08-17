@@ -210,6 +210,46 @@ def test_logout_clears_credentials_and_stops_watchers(harness):
     assert canvases_mod._syncs == {}
 
 
+def test_logout_failure_keeps_sync_alive_and_preserves_pending_edit(harness, monkeypatch):
+    # A failed `workbench logout` must not have already torn down sync (the
+    # user is still signed in) — and a local edit that was pending when the
+    # attempt started must not get silently adopted as clean by the
+    # pause/resume around the CLI call; it should still push once sync
+    # resumes.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.5)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    manager = canvases_mod._syncs.get("alpha")
+    assert manager is not None
+
+    (harness.root / "alpha" / "udf.py").write_text("print('hi')\n", encoding="utf-8")
+    deadline = time.time() + 5
+    while time.time() < deadline and manager._dirty_since is None:
+        time.sleep(0.02)
+    assert manager._dirty_since is not None
+
+    harness.set_scenario({"fail": "workbench unreachable"})
+    res = harness.client.post("/api/canvases/logout", headers=GUARD)
+    assert res.status_code != 200
+    assert harness.creds.exists()
+    assert not manager.stop_event.is_set()
+    assert canvases_mod._syncs.get("alpha") is manager
+
+    harness.set_scenario({})
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status["push_seq"] >= 1, status
+
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
 def test_stale_credentials_map_to_401(harness):
     # A present-but-unrefreshable store: the CLI dies with its own
     # re-authenticate message, and the client needs a 401 to fall back to the
@@ -258,6 +298,48 @@ def test_sync_start_requires_a_clone(harness):
     harness.log_in()
     res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 409
+
+
+def test_sync_start_on_stale_clone_pushes_pending_edit(harness, monkeypatch):
+    # Reopening an already-cloned canvas (or a server restart re-arming the
+    # watcher) must not trust whatever's on disk as clean baseline — files
+    # that predate the "just came out of a clone" window start dirty, so a
+    # genuinely unpushed edit from before the watcher existed still pushes.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "_FRESH_WINDOW_S", 1.0)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    old = time.time() - 120
+    for f in (harness.root / "alpha").iterdir():
+        os.utime(f, (old, old))
+
+    res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status["push_seq"] >= 1, status
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_sync_start_on_fresh_clone_does_not_push(harness, monkeypatch):
+    # The mirror case: files just written by `clone --force` are all within
+    # the fresh window, so sync/start must NOT fire a spurious push.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    time.sleep(0.4)
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["push_seq"] == 0
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
 def test_sync_watches_debounces_and_pushes(harness, monkeypatch):
@@ -318,6 +400,48 @@ def test_sync_pulls_remote_changes_when_clean(harness, monkeypatch):
     # The pull's own writes are baseline, not local changes — no echo push.
     time.sleep(0.4)
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_sync_pull_reprobe_diff_triggers_push(harness, monkeypatch):
+    # A dry-run right after the force pull that STILL reports a diff (e.g. a
+    # local edit landed while `--force` itself was running) means local
+    # moved away from what was just pulled — local wins: the pull leg must
+    # mark dirty instead of baselining as clean, so the normal debounced push
+    # resolves the discrepancy.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+
+    harness.set_scenario(
+        {
+            "pull_dry": "would update: remote_udf.py",
+            "pull_files": {
+                "canvas.toml": 'type = "canvas"\n',
+                "remote_udf.py": "print('from workbench')\n",
+            },
+        }
+    )
+    deadline = time.time() + 5
+    status = None
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["pull_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status and status["pull_seq"] >= 1, status
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+        if status["push_seq"] >= 1:
+            break
+        time.sleep(0.05)
+    assert status["push_seq"] >= 1, status
 
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 

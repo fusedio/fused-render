@@ -68,6 +68,11 @@ SCAN_INTERVAL_S = 1.0
 # Remote-change poll cadence (a `pull --dry-run` CLI call, so much slower
 # than the local fingerprint walk). Only runs while the local clone is clean.
 PULL_POLL_S = 10.0
+# A newly constructed _SyncManager treats the clone as clean only if every
+# file's mtime is younger than this — i.e. it just came out of a
+# `clone --force`. Anything older is unknown provenance (server restart,
+# reopening an already-cloned canvas) and starts dirty instead.
+_FRESH_WINDOW_S = 10.0
 
 # Canvas names are `[a-zA-Z0-9_]` per the CLI's own push rule; enforcing it
 # here also keeps the name safe as a path segment and an argv element.
@@ -455,16 +460,31 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    # Stop every watcher first: a push with cleared credentials would only
-    # spam 401s into sync status.
+    # A completing browser login could rewrite the credentials file right
+    # after we clear it — cancel it first.
+    login = _reap_login()
+    if login is not None:
+        login.proc.terminate()
+    # Pause every watcher for the CLI call (no push/pull spam using
+    # about-to-be-cleared credentials) but don't stop them until logout
+    # actually succeeds — a failed logout leaves the user signed in, and
+    # stopping first would leave sync dead until a canvas is reopened.
+    with _SYNC_LOCK:
+        managers = list(_syncs.values())
+    for manager in managers:
+        manager.pause()
+    try:
+        proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT)
+        if err is not None:
+            return err
+    finally:
+        for manager in managers:
+            manager.resume(rebaseline=False)
     with _SYNC_LOCK:
         managers = list(_syncs.values())
         _syncs.clear()
     for manager in managers:
         manager.stop()
-    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT)
-    if err is not None:
-        return err
     return {"ok": True}
 
 
@@ -516,14 +536,33 @@ class _SyncManager:
         self.stop_event = threading.Event()
         self.pause_count = 0
         self.pause_lock = threading.Lock()
+        # Held by the watcher thread for the duration of any _push/
+        # _pull_if_remote_changed call. pause() waits on it so it never
+        # returns while one of those is still writing to `self.dir` — a
+        # caller pausing to run its own CLI call (clone's re-pull) on the
+        # same folder would otherwise race it.
+        self._op_lock = threading.Lock()
         self.push_seq = 0
-        self.push_state = "idle"  # idle | pending | pushing | error
         self.last_push_at: float | None = None
         self.last_error: str | None = None
         self.pull_seq = 0
         self.last_pull_at: float | None = None
         self._fingerprint = self._take_fingerprint()
-        self._dirty_since: float | None = None
+        # A fresh manager (server restart, self-heal after a dropped
+        # watcher, or just opening an already-cloned canvas again) has no
+        # idea whether what's on disk was ever pushed — trusting it as the
+        # clean baseline would silently orphan real unpushed edits made
+        # while no watcher was running. But a manager created right after a
+        # `clone --force` (the common case: opening a canvas the first
+        # time) IS genuinely clean, and treating that as dirty would fire a
+        # pointless push every time — the exact case the "no push without a
+        # change" test guards. Tell them apart by file age: a clone's writes
+        # are all seconds old; anything else has at least one file older
+        # than that.
+        now = time.time()
+        fresh = all(now - mtime < _FRESH_WINDOW_S for mtime, _ in self._fingerprint.values())
+        self._dirty_since: float | None = None if fresh else now
+        self.push_state = "idle" if fresh else "pending"  # idle | pending | pushing | error
         self._last_pull_poll = time.time()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -531,17 +570,34 @@ class _SyncManager:
     def pause(self) -> None:
         with self.pause_lock:
             self.pause_count += 1
+        # Block until any push/pull already in flight finishes. pause_count
+        # is now >0, so the watcher loop won't start a NEW one once it does.
+        with self._op_lock:
+            pass
 
-    def resume(self) -> None:
+    def resume(self, *, rebaseline: bool = True) -> None:
         with self.pause_lock:
             self.pause_count = max(0, self.pause_count - 1)
-            if self.pause_count == 0:
+            if self.pause_count == 0 and rebaseline:
                 # Whatever the pull wrote is the new baseline, not a change.
+                # Callers pausing for something OTHER than "I just overwrote
+                # this dir with known-good content" (logout, pausing around a
+                # CLI call that might fail) must pass rebaseline=False — a
+                # pending local edit from before the pause would otherwise be
+                # silently adopted as clean and never pushed.
                 self._fingerprint = self._take_fingerprint()
                 self._dirty_since = None
 
     def stop(self) -> None:
+        # Join, not just signal: every subprocess call in the loop carries its
+        # own timeout (PUSH_TIMEOUT/PULL_TIMEOUT), so this is bounded. Without
+        # the join, a caller (logout, test teardown) can race ahead while the
+        # thread is still mid-subprocess — e.g. logout clearing credentials
+        # out from under an in-flight push, or (in tests) the thread's next
+        # subprocess call landing in the NEXT test's env/log after monkeypatch
+        # has moved on.
         self.stop_event.set()
+        self.thread.join()
 
     def _take_fingerprint(self) -> dict[str, tuple[float, int]]:
         fp: dict[str, tuple[float, int]] = {}
@@ -604,6 +660,16 @@ class _SyncManager:
         the dry-run and the force pull is re-checked right before applying;
         when in doubt the local side wins (it will push, which replaces the
         remote set wholesale — last writer wins, local preferred).
+
+        A local edit can still land WHILE `--force` itself is running — that
+        window can't be closed with fingerprints (the pull's own writes and a
+        concurrent local edit both just look like "the file changed"), so we
+        ask the CLI instead: a `--dry-run` right after applying compares local
+        against remote directly. Still up to date → clean, as before. Still a
+        diff → something moved local away from what we just pulled; mark
+        dirty (not clean) so the normal debounced push resolves it, local
+        wins. A concurrent edit to a file the pull itself overwrote is lost
+        either way — this only recovers the untouched-file case.
         """
         cli = fused_cli()
         if cli is None:
@@ -635,11 +701,25 @@ class _SyncManager:
             return
         if applied.returncode != 0:
             return
-        # The pull's writes are the new baseline, not local changes to push.
-        self._fingerprint = self._take_fingerprint()
-        self._dirty_since = None
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        # Did local diverge from remote again during the force pull? If so,
+        # local wins — queue a push instead of baselining as clean.
+        try:
+            recheck = subprocess.run(
+                [*cli.command, *base, "--dry-run"],
+                capture_output=True, text=True, timeout=PULL_TIMEOUT,
+                env=child_env(cli),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            recheck = None
+        self._fingerprint = self._take_fingerprint()
+        still_diff = recheck is not None and recheck.returncode == 0 and (
+            "already up to date" not in (recheck.stdout or "")
+        )
+        self._dirty_since = time.time() if still_diff else None
+        if still_diff and self.push_state != "error":
+            self.push_state = "pending"
 
     def _run(self) -> None:
         while not self.stop_event.wait(SCAN_INTERVAL_S):
@@ -655,7 +735,8 @@ class _SyncManager:
                     self.push_state = "pending"
                 continue
             if self._dirty_since is not None and time.time() - self._dirty_since >= DEBOUNCE_S:
-                self._push()
+                with self._op_lock:
+                    self._push()
                 continue
             if (
                 self._dirty_since is None
@@ -663,7 +744,8 @@ class _SyncManager:
                 and time.time() - self._last_pull_poll >= PULL_POLL_S
             ):
                 self._last_pull_poll = time.time()
-                self._pull_if_remote_changed()
+                with self._op_lock:
+                    self._pull_if_remote_changed()
 
     def status(self) -> dict:
         return {

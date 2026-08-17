@@ -16,7 +16,7 @@
 // the next local push; the banner says so). This page never reloads the
 // workbench iframe — refreshing on upstream changes is the workbench's job.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EMBED_PREFIX, navigateUrl } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   getAccessToken,
@@ -141,15 +141,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // Right pane: the local clone opened in the chrome-free explorer embed with
   // the Claude template — the editing surface over the files the watcher
   // pushes.
-  const editorSrc = dir
-    ? EMBED_PREFIX +
-      dir
-        .split("/")
-        .filter(Boolean)
-        .map(encodeURIComponent)
-        .join("/") +
-      "?_mode=claude"
-    : null;
+  const editorSrc = dir ? embedUrlForFsPath(dir, "?_mode=claude") : null;
 
   const frameSrc =
     baseUrl && handle
@@ -194,15 +186,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           {pushLabel}
         </span>
         {sync?.dir && (
-          <button
-            onClick={() =>
-              navigateUrl(
-                "/explorer/view/" +
-                  sync.dir.split("/").filter(Boolean).map(encodeURIComponent).join("/"),
-              )
-            }
-            title={sync.dir}
-          >
+          <button onClick={() => navigateUrl(urlForFsPath(sync.dir))} title={sync.dir}>
             Open local files
           </button>
         )}

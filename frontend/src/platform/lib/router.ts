@@ -212,19 +212,30 @@ export function fsPathFromLocation(): string | null {
   return rootedFsPath(decoded);
 }
 
-export function urlForFsPath(fsPath: string, search?: string): string {
-  // Windows callers (server stat/list results, bookmarks) may carry
-  // backslashes; the URL codec speaks forward slashes only. Normalize ONLY
-  // drive-letter paths — on POSIX a backslash is a legal filename character
-  // and must round-trip untouched.
+// Shared by urlForFsPath/embedUrlForFsPath below: normalize ONLY drive-letter
+// paths — on POSIX a backslash is a legal filename character and must
+// round-trip untouched — then split into encoded segments.
+function encodeFsPathSegments(fsPath: string): string {
   const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
-  const rest = norm.replace(/^\/+/, "");
-  const encoded = rest
+  return norm
+    .replace(/^\/+/, "")
     .split("/")
     .filter((s) => s.length > 0)
     .map(encodeURIComponent)
     .join("/");
-  return PREFIX + encoded + (search || "");
+}
+
+export function urlForFsPath(fsPath: string, search?: string): string {
+  // Windows callers (server stat/list results, bookmarks) may carry
+  // backslashes; the URL codec speaks forward slashes only.
+  return PREFIX + encodeFsPathSegments(fsPath) + (search || "");
+}
+
+// Embed url for a raw fs path — same codec as urlForFsPath, but always onto
+// the chrome-free embed prefix regardless of the current page's own
+// IS_EMBED-derived PREFIX (a normal page embedding a fs path in an iframe).
+export function embedUrlForFsPath(fsPath: string, search?: string): string {
+  return EMBED_PREFIX + encodeFsPathSegments(fsPath) + (search || "");
 }
 
 export function navigate(

@@ -78,7 +78,10 @@ export default function Canvases() {
     void refresh();
   }, [refresh]);
 
-  // While a login is in flight, poll status until logged_in flips.
+  // While a login is in flight, poll status until logged_in flips — or the
+  // browser child exits without ever flipping it (closed tab, denied, or the
+  // flow otherwise failed), which must also drop `loggingIn` or the button
+  // stays stuck on "Waiting for browser sign-in…" forever.
   useEffect(() => {
     if (!loggingIn) return;
     pollRef.current = window.setInterval(() => {
@@ -90,6 +93,9 @@ export default function Canvases() {
           setLoggingIn(false);
           setError(null);
           void refresh();
+        } else if (!s.login_in_flight) {
+          setLoggingIn(false);
+          setError("Sign-in was not completed — try again.");
         }
       });
     }, LOGIN_POLL_MS);
@@ -111,6 +117,10 @@ export default function Canvases() {
 
   const onLogout = async () => {
     setError(null);
+    // A deliberate sign-out during a stale-creds re-login must not let the
+    // login poll's now-defunct login_in_flight read surface a spurious
+    // "sign-in was not completed" error over this.
+    setLoggingIn(false);
     try {
       await logout();
       setCanvases(null);
