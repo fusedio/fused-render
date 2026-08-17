@@ -7433,6 +7433,16 @@ the installation, and the mark that says so.
   hour over a state change that is already over. A clock that has gone backwards past the stamp reads as *not*
   watching: a badge a minute late costs nothing, a permanent 5s poll costs a
   request every 5s for the life of the app.
+- **SF-12b** **A nudge ABANDONS the read already in flight**, it does not merely
+  cancel the next one. The two cadences above mean a `/api/config` read is
+  usually outstanding, and the request that resolves after a dismiss still
+  carries the state from before it — so cancelling only the pending timer left
+  the dismissed badge to come back a moment later, from a reply that was already
+  on the wire when the user clicked. Every read carries the epoch it was issued
+  under (`epochRef`, the idiom `DownloadManager` uses for the same hazard) and
+  applies only if that epoch is still current; a dismiss, a nudge and a new seed
+  each bump it. The panel's own optimistic clear goes through the same bump
+  rather than through the raw setter, so the two cannot disagree.
 - **SF-14** **The other way in is Preferences → "Fix this app"**, because most
   of what is wrong with an app never raises anything: a preview renders the
   wrong dates, a folder takes ten seconds to open, a button does nothing. No
@@ -7502,3 +7512,22 @@ the installation, and the mark that says so.
   the path). A session that cannot write spends several minutes reading and then
   reports a fix that was never applied — which, to the user watching, reads
   exactly like a fix that was.
+- **SF-13a** **ONE fix session at a time** (409 naming the run that holds it),
+  because they all edit the same tree: two agents rewriting one installation
+  concurrently is not a slow path, it is a conflict, and each report then
+  describes a state that never existed. A user with two failed rows clicking Fix
+  on both is the ordinary way to get there. The slot lives in memory like the job
+  registry — it describes work happening in THIS process — and the watcher hands
+  it back in a `finally`, so one dead thread cannot lock the feature out.
+- **SF-13b** **The claim is IDENTIFIED, and its TTL is derived from the
+  watcher's own lifetime.** Both halves are the same bug from opposite ends. The
+  TTL is the backstop for a watcher that died without releasing, and at a round
+  3600s it was *exactly* `claude_spawn._RECORD_POLL_TICKS × _RECORD_POLL_INTERVAL`
+  — so it expired at the very moment a healthy long-running watcher was taking
+  its final whole-tree digest, handing the slot to a second session while the
+  first was live. It is now those constants plus a margin, reached into rather
+  than restated, since a hand-written number is how the two came to coincide.
+  And because a slot CAN legitimately move on, a release must prove it still owns
+  what it is dropping: each claim carries a token, and a release whose token does
+  not match is a no-op. Unconditional, the first watcher's `finally` wiped the
+  newer claim on its way out and let a third agent into the tree.

@@ -54,31 +54,66 @@ _CHECK_EVERY_TICKS = 8
 # and a restart is the end of it. Held past the run's end by nothing — the
 # watcher releases it in a `finally` — with a TTL as the backstop for a watcher
 # thread that died without running one.
-_ACTIVE_TTL_S = 3600.0
+#
+# DERIVED from the watcher's own lifetime, not a round number. It was 3600s,
+# which is EXACTLY `_RECORD_POLL_TICKS * _RECORD_POLL_INTERVAL` — so the backstop
+# for a dead watcher expired at the very moment a healthy long-running one was
+# finishing, and its final stamp (a whole-tree digest) widened that window
+# further. A backstop must only fire when the thing it backs up is genuinely
+# gone, so it has to outlive the longest legitimate watcher by a margin. Reaching
+# into claude_spawn's poll constants is deliberate: a hand-written number here
+# silently drifts out of step with them, which is how the two came to coincide.
+_ACTIVE_TTL_S = (
+    claude_spawn._RECORD_POLL_TICKS * claude_spawn._RECORD_POLL_INTERVAL + 300.0
+)
 _active_lock = threading.Lock()
+# {"token": str, "run_id": str, "at": float} — see `_release_active` for why the
+# token exists.
 _active: dict | None = None
+_token_seq = 0
 
 
-def _claim_active(now: float) -> str | None:
-    """Take the slot, or say which run already has it."""
-    global _active
+def _claim_active(now: float) -> tuple[str, str]:
+    """Take the slot. Returns `(token, busy_run_id)`.
+
+    A non-empty token means it is OURS and must be handed back to
+    `_release_active`. Otherwise `busy_run_id` names the run already holding it.
+    """
+    global _active, _token_seq
     with _active_lock:
         if _active is not None and (now - _active["at"]) < _ACTIVE_TTL_S:
-            return str(_active["run_id"])
-        _active = {"run_id": "", "at": now}
-        return None
+            return "", str(_active["run_id"])
+        _token_seq += 1
+        token = str(_token_seq)
+        _active = {"token": token, "run_id": "", "at": now}
+        return token, ""
 
 
-def _set_active_run(run_id: str) -> None:
+def _set_active_run(token: str, run_id: str) -> None:
     global _active
     with _active_lock:
-        if _active is not None:
+        if _active is not None and _active.get("token") == token:
             _active["run_id"] = run_id
 
 
-def _release_active() -> None:
+def _release_active(token: str = "") -> None:
+    """Hand the slot back — but ONLY IF WE STILL HOLD IT.
+
+    An unconditional release let a finishing watcher wipe a NEWER session's
+    claim: once the TTL had handed the slot to a second session (see above), the
+    first watcher's `finally` cleared it anyway, leaving the guard open while a
+    session was live and letting a third agent into the same tree. A claim is
+    therefore identified by a token, and a release that does not match is a
+    no-op: the slot has moved on without us.
+
+    An empty token force-releases, which is what the tests reset with.
+    """
     global _active
     with _active_lock:
+        if _active is None:
+            return
+        if token and _active.get("token") != token:
+            return  # someone else's claim now — not ours to drop
         _active = None
 
 
@@ -90,7 +125,7 @@ _record_session_when_ready = claude_spawn.record_session_when_ready
 
 
 def _watch_fix(run_id: str, incident: str, report: str, title: str,
-               before: str) -> None:
+               before: str, token: str) -> None:
     """Follow the fix session and stamp the installation if it changed.
 
     Two jobs the session cannot do for itself. The FIRST is the stamp — see
@@ -137,7 +172,10 @@ def _watch_fix(run_id: str, incident: str, report: str, title: str,
         # so a watcher that died still frees the slot: the alternative is an app
         # that refuses every later fix for an hour because of one bad thread.
         stamp()
-        _release_active()
+        # OUR claim, by token: the TTL may have handed the slot to a newer
+        # session while this watcher was finishing, and dropping that one would
+        # reopen the guard with a session live.
+        _release_active(token)
 
 
 @router.post("/api/selffix/start")
@@ -198,7 +236,8 @@ def api_selffix_start(body: dict = Body(default={}),
             "applied here. Reinstall fused-render, or install it somewhere you "
             "own.", status=409)
 
-    if (busy := _claim_active(time.time())) is not None:
+    token, busy = _claim_active(time.time())
+    if not token:
         return _error(
             "a fix session is already running on this installation"
             + (f" (run {busy})" if busy else "")
@@ -215,7 +254,7 @@ def api_selffix_start(body: dict = Body(default={}),
         # the digest.
         _, before = selffix.begin_session()
     except OSError as exc:
-        _release_active()
+        _release_active(token)
         return _error(f"could not write the incident file: {exc}", status=500)
 
     try:
@@ -223,15 +262,15 @@ def api_selffix_start(body: dict = Body(default={}),
             root, selffix.fix_prompt(incident, report, reported_error=reported_error),
             selffix.FIX_PERMISSION_MODE)
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
-        _release_active()
+        _release_active(token)
         return _error(f"could not start the fix session: {exc}", status=502)
     run_id = res.get("run_id")
     if res.get("error") or not run_id:
-        _release_active()
+        _release_active(token)
         return _error(str(res.get("error") or "could not start the fix session"),
                       status=502)
 
-    _set_active_run(str(run_id))
+    _set_active_run(token, str(run_id))
     # The marker's label for this fix. A described problem has no operation
     # name, so its first line stands in — the panel lists fixes by this, and
     # "a problem the user described" over every row says nothing.
@@ -241,14 +280,14 @@ def api_selffix_start(body: dict = Body(default={}),
         title = first_line[0][:120] if first_line else ""
     try:
         threading.Thread(target=_watch_fix,
-                         args=(str(run_id), incident, report, title, before),
+                         args=(str(run_id), incident, report, title, before, token),
                          daemon=True, name="fused-render-selffix-watch").start()
     except Exception:  # noqa: BLE001 — the session is already running
         # Nothing will stamp and nothing will free the slot, so do both now: a
         # session that ran with no watcher is exactly the case where the mark
         # matters, and the TTL alone would lock the feature out for an hour.
         logger.exception("could not start the self-fix watcher")
-        _release_active()
+        _release_active(token)
     return {"run_id": str(run_id), "target": root, "incident": incident,
             "report": report}
 
