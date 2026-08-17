@@ -118,8 +118,33 @@ class _Refused(Exception):
 # ------------------------------------------------------------------ invocation
 
 
+def _popen_kwargs():
+    """The spawn discipline, shared with every other git caller in this repo.
+
+    `close_fds=False` is one of THREE things that together reach posix_spawn: an
+    absolute argv[0] and the absence of a `cwd=` kwarg are the other two, and any
+    one of them missing puts the call back on fork(), where a process with libproj
+    resident dies in PROJ's atfork handler before exec — rc -11, no output, no
+    exception. A plain dict literal on purpose: tests/test_git_posix_spawn.py
+    reads it statically to verify the call sites that spread it.
+    """
+    return {
+        "env": {**os.environ, **_ENV},
+        "stdin": subprocess.DEVNULL,
+        "close_fds": False,
+        "creationflags": (subprocess.CREATE_NO_WINDOW
+                          if sys.platform == "win32" else 0),
+    }
+
+
 def _run(args, cwd, timeout=TIMEOUT_S, allow=(0,)):
     """One bounded git call. Returns (stdout_text, stderr_text, returncode).
+
+    `cwd` becomes `-C <cwd>` in the argv rather than a `cwd=` kwarg (see
+    _popen_kwargs). git chdirs there itself before the subcommand runs, so every
+    relative path in `args` resolves exactly as it did before — and `dest` is
+    already required to be absolute by _check_dest, so the clone is unaffected
+    either way.
 
     `allow` is the set of exit codes that are ANSWERS rather than failures —
     `bundle verify` exits 1 for "this bundle needs commits you don't have",
@@ -127,15 +152,11 @@ def _run(args, cwd, timeout=TIMEOUT_S, allow=(0,)):
     """
     try:
         proc = subprocess.run(
-            [_git_bin(), "--no-pager", *_CONFIG, *args],
-            cwd=cwd,
-            env={**os.environ, **_ENV},
-            stdin=subprocess.DEVNULL,
+            [_git_bin(), "--no-pager", *_CONFIG, "-C", cwd, *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
-            creationflags=(subprocess.CREATE_NO_WINDOW
-                           if sys.platform == "win32" else 0),
+            **_popen_kwargs(),
         )
     except FileNotFoundError as exc:
         raise _Refused("no-git", "git is not installed, or not on this app's PATH.") from exc

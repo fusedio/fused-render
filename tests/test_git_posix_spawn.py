@@ -213,28 +213,265 @@ def test_a_signal_death_is_not_mistaken_for_a_missing_repo(monkeypatch, caplog,
 # this is pinned by test rather than by comment.
 
 
-def test_no_git_spawn_uses_a_bare_executable_name():
-    """A repo-wide sweep: nothing may spawn git by bare name.
+# ---------------------------------------------------------- the STATIC backstop
+#
+# The behavioural tests above only reach call sites a test can drive. The five
+# sites that shipped forking on this branch were NOT among them, and the first
+# version of this sweep passed anyway because it only looked at argv[0] — a
+# backstop that goes green while the bug is live is worse than no backstop, so
+# this one checks the whole rule.
+#
+# AST-based, and deliberately so. A regex over source lines misses the same
+# violation written multi-line, which is this repo's prevailing style (the git
+# gate's own call is wrapped across lines), and it cannot see a tuple argv or an
+# `executable=` kwarg at all.
+#
+# `**_popen_kwargs()`-style indirection is resolved by reading the helper's dict
+# literal out of the SAME file's AST — no import, so no module side effects. When
+# a spawn's kwargs cannot be determined statically the sweep FAILS rather than
+# skipping: "I could not check this" must never read as "this is fine", which is
+# precisely how five forking sites slipped through.
 
-    Deliberately a source sweep rather than per-site behaviour tests: these sites
-    need repos, remotes and app dirs to reach, and the property being protected —
-    argv[0] is resolved, not bare — is visible in the source and is the one that
-    silently un-fixes itself when someone adds a new call site by copy-paste.
+_SPAWNERS = {"run", "Popen", "call", "check_call", "check_output"}
+_GIT_NAMES = {"git", "git.exe"}
+
+
+def _is_git_argv(node):
+    """Whether this call's program is git, however argv[0] is spelled."""
+    import ast
+
+    def names_git(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            return os.path.basename(n.value) in _GIT_NAMES
+        if isinstance(n, ast.Call):                     # _git_bin() / git_bin()
+            f = n.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if name in ("_git_bin", "git_bin"):
+                return True
+            if name == "which" and n.args:              # shutil.which("git")
+                return names_git(n.args[0])
+        if isinstance(n, ast.BoolOp):                   # which("git") or "git"
+            return any(names_git(v) for v in n.values)
+        return False
+
+    for kw in node.keywords:
+        if kw.arg == "executable" and names_git(kw.value):
+            return True
+    if not node.args:
+        return False
+    argv = node.args[0]
+    if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts:
+        return names_git(argv.elts[0])
+    return names_git(argv)
+
+
+def _dict_literal_of(tree, name):
+    """The keys of a module-level `NAME = {...}` or `def NAME(): return {...}`.
+
+    Returns a dict of key -> ast node, or None when it is not a plain literal we
+    can read (which the caller must treat as a FAILURE, not a pass).
     """
+    import ast
+
+    def keys_of(d):
+        if not isinstance(d, ast.Dict):
+            return None
+        out = {}
+        for k, v in zip(d.keys, d.values):
+            if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+                return None
+            out[k.value] = v
+        return out
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id == name:
+                    return keys_of(node.value)
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            for sub in node.body:
+                if isinstance(sub, ast.Return):
+                    return keys_of(sub.value)
+    return None
+
+
+def _spawn_keywords(tree, node):
+    """(kwargs as key -> ast node, unresolved) for one spawn call."""
+    import ast
+
+    kwargs, unresolved = {}, []
+    for kw in node.keywords:
+        if kw.arg is not None:
+            kwargs[kw.arg] = kw.value
+            continue
+        # **something
+        target = kw.value
+        name = None
+        if isinstance(target, ast.Call):
+            f = target.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        elif isinstance(target, ast.Name):
+            name = target.id
+        merged = _dict_literal_of(tree, name) if name else None
+        if merged is None:
+            unresolved.append(name or "<expression>")
+        else:
+            kwargs.update(merged)
+    return kwargs, unresolved
+
+
+def _sources():
     import pathlib
-    import re
 
     root = pathlib.Path(__file__).resolve().parent.parent / "fused_render"
-    # argv lists whose first element is the literal string "git".
-    bare = re.compile(r"""\[\s*["']git["']\s*,""")
-    offenders = []
-    for py in root.rglob("*.py"):
-        for n, line in enumerate(py.read_text(errors="replace").splitlines(), 1):
-            if bare.search(line) and "# posix-spawn-exempt" not in line:
-                offenders.append(f"{py.relative_to(root)}:{n}: {line.strip()}")
-    assert not offenders, (
-        "these spawn git by bare name, so CPython forks and the child SIGSEGVs "
-        "before exec whenever libproj is resident:\n  " + "\n  ".join(offenders))
+    return root, sorted(root.rglob("*.py"))
+
+
+def test_every_git_spawn_in_the_repo_can_posix_spawn():
+    """The whole rule, statically, at every git spawn in the package.
+
+    Checks argv[0] is resolved AND `close_fds=False` AND no `cwd=` — the three
+    clauses that must hold together. Checking only the first is what let five
+    sites ship forking with a green suite.
+    """
+    import ast
+
+    root, files = _sources()
+    problems = []
+    for py in files:
+        try:
+            tree = ast.parse(py.read_text(errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in _SPAWNERS):
+                continue
+            if not _is_git_argv(node):
+                continue
+            where = f"{py.relative_to(root)}:{node.lineno}"
+            kwargs, unresolved = _spawn_keywords(tree, node)
+            if unresolved:
+                problems.append(
+                    f"{where}: cannot determine spawn kwargs (**{', **'.join(unresolved)}"
+                    ") — make the helper a plain dict literal in this file so this "
+                    "check can read it, rather than leaving the site unverifiable")
+                continue
+
+            # argv[0] must be resolved, not a bare name.
+            argv = node.args[0] if node.args else None
+            if isinstance(argv, (ast.List, ast.Tuple)) and argv.elts:
+                first = argv.elts[0]
+                if isinstance(first, ast.Constant) and not os.path.dirname(first.value):
+                    problems.append(f"{where}: argv[0] is the bare name "
+                                    f"{first.value!r} — CPython forks")
+
+            cf = kwargs.get("close_fds")
+            if cf is None:
+                problems.append(f"{where}: no close_fds — defaults to True, so "
+                                "CPython forks and the child SIGSEGVs before exec")
+            elif not (isinstance(cf, ast.Constant) and cf.value is False):
+                problems.append(f"{where}: close_fds is not the literal False")
+
+            cwd = kwargs.get("cwd")
+            if cwd is not None and not (isinstance(cwd, ast.Constant)
+                                        and cwd.value is None):
+                problems.append(f"{where}: passes cwd=, which forces the fork "
+                                "path on its own — use `-C <root>` instead")
+
+            for forcer in ("preexec_fn", "pass_fds", "start_new_session"):
+                val = kwargs.get(forcer)
+                if val is not None and not (isinstance(val, ast.Constant)
+                                            and not val.value):
+                    problems.append(f"{where}: {forcer}= forces the fork path")
+
+    assert not problems, (
+        f"{len(problems)} git spawn(s) would fork, and a fork in a process with "
+        "libproj resident dies with SIGSEGV before exec:\n  "
+        + "\n  ".join(problems))
+
+
+def test_the_sweep_actually_catches_each_violation(tmp_path):
+    """The backstop's own regression test.
+
+    A sweep that cannot fail is not a backstop, and this branch shipped one that
+    could not. So the detector is pointed at deliberately broken sources —
+    including the multi-line and tuple spellings the old regex missed — and must
+    object to every one.
+    """
+    import ast
+
+    bad = [
+        # multi-line argv: the spelling the regex version could not see
+        'subprocess.run(\n    ["git", "-C", root,\n     "status"],\n'
+        '    close_fds=False)',
+        # tuple argv
+        'subprocess.run(("git", "status"), close_fds=False)',
+        # absolute argv but no close_fds
+        'subprocess.run([_git_bin(), "status"])',
+        # absolute argv, close_fds ok, but cwd passed
+        'subprocess.run([_git_bin(), "status"], close_fds=False, cwd=root)',
+        # kwargs hidden behind an unreadable helper
+        'subprocess.run([_git_bin(), "status"], **make_kwargs(root))',
+        # executable= spelling
+        'subprocess.run(["x"], executable="git", close_fds=False)',
+    ]
+    for src in bad:
+        tree = ast.parse(src)
+        call = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in _SPAWNERS)
+        assert _is_git_argv(call), f"not recognised as a git spawn:\n{src}"
+        kwargs, unresolved = _spawn_keywords(tree, call)
+        argv = call.args[0] if call.args else None
+        bare = (isinstance(argv, (ast.List, ast.Tuple)) and argv.elts
+                and isinstance(argv.elts[0], ast.Constant)
+                and not os.path.dirname(argv.elts[0].value))
+        cf = kwargs.get("close_fds")
+        bad_cf = cf is None or not (isinstance(cf, ast.Constant) and cf.value is False)
+        cwd = kwargs.get("cwd")
+        bad_cwd = cwd is not None and not (isinstance(cwd, ast.Constant)
+                                          and cwd.value is None)
+        assert unresolved or bare or bad_cf or bad_cwd, (
+            f"the sweep would have PASSED this:\n{src}")
+
+    # …and must not object to the correct form.
+    good = 'subprocess.run([_git_bin(), "-C", root, "status"], close_fds=False)'
+    tree = ast.parse(good)
+    call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call))
+    kwargs, unresolved = _spawn_keywords(tree, call)
+    assert not unresolved
+    assert isinstance(kwargs["close_fds"], ast.Constant)
+    assert kwargs["close_fds"].value is False
+    assert "cwd" not in kwargs
+
+
+def test_the_sweep_resolves_a_kwargs_helper():
+    """`**_popen_kwargs()` must be READ, not waved through — four modules use it,
+    and that indirection is where the missed sites hid their missing close_fds."""
+    import ast
+
+    src = (
+        'def _popen_kwargs():\n'
+        '    return {"stdin": subprocess.DEVNULL, "close_fds": False}\n'
+        'subprocess.run([_git_bin(), "status"], **_popen_kwargs())\n')
+    tree = ast.parse(src)
+    call = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "run")
+    kwargs, unresolved = _spawn_keywords(tree, call)
+    assert not unresolved, unresolved
+    assert kwargs["close_fds"].value is False
+
+    # The same helper WITHOUT close_fds must be caught, not merged silently.
+    src_bad = src.replace(', "close_fds": False', "")
+    tree_bad = ast.parse(src_bad)
+    call_bad = next(n for n in ast.walk(tree_bad)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "run")
+    kwargs_bad, unresolved_bad = _spawn_keywords(tree_bad, call_bad)
+    assert not unresolved_bad
+    assert "close_fds" not in kwargs_bad
 
 
 def test_git_bin_is_absolute_and_cached():

@@ -239,12 +239,19 @@ def _git_env() -> dict:
     return env
 
 
-def _git(args: list[str], cwd: str | None = None, timeout: int = 300) -> str:
-    """Run git, raise DeeplinkError carrying git's stderr on failure."""
+def _git(args: list[str], timeout: int = 300) -> str:
+    """Run git, raise DeeplinkError carrying git's stderr on failure.
+
+    Takes no `cwd`: it had one, no caller ever passed it (every call already
+    carries its own `-C <dest>`), and a `cwd=` kwarg forces CPython onto the fork
+    path — where a process with libproj resident dies in PROJ's atfork handler
+    before exec, rc -11 and silent. Removed rather than defaulted so it cannot be
+    reintroduced by a caller that does not know that.
+    """
     try:
         proc = subprocess.run(
             [_git_bin(), *args],
-            cwd=cwd,
+            close_fds=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,

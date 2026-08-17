@@ -131,6 +131,11 @@ def _popen_kwargs():
     return {
         "env": {**os.environ, **_ENV},
         "stdin": subprocess.DEVNULL,
+        # Required, together with the absolute argv[0] and the ABSENCE of `cwd=`,
+        # to reach posix_spawn — see the note above _git_bin. Missing it here made
+        # both calls below fork, so opening a commit in the git view died with a
+        # silent rc -11 whenever libproj was resident.
+        "close_fds": False,
         "creationflags": (subprocess.CREATE_NO_WINDOW
                           if sys.platform == "win32" else 0),
     }
