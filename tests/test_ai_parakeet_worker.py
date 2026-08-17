@@ -195,14 +195,15 @@ class FakeResampler:
     recording is still inside the filter when the container runs out.
     """
 
-    def __init__(self, format=None, layout=None, rate=None):
+    def __init__(self, format=None, layout=None, rate=None, flush=160):
         self.args = {"format": format, "layout": layout, "rate": rate}
         self.flushed = False
+        self._flush = flush
 
     def resample(self, frame):
         if frame is None:
             self.flushed = True
-            return [FakeFrame(np.full(160, 0.5, dtype=np.float32))]
+            return [FakeFrame(np.full(self._flush, 0.5, dtype=np.float32))]
         return [frame]
 
 
@@ -230,19 +231,26 @@ class FakeContainer:
         return False
 
 
-def make_av(seconds=2.0, has_audio=True):
-    """An `av` module holding one recording of `seconds`, at 16 kHz."""
-    samples = np.zeros(int(RATE * seconds) - 160, dtype=np.float32)
+def make_av(seconds=2.0, has_audio=True, samples=None):
+    """An `av` module holding one recording, at 16 kHz.
+
+    `samples` overrides `seconds` for the cases measured in a handful of them —
+    a file so short its duration rounds to zero, which is the shape that used
+    to reach the decode loop as `(0.0, None)`.
+    """
+    count = int(RATE * seconds) if samples is None else int(samples)
+    flush = min(160, count)
+    body = np.zeros(max(0, count - flush), dtype=np.float32)
     module = types.ModuleType("av")
     module.resamplers = []
 
     def _resampler(**kwargs):
-        made = FakeResampler(**kwargs)
+        made = FakeResampler(flush=flush, **kwargs)
         module.resamplers.append(made)
         return made
 
     module.AudioResampler = _resampler
-    module.open = lambda path: FakeContainer([FakeFrame(samples)], has_audio=has_audio)
+    module.open = lambda path: FakeContainer([FakeFrame(body)], has_audio=has_audio)
     return module
 
 
@@ -428,6 +436,41 @@ def test_a_repo_in_ANOTHER_FORMAT_is_refused_by_name(monkeypatch, base, tmp_path
     assert "mlx-community/parakeet-tdt-0.6b-v3" in message
 
 
+def test_a_model_that_does_not_want_16_kHz_is_refused_AT_LOAD(monkeypatch, base,
+                                                              tmp_path):
+    """Everything downstream of the decode is 16 kHz and cannot say so for
+    itself: Silero's exported graph takes 512-sample windows at that rate and
+    nothing else, and the two sherpa diarization models are 16 kHz exports.
+    Left to be discovered, an 8 kHz model would reach `vad.session` — OUTSIDE
+    the degradation `try`, so an opaque ONNX crash mid-transcription — or, with
+    `vad: false`, produce turns wrong by a ratio and a transcript confidently
+    attributed to the wrong people. A refusal at load is the only place this is
+    still one sentence."""
+    package, inner, _ = make_parakeet(rate=8000)
+    worker = load_worker(monkeypatch, base, parakeet=package, inner=inner)
+
+    with pytest.raises(RuntimeError) as raised:
+        worker.load("org/parakeet-8k", _snapshot(tmp_path, NEMO_CONFIG))
+    assert "16000 Hz" in str(raised.value)
+    assert "8000" in str(raised.value)
+    # …and nothing is left resident: a half-loaded model would be reported
+    # ready by the next `/health` and decode at the wrong rate.
+    assert "model" not in worker._loaded and "rate" not in worker._loaded
+
+
+def test_a_MISSING_rate_is_loud_rather_than_guessed_at_16_kHz(monkeypatch, base):
+    """The state that can only exist if `load` was skipped or half-done. A
+    fallback constant here would silently resample to whatever the guess was —
+    the chipmunk transcript this rate exists to prevent — and it would fire in
+    exactly the case where nothing is known."""
+    package, inner, model = make_parakeet()
+    worker = load_worker(monkeypatch, base, parakeet=package, inner=inner)
+    worker._loaded["model"] = model
+
+    with pytest.raises(KeyError):
+        worker._sample_rate()
+
+
 def test_a_config_that_will_not_parse_is_the_same_refusal(monkeypatch, base, tmp_path):
     """A broken download, and the message above already says what a good one
     looks like — re-raising a JSON error would send the reader to their disk
@@ -542,10 +585,39 @@ def test_the_resampler_asks_for_the_MODELS_rate_mono_float_and_is_flushed(
     worker.generate(_request(tmp_path, vad=False))
 
     resampler = av_module.resamplers[0]
-    # The RATE is the model's, not a constant of the worker: a model trained at
-    # another rate must not be fed 16 kHz audio silently.
+    # The RATE is read from the loaded model rather than written into the
+    # decode, which is what makes `load`'s 16 kHz refusal the single place that
+    # question is answered — this state is reachable only by skipping it, as
+    # this test does deliberately.
     assert resampler.args == {"format": "fltp", "layout": "mono", "rate": 8000}
     assert resampler.flushed
+
+
+@pytest.mark.parametrize("vad", [True, False])
+def test_a_file_too_SHORT_to_have_a_duration_writes_an_empty_transcript(
+        monkeypatch, loaded, tmp_path, vad):
+    """A clip of a few dozen samples rounds to 0.0 seconds, and the row's
+    `total` is then None — indeterminate, which is the honest thing to show.
+    What must not happen is that None reaching the decode arithmetic: it used
+    to travel as the END of the only region and the ETA's `sum` raised a
+    TypeError, so a file the loop would have skipped in one line came back as a
+    traceback instead of an empty transcript."""
+    worker, model, _ = loaded(sentences=[FakeSentence(0.0, 1.0, "hi")],
+                              samples=40)
+    # The detector's own answer to 40 samples is not the subject; both routes
+    # into `_regions_to_decode` are (a `None` from the VAD and the `vad: false`
+    # skip), and both used to produce the same `(0.0, None)`.
+    monkeypatch.setattr(worker, "_speech_regions", lambda *a, **k: None)
+    request = _request(tmp_path, vad=vad)
+
+    result = worker.generate(request)
+
+    assert result["duration"] is None
+    assert result["segments"] == 0
+    assert model.calls == [], "a clip of pure padding must not be decoded"
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert written["segments"] == [] and written["text"] == ""
+    assert open(request["outText"], encoding="utf-8").read() == "\n"
 
 
 def test_a_file_with_no_audio_track_says_so(loaded, tmp_path):

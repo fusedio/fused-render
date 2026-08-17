@@ -190,8 +190,24 @@ def load(model_id, fetched):
 
     mx.eval(model.parameters())
 
+    rate = int(model.preprocessor_config.sample_rate)
+    if rate != SUPPORTED_RATE:
+        # Refused HERE, and nothing is stored: everything downstream of the
+        # decode is 16 kHz and none of it can say so for itself in a sentence
+        # anybody can act on. Silero's exported graph takes 512-sample windows
+        # at that rate and nothing else, and it is reached OUTSIDE
+        # `_speech_regions`'s degradation guard, so an 8 kHz model would abort
+        # a transcription from inside ONNX Runtime; with `vad: false` it would
+        # instead produce diarization turns wrong by a ratio, which is a
+        # transcript confidently attributed to the wrong people.
+        raise RuntimeError(
+            f"{model_id} wants {rate} Hz audio and this runner's speech "
+            f"detection and speaker labelling are {SUPPORTED_RATE} Hz only. "
+            "Every Parakeet model published for MLX today is 16 kHz — try "
+            "mlx-community/parakeet-tdt-0.6b-v3.")
+
     _loaded["model"] = model
-    _loaded["rate"] = int(model.preprocessor_config.sample_rate)
+    _loaded["rate"] = rate
     # See `worker_base.STATE["device"]`. MLX is Metal or nothing.
     worker_base.set_state(device="mps")
 
@@ -219,16 +235,27 @@ def memory():
 # ------------------------------------------------------------- audio, no ffmpeg
 
 
-def _sample_rate():
-    """The rate the LOADED model wants, not a constant of this file.
+#: The only rate this runner can serve, checked at LOAD.
+#:
+#: Not Parakeet's constraint — its mel front end reads whatever its config
+#: says — but everything AROUND it: `runners/vad.py` runs Silero's export,
+#: which takes 512-sample windows at 16 kHz and nothing else, and
+#: `runners/diarize.py` refuses turns denominated in any other rate because
+#: its two sherpa models are 16 kHz exports. Every Parakeet model published
+#: for MLX today says 16 kHz, so this is a guard rather than a limitation.
+SUPPORTED_RATE = 16000
 
-    Every Parakeet config here says 16 kHz and so does Whisper's front end, but
-    the number is read off the model because it is what the mel front end
-    assumes and what `runners/diarize.py` checks its turns against — a model
-    trained at another rate must produce a refusal, not a transcript of a
-    chipmunk.
+
+def _sample_rate():
+    """The rate the LOADED model wants, read rather than assumed.
+
+    `_loaded["rate"]`, not a `.get(...) or 16000`: the only state in which a
+    fallback could fire is one where nothing is known about the model, and
+    guessing there would resample the recording to a rate nobody checked —
+    the chipmunk transcript this number exists to prevent, produced silently.
+    A `KeyError` is the honest answer, and `load` is what makes it impossible.
     """
-    return int(_loaded.get("rate") or 16000)
+    return int(_loaded["rate"])
 
 
 def _decode_audio(path, rate):
@@ -257,7 +284,11 @@ def _decode_audio(path, rate):
             chunks.append(out.to_ndarray().reshape(-1))
     if not chunks:
         raise RuntimeError(f"{os.path.basename(path)} decoded to no audio")
-    return np.concatenate(chunks).astype(np.float32)
+    # `dtype=` on the concatenate rather than `.astype` after it. The frames
+    # are already float32 (the resampler was asked for `fltp`), so the second
+    # form allocates the whole waveform TWICE and frees one copy — 345MB of it
+    # on a 90-minute recording, at the moment the model is also resident.
+    return np.concatenate(chunks, dtype=np.float32)
 
 
 # ------------------------------------------------------------------- reporting
@@ -650,8 +681,15 @@ def _decode_clip(model, module, clip, rate, position):
                                 chunk_callback=chunk_callback)
 
 
-def _regions_to_decode(audio, regions, total):
+def _regions_to_decode(audio, regions, duration):
     """The clips to transcribe, as `(start, end)` in original-recording time.
+
+    `duration` is the NUMBER of seconds decoded, never the row's `total` — the
+    two differ for a recording so short it rounds to zero, where `total` is
+    None (indeterminate, which is what the row should show) and this arithmetic
+    needs 0.0. Handing the None on made the only clip `(0.0, None)`, and the
+    ETA's `sum` over the clips then raised a TypeError out of a file the loop
+    below would have skipped in one line.
 
     One region spanning everything is what "no VAD" looks like, and that is the
     point of the shape: the filtered and unfiltered paths are ONE loop, so the
@@ -664,7 +702,7 @@ def _regions_to_decode(audio, regions, total):
     version of a wrong answer.
     """
     if not regions:
-        return [(0.0, total)]
+        return [(0.0, duration)]
     return list(regions)
 
 
@@ -697,9 +735,16 @@ def _seconds_done(position, offset=0.0, limit=None):
     return round(done, 2)
 
 
-def _transcribe_regions(audio, clips, rate, job, row, total, transcribing_since,
-                        progressive=None):
+def _transcribe_regions(audio, clips, rate, job, row, total, duration,
+                        transcribing_since, progressive=None):
     """Transcribe each clip and return the segments in ORIGINAL time.
+
+    **`total` and `duration` are the same seconds in two currencies**, and the
+    split is not tidiness: `total` is what the ROW carries and is None for a
+    recording too short to round to a tenth of a second, because an
+    indeterminate bar is the honest rendering of "no length worth showing";
+    `duration` is the arithmetic, and is 0.0 there. Only the reporting may see
+    the None.
 
     `progressive` is the partial-transcript sink (`runners/partial.py`), fed
     from the one place where a segment is finished AND already remapped into
@@ -730,7 +775,8 @@ def _transcribe_regions(audio, clips, rate, job, row, total, transcribing_since,
 
     for index, (start, end) in enumerate(clips):
         last = index == len(clips) - 1
-        clip = audio if (start, end) == (0.0, total) else _slice(audio, start, end, rate)
+        clip = (audio if (start, end) == (0.0, duration)
+                else _slice(audio, start, end, rate))
         if len(clip) < rate // 10:
             # Under a tenth of a second: all padding and no signal, and a clip
             # of a few hundred samples is where a decoder invents a sentence.
@@ -876,7 +922,16 @@ def generate(body):
         raise worker_base.Cancelled()
     # The duration is OURS: we hold the samples, so it is exact rather than a
     # container's declared length, and it exists before the model sees a thing.
-    total = round(len(audio) / rate, 2) or None
+    #
+    # TWO names for it, and the difference is a real file: a clip of a few dozen
+    # samples rounds to 0.0, and `total` is what the ROW carries — where 0 would
+    # be a bar claiming a length nobody can see move, so None (indeterminate) is
+    # the honest value. `duration` is the arithmetic, and it stays a number:
+    # handing the None to `_regions_to_decode` made the only clip `(0.0, None)`
+    # and the ETA's `sum` over the clips raised a TypeError, turning a file the
+    # decode loop skips in one line into a traceback on the job row.
+    duration = round(len(audio) / rate, 2)
+    total = duration or None
 
     # PHASE ONE-AND-A-HALF — who is speaking, over the whole waveform. Before
     # the VAD and independent of it, and a fast pre-pass, which is why it gets
@@ -891,7 +946,7 @@ def generate(body):
 
     # PHASE TWO — find the speech, unless the caller said not to.
     regions = _speech_regions(audio, rate, total, job, row) if vad else None
-    clips = _regions_to_decode(audio, regions, total)
+    clips = _regions_to_decode(audio, regions, duration)
 
     # Everything from here to the final write happens inside the sink, because
     # its EXIT is the lifecycle: reaching the end means the real output landed
@@ -903,7 +958,7 @@ def generate(body):
         # PHASE THREE — transcribe each clip, with every timestamp mapped back
         # into original-recording time.
         segments = _transcribe_regions(audio, clips, rate, job, row, total,
-                                       transcribing_since,
+                                       duration, transcribing_since,
                                        progressive=progressive)
 
         # PHASE FOUR — the join, through the SAME function the whisper runners
