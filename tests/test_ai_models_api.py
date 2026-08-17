@@ -29,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.server import create_app
+from fused_render.ai import catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.server.routers import ai_models as ai_models_mod
 
@@ -1347,6 +1348,28 @@ def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     _snapshot_file(embed, "c1", "modules.json", "[]")
     assert _repo_row(client, "org/st")["task"] == "embeddings"
     assert _repo_row(client, "org/st")["capability"] is None
+
+
+@requires_symlinks
+def test_a_downloaded_repo_absent_from_the_suggestion_catalog_still_appears_in_the_listing(
+        client, hub):
+    """The Discover tab's Hub search can download ANY repo, curated or not.
+
+    This listing is the only place a user could then see it, and it is what
+    `cached_models()` — and through it `/api/ai/catalog` — reads to put the
+    same repo in a page's model picker (D323). So the listing must not quietly
+    restrict itself to the curation: pinned here because a "show only what we
+    recommend" filter looks like a tidy-up and is the whole bug.
+    """
+    repo_id = "some-org/a-model-nobody-curated"
+    assert repo_id not in catalog.all_suggested_ids()
+    repo = _repo(hub, "models--some-org--a-model-nobody-curated", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}))
+    row = _repo_row(client, repo_id)
+    assert row["kind"] == "model"
+    assert row["capability"] == _ai_registry.TEXT_GENERATION
 
 
 @requires_symlinks

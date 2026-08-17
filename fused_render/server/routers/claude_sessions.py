@@ -298,14 +298,28 @@ def _summarize(path: str, now: float, names: dict, triage: dict) -> dict | None:
     running = (now - activity) < _RUNNING_WINDOW_SEC
     last_active = last or datetime.fromtimestamp(stat.st_mtime, timezone.utc)
 
-    # Untriaged: running sessions are in progress, stopped ones are done — a
-    # session that finished while nothing was watching shouldn't sit in
-    # "in_progress" forever.
-    default = "in_progress" if running else "done"
-    record = triage.get(session_id)
-    status = (record.get("status") if isinstance(record, dict) else None) or default
-    if status not in STATUSES:
-        status = default
+    # THE IN-PROGRESS LANE IS DERIVED, NOT RECORDED — the same rule as the Inbox
+    # this module mirrors (core_apps/sessions/inbox.py). "Something is running in
+    # this conversation" is a fact about the present, so it outranks the record:
+    # a session filed as done or archived and then resumed belongs in In Progress,
+    # and one that finished while nothing was watching drops back to whatever the
+    # user filed it as (or Done, untriaged) without anything having to notice.
+    #
+    # The guard used to cover only the untriaged default, which was the half that
+    # was never the problem. The Inbox's `autoFlow` bought the other half by
+    # OVERWRITING the record whenever it saw a run — and could only retract that
+    # while its own tab stayed open, so every unwitnessed finish left an
+    # `in_progress` pin on disk that nothing would ever clear (tasks.py
+    # `_pin_holds` is the reap that made the leftovers harmless). autoFlow stopped
+    # writing it, so the lane is computed here instead and the user's own pin is
+    # still in the file when the run stops.
+    if running:
+        status = "in_progress"
+    else:
+        record = triage.get(session_id)
+        status = (record.get("status") if isinstance(record, dict) else None) or "done"
+        if status not in STATUSES:
+            status = "done"  # a hand-edited record costs the pin, not the row
 
     custom = names.get(session_id)
     if isinstance(custom, str) and custom.strip():
@@ -358,6 +372,15 @@ def api_claude_session_triage(patch: TriagePatch):
     Board drags cards between the same three columns the Inbox uses. Same
     file, same locking, same merge semantics: only `status` changes, and the
     record's other keys (note, tags, read) survive untouched.
+
+    **The write is stamped.** `at` is when this status was chosen, and the Tasks
+    router's `_pin_holds` needs it to tell a deliberate `in_progress` — the
+    reopen drag — from the ones `autoFlow` writes automatically and cannot take
+    back once its page is closed. A pin with no stamp reads as older than
+    anything that has happened and is reapable, which is the right answer for
+    every automatic one: `autoFlow` sends `{status}` alone, and this is the only
+    writer that knows the status came from a person. Stringified because that is
+    the shape of the record — `set_triage.py` coerces every field it writes.
     """
     session_id = patch.session_id.strip()
     if not session_id:
@@ -376,6 +399,7 @@ def api_claude_session_triage(patch: TriagePatch):
         if not isinstance(rec, dict):
             rec = {}
         rec["status"] = patch.status
+        rec["at"] = str(datetime.now(timezone.utc).timestamp())
         triage[session_id] = rec
         with open(triage_path, "w", encoding="utf-8") as f:
             json.dump(triage, f, indent=2, ensure_ascii=False)

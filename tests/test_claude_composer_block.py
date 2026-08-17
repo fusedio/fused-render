@@ -29,6 +29,15 @@ session ID because you are already there" — and the row is the LINK to the tas
 which is what let "Edit schedule" go: two doors to one room, and the banner's own
 door could not unblock.
 
+IT IS NOT ONLY THE BOX. The composer's calendar button — the hop that hands this
+draft to the Schedule page — goes dead with it (Akshil, 2026-08-17: "when we have
+a blocked panel we don't allow to type… we should not allow to schedule the task
+as well"). A session already holding pending scheduled work accepts no further
+input of ANY kind: queuing a second message into a context that is spoken for is
+the same pollution one step later. Both controls read the ONE `schedBlocked()`
+this file already had, because two notions of "is this session blocked" is two
+answers to one question.
+
 Structural assertions over the template source, the same approach
 test_claude_message_anchor.py and test_claude_schedule_pill.py take: inline
 vanilla JS in a 12000-line document, so what can be pinned is that the wiring
@@ -36,9 +45,17 @@ exists and that the properties it would be easy to get wrong stay true. Here
 those are: it blocks on a pending entry naming THIS session, it does NOT block
 when the schedule cannot be read, the row carries four facts and no fifth, it
 sits against the composer it is shutting, and its one action actually unblocks.
+
+Where a direction could be backwards rather than absent, the page's own function
+is LIFTED OUT AND RUN under node instead (`_node` below, the harness
+test_claude_shots.py established): "blocked ⇒ shut" and "unblocked ⇒ open again"
+are both `= blocked`, and a source read cannot tell them apart.
 """
+import json
 import os
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -65,6 +82,89 @@ def code(source) -> str:
 def _fn(code: str, opening: str) -> str:
     body = code[code.index(opening):]
     return body[:body.index("\n}")]
+
+
+# --------------------------------------------- the page's own JS, under node
+#
+# Structure says the wiring is there; it cannot say which way round it points.
+# "Blocked ⇒ shut" and "unblocked ⇒ open again" are the two directions a
+# `= blocked` assignment could have backwards, so applyComposerBlockState is
+# lifted out of the page and RUN, against stubs for the DOM it touches. Same
+# extraction as tests/test_claude_shots.py's `_node`, kept as its own copy for
+# the reason that one gives: the suites are independent and a shared harness
+# would couple them.
+
+def _node(fn_names, call, html, prelude=""):
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own composer-block helpers")
+    chunks = []
+    for name in fn_names:
+        start = html.index(name)
+        if name.startswith("function") or name.startswith("async function"):
+            end = html.index("\n}\n", start) + 3      # closing brace at column 0
+            chunks.append(html[start:end])
+            continue
+        taken = []
+        for line in html[start:].split("\n"):
+            taken.append(line)
+            if line.split("//")[0].rstrip().endswith(";"):
+                break
+        chunks.append("\n".join(taken))
+    script = prelude + "\n" + "\n".join(chunks) + "\n" + call
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+# The pristine strings come out of the TEMPLATE (the three `const`s below), so a
+# rename or a re-word on either the box or the button is caught here rather than
+# being quietly mirrored into the stub.
+_STATE_FNS = ["let schedBlockers", "const BOX_PLACEHOLDER",
+              "const SCHED_BTN_TITLE", "const SCHED_BTN_LABEL",
+              "function schedBlocked(", "function schedIsRepeat(",
+              "function schedBlockReason(", "function applyComposerBlockState(",
+              "function applyComposerBlock(", "function clearComposerBlock("]
+
+# Only the session matters to schedPendingHere, and the block exists only when
+# there is one. Everything else here is a surface the state function writes to.
+_STATE_STUBS = """
+const fused = { params: { get: (k) => (k === "session_id" ? "S1" : "") } };
+function nearBottom() { return false; }
+function scrollBottom() {}
+function schedLoadTaskRow() {}
+let confirmClosed = 0;
+function closeSchedConfirm() { confirmClosed += 1; }
+const schedBlockEl = { hidden: true };
+function renderSchedBlock() { schedBlockEl.hidden = !schedBlockers[0]; }
+const box = { disabled: false, placeholder: "Reply to Claude…" };
+const schedBtn = {
+  disabled: false,
+  title: "Schedule this as a task",
+  attrs: { "aria-label": "Schedule this as a task" },
+  setAttribute(k, v) { this.attrs[k] = v; },
+  getAttribute(k) { return this.attrs[k]; },
+};
+function snap() {
+  return {
+    disabled: schedBtn.disabled,
+    title: schedBtn.title,
+    label: schedBtn.getAttribute("aria-label"),
+    box_disabled: box.disabled,
+    placeholder: box.placeholder,
+    hidden: schedBlockEl.hidden,
+    confirm_closed: confirmClosed,
+  };
+}
+"""
+
+
+def _run(source, body):
+    return _node(_STATE_FNS, body, source, prelude=_STATE_STUBS)
+
+
+_ONE_OFF = '{ id: "e1", state: "pending", session_id: "S1", due: "2026-08-18T09:00:00" }'
+_REPEAT = ('{ id: "e2", state: "pending", session_id: "S1", template_id: "t9",'
+           ' due: "2026-08-18T09:00:00" }')
 
 
 # ------------------------------------------------------- what blocks the box
@@ -100,10 +200,172 @@ def test_the_box_is_shut_and_the_send_path_is_guarded(code):
 
 def test_the_send_button_is_never_disabled(code):
     """While a run is live that button is the STOP button, and a chat that cannot
-    stop its own running turn is a worse state than the one this prevents."""
+    stop its own running turn is a worse state than the one this prevents. The two
+    things that DO go dead are the textarea and the calendar button — everything
+    else in the row (the three selects, the screenshot, Send) stays live."""
     state = _fn(code, "function applyComposerBlockState(")
-    assert "disabled = blocked" in state
-    assert state.count("disabled = blocked") == 1, "only the textarea"
+    assert "box.disabled = blocked" in state
+    assert "schedBtn.disabled = blocked" in state
+    assert state.count("disabled = blocked") == 2, "the textarea and the calendar"
+    for live in (".send", "sendBtn", "viewshot", "model", "effort", "perm"):
+        assert live not in state, f"{live} has no business going dead here"
+
+
+# ------------------------------------------- the calendar button goes with it
+
+
+def test_the_calendar_button_is_shut_by_the_SAME_state_as_the_box(code):
+    """"When we have a blocked panel we don't allow to type… we should not allow to
+    schedule the task as well" (Akshil, 2026-08-17). A session holding pending
+    scheduled work takes no further input of ANY kind — typed or queued — because
+    queuing a second message into a context that is already spoken for is the same
+    pollution one keystroke later.
+
+    ONE state, not two. Both reads are `blocked`, the single `schedBlocked()` this
+    function already computed: a second notion of "is this session blocked" is two
+    answers to one question, and the day they disagree one of them is lying to the
+    user about what their chat is doing."""
+    state = _fn(code, "function applyComposerBlockState(")
+    assert "const blocked = schedBlocked();" in state
+    assert "box.disabled = blocked" in state
+    assert "schedBtn.disabled = blocked" in state
+    # no second predicate: nothing here re-derives the block from the entries
+    assert "schedPendingHere(" not in state
+    assert state.count("schedBlocked()") == 1
+
+
+def test_a_blocked_calendar_button_is_disabled_and_says_why(source):
+    """`disabled` for real, not a class that looks it: a control that paints itself
+    dead and still navigates on the click is worse than one that never dimmed.
+
+    And it says WHY in the banner's own sentence — schedBlockReason, the same
+    function that writes the card's one line — because the reader is being refused
+    by a button whose explanation is six pixels above it, and a second phrasing of
+    one fact is how the two drift apart."""
+    out = _run(source, "applyComposerBlock([" + _ONE_OFF
+               + "]); console.log(JSON.stringify(snap()));")
+    assert out["disabled"] is True
+    assert out["box_disabled"] is True, "the box and the button go together"
+    assert out["title"] == "Blocked — a scheduled message runs in this chat."
+    # the spoken name carries the reason too: `disabled` takes the button out of
+    # tab order, so the title is unreachable by keyboard
+    assert out["label"] == ("Schedule this as a task"
+                           " — Blocked — a scheduled message runs in this chat.")
+
+
+def test_a_repeat_is_refused_in_the_repeats_own_words(source):
+    """The banner distinguishes the two cases because the ESCAPE differs; the
+    button borrows whichever sentence the card is showing, so the tooltip never
+    disagrees with the notice directly above it."""
+    out = _run(source, "applyComposerBlock([" + _REPEAT
+               + "]); console.log(JSON.stringify(snap()));")
+    assert out["disabled"] is True
+    assert out["title"] == "Blocked — a repeating message runs in this chat."
+
+
+def test_the_calendar_button_comes_back_the_moment_the_block_lifts(source):
+    """The other direction, and it is the one an `= blocked` assignment can have
+    backwards. It re-enables through the path that reopens the BOX and no other:
+    the cancel, the stop, a queued turn completing and the switch of session all
+    land on applyComposerBlockState, so there is nothing here to refresh
+    separately — and the pristine title and name come back with it, or the button
+    would keep explaining a block that has gone."""
+    out = _run(source, "applyComposerBlock([" + _ONE_OFF + "]);"
+               " clearComposerBlock();"
+               " console.log(JSON.stringify(snap()));")
+    assert out["disabled"] is False
+    assert out["box_disabled"] is False
+    assert out["title"] == "Schedule this as a task"
+    assert out["label"] == "Schedule this as a task"
+    assert out["placeholder"] == "Reply to Claude…"
+
+
+def test_a_blocked_calendar_button_also_LOOKS_dead(source):
+    """`disabled` alone paints nothing on a pill: every background in that row is
+    transparent, so a live and a dead calendar are the same picture until the
+    cursor arrives — and then `.pill:hover` lights the dead one up. The hover is
+    excluded on `.pill:hover` itself rather than overridden locally: both selectors
+    sit at (0,2,0), so a `.schedbtn:disabled` background would lose on source
+    order — the exact bug the aria-pressed comment beside it records, with the
+    roles swapped.
+
+    The CURSOR is the box's, not .viewshot's: this button and that textarea are the
+    same refusal for the same reason and should feel like one under the hand, where
+    .viewshot's disable is a one-second capture nobody could have got wrong."""
+    rule = re.search(r"^  \.schedbtn:disabled \{[^\n]*$", source, flags=re.M).group(0)
+    assert "opacity:" in rule
+    assert "cursor: not-allowed;" in rule
+    box = source[source.index("  #box:disabled {"):]
+    assert "cursor: not-allowed;" in box[:box.index("\n  }")]
+    hover = re.search(r"^  \.pill:hover[^\n]*$", source, flags=re.M).group(0)
+    assert ":not(:disabled)" in hover
+    assert "!important" not in source, "specificity, not force (D146)"
+
+
+def test_the_pristine_title_and_name_are_captured_and_not_retyped(code):
+    """The same idiom as BOX_PLACEHOLDER beside them: read off the element at boot,
+    so the markup stays the one place the button's wording lives. Retyping the
+    strings here is how the restored tooltip ends up being last week's copy."""
+    assert 'const schedBtn = document.getElementById("schedbtn");' in code
+    assert "const SCHED_BTN_TITLE = schedBtn.title;" in code
+    assert 'const SCHED_BTN_LABEL = schedBtn.getAttribute("aria-label");' in code
+
+
+def test_every_route_to_the_scheduler_is_closed_while_blocked(code):
+    """Grepped, not assumed. Three ways in and all three are shut:
+
+    * the two `.schedbtn` clicks — `disabled` stops the pointer AND the keyboard,
+      since a disabled <button> fires no click for Enter or Space either, and the
+      handler guards anyway (`submitChat`'s discipline: disabled for the eye,
+      guarded for the hand);
+    * the confirm's Continue, which is the only caller of openScheduler and can
+      outlive the press — the 15s poll may block the chat while the question is
+      still on screen.
+
+    There is no shortcut key and no kebab item: the menu's schedule entry was
+    deleted on 2026-08-16 (see test_claude_schedule_button.py) and nothing else in
+    this template opens the Schedule page with a draft."""
+    clicks = code[code.index('document.querySelectorAll(".schedbtn")'):]
+    clicks = clicks[:clicks.index("\n});")]
+    assert "if (schedBlocked()) return;" in clicks
+    go = code[code.index('document.getElementById("schedpop-go").addEventListener'):]
+    go = go[:go.index("\n});")]
+    assert "if (schedBlocked()) return;" in go
+    assert go.index("schedBlocked()") < go.index("openScheduler("), \
+        "the guard has to come before the hop"
+    # and only those two: no third entry point grew one
+    assert code.count("openSchedConfirm(") == 2   # the definition and the click
+    assert code.count("openScheduler(") == 2      # the definition and Continue
+
+
+def test_a_confirm_already_open_is_taken_down_by_the_block(source):
+    """The poll arrives every 15s, so "Schedule this as a task?" can be on screen
+    when the block lands. Left standing it is a question about a button that has
+    just died, with a Continue that the guard above would silently ignore — so the
+    block closes it, and the reader sees the banner instead of a dead dialog."""
+    out = _run(source, "applyComposerBlock([" + _ONE_OFF
+               + "]); console.log(JSON.stringify(snap()));")
+    assert out["confirm_closed"] == 1
+    # and NOT on the way out: closing a confirm the user opened the moment the
+    # block lifted would be the block reaching past its own end
+    out = _run(source, "clearComposerBlock(); console.log(JSON.stringify(snap()));")
+    assert out["confirm_closed"] == 0
+
+
+def test_the_reason_line_has_one_author(code):
+    """The banner and the button read the same sentence from the same function.
+    Two literals would be two things to re-word, and the one that got missed would
+    be the one under the pointer."""
+    reason = _fn(code, "function schedBlockReason(")
+    assert '"Blocked — a repeating message runs in this chat."' in reason
+    assert '"Blocked — a scheduled message runs in this chat."' in reason
+    assert "schedIsRepeat(" in reason
+    # nobody else spells them
+    assert code.count("runs in this chat.") == 2, "the sentences live in one place"
+    render = _fn(code, "function renderSchedBlock(")
+    assert "schedBlockReason(next)" in render
+    state = _fn(code, "function applyComposerBlockState(")
+    assert "schedBlockReason(schedBlockers[0])" in state
 
 
 def test_there_is_no_time_window_anywhere(code):
@@ -350,8 +612,10 @@ def test_the_reason_is_one_short_line_and_nothing_else_in_words(code):
     second still spent a sentence on it. The state and the time live on the row now,
     so the line only has to say the box is shut and why."""
     render = _fn(code, "function renderSchedBlock(")
-    assert '"Blocked — a scheduled message runs in this chat."' in render
-    assert '"Blocked — a repeating message runs in this chat."' in render
+    assert "let why = schedBlockReason(next);" in render
+    reason = _fn(code, "function schedBlockReason(")
+    assert '"Blocked — a scheduled message runs in this chat."' in reason
+    assert '"Blocked — a repeating message runs in this chat."' in reason
     # the sentences it replaced are gone, in both generations
     for gone in ("read-only for as long as", "moves the block to the next one",
                  "would join this task's context", "Reschedule to change",

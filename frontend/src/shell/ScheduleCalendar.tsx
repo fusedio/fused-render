@@ -19,8 +19,9 @@
 // so there is nothing for a variable height to encode — the same reason Google
 // Calendar draws a short event as one line. Do not size chips by duration.
 //
-// Colour is per TASK, derived from its key (schedule-lib.taskColour) so five
-// days of a daily task read as one thing across the grid.
+// Colour is per PROJECT, hashed from the task's folder (schedule-lib.taskColour):
+// five days of a daily task read as one thing across the grid, AND every task out
+// of one repo carries that repo's hue (Akshil, 2026-08-17).
 //
 // AN ARCHIVED TASK DRAWS NOTHING. The grid is for what is going to happen and
 // what did; a task that was cancelled or skipped outright is filed away, and
@@ -1029,7 +1030,7 @@ export default function ScheduleCalendar({
                         left: `calc(${(chip.lane * 100) / chip.lanes}% + 1px)`,
                         width: `calc(${100 / chip.lanes}% - 3px)`,
                         ["--lane" as string]: chip.lane,
-                        // Same task, same colour, right across the grid.
+                        // Same FOLDER, same colour, right across the grid.
                         ["--chip" as string]: `var(--task-c${chip.colour})`,
                       } as React.CSSProperties}
                       title={name}
