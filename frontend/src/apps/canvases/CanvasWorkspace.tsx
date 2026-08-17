@@ -13,8 +13,8 @@
 //
 // Sync: the server watches the clone folder and pushes on every quiet period
 // (local wins — an edit made inside the embedded workbench is overwritten by
-// the next local push; the banner says so). The hosted workbench has no
-// push-driven reload, so when push_seq moves this page reloads the iframe.
+// the next local push; the banner says so). This page never reloads the
+// workbench iframe — refreshing on upstream changes is the workbench's job.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EMBED_PREFIX, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -44,10 +44,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Bumped when push_seq moves → remounts the iframe so the editor shows the
-  // pushed code (the hosted workbench never reloads itself on push).
-  const [frameEpoch] = useState(0);
-  const lastPushSeq = useRef<number | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -106,7 +102,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     return () => window.removeEventListener("message", onMessage);
   }, [seedToken]);
 
-  // Sync status poll; reload the iframe when a push lands.
+  // Sync status poll for the status strip; re-arms the watcher if it drops.
   useEffect(() => {
     const id = window.setInterval(() => {
       void getSyncStatus(name)
@@ -115,12 +111,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           setDir((d) => d ?? s.dir);
           // Self-heal: a server restart drops the watcher; re-arm it.
           if (!s.watching) void startSync(name).catch(() => undefined);
-          // Push-driven reload disabled for now — it made the workbench
-          // unusable while edits streamed in (reload on every push).
-          // if (lastPushSeq.current !== null && s.push_seq !== lastPushSeq.current) {
-          //   setFrameEpoch((n) => n + 1);
-          // }
-          lastPushSeq.current = s.push_seq;
         })
         .catch(() => undefined);
     }, SYNC_POLL_MS);
@@ -150,7 +140,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
 
   // Right pane: the local clone opened in the chrome-free explorer embed with
   // the Claude template — the editing surface over the files the watcher
-  // pushes. Stable across pushes (only the workbench iframe reloads).
+  // pushes.
   const editorSrc = dir
     ? EMBED_PREFIX +
       dir
@@ -236,7 +226,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         >
           {frameSrc ? (
             <iframe
-              key={frameEpoch}
               ref={frameRef}
               src={frameSrc}
               title={`Workbench: ${name}`}
