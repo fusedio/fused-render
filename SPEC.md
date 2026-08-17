@@ -7426,7 +7426,7 @@ world from one the user typed.
 
 ---
 
-## 42. Self-Fix — A Claude Session on This Installation (D326)
+## 42. Self-Fix — A Claude Session on This Installation (D327)
 
 Goal: when the app fails on a machine we cannot see, the user has one more
 option than "dismiss it and hope" — they can ask Claude to look at the failure
@@ -7668,6 +7668,17 @@ the installation, and the mark that says so.
   ask about this?" is answerable either way), the reinstall instructions, and
   the dismiss — with room to read it. Read-only installs say so up front here
   rather than only on click, since there is space to say it.
+- **SF-14c** **"Every report" means WHILE a badge is up as well**, and the tab
+  reads the DIRECTORY beside the marker rather than instead of it. The marker's
+  `fixes` is capped (`selffix.MAX_FIXES`), a dismiss drops the marker while
+  keeping the files, and a session that changed nothing still writes one — so a
+  listing gated on *no marker* hid all three in the state where someone is most
+  likely to be looking. `list_reports` walks the directory for exactly that
+  reason; gating its output on the marker was the UI contradicting the server
+  that fed it. The two lists are shown together and de-duplicated by path
+  (`unlistedReports`): titled fix rows first, everything else under them, so the
+  rule is "every report is reachable and none appears twice" rather than a
+  condition on which state the install is in.
 - **SF-15** **A dismissal is REMEMBERED, and it is scoped to the tree state it
   was made for.** The watcher re-stamps every few ticks and once more when the
   turn ends, so dismissing mid-session — the likeliest moment, since the badge

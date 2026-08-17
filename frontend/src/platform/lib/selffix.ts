@@ -389,6 +389,30 @@ export function issueUrl(snapshot: SelfFixSnapshot): string {
   return `${snapshot.issues_url}?${params.toString()}`;
 }
 
+/** Reports on disk that the marker's `fixes` list does not already name.
+ *
+ * The Preferences tab lists the marker's fixes with their titles, and then
+ * these underneath. The two together are ALL of them, which is the only
+ * acceptable answer: `list_reports` reads the directory rather than the marker
+ * precisely because the marker is capped (`selffix.MAX_FIXES`), a dismiss drops
+ * it while keeping the files, and a session that changed nothing still writes
+ * one. The tab used to show this list only when there was NO marker, which hid
+ * all three of those cases in exactly the state where someone is most likely to
+ * be looking — a UI contradicting the server that fed it.
+ *
+ * Matched on path, since that is what both sides carry, and a report named by a
+ * titled fix row says more there than it would as a bare filename here.
+ */
+export function unlistedReports(
+  reports: SelfFixReport[],
+  marker: ModifiedInstall | null | undefined
+): SelfFixReport[] {
+  const named = new Set(
+    (marker?.fixes ?? []).map((f) => f.report).filter((p): p is string => !!p)
+  );
+  return reports.filter((r) => !named.has(r.path));
+}
+
 // The line under the chip's heading. Says WHEN, because "this install was
 // modified" without a date is a fact the user cannot place — and the most
 // common reaction to the badge is "when did that happen?".

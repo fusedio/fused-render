@@ -34,6 +34,7 @@ import {
   isSelfFixStorageKey,
   issueUrl,
   startSelfFix,
+  unlistedReports,
   SELFFIX_CHANGED_EVENT,
   type SelfFixSnapshot,
 } from "@platform/lib/selffix";
@@ -116,6 +117,7 @@ function DescribeSection({ writable }: { writable: boolean }) {
 function InstallationSection({ snapshot }: { snapshot: SelfFixSnapshot }) {
   const [error, setError] = useState<string | null>(null);
   const { marker, reinstall } = snapshot;
+  const otherReports = unlistedReports(snapshot.reports, marker);
 
   return (
     <section className="prefs-section">
@@ -189,15 +191,27 @@ function InstallationSection({ snapshot }: { snapshot: SelfFixSnapshot }) {
         </p>
       )}
 
-      {/* Reports with no marker: everything a dismissed badge left behind, and
-          the sessions that changed nothing. Listing them here rather than only
-          under a live badge is the difference between a record and a receipt —
-          "did I already ask about this?" is answerable either way. */}
-      {!marker && snapshot.reports.length > 0 && (
+      {/* EVERY OTHER REPORT ON DISK, whether or not a badge is up. This used to
+          be shown only when there was no marker, which hid exactly the reports
+          it exists to keep: the marker's `fixes` is CAPPED (selffix.MAX_FIXES),
+          a dismiss drops the marker while keeping the files, and a session that
+          changed nothing still writes one — so while a badge was active, all
+          three were invisible. `list_reports` reads the DIRECTORY for precisely
+          that reason ("a listing that could go missing under a cap would be the
+          one thing this feature is not allowed to lose"), and the UI was
+          contradicting its own server.
+
+          Filtered against the fixes above rather than shown twice: a report
+          already named by a titled row says more there than it would as a bare
+          filename here. So the rule is one line — every report is reachable,
+          none appears twice — instead of a condition on the marker. */}
+      {otherReports.length > 0 && (
         <>
-          <p className="deploy-muted">Earlier fix sessions left these reports:</p>
+          <p className="deploy-muted">
+            {marker ? "Other reports on disk:" : "Earlier fix sessions left these reports:"}
+          </p>
           <ul className="selffix-fixes">
-            {snapshot.reports.map((r) => (
+            {otherReports.map((r) => (
               <li key={r.path}>
                 <button
                   type="button"
