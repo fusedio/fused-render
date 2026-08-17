@@ -580,6 +580,156 @@ def test_a_named_pending_message_makes_the_task_its_run_will_join(
     assert tasks[0]["message_count"] == 1
 
 
+# -------------------------------------------------- when a task stops being one
+#
+# The rule: a task that NEVER RAN disappears when its work is cancelled; a task
+# that HAS run keeps its row, in Archive. Decided in `_collect`, so every view
+# agrees — and an absence of a task, never a filter.
+
+
+def test_a_task_that_never_ran_vanishes_when_it_is_cancelled(client, tmp_path):
+    """Deleting a scheduled message cancels its entry. With no session behind it
+    there is no transcript and no history — nothing for a row to be about — and
+    the row that used to survive was an empty shell sitting in Archive."""
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.CANCELLED,
+                           target=str(tmp_path))])
+    assert _tasks(client) == []
+    # And it is gone from the one view that could still reach it by key.
+    assert client.get("/api/tasks/pending:e1/messages").status_code == 404
+
+
+def test_a_never_run_skip_vanishes_too(client, tmp_path):
+    """A skipped OCCURRENCE is the same fact by a different route — the loop's
+    missed verdict rather than the user's cancel — and it ran exactly as much."""
+    _seed_schedule([_entry("occ", "every morning", T9, state=schedule.MISSED,
+                           template_id="tpl", target=str(tmp_path))])
+    assert _tasks(client) == []
+
+
+def test_a_pending_message_keeps_its_task_when_its_neighbour_is_cancelled(
+        client, tmp_path):
+    """The boundary that matters most: only when NOTHING is left to run does a
+    task go. Cancelling one of two scheduled messages takes that one's row and
+    leaves the upcoming one exactly where it was — each session-less message is
+    its own task, so the cancel cannot reach past its own row."""
+    _seed_schedule([
+        _entry("e1", "pull the news", T9, state=schedule.CANCELLED,
+               target=str(tmp_path)),
+        _entry("e2", "pull the weather", T12, target=str(tmp_path)),
+    ])
+    tasks = _tasks(client)
+    assert [t["key"] for t in tasks] == ["pending:e2"]
+    assert tasks[0]["status"] == "upcoming"
+
+
+def test_a_thread_with_anything_left_to_run_is_still_a_task(tmp_path):
+    """The `all` over a task's entries, at the level it is written.
+
+    Grouping gives a session-less task exactly ONE entry today (a message that
+    names no session is asking for a fresh one, so it keys under its own
+    `pending:` row — see `test_messages_with_no_session_stay_separate_tasks`),
+    which means the HTTP cases above can only exercise the one-entry form. The
+    rule is written over the whole thread anyway, because the two ways a thread
+    earns its row must not depend on that: anything left to run, or anything that
+    already ran."""
+    def task(*entries):
+        return {"key": "pending:e1", "session_id": "", "path": None,
+                "entries": list(entries)}
+
+    cancelled = _entry("e1", "gone", T9, state=schedule.CANCELLED)
+    skipped = _entry("e2", "skipped", T9, state=schedule.MISSED,
+                     template_id="tpl")
+    assert tasks_mod._is_task(task(cancelled, skipped)) is False
+    assert tasks_mod._is_task(task(cancelled)) is False
+    # Anything left to run.
+    assert tasks_mod._is_task(task(cancelled, _entry("e3", "soon", T12))) is True
+    # Anything that already ran, even with the cancel newest.
+    ran = _entry("e4", "went", T9, state=schedule.SENT, fired=T9, turn="ok")
+    assert tasks_mod._is_task(task(ran, cancelled)) is True
+    # A send that BROKE is news, not an absence: `error` keeps the row.
+    broke = _entry("e5", "boom", T9, state=schedule.ERROR, error="gone")
+    assert tasks_mod._is_task(task(broke)) is True
+    # And a session keeps it whatever its entries say.
+    named = dict(task(cancelled, skipped), session_id="sess-a")
+    assert tasks_mod._is_task(named) is True
+
+
+def test_a_session_keeps_its_row_with_every_entry_cancelled(client,
+                                                            projects_dir):
+    """A task that has run is a Claude session with a real transcript, and this
+    app does not destroy transcripts (D306). Archive is the honest resting place
+    for that one — the row stays, whatever happened to its entries."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "later", T12, state=schedule.CANCELLED,
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "archived"
+    assert task["messages"][0]["state"] == "cancelled"
+
+
+def test_a_session_with_one_cancelled_and_one_pending_entry_is_upcoming(
+        client, tmp_path):
+    """Two messages scheduled into the same conversation, one of them deleted.
+    The row stays and still reads `upcoming`, because the surviving message is
+    the newest thing in the thread and it has not happened yet."""
+    _seed_schedule([
+        _entry("e1", "try that again", T9, session_id="not-yet",
+               state=schedule.CANCELLED, target=str(tmp_path)),
+        _entry("e2", "and then this", T12, session_id="not-yet",
+               target=str(tmp_path)),
+    ])
+    tasks = _tasks(client)
+    assert [t["key"] for t in tasks] == ["not-yet"]
+    assert tasks[0]["status"] == "upcoming"
+    assert tasks[0]["message_count"] == 2
+
+
+def test_a_run_whose_transcript_is_missing_keeps_its_row(client, tmp_path):
+    """It ran: `sent` says the body was handed to a session. The transcript may
+    be seconds old or may have been moved, and the module's whole posture is that
+    an unreadable transcript costs a fact and never the user's message."""
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", target=str(tmp_path))])
+    tasks = _tasks(client)
+    assert [t["key"] for t in tasks] == ["pending:e1"]
+    assert tasks[0]["session_id"] == "", "no session named, and still a task"
+    assert tasks[0]["message_count"] == 1
+
+
+def test_a_dropped_task_keeps_its_number_allocated_and_unused(client, tmp_path,
+                                                              state_dir):
+    """Allocate once, never renumber — the store's rule, unchanged by this one.
+    A dropped task's number stays where it is: nothing reclaims it, so the next
+    task in the project takes the NEXT one, and an unskip that brings the entry
+    back finds the row still called what the user saw."""
+    _seed_schedule([_entry("e1", "pull the news", T9, target=str(tmp_path))])
+    assert _tasks(client)[0]["task_id"] == "TASK-001"
+    store = json.loads((state_dir / "task_ids.json").read_text())
+    assert store["pending:e1"]["n"] == 1
+
+    cancelled = _entry("e1", "pull the news", T9, state=schedule.CANCELLED,
+                       target=str(tmp_path))
+    _seed_schedule([cancelled])
+    tasks_mod.reset_cache()
+    assert _tasks(client) == []
+    assert json.loads((state_dir / "task_ids.json").read_text()) == store, \
+        "the record is not touched, let alone released"
+
+    _seed_schedule([cancelled,
+                    _entry("e2", "another thing", T12, target=str(tmp_path))])
+    tasks_mod.reset_cache()
+    rows = _tasks(client)
+    assert [(t["key"], t["task_id"]) for t in rows] == [("pending:e2",
+                                                        "TASK-002")]
+
+    # And the dropped row keeps the number it was showing if it comes back.
+    _seed_schedule([_entry("e1", "pull the news", T9, target=str(tmp_path)),
+                    _entry("e2", "another thing", T12, target=str(tmp_path))])
+    tasks_mod.reset_cache()
+    back = {t["key"]: t["task_id"] for t in _tasks(client)}
+    assert back == {"pending:e1": "TASK-001", "pending:e2": "TASK-002"}
+
+
 # --------------------------------------------------------------- the calendar
 
 
@@ -786,6 +936,21 @@ def test_a_recurring_template_is_not_drawn(client, tmp_path):
     ])
     items = _scheduled(client, DAY_START, DAY_END)
     assert [i["message"]["entry_id"] for i in items] == ["occ"]
+
+
+def test_a_never_run_message_that_was_cancelled_draws_no_chip(client, tmp_path):
+    """The window reads the same collection the listing does, so the two cannot
+    disagree: a chip for a task the listing no longer contains would point at a
+    row that is not there."""
+    _seed_schedule([
+        _entry("gone", "deleted", "2026-08-16T09:00:00Z",
+               state=schedule.CANCELLED, target=str(tmp_path)),
+        _entry("kept", "still here", "2026-08-16T10:00:00Z",
+               target=str(tmp_path)),
+    ])
+    items = _scheduled(client, DAY_START, DAY_END)
+    assert [i["message"]["entry_id"] for i in items] == ["kept"]
+    assert [t["key"] for t in _tasks(client)] == ["pending:kept"]
 
 
 # ----------------------------------------------------------------- the status

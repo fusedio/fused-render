@@ -33,6 +33,18 @@ that never reached a transcript at all (pending, missed, cancelled). Message ids
 follow from that count and nothing else: the Nth message in time order is MSG-N
 (`tasks_store.message_ids`), so nothing has to be stored and nothing can drift.
 
+**When a task stops being one.** A task with no session whose every scheduled
+message has reached a terminal state that never ran — cancelled, skipped, missed
+— is not a task any more and is not listed anywhere (`_is_task`). Deleting a
+message that never ran leaves no session, no transcript and no history, so there
+is nothing for a row to be about; leaving one behind meant an empty shell sitting
+in Archive forever. A task that HAS run keeps its row whatever happens to its
+entries, because it has a transcript and this app does not destroy transcripts
+(D306) — Archive is the honest resting place for that one. This is decided in
+`_collect`, which every endpoint below reads, so the listing, the board and the
+calendar agree by construction rather than each learning the rule; it is not a
+filter, and the default filters are unchanged.
+
 **A task key** is the session id, or `pending:<entry-id>` for a message that
 names no session at all and so has none to be filed under yet (§5). A message
 that DOES name one — a re-send, a message scheduled out of an open chat — is
@@ -586,9 +598,57 @@ def _entry_session(entry: dict) -> str:
             or str(entry.get("session_id") or ""))
 
 
+# States that mean a scheduled message will never run and never did. In
+# `_entry_state`'s vocabulary, so a cancelled or missed OCCURRENCE — which reads
+# as `skipped` — is covered by the same tuple, and `error` is NOT: a send that
+# broke is news, and `_board_column` gives it its own column.
+#
+# `sent` and `sending` are obviously excluded, and so is `pending`: a message
+# waiting for its time is work that has not happened yet, not work that never
+# will.
+_NEVER_RAN = ("cancelled", "skipped", "missed")
+
+
+def _is_task(task: dict) -> bool:
+    """Is this still a task at all?
+
+    A task that never ran DISAPPEARS when its work is cancelled; a task that has
+    run keeps its row, in Archive. Deleting a scheduled message cancels its
+    entry, and for a message that already fired that is exactly right — there is
+    a Claude session behind it with a real transcript, and the row is how the
+    user reaches it. For a message that never fired there is nothing behind it
+    at all: no session, no transcript, no history. The row that used to survive
+    was an empty shell filed under Archive, describing work that did not happen
+    and cannot be reached.
+
+    Two boundaries, both of which have to hold or the rule destroys something:
+
+    * **A session keeps the row, always.** `session_id` here is what
+      `_entry_session` resolved (the run's answer, else the conversation the
+      message named), and a transcript-derived task always has one. If a
+      conversation exists, the row stays even with every entry cancelled — the
+      transcript is the thing worth keeping (D306), and Archive is where it
+      belongs.
+    * **Anything left to run keeps the row.** One `pending` entry among a
+      hundred cancelled ones is upcoming work, and a row it must appear in. Only
+      when NOTHING is left to run, and nothing ever ran, does the task go.
+
+    A mixed thread — one cancelled entry, one that sent — has run, so it stays.
+    """
+    if task["session_id"] or not task["entries"]:
+        # No entries and no session cannot happen — a session-less task exists
+        # only because an entry made it — and is kept rather than dropped
+        # anyway, because `all()` over nothing is true and a bug upstream must
+        # not turn into a row silently disappearing.
+        return True
+    return not all(_entry_state(entry) in _NEVER_RAN
+                   for entry in task["entries"])
+
+
 def _collect() -> dict[str, dict]:
     """Every task on this machine: one per transcript, plus one per scheduled
-    message that names no session at all.
+    message that names no session at all — minus the ones that are no longer
+    tasks (`_is_task`).
 
     A scheduled entry whose session has no transcript on disk still makes a
     task — the session may be seconds old, it may not have been started yet
@@ -618,7 +678,11 @@ def _collect() -> dict[str, dict]:
             task["entries"].append(entry)
     for task in tasks.values():
         task["entries"].sort(key=_entry_at)
-    return tasks
+    # The drop happens HERE, once, rather than in each endpoint: the listing,
+    # the full thread, the calendar window and the read endpoint all collect
+    # through this function, so a task that is no longer a task is absent from
+    # every one of them and no view has to know why.
+    return {key: task for key, task in tasks.items() if _is_task(task)}
 
 
 def _workdir(target: str) -> str:
@@ -833,6 +897,8 @@ def api_tasks():
 
     Includes tasks that have never been scheduled (a chat session is a task) and
     tasks that have never run (a message scheduled for tomorrow is a task, §5).
+    Excludes the ones that stopped being tasks: no session, and nothing left to
+    run — see `_is_task`. That is an absence of a task, not a filter hiding one.
     """
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
@@ -921,6 +987,12 @@ def api_tasks_scheduled(window_from: float = Query(..., alias="from"),
     bounds (the window is a QUERY, not a file) alongside a signature of what
     could change the answer: the size of each thread's transcript, and the state
     of each of its scheduled entries.
+
+    A task that is no longer a task (`_is_task`) has no chips here either — the
+    collection this reads has already dropped it. That is the point of deciding
+    it once: a cancelled never-run message still drawing a chip for a task the
+    listing does not contain would be a visible disagreement between two views
+    of the same store, and the chip's own row would be unreachable.
 
     Projected future occurrences of a recurring rule are deliberately NOT here.
     The client synthesises those from `/api/schedule`'s `upcoming[]`, which is
