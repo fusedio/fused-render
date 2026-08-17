@@ -543,9 +543,10 @@ def test_the_note_composer_is_portaled_to_the_click_in_the_target_document():
     assert "annUnportalPop();" in place
     assert "#annpop.sidebar {" in _pane_source()
     # And the chip-edit path says so with nulls rather than inventing a point in
-    # someone else's viewport.
+    # someone else's viewport — a point NOTE is the one exception, since it has
+    # its own coordinate and never needs the invented-point fallback at all.
     render = code[code.index("function renderAnn() {"):]
-    assert "const cx = r ? r.right : (CHAT_ONLY ? null : w / 3);" in render
+    assert "const cx = p ? p.x : r ? r.right : (CHAT_ONLY ? null : w / 3);" in render
 
     # A target that reloads or unmarks while the composer is open takes the
     # composer's document with it: the sync closes it (dropping the draft, which
