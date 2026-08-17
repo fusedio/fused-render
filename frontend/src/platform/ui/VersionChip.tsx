@@ -345,7 +345,15 @@ function useModifiedInstall(
     const onPing = (e: StorageEvent) => {
       if (isSelfFixStorageKey(e.key)) rearm();
     };
-    timer = window.setTimeout(poll, selffixPollInterval(lastFixStartedAt()));
+    // PROBED ONCE ON MOUNT rather than after a full interval, which is what
+    // UpdateBadge and DownloadManager both do and for the same reason: the
+    // `seed` prop is the config the shell booted with, and the startup
+    // `reconcile` may still have been clearing a same-version reinstall's
+    // marker when that answer was served. Nothing pushes the result of that
+    // sweep to the browser, so waiting for the first timer left an amber badge
+    // over a clean installation — disagreeing with Preferences, which fetches
+    // on open — for up to a minute after launch. One read at mount closes it.
+    poll();
     window.addEventListener("storage", onPing);
     window.addEventListener(SELFFIX_CHANGED_EVENT, rearm);
     return () => {

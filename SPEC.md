@@ -7641,6 +7641,14 @@ the installation, and the mark that says so.
   would show up on your next launch. So the chip polls at two cadences — 60s
   always, 5s for 30 minutes after a fix STARTS — keyed off a `localStorage`
   timestamp (`fused-render:selffix-ping`) written at start.
+- **SF-11a** **The chip probes ONCE ON MOUNT**, not after a first full interval
+  — the same thing `UpdateBadge` and `DownloadManager` do, and for a reason
+  specific to this state: the `seed` prop is the config the shell booted with,
+  and the startup `reconcile` (SF-8) may still have been clearing a same-version
+  reinstall's marker when that answer was served. Nothing pushes the result of
+  that sweep to the browser, so waiting for the first timer left an amber badge
+  over a clean installation — disagreeing with Preferences, which fetches on
+  open — for up to a minute after launch.
 - **SF-12a** **A state change is nudged on TWO channels, and neither is
   redundant**: `storage` (`fused-render:selffix-changed`) fires in every
   same-origin document EXCEPT the one that wrote it, so it reaches other tabs
