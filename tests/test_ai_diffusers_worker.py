@@ -312,12 +312,17 @@ class FakePipe:
     """
 
     def __init__(self, vae_class="AutoencoderKLFlux2", sigmas=None, on_read=None,
-                 latents=None):
+                 latents=None, latents_per_step=None):
         self.vae = type(vae_class, (), {})()
         self.scheduler = types.SimpleNamespace(
             sigmas=sigmas or [1.0, 0.9, 0.7, 0.4, 0.0])
         self.on_read = on_read
         self.latents = latents
+        #: One array per step, when a test needs the latents to actually MOVE —
+        #: identical latents mean zero velocity, and a zero velocity makes the
+        #: denoised estimate equal the latent at every sigma, which is how a
+        #: test can look like it pins the sigma indexing without pinning it.
+        self.latents_per_step = latents_per_step
         self.watch = None
 
     def __call__(self, prompt=None, height=None, width=None, guidance_scale=None,
@@ -329,8 +334,9 @@ class FakePipe:
         array = (self.latents if self.latents is not None
                  else numpy.zeros((1, tokens, 128), dtype=numpy.float32))
         for step in range(num_inference_steps):
+            held = array if self.latents_per_step is None else self.latents_per_step[step]
             callback_on_step_end(self, step, 0, {
-                "latents": FakeTensor(array, on_read=self.on_read)})
+                "latents": FakeTensor(held, on_read=self.on_read)})
             if self.watch is not None:
                 self.watch(step)
         return types.SimpleNamespace(images=[FakeSavedImage()])
@@ -413,39 +419,82 @@ def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
     assert os.listdir(tmp_path) == ["fox.png"]
 
 
+def _frame_pixels(path):
+    from PIL import Image
+
+    import numpy
+
+    with Image.open(path) as image:
+        return image.size, numpy.frombuffer(
+            image.convert("RGB").tobytes(), dtype=numpy.uint8).tolist()
+
+
+def _expected_frame(preview, previous, current, sigma_previous, sigma_current):
+    """The bytes `_write` would produce for one estimate, computed the same way.
+
+    Through `preview`'s own `denoised` and `project` rather than a second
+    implementation of the arithmetic — what is under test here is which SIGMAS
+    the worker paired with which latents, not whether the maths is right (that
+    is `test_ai_image_preview.py`'s job).
+    """
+    import numpy
+
+    estimate = preview.denoised(previous, current, sigma_previous, sigma_current)
+    rgb = preview.project(estimate, "AutoencoderKLFlux2")
+    return numpy.asarray(rgb * 255.0 + 0.5, dtype=numpy.uint8).reshape(-1).tolist()
+
+
 def test_the_thumbnail_is_the_estimate_at_the_sigma_just_REACHED(
         monkeypatch, base, tmp_path):
     """The wiring's one real risk: an off-by-one on `scheduler.sigmas` reads the
-    level the run has LEFT rather than the one it arrived at, which is a preview
-    that is permanently one step stale and looks perfectly fine.
+    level the run has LEFT rather than the one it arrived at — a preview that is
+    permanently one step stale and looks perfectly fine.
 
-    The fake hands every step the same latents, so the velocity is zero and the
-    estimate is the latent itself — at the FINAL sigma of 0.0. Read one entry
-    earlier the last frame would be the estimate at 0.318, which these pixels
-    are not."""
+    Two things make this actually pin it, and both were missing:
+
+    * **The latents MOVE.** With the same array every step the velocity is zero,
+      and a zero velocity makes `denoised` return the latent at any sigma
+      whatsoever — so the assertion passed just as happily against
+      `sigmas[step]`.
+    * **The frame examined is not the LAST one.** The schedule ends at sigma 0,
+      where the estimate degenerates to the latent again for the same reason. So
+      this reads the frame written mid-render, where the two indexings give
+      genuinely different pixels — and asserts that it is the one and not the
+      other.
+    """
     import numpy
-    from PIL import Image
 
     rng = numpy.random.default_rng(7)
-    latents = rng.standard_normal((1, 32 * 32, 128)).astype(numpy.float32)
-    pipe = FakePipe(sigmas=[1.0, 0.9, 0.7, 0.318, 0.0], latents=latents)
+    sigmas = [1.0, 0.9, 0.7, 0.318, 0.0]
+    steps = [rng.standard_normal((1, 32 * 32, 128)).astype(numpy.float32) * 2.0
+             for _ in range(4)]
+    pipe = FakePipe(sigmas=sigmas, latents_per_step=steps)
     worker = loaded_worker(monkeypatch, base, pipe)
     # The worker's OWN reading of `preview.py` — a runner reaches it by path, so
     # `fused_render.ai.runners.preview` is a second module object with its own
     # `Sink` class, and patching that one would patch nothing the worker uses.
     preview = worker.preview
     request = _request(tmp_path)
-    # Keep the last frame: `generate`'s clean exit removes it, which is the
-    # behaviour the test above is about.
-    monkeypatch.setattr(preview.Sink, "discard", lambda self: None)
+    # Snapshot each frame as it lands: the clean exit removes the file, and the
+    # frame that discriminates is mid-render anyway.
+    shots = []
+    pipe.watch = lambda step: shots.append(
+        _frame_pixels(request["outPreview"])
+        if os.path.exists(request["outPreview"]) else None)
     worker.generate(request)
 
-    expected = preview.project(latents[0], "AutoencoderKLFlux2")
-    frame = numpy.asarray(expected * 255.0 + 0.5, dtype=numpy.uint8)
-    with Image.open(request["outPreview"]) as image:
-        assert image.size == (preview.MAX_SIDE, preview.MAX_SIDE)
-        got = numpy.frombuffer(image.convert("RGB").tobytes(), dtype=numpy.uint8)
-    assert got.tolist() == frame.reshape(-1).tolist()
+    # After step index 2 the pair is (latents[1] at sigmas[2], latents[2] at
+    # sigmas[3]) — the level the scheduler has ARRIVED at.
+    right = _expected_frame(preview, steps[1], steps[2], sigmas[2], sigmas[3])
+    # …and this is what reading `sigmas[step]` instead would have produced: the
+    # same two latents, paired with the two levels one entry earlier.
+    stale = _expected_frame(preview, steps[1], steps[2], sigmas[1], sigmas[2])
+    assert right != stale, "the schedule chosen cannot tell the two apart"
+
+    size, pixels = shots[2]
+    assert size == (preview.MAX_SIDE, preview.MAX_SIDE)
+    assert pixels == right
+    assert pixels != stale
 
 
 def _order_spies(monkeypatch, worker, base, events):

@@ -119,7 +119,8 @@ class FakeLatents:
 class FakeModel:
     """An mflux variant: a callback registry, and a loop that drives it."""
 
-    def __init__(self, steps_to_run=None, latents=None, sigmas=None):
+    def __init__(self, steps_to_run=None, latents=None, sigmas=None,
+                 latents_per_step=None):
         self.callbacks = FakeRegistry()
         self.calls = []
         self.image = FakeImage()
@@ -132,6 +133,11 @@ class FakeModel:
         #: schedule to read, so those tests pin that nothing breaks without one.
         self.latents = latents
         self.sigmas = sigmas
+        #: One array per step, when a test needs the latents to actually MOVE.
+        #: Identical latents mean zero velocity, and a zero velocity makes the
+        #: denoised estimate equal the latent at every sigma — which is how a
+        #: test can look like it pins the sigma indexing without pinning it.
+        self.latents_per_step = latents_per_step
         #: Called after each step, for a test that watches the preview appear.
         self.watch = None
 
@@ -146,11 +152,13 @@ class FakeModel:
             config = types.SimpleNamespace(
                 scheduler=types.SimpleNamespace(sigmas=self.sigmas))
         for t in range(total):
+            held = (self.latents if self.latents_per_step is None
+                    else self.latents_per_step[t])
             for callback in self.callbacks.callbacks:
                 # mflux calls it with keywords; the reporter's signature has to
                 # match, and a positional call here would hide a rename.
                 callback.call_in_loop(t=t, seed=seed, prompt=prompt,
-                                      latents=self.latents, config=config,
+                                      latents=held, config=config,
                                       time_steps=None)
             if self.watch is not None:
                 self.watch(t)
@@ -536,18 +544,30 @@ def test_PACKED_and_UNPATCHIFIED_latents_are_both_understood(
     """mflux hands the callback `(B, N, 128)` on some paths and
     `(B, 128, h, w)` on others. Both are the same picture, and neither runner
     reshapes before handing it over — that would be a second copy of the unpack
-    rule `preview._tokens` owns."""
+    rule `preview._tokens` owns.
+
+    The two steps hold DIFFERENT latents, so the estimate is a real
+    extrapolation rather than the degenerate zero-velocity case: an unpack that
+    agreed on a constant field and disagreed on a moving one would otherwise
+    pass this.
+    """
     import numpy
 
     rng = numpy.random.default_rng(4)
+    first = _packed(rng, tokens=16)
     packed = _packed(rng, tokens=16)
-    grid = packed[0].reshape(4, 4, 128).transpose(2, 0, 1)[None]
+    shapes = [
+        (first, packed),
+        (first[0].reshape(4, 4, 128).transpose(2, 0, 1)[None],
+         packed[0].reshape(4, 4, 128).transpose(2, 0, 1)[None]),
+    ]
     written = []
-    for index, array in enumerate((packed, grid)):
+    for index, pair in enumerate(shapes):
         # One directory each: `snapshot` makes a fresh repo layout per load.
         room = tmp_path / str(index)
         room.mkdir()
-        model = FakeModel(latents=FakeLatents(array), sigmas=[1.0, 0.5, 0.0])
+        model = FakeModel(sigmas=[1.0, 0.5, 0.0],
+                          latents_per_step=[FakeLatents(a) for a in pair])
         worker, _ = _previewing_worker(monkeypatch, base, room, model=model)
         request = _request(room, width=64, height=64, steps=2,
                            out=str(room / "fox.png"),
@@ -557,6 +577,60 @@ def test_PACKED_and_UNPATCHIFIED_latents_are_both_understood(
         with open(request["outPreview"], "rb") as handle:
             written.append(handle.read())
     assert written[0] == written[1]
+
+
+def test_the_thumbnail_is_the_estimate_at_the_sigma_just_REACHED(
+        monkeypatch, base, tmp_path):
+    """`_sigma_after` is a SECOND copy of the off-by-one, against a second
+    library's schedule, and it had no test at all — the diffusers runner's
+    covered only its own.
+
+    The same two properties make this pin it rather than merely pass: the
+    latents MOVE (a zero velocity makes the estimate equal the latent at any
+    sigma, so any indexing would satisfy it) and the frame examined is
+    MID-RENDER (the schedule ends at sigma 0, where the estimate degenerates the
+    same way). Read one entry earlier, these pixels are different ones.
+    """
+    import numpy
+    from PIL import Image
+
+    rng = numpy.random.default_rng(21)
+    sigmas = [1.0, 0.9, 0.7, 0.318, 0.0]
+    steps = [_packed(rng, tokens=32 * 32) * 2.0 for _ in range(4)]
+    model = FakeModel(sigmas=sigmas,
+                      latents_per_step=[FakeLatents(a) for a in steps])
+    worker, made = _previewing_worker(monkeypatch, base, tmp_path, model=model)
+    preview = worker.preview
+    out = str(tmp_path / "fox.preview.png")
+    shots = []
+
+    def snapshot(t):
+        if not os.path.exists(out):
+            shots.append(None)
+            return
+        with Image.open(out) as image:
+            shots.append((image.size, numpy.frombuffer(
+                image.convert("RGB").tobytes(), dtype=numpy.uint8).tolist()))
+
+    made.watch = snapshot
+    worker.generate(_request(tmp_path, width=512, height=512, steps=4,
+                             outPreview=out))
+
+    def frame(sigma_previous, sigma_current):
+        estimate = preview.denoised(steps[1], steps[2], sigma_previous, sigma_current)
+        rgb = preview.project(estimate, "AutoencoderKLFlux2")
+        return numpy.asarray(rgb * 255.0 + 0.5, dtype=numpy.uint8).reshape(-1).tolist()
+
+    # After step index 2: latents[1] at sigmas[2], latents[2] at sigmas[3] — the
+    # level the schedule has ARRIVED at, not the one it left.
+    right = frame(sigmas[2], sigmas[3])
+    stale = frame(sigmas[1], sigmas[2])
+    assert right != stale, "the schedule chosen cannot tell the two apart"
+
+    size, pixels = shots[2]
+    assert size == (preview.MAX_SIDE, preview.MAX_SIDE)
+    assert pixels == right
+    assert pixels != stale
 
 
 def test_the_FRAME_is_written_BEFORE_the_tick_that_announces_it(monkeypatch, base,
