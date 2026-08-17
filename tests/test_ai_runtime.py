@@ -26,7 +26,7 @@ from fused_render import jobs
 from fused_render.ai import catalog, registry, supervisor
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
-from fused_render.server.routers import ai_runtime
+from fused_render.server.routers import ai_models, ai_runtime
 from fused_render.server.routers.ai_models import CachedModel
 
 #: The real `_ensure_venv`, captured at import — before any fixture replaces it.
@@ -4150,3 +4150,32 @@ def test_resident_models_reports_a_held_worker_without_probing_it(client, fake_r
                 headers={"X-Fused": "1"})
     _wait_ready("org/chat")
     assert supervisor.resident_models() == {"org/chat"}
+
+
+def test_the_cache_walk_is_not_repeated_on_every_poll(client, hub, monkeypatch):
+    """`cached_models()` is a full tree walk on a route the chatbot page hits on
+    every `refreshRuntime()`, so it is memoised — pinned here because a memo that
+    nothing measures is a memo somebody deletes as an over-optimisation."""
+    _text_repo(hub, "some-org/polled", size=2048)
+    walks = []
+    real = ai_models._scan_repo
+    monkeypatch.setattr(ai_models, "_scan_repo",
+                        lambda root: walks.append(root) or real(root))
+    _catalog(client)
+    after_first = len(walks)
+    assert after_first > 0
+    _catalog(client)
+    assert len(walks) == after_first
+
+
+def test_the_memo_is_dropped_when_a_repo_lands_rather_than_when_a_timer_says_so(
+        client, hub, monkeypatch):
+    """The TTL is a BACKSTOP, not the mechanism. A read is invalidated by the cache
+    directory's own signature, so a finished download is visible immediately even
+    with the clock frozen — a memo that could only expire on time would hide the
+    model the user just fetched, which is the bug this whole change fixes."""
+    frozen = time.time()
+    monkeypatch.setattr(ai_models.time, "time", lambda: frozen)
+    assert _entry(client, registry.TEXT_GENERATION, "some-org/just-landed") is None
+    _text_repo(hub, "some-org/just-landed", size=2048)
+    assert _entry(client, registry.TEXT_GENERATION, "some-org/just-landed") is not None
