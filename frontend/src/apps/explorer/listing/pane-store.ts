@@ -12,6 +12,12 @@
 // the listing pane doesn't either — and as of D282 the two even share the same
 // default share, 30%.
 //
+// That sidebar's width now lives in a store of its own, `lib/side-store.ts`, on
+// this same policy (D326 — it was mount-local `useState` until then, which sprang
+// back on every file→file hop). Two stores rather than one because the two hold
+// different quantities: a fraction here, pixels there. The reasoning is written
+// down in that file, and the default share is what the two genuinely share.
+//
 // MEMORY ONLY, DELIBERATELY — this is not a missing feature:
 //   • it survives everything the SHELL does, because the shell navigates by
 //     history.pushState (platform/lib/router) and never reloads the document.

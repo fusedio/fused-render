@@ -158,11 +158,43 @@ describe("paneSideList", () => {
 
   test("one probe landing is enough to decide", () => {
     // Git still out, Claude answered: the chat is offered and the pane can mount.
+    // Nothing Git's verdict can say will outrank it, so there is nothing to wait for.
     expect(paneSideList({ ...PENDING, claude: entry("claude"), claudePending: false }))
       .toEqual(["claude"]);
     // Claude denied, Git answered: the first side ON OFFER, which is Git.
     expect(paneSideList({ ...PENDING, git: entry("git"), gitPending: false, claudePending: false }))
       .toEqual(["git"]);
+  });
+
+  // …EXCEPT WHEN THE ONE THAT LANDED IS THE FOLLOWER. The two probes are independent
+  // `useDirMode` calls with their own caches, so Git answering first is ordinary, and
+  // `activePaneSide` tracks the live list: the pane opened on Git and then JUMPED to
+  // Claude when its probe landed, because Claude leads the order. Same defect as the
+  // file sidebar's (lib/preview-side's `defaultSide`) and fixed by the same rule —
+  // the LEADER decides, and while the leader is undecided so is the pane.
+  test("Git landing first does not open a pane that Claude would then displace", () => {
+    const gitFirst = { ...PENDING, git: entry("git"), gitPending: false };
+    expect(paneSideList(gitFirst)).toEqual([]);
+    // ...so there is nothing on screen to move: the caller holds its skeleton on an
+    // empty list, and `activePaneSide`'s answer is only the pill's placeholder.
+    expect(activePaneSide(paneSideList(gitFirst), null)).toBe(PANE_SIDE_FALLBACK);
+    // When Claude lands, BOTH are offered — that list is what the pane may be on —
+    // and the pane opens on the leader, once.
+    const both = { ...gitFirst, claude: entry("claude"), claudePending: false };
+    expect(paneSideList(both)).toEqual(["claude", "git"]);
+    expect(activePaneSide(paneSideList(both), null)).toBe("claude");
+    // ...and a DENIAL still lands the pane on Git, which is a decision, not a swap.
+    expect(paneSideList({ ...gitFirst, claudePending: false })).toEqual(["git"]);
+    expect(activePaneSide(paneSideList({ ...gitFirst, claudePending: false }), null)).toBe("git");
+  });
+
+  test("an explicit request is still honoured through the wait", () => {
+    // The undecided list is about what an ABSENT `_side` resolves to; a `?_side=git`
+    // deep link is the user's own choice and `activePaneSide` keeps it (the param is
+    // deliberately never reconciled away here).
+    const gitFirst = { ...PENDING, git: entry("git"), gitPending: false };
+    expect(activePaneSide(paneSideList(gitFirst), "git")).toBe(PANE_SIDE_FALLBACK);
+    expect(activePaneSide(paneSideList({ ...gitFirst, claudePending: false }), "git")).toBe("git");
   });
 
   test("a FILE row waits with everything else now — the old exemption is void", () => {

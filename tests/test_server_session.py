@@ -148,6 +148,89 @@ def test_empty_query_does_not_clobber_existing_session(tmp_path):
     assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
 
 
+# --- LSN-12: `_side` never round-trips through a sidecar (D326) --------------
+# The file preview's companion sidebar is session-only by policy: it opens at its
+# default on every page load, and a refresh is the way back from any change. A
+# sidecar that recorded `_side` broke exactly that — the refresh is when the
+# sidecar is replayed — so one file remembered a sidebar forever while its
+# neighbour never had one. Stripped on WRITE and ignored on READ, so the sidecars
+# already on disk self-heal on the next write and are inert before it.
+
+
+def test_side_alone_does_not_start_a_session(tmp_path):
+    # `_side` is not a qualifying param: opening the sidebar on a file must not be
+    # the thing that starts that file's session.
+    f = _target(tmp_path)
+    r = PUT(body={"path": str(f), "search": "_side=claude"}, x_fused="1")
+    assert r == {"ok": True, "skipped": True}
+    assert GET(path=str(f)) == {"lastSession": None}
+    # ...nor with `_mode`, the other non-qualifying one, for company.
+    assert PUT(body={"path": str(f), "search": "_side=off&_mode=code"},
+               x_fused="1")["skipped"] is True
+    assert GET(path=str(f)) == {"lastSession": None}
+
+
+def test_side_is_stripped_from_a_stored_query(tmp_path):
+    f = _target(tmp_path)
+    PUT(body={"path": str(f), "search": "city=oslo&_side=git&limit=50"}, x_fused="1")
+    assert _sidecar(f)["lastSession"]["search"] == "city=oslo&limit=50"
+    assert GET(path=str(f))["lastSession"]["search"] == "city=oslo&limit=50"
+
+
+def test_side_only_update_does_not_clobber_an_existing_session(tmp_path):
+    # Stripping happens BEFORE the LSN-3 gate, so a `_side`-only query is an empty
+    # one: it must not overwrite a real session down to "".
+    f = _target(tmp_path)
+    PUT(body={"path": str(f), "search": "city=oslo"}, x_fused="1")
+    assert PUT(body={"path": str(f), "search": "_side=git"},
+               x_fused="1")["skipped"] is True
+    assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
+
+
+def test_an_old_side_only_sidecar_reads_as_no_session(tmp_path):
+    # The self-healing half, and the shape that matters most: a sidecar written
+    # before this rule whose ONLY param was `_side` must read as NO session, not as
+    # an empty-string one — an empty session would still be a `lastSession` dict,
+    # which is what LSN-3 keys "a session already exists" off.
+    f = _target(tmp_path)
+    sidecar_path = storage.sidecar_path(str(f))
+    os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
+    with open(sidecar_path, "w", encoding="utf-8") as fh:
+        json.dump({"lastSession": {"search": "_side=claude", "updated_at": 1.0}}, fh)
+    assert GET(path=str(f)) == {"lastSession": None}
+    # ...and because it reads as no session, a later `_mode`-only query still does
+    # not start one (LSN-3), rather than being let through by a session that only
+    # ever held a sidebar.
+    assert PUT(body={"path": str(f), "search": "_mode=code"},
+               x_fused="1")["skipped"] is True
+
+
+def test_an_old_mixed_sidecar_replays_everything_but_side(tmp_path):
+    f = _target(tmp_path)
+    sidecar_path = storage.sidecar_path(str(f))
+    os.makedirs(os.path.dirname(sidecar_path), exist_ok=True)
+    with open(sidecar_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {"lastSession": {"search": "_side=git&city=oslo", "updated_at": 1.0}}, fh
+        )
+    assert GET(path=str(f))["lastSession"]["search"] == "city=oslo"
+
+
+def test_stripping_leaves_other_params_verbatim(tmp_path):
+    # LSN-2: the stored query is the shell's query string verbatim. The strip must
+    # not re-encode what it keeps.
+    f = _target(tmp_path)
+    PUT(body={"path": str(f), "search": "q=a+b%2Cc&stretch=2,1471&_side=git"},
+        x_fused="1")
+    assert GET(path=str(f))["lastSession"]["search"] == "q=a+b%2Cc&stretch=2,1471"
+
+
+def test_stripping_is_not_fooled_by_a_similar_name(tmp_path):
+    f = _target(tmp_path)
+    PUT(body={"path": str(f), "search": "_sidebar=1&x_side=2"}, x_fused="1")
+    assert GET(path=str(f))["lastSession"]["search"] == "_sidebar=1&x_side=2"
+
+
 # --------------------------------------------------- read-only remote mounts
 # D83-reversal: the sidecar now lives under home_dir()/sidecar/, never on the
 # mounted file's own filesystem, so a read-only remote mount no longer has any
