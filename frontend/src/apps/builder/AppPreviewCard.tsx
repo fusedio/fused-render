@@ -81,7 +81,7 @@ function useNearViewport<T extends Element>(): [React.RefObject<T>, boolean] {
       (entries) => setNear(entries[entries.length - 1].isIntersecting),
       // Both surfaces that render this card scroll inside their own div, so
       // the root is whichever one this card sits in ("/apps" or Home).
-      { root: el.closest(".apps-page, .home-page"), rootMargin: NEAR_VIEWPORT_MARGIN },
+      { root: el.closest(".apps-page, .files-home, .home-page"), rootMargin: NEAR_VIEWPORT_MARGIN },
     );
     io.observe(el);
     return () => io.disconnect();
@@ -131,7 +131,13 @@ export function AppPreviewCard({
       // INSIDE this element, so a right-click over the preview bubbles up here
       // (the iframe itself never sees it) and one handler covers the whole card.
       onContextMenu={onContextMenu && ((e) => onContextMenu(e, app))}
-      onMouseEnter={() => setHovered(true)}
+      // liveReady resets on ENTER as well as leave: a straggler onLoad from the
+      // previous hover's iframe could have re-set it after leave cleared it, and
+      // a stale true would blank the still before the new iframe has painted.
+      onMouseEnter={() => {
+        setHovered(true);
+        setLiveReady(false);
+      }}
       onMouseLeave={() => {
         setHovered(false);
         setLiveReady(false);
@@ -172,7 +178,12 @@ export function AppPreviewCard({
               alt=""
               loading="lazy"
               onError={() => setShotFailed(true)}
-              style={hovered && liveReady ? { opacity: 0 } : undefined}
+              // Transition inline with the opacity: hover-end removes the whole
+              // style, so the still snaps back instantly instead of fading in
+              // over the unmounted iframe's blank.
+              style={
+                hovered && liveReady ? { opacity: 0, transition: "opacity 0.15s ease" } : undefined
+              }
             />
             {/* The same shield the iframe gets. An <img> swallows no clicks of
                 its own, but it DOES carry the browser's native drag-the-image
