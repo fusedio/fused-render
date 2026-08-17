@@ -3004,7 +3004,14 @@ def _history(file: str, session_id: str) -> dict:
     prose around them. User turns keep just `text`: there is nothing structured
     about a typed message, and the app-state block is stripped from it BEFORE
     anything else reads it (below), which is also why segments cannot become a
-    second route back for the block the user never saw."""
+    second route back for the block the user never saw.
+
+    User turns DO carry `uuid`, the transcript record's own id. It is the one
+    field a restored turn can be addressed by from outside this page: the Tasks
+    list reads the same uuid off the same record (`_prompt`, server/routers/
+    tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
+    turn a person clicked instead of to the top of the conversation. "" on a
+    record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
         return {"turns": []}
     file = os.path.abspath(file)
@@ -3063,7 +3070,8 @@ def _history(file: str, session_id: str) -> dict:
             text = _strip_app_state(text)
             if text.strip() and not text.startswith(("<local-command", "<command-name")):
                 close_stretch()  # before the user turn, or the segments land on it
-                turns.append({"role": "user", "text": text})
+                turns.append({"role": "user", "text": text,
+                              "uuid": str(row.get("uuid") or "")})
             else:
                 # Everything else on a `user` row belongs to the assistant's
                 # reply: tool_result blocks are what its tool segments are

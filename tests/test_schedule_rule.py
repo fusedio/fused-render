@@ -150,6 +150,57 @@ def test_the_series_includes_its_anchor():
                                  SAT - timedelta(days=99)) == SAT
 
 
+def test_hourly_steps_by_its_interval():
+    """The one frequency that fires more than once a day — everything else in
+    this module keeps a time of day fixed, and this one moves it."""
+    assert _walk({"freq": "hour"}, SAT, 3) == [
+        SAT, datetime(2026, 8, 15, 10, 0), datetime(2026, 8, 15, 11, 0)]
+    assert _walk({"freq": "hour", "interval": 3}, SAT, 3) == [
+        SAT, datetime(2026, 8, 15, 12, 0), datetime(2026, 8, 15, 15, 0)]
+    # Strictly after, so the anchor's own instant is not offered twice.
+    assert recur.next_occurrence({"freq": "hour"}, SAT, SAT) == \
+        datetime(2026, 8, 15, 10, 0)
+
+
+def test_hourly_walks_straight_through_midnight():
+    """The date is a consequence of the arithmetic, never a step in it: an
+    hourly series does not pause at the end of a day, and an interval that does
+    not divide 24 lands on a different hour of the next one."""
+    late = datetime(2026, 8, 15, 23, 0)
+    assert _walk({"freq": "hour"}, late, 3) == [
+        late, datetime(2026, 8, 16, 0, 0), datetime(2026, 8, 16, 1, 0)]
+    assert _walk({"freq": "hour", "interval": 5}, datetime(2026, 8, 15, 22, 0), 3) == [
+        datetime(2026, 8, 15, 22, 0), datetime(2026, 8, 16, 3, 0),
+        datetime(2026, 8, 16, 8, 0)]
+
+
+def test_an_hourly_until_keeps_every_run_of_its_last_day():
+    """`until` is a DATE and an hourly rule is not, which is the one place the
+    two could have disagreed. "Ends on the 16th" means the 16th runs in full —
+    all twenty-four of them — and the 17th does not run at all."""
+    rule = {"freq": "hour", "until": "2026-08-16"}
+    times = _walk(rule, datetime(2026, 8, 15, 22, 0), 99)
+    assert len(times) == 26                       # 22:00, 23:00, then all of the 16th
+    assert times[-1] == datetime(2026, 8, 16, 23, 0)
+    assert {t.date() for t in times} == {date(2026, 8, 15), date(2026, 8, 16)}
+    # The last hour of the last day is reachable, and nothing follows it.
+    assert recur.next_occurrence(rule, datetime(2026, 8, 15, 22, 0),
+                                 datetime(2026, 8, 16, 22, 30)) == times[-1]
+    assert recur.next_occurrence(rule, datetime(2026, 8, 15, 22, 0),
+                                 times[-1]) is None
+
+
+def test_hourly_takes_neither_weekdays_nor_a_monthly_mode():
+    """The existing sentences cover it: `byday` belongs to a week and `monthly`
+    to a month, and "hour" is neither — no branch of its own."""
+    with pytest.raises(ValueError) as byday:
+        recur.validate_rule({"freq": "hour", "byday": [1]})
+    assert "only a weekly repeat" in str(byday.value)
+    with pytest.raises(ValueError) as monthly:
+        recur.validate_rule({"freq": "hour", "monthly": "day"})
+    assert "only a monthly repeat" in str(monthly.value)
+
+
 def test_daily_steps_by_its_interval_and_keeps_the_time_of_day():
     assert _walk({"freq": "day", "interval": 3}, SAT, 3) == [
         SAT, datetime(2026, 8, 18, 9, 0), datetime(2026, 8, 21, 9, 0)]
@@ -292,6 +343,8 @@ def test_count_is_not_the_walks_business():
 
 def test_a_valid_rule_normalises_to_what_it_actually_says():
     assert recur.validate_rule({"freq": "day"}) == {"freq": "day", "interval": 1}
+    assert recur.validate_rule({"freq": "hour", "interval": 6}) == \
+        {"freq": "hour", "interval": 6}
     # byday deduped and sorted; monthly defaulted only where it means something.
     assert recur.validate_rule({"freq": "week", "byday": [3, 1, 3]}) == \
         {"freq": "week", "interval": 1, "byday": [1, 3]}
@@ -314,6 +367,8 @@ def test_a_valid_rule_normalises_to_what_it_actually_says():
     ({"freq": "day", "interval": 100}, "interval: expected a whole number"),
     ({"freq": "day", "interval": "2"}, "interval: expected a whole number"),
     ({"freq": "day", "byday": [1]}, "only a weekly repeat"),
+    ({"freq": "hour", "byday": [1]}, "only a weekly repeat"),
+    ({"freq": "hour", "monthly": "day"}, "only a monthly repeat"),
     ({"freq": "week", "byday": []}, "byday: cannot be empty"),
     ({"freq": "week", "byday": 3}, "byday: expected a list"),
     ({"freq": "week", "byday": [7]}, "is not a weekday"),
@@ -330,6 +385,16 @@ def test_a_bad_rule_says_what_is_wrong_with_it(rule, says):
     with pytest.raises(ValueError) as raised:
         recur.validate_rule(rule)
     assert says in str(raised.value)
+
+
+def test_the_freq_message_offers_the_whole_vocabulary_shortest_first():
+    """"hourly" is the near miss the word "hour" invites, so the sentence that
+    refuses it has to name every word on offer — and in the order the repeat
+    menu lists them, or the list reads as arbitrary."""
+    with pytest.raises(ValueError) as raised:
+        recur.validate_rule({"freq": "hourly"})
+    assert "expected one of hour, day, week, month, year" in str(raised.value)
+    assert recur.FREQUENCIES == ("hour", "day", "week", "month", "year")
 
 
 def test_a_typo_is_refused_rather_than_ignored():
@@ -367,9 +432,10 @@ def test_create_with_a_rule_stores_a_template_and_its_first_run(target):
     occurrence = occurrences[0]
     assert occurrence["state"] == schedule.PENDING
     assert occurrence["template_id"] == template["id"]
-    # A recurring run, so the tiny skip-not-catch-up bound, exactly as a cron
-    # occurrence gets — the whole point of sharing the lifecycle.
-    assert occurrence["max_late"] == schedule._OCCURRENCE_MAX_LATE_S
+    # No per-occurrence late bound, exactly as a cron occurrence gets none —
+    # the whole point of sharing the lifecycle. The 120-second
+    # skip-not-catch-up bound both used to carry was replaced by coalescing.
+    assert "max_late" not in occurrence
     assert _entries()[template["id"]]["made"] == 1
     # The template's `due` mirrors the run ahead of it; `anchor` does not move.
     assert _entries()[template["id"]]["due"] == occurrence["due"]
@@ -391,19 +457,111 @@ def test_a_rule_needs_a_due_and_refuses_a_second_schedule(target):
     assert schedule.list_entries() == []
 
 
-def test_an_anchor_in_the_past_is_a_phase_not_a_missed_message(target):
-    """A one-shot further back than the catch-up bound is refused; an anchor is
-    not. "Every other Monday, on the phase that started last Monday" is an
-    ordinary thing to mean, and nothing about it fires late — the first run
-    materialized is still in the future."""
+def test_an_anchor_in_the_past_runs_its_MOST_RECENT_slot(target, clock):
+    """A past anchor sets the PATTERN and runs the latest slot, once.
+
+    It used to set the pattern only, and that inconsistency was the bug: a
+    past-dated ONE-OFF sorts to the head of the queue and sends on the next
+    tick, while a past-anchored REPEAT did nothing at all until the next slot
+    came round. Two ways of writing "starting last Saturday", two different
+    answers, and nothing on the form to tell you which you were about to get.
+
+    Which slot runs is the second half of it, and the anchor is the wrong
+    answer: "daily at 9am, starting Saturday" asked on Monday morning does not
+    mean Saturday's run, it means THIS morning's, run late. Same rule
+    `_coalesce` applies to a repeat the app slept through, and the same walk."""
+    clock.set(datetime(2026, 8, 17, 10, 0).astimezone().astimezone(timezone.utc))
+    anchor = datetime(2026, 8, 15, 9, 0).astimezone()
+    template = schedule.create(str(target), "standing", due=anchor,
+                               rule={"freq": "day"})
+    assert template["state"] == schedule.RECURRING
+
+    made = _occurrences(template["id"])
+    assert len(made) == 1, "one catch-up, never a backlog"
+    first = made[0]
+    assert first["catch_up"] is True
+    assert first["state"] == schedule.PENDING
+    # The 17th's 9am — the latest slot at or before now — with its own real
+    # time, not `now` and not the anchor. The 15th and 16th never happen.
+    assert _local(first) == datetime(2026, 8, 17, 9, 0)
+    assert schedule.parse_due(first["due"]) < clock.now
+
+
+def test_the_catch_up_run_goes_once_and_the_series_continues(target, spawned,
+                                                             clock):
+    """One run, then the future. The catch-up fires on the first tick; the
+    occurrence after it is ahead of now and still on the anchor's phase, so the
+    thirty days between the anchor and today are never replayed."""
     template = schedule.create(str(target), "standing", due=_anchor(days=-30),
                                rule={"freq": "day", "interval": 7})
-    assert template["state"] == schedule.RECURRING
     first = _occurrences(template["id"])[0]
-    assert schedule.parse_due(first["due"]) > datetime.now(timezone.utc)
-    # Still on the anchor's phase: a whole number of weeks from it.
-    step = schedule.parse_due(first["due"]) - schedule.parse_due(template["anchor"])
-    assert step.total_seconds() % (7 * 86400) == 0
+    # 30 days back on a 7-day interval: the latest slot is 28 days after the
+    # anchor, i.e. two days ago — not the anchor, and not now.
+    assert schedule.parse_due(first["due"]) == (
+        schedule.parse_due(template["anchor"]) + timedelta(days=28))
+
+    fired = schedule.tick(now=clock.now)
+    assert [e["id"] for e in fired] == [first["id"]]
+    assert len(spawned) == 1
+
+    schedule.tick(now=clock.now)  # the successor is minted on the next pass
+    ahead = _pending(template["id"])
+    assert len(ahead) == 1
+    following = schedule.parse_due(ahead[0]["due"])
+    assert following > clock.now
+    step = following - schedule.parse_due(template["anchor"])
+    assert step.total_seconds() % (7 * 86400) == 0, "still on the anchor's phase"
+
+    # And a further tick mints nothing: the catch-up is a once-per-template
+    # event, not a state the coalescer can walk into again.
+    schedule.tick(now=clock.now)
+    assert len(_occurrences(template["id"])) == 2
+    assert len(spawned) == 1
+
+
+def test_the_slots_before_the_catch_up_are_never_materialized(target, clock):
+    """The point of collapsing rather than replaying: a year of a daily rule
+    anchored in the past is ONE row in the store, not 365 — and no `skipped`
+    report either, because nothing was ever scheduled to be skipped."""
+    schedule.create(str(target), "standing", due=_anchor(days=-365),
+                    rule={"freq": "day"})
+    occurrences = [e for e in schedule.list_entries() if e.get("template_id")]
+    assert len(occurrences) == 1
+    assert occurrences[0].get("skipped") is None
+    assert [e for e in schedule.event_log()
+            if e["kind"] == schedule.EVENT_MISSED] == []
+
+
+def test_a_past_anchored_nth_weekday_rule_keeps_its_pattern(target, clock):
+    """The legitimate "phase only" use, which the catch-up must not damage:
+    "monthly on the second Wednesday", anchored on a second Wednesday that has
+    already been. Here the anchor IS the latest slot at or before now — the next
+    one is a month out — so the catch-up lands on it, and the run after it is
+    the NEXT second Wednesday rather than the anchor's own day-of-month."""
+    clock.set(datetime(2026, 8, 20, 12, 0).astimezone().astimezone(timezone.utc))
+    anchor = datetime(2026, 8, 12, 9, 0).astimezone()  # a second Wednesday
+    template = schedule.create(str(target), "standing", due=anchor,
+                               rule={"freq": "month", "monthly": "nth-weekday"})
+    catch_up = _occurrences(template["id"])[0]
+    assert catch_up["catch_up"] is True
+    assert _local(catch_up) == datetime(2026, 8, 12, 9, 0)
+
+    schedule.tick(now=clock.now)  # sends the catch-up
+    schedule.tick(now=clock.now)  # materializes the successor
+    following = _pending(template["id"])
+    assert len(following) == 1
+    # 9 September 2026 is a Wednesday, and the second one of that month.
+    assert _local(following[0]) == datetime(2026, 9, 9, 9, 0)
+
+
+def test_a_catch_up_run_spends_exactly_one_of_the_count_budget(target):
+    """`made` counts what a template put on the calendar. The catch-up run is on
+    the calendar and costs one; the nine slots it collapsed past never were, so
+    they cost nothing — the rule did not exist when they went by."""
+    template = schedule.create(str(target), "run", due=_anchor(days=-10),
+                               rule={"freq": "day", "count": 3})
+    assert _entries()[template["id"]]["made"] == 1
+    assert len(_occurrences(template["id"])) == 1
 
 
 def test_a_fired_run_is_followed_by_the_next_one(target, spawned):
@@ -465,18 +623,53 @@ def test_count_stops_the_series_at_n_runs(target, spawned, clock):
 
 
 def test_count_projection_ignores_never_made_past_runs(target):
-    """A past anchor is phase, not history: theoretical runs between the
-    anchor and now were never materialized, so they cost the `count` budget
-    nothing — and the projection must bill it the way the SWEEP will, or the
-    calendar under-draws the series' tail (Bugbot, PR #541). Ten days of a
-    daily rule already lie 'behind' this anchor; all three runs are ahead."""
+    """A past anchor is phase, not history: theoretical runs between the anchor
+    and now were never materialized, so they cost the `count` budget nothing —
+    and the projection must bill it the way the SWEEP will, or the calendar
+    under-draws the series' tail (Bugbot, PR #541).
+
+    Ten days of a daily rule lie 'behind' this anchor and cost nothing. The ONE
+    thing that does cost is the catch-up run the past anchor materializes at the
+    anchor's own time, which is a real occurrence on the calendar — so two of
+    the three are still ahead, and none of the ten ghosts are billed."""
     template = schedule.create(str(target), "run",
                                due=_anchor(days=-10, minutes=5),
                                rule={"freq": "day", "count": 3})
     stored = _entries()[template["id"]]
+    assert stored["made"] == 1, "the catch-up run, and only it"
     ahead = schedule.upcoming(stored)
-    assert len(ahead) == 3
+    assert len(ahead) == 2
     assert all(schedule.parse_due(t) > schedule._now() for t in ahead)
+
+
+def test_an_hourly_count_series_runs_out_the_same_way(target, spawned, clock):
+    """The store never learns that this one fires more often: `made` counts
+    materializations, and a materialization an hour apart costs exactly what one
+    a day apart does."""
+    template = schedule.create(str(target), "run", due=_anchor(minutes=1),
+                               rule={"freq": "hour", "count": 3})
+    made = _run_out(template["id"], clock)
+
+    assert len(made) == 3
+    assert len(spawned) == 3
+    steps = [_local(b) - _local(a) for a, b in zip(made, made[1:])]
+    assert steps == [timedelta(hours=1), timedelta(hours=1)]
+    assert schedule.upcoming(_entries()[template["id"]]) == []
+
+
+def test_an_hourly_projection_fills_the_days_it_covers(target):
+    """The projection is a list of instants, not one per day — the first rule
+    that could have exposed a day-bucketed `upcoming`."""
+    template = schedule.create(str(target), "run", due=_anchor(minutes=1),
+                               rule={"freq": "hour"})
+    times = [_local(t) for t in schedule.upcoming(_entries()[template["id"]],
+                                                  horizon_days=2)]
+    assert len(times) == 48
+    assert times == sorted(times)
+    # Far more runs than days: whatever hour the test runs at, two days of an
+    # hourly rule cannot be three dates' worth of one-a-day.
+    assert len(times) > len({t.date() for t in times})
+    assert all(b - a == timedelta(hours=1) for a, b in zip(times, times[1:]))
 
 
 def test_a_skipped_run_still_counts_against_the_count(target, spawned, clock):

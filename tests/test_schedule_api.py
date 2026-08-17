@@ -208,6 +208,88 @@ def test_the_loop_is_not_started_by_building_the_app(tmp_path, monkeypatch):
     assert started == [True]
 
 
+# -------------------------------------------------- the form's three fields
+
+def test_the_forms_three_new_fields_survive_the_round_trip(client, target):
+    """The regression this test exists for: `/api/schedule` takes a raw dict, so
+    a field the endpoint does not name is silently dropped — no 400, just gone.
+    All three of the form's newest controls went that way, which made the user's
+    own title never persist, description write-only, and "New task each run" a
+    checkbox that did nothing.
+
+    The form reads them back under these exact names when it opens on an
+    existing task, so the names are part of the contract rather than an internal
+    detail."""
+    created = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "pull news",
+                                "repeats": "0 9 * * *",
+                                "title": "Morning digest",
+                                "description": "Reads the feeds",
+                                "new_task_each_run": True})
+    assert created.status_code == 200
+    entry = created.json()["entry"]
+    assert entry["title"] == "Morning digest"
+    assert entry["description"] == "Reads the feeds"
+    assert entry["new_task_each_run"] is True
+
+    listed = client.get("/api/schedule").json()["entries"]
+    template = next(e for e in listed if e["id"] == entry["id"])
+    assert template["title"] == "Morning digest"
+    # The occurrence carries the words and, because the box is ticked, opens its
+    # own session rather than inheriting the template's thread.
+    occurrence = next(e for e in listed if e.get("template_id") == entry["id"])
+    assert occurrence["title"] == "Morning digest"
+    assert occurrence["description"] == "Reads the feeds"
+    assert occurrence["session_id"] == ""
+
+
+def test_the_three_fields_are_optional_and_never_a_400(client, target):
+    """The form omits them when blank or unticked, and a stray null must still
+    schedule the message — they are labels and a threading preference, not
+    inputs a request can be refused over."""
+    for body in ({}, {"title": None, "description": None,
+                      "new_task_each_run": None}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600, **body})
+        assert res.status_code == 200
+        entry = res.json()["entry"]
+        assert entry["title"] == ""
+        assert entry["description"] == ""
+        assert entry["new_task_each_run"] is False
+
+
+def test_session_learned_survives_the_round_trip_and_is_never_invented(
+        client, target):
+    """The same drop, in the one place it costs a thread: an edit is cancel +
+    re-create, so the re-create is where a learned session's provenance has to
+    be re-stated. A router that quietly ignored `session_learned` would make
+    every edit look like a chat handoff, and the next repeat would refuse the
+    task's own thread."""
+    kept = client.post("/api/schedule", headers=WRITE,
+                       json={"target": str(target), "message": "pull news",
+                             "repeats": "0 9 * * *",
+                             "session_id": "sess-learned",
+                             "session_learned": True})
+    assert kept.status_code == 200
+    entry = kept.json()["entry"]
+    assert entry["session_learned"] is True
+    occurrence = next(e for e in client.get("/api/schedule").json()["entries"]
+                      if e.get("template_id") == entry["id"])
+    assert occurrence["session_id"] == "sess-learned"
+    assert occurrence["session_learned"] is True
+
+    # A chat handoff says nothing, so nothing is claimed for it — and a stray
+    # null is a missing opinion, not a 400.
+    for body in ({}, {"session_learned": None}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600,
+                                "session_id": "sess-chat", **body})
+        assert res.status_code == 200
+        assert res.json()["entry"]["session_learned"] is False
+
+
 # ----------------------------------------------------------------- recurring
 
 def test_repeats_creates_a_template_and_lists_its_projection(client, target):

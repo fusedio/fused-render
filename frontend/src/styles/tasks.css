@@ -1,0 +1,634 @@
+/* -- Tasks page: the List accordion ------------------------------------------
+   shell/ScheduleTaskViews.tsx. Everything the Tasks page ADDS to the vocabulary
+   styles/schedule.css already established — the accordion node, the thread
+   rows, the TASK-n/MSG-n id chips, the unread dot — lives here. The shared
+   pieces (the status ring, the live ping, the folder chip, the board's lanes,
+   cards and rails, the filter popover) are still schedule.css's: the three
+   views are one page and must not drift into three dialects.
+
+   This file is imported AFTER schedule.css by the shell.css barrel, so a rule
+   here that names the same selector wins — which is how the List's root gets
+   its own scroll behaviour without touching the board's.
+
+   Three house rules it obeys, each learned the hard way:
+
+   1. No `transition: all`. It animates the border-color a hover skin sets AND
+      the width the layout sets, which reads as a flash. Every rule below names
+      the one property it means.
+   2. `.prefs-section button` repaints any unarmored button on this page with a
+      bordered pill, so every button here is written with that scope as well and
+      states its own colour, border, padding and background outright.
+   3. Exactly one flex spacer per row. Free space is shared EQUALLY between all
+      `auto` margins, so two of them centre the right-hand group instead of
+      pushing it to the end; `.tasks-grow` is a `flex: 1` element, not a margin,
+      and there is one per row. */
+
+/* The List is a pane, not a run of page: it takes what the toolbar leaves and
+   scrolls inside itself. `min-height: 0` is what allows a flex child to be
+   SHORTER than its content — without it this floors at its content height and
+   the scroller never engages. Every ancestor already carries it (schedule.css
+   `.schedule-page`, `.schedule-main`). */
+.schedule-page .schedule-main > .tasks-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.tasks-list {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+/* Hairlines between TASKS only. A task and its thread are one thing, and a
+   rule between them would break the group up. */
+.tasks-node + .tasks-node {
+  border-top: 1px solid var(--border);
+}
+
+/* -- The unread rail's geometry ------------------------------------------------
+   ONE column, shared by a task row and every message row beneath it. The dot
+   moved to the head of the message rows last round and the task's own count did
+   not move with it — it stayed at the far right beside the folder chip, so the
+   rail started halfway down the task (Akshil, 2026-08-17: "for the tasks you
+   didn't bring this on the left side, only for the messages you brought. This
+   looks odd").
+
+   The two rows are indented differently on purpose — the thread hangs under its
+   task — so the column can only stay straight if ONE number decides where it
+   is and the other indents are derived from it. That number is
+   `--tasks-rail-x`: how far the rail sits from the node's left edge. The task
+   row reaches it by its own padding plus the caret gutter; the thread reaches it
+   by subtracting a message row's indent from it. Retune any part and both move
+   together; hand-tune one and they part company, which is the whole bug. */
+.tasks-node {
+  --tasks-row-pad: 12px; /* the task row's left padding */
+  --tasks-caret-w: 16px; /* the disclosure gutter, OUTSIDE the rail */
+  --tasks-row-gap: 8px; /* the flex gap every row here uses */
+  --tasks-rail-w: 16px; /* wide enough for a two-digit pill to centre in */
+  --tasks-msg-indent: 13px; /* a message row's 1px rule + its own padding */
+  --tasks-rail-x: calc(
+    var(--tasks-row-pad) + var(--tasks-caret-w) + var(--tasks-row-gap)
+  );
+}
+
+/* -- The task row (the accordion's own header) -------------------------------- */
+.tasks-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tasks-row-gap);
+  padding: 7px var(--tasks-row-pad);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+
+.tasks-row:hover {
+  background: var(--row-bg-hover);
+}
+
+/* An open task keeps a tint under its header so the thread beneath it reads as
+   belonging to that row rather than floating between two. */
+.tasks-row.is-open {
+  background: rgba(var(--tint), 0.04);
+}
+
+.tasks-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tasks-caret-w);
+  height: var(--tasks-caret-w);
+  flex: 0 0 var(--tasks-caret-w);
+  color: var(--fg-muted);
+  /* transform, not `all`: the row's background is transitioning too, and one
+     rule owning both smears the caret on hover. */
+  transition: transform 0.12s ease;
+}
+
+.tasks-caret.is-open {
+  transform: rotate(90deg);
+}
+
+.tasks-title {
+  min-width: 0;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The row's ONE spacer (see the header note). */
+.tasks-grow {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+/* -- Designed identifiers ------------------------------------------------------
+   TASK-002 and MSG-003 are allocated once and never renumbered (§3), so unlike
+   a session uuid they are meant to be read, said out loud and searched for —
+   which is why they are PRINTED here while the uuid is not. Monospaced and
+   tabular, because a column of ids is scanned rather than read. */
+.tasks-id {
+  flex: 0 0 auto;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  color: var(--fg-muted);
+}
+
+.tasks-id--task {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tasks-id--message {
+  font-size: 10.5px;
+  opacity: 0.85;
+}
+
+/* -- Unread ------------------------------------------------------------------
+   A dot, in the one hue the page reserves for "not finished with yet". A
+   message row shows the dot; the task row above shows the SAME dot carrying its
+   count, which is the only way a number reads in a leading slot without either
+   shrinking to nothing or breaking the column it sits in. */
+.tasks-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 999px;
+  background: var(--status-upcoming);
+}
+
+/* The rail slot itself, at the head of a task row and of every message row.
+   Fixed width and centred contents: that is what puts a 7px dot and a 16px
+   count pill on one centre line, so the rail stays straight whatever each row
+   has to say. Drawn even when empty — a slot that appeared only on unread rows
+   would shift every cell of those rows sideways, and a ragged left edge is
+   exactly what a scan cannot follow. */
+.tasks-rail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tasks-rail-w);
+  flex: 0 0 var(--tasks-rail-w);
+}
+
+/* The count. FILLED rather than the tinted pill it used to be at the far right
+   of the row: at the head of the rail it has to read as the same mark the dots
+   below it are, and a 16%-tint chip beside a run of solid dots reads as a
+   different thing entirely. --on-accent is the page's glyph-on-a-fill token and
+   holds in both themes (near-black on the lighter dark-theme blue, white on the
+   darker light-theme one).
+
+   min-width is the rail's own width, so one digit is a circle exactly filling
+   the slot; two grow it into a short pill that bleeds ~2px each side into the
+   8px gaps and never reaches its neighbours (measured: even "99+" keeps ~2px
+   clear). Past 99 the text is capped at "99+" (tasks-lib.unreadCount) and the
+   true number stays in the label.
+
+   The fallback in that min-width is not decoration: the Board's card wears this
+   same pill from OUTSIDE `.tasks-node`, where the rail's variables do not
+   resolve. Inside the List it tracks the rail; on a card it keeps the shape. */
+.tasks-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: var(--tasks-rail-w, 16px);
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--status-upcoming);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- Quiet row action (Open chat) ---------------------------------------------
+   Hidden until the row is pointed at: it applies to every task that has run,
+   and a permanent icon on every row would out-shout the work itself. Kept
+   reachable by keyboard — focus-within reveals it. */
+.tasks-act,
+.prefs-section .tasks-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  padding: 0;
+  align-self: center;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+
+.tasks-row:hover .tasks-act,
+.tasks-row:focus-within .tasks-act,
+.tasks-msg:hover .tasks-act,
+.tasks-msg:focus-within .tasks-act,
+.tasks-act:focus-visible {
+  opacity: 1;
+}
+
+.tasks-act:hover:not(:disabled),
+.prefs-section .tasks-act:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+/* Cancel / Skip. It sits in the same hover-revealed group as Edit and is the
+   same size and weight at rest — the difference only shows under the pointer,
+   which is the moment it matters, because the two buttons are one flick apart
+   and only one of them is not undoable. */
+.tasks-act--cancel:hover:not(:disabled),
+.prefs-section .tasks-act--cancel:hover:not(:disabled) {
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  border-color: color-mix(in srgb, var(--error) 32%, transparent);
+}
+
+/* Run now / Re-run. Same group, same size, same silence at rest as Edit and
+   Cancel — the hue only arrives under the pointer, and it is the page's
+   "upcoming" blue rather than Cancel's red: this one STARTS something. */
+.tasks-act--run:hover:not(:disabled),
+.prefs-section .tasks-act--run:hover:not(:disabled) {
+  color: var(--status-upcoming);
+  background: color-mix(in srgb, var(--status-upcoming) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-upcoming) 32%, transparent);
+}
+
+/* Mark read. Same group, same size, same silence at rest — and NEUTRAL under the
+   pointer, not the unread dot's own `--status-upcoming`. That hue is already
+   spoken for twice over: it is what the dot and the count pill are painted in, so
+   wearing it here would read as "this IS unread" rather than "clear it"; and it is
+   also the hue Run now takes on hover, which sits directly beside this button on
+   every row that offers both. Two adjacent buttons in one colour, one of which
+   starts a Claude turn, is the confusion worth spending a hue to avoid. The glyph
+   carries the meaning; the skin only has to say "this is a control". */
+.tasks-act--seen:hover:not(:disabled),
+.prefs-section .tasks-act--seen:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+/* Archive / Unarchive. Same group, same size, same silence at rest as Edit,
+   Cancel and Run now — and deliberately NEUTRAL under the pointer, not red.
+   Filing a task away destroys nothing (a task IS a Claude session and the
+   transcript is kept, D306), so borrowing Cancel's red would tell the reader
+   this is the destructive one, which is the exact misunderstanding archiving
+   exists to correct. The plain `.tasks-act` hover skin already says "this is a
+   control"; that is all this one needs to say. */
+.tasks-act--archive:hover:not(:disabled),
+.tasks-act--unarchive:hover:not(:disabled),
+.prefs-section .tasks-act--archive:hover:not(:disabled),
+.prefs-section .tasks-act--unarchive:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+
+/* -- The same actions on a board card ------------------------------------------
+   The card is a `<button>`, so the actions cannot live inside it — nested buttons
+   do not parse. They are siblings, and this wrapper is what they are positioned
+   against; the wrapper takes the card's place as the lane's flex child and the
+   card still stretches to fill it.
+
+   They sit over the card HEAD's right end, which is empty on every card: the head
+   holds the unread pill, the ring, the id and the live ping, all left-aligned
+   and none of them growing. The title below is clamped to two lines and starts
+   on the next line down, so nothing is covered. */
+.tasks-card-wrap {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+}
+
+/* One STRIP, pinned once, holding however many actions this card offers — Run
+   now, Archive, or both, which a failed task with a spent message offers
+   together. Two separately-pinned buttons would each anchor to the same `right`
+   and stack on top of one another; laying them out with flex is what keeps the
+   pair legible and keeps either one alone in exactly the same place.
+
+   The strip itself takes no clicks: it is an invisible box over the top-right of
+   a card that IS a button, and the 2px between its children must not swallow the
+   press that opens the chat. Only the buttons take them back. */
+.tasks-card-acts {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  /* Above the card it overlays; the card sets no z-index of its own. */
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.tasks-card-act,
+.prefs-section .tasks-card-act {
+  pointer-events: auto;
+  /* The card paints `--bg`, and a transparent glyph sitting on it would read as
+     part of the head's own row of marks. */
+  background: var(--bg);
+}
+
+.tasks-card-wrap:hover .tasks-card-act,
+.tasks-card-wrap:focus-within .tasks-card-act,
+.tasks-card-act:focus-visible {
+  opacity: 1;
+}
+
+/* Mid-write, same as the row's: the card is being pointed at, so full opacity is
+   already on and dropping it is what says "asked, not answered yet". */
+.tasks-card-wrap:hover .tasks-card-act:disabled,
+.tasks-card-wrap:focus-within .tasks-card-act:disabled,
+.tasks-card-act:disabled:focus-visible {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* While the card is in the air it ghosts to 0.35 — an action button left at full
+   strength over a ghost would be the one solid thing on a card that is halfway
+   somewhere else, and it is not a drop target either. */
+.tasks-card-wrap.is-dragging .tasks-card-act,
+.prefs-section .tasks-card-wrap.is-dragging .tasks-card-act {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* What the server said when it would not run it. Under the row it is about,
+   indented to the rail, and QUIET — `.schedule-tv-note` is the same muted line
+   the board's drag refusal already uses, and it is muted on purpose: the common
+   refusal is a 409 because that conversation has a turn open right now, which
+   is "wait", not "broken". A red line here would report a working safeguard as
+   a failure. */
+.tasks-row-note {
+  padding: 0 var(--tasks-row-pad) 6px var(--tasks-rail-x);
+}
+
+/* Mid-cancel. The row is by definition being pointed at, so the button is
+   already at full opacity — dropping it is what says "asked, not answered yet"
+   without swapping the glyph for a spinner the width of the row. */
+.tasks-row:hover .tasks-act:disabled,
+.tasks-row:focus-within .tasks-act:disabled,
+.tasks-msg:hover .tasks-act:disabled,
+.tasks-msg:focus-within .tasks-act:disabled,
+.tasks-act:disabled:focus-visible {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* What the server said about a cancel that did not land — under the one row it
+   is about, not as a banner over a thread that is otherwise intact. The 404 is
+   the common case and it is a real answer: the message sent while the user was
+   reaching for the button. */
+.tasks-msg-error {
+  margin: 0 0 2px;
+  padding: 2px 8px 4px 12px;
+  border-left: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--error);
+}
+
+/* -- The thread ----------------------------------------------------------------
+   Indented under its task, with a rule running down the left so a long thread
+   still reads as belonging to the row above it.
+
+   The left padding is DERIVED, never typed: it is where the rail is, less a
+   message row's own indent, so the thread's dots land on the task row's rail
+   above them. See the geometry block at the top of this file. */
+.tasks-thread {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 12px 8px calc(var(--tasks-rail-x) - var(--tasks-msg-indent));
+}
+
+.tasks-msg {
+  display: flex;
+  align-items: center;
+  gap: var(--tasks-row-gap);
+  /* 1px rule + this padding = --tasks-msg-indent, the number the thread's own
+     padding subtracts. Written as the subtraction so the two cannot drift. */
+  padding: 5px 8px 5px calc(var(--tasks-msg-indent) - 1px);
+  border-left: 1px solid var(--border);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+
+.tasks-msg:hover {
+  background: var(--row-bg-hover);
+}
+
+.tasks-msg-kind {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+
+.tasks-msg-body {
+  min-width: 0;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The body is a quotation — it is the words the person actually sent, not a
+   label this page wrote — and the quotes are what say so. */
+.tasks-msg-body::before {
+  content: "\201C";
+}
+
+.tasks-msg-body::after {
+  content: "\201D";
+}
+
+/* Unread is the ONE thing in a thread worth weight: everything else here is
+   history. */
+.tasks-msg.is-unread .tasks-msg-body {
+  font-weight: 600;
+}
+
+.tasks-msg-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* "ran 07:12 today" — drawn only when the run and the due time are different
+   facts (tasks-lib.ranNote), which is a minority of rows, so it is quieter than
+   the due time it qualifies rather than a second column beside it. */
+.tasks-msg-ran {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--fg-muted);
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The message row's own unread slot is `.tasks-rail`, defined with the rest of
+   the rail's geometry near the top of this file — one class for the task row
+   and its messages, because they are one column. */
+
+.tasks-thread-error {
+  margin: 4px 0 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--error);
+}
+
+/* -- Show more -----------------------------------------------------------------
+   Only ever drawn when the server's own `message_count` says there IS more, so
+   it is never a button that does nothing. Dashed, like the board's own reveal:
+   both mean "there is more behind this". */
+.tasks-more,
+.prefs-section .tasks-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  margin: 4px 0 0 12px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.08s ease, border-color 0.08s ease;
+}
+
+.tasks-more:hover:not(:disabled),
+.prefs-section .tasks-more:hover:not(:disabled) {
+  color: var(--fg);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
+}
+
+.tasks-more:disabled,
+.prefs-section .tasks-more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.tasks-more-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* -- The filter popovers -------------------------------------------------------
+   schedule.css draws these `position: absolute` with a note claiming nothing
+   above them clips. Two things do: `.prefs-page { overflow-y: auto }` and
+   `.schedule-page { overflow: hidden }`, and the Project menu shipped sliced
+   off at the bottom with a handful of its 28 folders showing (Akshil,
+   screenshot). The panel is now FIXED and measured off its trigger in
+   ScheduleTaskViews.popStyle — the same answer NewJobModal's date, time and
+   repeat menus already use — so `top`/`bottom`/`left`/`max-height` all arrive
+   as inline style and this rule only has to undo the absolute placement and
+   let the panel scroll.
+
+   No height and no min-height: a two-item Status menu is two items tall. The
+   cap is the inline `max-height`, and it is what makes 28 projects a scroller
+   rather than a column taller than the window. */
+.schedule-tv-pop.tasks-pop {
+  position: fixed;
+  top: auto;
+  left: auto;
+  overflow-y: auto;
+  /* The panel is the scroller; a flex column only shrinks below its content
+     when it is allowed to. */
+  min-height: 0;
+}
+
+/* Items keep their own height inside that scroller — a constrained flex column
+   otherwise squeezes them all to fit, which turns 28 rows into 28 slivers. */
+.schedule-tv-pop.tasks-pop > .schedule-tv-pop-item,
+.prefs-section .schedule-tv-pop.tasks-pop > .schedule-tv-pop-item {
+  flex: 0 0 auto;
+}
+
+/* The project menu's own label — the folder's name, ellipsised rather than
+   widening a popover that is sized for status words. */
+.tasks-pop-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -- Failed, the fifth lane ----------------------------------------------------
+   schedule.css already paints `.schedule-ring--failed` red — it was the
+   modifier that repainted a Done ring — so the new column needs no hue of its
+   own. What it needs is the FILLED centre every settled state carries: Failed
+   is terminal, and a hollow ring beside Done's solid one would read as "still
+   going" in the one column where nothing is. `.schedule-ring--done::after`
+   already defines that dot; this only widens who gets it. */
+.schedule-ring--failed::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+/* -- The one drop that is not filing ------------------------------------------
+   Upcoming → In Progress sends the task's next scheduled message immediately
+   (tasks-lib.dropAction). Every other drop just moves a card between lanes and
+   is undone by dragging it back; this one is a turn that starts, and there is
+   no dragging that back. So the lane says which it is while the card is still
+   in the air — the dashed legal-drop outline schedule.css draws is identical
+   for both and cannot carry the difference — and says the half a person would
+   otherwise fear: the schedule itself is not touched. */
+.schedule-tv-lane-body.is-drop-run,
+.schedule-tv-rail.is-drop-run,
+.prefs-section .schedule-tv-rail.is-drop-run {
+  outline: 1px dashed color-mix(in srgb, var(--status-upcoming) 60%, transparent);
+  outline-offset: -1px;
+}
+
+.tasks-run-hint {
+  margin: 0 0 2px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--status-upcoming) 14%, transparent);
+  color: var(--status-upcoming);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  /* It appears mid-drag, and a pointer event on it would count as leaving the
+     lane it is drawn inside. */
+  pointer-events: none;
+}
+
+/* -- Focus: the page's own ring, on every bespoke control added above --------- */
+.tasks-row:focus-visible,
+.tasks-msg:focus-visible,
+.tasks-act:focus-visible,
+.tasks-more:focus-visible,
+.prefs-section .tasks-act:focus-visible,
+.prefs-section .tasks-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

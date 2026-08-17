@@ -1,6 +1,6 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Inbox), the explorer's Bookmarks below it,
+// primary nav on top (Home / Tasks), the explorer's Bookmarks below it,
 // and a single Settings trigger pinned to the
 // bottom that opens a menu holding everything else (Config / App Basics for
 // now, plus Templates / Mounts / AI Models / Preferences).
@@ -15,11 +15,7 @@ import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import {
-  useUrlVersion,
-  useLearnMountReady,
-  useSessionsMountReady,
-} from "@platform/lib/hooks";
+import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
 import { useAccountLoggedIn } from "@platform/lib/account";
 import { useDeployEnabled } from "@platform/lib/prefs";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
@@ -51,13 +47,10 @@ const CLAUDE_CONFIG_ICON = (
   </svg>
 );
 
-// Inbox tray — the Sessions app is a triage inbox for Claude Code sessions.
-const SESSIONS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-    <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-  </svg>
-);
+// The Inbox tray icon lived here. Inbox (/sessions) no longer has a sidebar
+// entry — Tasks does its job now — and the ROUTE is untouched, so anything
+// already open, and any direct link to it, still works. It is simply not
+// advertised any more.
 
 // Stacked disks — the AI Models entry is an inventory of what the Hugging
 // Face cache is storing on this machine, so it reads as storage, not as a chip.
@@ -225,7 +218,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const deployEnabled = useDeployEnabled();
 
   const learnMountReady = useLearnMountReady(config.learn_mount_ready);
-  const sessionsMountReady = useSessionsMountReady(config.sessions_mount_ready);
+  // No sessions-mount gate any more: the one entry it guarded (Inbox) is gone
+  // from the sidebar. The route and its mount are untouched.
   const claudeConfigAvailable = useClaudeConfigAvailable();
 
   // A model resident in memory is the one piece of app state that costs
@@ -248,6 +242,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
+  const tasksActive = pathname === "/scheduled";
 
   // Everything that is not primary nav lives in the bottom menu for now:
   // the former sidebar entries (Config / App Basics), then the settings
@@ -262,10 +257,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push(
     { href: "/templates", label: "Templates", icon: TEMPLATES_ICON },
     { href: "/mounts", label: "Mounts", icon: MOUNTS_ICON },
-    // Ungated, unlike Claude Config / App Basics above: the page is useful (and
-    // says so) even with nothing scheduled yet, and there is no machine state
-    // that can make scheduling unavailable.
-    { href: "/scheduled", label: "Schedule", icon: SCHEDULED_ICON },
+    // No /scheduled entry here on purpose: Tasks is primary nav now (see the
+    // rail below). Listing the same route in the menu too would light the Tasks
+    // row and the Preferences trigger at once, since `prefsActive` treats every
+    // menu href as "you are on one of my pages" — the same double-selection the
+    // Home comment above rejects.
     { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
     {
       href: "/preferences",
@@ -302,9 +298,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const rail: SidebarRailItem[] = [
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    ...(sessionsMountReady
-      ? [{ key: "sessions", label: "Inbox", icon: SESSIONS_ICON, href: "/sessions" }]
-      : []),
+    { key: "scheduled", label: "Tasks", icon: SCHEDULED_ICON, href: "/scheduled", active: tasksActive },
     {
       key: "preferences",
       label: "Preferences",
@@ -335,9 +329,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             icon={HOME_ICON}
             active={homeActive}
           />
-          {sessionsMountReady && (
-            <NavItem href="/sessions" id="sessions-link" label="Inbox" icon={SESSIONS_ICON} />
-          )}
+          {/* Tasks took Inbox's place as well as its job: the two pages showed
+              the same pile of work from two ends, and the one that survives in
+              the nav is the one that can say when the work runs. Inbox itself is
+              only unadvertised, never removed — /sessions still answers. */}
+          <NavItem
+            href="/scheduled"
+            id="scheduled-link"
+            label="Tasks"
+            icon={SCHEDULED_ICON}
+            active={tasksActive}
+          />
         </div>
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">

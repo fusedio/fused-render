@@ -6942,12 +6942,17 @@ world from one the user typed.
     body: it sends things, and every test that builds an app would otherwise
     spawn whatever the developer's store held) and does not sleep before its
     first pass.
-  - **SCH-3b** **A bound on how late is still worth sending**
-    (`FUSED_RENDER_SCHEDULE_MAX_LATE`, default 24h). Unbounded catch-up is its
-    own bug: a message meant for Tuesday's standup, fired unattended on Friday
-    against a repo that has moved on, is worse than one that never fired. Past
-    the bound an entry becomes `missed` — visible, never sent. `GET /api/schedule`
-    reports the bound, because the page cannot explain a `missed` entry without it.
+  - **SCH-3b** **Missed work QUEUES and runs when the app next opens; there is no
+    bound by default.** The earlier design bounded catch-up at 24h on the reasoning
+    that a message meant for Tuesday's standup, fired unattended on Friday, is worse
+    than one that never fired. That reasoning was sound about *unattended* firing and
+    is answered directly now rather than by a timer: the queue is visible before it
+    runs (the Calendar's Queued strip), every entry in it can be cancelled, and a
+    running one carries its own cancel. Given a cancel affordance, a bound only
+    throws work away silently. `FUSED_RENDER_SCHEDULE_MAX_LATE` still reinstates a
+    bound where an operator wants one, and only then does an entry become `missed`.
+    `GET /api/schedule` reports `max_late_seconds: null` when unbounded — the page
+    must read null as "no bound", never as zero.
 - **SCH-4** **The claim is written before the spawn.** An entry becomes `sending`
   *before* the helper is launched, so a process that dies mid-spawn leaves it
   `sending` rather than `pending` and the next boot does not resend it; a sweep
@@ -7228,11 +7233,81 @@ world from one the user typed.
   computed from the latest occurrence ever created (never earlier than now).
   Everything downstream — claim-before-spawn, job rows, the event log, the
   watcher — handles only one-shots, unchanged.
-- **SCH-13** **A missed recurring run is SKIPPED, never caught up.** Occurrences
-  carry `max_late: 120` where one-shots keep the day-long global bound: replaying
-  "daily at 9am" at 2pm is not what the words meant, and the next run is already
-  coming. The two minutes absorb tick jitter only. The missed verdict is worded
-  as "skipped", and the next materialization rolls past every missed slot.
+- **SCH-13** **A recurring backlog COALESCES to its latest run, never replays.**
+  Where a one-shot missed by a week still runs (SCH-3b), a repeat missed five times
+  runs **once** — replaying "daily at 9am" five times into one thread is not what
+  the words meant. `_coalesce` walks the recurrence before `_materialize`, keeps the
+  most recent missed occurrence and counts the rest onto it as `skipped` /
+  `skipped_note`, announced as a single event ("4 earlier runs skipped") rather than
+  four. Occurrences no longer carry `max_late: 120`; a legacy one is cleared by the
+  coalescer. `count`/`until` budgets are spent by skipped runs, following the same
+  rule `create` already applies.
+- **SCH-13a** **A repeating template LEARNS its thread on the first run.** A task is
+  a Claude session, so a repeat appends into one thread and `new_task_each_run` is
+  the opt-out — but that does not fall out for free, and assuming it did was a real
+  bug. A template is created with **no** session, because none exists yet: Claude
+  Code mints the id on the first turn. So when a run reports the session it actually
+  ran in, `_chain_session` writes that id back onto the TEMPLATE's `session_id`, and
+  every later occurrence inherits it. Three guards, each of which is a bug if
+  dropped: write only while the field is empty, so a re-report cannot thrash it and a
+  session the user chose deliberately is never overwritten; never write when the
+  template is set to fork; and fix up any ALREADY-materialized pending occurrence in
+  the same pass, because `tick` materializes the next run before the previous turn
+  reports, so run 2 normally already exists carrying `""`. `_busy_sessions` must also
+  union `session_id` with `claude_session_id`, or run 2 resumes run 1's thread while
+  its turn is still open. The `session_id` (input, "resume this") and
+  `claude_session_id` (answer, "what it ran in") split is preserved throughout: this
+  propagates run 1's ANSWER into run 2's INPUT, and never conflates the two on one
+  entry. The writeback also stamps **`session_learned`** on the entry, because a
+  `session_id` has two possible authors — a chat handoff the user supplied, which a
+  repeat must refuse, and this — and only the moment of writing knows which. It rides
+  with the id everywhere the id goes (`_materialize` copies both; `create` accepts it
+  so an edit, which is cancel + re-create, can re-state it) and is never invented for
+  a supplied id. Absent means NOT learned, which is what every entry stored before it
+  existed is.
+- **SCH-13b** **A rule anchored in the PAST runs once, on its most recent slot.**
+  A past-anchored template used to run nothing until its next future slot, because
+  `_materialize` computes from `base = now` and the anchor only sets the pattern
+  (time of day, weekday, nth-weekday). That is right for "monthly on the second
+  Wednesday" but reads as broken beside a past one-off, which fires immediately.
+  So a rule template with no occurrences yet walks anchor → now and materializes
+  **the latest slot at or before now**, at that slot's own time, marked `catch_up`.
+  The latest, not the anchor: "the oldest thing you missed" is rarely what anyone
+  wants re-run, and this is the rule `_coalesce` already applies to a repeat missed
+  while the app was shut — the same walk, extracted as `_walk_latest` and shared,
+  with `spend=True` for the coalescer (it bills `made` and counts `skipped`) and
+  `spend=False` here. Intervening slots are never materialized and never reported:
+  nothing happened at those times, so nothing is drawn at them either.
+- **SCH-13c** **A due message DEFERS while that conversation has a live turn.**
+  `_busy_sessions` only ever knew about scheduled sends, so a message due while the
+  user was mid-turn in the same session spawned a second `claude --resume` against
+  one transcript. Liveness is now asked of the same rule the session badge uses —
+  extracted to `fused_render/session_liveness.py` rather than duplicated, because it
+  is a 16KB tail read plus a housekeeping filter plus a `turn_duration` end-marker
+  plus two windows, and a scheduler that disagreed with the badge on any one of them
+  would hold a message the page calls safe. **Deferred, never dropped:** nothing is
+  written, so the entry stays `pending` and cannot be swept `missed` (catch-up is
+  unbounded by default). An unreadable or absent transcript answers "not live", so a
+  bad read can never park a message for ever. The user is never blocked from their
+  own chat — the machine waits, not the person.
+- **SCH-13d** **`POST /api/schedule/run-now` sends a pending message early and
+  leaves its `due` alone.** The Board's Upcoming → In Progress drag means "run it
+  now", and the schedule time is a fact about what was asked for, so history keeps
+  it and the row reads as having run early (`at` is scheduled-for, `ran_at` is when
+  it went; see SCH-15). Reuses `_claim`, the single `pending → sending` transition,
+  so claim-before-spawn is unchanged and run-now races a tick exactly as two ticks
+  race each other. Anything not pending is refused 409 with its own sentence.
+  Running one occurrence early leaves its template's rule, `made` and `due` alone.
+  A conversation with a live turn is refused rather than forced — a drag gesture
+  cannot consent to two processes on one transcript (SCH-13c).
+- **SCH-15** **`at` is when a message was scheduled for and never moves; `ran_at`
+  is when it actually went.** They were one field, and matching a run to its
+  transcript prompt overwrote the due time — so a task scheduled two days ago and
+  caught up today jumped to today's column. A calendar places chips by `at`, so the
+  chip stays on the day the work was asked for and the row says it ran late; the
+  Board's run-now case is the same field pair read the other way round. `last_active`
+  maxes over both, so a caught-up task still sorts as today's news while its chip
+  stays put.
 - **SCH-14** **Cron is parsed in-house** (`fused_render/cron.py`): `*`, numbers,
   ranges, lists, `/n` steps, dow 0–7 with both 0 and 7 as Sunday, and the
   standard dom-OR-dow rule; all arithmetic in naive LOCAL time because "daily at
