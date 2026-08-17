@@ -34,7 +34,9 @@ def main():
     if path and os.path.exists(path):
         with open(path) as f:
             scenario = json.load(f)
-    plain = [a for a in args if a not in ("--format", "json")]
+    # The legacy SDK CLI is nested under `fused workbench` (fused >= 2.x
+    # agent-toolkit layout); the stub strips the nesting like option tokens.
+    plain = [a for a in args if a not in ("workbench", "--format", "json")]
     if scenario.get("fail"):
         sys.stderr.write("Error: " + scenario["fail"] + "\n")
         sys.exit(1)
@@ -163,7 +165,7 @@ def test_clone_pulls_into_canvases_dir(harness):
     res = harness.client.post("/api/canvases/clone", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 200
     assert os.path.isfile(harness.root / "alpha" / "canvas.toml")
-    pulls = [c for c in harness.calls() if c[:2] == ["canvas", "pull"]]
+    pulls = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]]
     assert pulls and "--force" in pulls[0]
 
 
@@ -192,7 +194,7 @@ def test_sync_watches_debounces_and_pushes(harness, monkeypatch):
 
     # The clone's own files are the baseline — no push without a change.
     time.sleep(0.4)
-    assert not [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
 
     (harness.root / "alpha" / "udf.py").write_text("print('hi')\n", encoding="utf-8")
     deadline = time.time() + 5
@@ -202,7 +204,7 @@ def test_sync_watches_debounces_and_pushes(harness, monkeypatch):
             break
         time.sleep(0.05)
     assert status["push_seq"] >= 1, status
-    pushes = [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
+    pushes = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
     assert pushes and pushes[0][-2:] == ["--canvas", "alpha"]
 
     stop = harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)

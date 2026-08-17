@@ -130,6 +130,11 @@ def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProce
     cli = fused_cli()
     if cli is None:
         return None, _no_cli_error()
+    # Human-readable command label for error messages: the subcommand words,
+    # skipping the `workbench` nesting and option tokens.
+    label = "fused " + " ".join(
+        a for a in args if a not in ("workbench", "--format", "json")
+    )
     try:
         proc = subprocess.run(
             [*cli.command, *args],
@@ -139,11 +144,11 @@ def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProce
             env=child_env(cli),
         )
     except subprocess.TimeoutExpired:
-        return None, _error(f"`fused {args[0]}` timed out after {int(timeout)}s", 502)
+        return None, _error(f"`{label}` timed out after {int(timeout)}s", 502)
     except OSError as e:
         return None, _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
     if proc.returncode != 0:
-        return None, _error(cli_error(proc.stderr or proc.stdout, f"fused {args[0]} failed"), 502)
+        return None, _error(cli_error(proc.stderr or proc.stdout, f"{label} failed"), 502)
     return proc, None
 
 
@@ -202,7 +207,7 @@ def api_canvases_whoami(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    proc, err = _run_cli(["--format", "json", "whoami"], WHOAMI_TIMEOUT)
+    proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT)
     if err is not None:
         return err
     try:
@@ -247,7 +252,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
                 # authorize URL — so there is nothing to capture; the client
                 # polls /api/canvases/status until logged_in flips.
                 proc = subprocess.Popen(
-                    [*cli.command, "login"],
+                    [*cli.command, "workbench", "login"],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -341,7 +346,7 @@ def api_canvases_list(x_fused: str | None = Header(default=None)):
         return guard
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
-    proc, err = _run_cli(["--format", "json", "canvas", "list"], LIST_TIMEOUT)
+    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT)
     if err is not None:
         return err
     try:
@@ -396,7 +401,7 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
         manager.pause()
     try:
         proc, err = _run_cli(
-            ["canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
+            ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
         )
     finally:
         if manager is not None:
@@ -476,7 +481,7 @@ class _SyncManager:
         self._dirty_since = None
         try:
             proc = subprocess.run(
-                [*cli.command, "canvas", "push", self.dir, "--canvas", self.name],
+                [*cli.command, "workbench", "canvas", "push", self.dir, "--canvas", self.name],
                 capture_output=True,
                 text=True,
                 timeout=PUSH_TIMEOUT,

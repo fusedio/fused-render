@@ -7,7 +7,13 @@ from the `fused cloud login` store account.py manages. The refreshed token is
 saved back so the on-disk expires_at stays truthful for the cheap staleness
 check canvases.py does before spawning this child.
 """
-from fused._auth import Credentials
+try:
+    # fused >= 2.x agent-toolkit layout nests the legacy SDK under
+    # fused.workbench (fused._auth aliases it today, but the nested path is
+    # the canonical one).
+    from fused.workbench._auth import Credentials
+except ImportError:
+    from fused._auth import Credentials
 
 
 def main() -> None:
