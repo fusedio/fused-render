@@ -124,3 +124,25 @@ export function clampSideWidth(
   if (!(containerW > 0) || max < MIN_W) return current;
   return Math.max(MIN_W, Math.min(chosen ?? current, max));
 }
+
+// THE WIDTH THE COLUMN OPENS AT, decided ONCE against the measured container —
+// `null` for "the container cannot be measured, keep whatever the caller seeded".
+//
+// Both inputs to the question in one place: a dragged width from an earlier view in
+// this document (lib/side-store) if there is one, else the container's share. The
+// difference from reading the store directly is the CLAMP, and it is a pre-paint
+// bug fix: the mount effect used to return early whenever a stored width existed, so
+// the column painted at the raw stored pixels and only met the floors in the
+// post-paint resize effect. Drag wide, navigate to a folder (the column unmounts),
+// shrink the window, open a file — and the sidebar overflowed the split for a frame
+// before snapping back. A width chosen in one window is not a width that fits in the
+// next one.
+//
+// It never WIDENS a stored width to the share: the drag is the standing answer to
+// "how wide", and the share only answers it when nothing was dragged. And it writes
+// nothing back to the store — opening in a smaller window is not the user choosing a
+// narrower column, the same rule the resize clamp follows.
+export function openingSideWidth(chosen: number | null, containerW: number): number | null {
+  if (!(containerW > 0)) return null;
+  return chosen === null ? defaultSideWidth(containerW) : clampSideWidth(chosen, chosen, containerW);
+}

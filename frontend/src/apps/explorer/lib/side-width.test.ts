@@ -3,6 +3,7 @@ import {
   COMPANION_FRAC,
   clampSideWidth,
   defaultSideWidth,
+  openingSideWidth,
   CONTENT_MIN_W,
   MIN_W,
 } from "@apps/explorer/lib/side-width";
@@ -150,5 +151,44 @@ describe("clampSideWidth", () => {
 
   it("never returns below MIN_W where it acts at all", () => {
     expect(clampSideWidth(MIN_W, 5, 2000)).toBeGreaterThanOrEqual(MIN_W);
+  });
+});
+
+// WHAT THE COLUMN OPENS AT, decided once against the MEASURED container — the
+// pre-paint answer, so nothing reaches the screen at one width and jumps to
+// another. A stored width used to skip this step entirely (the mount effect
+// returned early when one existed), so the column painted at the raw stored pixels
+// and only met the floors in the post-paint resize effect: drag wide, navigate to a
+// folder so the column unmounts, shrink the window, open a file — and the column
+// overflowed for a frame before snapping back.
+describe("openingSideWidth", () => {
+  it("takes the container's share when nothing was dragged", () => {
+    expect(openingSideWidth(null, 2000)).toBe(defaultSideWidth(2000));
+  });
+
+  it("CLAMPS a stored width to the container it is opening in", () => {
+    // Dragged to 900 in a big window, reopened in a 800px one: the content column's
+    // floor wins on the first paint, not one frame later.
+    expect(openingSideWidth(900, 800)).toBe(800 - CONTENT_MIN_W);
+    // ...and a stored width that still fits opens exactly as it was left.
+    expect(openingSideWidth(900, 2000)).toBe(900);
+  });
+
+  it("never widens a stored width to the share", () => {
+    expect(openingSideWidth(MIN_W, 4000)).toBe(MIN_W);
+  });
+
+  it("answers null for an unmeasurable container", () => {
+    // Null means "keep the seed": detached, display:none, or a state initialiser
+    // running before there is any layout — the caller's viewport guess is the
+    // honest answer there and this must not overwrite it with a floor.
+    expect(openingSideWidth(null, 0)).toBe(null);
+    expect(openingSideWidth(900, 0)).toBe(null);
+    expect(openingSideWidth(900, NaN)).toBe(null);
+  });
+
+  it("leaves a stored width alone when both floors cannot fit", () => {
+    // Same rule as the clamp: CSS min-widths hold below the floor sum.
+    expect(openingSideWidth(900, MIN_W + CONTENT_MIN_W - 1)).toBe(900);
   });
 });

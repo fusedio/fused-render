@@ -44,6 +44,7 @@ import {
 import {
   clampSideWidth,
   defaultSideWidth,
+  openingSideWidth,
   MIN_W,
   CONTENT_MIN_W,
 } from "@apps/explorer/lib/side-width";
@@ -107,9 +108,11 @@ export default function PreviewSidebar({
   // (SideChrome writes the split down), so this is the only way out of it.
   onClose: () => void;
 }) {
-  // A width the user DRAGGED earlier in this document wins outright (lib/
-  // side-store) — that is what makes the divider hold still while you walk from
-  // file to file, since this component remounts on every one of those hops.
+  // A width the user DRAGGED earlier in this document leads (lib/side-store) — that
+  // is what makes the divider hold still while you walk from file to file, since
+  // this component remounts on every one of those hops. It leads, it does not win
+  // outright: the layout effect below still measures and clamps it into THIS
+  // container's floors before the first paint.
   //
   // Failing that, seeded from the VIEWPORT, because a state initialiser runs
   // before there is any layout to measure. It is a stand-in only — the layout
@@ -126,21 +129,26 @@ export default function PreviewSidebar({
   const dividerRef = useRef<HTMLDivElement>(null);
   const splitEl = () => dividerRef.current?.closest<HTMLElement>(SPLIT_SEL) ?? null;
 
-  // The real default, measured. useLayoutEffect and not useEffect: the refs are
-  // attached and the container laid out by now, and React flushes this before
+  // The real opening width, measured. useLayoutEffect and not useEffect: the refs
+  // are attached and the container laid out by now, and React flushes this before
   // paint, so the seeded viewport width never reaches the screen and the column
   // does not open at one width and jump to another.
   //
-  // Mount-only, and deliberately not re-run on container resize: the ResizeObserver
-  // below only ever narrows the column, so a window the user widens keeps the
-  // width they are looking at instead of springing back to the share.
+  // A STORED WIDTH GOES THROUGH THIS TOO, and that is the point of `openingSideWidth`
+  // rather than a `getSideWidth()` early return: a width dragged in one window is not
+  // necessarily a width that fits in this one, and skipping the measurement meant the
+  // column painted at the raw stored pixels and only met the floors in the resize
+  // effect below, which runs AFTER paint. (Drag wide, navigate to a folder so this
+  // unmounts, shrink the window, open a file.) Null answers "container unmeasurable",
+  // where the seeded viewport guess is the honest value and is left alone.
   //
-  // Skipped entirely once a drag has been recorded: the measured default is the
-  // answer to "how wide should this open", which is a question already answered.
+  // Mount-only, and deliberately not re-run on container resize: the observer below
+  // never widens past the standing choice, so a window the user widens keeps the
+  // width they are looking at instead of springing back to the share.
   useLayoutEffect(() => {
-    if (getSideWidth() !== null) return;
     const w = splitEl()?.getBoundingClientRect().width ?? 0;
-    if (w > 0) setWidth(defaultSideWidth(w));
+    const opening = openingSideWidth(getSideWidth(), w);
+    if (opening !== null) setWidth(opening);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
