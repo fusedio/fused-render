@@ -163,8 +163,10 @@ def main(session: str = "", instruction: str = "") -> dict:
                 capture_output=True,
                 text=True,
                 # fused-render's executor kills the whole child at 30s — finish
-            # (or fail cleanly) inside that budget instead of being killed
-            timeout=25,
+                # (or fail cleanly) inside that budget instead of being killed
+                timeout=25,
+                encoding="utf-8",
+                errors="replace",
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             return {"ok": False, "error": str(e)}

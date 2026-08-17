@@ -512,7 +512,8 @@ def _read_system(params):
     here = (os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals()
             else os.path.abspath(sys.path[0]))  # runner exec()s without __file__
     r = subprocess.run([py, "-c", _WORKER, here], input=json.dumps(params),
-                       capture_output=True, text=True, timeout=120, env=env)
+                       capture_output=True, text=True, timeout=120, env=env,
+                       encoding="utf-8", errors="replace")
     if r.returncode != 0:
         return {"error": f"system engine failed: {r.stderr[-500:]}"}
     return json.loads(r.stdout.strip().splitlines()[-1])
