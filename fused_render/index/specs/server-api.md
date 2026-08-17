@@ -149,9 +149,12 @@ all of it billed to a keystroke. The warm moves it to idle.
 
 - A **thread**, not `asyncio.to_thread`: a startup hook must complete before the app
   serves, and this is seconds of work.
-- A **mount-backed** home is skipped on the string check alone (`MountGuard.blocks_root`),
-  never a syscall: the index refuses to scan mounts, so the warm could only answer
-  `covered: false` after aiming kernel I/O at a mount.
+- A **mount-backed** home is skipped by `MountGuard.blocks_root`, the same check
+  `runner.start` makes, before anything touches the path: the index refuses to scan
+  mounts, so the warm could only answer `covered: false` after aiming kernel I/O at a
+  mount. The guarantee is about the mount, not about cost — a path under the mounts dir
+  matches on `abspath` alone, while a local home falls through to `is_mount_backed` and
+  pays two `realpath`s, neither of them on the mount.
 - **One bounded wait on a first boot.** Usually the index is already there, the search
   answers `covered: true`, and the warm is those two calls and nothing else. When it
   answers `covered: false` — first-ever boot, nothing to sweep — the warm waits for the

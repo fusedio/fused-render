@@ -736,6 +736,35 @@ def test_columns_are_several_times_smaller_on_the_wire(home, tmp_path, monkeypat
     assert wire[0] / wire[1] >= 3.0, wire
 
 
+@pytest.mark.parametrize("accept,gzipped", [
+    ("gzip", True),
+    ("gzip, deflate, br", True),
+    ("x-gzip", True),
+    ("gzip;q=0.5", True),
+    ("*", True),
+    # `q=0` is the explicit "I cannot take this encoding" spelling, and a
+    # substring match read it as consent — handing a client a 5 MB body it
+    # just said it could not decode.
+    ("gzip;q=0", False),
+    ("gzip; q=0.0", False),
+    ("*;q=0", False),
+    ("identity", False),
+    ("", False),
+])
+def test_gzip_is_negotiated_by_q_value_not_by_substring(home, tmp_path,
+                                                        monkeypatch, accept,
+                                                        gzipped):
+    _stub_corpus(monkeypatch, _corpus())
+    resp = _client(tmp_path).get("/api/index/search",
+                                 params={"root": "/r", "fmt": "columns"},
+                                 headers={"Accept-Encoding": accept})
+    assert (resp.headers.get("content-encoding") == "gzip") is gzipped
+    # Both bodies live at one URL, so an intermediary keyed on the URL alone
+    # would otherwise serve either one to either client.
+    assert resp.headers["vary"] == "Accept-Encoding"
+    assert resp.json()["rels"] == ["d", "d/f0.txt", "d/f1.txt", "d/f2.txt"]
+
+
 def test_a_client_that_cannot_gunzip_still_gets_the_columns(home, tmp_path,
                                                             monkeypatch):
     """Encoding is negotiated, not assumed: `Accept-Encoding` decides whether
@@ -891,16 +920,21 @@ def test_startup_warm_waits_for_the_scan_it_started(home, tmp_path, monkeypatch)
 
 def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
                                                              monkeypatch):
-    """A worker that hangs (or a status that never flips) must not leave a
-    thread polling for the process lifetime: the wait is deadline-bounded and
-    the warm simply does not happen."""
+    """A worker alive but wedged — writing nothing, dying never — must not
+    leave a thread polling for the process lifetime: the wait is
+    deadline-bounded and the warm simply does not happen."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    run_dir = tmp_path / "wedged-run"
+    run_dir.mkdir()
     calls = []
     monkeypatch.setattr(index_router, "index_search",
                         lambda cfg, root, **kw: calls.append(root)
                         or {"covered": False, "root": root})
-    monkeypatch.setattr(index_router.runner, "status",
-                        lambda cfg, run_id, since=0: {"state": {"running": True}})
+    monkeypatch.setattr(index_router.runner, "_run_dir",
+                        lambda cfg, run_id: str(run_dir))
+    # Alive, so the dead-worker exit cannot fire: only the deadline can end it.
+    monkeypatch.setattr(index_router.runner, "_looks_abandoned",
+                        lambda run_dir, now, threshold_s: False)
     monkeypatch.setattr(index_router, "WARM_WAIT_DEADLINE_S", 0.05)
     monkeypatch.setattr(index_router, "WARM_WAIT_POLL_S", 0.01)
     monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
@@ -909,6 +943,30 @@ def test_startup_warm_gives_up_when_the_scan_never_finishes(home, tmp_path,
     index_router.run_startup_warm()
     assert time.monotonic() - began < 5, "the wait is not deadline-bounded"
     assert len(calls) == 1, "it searched again after giving up"
+
+
+def test_startup_warm_stops_waiting_on_a_worker_that_died(home, tmp_path,
+                                                          monkeypatch):
+    """A worker killed mid-walk never writes `run_end`, so the log alone would
+    keep the wait going until the deadline. runner's own mtime liveness check
+    is what ends it in seconds instead."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    run_dir = tmp_path / "dead-run"
+    run_dir.mkdir()
+    calls = []
+    monkeypatch.setattr(index_router, "index_search",
+                        lambda cfg, root, **kw: calls.append(root)
+                        or {"covered": False, "root": root})
+    monkeypatch.setattr(index_router.runner, "_run_dir",
+                        lambda cfg, run_id: str(run_dir))
+    monkeypatch.setattr(index_router.runner, "_looks_abandoned",
+                        lambda run_dir, now, threshold_s: True)
+    monkeypatch.setitem(index_router._startup_runs, index_router.warm_root(),
+                        "run-that-died")
+    began = time.monotonic()
+    index_router.run_startup_warm()
+    assert time.monotonic() - began < 5
+    assert len(calls) == 1
 
 
 def test_startup_warm_does_not_wait_when_the_root_is_covered(home, tmp_path,

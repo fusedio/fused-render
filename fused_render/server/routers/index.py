@@ -155,21 +155,22 @@ def warm_root() -> str:
     return runner.canonical_root("~")
 
 
-# How often the warm re-reads the status of the one scan it is waiting for.
-# Nothing signals this thread when a detached worker finishes, so the wait is
-# a stat of that run's event log (runner.status folds it, and re-folds only
-# when the log moves). Half a second is the worker's own heartbeat cadence, so
-# a finer poll would mostly re-read an unchanged file, and half a second of
-# latency is nothing against the ~2.2 s the warm is saving.
+# How often the warm re-reads the event log of the one scan it is waiting for.
+# Nothing signals this thread when a detached worker finishes, so the wait
+# reads that log (`runner.has_ended`, cursored so only new lines are decoded).
+# Half a second is the worker's own progress cadence, so a finer poll would
+# mostly re-read a file with nothing new in it, and half a second of latency is
+# nothing against the ~2.2 s the warm is saving.
 WARM_WAIT_POLL_S = 0.5
 # ...and the hard ceiling on that wait. The first-ever whole-home scan that
 # motivated this took 9.2 s (570k files, 74k dirs); six minutes is ~40x that,
-# so even a much larger home on a much slower disk still gets warmed. The
-# ceiling exists for the scan that never reports at all: a worker killed
-# mid-walk is reported not-running by runner's own liveness check after
-# ABANDONED_RUN_S (5 min), so this must sit just PAST that — otherwise the
-# common death gives up here instead of taking the (correct) finished path —
-# while still guaranteeing the thread cannot poll for the process lifetime.
+# so even a much larger home on a much slower disk still gets warmed. This is
+# the LAST resort, not the usual exit: a worker killed mid-walk never writes
+# `run_end`, and the wait spots that within ABANDONED_RUN_S (5 min) through the
+# same mtime check `runner.status` uses. The ceiling sits just past that so the
+# common death takes the specific path, and covers only the pathological rest —
+# a worker alive but wedged — so the thread can never poll for the process
+# lifetime.
 WARM_WAIT_DEADLINE_S = 6 * 60.0
 
 
@@ -177,19 +178,34 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
     """Block until `run_id` stops running; False if the deadline beat it.
 
     One-shot and bounded, on a daemon thread nobody joins: it waits for one
-    named run and then it is done, whichever way that run ended."""
+    named run and then it is done, whichever way that run ended.
+
+    Deliberately NOT `runner.status`, which is the status panel's call: it
+    folds the whole event log from line 0 every time, so polling it would
+    re-parse a log the waited-on scan is appending to twice a second — work
+    quadratic in that scan's length, spent competing with it for the disk.
+    `runner.has_ended` carries a cursor and decodes only what is new, and the
+    dead-worker case is the same `_looks_abandoned` mtime check `status`
+    applies (a worker killed mid-walk never writes `run_end`, so without it
+    this would wait out the whole deadline for the most common death)."""
     import time
 
+    try:
+        run_dir = runner._run_dir(cfg, run_id)
+    except ValueError:
+        # The run dir is gone (pruned, or a stubbed start that never made
+        # one). Nothing left to wait for, and the index is whatever it is.
+        return True
     deadline = time.monotonic() + WARM_WAIT_DEADLINE_S
+    cursor = 0
     while True:
-        try:
-            state = runner.status(cfg, run_id)["state"]
-        except ValueError:
-            # The run dir is gone (pruned, or a stubbed start that never made
-            # one). Nothing left to wait for, and the index is whatever it is.
+        ended, cursor = runner.has_ended(run_dir, cursor)
+        if ended:
             return True
-        if not state.get("running"):
-            return True
+        if runner._looks_abandoned(run_dir, time.time(), runner.ABANDONED_RUN_S):
+            logger.info("index: scan %s died without finishing; the search "
+                        "corpus stays cold", run_id)
+            return False
         if time.monotonic() >= deadline:
             # Once, at info: this is a diagnosis of a stuck scan, not a
             # failure of the warm — the next search just pays the old cost.
@@ -230,7 +246,12 @@ def run_startup_warm() -> None:
         # A mount-backed home is refused by the index anyway, so the warm
         # could only answer `covered: false` — after aiming kernel I/O at a
         # mount path, which is the one thing this codebase never does
-        # speculatively. Pure string work, exactly as in `runner.start`.
+        # speculatively. Exactly the check `runner.start` makes, and what it
+        # guarantees is what matters here: a path INSIDE the mounts dir matches
+        # on `abspath` alone and is refused before any syscall touches it. It
+        # is not free for everyone else — a local home falls through to
+        # `is_mount_backed`, which realpaths the mounts dir and the path — but
+        # those two realpaths are off the mount by construction.
         if MountGuard(mounts_dir=runner._mounts_dir()).blocks_root(root):
             return
         cfg = load_config()
@@ -559,13 +580,48 @@ def _corpus_response(body: dict, accept_encoding: str | None) -> Response:
 
     `Accept-Encoding` is honoured rather than assumed: browsers and the JS
     bridge all send gzip, but a client that cannot decompress must still be
-    able to read the corpus."""
+    able to read the corpus. `Vary` goes on both answers because both live at
+    the same URL — an intermediary keyed on the URL alone would otherwise hand
+    a gzipped body to the client that asked for identity, or the reverse."""
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
-    if "gzip" not in (accept_encoding or "").lower():
-        return Response(content=payload, media_type="application/json")
+    headers = {"Vary": "Accept-Encoding"}
+    if not _accepts_gzip(accept_encoding):
+        return Response(content=payload, media_type="application/json",
+                        headers=headers)
     return Response(content=gzip.compress(payload, 1),
                     media_type="application/json",
-                    headers={"Content-Encoding": "gzip"})
+                    headers={**headers, "Content-Encoding": "gzip"})
+
+
+def _accepts_gzip(accept_encoding: str | None) -> bool:
+    """Whether the caller will take a gzipped body, per RFC 9110 §12.5.3.
+
+    A substring test for "gzip" is not that test: `gzip;q=0` is the explicit
+    spelling of "I cannot decode this", and reading it as consent hands such a
+    client 5 MB it has no way to open. So the qvalue is parsed, an explicit
+    `gzip` (or the legacy `x-gzip`) beats the `*` wildcard, and anything
+    unparseable is treated as a refusal — being wrong the safe way costs a
+    bigger body, not an unreadable one."""
+    explicit = star = None
+    for part in (accept_encoding or "").split(","):
+        token, _, params = part.strip().partition(";")
+        token = token.strip().lower()
+        if token not in ("gzip", "x-gzip", "*"):
+            continue
+        q = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 0.0
+        if token == "*":
+            star = q if star is None else max(star, q)
+        else:
+            explicit = q if explicit is None else max(explicit, q)
+    q = explicit if explicit is not None else star
+    return q is not None and q > 0
 
 
 # ------------------------------------------------------------------ user SQL
