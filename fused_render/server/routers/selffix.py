@@ -283,11 +283,27 @@ def api_selffix_start(body: dict = Body(default={}),
                          args=(str(run_id), incident, report, title, before, token),
                          daemon=True, name="fused-render-selffix-watch").start()
     except Exception:  # noqa: BLE001 — the session is already running
-        # Nothing will stamp and nothing will free the slot, so do both now: a
-        # session that ran with no watcher is exactly the case where the mark
-        # matters, and the TTL alone would lock the feature out for an hour.
-        logger.exception("could not start the self-fix watcher")
-        _release_active(token)
+        # THE SLOT IS KEPT, and that is a reversal: this used to release it,
+        # reasoning that nothing would stamp and nothing would free it, so the
+        # TTL alone would lock the feature out for an hour. That traded the one
+        # thing the slot exists to prevent for the one thing it was allowed to
+        # cost. A release here says "no session is running" while a session IS
+        # running, and lets a second agent into the same tree — two of them
+        # rewriting one installation, each report describing a state that never
+        # existed (SF-13a). Holding it says something TRUE instead: the next
+        # Fix this is refused with "a fix session is already running", which is
+        # exactly the case. The TTL then frees it, which is the job it was
+        # derived for (SF-13b).
+        #
+        # The cost is real and is the smaller one: this session goes unwatched,
+        # so its changes are not stamped and the badge does not appear. Nothing
+        # else can recover that — the mark is a provenance claim only a watched
+        # session can make (SF-7a), never inferred from the digest. Reaching
+        # here at all means the interpreter could not start a thread.
+        logger.exception(
+            "could not start the self-fix watcher for run %s — the session is "
+            "running unwatched and will not be stamped; the slot is held until "
+            "it times out", run_id)
     return {"run_id": str(run_id), "target": root, "incident": incident,
             "report": report}
 
