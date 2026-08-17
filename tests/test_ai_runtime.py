@@ -695,7 +695,7 @@ def test_describe_engines_carries_every_choice_with_its_own_reason(monkeypatch):
     assert speech["effective"] == "faster-whisper"
     assert speech["ignoredReason"] is None
     choices = {choice["code"]: choice for choice in speech["choices"]}
-    assert set(choices) == {"mlx-whisper", "faster-whisper"}
+    assert set(choices) == {"mlx-whisper", "parakeet-mlx", "faster-whisper"}
     assert choices["mlx-whisper"]["available"] is False
     assert "Apple Silicon" in choices["mlx-whisper"]["reason"]
     assert choices["faster-whisper"]["reason"] is None
@@ -1553,7 +1553,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
     body = client.get("/api/ai/runtime").json()
     assert {r["code"] for r in body["runners"]} == {
         "mlx-text", "transformers-text", "diffusers-image", "mflux-image",
-        "faster-whisper", "mlx-whisper"}
+        "faster-whisper", "mlx-whisper", "parakeet-mlx"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is

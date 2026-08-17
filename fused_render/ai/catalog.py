@@ -340,6 +340,43 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "twice turbo's disk and several times its decoding.",
         },
     ],
+    # NeMo Parakeet exports ONLY, and the FOURTH mutually unloadable speech
+    # list in the app (D319). These carry `model.safetensors` — the same
+    # filename a transformers checkpoint has — beside a `config.json` naming a
+    # NeMo ASR class, which is what tells the two apart (`formats.py`). A
+    # Whisper repo suggested here would fail inside `from_config` with "Model
+    # is not supported yet!", and a Parakeet repo suggested to a whisper runner
+    # fails the other way; the split is per RUNNER for exactly this reason.
+    #
+    # These are the repos a Mac sees only after CHOOSING this engine on the
+    # Engines tab — the registry keeps Whisper as the default (see the runner
+    # row). Sizes are the same full-snapshot Hub metadata estimate as the lists
+    # above (2026-08-17). **One line each**, per the rule the transformers list
+    # states: a shortlist is read by sweeping it.
+    "parakeet-mlx": [
+        {
+            "id": "mlx-community/parakeet-tdt_ctc-110m",
+            "label": "Parakeet TDT-CTC 110M",
+            "size_gb": 0.5,
+            "note": "The smallest here, and what a bare transcribe call loads — "
+                    "English only, and it drops the punctuation the 0.6B "
+                    "models get right.",
+        },
+        {
+            "id": "mlx-community/parakeet-tdt-0.6b-v2",
+            "label": "Parakeet TDT 0.6B v2",
+            "size_gb": 2.5,
+            "note": "English only, and the most accurate of the three on it — "
+                    "pick v3 instead unless every recording is in English.",
+        },
+        {
+            "id": "mlx-community/parakeet-tdt-0.6b-v3",
+            "label": "Parakeet TDT 0.6B v3",
+            "size_gb": 2.5,
+            "note": "The one to reach for: v2's accuracy plus 24 more European "
+                    "languages, detected rather than declared.",
+        },
+    ],
     # CTranslate2 conversions ONLY. `openai/whisper-large-v3` is the repo
     # everyone reaches for and it does not load here — the runner reads
     # CTranslate2's `model.bin`, not transformers' safetensors — so suggesting
@@ -483,7 +520,7 @@ def describe() -> list[dict]:
                 # pick, so the platform half is noise there.
                 "runnerShortLabel": runner.short if runner else None,
                 # …and what using it is LIKE. The Discover tab no longer prints
-                # this over its capability sections (D315): three of six runners
+                # this over its capability sections (D315): only some runners
                 # have one, so the sections came out blotchy, and the one that
                 # matters is a caution about an engine CHOICE, which now reads
                 # under the picker on the Engines tab. The field stays on this

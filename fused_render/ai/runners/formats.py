@@ -40,6 +40,21 @@ CT2_WEIGHTS = "model.bin"
 #: there, so a repo with either is loadable.
 MLX_WHISPER_WEIGHTS = ("weights.npz", "weights.safetensors")
 
+#: An MLX conversion of a NeMo Parakeet model — the single file `parakeet-mlx`
+#: loads. Nothing distinguishing on its own: it is the name every transformers
+#: repo on the Hub carries, which is exactly why the config below has to be
+#: read too.
+PARAKEET_WEIGHTS = "model.safetensors"
+
+#: …and what DOES distinguish one. A Parakeet snapshot's `config.json` is
+#: NeMo's training config, not a transformers one, and it names the class the
+#: weights came out of in `target` — which is what `parakeet_mlx.from_config`
+#: dispatches on. The prefix is narrowed to `…asr.models.` deliberately: NeMo
+#: also ships TTS and LLM collections, and this runner loads neither, so a
+#: check on the word "nemo" would offer a Load button for a speech SYNTHESIS
+#: repo and fail inside a library that never had a chance.
+NEMO_ASR_TARGET = "nemo.collections.asr.models."
+
 #: What an mflux-readable snapshot always has: component subfolders of MLX
 #: safetensors, rather than the single-file layout diffusers writes.
 MFLUX_COMPONENTS = ("transformer", "text_encoder", "vae")
@@ -179,7 +194,10 @@ UNLOADABLE_QUANT = {
 #: is a diffusion pipeline. The two text runners are the opposite case — a
 #: directory of safetensors says nothing about the modality — so a match there
 #: never implies a capability.
-DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image")
+DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "diffusers-image",
+            # A NeMo ASR `target` is as decisive as a `weights.npz`: the config
+            # names an ASR class, and nothing else in this app can read it.
+            "parakeet-mlx")
 
 
 def is_mlx_checkpoint(config: dict) -> bool:
@@ -223,6 +241,18 @@ def is_ct2_whisper(names, config: dict) -> bool:
             or any(name in names for name in _CT2_WHISPER_FILES))
 
 
+def is_parakeet_checkpoint(config: dict) -> bool:
+    """A NeMo ASR export, which is the only thing `parakeet-mlx` can load.
+
+    Read off `target` rather than off the filename, because the filename is
+    `model.safetensors` — shared with every transformers checkpoint on the Hub
+    — and off the config rather than the repo id, because a fine-tune under
+    somebody's own account is the same format and deserves the same tag.
+    """
+    target = config.get("target")
+    return isinstance(target, str) and target.startswith(NEMO_ASR_TARGET)
+
+
 def has_mflux_components(dirnames) -> bool:
     return all(name in dirnames for name in MFLUX_COMPONENTS)
 
@@ -252,6 +282,14 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool)
         found.append("mflux-image")
     if DIFFUSERS_INDEX in names:
         found.append("diffusers-image")
+    if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
+        found.append("parakeet-mlx")
+        # …and NOTHING else, which is the point of returning here. A Parakeet
+        # snapshot is a directory of safetensors, so the text branch below
+        # would claim it too and the page would offer to load a speech model
+        # as a chat model — the failure `DECISIVE` exists to prevent, arriving
+        # by a new route.
+        return tuple(found)
     # The two text runners read the same directory of safetensors, and which of
     # them gets it is a platform-and-preference question rather than a format
     # one — with the one exception torch states itself: an MLX checkpoint is

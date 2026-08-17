@@ -31,6 +31,10 @@ def test_every_runner_code_named_here_is_a_registered_runner():
         repo_id="x/y", names={formats.CT2_WEIGHTS, formats.MLX_WHISPER_WEIGHTS[0],
                               formats.DIFFUSERS_INDEX},
         dirnames=set(), config={}, torch_weights=True))
+    named |= set(formats.loaders(
+        repo_id="x/y", names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
+        config={"target": formats.NEMO_ASR_TARGET + "rnnt_bpe_models.X"},
+        torch_weights=True))
     assert named <= _codes(), sorted(named - _codes())
 
 
@@ -52,6 +56,59 @@ def test_every_runner_code_named_here_is_a_registered_runner():
 def test_loaders_reads_the_format_and_nothing_else(names, dirnames, config, torch, expected):
     assert set(formats.loaders(repo_id="org/m", names=names, dirnames=dirnames,
                                config=config, torch_weights=torch)) == expected
+
+
+#: What a Parakeet MLX snapshot looks like: transformers-shaped safetensors
+#: beside a config that is NeMo's rather than transformers'.
+_PARAKEET_CONFIG = {"target": "nemo.collections.asr.models.rnnt_bpe_models."
+                              "EncDecRNNTBPEModel"}
+
+
+def test_a_parakeet_snapshot_is_recognised_by_its_NEMO_config():
+    """`model.safetensors` alone says nothing — it is the file every
+    transformers repo carries. What settles it is the `target` in config.json,
+    which names the NeMo class the weights were exported from and which no text
+    checkpoint has."""
+    assert set(formats.loaders(
+        repo_id="mlx-community/parakeet-tdt-0.6b-v3",
+        names={formats.PARAKEET_WEIGHTS, "config.json"}, dirnames=set(),
+        config=_PARAKEET_CONFIG, torch_weights=True)) == {"parakeet-mlx"}
+
+
+def test_a_parakeet_snapshot_is_NOT_offered_to_the_text_runners():
+    """The trap this guards: a directory of safetensors is normally both text
+    runners', so without the exclusion the AI Models page would put a Load
+    button on Parakeet for `mlx-text`, which would try to read a speech model
+    as a chat model and fail several frames inside mlx-lm."""
+    codes = formats.loaders(
+        repo_id="mlx-community/parakeet-tdt-0.6b-v3",
+        names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
+        config=_PARAKEET_CONFIG, torch_weights=True)
+    assert "mlx-text" not in codes and "transformers-text" not in codes
+
+
+def test_a_nemo_config_with_no_weights_beside_it_loads_nowhere():
+    """Evidence in both halves, like every other format here: a config alone is
+    a repo somebody uploaded the metadata of."""
+    assert formats.loaders(repo_id="org/m", names={"config.json"}, dirnames=set(),
+                           config=_PARAKEET_CONFIG, torch_weights=False) == ()
+
+
+def test_a_NON_asr_nemo_target_is_not_a_parakeet_repo():
+    """NeMo covers TTS and LLMs too, and this runner loads neither — the ASR
+    prefix is what the check is on, not the word "nemo"."""
+    codes = formats.loaders(
+        repo_id="org/m", names={formats.PARAKEET_WEIGHTS}, dirnames=set(),
+        config={"target": "nemo.collections.tts.models.FastPitchModel"},
+        torch_weights=True)
+    assert "parakeet-mlx" not in codes
+
+
+def test_a_parakeet_repo_SETTLES_what_the_model_is():
+    """`DECISIVE` is the list of formats whose evidence also names the
+    modality, and a NeMo ASR config does: it cannot be anything but speech
+    recognition, so the page's tag does not have to hedge."""
+    assert "parakeet-mlx" in formats.DECISIVE
 
 
 def test_mflux_needs_the_variant_table_as_well_as_the_layout():

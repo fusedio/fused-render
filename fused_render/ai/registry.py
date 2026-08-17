@@ -31,12 +31,14 @@ and gets whichever runner serves it here. A model id never picks the runner,
 because the same repo can be servable by two backends and the choice belongs to
 the machine, not to the string.
 
-**Two runners can share one capability, and the ORDER between them is the whole
-mechanism.** Text generation prefers MLX on Apple Silicon and uses torch on
-Windows and Linux, with torch also remaining a fallback on Apple Silicon when
+**Several runners can share one capability, and the ORDER between them is the
+whole mechanism.** Text generation prefers MLX on Apple Silicon and uses torch
+on Windows and Linux, with torch also remaining a fallback on Apple Silicon when
 MLX is unavailable; speech to text does the same thing with MLX Whisper over
-CTranslate2. Both rows are registered, both are asked whether they can run, and
-the first that says yes wins. Nothing else in the app knows there is more than
+CTranslate2, and since D319 carries a THIRD row — Parakeet, Apple Silicon only,
+registered under MLX Whisper so that the default does not move. Every row is
+registered, every one is asked whether it can run, and the first that says yes
+wins. Nothing else in the app knows there is more than
 one — but the CATALOG does, because what to suggest depends on which backend
 will load it (`catalog.py`), and an MLX checkpoint on a Windows machine is a
 download that cannot be used.
@@ -108,7 +110,7 @@ class Runner:
     #: the first runner whose name legitimately contains brackets would lose
     #: half of it with nothing failing. It is also the vocabulary this app
     #: already speaks informally — `skills/fused-render-ai/SKILL.md`'s runner
-    #: table has been writing these six names for as long as it has existed.
+    #: table has been writing these names for as long as it has existed.
     #:
     #: The qualifier is noise anywhere the reader is not CHOOSING: a card
     #: saying "MLX FLUX (Apple Silicon)" tells someone on a Mac nothing they did
@@ -117,7 +119,7 @@ class Runner:
     #:
     #: **Both names are PRODUCT NAMES, and they are Title Case with acronyms
     #: left uppercase — "MLX Whisper", "Diffusers", "Faster Whisper".** The AI
-    #: Models page prints these six side by side in one column, so a name that
+    #: Models page prints them all side by side in one column, so a name that
     #: keeps its upstream punctuation reads as a different KIND of thing than
     #: its neighbours rather than as a faithful citation; `faster-whisper` sat
     #: next to `Diffusers` and `MLX FLUX` and looked like a package, not a
@@ -140,7 +142,7 @@ class Runner:
     #: **It renders under that engine's row on the AI Models page's Engines
     #: tab** (D315), beneath the select, and only for the runner actually
     #: serving the capability. It spent a while over the Discover tab's
-    #: capability sections instead, which was wrong twice: three of six runners
+    #: capability sections instead, which was wrong twice: only some runners
     #: have a note, so those sections were blotchy and the sentences read as
     #: noise; and the `mflux-image` one is a CAUTION about a choice — the thing
     #: that tells a 16GB Mac to go back to Diffusers — which belongs beside the
@@ -320,6 +322,29 @@ _RUNNERS: tuple[Runner, ...] = (
         short_label="MLX Whisper",
         note="Transcribes on the GPU. Several times quicker than the CPU path "
              "on the same Mac.",
+        _available=_apple_silicon,
+    ),
+    # …and the third, which is the first capability to have one (D319).
+    # **Below MLX Whisper deliberately**, so nothing about the default changes:
+    # Parakeet-TDT beats Whisper large-v3 on English word error rate and is
+    # several times quicker again on the same Mac, but v3 covers 25 European
+    # languages against Whisper's ~99 — so promoting it would silently break
+    # every page relying on `language` being detected, on recordings this
+    # model has never heard a word of. A user opts in per capability on the
+    # Engines tab (D302), which is exactly the machinery that case needs and
+    # is why no new plumbing came with this runner.
+    Runner(
+        code="parakeet-mlx",
+        capability=SPEECH_TO_TEXT,
+        folder=os.path.join(RUNNERS_DIR, "parakeet_mlx"),
+        label="Parakeet TDT (Apple Silicon)",
+        short_label="Parakeet TDT",
+        # ONE LINE, per the rule the transformers row states — it sits under
+        # this engine's row on the Engines tab, between one picker and the
+        # next. It describes an OPT-IN, so what it leads with is the reason to
+        # take it and the reason not to, in that order.
+        note="Quicker than Whisper and more accurate in English, but it "
+             "handles 25 European languages only.",
         _available=_apple_silicon,
     ),
     Runner(
