@@ -634,7 +634,9 @@ def test_every_git_call_is_an_argv_list_with_no_shell_and_a_timeout(
     reader.main(full_bundle, action="history", ref="refs/heads/main")
     assert seen
     for cmd, kw in seen:
-        assert isinstance(cmd, list) and cmd[0] == "git"
+        # argv[0] is now the ABSOLUTE git path — required to reach posix_spawn, since CPython forks unless os.path.dirname(executable) is truthy and a fork with libproj resident SIGSEGVs before exec (tests/test_git_posix_spawn.py). Still one basename, still a list, still no shell, which is what this test is about.
+        assert isinstance(cmd, list)
+        assert os.path.basename(cmd[0]) in ("git", "git.exe")
         assert kw.get("shell", False) is False
         assert kw.get("stdin") is subprocess.DEVNULL
         assert kw.get("timeout") or kw.get("stdout") is subprocess.PIPE

@@ -195,3 +195,54 @@ def test_a_signal_death_is_not_mistaken_for_a_missing_repo(monkeypatch, caplog,
         assert gitignore._is_repo_root(str(tmp_path)) is False
     joined = " ".join(r.getMessage() for r in caplog.records)
     assert "-11" in joined, "a SIGSEGV'd git was reported without its exit status"
+
+
+# --------------------------------------------------- every OTHER git spawn too
+#
+# The same latent bug sat at eight more sites. Two of them matter directly to the
+# feature the user reported: `routers/git_show.py` renders a file as of a commit
+# (GT-17, reached from the same git view) and `server/fs_mutate.py` performs the
+# server's git writes. The rest — app_git, community, deeplink, claude_config,
+# the bundle reader, the claude agent — would fail the same silent way.
+#
+# `app_git.py`'s module docstring records this exact crash being diagnosed in
+# August ("every `git add` died rc=-11 with empty output") and being fixed with
+# `close_fds=False`. That fix could never have worked while argv[0] stayed the
+# bare name `"git"`: the posix_spawn path was still unreachable. It only LOOKED
+# fixed because it was validated in a process where libproj was not resident. So
+# this is pinned by test rather than by comment.
+
+
+def test_no_git_spawn_uses_a_bare_executable_name():
+    """A repo-wide sweep: nothing may spawn git by bare name.
+
+    Deliberately a source sweep rather than per-site behaviour tests: these sites
+    need repos, remotes and app dirs to reach, and the property being protected —
+    argv[0] is resolved, not bare — is visible in the source and is the one that
+    silently un-fixes itself when someone adds a new call site by copy-paste.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "fused_render"
+    # argv lists whose first element is the literal string "git".
+    bare = re.compile(r"""\[\s*["']git["']\s*,""")
+    offenders = []
+    for py in root.rglob("*.py"):
+        for n, line in enumerate(py.read_text(errors="replace").splitlines(), 1):
+            if bare.search(line) and "# posix-spawn-exempt" not in line:
+                offenders.append(f"{py.relative_to(root)}:{n}: {line.strip()}")
+    assert not offenders, (
+        "these spawn git by bare name, so CPython forks and the child SIGSEGVs "
+        "before exec whenever libproj is resident:\n  " + "\n  ".join(offenders))
+
+
+def test_git_bin_is_absolute_and_cached():
+    from fused_render.server import gitignore
+
+    first = gitignore.git_bin()
+    assert os.path.isabs(first) or first == "git"   # "git" only with no PATH
+    assert gitignore.git_bin() is first             # cached, not re-resolved
+    if first != "git":
+        assert os.path.basename(first) in ("git", "git.exe")
+        assert os.access(first, os.X_OK)

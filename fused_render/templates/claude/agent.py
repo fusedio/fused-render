@@ -1612,8 +1612,12 @@ def _commit_turn(file: str, message: str) -> None:
         if subject else "Claude turn"
 
     def git(*args):
+        # ABSOLUTE argv[0]: close_fds=False alone does NOT reach posix_spawn —
+        # CPython forks unless os.path.dirname(executable) is truthy, and a fork
+        # with libproj resident dies with SIGSEGV before exec (rc -11, silently).
+        import shutil
         return subprocess.run(
-            ["git", "-C", app_dir, "-c", "user.name=Fused",
+            [shutil.which("git") or "git", "-C", app_dir, "-c", "user.name=Fused",
              "-c", "user.email=apps@fused.io", *args],
             capture_output=True, text=True, timeout=30, close_fds=False)
 

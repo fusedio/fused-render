@@ -40,6 +40,23 @@ import subprocess
 import sys
 import tempfile
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 # The fused engine execs this script without setting __file__; it puts the
 # script's own directory first on sys.path, so rebuild __file__ from it. Under
 # the built-in executor __file__ is already set, so this is a no-op. (The
@@ -110,7 +127,7 @@ def _run(args, cwd, timeout=TIMEOUT_S, allow=(0,)):
     """
     try:
         proc = subprocess.run(
-            ["git", "--no-pager", *_CONFIG, *args],
+            [_git_bin(), "--no-pager", *_CONFIG, *args],
             cwd=cwd,
             env={**os.environ, **_ENV},
             stdin=subprocess.DEVNULL,

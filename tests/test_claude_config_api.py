@@ -732,7 +732,9 @@ def test_git_runs_with_dash_c_rather_than_cwd():
     with mock.patch.object(subprocess, "run", fake_run):
         lib.git("status", "--porcelain")
 
-    assert seen["argv"][:3] == ["git", "-C", lib.CLAUDE_DIR]
+    # argv[0] is now the ABSOLUTE git path — required to reach posix_spawn, since CPython forks unless os.path.dirname(executable) is truthy and a fork with libproj resident SIGSEGVs before exec (tests/test_git_posix_spawn.py). Still one basename, still a list, still no shell, which is what this test is about.
+    assert os.path.basename(seen["argv"][0]) in ("git", "git.exe")
+    assert seen["argv"][1:3] == ["-C", lib.CLAUDE_DIR]
     assert "cwd" not in seen["kwargs"]
     assert seen["kwargs"]["close_fds"] is False
 

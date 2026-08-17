@@ -24,6 +24,23 @@ from fused_render.server.mount import _invalidate_stat_cache, _is_under_snapshot
 from fused_render.server.walk import _mount_list_error_response
 from fused_render.shell import storage as shell_storage
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 router = APIRouter()
 
 
@@ -378,7 +395,7 @@ def _run_git(args: list[str], cwd: str):
     Returns the CompletedProcess, or None when git is missing/hung."""
     try:
         return subprocess.run(
-            ["git", "--no-pager", *args],
+            [_git_bin(), "--no-pager", *args],
             cwd=cwd,
             env={**os.environ, **_GIT_ENV},
             stdin=subprocess.DEVNULL,

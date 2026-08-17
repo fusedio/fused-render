@@ -62,6 +62,23 @@ from fused_render.server.common import _error
 from fused_render.server.proxy import _harden_raw
 from fused_render.shell import mounts as shell_mounts
 
+
+# An ABSOLUTE git path is required to reach posix_spawn, not merely tidy: CPython
+# forks unless `os.path.dirname(executable)` is truthy, and a fork in a process
+# with libproj resident dies with SIGSEGV before exec (rc -11, no output, no
+# exception). `close_fds=False` alone does NOT achieve this — see
+# fused_render/server/gitignore.py and tests/test_git_posix_spawn.py.
+_GIT_BIN = None
+
+
+def _git_bin():
+    global _GIT_BIN
+    if _GIT_BIN is None:
+        import shutil
+        _GIT_BIN = shutil.which("git") or "git"
+    return _GIT_BIN
+
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -177,7 +194,7 @@ def _git(root: str, *args: str, allow=(0,)) -> bytes:
     so no caller has to branch on a raw CalledProcessError."""
     try:
         proc = subprocess.run(
-            ["git", "--no-pager", "-C", root, *args],
+            [_git_bin(), "--no-pager", "-C", root, *args],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=TIMEOUT_S, **_popen_kwargs())
     except FileNotFoundError as exc:
@@ -206,7 +223,7 @@ def _show(root: str, rel: str, sha: str) -> bytes:
     spec = f"{sha}:{rel}"
     try:
         proc = subprocess.Popen(
-            ["git", "--no-pager", "-C", root, "show", spec],
+            [_git_bin(), "--no-pager", "-C", root, "show", spec],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_popen_kwargs())
     except FileNotFoundError as exc:
         raise _Refused("git is not installed, or not on this app's PATH",
